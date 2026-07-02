@@ -173,13 +173,17 @@ impl UserContextStore {
             });
         }
 
-        // Merge the two time-ordered streams, then re-cap at max_items.
+        // Merge the two time-ordered streams, collapse runs of near-identical
+        // frames (a screen held static at 1fps otherwise floods the prompt with
+        // dozens of duplicate OCR blocks), then re-cap at max_items. Dedup runs
+        // BEFORE the truncate so the cap keeps compacted (distinct) content.
         items.sort_by(|a, b| {
             a.captured_at_ms
                 .cmp(&b.captured_at_ms)
                 .then_with(|| a.subject_type.cmp(&b.subject_type))
                 .then_with(|| a.subject_id.cmp(&b.subject_id))
         });
+        let mut items = dedup_adjacent_frames(items);
         if max_items >= 0 {
             items.truncate(max_items as usize);
         }
@@ -190,6 +194,62 @@ impl UserContextStore {
             end_ms,
         })
     }
+}
+
+/// Word-set Jaccard at or above which two consecutive same-app frames are treated
+/// as the same screen and collapsed. 0.9 tolerates OCR jitter (a blinking cursor,
+/// a ticking clock, a changing % readout) without merging genuinely different
+/// screens; a starting point to tune against real windows like the ADR 0042 floor.
+const FRAME_DEDUP_JACCARD_THRESHOLD: f64 = 0.9;
+
+/// Lowercased whitespace-token set of `text`, for near-duplicate frame detection.
+/// Punctuation stays attached to tokens — OCR noise is the target, and exact-token
+/// overlap is a good-enough signal without pulling in a tokenizer. `// ponytail:
+/// word-set Jaccard, upgrade to shingles/edit-distance only if jitter still leaks.`
+fn word_set(text: &str) -> std::collections::HashSet<String> {
+    text.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Jaccard similarity of two frames' word sets: `|A∩B| / |A∪B|`. Two empty texts
+/// count as identical (1.0); one empty as disjoint (0.0).
+fn text_similarity(a: &str, b: &str) -> f64 {
+    let (sa, sb) = (word_set(a), word_set(b));
+    let union = sa.union(&sb).count();
+    if union == 0 {
+        return 1.0;
+    }
+    sa.intersection(&sb).count() as f64 / union as f64
+}
+
+/// Collapse runs of CONSECUTIVE near-identical frames from the SAME app into one
+/// representative (the frame with the most OCR text), so a static screen captured
+/// at 1fps does not flood the derivation prompt with duplicate blocks. Only frames
+/// collapse, and only against the immediately-preceding KEPT frame of the same
+/// `app_label`: audio transcript items and app switches break a run, so a genuine
+/// return to a screen after other work stays a distinct item. Dropped duplicates
+/// lose their own evidence tag — the representative frame carries the run's
+/// evidence, which is the intent (one clean frame, not sixty identical ones).
+fn dedup_adjacent_frames(items: Vec<CaptureWindowItem>) -> Vec<CaptureWindowItem> {
+    let mut out: Vec<CaptureWindowItem> = Vec::with_capacity(items.len());
+    for item in items {
+        if item.subject_type == FRAME_SUBJECT_TYPE {
+            if let Some(last) = out.last_mut() {
+                if last.subject_type == FRAME_SUBJECT_TYPE
+                    && last.app_label == item.app_label
+                    && text_similarity(&last.text, &item.text) >= FRAME_DEDUP_JACCARD_THRESHOLD
+                {
+                    // Near-duplicate of the current representative: keep whichever
+                    // carries the richer OCR text, drop the other.
+                    if item.text.chars().count() > last.text.chars().count() {
+                        *last = item;
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(item);
+    }
+    out
 }
 
 /// Builds a privacy-reduced best-effort `(app_label, url)` pair from a frame
@@ -285,6 +345,62 @@ fn rfc3339_to_ms(value: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(id: i64, t: i64, text: &str, app: &str) -> CaptureWindowItem {
+        CaptureWindowItem {
+            subject_type: FRAME_SUBJECT_TYPE.to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: Some(app.to_string()),
+            url: None,
+        }
+    }
+
+    fn audio(id: i64, t: i64, text: &str) -> CaptureWindowItem {
+        CaptureWindowItem {
+            subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: None,
+            url: None,
+        }
+    }
+
+    #[test]
+    fn dedup_adjacent_frames_collapses_static_screen_runs() {
+        // A static screen: 20 shared tokens plus one jittering readout token.
+        let s = |extra: &str| -> String {
+            let mut v: Vec<String> = (0..20).map(|i| format!("w{i}")).collect();
+            v.extend(extra.split_whitespace().map(str::to_string));
+            v.join(" ")
+        };
+        // Jitter-only difference is treated as the same screen (>= 0.9)...
+        assert!(text_similarity(&s("12%"), &s("13%")) >= FRAME_DEDUP_JACCARD_THRESHOLD);
+        // ...but genuinely different content is not.
+        assert!(
+            text_similarity(&s("12%"), "totally unrelated different screen text here now")
+                < FRAME_DEDUP_JACCARD_THRESHOLD
+        );
+
+        let items = vec![
+            frame(1, 100, &s("12%"), "Hitch"),       // run representative
+            frame(2, 101, &s("12%"), "Hitch"),       // identical dup -> dropped
+            frame(3, 102, &s("12% bonus"), "Hitch"), // near-dup + richer -> new representative
+            audio(4, 103, "spoken words here"),      // audio breaks the run
+            frame(5, 104, &s("12%"), "Hitch"),       // new run after audio -> kept
+            frame(6, 105, &s("12%"), "Zen"),         // app switch -> kept
+        ];
+        let out = dedup_adjacent_frames(items);
+
+        // 1/2/3 collapse to the richest (id 3); audio, post-audio frame, and the
+        // app-switched frame all survive.
+        let ids: Vec<i64> = out.iter().map(|i| i.subject_id).collect();
+        assert_eq!(ids, vec![3, 4, 5, 6]);
+        // The representative carries the richest OCR text of its run.
+        assert_eq!(out[0].text, s("12% bonus"));
+    }
 
     #[test]
     fn url_origin_host_reduces_to_bare_host() {
