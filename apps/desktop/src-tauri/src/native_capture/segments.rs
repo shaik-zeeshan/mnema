@@ -782,7 +782,7 @@ fn capture_session_options(
             on_frame_exported: Arc::new(move |artifact| {
                 let metadata_snapshot = metadata_snapshot_provider
                     .as_ref()
-                    .and_then(|provider| provider());
+                    .and_then(|provider| provider(artifact.captured_at_unix_ms));
                 match try_forward_frame_artifact(&frame_artifact_tx, artifact, metadata_snapshot) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {

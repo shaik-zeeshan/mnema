@@ -404,11 +404,13 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
         //
         // On a focus change, publish the fresh frontmost app identity with the
         // *cached* URL first. The live read below can cost up to ~1.4s (Gecko AX
-        // on Zen/Firefox), and `latest_snapshot` — which `on_frame_exported`
-        // stamps onto every frame — only updates once collection returns. Without
-        // this cheap pre-pass, frames exported during that window get stamped with
-        // the *previous* app's name (e.g. a Zen frame labelled "Hitch"). The live
-        // pass then upgrades only the browser URL for the same app.
+        // on Zen/Firefox). `on_frame_exported` stamps each frame by *capture* time
+        // via `snapshot_in_effect_at` (the history ring), so the new app has to be
+        // in the ring — with a `published_at` close to the switch — before those
+        // frames are captured. This cheap pre-pass publishes it within ~ms; without
+        // it only the ~1.4s-late live pass would, leaving frames captured in that
+        // window resolving to the *previous* app (e.g. a Zen frame labelled
+        // "Hitch"). The live pass then upgrades only the browser URL for the same app.
         if reason == PrivacyRefreshReason::WorkspaceFocusChanged {
             let _ = collect_privacy_filter_update(
                 &app_handle,
