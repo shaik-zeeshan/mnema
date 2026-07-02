@@ -19,6 +19,13 @@
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import {
+    loadOcrForFrame,
+    loadOcrFromJob,
+    ocrBoxStyle,
+    type OcrLoadResult,
+    type OcrStatus,
+  } from "$lib/frame-ocr";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import IconScanText from "~icons/lucide/scan-text";
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
@@ -69,7 +76,6 @@
     ListAudioSegmentsRequest,
     ListFramesRequest,
     OcrObservation,
-    OcrStructuredPayload,
     ProcessingJobDto,
     ProcessingResultDto,
     ReprocessAudioSegmentSpeakerAnalysisRequest,
@@ -5625,10 +5631,7 @@
   // Switching active frame clears any prior OCR state so a stale overlay
   // never sits on the wrong preview. A monotonic generation token prevents a
   // late response for an old frame from writing into the new frame's state.
-  type OcrStatus = "idle" | "running" | "success" | "empty" | "missing" | "error";
-  const FRAME_SUBJECT_TYPE = "frame";
   const AUDIO_SEGMENT_SUBJECT_TYPE = "audio_segment";
-  const OCR_PROCESSOR = "ocr";
   const OCR_SOURCE_IMAGE_PATH_OPTION = "mnemaSourceImagePath";
   const AUDIO_TRANSCRIPTION_PROCESSOR = "audio_transcription";
   const SPEAKER_ANALYSIS_PROCESSOR = "speaker_analysis";
@@ -5667,185 +5670,6 @@
       ocrRerunLoading = false;
     }
   });
-
-  type OcrPayloadShape = {
-    provider?: string;
-    modelId?: string | null;
-    observations?: OcrObservation[];
-    provenance?: {
-      provider?: string;
-      modelId?: string | null;
-    } | null;
-  };
-
-  type OcrJobPayloadShape = {
-    provider?: string;
-    modelId?: string | null;
-  };
-
-  function formatOcrProviderLabel(provider: string): string {
-    switch (provider) {
-      case "apple_vision": return "Apple Vision";
-      case "tesseract": return "Tesseract";
-      case "paddle_ocr": return "PaddleOCR";
-      default: return provider;
-    }
-  }
-
-  function resolveOcrProviderLabel(
-    jobPayloadJson: string | null | undefined,
-    resultPayloadJson: string | null | undefined,
-    processorVersion: string | null | undefined,
-  ): string | null {
-    let jobPayload: OcrJobPayloadShape | null = null;
-    let resultPayload: OcrPayloadShape | null = null;
-    try {
-      if (jobPayloadJson) jobPayload = JSON.parse(jobPayloadJson) as OcrJobPayloadShape;
-    } catch {}
-    try {
-      if (resultPayloadJson) resultPayload = JSON.parse(resultPayloadJson) as OcrPayloadShape;
-    } catch {}
-
-    const provider =
-      typeof resultPayload?.provider === "string"
-        ? resultPayload.provider
-        : typeof resultPayload?.provenance?.provider === "string"
-          ? resultPayload.provenance.provider
-          : typeof jobPayload?.provider === "string"
-            ? jobPayload.provider
-            : typeof processorVersion === "string" && processorVersion.includes(":")
-              ? processorVersion.split(":", 1)[0]
-              : processorVersion;
-    if (!provider) return null;
-    const modelId =
-      typeof resultPayload?.modelId === "string"
-        ? resultPayload.modelId
-        : typeof resultPayload?.provenance?.modelId === "string"
-          ? resultPayload.provenance.modelId
-          : typeof jobPayload?.modelId === "string"
-            ? jobPayload.modelId
-            : null;
-    const providerLabel = formatOcrProviderLabel(provider);
-    return modelId ? `${providerLabel} · ${modelId}` : providerLabel;
-  }
-
-  function parseOcrPayload(json: string | null | undefined): { observations: OcrObservation[]; providerLabel: string | null } | null {
-    if (!json) return null;
-    try {
-      const parsed = JSON.parse(json) as Partial<OcrStructuredPayload>;
-      const obs = Array.isArray(parsed?.observations) ? parsed.observations : null;
-      if (!obs) return null;
-      const out: OcrObservation[] = [];
-      for (const o of obs) {
-        const bb = o?.boundingBox;
-        if (
-          !bb ||
-          typeof bb.x !== "number" ||
-          typeof bb.y !== "number" ||
-          typeof bb.width !== "number" ||
-          typeof bb.height !== "number"
-        )
-          continue;
-        out.push({
-          text: typeof o.text === "string" ? o.text : "",
-          confidence: typeof o.confidence === "number" ? o.confidence : 0,
-          boundingBox: {
-            x: bb.x,
-            y: bb.y,
-            width: bb.width,
-            height: bb.height,
-          },
-        });
-      }
-      const provider =
-        typeof parsed?.provider === "string"
-          ? parsed.provider
-          : typeof parsed?.provenance?.provider === "string"
-            ? parsed.provenance.provider
-            : null;
-      const modelId =
-        typeof parsed?.modelId === "string"
-          ? parsed.modelId
-          : typeof parsed?.provenance?.modelId === "string"
-            ? parsed.provenance.modelId
-            : null;
-      return {
-        observations: out,
-        providerLabel: provider ? (modelId ? `${formatOcrProviderLabel(provider)} · ${modelId}` : formatOcrProviderLabel(provider)) : null,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  type OcrLoadResult = {
-    status: OcrStatus;
-    observations: OcrObservation[];
-    providerLabel: string | null;
-    error: string | null;
-    job: ProcessingJobDto | null;
-  };
-
-  async function loadOcrFromJob(job: ProcessingJobDto): Promise<OcrLoadResult> {
-    if (job.status === "queued" || job.status === "running") {
-      return {
-        status: "running",
-        observations: [],
-        providerLabel: resolveOcrProviderLabel(job.payloadJson, null, null),
-        error: null,
-        job,
-      };
-    }
-    if (job.status === "failed") {
-      return {
-        status: "error",
-        observations: [],
-        providerLabel: resolveOcrProviderLabel(job.payloadJson, null, null),
-        error: job.lastError ?? "OCR job failed",
-        job,
-      };
-    }
-
-    const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
-      request: { jobId: job.id } satisfies GetProcessingResultRequest,
-    });
-
-    const parsedPayload = parseOcrPayload(result?.structuredPayloadJson);
-    if (parsedPayload === null) {
-      return {
-        status: "error",
-        observations: [],
-        providerLabel: resolveOcrProviderLabel(job.payloadJson, result?.structuredPayloadJson, result?.processorVersion),
-        error: result ? "OCR result payload is missing or invalid" : "OCR result not available",
-        job,
-      };
-    }
-
-    return {
-      status: parsedPayload.observations.length === 0 ? "empty" : "success",
-      observations: parsedPayload.observations,
-      providerLabel: parsedPayload.providerLabel ?? resolveOcrProviderLabel(job.payloadJson, result?.structuredPayloadJson, result?.processorVersion),
-      error: null,
-      job,
-    };
-  }
-
-  async function loadOcrForFrame(sourceFrame: FrameDto): Promise<OcrLoadResult> {
-    const jobs = await invoke<ProcessingJobDto[]>("list_processing_jobs", {
-      request: { subjectType: FRAME_SUBJECT_TYPE, subjectId: sourceFrame.id },
-    });
-
-    const ocrJobs = jobs.filter((j) => j.processor === OCR_PROCESSOR);
-    if (ocrJobs.length === 0) {
-      return { status: "missing", observations: [], providerLabel: null, error: null, job: null };
-    }
-
-    const completed = ocrJobs
-      .filter((j) => j.status === "completed")
-      .sort((a, b) => b.id - a.id);
-    const job = completed[0] ?? ocrJobs.sort((a, b) => b.id - a.id)[0];
-    return loadOcrFromJob(job);
-  }
 
   function ocrIsCurrent(activeFrameId: number, gen: number): boolean {
     return gen === ocrGeneration && timelineActive?.id === activeFrameId && ocrFrameId === activeFrameId;
@@ -5913,7 +5737,7 @@
         });
         return;
       }
-      const ocrData = await loadOcrFromJob(job);
+      const ocrData = await loadOcrFromJob(job, invoke);
       applyLoadedOcrData(activeFrameId, sourceFrame, gen, ocrData);
     } catch (err) {
       if (!ocrIsCurrent(activeFrameId, gen)) return;
@@ -5949,7 +5773,7 @@
       if (!ocrIsCurrent(frameId, gen)) return;
 
       let sourceFrame = frame;
-      let ocrData = await loadOcrForFrame(sourceFrame);
+      let ocrData = await loadOcrForFrame(sourceFrame, invoke);
       if (!ocrIsCurrent(frameId, gen)) return;
 
       if (ocrData.status === "missing") {
@@ -5965,7 +5789,7 @@
 
         if (fallbackFrame) {
           sourceFrame = fallbackFrame;
-          ocrData = await loadOcrForFrame(sourceFrame);
+          ocrData = await loadOcrForFrame(sourceFrame, invoke);
           if (!ocrIsCurrent(frameId, gen)) return;
         }
       }
@@ -6066,7 +5890,7 @@
         },
       );
       if (!ocrIsCurrent(frameId, gen)) return;
-      const ocrData = await loadOcrFromJob(result.job);
+      const ocrData = await loadOcrFromJob(result.job, invoke);
       applyLoadedOcrData(frameId, frame, gen, ocrData);
     } catch (err) {
       if (!ocrIsCurrent(frameId, gen)) return;
@@ -6155,29 +5979,10 @@
     return () => ro.disconnect();
   });
 
-  // OCR box styles are expressed in PERCENTAGES of the overlay wrapper.
-  // The wrapper itself is sized/positioned to match the measured image
-  // rect (see template), so percentage coordinates inside it map 1:1 onto
-  // image-space coordinates. The lower-left origin of the source space
-  // means y must be flipped to CSS top.
-  //
-  // Boxes are drawn quietly by default; the recognized text only appears
-  // when the user hovers/focuses a single box. The reveal uses an opaque
-  // chip whose font-size is derived from the box height (so it visually
-  // matches the underlying glyph row and replaces — rather than doubles —
-  // the pixels underneath).
-  function ocrBoxStyle(obs: OcrObservation): string {
-    const bb = obs.boundingBox;
-    const leftPct = bb.x * 100;
-    const topPct = (1 - bb.y - bb.height) * 100;
-    const widthPct = bb.width * 100;
-    const heightPct = bb.height * 100;
-    // 0.78 ≈ cap-height ratio of common UI fonts; keeps glyphs vertically
-    // centered inside the bbox without descenders escaping the bottom edge.
-    const heightPx = Math.max(8, bb.height * renderedImageRect.height);
-    const fontSizePx = Math.max(6, heightPx * 0.78);
-    return `left: ${leftPct}%; top: ${topPct}%; width: ${widthPct}%; height: ${heightPct}%; --ocr-font-size: ${fontSizePx.toFixed(2)}px;`;
-  }
+  // Thin wrapper over the pure `ocrBoxStyle` (in $lib/frame-ocr): closes over
+  // the measured image height so the template call site stays clean.
+  const ocrBoxStyleLocal = (obs: OcrObservation): string =>
+    ocrBoxStyle(obs, renderedImageRect.height);
 
   const ocrButtonLabel = $derived(
     ocrStatus === "running"
@@ -6917,7 +6722,7 @@
               <div
                 class="timeline__ocr-box"
                 role="listitem"
-                style={ocrBoxStyle(obs)}
+                style={ocrBoxStyleLocal(obs)}
                 aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
                 use:tip={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
