@@ -945,16 +945,24 @@
       }
       if (activeConversationId !== conversationId) return;
       if (snapshot === null || snapshot.view.turnIndex !== event.turnIndex) return;
-      const hydrated = makeTurn(
-        snapshot.view.turnIndex,
-        snapshot.view.question,
-        normalizePhase(snapshot.view.phase),
-      );
-      turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+      // Re-check after the await: the listener fires handleUpdateEvent without
+      // awaiting, so a concurrent invocation for this same missing turnIndex may
+      // have hydrated it while we were suspended in ask_ai_snapshot — appending
+      // again would duplicate the turn. Only the first resolver hydrates; the
+      // rest fall through to the version contract below.
       turn = turns.find((t) => t.turnIndex === event.turnIndex);
-      if (!turn) return;
-      adoptView(turn, snapshot.view, snapshot.version);
-      reconcileComposer(turn);
+      if (!turn) {
+        const hydrated = makeTurn(
+          snapshot.view.turnIndex,
+          snapshot.view.question,
+          normalizePhase(snapshot.view.phase),
+        );
+        turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+        turn = turns.find((t) => t.turnIndex === event.turnIndex);
+        if (!turn) return;
+        adoptView(turn, snapshot.view, snapshot.version);
+        reconcileComposer(turn);
+      }
     }
 
     if (event.version === turn.version + 1) {

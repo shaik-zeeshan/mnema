@@ -40,6 +40,7 @@
   import ConclusionStrip from "$lib/insights/ConclusionStrip.svelte";
   import ConclusionTimeline from "$lib/insights/ConclusionTimeline.svelte";
   import { buildTimeline } from "$lib/insights/subjectTimeline";
+  import { debounce } from "$lib/insights/subjectsTiers";
   import { humanizeError } from "$lib/format-error";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
@@ -356,10 +357,15 @@
     subject;
     void loadSubject();
 
+    // `user_context_changed` fires per derivation pass (~every 5s during a
+    // backlog drain); coalesce bursts into one trailing reload, matching the
+    // treatment Subjects.svelte gives the same event.
+    const debouncedReload = debounce(() => void loadSubject(), 500);
+
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
-      void loadSubject();
+      debouncedReload();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -368,6 +374,7 @@
     return () => {
       disposed = true;
       unlisten?.();
+      debouncedReload.cancel();
     };
   });
 </script>
