@@ -35,11 +35,13 @@
     SubjectView,
     ConclusionEvidenceRef,
     Activity,
+    ActivityEvidenceRef,
     AiRuntimeStatus,
     UserContextStatus,
   } from "$lib/types/recording";
   import Sparkline from "$lib/insights/charts/Sparkline.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
   import {
     type Axis,
@@ -463,15 +465,35 @@
     }
   }
 
-  // "View in Timeline" — best-effort Activity-span handoff to the raw Timeline
-  // (port of SubjectDetail.viewInTimeline). Resolves the first cited Activity's
-  // first raw evidence ref (frame/audio) and asks the main window to land there;
-  // if nothing resolves, fall back to navigating to the Timeline surface.
+  // In-place frame peek (FrameDetailModal). A frame evidence ref opens the modal
+  // instead of hopping to the raw Timeline window; the old hand-off survives only
+  // as the modal's escape hatch and as the audio/no-ref fallback.
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  // "View frame" — resolve the first cited Activity's first raw evidence ref. A
+  // frame ref peeks in place; an audio ref (or no ref) keeps the old raw-Timeline
+  // hand-off / plain Timeline navigation.
   async function viewInTimeline(r: SubjectRow): Promise<void> {
     const chips = evidenceChipsFor(r);
     const first = chips[0];
     const activity = first ? activitiesById.get(first.activityId) : undefined;
     const ref = activity?.evidence?.[0];
+    if (ref && ref.subjectType === "frame") {
+      frameModalId = ref.subjectId;
+      frameModalOpenInTimeline = () => void openRefInTimeline(ref);
+      frameModalOpen = true;
+      return;
+    }
+    await openRefInTimeline(ref);
+  }
+
+  // The legacy best-effort Activity-span hand-off to the raw Timeline — now the
+  // modal's escape hatch + the audio/no-ref fallback.
+  async function openRefInTimeline(
+    ref: ActivityEvidenceRef | undefined,
+  ): Promise<void> {
     try {
       if (ref && ref.subjectType === "audio_segment") {
         await invoke("open_capture_result_in_main_window", {
@@ -897,7 +919,7 @@
                     void viewInTimeline(r);
                   }}
                 >
-                  View in Timeline ›
+                  View frame ›
                 </button>
               </div>
             {:else if hasEvidenceRefs(r) && !resolvedSubjects.has(r.subject)}
@@ -1142,6 +1164,15 @@
     </p>
   {/if}
 </section>
+
+<!-- In-place frame peek for a subject's grounding evidence. Its "open full
+     timeline →" escape hatch replays the old raw-Timeline hand-off. -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
 
 <style>
   .subjects {

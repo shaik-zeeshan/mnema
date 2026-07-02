@@ -40,6 +40,7 @@
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
@@ -790,8 +791,38 @@
     }
   }
 
-  // Hand off an Answer Source to the main timeline window (frame xor audio).
-  async function selectSource(source: AskAiSource): Promise<void> {
+  // In-place frame peek (FrameDetailModal). A frame source — or an audio source
+  // that carries an aligned frame — opens the modal instead of hopping to the raw
+  // Timeline window; the old timeline hand-off survives only as the modal's
+  // demoted escape hatch (`onOpenInTimeline`) and as the fallback for audio with
+  // no frame to peek.
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalApp = $state<string | null>(null);
+  let frameModalTitle = $state<string | null>(null);
+  let frameModalCapturedAt = $state<string | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  // Select an Answer Source: peek a frame in place when one is available, else
+  // keep the old raw-Timeline hand-off (audio with no aligned frame).
+  function selectSource(source: AskAiSource): void {
+    const frameId =
+      source.kind === "frame" ? source.frameId : (source.alignedFrameId ?? null);
+    if (frameId == null) {
+      void openSourceInTimeline(source);
+      return;
+    }
+    frameModalId = frameId;
+    frameModalApp = source.appName;
+    frameModalTitle = source.windowTitle;
+    frameModalCapturedAt = source.startedAt;
+    frameModalOpenInTimeline = () => void openSourceInTimeline(source);
+    frameModalOpen = true;
+  }
+
+  // Hand off an Answer Source to the main timeline window (frame xor audio) — the
+  // legacy behavior, now the modal's escape hatch + the audio-no-frame fallback.
+  async function openSourceInTimeline(source: AskAiSource): Promise<void> {
     try {
       await invoke("open_capture_result_in_main_window", {
         kind: source.kind,
@@ -1538,6 +1569,18 @@
   {/if}
 {/if}
 </section>
+
+<!-- In-place frame peek for Answer Sources. Its "open full timeline →" escape
+     hatch replays the old raw-Timeline hand-off captured at open time. -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  appName={frameModalApp}
+  windowTitle={frameModalTitle}
+  capturedAt={frameModalCapturedAt}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
 
 <style>
   /* The conversation pane filling the insights surface. Mirrors the terminal/

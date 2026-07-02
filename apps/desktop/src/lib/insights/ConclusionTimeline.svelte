@@ -27,7 +27,9 @@
     type TimelineEvent,
   } from "$lib/insights/subjectTimeline";
   import { CATEGORY_COLOR, categoryLabel } from "$lib/insights/activity-helpers";
+  import { invoke } from "@tauri-apps/api/core";
   import ConclusionHero from "$lib/insights/ConclusionHero.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
 
   interface Props {
     events: TimelineEvent[];
@@ -54,6 +56,44 @@
   }: Props = $props();
 
   const isFaded = $derived(conclusion.status === "faded");
+
+  // In-place frame peek (FrameDetailModal). An evidence row that carries a frame
+  // opens the modal instead of hopping to the raw Timeline window; the old
+  // hand-off (the `onViewInTimeline` prop) survives only as the modal's escape
+  // hatch and as the fallback for rows with no frame (audio evidence, contradict
+  // rows whose frame the parent resolves).
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  function openEvidence(frameId: number | null, activityId: number): void {
+    if (frameId != null) {
+      const fid = frameId;
+      frameModalId = fid;
+      // Escape hatch = hand THIS frame to the raw Timeline directly. It must NOT
+      // route back through `onViewInTimeline`, which re-branches a frame ref into
+      // the parent's own peek modal — that reopened a modal instead of navigating
+      // (the "flicker + needs a second click" bug).
+      frameModalOpenInTimeline = () => void openFrameInTimeline(fid, activityId);
+      frameModalOpen = true;
+      return;
+    }
+    onViewInTimeline(activityId);
+  }
+
+  // Raw-Timeline hand-off for a specific frame (the modal's escape hatch). On
+  // failure, fall back to the parent's activity-span navigation.
+  async function openFrameInTimeline(frameId: number, activityId: number): Promise<void> {
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind: "frame",
+        frameId,
+        audioSegmentId: null,
+      });
+    } catch {
+      onViewInTimeline(activityId);
+    }
+  }
 
   function pct(confidence: number): number {
     return Math.round(Math.max(0, Math.min(1, confidence)) * 100);
@@ -252,11 +292,11 @@
             class:ev-card--contradict={isContra}
             role="button"
             tabindex="0"
-            onclick={() => onViewInTimeline(ev.activityId)}
+            onclick={() => openEvidence(frameId, ev.activityId)}
             onkeydown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
-                onViewInTimeline(ev.activityId);
+                openEvidence(frameId, ev.activityId);
               }
             }}
           >
@@ -293,7 +333,9 @@
                 <span class="stance" class:stance--contradict={isContra}>
                   {isContra ? "contradicts" : "supports"}
                 </span>
-                <span class="ev-link">view in Timeline →</span>
+                <span class="ev-link"
+                  >{frameId != null ? "view frame →" : "view in Timeline →"}</span
+                >
               </div>
             </div>
           </div>
@@ -349,6 +391,15 @@
     {/each}
   </div>
 </section>
+
+<!-- In-place frame peek for an evidence row. Its "open full timeline →" escape
+     hatch replays the parent's raw-Timeline hand-off (onViewInTimeline). -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
 
 <style>
   /* ============================== STORY FRAMING ============================== */
