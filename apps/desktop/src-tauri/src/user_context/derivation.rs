@@ -49,7 +49,9 @@ from this fixed taxonomy (deep = sustained single-thread deep \
 work, mixed = some focus but context-switching or interleaved, distracted = scattered, interrupted, \
 or off-task) or omit it when unsure, and the list of evidence reference tags (the f<id>/a<id> tags \
 shown on each input item) that belong to that Activity. Only use tags that appear in the input. \
-Do NOT describe an \
+Also give a headline_ref: the SINGLE evidence tag from that list that best represents the title — \
+the one moment someone should see first to recognize the Activity (must be one of the Activity's \
+own evidence tags). Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
 summaries to the work/task itself. Return the structured result.";
@@ -94,6 +96,12 @@ pub struct DerivedActivity {
     /// `f<id>` (frame) / `a<id>` (audio_segment) evidence tags.
     #[serde(default)]
     pub evidence_refs: Vec<String>,
+    /// The single evidence tag (from `evidence_refs`) that best represents the
+    /// title — the frame the Timeline should land on when the user opens this
+    /// Activity. Optional: when omitted or not present in `evidence_refs`, the
+    /// store falls back to the chronologically earliest evidence frame.
+    #[serde(default)]
+    pub headline_ref: Option<String>,
 }
 
 /// The structured batch the engine returns for one capture window.
@@ -367,6 +375,15 @@ pub async fn derive_activities(
     for activity in &batch.activities {
         // Resolve evidence refs that are actually present in the window, dedup,
         // and pull each capture time.
+        // The engine-nominated headline tag, kept only if it resolves to one of
+        // this Activity's own evidence tags (else the store falls back to the
+        // earliest frame).
+        let headline_tag = activity
+            .headline_ref
+            .as_deref()
+            .and_then(parse_ref)
+            .map(|(subject_type, subject_id)| item_tag(subject_type, subject_id));
+
         let mut evidence: Vec<NewActivityEvidence> = Vec::new();
         let mut seen: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
         let mut captured_at_values: Vec<i64> = Vec::new();
@@ -387,6 +404,7 @@ pub async fn derive_activities(
                 subject_type: subject_type.to_string(),
                 subject_id,
                 captured_at_ms: Some(captured_at),
+                is_headline: headline_tag.as_deref() == Some(tag.as_str()),
             });
         }
 

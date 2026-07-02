@@ -70,6 +70,12 @@ pub struct NewActivityEvidence {
     pub subject_type: String,
     pub subject_id: i64,
     pub captured_at_ms: Option<i64>,
+    /// The engine-nominated headline frame for the Activity: the single evidence
+    /// frame that best represents the Activity title. `list_activity_evidence`
+    /// orders headline rows first so the UI's `evidence[0]` pick lands the
+    /// Timeline on the title's frame instead of the chronologically earliest
+    /// (often a tangential earlier sub-topic). At most one per Activity.
+    pub is_headline: bool,
 }
 
 /// Per-gate withheld counters for one Conclusion-distillation pass: how many
@@ -293,13 +299,14 @@ impl UserContextStore {
         for evidence in &draft.evidence {
             sqlx::query(
                 "INSERT OR IGNORE INTO user_context_activity_evidence \
-                    (activity_id, subject_type, subject_id, captured_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4)",
+                    (activity_id, subject_type, subject_id, captured_at_ms, is_headline) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
             )
             .bind(activity_id)
             .bind(&evidence.subject_type)
             .bind(evidence.subject_id)
             .bind(evidence.captured_at_ms)
+            .bind(evidence.is_headline as i64)
             .execute(&mut *transaction)
             .await?;
         }
@@ -459,7 +466,7 @@ impl UserContextStore {
             "SELECT subject_type, subject_id, captured_at_ms \
              FROM user_context_activity_evidence \
              WHERE activity_id = ?1 \
-             ORDER BY captured_at_ms ASC, id ASC",
+             ORDER BY is_headline DESC, captured_at_ms ASC, id ASC",
         )
         .bind(activity_id)
         .fetch_all(self.db.read())
@@ -2765,6 +2772,7 @@ mod tests {
                 subject_type TEXT NOT NULL,
                 subject_id INTEGER NOT NULL,
                 captured_at_ms INTEGER,
+                is_headline INTEGER NOT NULL DEFAULT 0,
                 UNIQUE (activity_id, subject_type, subject_id)
             )",
             "CREATE TABLE user_context_conclusions (
@@ -2867,6 +2875,7 @@ mod tests {
                     subject_type: "frame".to_string(),
                     subject_id: started_at_ms,
                     captured_at_ms: Some(started_at_ms),
+                    is_headline: false,
                 }],
             })
             .await
@@ -4405,6 +4414,7 @@ mod tests {
                     subject_type: subject_type.to_string(),
                     subject_id,
                     captured_at_ms: Some(started_at_ms),
+                    is_headline: false,
                 }],
             })
             .await
@@ -5265,6 +5275,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 10,
                         captured_at_ms: Some(100),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -5280,6 +5291,53 @@ mod tests {
             let from_distill = distill.iter().find(|a| a.id == id).expect("present");
             assert_eq!(from_distill.category, Some(ActivityCategory::Creating));
             assert_eq!(from_distill.focus, Some(FocusLevel::Deep));
+        });
+    }
+
+    /// The engine-nominated headline evidence frame is read back FIRST even when
+    /// it is not the chronologically earliest — so the UI's `evidence[0]` pick
+    /// lands the Timeline on the frame that represents the title, not an earlier
+    /// tangential sub-topic. With no headline flagged, order stays earliest-first.
+    #[test]
+    fn headline_evidence_frame_orders_first() {
+        block_on(async {
+            let store = test_store().await;
+            let id = store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "Researching Fable 5 context window".to_string(),
+                    summary: "Read docs".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 100,
+                    ended_at_ms: 300,
+                    derivation_run_id: None,
+                    evidence: vec![
+                        // Earliest frame — a different, earlier sub-topic.
+                        NewActivityEvidence {
+                            subject_type: "frame".to_string(),
+                            subject_id: 10,
+                            captured_at_ms: Some(100),
+                            is_headline: false,
+                        },
+                        // Later frame the engine nominated as the headline.
+                        NewActivityEvidence {
+                            subject_type: "frame".to_string(),
+                            subject_id: 20,
+                            captured_at_ms: Some(300),
+                            is_headline: true,
+                        },
+                    ],
+                })
+                .await
+                .expect("insert");
+
+            let activities = store.list_recent_activities(10, 0).await.expect("list");
+            let activity = activities.iter().find(|a| a.id == id).expect("present");
+            assert_eq!(
+                activity.evidence.first().map(|e| e.subject_id),
+                Some(20),
+                "headline frame (later) must sort before the earlier non-headline frame"
+            );
         });
     }
 
@@ -5306,6 +5364,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 10,
                         captured_at_ms: Some(100),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -5365,6 +5424,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 11,
                         captured_at_ms: Some(300),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -5418,6 +5478,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 10,
                         captured_at_ms: Some(100),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -5701,6 +5762,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 10,
                         captured_at_ms: Some(1_000),
+                        is_headline: false,
                     }],
                 })
                 .await

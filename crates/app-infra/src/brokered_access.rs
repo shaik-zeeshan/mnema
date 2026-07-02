@@ -2685,6 +2685,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 1,
                         captured_at_ms: Some(1_000),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -2703,6 +2704,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 2,
                         captured_at_ms: Some(50_000),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -2807,6 +2809,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 1,
                         captured_at_ms: Some(2_000),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -2826,6 +2829,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 2,
                         captured_at_ms: Some(1_000),
+                        is_headline: false,
                     }],
                 })
                 .await
@@ -2914,6 +2918,7 @@ mod tests {
                         subject_type: "frame".to_string(),
                         subject_id: 1,
                         captured_at_ms: Some(1_000),
+                        is_headline: false,
                     }],
                 })
                 .await
