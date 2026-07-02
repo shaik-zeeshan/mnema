@@ -361,7 +361,12 @@
   $effect(() => clearOcrPoll);
 
   function openFrameUrl(): void {
-    if (frameUrl) void openUrl(frameUrl);
+    if (!frameUrl) return;
+    // frame.url is the read-time *guarded* URL (host[:port]/path, scheme
+    // stripped by guard_url, always http(s)). openUrl's scope only permits
+    // http(s) URLs, so a schemeless string is silently rejected — re-add https.
+    const href = /^https?:\/\//i.test(frameUrl) ? frameUrl : `https://${frameUrl}`;
+    void openUrl(href);
   }
 
   function openInTimeline(): void {
