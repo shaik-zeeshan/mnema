@@ -87,9 +87,26 @@ pub struct DistillationGateDrops {
     pub below_formation_bar: i64,
     /// Dismissed Conclusions that did not clear the resurface bar (#99).
     pub resurface_blocked: i64,
+    /// ADR 0046 supersede OUTCOME counters — NOT withholdings. A supersede does
+    /// not drop the citing draft (it still persists); these record what its
+    /// `supersedes_id` did to the OTHER (cited) row, so they are excluded from
+    /// [`Self::total`] (the "withheld N drafts" worker log must not be inflated
+    /// by successful retirements).
+    ///
+    /// Wrong rows retired downward (`SupersedeOutcome::Retired`).
+    pub superseded: i64,
+    /// Stronger rows dropped one contradiction step instead of retired
+    /// (`SupersedeOutcome::Degraded`).
+    pub supersede_degraded: i64,
+    /// `supersedes_id` ignored — pinned / missing / self / foreign-subject /
+    /// already retired (`SupersedeOutcome::Blocked`).
+    pub supersede_blocked: i64,
 }
 
 impl DistillationGateDrops {
+    /// Total drafts WITHHELD from the dossier this pass — the four gate counters
+    /// only. The three supersede counters are outcomes, not withholdings (see the
+    /// field docs), so they are deliberately excluded.
     pub fn total(&self) -> i64 {
         self.ungrounded
             + self.guardrail_suppressed
@@ -158,6 +175,31 @@ pub struct NewConclusion {
 pub struct NewConclusionEvidence {
     pub activity_id: i64,
     pub stance: EvidenceStance,
+}
+
+/// What a `supersedes_id` on an [`UserContextStore::upsert_conclusion_with_evidence`]
+/// call actually did to the cited old row (ADR 0046). Lets the caller count
+/// retirements / degradations / blocks for the derivation-run ledger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupersedeOutcome {
+    /// No `supersedes_id` was passed.
+    None,
+    /// The old row was weaker than the citing belief's formation value → retired
+    /// (status `'superseded'`, `superseded_by` set, supersede dismissal written).
+    Retired,
+    /// The old row was stronger → left alive with one contradiction drop (−0.35).
+    Degraded,
+    /// The `supersedes_id` was ignored: pinned, missing, self, foreign-subject, or
+    /// already retired. The citing belief still persisted normally.
+    Blocked,
+}
+
+/// The result of [`UserContextStore::upsert_conclusion_with_evidence`]: the
+/// citing belief's row id plus what its optional supersede did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UpsertConclusionOutcome {
+    pub id: i64,
+    pub supersede: SupersedeOutcome,
 }
 
 /// One Conclusion eligible for the confidence-decay beat, paired with the
@@ -537,8 +579,10 @@ impl UserContextStore {
                 (kind, window_start_ms, window_end_ms, status, activities_derived, \
                  conclusions_derived, input_tokens, output_tokens, provider, model, error, \
                  ungrounded, guardrail_suppressed, below_formation_bar, resurface_blocked, \
+                 superseded, supersede_degraded, supersede_blocked, \
                  created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
+                     ?16, ?17, ?18, ?19)",
         )
         .bind(&run.kind)
         .bind(run.window_start_ms)
@@ -555,6 +599,9 @@ impl UserContextStore {
         .bind(run.gate_drops.guardrail_suppressed)
         .bind(run.gate_drops.below_formation_bar)
         .bind(run.gate_drops.resurface_blocked)
+        .bind(run.gate_drops.superseded)
+        .bind(run.gate_drops.supersede_degraded)
+        .bind(run.gate_drops.supersede_blocked)
         .bind(created_at_ms)
         .execute(self.db.write())
         .await?
@@ -571,7 +618,8 @@ impl UserContextStore {
     ) -> Result<Option<(i64, i64, DistillationGateDrops)>> {
         let row = sqlx::query(
             "SELECT created_at_ms, conclusions_derived, ungrounded, guardrail_suppressed, \
-                    below_formation_bar, resurface_blocked \
+                    below_formation_bar, resurface_blocked, superseded, supersede_degraded, \
+                    supersede_blocked \
              FROM user_context_derivation_runs \
              WHERE kind = 'conclusion' AND status = 'completed' \
              ORDER BY created_at_ms DESC, id DESC \
@@ -589,6 +637,9 @@ impl UserContextStore {
                     guardrail_suppressed: row.get("guardrail_suppressed"),
                     below_formation_bar: row.get("below_formation_bar"),
                     resurface_blocked: row.get("resurface_blocked"),
+                    superseded: row.get("superseded"),
+                    supersede_degraded: row.get("supersede_degraded"),
+                    supersede_blocked: row.get("supersede_blocked"),
                 },
             )
         }))
@@ -912,6 +963,12 @@ impl UserContextStore {
         } else {
             ""
         };
+        // ADR 0046: the ON CONFLICT DO UPDATE below must NEVER resurrect a
+        // 'superseded' row back to visible/faded — the model re-deriving the same
+        // wrong statement from still-in-window evidence would otherwise silently
+        // undo the retirement. The `status = CASE WHEN status = 'superseded' ...`
+        // arm (referencing the pre-update column) preserves it; resurface is the
+        // only path back, and it flips the retained row deliberately.
         let id = sqlx::query(&format!(
             "INSERT INTO user_context_conclusions \
                 (subject, statement, confidence, status, formed_at_ms, \
@@ -923,7 +980,8 @@ impl UserContextStore {
                 confidence = excluded.confidence, \
                 last_supported_at_ms = MAX(last_supported_at_ms, excluded.last_supported_at_ms), \
                 updated_at_ms = excluded.updated_at_ms, \
-                status = CASE WHEN excluded.confidence < 0.15 AND COALESCE(pinned, 0) = 0 \
+                status = CASE WHEN status = 'superseded' THEN 'superseded' \
+                              WHEN excluded.confidence < 0.15 AND COALESCE(pinned, 0) = 0 \
                               THEN 'faded' ELSE 'visible' END\
                 {update_decayed_clause} \
              RETURNING id",
@@ -944,7 +1002,8 @@ impl UserContextStore {
     /// transaction (#14): the upsert and the evidence replacement must commit or
     /// roll back together, so a crash/error between them can never leave a
     /// Conclusion with stale or zero evidence (the old code spanned two
-    /// transactions). Returns the Conclusion id.
+    /// transactions). Returns the Conclusion id plus what its optional
+    /// `supersedes_id` did (ADR 0046) as an [`UpsertConclusionOutcome`].
     ///
     /// Confidence is the **reinforcement ratchet** (#9/#10), not a reset: for an
     /// existing Conclusion the prior value is decayed to `now` over silence since
@@ -958,37 +1017,53 @@ impl UserContextStore {
     ///
     /// `support_count` / `contradict_count` are the resolved fresh evidence counts
     /// from this window; `evidence` is the full link set (support + contradict).
+    ///
+    /// Reinforcement identity is now **per-belief**, not subject-only: the caller
+    /// (the distiller) passes `reinforces_id` — the exact Conclusion id it means to
+    /// strengthen. When `Some(id)` resolves to a non-dismissed row *of the same
+    /// subject*, that one row is reinforced in place (its `statement` frozen). When
+    /// `reinforces_id` is `None`, or the cited id is missing / belongs to another
+    /// subject / is dismissed, a NEW row forms at the formation value. The old
+    /// subject-only `ORDER BY confidence DESC, id ASC LIMIT 1` lookup collapsed
+    /// every belief about a subject onto one frozen row and let unrelated evidence
+    /// overwrite it (drift); scoping identity to the cited id kills that. The
+    /// missing/foreign/dismissed fallback is defensive: a bad id must never write
+    /// the wrong belief — it forms cleanly instead.
     pub async fn upsert_conclusion_with_evidence(
         &self,
         draft: NewConclusion,
         support_count: usize,
         contradict_count: usize,
         evidence: Vec<NewConclusionEvidence>,
-    ) -> Result<i64> {
+        reinforces_id: Option<i64>,
+        supersedes_id: Option<i64>,
+    ) -> Result<UpsertConclusionOutcome> {
         let now = now_ms();
         let mut transaction = self.db.begin_write().await?;
 
-        // Reinforcement matches by SUBJECT ONLY (approach B), not the old
-        // `(subject, statement)` pair: a second observation of the same Subject
-        // with a differently-worded distillation must REINFORCE the existing
-        // Conclusion, not insert a near-duplicate row that splits the Subject's
-        // trajectory (warming/dedup). Read the CANONICAL row's id + confidence +
-        // decay anchor + pin inside the txn so the ratchet is computed against a
-        // consistent snapshot. Canonical = highest confidence, ties broken by
-        // lowest id (`confidence DESC, id ASC`). Dismissal deletes the row, so
-        // `status != 'dismissed'` admits visible + faded candidates (a faded row
-        // is reinforceable back into the dossier). Absent → formation.
-        let existing = sqlx::query(
-            "SELECT id, confidence, \
-                    COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms, \
-                    COALESCE(pinned, 0) AS pinned \
-             FROM user_context_conclusions \
-             WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
-             ORDER BY confidence DESC, id ASC LIMIT 1",
-        )
-        .bind(&draft.subject)
-        .fetch_optional(&mut *transaction)
-        .await?;
+        // Resolve the reinforcement target ONLY from the cited id, and only when
+        // it belongs to this subject and isn't dismissed. Read the row's id +
+        // confidence + decay anchor + pin inside the txn so the ratchet is
+        // computed against a consistent snapshot. A `None` id, or an id that
+        // doesn't resolve (missing / foreign-subject / dismissed), leaves
+        // `existing = None` → formation of a new row below.
+        let existing = match reinforces_id {
+            Some(id) => {
+                sqlx::query(
+                    "SELECT id, confidence, \
+                            COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms, \
+                            COALESCE(pinned, 0) AS pinned \
+                     FROM user_context_conclusions \
+                     WHERE id = ?1 AND subject = ?2 COLLATE NOCASE \
+                       AND status NOT IN ('dismissed', 'superseded')",
+                )
+                .bind(id)
+                .bind(&draft.subject)
+                .fetch_optional(&mut *transaction)
+                .await?
+            }
+            None => None,
+        };
 
         // The prior stored confidence (None on formation), captured before the
         // row is consumed by the match — the up-step guard for the history
@@ -1098,8 +1173,129 @@ impl UserContextStore {
             .await?;
         }
 
+        // Supersede (ADR 0046): the citing belief just persisted above may retire a
+        // DIFFERENT wrong Conclusion it replaces. Runs in the SAME txn, AFTER the
+        // citing belief's row id is known, so retirement + formation commit (or
+        // roll back) together — a dropped superseder retires nothing. Composes with
+        // reinforce: reinforces_id strengthened the right sibling, supersedes_id
+        // retires the wrong one, in one call.
+        let supersede = match supersedes_id {
+            None => SupersedeOutcome::None,
+            Some(sid) => {
+                // Resolve the old row within this subject; already-retired /
+                // dismissed rows are excluded. Missing / foreign-subject / self →
+                // Blocked (the citing belief is still persisted).
+                let old = sqlx::query(
+                    "SELECT id, subject, statement, confidence, COALESCE(pinned, 0) AS pinned \
+                     FROM user_context_conclusions \
+                     WHERE id = ?1 AND subject = ?2 COLLATE NOCASE \
+                       AND status NOT IN ('dismissed', 'superseded')",
+                )
+                .bind(sid)
+                .bind(&draft.subject)
+                .fetch_optional(&mut *transaction)
+                .await?;
+
+                match old {
+                    None => SupersedeOutcome::Blocked,
+                    Some(_) if sid == conclusion_id => SupersedeOutcome::Blocked,
+                    // Pinned is untouchable (ADR 0046 guardrail 1).
+                    Some(row) if row.get::<i64, _>("pinned") != 0 => SupersedeOutcome::Blocked,
+                    Some(row) => {
+                        let old_confidence = row.get::<f64, _>("confidence");
+                        // The citing belief's formation value — retire only downward
+                        // (guardrail 3): a stronger old row degrades one step instead.
+                        let formation_value = super::confidence::initial_confidence(
+                            support_count,
+                            contradict_count,
+                        );
+                        if old_confidence <= formation_value {
+                            // Retire: freeze the old row, link it to the successor.
+                            // Row + evidence + history are KEPT (resurface can flip
+                            // it back to visible), only the status changes.
+                            sqlx::query(
+                                "UPDATE user_context_conclusions SET \
+                                    status = 'superseded', superseded_by = ?2, updated_at_ms = ?3 \
+                                 WHERE id = ?1",
+                            )
+                            .bind(sid)
+                            .bind(conclusion_id)
+                            .bind(now)
+                            .execute(&mut *transaction)
+                            .await?;
+
+                            // Record a supersede dismissal so the resurface gate can
+                            // block re-forming this statement from the same evidence
+                            // (replicates dismiss_conclusion's fingerprint + support
+                            // count, tagged source='supersede' not 'user').
+                            let old_subject: String = row.get("subject");
+                            let old_statement: String = row.get("statement");
+                            let evidence_rows = sqlx::query(
+                                "SELECT activity_id FROM user_context_conclusion_evidence \
+                                 WHERE conclusion_id = ?1",
+                            )
+                            .bind(sid)
+                            .fetch_all(&mut *transaction)
+                            .await?;
+                            let evidence_ids: Vec<i64> = evidence_rows
+                                .iter()
+                                .map(|row| row.get("activity_id"))
+                                .collect();
+                            let fingerprint = evidence_fingerprint(&evidence_ids);
+                            let old_support_count: i64 = sqlx::query(
+                                "SELECT COUNT(*) AS count FROM user_context_conclusion_evidence \
+                                 WHERE conclusion_id = ?1 AND stance = 'support'",
+                            )
+                            .bind(sid)
+                            .fetch_one(&mut *transaction)
+                            .await?
+                            .get("count");
+                            sqlx::query(
+                                "INSERT INTO user_context_dismissals \
+                                    (subject, statement, evidence_fingerprint, \
+                                     evidence_activity_count, dismissed_at_ms, source) \
+                                 VALUES (?1, ?2, ?3, ?4, ?5, 'supersede')",
+                            )
+                            .bind(&old_subject)
+                            .bind(&old_statement)
+                            .bind(&fingerprint)
+                            .bind(old_support_count)
+                            .bind(now)
+                            .execute(&mut *transaction)
+                            .await?;
+
+                            SupersedeOutcome::Retired
+                        } else {
+                            // Stronger old row: one contradiction drop (−0.35), status
+                            // re-derived from the new confidence (mirrors the reinforce
+                            // path). Killing a well-earned belief takes repeated
+                            // independent agreement; a one-off hiccup costs 0.35.
+                            let degraded =
+                                super::confidence::apply_contradiction(old_confidence, 1);
+                            sqlx::query(
+                                "UPDATE user_context_conclusions SET \
+                                    confidence = ?2, updated_at_ms = ?3, \
+                                    status = CASE WHEN ?2 < 0.15 AND COALESCE(pinned, 0) = 0 \
+                                                  THEN 'faded' ELSE 'visible' END \
+                                 WHERE id = ?1",
+                            )
+                            .bind(sid)
+                            .bind(degraded)
+                            .bind(now)
+                            .execute(&mut *transaction)
+                            .await?;
+                            SupersedeOutcome::Degraded
+                        }
+                    }
+                }
+            }
+        };
+
         transaction.commit().await?;
-        Ok(conclusion_id)
+        Ok(UpsertConclusionOutcome {
+            id: conclusion_id,
+            supersede,
+        })
     }
 
     /// Replace the full evidence set for a Conclusion: delete its existing
@@ -1223,16 +1419,61 @@ impl UserContextStore {
     /// faded included, hydrated with their evidence. Powers the Subject page.
     pub async fn list_conclusions_for_subject(&self, subject: &str) -> Result<Vec<Conclusion>> {
         let rows = sqlx::query(
-            "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
-                    last_supported_at_ms, updated_at_ms \
-             FROM user_context_conclusions \
-             WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
-             ORDER BY confidence DESC, updated_at_ms DESC, id DESC",
+            "SELECT c.id, c.subject, c.statement, c.confidence, c.status, c.pinned, \
+                    c.formed_at_ms, c.last_supported_at_ms, c.updated_at_ms, \
+                    (SELECT p.statement FROM user_context_conclusions p \
+                       WHERE p.superseded_by = c.id AND p.status = 'superseded' \
+                       ORDER BY p.updated_at_ms DESC LIMIT 1) AS replaced_statement, \
+                    (SELECT p.updated_at_ms FROM user_context_conclusions p \
+                       WHERE p.superseded_by = c.id AND p.status = 'superseded' \
+                       ORDER BY p.updated_at_ms DESC LIMIT 1) AS replaced_at_ms \
+             FROM user_context_conclusions c \
+             WHERE c.subject = ?1 COLLATE NOCASE AND c.status NOT IN ('dismissed', 'superseded') \
+             ORDER BY c.confidence DESC, c.updated_at_ms DESC, c.id DESC",
         )
         .bind(subject)
         .fetch_all(self.db.read())
         .await?;
         self.hydrate_conclusions(rows).await
+    }
+
+    /// Bounded read powering the KNOWN SUBJECTS block's per-subject conclusion
+    /// listing. For each subject in `subjects`, its non-dismissed conclusions ordered
+    /// confidence-desc (ties → lowest id), capped at `per_subject_cap` per subject.
+    /// Returns (subject, id, statement, confidence) tuples. Thin cousin of
+    /// `list_conclusions_for_subject` — no evidence hydration.
+    pub async fn list_conclusions_for_subjects(
+        &self,
+        subjects: &[String],
+        per_subject_cap: i64,
+    ) -> Result<Vec<(String, i64, String, f64)>> {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        // ponytail: per-subject query loop, fine at small N
+        for subject in subjects {
+            let trimmed = subject.trim();
+            if trimmed.is_empty() || !seen.insert(trimmed.to_lowercase()) {
+                continue;
+            }
+            let rows = sqlx::query(
+                "SELECT id, statement, confidence FROM user_context_conclusions \
+                 WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
+                 ORDER BY confidence DESC, id ASC LIMIT ?2",
+            )
+            .bind(subject)
+            .bind(per_subject_cap)
+            .fetch_all(self.db.read())
+            .await?;
+            for row in rows {
+                out.push((
+                    subject.clone(),
+                    row.get::<i64, _>("id"),
+                    row.get::<String, _>("statement"),
+                    row.get::<f64, _>("confidence"),
+                ));
+            }
+        }
+        Ok(out)
     }
 
     /// The canonical statement for `subject`: the single highest-confidence
@@ -1250,7 +1491,7 @@ impl UserContextStore {
     ) -> Result<Option<String>> {
         let row = sqlx::query(
             "SELECT statement FROM user_context_conclusions \
-             WHERE subject = ?1 COLLATE NOCASE AND status != 'dismissed' \
+             WHERE subject = ?1 COLLATE NOCASE AND status NOT IN ('dismissed', 'superseded') \
              ORDER BY confidence DESC, id ASC \
              LIMIT 1",
         )
@@ -1274,7 +1515,7 @@ impl UserContextStore {
     pub async fn list_subject_handles_by_recency(&self, limit: i64) -> Result<Vec<String>> {
         let rows = sqlx::query(
             "SELECT subject FROM user_context_conclusions \
-             WHERE status != 'dismissed' \
+             WHERE status NOT IN ('dismissed', 'superseded') \
              GROUP BY subject COLLATE NOCASE \
              ORDER BY MAX(last_supported_at_ms) DESC, subject ASC \
              LIMIT ?1",
@@ -1309,7 +1550,7 @@ impl UserContextStore {
         let rows = sqlx::query(
             "SELECT subject, COALESCE(GROUP_CONCAT(statement, ' '), '') AS statements \
              FROM user_context_conclusions \
-             WHERE status != 'dismissed' \
+             WHERE status NOT IN ('dismissed', 'superseded') \
              GROUP BY subject COLLATE NOCASE \
              ORDER BY MAX(last_supported_at_ms) DESC, subject ASC",
         )
@@ -1334,7 +1575,8 @@ impl UserContextStore {
     /// Number of non-dismissed Conclusions (the status-surface count).
     pub async fn count_conclusions(&self) -> Result<i64> {
         let row = sqlx::query(
-            "SELECT COUNT(*) AS count FROM user_context_conclusions WHERE status != 'dismissed'",
+            "SELECT COUNT(*) AS count FROM user_context_conclusions \
+             WHERE status NOT IN ('dismissed', 'superseded')",
         )
         .fetch_one(self.db.read())
         .await?;
@@ -1682,7 +1924,7 @@ impl UserContextStore {
     /// resurface gate can compare fresh evidence to what was vetoed).
     pub async fn list_dismissals(&self) -> Result<Vec<DismissalState>> {
         let rows = sqlx::query(
-            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms \
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
              FROM user_context_dismissals \
              ORDER BY dismissed_at_ms DESC, id DESC",
         )
@@ -1698,7 +1940,7 @@ impl UserContextStore {
         subject: &str,
     ) -> Result<Vec<DismissalState>> {
         let rows = sqlx::query(
-            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms \
+            "SELECT subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms, source \
              FROM user_context_dismissals \
              WHERE subject = ?1 COLLATE NOCASE \
              ORDER BY dismissed_at_ms DESC, id DESC",
@@ -1726,6 +1968,55 @@ impl UserContextStore {
         .execute(self.db.write())
         .await?;
         Ok(())
+    }
+
+    /// Resurface a **superseded** belief (ADR 0046): when fresh support clears the
+    /// resurface bar for a statement a distillation had retired (`source =
+    /// 'supersede'`), flip the RETAINED superseded row back to visible with its
+    /// history intact and clear the supersede dismissal — rather than inserting a
+    /// duplicate. In one txn: re-derive the row's status from its own confidence
+    /// (the same `<0.15 && !pinned` faded rule the rest of the store uses), null
+    /// `superseded_by`, then delete the matching `source='supersede'` dismissal
+    /// rows. Returns whether a superseded row was actually flipped (so the caller
+    /// can skip the normal upsert). Keyed on the same case-insensitive
+    /// `(subject, statement)` identity the resurface gate matches on.
+    pub async fn resurface_superseded(&self, subject: &str, statement: &str) -> Result<bool> {
+        let now = now_ms();
+        let mut transaction = self.db.begin_write().await?;
+
+        let flipped = sqlx::query(
+            "UPDATE user_context_conclusions SET \
+                status = CASE WHEN confidence < 0.15 AND COALESCE(pinned, 0) = 0 \
+                              THEN 'faded' ELSE 'visible' END, \
+                superseded_by = NULL, \
+                updated_at_ms = ?3 \
+             WHERE subject = ?1 COLLATE NOCASE AND statement = ?2 COLLATE NOCASE \
+               AND status = 'superseded'",
+        )
+        .bind(subject)
+        .bind(statement)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await?
+        .rows_affected()
+            > 0;
+
+        if flipped {
+            // Clear only the machine-written veto; a user Dismiss of the same
+            // statement (source='user') must survive to keep vetoing.
+            sqlx::query(
+                "DELETE FROM user_context_dismissals \
+                 WHERE subject = ?1 COLLATE NOCASE AND statement = ?2 COLLATE NOCASE \
+                   AND source = 'supersede'",
+            )
+            .bind(subject)
+            .bind(statement)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+        Ok(flipped)
     }
 
     // --- #107: User-authored Context --------------------------------------
@@ -2139,10 +2430,14 @@ pub async fn cascade_derived_for_deleted_subjects_in(
     //    Subject keying; conclusion `subject` is NOT NULL, so the subquery yields no
     //    NULLs that would defeat `NOT IN`. Wipe clears the whole table and Dismiss
     //    NULLs one row — this closes the Delete Recent Capture gap.
+    // ADR 0046: a 'superseded' row is off every recall surface (dossier, KNOWN
+    // SUBJECTS, count), so its Subject Vector must be cleaned like a dismissed
+    // one — a retired row is not a "live Conclusion" keeping the vector alive.
     sqlx::query(
         "DELETE FROM user_context_subject_vectors \
          WHERE subject NOT IN (\
-             SELECT subject FROM user_context_conclusions WHERE status != 'dismissed')",
+             SELECT subject FROM user_context_conclusions \
+             WHERE status NOT IN ('dismissed', 'superseded'))",
     )
     .execute(&mut *conn)
     .await?;
@@ -2234,6 +2529,7 @@ fn map_dismissal(row: SqliteRow) -> DismissalState {
         evidence_fingerprint: row.get("evidence_fingerprint"),
         evidence_activity_count: row.get("evidence_activity_count"),
         dismissed_at_ms: row.get("dismissed_at_ms"),
+        source: row.get("source"),
     }
 }
 
@@ -2359,6 +2655,7 @@ fn status_to_str(status: ConclusionStatus) -> &'static str {
         ConclusionStatus::Visible => "visible",
         ConclusionStatus::Faded => "faded",
         ConclusionStatus::Dismissed => "dismissed",
+        ConclusionStatus::Superseded => "superseded",
     }
 }
 
@@ -2369,6 +2666,7 @@ fn status_from_str(value: &str) -> ConclusionStatus {
     match value {
         "faded" => ConclusionStatus::Faded,
         "dismissed" => ConclusionStatus::Dismissed,
+        "superseded" => ConclusionStatus::Superseded,
         _ => ConclusionStatus::Visible,
     }
 }
@@ -2388,6 +2686,10 @@ fn map_conclusion(row: SqliteRow) -> Conclusion {
         last_supported_at_ms: row.get("last_supported_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
         evidence: Vec::new(),
+        // ADR 0046: populated only by readers that select the predecessor
+        // columns (`list_conclusions_for_subject`); absent elsewhere → None.
+        replaced_statement: row.try_get("replaced_statement").unwrap_or(None),
+        replaced_at_ms: row.try_get("replaced_at_ms").unwrap_or(None),
     }
 }
 
@@ -2436,6 +2738,9 @@ mod tests {
                 guardrail_suppressed INTEGER NOT NULL DEFAULT 0,
                 below_formation_bar INTEGER NOT NULL DEFAULT 0,
                 resurface_blocked INTEGER NOT NULL DEFAULT 0,
+                superseded INTEGER NOT NULL DEFAULT 0,
+                supersede_degraded INTEGER NOT NULL DEFAULT 0,
+                supersede_blocked INTEGER NOT NULL DEFAULT 0,
                 created_at_ms INTEGER NOT NULL
             )",
             "CREATE TABLE user_context_activities (
@@ -2473,7 +2778,8 @@ mod tests {
                 updated_at_ms INTEGER NOT NULL,
                 created_at_ms INTEGER NOT NULL,
                 last_decayed_at_ms INTEGER,
-                pinned INTEGER NOT NULL DEFAULT 0
+                pinned INTEGER NOT NULL DEFAULT 0,
+                superseded_by INTEGER
             )",
             // Mirrors migration 0037: the NOCASE unique index that backs the
             // atomic `INSERT ... ON CONFLICT` dedup in `upsert_conclusion`.
@@ -2499,7 +2805,8 @@ mod tests {
                 statement TEXT NOT NULL,
                 evidence_fingerprint TEXT NOT NULL,
                 evidence_activity_count INTEGER NOT NULL DEFAULT 0,
-                dismissed_at_ms INTEGER NOT NULL
+                dismissed_at_ms INTEGER NOT NULL,
+                source TEXT NOT NULL DEFAULT 'user'
             )",
             "CREATE TABLE user_context_authored (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3023,9 +3330,11 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    None,
+                    None,
                 )
                 .await
-                .expect("form");
+                .expect("form").id;
 
             // Reinforce with MORE support (four → 0.78): confidence ratchets UP, so
             // the persist path records the rise as a new history snapshot.
@@ -3040,6 +3349,8 @@ mod tests {
                         NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
                     ],
+                    Some(id),
+                    None,
                 )
                 .await
                 .expect("reinforce");
@@ -3213,9 +3524,11 @@ mod tests {
                         NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
                     ],
+                    None,
+                    None,
                 )
                 .await
-                .expect("form");
+                .expect("form").id;
             assert_eq!(store.list_confidence_history(id).await.expect("h").len(), 1);
 
             // Reinforce with FEWER supports (two → would justify only 0.54): the
@@ -3230,6 +3543,8 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    Some(id),
+                    None,
                 )
                 .await
                 .expect("reinforce");
@@ -3266,13 +3581,16 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    None,
+                    None,
                 )
                 .await
-                .expect("form");
+                .expect("form").id;
             let formed = store.get_conclusion(id).await.expect("get").expect("row");
 
-            // Second observation of the SAME subject with a DIFFERENT statement and
-            // more support (4 → 0.78). This must reinforce the canonical row, not insert.
+            // Second observation citing the SAME id with a DIFFERENT statement and
+            // more support (4 → 0.78). This must reinforce that row in place, freezing
+            // its statement, not insert a reworded duplicate.
             let reinforced_id = store
                 .upsert_conclusion_with_evidence(
                     draft("Rust", "Rust ownership is tricky", 0.0),
@@ -3284,11 +3602,13 @@ mod tests {
                         NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
                     ],
+                    Some(id),
+                    None,
                 )
                 .await
-                .expect("reinforce");
+                .expect("reinforce").id;
 
-            assert_eq!(reinforced_id, id, "subject-only match reinforces the same row");
+            assert_eq!(reinforced_id, id, "citing the id reinforces that exact row");
 
             let rows = store
                 .list_conclusions_for_subject("Rust")
@@ -3307,108 +3627,6 @@ mod tests {
                 after.statement, "Learning Rust",
                 "canonical statement is frozen on reinforce (reworded draft is ignored)"
             );
-        });
-    }
-
-    /// Canonical = highest confidence. When a Subject has multiple non-dismissed
-    /// rows, reinforcement routes to the highest-confidence one; the others are
-    /// left untouched.
-    #[test]
-    fn canonical_reinforce_picks_highest_confidence() {
-        block_on(async {
-            let store = test_store().await;
-            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
-            let b = seed_activity(&store, "rust async", 3_000).await;
-            let c = seed_activity(&store, "rust traits", 4_000).await;
-            let d = seed_activity(&store, "rust macros", 5_000).await;
-
-            // Two rows for the same Subject, different statements + confidences.
-            let low = store
-                .upsert_conclusion(draft("Rust", "Low-confidence take", 0.30))
-                .await
-                .expect("low");
-            let high = store
-                .upsert_conclusion(draft("Rust", "High-confidence take", 0.70))
-                .await
-                .expect("high");
-            let low_before = store.get_conclusion(low).await.expect("g").expect("r").confidence;
-
-            // Reinforce by subject with 4 supports (newly_justified 0.78).
-            let reinforced_id = store
-                .upsert_conclusion_with_evidence(
-                    draft("Rust", "Yet another wording", 0.0),
-                    4,
-                    0,
-                    vec![
-                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
-                    ],
-                )
-                .await
-                .expect("reinforce");
-
-            assert_eq!(reinforced_id, high, "the highest-confidence row is canonical");
-            let high_after = store.get_conclusion(high).await.expect("g").expect("r").confidence;
-            assert!(high_after > 0.70, "canonical row's confidence ratcheted up: {high_after}");
-
-            let low_after = store.get_conclusion(low).await.expect("g").expect("r").confidence;
-            assert_eq!(low_after, low_before, "the non-canonical row is untouched");
-        });
-    }
-
-    /// Canonical tie-break = lowest id. Two rows with equal confidence: the
-    /// earlier-inserted (lowest id) one is canonical and receives the reinforcement.
-    #[test]
-    fn canonical_reinforce_tie_broken_by_lowest_id() {
-        block_on(async {
-            let store = test_store().await;
-            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
-            let b = seed_activity(&store, "rust async", 3_000).await;
-            let c = seed_activity(&store, "rust traits", 4_000).await;
-            let d = seed_activity(&store, "rust macros", 5_000).await;
-
-            // Two rows for the same Subject with EQUAL confidence.
-            let first = store
-                .upsert_conclusion(draft("Rust", "First wording", 0.50))
-                .await
-                .expect("first");
-            let second = store
-                .upsert_conclusion(draft("Rust", "Second wording", 0.50))
-                .await
-                .expect("second");
-            assert!(first < second, "first row has the lower id");
-            let second_before = store
-                .get_conclusion(second)
-                .await
-                .expect("g")
-                .expect("r")
-                .confidence;
-
-            let reinforced_id = store
-                .upsert_conclusion_with_evidence(
-                    draft("Rust", "Third wording", 0.0),
-                    4,
-                    0,
-                    vec![
-                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
-                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
-                    ],
-                )
-                .await
-                .expect("reinforce");
-
-            assert_eq!(reinforced_id, first, "ties break to the lowest id");
-            let second_after = store
-                .get_conclusion(second)
-                .await
-                .expect("g")
-                .expect("r")
-                .confidence;
-            assert_eq!(second_after, second_before, "the tie loser is untouched");
         });
     }
 
@@ -3431,6 +3649,8 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    None,
+                    None,
                 )
                 .await
                 .expect("form rust");
@@ -3445,9 +3665,11 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    None,
+                    None,
                 )
                 .await
-                .expect("form apple");
+                .expect("form apple").id;
 
             assert_eq!(store.count_conclusions().await.expect("count"), 2, "two distinct subjects");
             assert_eq!(
@@ -3459,6 +3681,278 @@ mod tests {
                 store.get_conclusion(other).await.expect("g").expect("r").subject,
                 "Apple"
             );
+        });
+    }
+
+    /// The headline drift-dies repro: two genuinely-different beliefs about the
+    /// SAME subject, each formed with `reinforces_id: None`, must coexist as two
+    /// rows — the second must NOT overwrite the first's statement or evidence. This
+    /// is exactly the drift the old subject-only lookup caused.
+    #[test]
+    fn distinct_beliefs_under_one_subject_do_not_overwrite() {
+        block_on(async {
+            let store = test_store().await;
+            let a1 = seed_activity(&store, "genshin login", 2_000).await;
+            let a2 = seed_activity(&store, "genshin farming", 3_000).await;
+            let b1 = seed_activity(&store, "007 first light trailer", 4_000).await;
+            let b2 = seed_activity(&store, "007 first light gameplay", 5_000).await;
+
+            // Window A: form "plays Genshin" under "Gaming".
+            let g = store
+                .upsert_conclusion_with_evidence(
+                    draft("Gaming", "plays Genshin", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a1, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: a2, stance: EvidenceStance::Support },
+                    ],
+                    None,
+                    None,
+                )
+                .await
+                .expect("form genshin").id;
+
+            // Window B: a genuinely NEW belief under the same subject, different
+            // evidence, reinforces_id None → must form a second row, not overwrite G.
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Gaming", "plays 007 First Light", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: b1, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b2, stance: EvidenceStance::Support },
+                    ],
+                    None,
+                    None,
+                )
+                .await
+                .expect("form 007");
+
+            let rows = store
+                .list_conclusions_for_subject("Gaming")
+                .await
+                .expect("gaming rows");
+            assert_eq!(rows.len(), 2, "the subject now holds BOTH beliefs");
+
+            let genshin = store.get_conclusion(g).await.expect("get").expect("row");
+            assert_eq!(
+                genshin.statement, "plays Genshin",
+                "the first belief's statement is untouched by the second window"
+            );
+            let mut ev_ids: Vec<i64> = genshin.evidence.iter().map(|e| e.activity_id).collect();
+            ev_ids.sort_unstable();
+            let mut want = vec![a1, a2];
+            want.sort_unstable();
+            assert_eq!(
+                ev_ids, want,
+                "the Genshin row keeps ONLY its own Window-A evidence (not overwritten)"
+            );
+        });
+    }
+
+    /// The `reinforces_id` branch matrix: valid same-subject id reinforces in
+    /// place; missing / foreign-subject / dismissed ids all fall through to a fresh
+    /// formation (a bad id must never write the wrong belief); and a new statement
+    /// under an existing subject with `None` inserts cleanly.
+    #[test]
+    fn reinforces_id_branch_matrix() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "rust borrow checker", 2_000).await;
+            let b = seed_activity(&store, "rust async", 3_000).await;
+            let c = seed_activity(&store, "rust traits", 4_000).await;
+            let d = seed_activity(&store, "rust macros", 5_000).await;
+
+            // Form a belief under "Rust" (2 supports → 0.54).
+            let base = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Learning Rust", 0.0),
+                    2,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                    ],
+                    None,
+                    None,
+                )
+                .await
+                .expect("form base").id;
+            let base_before = store.get_conclusion(base).await.expect("g").expect("r");
+
+            // (1) Valid same-subject id → reinforce in place: count unchanged,
+            // confidence bumps, statement frozen, evidence replaced with the new set.
+            let reinforced = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "reworded take", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                    Some(base),
+                    None,
+                )
+                .await
+                .expect("reinforce base").id;
+            assert_eq!(reinforced, base, "cited id reinforces that exact row");
+            assert_eq!(
+                store.list_conclusions_for_subject("Rust").await.expect("rust").len(),
+                1,
+                "reinforce in place does not add a row"
+            );
+            let after = store.get_conclusion(base).await.expect("g").expect("r");
+            assert!(after.confidence > base_before.confidence, "confidence bumped");
+            assert_eq!(after.statement, "Learning Rust", "statement frozen on reinforce");
+            let mut ev: Vec<i64> = after.evidence.iter().map(|e| e.activity_id).collect();
+            ev.sort_unstable();
+            let mut want = vec![c, d];
+            want.sort_unstable();
+            assert_eq!(ev, want, "evidence replaced with the new set");
+
+            // (2) Missing id → forms a NEW row.
+            let before_count = store.count_conclusions().await.expect("count");
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "a fresh unrelated belief", 0.0),
+                    2,
+                    0,
+                    vec![NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support }],
+                    Some(999_999),
+                    None,
+                )
+                .await
+                .expect("missing id forms");
+            assert_eq!(
+                store.count_conclusions().await.expect("count"),
+                before_count + 1,
+                "a missing cited id forms a new row"
+            );
+
+            // (3) Foreign-subject id: cite a "Rust" row while draft.subject = "Vim" →
+            // forms a new "Vim" row and leaves the "Rust" row untouched.
+            let rust_stmt_before = store.get_conclusion(base).await.expect("g").expect("r").statement;
+            let vim = store
+                .upsert_conclusion_with_evidence(
+                    draft("Vim", "uses Vim", 0.0),
+                    2,
+                    0,
+                    vec![NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support }],
+                    Some(base),
+                    None,
+                )
+                .await
+                .expect("foreign subject forms").id;
+            assert_ne!(vim, base, "a foreign-subject id must not reinforce the other subject's row");
+            assert_eq!(
+                store.get_conclusion(vim).await.expect("g").expect("r").subject,
+                "Vim"
+            );
+            assert_eq!(
+                store.get_conclusion(base).await.expect("g").expect("r").statement,
+                rust_stmt_before,
+                "the foreign row is not modified"
+            );
+
+            // (4) Dismissed id → forms a NEW row (the dismissed one is not touched).
+            let dismissed = store
+                .upsert_conclusion_with_evidence(
+                    draft("Coffee", "drinks coffee", 0.0),
+                    2,
+                    0,
+                    vec![NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support }],
+                    None,
+                    None,
+                )
+                .await
+                .expect("form coffee").id;
+            sqlx::query("UPDATE user_context_conclusions SET status = 'dismissed' WHERE id = ?1")
+                .bind(dismissed)
+                .execute(store.db.write())
+                .await
+                .expect("dismiss");
+            let before_dismiss_count = store.count_conclusions().await.expect("count");
+            let reformed = store
+                .upsert_conclusion_with_evidence(
+                    draft("Coffee", "drinks coffee daily", 0.0),
+                    2,
+                    0,
+                    vec![NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support }],
+                    Some(dismissed),
+                    None,
+                )
+                .await
+                .expect("dismissed id forms").id;
+            assert_ne!(reformed, dismissed, "a dismissed cited id must not be reinforced");
+            assert_eq!(
+                store.count_conclusions().await.expect("count"),
+                before_dismiss_count + 1,
+                "citing a dismissed id forms a new row"
+            );
+
+            // (5) New statement under an existing subject with None inserts cleanly
+            // (differs from existing statements → no UNIQUE(subject, statement) clash).
+            let count_before = store.count_conclusions().await.expect("count");
+            store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "prefers the borrow checker", 0.0),
+                    2,
+                    0,
+                    vec![NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support }],
+                    None,
+                    None,
+                )
+                .await
+                .expect("new statement inserts");
+            assert_eq!(
+                store.count_conclusions().await.expect("count"),
+                count_before + 1,
+                "a new distinct statement inserts without a UNIQUE clash"
+            );
+        });
+    }
+
+    /// `list_conclusions_for_subjects` returns each subject's non-dismissed
+    /// conclusions confidence-desc, capped per subject.
+    #[test]
+    fn list_conclusions_for_subjects_orders_and_caps() {
+        block_on(async {
+            let store = test_store().await;
+            store.upsert_conclusion(draft("Rust", "Rust low", 0.30)).await.expect("r1");
+            store.upsert_conclusion(draft("Rust", "Rust high", 0.90)).await.expect("r2");
+            store.upsert_conclusion(draft("Rust", "Rust mid", 0.60)).await.expect("r3");
+            store.upsert_conclusion(draft("Vim", "Vim only", 0.50)).await.expect("v1");
+
+            let all = store
+                .list_conclusions_for_subjects(
+                    &["Rust".to_string(), "Vim".to_string()],
+                    10,
+                )
+                .await
+                .expect("list");
+            let rust: Vec<(&str, f64)> = all
+                .iter()
+                .filter(|(s, ..)| s == "Rust")
+                .map(|(_, _, stmt, conf)| (stmt.as_str(), *conf))
+                .collect();
+            assert_eq!(
+                rust,
+                vec![("Rust high", 0.90), ("Rust mid", 0.60), ("Rust low", 0.30)],
+                "per-subject confidence-desc ordering"
+            );
+            assert_eq!(all.iter().filter(|(s, ..)| s == "Vim").count(), 1);
+
+            // The cap truncates to the top-N per subject.
+            let capped = store
+                .list_conclusions_for_subjects(&["Rust".to_string()], 2)
+                .await
+                .expect("capped");
+            assert_eq!(capped.len(), 2, "per_subject_cap truncates");
+            assert_eq!(capped[0].2, "Rust high");
+            assert_eq!(capped[1].2, "Rust mid");
         });
     }
 
@@ -3537,19 +4031,20 @@ mod tests {
             // far-past instant (last_supported_at_ms = 1_000, last_decayed NULL):
             // this is exactly the row that, under the bug, would be re-decayed
             // from 1_000 by the next beat after a reinforce.
-            sqlx::query(
+            let seeded_id = sqlx::query(
                 "INSERT INTO user_context_conclusions \
                     (subject, statement, confidence, status, formed_at_ms, \
                      last_supported_at_ms, updated_at_ms, created_at_ms, last_decayed_at_ms) \
-                 VALUES ('Rust', 'Learning Rust', 0.8, 'visible', 1000, 1000, 1000, 1000, NULL)",
+                 VALUES ('Rust', 'Learning Rust', 0.8, 'visible', 1000, 1000, 1000, 1000, NULL) \
+                 RETURNING id",
             )
-            .execute(store.db.write())
+            .fetch_one(store.db.write())
             .await
-            .expect("seed conclusion");
+            .expect("seed conclusion")
+            .get::<i64, _>("id");
 
             // Two surviving supports so the row stays past the formation bar, and
-            // so the reinforce path finds an existing row (it computes against the
-            // (subject, statement) match).
+            // so the reinforce path finds the cited existing row.
             let a = seed_activity(&store, "rust borrow checker", 2_000).await;
             let b = seed_activity(&store, "rust async", 3_000).await;
 
@@ -3565,6 +4060,8 @@ mod tests {
                         NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
                         NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
                     ],
+                    Some(seeded_id),
+                    None,
                 )
                 .await
                 .expect("reinforce");
@@ -4491,6 +4988,9 @@ mod tests {
                 guardrail_suppressed: 2,
                 below_formation_bar: 3,
                 resurface_blocked: 4,
+                superseded: 5,
+                supersede_degraded: 6,
+                supersede_blocked: 7,
             };
             store
                 .insert_derivation_run(conclusion_run("completed", 2, expected))
@@ -5249,6 +5749,425 @@ mod tests {
                 .expect("noop");
             assert_eq!(noop.deleted_digests, 0);
             assert!(store.get_digest("day", 5_000).await.expect("d3").is_some());
+        });
+    }
+
+    // --- ADR 0046: supersede wrong conclusions ---------------------------
+
+    /// Form a supersede successor: two `Support` evidence links → formation 0.54.
+    async fn form(
+        store: &UserContextStore,
+        subject: &str,
+        statement: &str,
+        a: i64,
+        b: i64,
+        reinforces_id: Option<i64>,
+        supersedes_id: Option<i64>,
+    ) -> UpsertConclusionOutcome {
+        store
+            .upsert_conclusion_with_evidence(
+                draft(subject, statement, 0.0),
+                2,
+                0,
+                vec![
+                    NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                    NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                ],
+                reinforces_id,
+                supersedes_id,
+            )
+            .await
+            .expect("upsert")
+    }
+
+    /// Read a row's stored `superseded_by` (NULL → None) directly.
+    async fn superseded_by(store: &UserContextStore, id: i64) -> Option<i64> {
+        sqlx::query("SELECT superseded_by FROM user_context_conclusions WHERE id = ?1")
+            .bind(id)
+            .fetch_one(store.pool())
+            .await
+            .expect("row")
+            .get::<Option<i64>, _>("superseded_by")
+    }
+
+    /// Superseding a WEAK row retires it in the same txn the successor forms, and
+    /// writes a `source = 'supersede'` dismissal — the old row/statement survive.
+    #[test]
+    fn supersede_retires_weak_row_and_forms_successor() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+
+            let wrong = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            let successor = form(
+                &store,
+                "Rust",
+                "Rust is compiled",
+                a,
+                b,
+                None,
+                Some(wrong.id),
+            )
+            .await;
+
+            assert_eq!(successor.supersede, SupersedeOutcome::Retired);
+            assert_ne!(successor.id, wrong.id, "successor is a new row");
+
+            let retired = store.get_conclusion(wrong.id).await.expect("g").expect("r");
+            assert_eq!(retired.status, ConclusionStatus::Superseded);
+            assert_eq!(superseded_by(&store, wrong.id).await, Some(successor.id));
+
+            let live = store.get_conclusion(successor.id).await.expect("g").expect("r");
+            assert_eq!(live.status, ConclusionStatus::Visible);
+
+            // A supersede dismissal was recorded for the retired statement.
+            let count: i64 = sqlx::query(
+                "SELECT COUNT(*) AS c FROM user_context_dismissals \
+                 WHERE statement = 'Rust is interpreted' AND source = 'supersede'",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("q")
+            .get("c");
+            assert_eq!(count, 1, "supersede writes a source='supersede' dismissal");
+        });
+    }
+
+    /// `reinforces_id = A`, `supersedes_id = B` (A ≠ B, same subject): the citing
+    /// belief reinforces A and retires the wrong sibling B in one call.
+    #[test]
+    fn supersede_composes_with_reinforce() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+
+            let good = form(&store, "Rust", "Rust is compiled", a, b, None, None).await;
+            let wrong = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+
+            let outcome = form(
+                &store,
+                "Rust",
+                "Rust is compiled",
+                a,
+                b,
+                Some(good.id),
+                Some(wrong.id),
+            )
+            .await;
+
+            assert_eq!(outcome.id, good.id, "reinforced the cited sibling in place");
+            assert_eq!(outcome.supersede, SupersedeOutcome::Retired);
+            assert_eq!(
+                store.get_conclusion(wrong.id).await.expect("g").expect("r").status,
+                ConclusionStatus::Superseded
+            );
+            assert_eq!(superseded_by(&store, wrong.id).await, Some(good.id));
+        });
+    }
+
+    /// A pinned old row is untouchable: supersede is Blocked, the pinned row keeps
+    /// its status/confidence, and the citing belief still persists.
+    #[test]
+    fn supersede_blocked_on_pinned_row() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+
+            let pinned = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            store.set_pinned(pinned.id, true).await.expect("pin");
+            let before = store.get_conclusion(pinned.id).await.expect("g").expect("r");
+
+            let successor =
+                form(&store, "Rust", "Rust is compiled", a, b, None, Some(pinned.id)).await;
+
+            assert_eq!(successor.supersede, SupersedeOutcome::Blocked);
+            let after = store.get_conclusion(pinned.id).await.expect("g").expect("r");
+            assert_eq!(after.status, before.status, "pinned row untouched");
+            assert_eq!(after.confidence, before.confidence);
+            assert_eq!(superseded_by(&store, pinned.id).await, None);
+            assert!(
+                store.get_conclusion(successor.id).await.expect("g").is_some(),
+                "citing belief still persisted"
+            );
+        });
+    }
+
+    /// Superseding a STRONGER row degrades it one contradiction step (−0.35), it is
+    /// NOT retired.
+    #[test]
+    fn supersede_degrades_stronger_row() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+            let c = seed_activity(&store, "act c", 4_000).await;
+            let d = seed_activity(&store, "act d", 5_000).await;
+
+            // Strong old row: four supports → 0.78 (> the 0.54 successor formation).
+            let strong = store
+                .upsert_conclusion_with_evidence(
+                    draft("Rust", "Rust is interpreted", 0.0),
+                    4,
+                    0,
+                    vec![
+                        NewConclusionEvidence { activity_id: a, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: b, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: c, stance: EvidenceStance::Support },
+                        NewConclusionEvidence { activity_id: d, stance: EvidenceStance::Support },
+                    ],
+                    None,
+                    None,
+                )
+                .await
+                .expect("form strong")
+                .id;
+
+            let successor =
+                form(&store, "Rust", "Rust is compiled", a, b, None, Some(strong)).await;
+
+            assert_eq!(successor.supersede, SupersedeOutcome::Degraded);
+            let after = store.get_conclusion(strong).await.expect("g").expect("r");
+            assert!(
+                (after.confidence - 0.43).abs() < 1e-9,
+                "0.78 − 0.35 = 0.43, got {}",
+                after.confidence
+            );
+            assert_eq!(after.status, ConclusionStatus::Visible, "still visible, not retired");
+            assert_eq!(superseded_by(&store, strong).await, None);
+        });
+    }
+
+    /// Store-level Blocked cases: missing id, wrong subject, self-reference, and an
+    /// already-superseded target all leave the target untouched.
+    #[test]
+    fn supersede_blocked_on_missing_self_foreign_and_retired() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+
+            // Missing id → Blocked.
+            let missing = form(&store, "Rust", "Rust is compiled", a, b, None, Some(999_999)).await;
+            assert_eq!(missing.supersede, SupersedeOutcome::Blocked);
+
+            // Self-reference (reinforce A, then supersede the same A) → Blocked.
+            let base = form(&store, "Go", "Go has generics", a, b, None, None).await;
+            let selfref = form(
+                &store,
+                "Go",
+                "Go has generics",
+                a,
+                b,
+                Some(base.id),
+                Some(base.id),
+            )
+            .await;
+            assert_eq!(selfref.id, base.id);
+            assert_eq!(selfref.supersede, SupersedeOutcome::Blocked);
+            assert_eq!(superseded_by(&store, base.id).await, None);
+
+            // Foreign subject: cite a Vim row while forming a Rust belief → Blocked.
+            let vim = form(&store, "Vim", "Vim is modal", a, b, None, None).await;
+            let foreign =
+                form(&store, "Rust", "Rust is safe", a, b, None, Some(vim.id)).await;
+            assert_eq!(foreign.supersede, SupersedeOutcome::Blocked);
+            assert_eq!(
+                store.get_conclusion(vim.id).await.expect("g").expect("r").status,
+                ConclusionStatus::Visible
+            );
+
+            // Already-superseded target → Blocked (excluded by status filter).
+            let wrong = form(&store, "Zig", "Zig has a GC", a, b, None, None).await;
+            let first = form(&store, "Zig", "Zig has no GC", a, b, None, Some(wrong.id)).await;
+            assert_eq!(first.supersede, SupersedeOutcome::Retired);
+            let again = form(&store, "Zig", "Zig has no GC either", a, b, None, Some(wrong.id)).await;
+            assert_eq!(again.supersede, SupersedeOutcome::Blocked);
+        });
+    }
+
+    /// ON CONFLICT guard (ADR 0046): re-deriving the same (subject, statement) as a
+    /// retired row must NOT flip it back to visible — the formation upsert preserves
+    /// 'superseded'. (Resurface, the deliberate flip-back, is Slice 2.)
+    #[test]
+    fn on_conflict_never_resurrects_superseded_row() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "act a", 2_000).await;
+            let b = seed_activity(&store, "act b", 3_000).await;
+
+            let wrong = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            let successor =
+                form(&store, "Rust", "Rust is compiled", a, b, None, Some(wrong.id)).await;
+            assert_eq!(successor.supersede, SupersedeOutcome::Retired);
+
+            // Standalone formation of the SAME retired statement hits ON CONFLICT.
+            store
+                .upsert_conclusion(draft("Rust", "Rust is interpreted", 0.9))
+                .await
+                .expect("re-derive");
+
+            assert_eq!(
+                store.get_conclusion(wrong.id).await.expect("g").expect("r").status,
+                ConclusionStatus::Superseded,
+                "ON CONFLICT must not resurrect a superseded row"
+            );
+        });
+    }
+
+    /// ADR 0046 Slice 2: a 'superseded' row is off every recall surface — the
+    /// subject/conclusion readers with a negative status filter must hide it, and a
+    /// subject whose ONLY row is superseded disappears from counts and handles.
+    #[test]
+    fn readers_exclude_superseded_rows() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "a", 1_000).await;
+            let b = seed_activity(&store, "b", 2_000).await;
+
+            let keep = form(&store, "Rust", "Rust is compiled", a, b, None, None).await;
+            let retire = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            // A subject whose ONLY belief is retired.
+            let solo = form(&store, "Cobol", "Cobol is modern", a, b, None, None).await;
+
+            // Mark the two wrong rows superseded directly — isolates the reader
+            // filters from the supersede write path (tested separately).
+            for id in [retire.id, solo.id] {
+                sqlx::query("UPDATE user_context_conclusions SET status = 'superseded' WHERE id = ?1")
+                    .bind(id)
+                    .execute(store.pool())
+                    .await
+                    .expect("mark superseded");
+            }
+
+            let rust = store.list_conclusions_for_subject("Rust").await.expect("list");
+            assert_eq!(rust.len(), 1, "superseded row hidden from subject list");
+            assert_eq!(rust[0].id, keep.id);
+
+            let tuples = store
+                .list_conclusions_for_subjects(
+                    &["Rust".to_string(), "Cobol".to_string()],
+                    10,
+                )
+                .await
+                .expect("tuples");
+            assert_eq!(tuples.len(), 1, "KNOWN SUBJECTS query hides superseded rows");
+            assert_eq!(tuples[0].1, keep.id);
+
+            assert_eq!(
+                store.canonical_statement_for_subject("Rust").await.expect("canon"),
+                Some("Rust is compiled".to_string()),
+            );
+            assert_eq!(
+                store.canonical_statement_for_subject("Cobol").await.expect("canon"),
+                None,
+                "an all-superseded subject has no canonical statement",
+            );
+
+            assert_eq!(
+                store.count_conclusions().await.expect("count"),
+                1,
+                "count excludes superseded rows",
+            );
+
+            let handles = store.list_subject_handles_by_recency(50).await.expect("handles");
+            assert!(handles.iter().any(|h| h == "Rust"));
+            assert!(
+                !handles.iter().any(|h| h == "Cobol"),
+                "a subject with only superseded rows drops off the handle list",
+            );
+        });
+    }
+
+    /// ADR 0046 Slice 4: the successor's subject-view row carries its retired
+    /// predecessor's statement + retirement time; the predecessor is absent.
+    #[test]
+    fn subject_view_carries_replaced_predecessor() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "a", 1_000).await;
+            let b = seed_activity(&store, "b", 2_000).await;
+
+            let wrong = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            let successor =
+                form(&store, "Rust", "Rust is compiled", a, b, None, Some(wrong.id)).await;
+            assert_eq!(successor.supersede, SupersedeOutcome::Retired);
+
+            let retired = store.get_conclusion(wrong.id).await.expect("g").expect("r");
+
+            let rust = store.list_conclusions_for_subject("Rust").await.expect("list");
+            assert_eq!(rust.len(), 1, "only the successor is visible");
+            let live = &rust[0];
+            assert_eq!(live.id, successor.id);
+            assert_eq!(
+                live.replaced_statement.as_deref(),
+                Some("Rust is interpreted"),
+                "successor carries its retired predecessor's statement",
+            );
+            assert_eq!(
+                live.replaced_at_ms,
+                Some(retired.updated_at_ms),
+                "replaced_at_ms is the predecessor's retirement time",
+            );
+        });
+    }
+
+    /// ADR 0046 Slice 2: `resurface_superseded` flips the RETAINED row back to
+    /// visible, nulls `superseded_by`, deletes the source='supersede' dismissal,
+    /// creates no duplicate, and is a no-op on the second call.
+    #[test]
+    fn resurface_superseded_flips_retained_row_and_clears_dismissal() {
+        block_on(async {
+            let store = test_store().await;
+            let a = seed_activity(&store, "a", 1_000).await;
+            let b = seed_activity(&store, "b", 2_000).await;
+
+            let wrong = form(&store, "Rust", "Rust is interpreted", a, b, None, None).await;
+            let successor =
+                form(&store, "Rust", "Rust is compiled", a, b, None, Some(wrong.id)).await;
+            assert_eq!(successor.supersede, SupersedeOutcome::Retired);
+
+            // Flip back (case-insensitive on both subject and statement).
+            let flipped = store
+                .resurface_superseded("rust", "RUST IS INTERPRETED")
+                .await
+                .expect("resurface");
+            assert!(flipped, "the retained superseded row was flipped");
+
+            let back = store.get_conclusion(wrong.id).await.expect("g").expect("r");
+            assert_eq!(back.status, ConclusionStatus::Visible);
+            assert_eq!(superseded_by(&store, wrong.id).await, None, "link cleared");
+
+            let dismissals: i64 = sqlx::query(
+                "SELECT COUNT(*) AS c FROM user_context_dismissals \
+                 WHERE statement = 'Rust is interpreted' AND source = 'supersede'",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("q")
+            .get("c");
+            assert_eq!(dismissals, 0, "supersede dismissal cleared");
+
+            let rows: i64 = sqlx::query(
+                "SELECT COUNT(*) AS c FROM user_context_conclusions \
+                 WHERE statement = 'Rust is interpreted'",
+            )
+            .fetch_one(store.pool())
+            .await
+            .expect("q")
+            .get("c");
+            assert_eq!(rows, 1, "no duplicate row created — the retained one was reused");
+
+            // Nothing left to flip.
+            assert!(
+                !store
+                    .resurface_superseded("Rust", "Rust is interpreted")
+                    .await
+                    .expect("noop"),
+                "second resurface is a no-op",
+            );
         });
     }
 }

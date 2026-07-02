@@ -102,7 +102,7 @@ pub use user_context::{
     digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
     CaptureWindowItem, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
-    UserContextCascadeSummary, UserContextStore,
+    SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };
 pub use user_context::SubjectVectorStore;
 

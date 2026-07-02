@@ -2301,6 +2301,8 @@ mod tests {
             last_supported_at_ms: 0,
             updated_at_ms: 0,
             evidence: Vec::new(),
+            replaced_statement: None,
+            replaced_at_ms: None,
         }
     }
 

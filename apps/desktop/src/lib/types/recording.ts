@@ -228,6 +228,11 @@ export interface Conclusion {
 	lastSupportedAtMs: number;
 	updatedAtMs: number;
 	evidence: ConclusionEvidenceRef[];
+	/** ADR 0046: when this belief replaced a wrong earlier one, the retired
+	 *  statement + when it was retired (drives the "replaced an earlier take"
+	 *  timeline event). Absent when this belief superseded nothing. */
+	replacedStatement?: string | null;
+	replacedAtMs?: number | null;
 }
 
 /** A single point on a Conclusion's confidence-over-time line. */

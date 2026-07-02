@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted (write-rule superseded by ADR 0043; candidate-recall + Subject-vector machinery retained)
 date: 2026-06-30
 ---
 
