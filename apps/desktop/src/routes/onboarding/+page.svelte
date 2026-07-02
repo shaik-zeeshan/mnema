@@ -11,7 +11,8 @@
   import FeatureRow from "./FeatureRow.svelte";
   import WelcomeScreen from "./WelcomeScreen.svelte";
   import FinaleScreen from "./FinaleScreen.svelte";
-  import { FEATURES } from "./feature-model";
+  import { platformFeatures } from "./feature-model";
+  import { detectKeyboardPlatform } from "$lib/keyboard";
   import { OnboardingController } from "./onboarding.svelte";
   import PermissionsBody from "./PermissionsBody.svelte";
   import ScreenBody from "./ScreenBody.svelte";
@@ -26,6 +27,11 @@
   import SemanticSearchBody from "./SemanticSearchBody.svelte";
 
   const c = new OnboardingController();
+
+  // Platform-filtered feature list: the App-Privacy-Exclusion "privacy" step is
+  // macOS-only (ADR 0025), so it's absent on Windows. Computed once — platform
+  // can't change mid-session — and mirrored by the controller's on/attention counts.
+  const features = platformFeatures(detectKeyboardPlatform());
 
   // Mount loaders. The `untrack` is MANDATORY: without it, editing a draft
   // re-runs init and reverts the edit (known onboarding/settings mount-effect
@@ -84,7 +90,7 @@
       secondaryLabel="← Back"
       onSecondary={() => c.backToWelcome()}
     >
-    {#each FEATURES as f (f.id)}
+    {#each features as f (f.id)}
       <FeatureRow
         icon={f.icon}
         name={f.name}

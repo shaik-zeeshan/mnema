@@ -1,6 +1,6 @@
 # Windows On-Device Capture Smoke Runbook
 
-_Last updated: 2026-06-08 (GitHub issue #84)_
+_Last updated: 2026-07-02 (browser-URL via UI Automation, [ADR 0044](../adr/0044-windows-browser-url-via-ui-automation.md))_
 
 This is the operator runbook for the human-in-the-loop (HITL) Windows capture
 smoke pass. An operator must physically drive the machine — lock it (Win+L),
@@ -151,6 +151,49 @@ Full-app variant: launch the desktop app with no mic, plug one in, and start a
 recording with the microphone source enabled — it must start without an app
 restart, and the tray Sources menu must re-enable Microphone after the plug-in.
 
+## Scenario 5 — Browser URL via UI Automation (ADR 0044)
+
+Exercises the production UIA reader and the brand-less exe-stem → engine
+allowlist against a real, installed browser. Unlike the lock/suspend/idle
+scenarios, this one needs no physical power/idle action — just a focused browser
+with a real tab open.
+
+```powershell
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-browser-url-smoke
+```
+
+Target a specific engine/browser by executable stem with `--exe <stem>`, e.g.
+`--exe chrome` (covers Helium, which ships as `chrome.exe`) or `--exe zen`:
+
+```powershell
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-browser-url-smoke --exe chrome
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml -- --windows-browser-url-smoke --exe zen
+```
+
+Steps:
+1. Focus a **Chromium** (Chrome / Edge / Brave / Vivaldi / Opera / Arc /
+   Helium) or **Gecko** (Firefox / Zen / LibreWolf / Waterfox / Floorp) browser
+   with a real `http(s)` tab open (not a `about:`/new-tab page).
+2. Run the command.
+
+Notes:
+- The **Gecko** path reads from the focused element and climbs to the enclosing
+  `Document`, so the browser must be **focused** (focus-climb); focus in the URL
+  bar deliberately yields no URL for that tick (no-guess invariant).
+- The **first read on a cold Chromium** is served by the in-read cold-poll: the
+  renderer's UIA accessibility is dormant until the first client connects, so the
+  connection wakes it and a re-read milliseconds later succeeds.
+- **Verify the `opera_gx` stem on-device.** Opera GX may actually ship as
+  `opera.exe` rather than `opera_gx.exe`; either is harmless (both are in the
+  allowlist), but confirm the real stem and, if it differs, adjust the
+  `known_browser_engine_for_exe_stem` allowlist and rerun (per ADR 0044's
+  further notes).
+
+Pass criteria:
+- Prints the detected **engine** (Chromium/Gecko), a **well-formed URL**, and
+  the **timing** within the reader's budget; exits `0`.
+- FAILs cleanly (exit `1`) when no recognized browser is focused / running.
+
 ## Recording results
 
 For each run, capture: the command, the final `PASS`/`FAIL` line, the printed
@@ -162,6 +205,7 @@ output directory, and (on failure) the failing assertion. Suggested table:
 | System suspend | `--windows-transient-liveness-smoke --system-suspend` | PASS / FAIL | | |
 | Inactivity (normal stop) | `--windows-inactivity-smoke` | PASS / FAIL | | |
 | Inactivity (stop while paused) | `--windows-inactivity-smoke --stop-while-paused` | PASS / FAIL | | |
+| Browser URL (UIA) | `--windows-browser-url-smoke` (optionally `--exe <stem>`) | PASS / FAIL | | |
 
 File any failure as a follow-up issue, referencing the scenario, the failing
 assertion text, and the output directory. The display-unavailable scenario stays

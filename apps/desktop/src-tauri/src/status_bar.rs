@@ -16,6 +16,7 @@ const PAUSE_TOGGLE_ID: &str = "tray_pause_toggle";
 const DELETE_LAST_1_MINUTE_ID: &str = "tray_delete_recent_60";
 const DELETE_LAST_5_MINUTES_ID: &str = "tray_delete_recent_300";
 const DELETE_LAST_15_MINUTES_ID: &str = "tray_delete_recent_900";
+#[cfg(target_os = "macos")]
 const EXCLUDE_CURRENT_APP_ID: &str = "tray_exclude_current_app";
 const SOURCE_SCREEN_ID: &str = "tray_source_screen";
 const SOURCE_MICROPHONE_ID: &str = "tray_source_microphone";
@@ -343,6 +344,7 @@ fn build_menu(
     )
     .enabled(model.pause_enabled)
     .build(app)?;
+    #[cfg(target_os = "macos")]
     let exclude_current =
         MenuItemBuilder::with_id(EXCLUDE_CURRENT_APP_ID, "Exclude Current App From Now On...")
             .build(app)?;
@@ -391,8 +393,11 @@ fn build_menu(
         &recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
         &pause,
         &sources,
-        &exclude_current,
-        &delete_recent,
+    ]);
+    #[cfg(target_os = "macos")]
+    items.push(&exclude_current);
+    items.extend([
+        &delete_recent as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
         &separator_two,
         &open_main,
         &settings,
@@ -597,59 +602,49 @@ fn confirm_delete_recent(app: &tauri::AppHandle, seconds: i64) {
         });
 }
 
+#[cfg(target_os = "macos")]
 fn handle_exclude_current_app(app: &tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        let snapshot = crate::native_capture::metadata::collect_native_active_window_snapshot();
-        let bundle_id = snapshot.bundle_id.unwrap_or_default();
-        let display_name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
-        if bundle_id.trim().is_empty() || bundle_id == "com.shaikzeeshan.mnema" {
-            app.dialog()
-                .message("Mnema could not identify a frontmost app to exclude from screen capture.")
-                .kind(MessageDialogKind::Info)
-                .title("Exclude Current App")
-                .show(|_| {});
-            return;
-        }
-        let app_handle = app.clone();
+    let snapshot = crate::native_capture::metadata::collect_native_active_window_snapshot();
+    let bundle_id = snapshot.bundle_id.unwrap_or_default();
+    let display_name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
+    if bundle_id.trim().is_empty() || bundle_id == "com.shaikzeeshan.mnema" {
         app.dialog()
-            .message(format!(
-                "Exclude {display_name} from screen content capture from now on? This does not delete historical capture."
-            ))
-            .buttons(MessageDialogButtons::OkCancelCustom(
-                "Exclude".to_string(),
-                "Cancel".to_string(),
-            ))
-            .kind(MessageDialogKind::Warning)
-            .title("Exclude Current App")
-            .show(move |confirmed| {
-                if !confirmed {
-                    return;
-                }
-                if let Err(error) = crate::privacy_redaction_sources::add_or_enable_privacy_excluded_app_from_app_handle(
-                    app_handle.clone(),
-                    bundle_id,
-                    display_name,
-                ) {
-                    show_capture_error(&app_handle, "Could not exclude app", error);
-                } else {
-                    app_handle
-                        .dialog()
-                        .message("The app is excluded from future screen content capture. Historical capture was not deleted.")
-                        .kind(MessageDialogKind::Info)
-                        .title("App Excluded")
-                        .show(|_| {});
-                }
-            });
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        app.dialog()
-            .message("Exclude Current App is currently available only on macOS.")
+            .message("Mnema could not identify a frontmost app to exclude from screen capture.")
             .kind(MessageDialogKind::Info)
             .title("Exclude Current App")
             .show(|_| {});
+        return;
     }
+    let app_handle = app.clone();
+    app.dialog()
+        .message(format!(
+            "Exclude {display_name} from screen content capture from now on? This does not delete historical capture."
+        ))
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Exclude".to_string(),
+            "Cancel".to_string(),
+        ))
+        .kind(MessageDialogKind::Warning)
+        .title("Exclude Current App")
+        .show(move |confirmed| {
+            if !confirmed {
+                return;
+            }
+            if let Err(error) = crate::privacy_redaction_sources::add_or_enable_privacy_excluded_app_from_app_handle(
+                app_handle.clone(),
+                bundle_id,
+                display_name,
+            ) {
+                show_capture_error(&app_handle, "Could not exclude app", error);
+            } else {
+                app_handle
+                    .dialog()
+                    .message("The app is excluded from future screen content capture. Historical capture was not deleted.")
+                    .kind(MessageDialogKind::Info)
+                    .title("App Excluded")
+                    .show(|_| {});
+            }
+        });
 }
 
 fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
@@ -659,6 +654,7 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         }
         RECORDING_TOGGLE_ID => handle_recording_toggle(app),
         PAUSE_TOGGLE_ID => handle_pause_toggle(app),
+        #[cfg(target_os = "macos")]
         EXCLUDE_CURRENT_APP_ID => handle_exclude_current_app(app),
         DELETE_LAST_1_MINUTE_ID => confirm_delete_recent(app, 60),
         DELETE_LAST_5_MINUTES_ID => confirm_delete_recent(app, 300),

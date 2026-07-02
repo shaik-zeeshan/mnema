@@ -12,5 +12,6 @@ fn main() {
     mnema_lib::maybe_run_speaker_analysis_helper_and_exit();
     mnema_lib::maybe_run_windows_inactivity_smoke_and_exit();
     mnema_lib::maybe_run_windows_transient_liveness_smoke_and_exit();
+    mnema_lib::maybe_run_windows_browser_url_smoke_and_exit();
     mnema_lib::run()
 }
