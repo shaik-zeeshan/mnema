@@ -5885,11 +5885,20 @@
     ocrRerunLoading = true;
 
     try {
-      let sourceImagePath = previewCache.get(frameId) ?? null;
-      if (!sourceImagePath) {
+      if (!previewCache.has(frameId)) {
         await ensurePreview(frameId);
-        sourceImagePath = previewCache.get(frameId) ?? null;
       }
+      // Only OCR pixels that belong to this frame: original_frame is the
+      // frame's own artifact, video_fallback is its exact video position.
+      // A segment_frame_fallback preview is a *different* frame's image —
+      // OCRing it would persist wrong text under this frame's id; without a
+      // usable source the backend falls back to frame.file_path (and fails
+      // honestly if that artifact is gone).
+      const sourceKind = previewSourceKindCache.get(frameId);
+      const sourceImagePath =
+        sourceKind === "original_frame" || sourceKind === "video_fallback"
+          ? previewCache.get(frameId) ?? null
+          : null;
       const payloadJson = sourceImagePath
         ? JSON.stringify({
             provider: "apple_vision",
