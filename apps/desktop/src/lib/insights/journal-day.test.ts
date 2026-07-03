@@ -170,10 +170,13 @@ describe("midnight boundaries", () => {
     expect(model.totalFrameCount).toBe(2);
   });
 
-  it("includes an activity straddling midnight and clamps gaps to day bounds", () => {
-    // Activity starts before the day, ends inside it → overlaps → included.
-    const activities = [activity(DAY_START - 30 * MIN, at(10))];
+  it("owns activities by start day: yesterday's midnight-straddler is excluded, today's is kept", () => {
+    const activities = [
+      activity(DAY_START - 30 * MIN, at(10)), // started yesterday, spills into today → yesterday's card
+      activity(DAY_END - 5 * MIN, DAY_END + 5 * MIN), // started today, spills into tomorrow → today's card
+    ];
     const model = buildJournalDay(baseInput({ activities, coveredUntilMs: at(60) }));
     expect(model.slots).toHaveLength(1);
+    expect(model.slots[0].activity.startedAtMs).toBe(DAY_END - 5 * MIN);
   });
 });

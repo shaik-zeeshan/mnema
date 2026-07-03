@@ -46,7 +46,7 @@ export interface JournalPending {
 }
 
 export interface JournalDayModel {
-	/** One per day-overlapping activity, chronological (oldest first). */
+	/** One per activity started within the day, chronological (oldest first). */
 	slots: JournalCardSlot[];
 	/** Away-gaps within the covered region (no frames, ≥ AWAY_GAP_MIN_MS). */
 	gaps: JournalGap[];
@@ -89,11 +89,14 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	const totalFrameCount = dayFrameTs.length;
 	const hasAnyCapture = totalFrameCount > 0;
 
-	// --- Slots: one per day-overlapping activity, chronological. ---
+	// --- Slots: one per activity that STARTED this day, chronological. ---
+	// Ownership is by start day, not overlap: a midnight-crossing activity is
+	// already split at the boundary by derivation, so overlap semantics would
+	// render yesterday's 11:5x PM half a second time at the top of today.
 	// ponytail: O(activities × frames) frame-count scan — trivial for a single
 	// day; binary-search the sorted timestamps if a day ever gets huge.
 	const slots: JournalCardSlot[] = activities
-		.filter((a) => a.endedAtMs > dayStartMs && a.startedAtMs < dayEndMs)
+		.filter((a) => a.startedAtMs >= dayStartMs && a.startedAtMs < dayEndMs)
 		.sort((a, b) => a.startedAtMs - b.startedAtMs || a.endedAtMs - b.endedAtMs || a.id - b.id)
 		.map((activity) => {
 			const frameCount = dayFrameTs.filter(
