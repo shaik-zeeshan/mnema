@@ -5,6 +5,7 @@ import {
   LruCache,
   clampIndex,
   stepIndex,
+  desiredWindow,
   initialPosterIndex,
   countCaptureSegments,
 } from "./receipt-playback";
@@ -77,6 +78,20 @@ describe("initialPosterIndex", () => {
   });
   it("is 0 for an empty strip", () => {
     expect(initialPosterIndex([], 5)).toBe(0);
+  });
+});
+
+describe("desiredWindow", () => {
+  it("orders current first, then interleaves ahead and behind", () => {
+    // index 2, lookahead 2, behind 1 → current, +1, -1, +2
+    expect(desiredWindow([10, 20, 30, 40, 50], 2, 2, 1)).toEqual([30, 40, 20, 50]);
+  });
+  it("clips at both strip edges", () => {
+    expect(desiredWindow([10, 20, 30], 0, 2, 1)).toEqual([10, 20, 30]);
+    expect(desiredWindow([10, 20, 30], 2, 2, 1)).toEqual([30, 20]);
+  });
+  it("is empty for an empty strip", () => {
+    expect(desiredWindow([], 0, 2, 1)).toEqual([]);
   });
 });
 

@@ -21,7 +21,6 @@
     humanizeMs,
   } from "$lib/insights/activity-helpers";
   import {
-    LruCache,
     clampIndex,
     countCaptureSegments,
     framesPerSecond,
@@ -29,26 +28,15 @@
     SPEEDS,
     type Speed,
   } from "$lib/insights/receipt-playback";
+  import { ReceiptFrameLoader } from "$lib/insights/receipt-frames";
   import type { Activity } from "$lib/types/recording";
-  import type {
-    FrameDto,
-    FramePreviewDto,
-    FrameSummaryDto,
-    GetFramePreviewRequest,
-  } from "$lib/types/app-infra";
+  import type { FrameDto, FramePreviewDto, FrameSummaryDto } from "$lib/types/app-infra";
 
   interface Props {
     activity: Activity;
     onClose: () => void;
   }
   let { activity, onClose }: Props = $props();
-
-  // ── Tuning knobs ─────────────────────────────────────────────────────
-  const DECODE_CONCURRENCY = 2; // simultaneous get_frame_preview calls
-  const LOOKAHEAD = 6; // frames to prefetch ahead of the playhead
-  const BEHIND = 1; // frames to keep warm behind it
-  const PREVIEW_CACHE_CAP = 40; // LRU of decoded previews
-  const META_CACHE_CAP = 40; // LRU of per-frame FrameDto meta
 
   type StripFrame = { id: number; ms: number };
 
@@ -62,21 +50,28 @@
   let currentMeta = $state<FrameDto | null>(null);
   let thumbUrls = $state<Record<number, string>>({}); // frameId → preview URL
 
-  // ── Non-reactive machinery (guarded by loadGen / display via cacheBump) ─
-  let previews = new LruCache<FramePreviewDto>(PREVIEW_CACHE_CAP);
-  let metaCache = new LruCache<FrameDto>(META_CACHE_CAP);
-  const inFlight = new Set<number>();
-  const failed = new Set<number>();
-  let loadGen = 0; // bumped per activity load; stale async work drops
-  let metaToken = 0;
+  // ── Non-reactive machinery ───────────────────────────────────────────
+  // All invoke-touching fetch work (preview prefetch pump, thumbnail queue,
+  // frame meta) lives in the loader (receipt-frames.ts); it reports back into
+  // the reactive state through these three callbacks.
+  const loader = new ReceiptFrameLoader({
+    onPreview: () => {
+      cacheBump++;
+    },
+    onThumb: (fid, url) => {
+      thumbUrls[fid] = url;
+    },
+    onMeta: (meta) => {
+      currentMeta = meta;
+    },
+  });
+  let loadGen = 0; // bumped per activity load; a stale strip fetch drops
   let rafId: number | null = null;
   let lastTs = 0;
   let frameAccum = 0;
   let trackEl = $state<HTMLDivElement | null>(null);
   let filmEl = $state<HTMLDivElement | null>(null);
   let scrubbing = false;
-  const thumbQueue: number[] = [];
-  const thumbInFlight = new Set<number>();
   let thumbObserver: IntersectionObserver | null = null;
 
   // ── Derived view model ───────────────────────────────────────────────
@@ -98,7 +93,7 @@
   const currentPreview = $derived.by<FramePreviewDto | null>(() => {
     cacheBump; // recompute when a preview lands
     const id = currentFrameId;
-    return id == null ? null : (previews.peek(id) ?? null);
+    return id == null ? null : loader.peekPreview(id);
   });
   const currentUrl = $derived(
     currentPreview ? framePreviewAssetUrl(currentPreview.filePath) : null,
@@ -159,13 +154,9 @@
     loading = true;
     strip = [];
     currentMeta = null;
-    previews = new LruCache(PREVIEW_CACHE_CAP);
-    metaCache = new LruCache(META_CACHE_CAP);
-    inFlight.clear();
-    failed.clear();
     thumbUrls = {};
-    thumbQueue.length = 0;
     index = 0;
+    loader.reset();
     try {
       const summaries = await invoke<FrameSummaryDto[]>(
         "list_frame_summaries_in_range",
@@ -188,7 +179,6 @@
         headlineFrameId,
       );
       cacheBump++;
-      pumpDecodes();
     } catch {
       // 0 frames (retention) and a load failure both render the expired panel.
       if (gen === loadGen) strip = [];
@@ -197,62 +187,9 @@
     }
   }
 
-  // ── Bounded, cancellable preview prefetch ────────────────────────────
-  // A small pump keeps ≤DECODE_CONCURRENCY get_frame_preview calls in flight,
-  // fetching the lookahead window around the playhead. Results whose loadGen is
-  // stale (activity changed) are dropped; out-of-window frames are simply never
-  // scheduled, so a long activity or a scrub never thrashes the decoder.
-  function desiredWindow(): number[] {
-    const ids: number[] = [];
-    const n = strip.length;
-    const i = index;
-    for (let d = 0; d <= LOOKAHEAD; d++) {
-      if (i + d < n) ids.push(strip[i + d].id); // ahead (current first)
-      if (d >= 1 && d <= BEHIND && i - d >= 0) ids.push(strip[i - d].id);
-    }
-    return ids;
-  }
-
-  function pumpDecodes(): void {
-    if (strip.length === 0) return;
-    const gen = loadGen;
-    for (const fid of desiredWindow()) {
-      if (inFlight.size >= DECODE_CONCURRENCY) break;
-      if (previews.has(fid) || inFlight.has(fid) || failed.has(fid)) continue;
-      inFlight.add(fid);
-      void fetchPreview(fid, gen);
-    }
-  }
-
-  async function fetchPreview(fid: number, gen: number): Promise<void> {
-    try {
-      const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
-        request: { frameId: fid } satisfies GetFramePreviewRequest,
-      });
-      if (gen !== loadGen) return; // superseded — drop
-      if (dto) {
-        previews.set(fid, dto);
-        // ponytail: warm the browser decode with a throwaway Image so the
-        // <img> swap is instant (no CSS transition) — that's what sells the
-        // "video" feel over raw frames.
-        const warm = new Image();
-        warm.src = framePreviewAssetUrl(dto.filePath);
-        cacheBump++;
-      } else {
-        failed.add(fid);
-      }
-    } catch {
-      if (gen === loadGen) failed.add(fid);
-    } finally {
-      inFlight.delete(fid);
-      if (gen === loadGen) pumpDecodes();
-    }
-  }
-
   // Filmstrip thumbnails: every frame gets a cell; an IntersectionObserver
-  // queues a cell's preview as it scrolls into view and a DECODE_CONCURRENCY
-  // pump keeps decode load bounded. URLs live outside the playback LRU so
-  // eviction during playback never blanks a loaded thumb.
+  // queues a cell's preview as it scrolls into view and the loader's bounded
+  // pump does the fetching.
   // ponytail: no cell virtualization — a multi-hour activity renders one
   // <button> per frame; virtualize the strip if that ever gets janky.
   function thumbCell(node: HTMLElement, fid: number) {
@@ -261,7 +198,7 @@
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         thumbObserver?.unobserve(entry.target);
-        requestThumb(Number((entry.target as HTMLElement).dataset.fid));
+        loader.requestThumb(Number((entry.target as HTMLElement).dataset.fid));
       }
     });
     thumbObserver.observe(node);
@@ -270,65 +207,6 @@
         thumbObserver?.unobserve(node);
       },
     };
-  }
-
-  function requestThumb(fid: number): void {
-    if (!Number.isFinite(fid) || thumbUrls[fid]) return;
-    if (thumbInFlight.has(fid) || thumbQueue.includes(fid)) return;
-    thumbQueue.push(fid);
-    pumpThumbs();
-  }
-
-  function pumpThumbs(): void {
-    while (thumbInFlight.size < DECODE_CONCURRENCY) {
-      const fid = thumbQueue.shift();
-      if (fid === undefined) return;
-      thumbInFlight.add(fid);
-      void fetchThumb(fid, loadGen);
-    }
-  }
-
-  async function fetchThumb(fid: number, gen: number): Promise<void> {
-    try {
-      const dto =
-        previews.peek(fid) ??
-        (await invoke<FramePreviewDto | null>("get_frame_preview", {
-          request: { frameId: fid } satisfies GetFramePreviewRequest,
-        }));
-      if (gen === loadGen && dto) {
-        thumbUrls[fid] = framePreviewAssetUrl(dto.filePath);
-      }
-    } catch {
-      // cell keeps its placeholder
-    } finally {
-      thumbInFlight.delete(fid);
-      pumpThumbs();
-    }
-  }
-
-  // Display-only per-frame metadata (app / window / OCR-present). Guarded so a
-  // slow response never paints onto a newer frame. Never renders OCR text —
-  // bounded playback only shows THAT ocr exists.
-  async function loadMeta(id: number): Promise<void> {
-    const cached = metaCache.peek(id);
-    if (cached) {
-      currentMeta = cached;
-      return;
-    }
-    const token = ++metaToken;
-    const gen = loadGen;
-    try {
-      const dto = await invoke<FrameDto | null>("get_frame", {
-        request: { frameId: id },
-      });
-      if (token !== metaToken || gen !== loadGen) return;
-      if (dto) {
-        metaCache.set(id, dto);
-        currentMeta = dto;
-      }
-    } catch {
-      // keep the last-shown chips; a transient failure shouldn't blank them
-    }
   }
 
   // ── Playback loop (frame-swap timelapse) ─────────────────────────────
@@ -437,16 +315,18 @@
     void loadStrip();
   });
 
-  // Re-pump the lookahead whenever the playhead moves.
+  // Re-pump the preview lookahead whenever the strip loads or the playhead moves.
   $effect(() => {
-    index;
-    pumpDecodes();
+    loader.pump(
+      strip.map((f) => f.id),
+      index,
+    );
   });
 
   // Load display metadata for the current frame.
   $effect(() => {
     const id = currentFrameId;
-    if (id != null) void loadMeta(id);
+    if (id != null) void loader.loadMeta(id);
   });
 
   // Window capture-phase keyboard — WKWebView doesn't focus <button> on click,

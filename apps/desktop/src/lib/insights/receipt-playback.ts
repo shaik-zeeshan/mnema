@@ -70,6 +70,24 @@ export function initialPosterIndex(frameIds: number[], headlineFrameId: number |
   return Math.floor((frameIds.length - 1) / 2);
 }
 
+/**
+ * Preview ids worth having decoded around playhead `index`: the current frame
+ * first, then ahead up to `lookahead`, keeping `behind` frames warm behind it.
+ */
+export function desiredWindow(
+  ids: number[],
+  index: number,
+  lookahead: number,
+  behind: number,
+): number[] {
+  const out: number[] = [];
+  for (let d = 0; d <= lookahead; d++) {
+    if (index + d < ids.length) out.push(ids[index + d]);
+    if (d >= 1 && d <= behind && index - d >= 0) out.push(ids[index - d]);
+  }
+  return out;
+}
+
 export const SPEEDS = [2, 8, 16] as const;
 export type Speed = (typeof SPEEDS)[number];
 
