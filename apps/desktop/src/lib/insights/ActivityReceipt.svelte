@@ -145,6 +145,7 @@
     return new Date(ms).toLocaleTimeString(undefined, {
       hour: "numeric",
       minute: "2-digit",
+      hour12: true,
     });
   }
   function clockSec(ms: number): string {
@@ -152,6 +153,7 @@
       hour: "numeric",
       minute: "2-digit",
       second: "2-digit",
+      hour12: true,
     });
   }
   function posFor(ms: number): number {

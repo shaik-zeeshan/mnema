@@ -44,7 +44,7 @@
     return new Date(ms).toLocaleTimeString(undefined, {
       hour: "numeric",
       minute: "2-digit",
-      hour12: false,
+      hour12: true,
     });
   }
   // Category → CSS colour value (named category token, else the neutral grey).
