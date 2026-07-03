@@ -519,6 +519,12 @@
       <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}>✕</button>
     </div>
 
+    <!-- The compact journal rows show no summary, so the receipt is where the
+         description lives; it also survives footage expiry (ADR 0029). -->
+    {#if activity.summary}
+      <p class="m-summary">{activity.summary}</p>
+    {/if}
+
     {#if loading}
       <div class="viewer">
         <div class="skeleton" aria-hidden="true"></div>
@@ -693,6 +699,11 @@
     border: 1px solid var(--app-border); border-radius: 5px;
   }
   .m-close:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+  .m-summary {
+    flex: 0 0 auto; margin: 0; padding: 10px 16px;
+    border-bottom: 1px solid var(--app-border);
+    font-size: 12px; line-height: 1.65; color: var(--app-text-muted);
+  }
 
   /* Viewer — no transition on the img: instant frame swaps are the video feel. */
   .viewer {
