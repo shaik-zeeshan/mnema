@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use app_infra::{
     evidence_fingerprint, ActivityCorrection, CaptureWindow, NewActivity, NewActivityEvidence,
-    NewConclusion, NewConclusionEvidence, SubjectVectorStore, UserContextStore,
+    NewConclusion, NewConclusionEvidence, SubjectVectorStore, SupersedeOutcome, UserContextStore,
 };
 use app_infra::user_context::{confidence, guardrail};
 
@@ -49,7 +49,9 @@ from this fixed taxonomy (deep = sustained single-thread deep \
 work, mixed = some focus but context-switching or interleaved, distracted = scattered, interrupted, \
 or off-task) or omit it when unsure, and the list of evidence reference tags (the f<id>/a<id> tags \
 shown on each input item) that belong to that Activity. Only use tags that appear in the input. \
-Do NOT describe an \
+Also give a headline_ref: the SINGLE evidence tag from that list that best represents the title — \
+the one moment someone should see first to recognize the Activity (must be one of the Activity's \
+own evidence tags). Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
 summaries to the work/task itself. Return the structured result.";
@@ -94,6 +96,12 @@ pub struct DerivedActivity {
     /// `f<id>` (frame) / `a<id>` (audio_segment) evidence tags.
     #[serde(default)]
     pub evidence_refs: Vec<String>,
+    /// The single evidence tag (from `evidence_refs`) that best represents the
+    /// title — the frame the Timeline should land on when the user opens this
+    /// Activity. Optional: when omitted or not present in `evidence_refs`, the
+    /// store falls back to the chronologically earliest evidence frame.
+    #[serde(default)]
+    pub headline_ref: Option<String>,
 }
 
 /// The structured batch the engine returns for one capture window.
@@ -367,6 +375,15 @@ pub async fn derive_activities(
     for activity in &batch.activities {
         // Resolve evidence refs that are actually present in the window, dedup,
         // and pull each capture time.
+        // The engine-nominated headline tag, kept only if it resolves to one of
+        // this Activity's own evidence tags (else the store falls back to the
+        // earliest frame).
+        let headline_tag = activity
+            .headline_ref
+            .as_deref()
+            .and_then(parse_ref)
+            .map(|(subject_type, subject_id)| item_tag(subject_type, subject_id));
+
         let mut evidence: Vec<NewActivityEvidence> = Vec::new();
         let mut seen: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
         let mut captured_at_values: Vec<i64> = Vec::new();
@@ -387,6 +404,7 @@ pub async fn derive_activities(
                 subject_type: subject_type.to_string(),
                 subject_id,
                 captured_at_ms: Some(captured_at),
+                is_headline: headline_tag.as_deref() == Some(tag.as_str()),
             });
         }
 
@@ -458,7 +476,20 @@ against it) the Activity ids that CONTRADICT it. Only reference Activity ids tha
 input. Prefer a few well-supported Conclusions over many flimsy ones. When a KNOWN SUBJECTS list \
 is provided and a Conclusion is about one of those handles, reuse that handle VERBATIM as its \
 subject so it reinforces the existing subject; only invent a new handle for a genuinely new \
-subject. Return the structured result.";
+subject. Split a compound statement into one Conclusion per DISTINCT claim that can independently \
+gain evidence / be confirmed / dismissed / fade — NOT one per proper noun. For example, \"Plays \
+Genshin Impact via a Windows VM and watches Marvel Rivals / OW2 streams\" becomes THREE Conclusions \
+under subject \"Gaming\": one that they play Genshin Impact (on a Windows VM), one that they \
+play/are interested in 007 First Light, and one that they watch gaming streams (Marvel Rivals / \
+OW2) — each carrying only its own supporting Activity ids. When a KNOWN SUBJECTS entry lists an \
+existing conclusion (shown as `id: statement`) that restates the belief you are forming, set that \
+belief's `reinforces_id` to that conclusion's id so it reinforces the existing belief. Otherwise \
+leave `reinforces_id` unset (a genuinely new belief). If an existing conclusion shown in KNOWN \
+SUBJECTS is now WRONG in light of the evidence and this belief replaces it, set that belief's \
+`supersedes_id` to the wrong conclusion's id. `supersedes_id` composes with `reinforces_id` (you \
+may reinforce the correct sibling and supersede the wrong one in the same belief). Cite it ONLY \
+for a genuinely wrong existing belief, never for a merely weaker or older one. Return the \
+structured result.";
 
 /// The full Conclusion-distillation preamble the engine sees: the **soft**
 /// Sensitive Category Guardrail instruction (#96) prepended to
@@ -498,6 +529,15 @@ pub struct DistilledConclusion {
     /// Activity ids that contradict the Conclusion (usually empty).
     #[serde(default)]
     pub contradict_refs: Vec<i64>,
+    /// The `id` of an existing conclusion (from a KNOWN SUBJECTS entry) this belief
+    /// reinforces, when it restates one already listed; unset (None) for a new belief.
+    #[serde(default)]
+    pub reinforces_id: Option<i64>,
+    /// The `id` of an existing conclusion (from a KNOWN SUBJECTS entry) this belief
+    /// SUPERSEDES — a genuinely WRONG existing belief this one replaces (ADR 0046).
+    /// Composes with `reinforces_id`; unset (None) unless replacing a wrong belief.
+    #[serde(default)]
+    pub supersedes_id: Option<i64>,
 }
 
 /// The structured batch the engine returns for one distillation pass.
@@ -696,7 +736,28 @@ pub async fn distill_conclusions(
     related.extend(semantic_candidates);
     let known_subjects =
         super::subject_candidates::merge_known_subjects(recency_handles, related);
-    prompt.push_str(&build_known_subjects_block(&known_subjects));
+    // Per-belief reinforce (ADR 0043): show each candidate subject's existing
+    // conclusions as `id: statement` lines so the engine can cite the exact belief it
+    // reinforces via `reinforces_id`. Tuples arrive confidence-desc within a subject.
+    let subject_conclusions = store
+        .list_conclusions_for_subjects(&known_subjects, KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut conclusions_by_subject: HashMap<String, Vec<(i64, String)>> = HashMap::new();
+    for (subject, id, statement, _confidence) in &subject_conclusions {
+        conclusions_by_subject
+            .entry(subject.clone())
+            .or_default()
+            .push((*id, statement.clone()));
+    }
+    // The ids actually shown to the model — a `reinforces_id` naming anything else was
+    // hallucinated and is dropped to None at the persist site below.
+    let shown_ids: std::collections::HashSet<i64> =
+        subject_conclusions.iter().map(|(_, id, _, _)| *id).collect();
+    prompt.push_str(&build_known_subjects_block(
+        &known_subjects,
+        &conclusions_by_subject,
+    ));
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
@@ -777,6 +838,22 @@ pub async fn distill_conclusions(
                 gate_drops.resurface_blocked += 1;
                 continue;
             }
+            // Resurface bar cleared. ADR 0046: for a SUPERSEDE dismissal (a machine
+            // retirement) the old belief was right after all — flip the RETAINED
+            // superseded row back to visible with its history rather than forming a
+            // duplicate. A user Dismiss (source='user') keeps today's behavior: fall
+            // through to form a new row. If no superseded row is actually flipped
+            // (e.g. already cleared), fall through to normal formation too.
+            if dismissal.source == "supersede" {
+                let flipped = store
+                    .resurface_superseded(subject, statement)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if flipped {
+                    upserted += 1;
+                    continue;
+                }
+            }
         }
 
         // started / last_supported = the most recent supporting Activity time
@@ -809,10 +886,20 @@ pub async fn distill_conclusions(
             });
         }
 
+        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
+        // showed it to the model — a hallucinated / not-shown id becomes None. The
+        // store re-validates subject/dismissed defensively, so this is just "don't
+        // forward an id we never presented".
+        let reinforces_id = conclusion.reinforces_id.filter(|id| shown_ids.contains(id));
+        // Supersede (ADR 0046): forward the cited id only if we actually showed it
+        // — same drop-hallucinated rule as reinforces_id. The store enforces
+        // same-subject / not-pinned / self-block / retire-only-downward strength.
+        let supersedes_id = conclusion.supersedes_id.filter(|id| shown_ids.contains(id));
+
         // Single transaction: upsert (with the ratcheted confidence) + evidence
         // replacement commit/roll back together, so an error between them can
         // never leave a Conclusion with stale or zero evidence (#14).
-        store
+        let outcome = store
             .upsert_conclusion_with_evidence(
                 NewConclusion {
                     subject: subject.to_string(),
@@ -829,9 +916,19 @@ pub async fn distill_conclusions(
                 support_refs.len(),
                 contradict_refs.len(),
                 evidence,
+                reinforces_id,
+                supersedes_id,
             )
             .await
             .map_err(|error| error.to_string())?;
+        // Count what the optional supersede did (ADR 0046 observability). These are
+        // OUTCOME counters, not withholdings — the citing belief still persisted.
+        match outcome.supersede {
+            SupersedeOutcome::Retired => gate_drops.superseded += 1,
+            SupersedeOutcome::Degraded => gate_drops.supersede_degraded += 1,
+            SupersedeOutcome::Blocked => gate_drops.supersede_blocked += 1,
+            SupersedeOutcome::None => {}
+        }
         upserted += 1;
     }
 
@@ -909,15 +1006,22 @@ fn build_dismissed_conclusions_block(dismissals: &[DismissalState]) -> String {
     }
     let mut block = String::new();
     block.push_str(
-        "\nDISMISSED CONCLUSIONS — the user already REJECTED each belief below as wrong (a \
-correction they made). Do NOT reconstitute, restate, or paraphrase any of these unless there is \
-substantially MORE and NEWER Activity evidence than before that genuinely rebuilds it; never \
-re-form one from the same evidence that was already rejected. When in doubt, leave a dismissed \
-belief out.\n\n",
+        "\nDISMISSED CONCLUSIONS — each belief below was already removed: either the user REJECTED \
+it as wrong, or a prior pass ALREADY REPLACED it with a correction (marked per row). Do NOT \
+reconstitute, restate, or paraphrase any of these unless there is substantially MORE and NEWER \
+Activity evidence than before that genuinely rebuilds it; never re-form one from the same evidence \
+that was already removed. When in doubt, leave a removed belief out.\n\n",
     );
     for dismissal in dismissals {
+        // ADR 0046: supersede rows are machine corrections — present them as
+        // "already replaced" rather than the user's "rejected".
+        let marker = if dismissal.source == "supersede" {
+            "already replaced"
+        } else {
+            "rejected"
+        };
         block.push_str(&format!(
-            "- subject={} statement={}\n",
+            "- ({marker}) subject={} statement={}\n",
             dismissal.subject.trim(),
             dismissal.statement.trim()
         ));
@@ -938,12 +1042,19 @@ const KNOWN_SUBJECTS_FALLBACK_LIMIT: i64 = 200;
 /// topically-scattered window cannot flood the block with weak lexical matches.
 const KNOWN_SUBJECTS_LEXICAL_LIMIT: i64 = 20;
 
-/// Total char budget for the KNOWN SUBJECTS block (slices 5/6). Handles are short,
-/// so this generous cap effectively hands a big-context cloud LLM every candidate
-/// handle; a small-context local LLM is recency/relevance-bounded by the cap (the
-/// accepted worst case — the most-recent/most-relevant handles lead). Listed until
-/// the cap, then the rest are dropped.
-const KNOWN_SUBJECTS_CHAR_CAP: usize = 4_000;
+/// Total char budget for the KNOWN SUBJECTS block (slices 5/6). Each handle now
+/// carries its existing conclusions as indented `id: statement` lines, so the cap
+/// budgets those lines too (bumped from 4_000 accordingly). Handles are short but
+/// their conclusion lines are not; a big-context cloud LLM effectively sees every
+/// candidate, while a small-context local LLM is recency/relevance-bounded by the cap
+/// (the accepted worst case — the most-recent/most-relevant handles lead). Calibration-
+/// tunable. A subject whose full block (handle + conclusion lines) would overflow
+/// degrades to handle-only.
+const KNOWN_SUBJECTS_CHAR_CAP: usize = 8_000;
+
+/// Per-subject cap on how many existing conclusions are shown under a KNOWN SUBJECTS
+/// handle (confidence-desc). Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
+const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 12;
 
 /// Render the KNOWN SUBJECTS prompt block (slices 5/6): the candidate Subject
 /// handles the user already has, fed to the engine with an instruction to reuse a
@@ -955,7 +1066,19 @@ const KNOWN_SUBJECTS_CHAR_CAP: usize = 4_000;
 /// dropped). Empty (no trailing block) when there are no candidate handles, so a
 /// fresh dossier's prompt is unchanged — the same convention as the authored /
 /// dismissed blocks.
-fn build_known_subjects_block(handles: &[String]) -> String {
+fn build_known_subjects_block(
+    handles: &[String],
+    conclusions_by_subject: &std::collections::HashMap<String, Vec<(i64, String)>>,
+) -> String {
+    // Case-insensitive lookup: subjects come from the same store as the handles, but
+    // match defensively so a casing drift never silently hides a subject's conclusions.
+    let lookup = |handle: &str| -> Option<&Vec<(i64, String)>> {
+        conclusions_by_subject
+            .iter()
+            .find(|(subject, _)| subject.eq_ignore_ascii_case(handle))
+            .map(|(_, conclusions)| conclusions)
+    };
+
     let mut lines: Vec<String> = Vec::new();
     let mut used = 0usize;
     for handle in handles {
@@ -963,12 +1086,27 @@ fn build_known_subjects_block(handles: &[String]) -> String {
         if handle.is_empty() {
             continue;
         }
-        let line = format!("- {handle}\n");
-        if used + line.chars().count() > KNOWN_SUBJECTS_CHAR_CAP && !lines.is_empty() {
-            break;
+        let handle_line = format!("- {handle}\n");
+        // The full block for this subject = handle line + its indented conclusion lines.
+        let conclusion_lines: String = lookup(handle)
+            .map(|conclusions| {
+                conclusions
+                    .iter()
+                    .map(|(id, statement)| format!("    {id}: {}\n", statement.trim()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let full = format!("{handle_line}{conclusion_lines}");
+        if used + full.chars().count() <= KNOWN_SUBJECTS_CHAR_CAP || lines.is_empty() {
+            used += full.chars().count();
+            lines.push(full);
+            continue;
         }
-        used += line.chars().count();
-        lines.push(line);
+        // Full block overflows: degrade to handle-only if that alone still fits, else stop.
+        if used + handle_line.chars().count() <= KNOWN_SUBJECTS_CHAR_CAP {
+            used += handle_line.chars().count();
+            lines.push(handle_line);
+        }
     }
     if lines.is_empty() {
         return String::new();
@@ -976,10 +1114,13 @@ fn build_known_subjects_block(handles: &[String]) -> String {
 
     let mut block = String::new();
     block.push_str(
-        "\nKNOWN SUBJECTS — these are subject handles the user already has. When a \
-Conclusion you form is about one of them, reuse the handle VERBATIM (exactly as written below) as \
-that Conclusion's subject so it reinforces the existing subject rather than creating a reworded \
-duplicate. Only coin a NEW handle for a genuinely new subject that is not in this list.\n\n",
+        "\nKNOWN SUBJECTS — these are subject handles the user already has, each followed by its \
+existing conclusions as indented `id: statement` lines. When a Conclusion you form is about one of \
+these handles, reuse the handle VERBATIM (exactly as written below) as that Conclusion's subject so \
+it reinforces the existing subject rather than creating a reworded duplicate. When one of the listed \
+`id: statement` conclusions restates the belief you are forming, set that belief's `reinforces_id` \
+to that id so it reinforces that exact existing belief. Only coin a NEW handle for a genuinely new \
+subject that is not in this list.\n\n",
     );
     for line in lines {
         block.push_str(&line);
@@ -1166,6 +1307,33 @@ mod tests {
     }
 
     #[test]
+    fn supersedes_id_defaults_to_none_when_absent() {
+        // ADR 0046: a draft with no supersedes_id (the common case) parses to None,
+        // exactly like reinforces_id — the `#[serde(default)]` must hold.
+        let json = r#"{"subject":"Rust","statement":"Rust is compiled","support_refs":[1,2]}"#;
+        let parsed: DistilledConclusion = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.supersedes_id, None);
+        assert_eq!(parsed.reinforces_id, None);
+        // And it round-trips when present.
+        let with = r#"{"subject":"Rust","statement":"x","support_refs":[1],"supersedes_id":7}"#;
+        let parsed: DistilledConclusion = serde_json::from_str(with).expect("parse");
+        assert_eq!(parsed.supersedes_id, Some(7));
+    }
+
+    #[test]
+    fn dismissed_block_marks_supersede_rows_as_already_replaced() {
+        // ADR 0046 Slice 3H: user Dismiss rows read as "rejected", machine
+        // supersede rows as "already replaced"; both stay in the block.
+        let mut user = dismissal("Rust", "Rust is interpreted", "1,2", 2);
+        user.source = "user".to_string();
+        let mut sup = dismissal("Go", "Go has classes", "3,4", 2);
+        sup.source = "supersede".to_string();
+        let block = build_dismissed_conclusions_block(&[user, sup]);
+        assert!(block.contains("(rejected) subject=Rust"));
+        assert!(block.contains("(already replaced) subject=Go"));
+    }
+
+    #[test]
     fn filter_known_refs_drops_unknown_and_dedups() {
         let valid: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
         // 9 is not in the set; the second `2` is a duplicate; order preserved.
@@ -1182,6 +1350,7 @@ mod tests {
             evidence_fingerprint: fingerprint.to_string(),
             evidence_activity_count: count,
             dismissed_at_ms: 1_000,
+            source: "user".to_string(),
         }
     }
 
@@ -1268,15 +1437,17 @@ mod tests {
 
     #[test]
     fn known_subjects_block_is_empty_without_handles() {
-        assert!(build_known_subjects_block(&[]).is_empty());
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        assert!(build_known_subjects_block(&[], &empty).is_empty());
         // All-blank handles also yield no block (prompt unchanged).
-        assert!(build_known_subjects_block(&["   ".to_string()]).is_empty());
+        assert!(build_known_subjects_block(&["   ".to_string()], &empty).is_empty());
     }
 
     #[test]
     fn known_subjects_block_renders_handles_and_header() {
         let handles = vec!["Apple".to_string(), "async communication".to_string()];
-        let block = build_known_subjects_block(&handles);
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        let block = build_known_subjects_block(&handles, &empty);
         assert!(block.contains("KNOWN SUBJECTS"));
         // The reuse-verbatim instruction frames the block.
         assert!(block.contains("VERBATIM"));
@@ -1287,14 +1458,58 @@ mod tests {
     }
 
     #[test]
+    fn known_subjects_block_nests_conclusions_in_order() {
+        let handles = vec!["Apple".to_string()];
+        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        // Confidence-desc order is the caller's job; the block preserves push order.
+        map.insert(
+            "Apple".to_string(),
+            vec![
+                (7, "Interested in Apple silicon".to_string()),
+                (9, "Follows Apple keynotes".to_string()),
+            ],
+        );
+        let block = build_known_subjects_block(&handles, &map);
+        assert!(block.contains("- Apple\n"));
+        // Indented `id: statement` lines nested under the handle, in order.
+        let first = block.find("    7: Interested in Apple silicon").unwrap();
+        let second = block.find("    9: Follows Apple keynotes").unwrap();
+        assert!(first < second, "conclusion lines keep their given order");
+        // The instruction explains the reinforces-by-id semantics.
+        assert!(block.contains("reinforces_id"));
+    }
+
+    #[test]
+    fn known_subjects_block_degrades_overflowing_subject_to_handle_only() {
+        // Two subjects, each with one very long conclusion line. Sized so the first
+        // subject's full block fits but the second's conclusion line overflows the cap,
+        // forcing the second down to handle-only.
+        let long = "x".repeat(KNOWN_SUBJECTS_CHAR_CAP * 3 / 4);
+        let handles = vec!["First".to_string(), "Second".to_string()];
+        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        map.insert("First".to_string(), vec![(1, long.clone())]);
+        map.insert("Second".to_string(), vec![(2, long)]);
+        let block = build_known_subjects_block(&handles, &map);
+        // First subject keeps its conclusion line...
+        assert!(block.contains("    1: xxx"), "first subject's conclusion shown");
+        // ...but the second degrades to handle-only (its `2:` line dropped).
+        assert!(block.contains("- Second\n"), "second handle still present");
+        assert!(
+            !block.contains("    2: "),
+            "overflowing subject degrades to handle-only"
+        );
+    }
+
+    #[test]
     fn known_subjects_block_respects_char_cap() {
         // Many handles; the block stays bounded by the cap (plus the header + the
-        // single over-budget line the !lines.is_empty() guard allows once).
+        // single over-budget line the lines.is_empty() guard allows once).
         let handles: Vec<String> = (0..2_000).map(|i| format!("subject-{i:05}")).collect();
-        let block = build_known_subjects_block(&handles);
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        let block = build_known_subjects_block(&handles, &empty);
         assert!(block.contains("KNOWN SUBJECTS"));
         assert!(
-            block.chars().count() < KNOWN_SUBJECTS_CHAR_CAP + 600,
+            block.chars().count() < KNOWN_SUBJECTS_CHAR_CAP + 700,
             "block stays bounded by the char cap (+header/one-line slack)"
         );
     }

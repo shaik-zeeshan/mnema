@@ -23,5 +23,5 @@ pub use store::{
     cascade_derived_for_deleted_subjects_in, digest_input_fingerprint, evidence_fingerprint,
     ActivityCorrection, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
-    UserContextCascadeSummary, UserContextStore,
+    SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };

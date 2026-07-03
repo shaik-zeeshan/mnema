@@ -96,6 +96,9 @@ export interface RecordingStoreDeps {
   // key-presence badges + availability reflect the synced provider list.
   refreshAiProviderKeyPresence: () => void;
   loadAiRuntimeStatus: () => void;
+  // Re-check Ask AI availability after an ai_runtime-domain sync so its readiness
+  // pill reflects the synced provider list / default model (sibling store).
+  loadAskAiAvailability: () => void;
   // The capture-support-derived save-block gates (page state).
   gates: () => RecordingValidationGates;
   // Run once the canonical recording settings (incl. the persisted
@@ -554,6 +557,7 @@ export class RecordingStore {
     if (draftDomain === "ai_runtime" && applyDrafts) {
       this.#deps.refreshAiProviderKeyPresence();
       this.#deps.loadAiRuntimeStatus();
+      this.#deps.loadAskAiAvailability();
     }
   }
 

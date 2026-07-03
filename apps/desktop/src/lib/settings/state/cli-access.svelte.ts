@@ -32,9 +32,9 @@ export type GrantStatus = "active" | "expired" | "revoked";
 
 // ── Pure helpers (label/format) ─────────────────────────────────────────────
 
-export function grantStatus(grant: BrokerGrant): GrantStatus {
+export function grantStatus(grant: BrokerGrant, nowMs: number = Date.now()): GrantStatus {
   if (grant.revoked) return "revoked";
-  if (grant.expiresAtUnixMs <= Date.now()) return "expired";
+  if (grant.expiresAtUnixMs <= nowMs) return "expired";
   return "active";
 }
 
@@ -47,8 +47,8 @@ export function formatGrantScope(scope: BrokerGrant["scope"]): string {
   return "Limited scope";
 }
 
-export function formatGrantTime(unixMs: number): string {
-  const diffMs = unixMs - Date.now();
+export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): string {
+  const diffMs = unixMs - nowMs;
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   const abs = Math.abs(diffMs);
   if (abs < 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 60000), "minute");
@@ -56,11 +56,11 @@ export function formatGrantTime(unixMs: number): string {
   return rtf.format(Math.round(diffMs / 86400000), "day");
 }
 
-export function grantStatusLabel(grant: BrokerGrant): string {
-  const status = grantStatus(grant);
+export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now()): string {
+  const status = grantStatus(grant, nowMs);
   if (status === "revoked") return "Revoked";
-  if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs)}`;
-  return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
+  if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
+  return `Expires ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
 }
 
 // ── Reactive store ──────────────────────────────────────────────────────────

@@ -49,13 +49,16 @@ pub enum FocusLevel {
 }
 
 /// Visibility status of a [`Conclusion`] in the dossier. `faded` means the
-/// Conclusion sits below the display floor but keeps its history.
+/// Conclusion sits below the display floor but keeps its history. `superseded`
+/// (ADR 0046) means a corrected belief replaced it: it is retired from every
+/// read surface but its row/history are kept for the audit trail and resurface.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ConclusionStatus {
     Visible,
     Faded,
     Dismissed,
+    Superseded,
 }
 
 /// Whether a piece of evidence supports or contradicts a [`Conclusion`].
@@ -122,6 +125,11 @@ pub struct Conclusion {
     pub updated_at_ms: i64,
     #[serde(default)]
     pub evidence: Vec<ConclusionEvidenceRef>,
+    /// ADR 0046: when this belief replaced a wrong earlier one, the retired statement + when it was retired.
+    #[serde(default)]
+    pub replaced_statement: Option<String>,
+    #[serde(default)]
+    pub replaced_at_ms: Option<i64>,
 }
 
 /// A single point on a [`Conclusion`]'s confidence-over-time line.
@@ -245,6 +253,17 @@ pub struct DismissalState {
     pub evidence_fingerprint: String,
     pub evidence_activity_count: i64,
     pub dismissed_at_ms: i64,
+    /// Provenance (ADR 0046): `"user"` = the user dismissed it, `"supersede"` =
+    /// a distillation retired it as wrong. Consumers must treat `"supersede"`
+    /// rows as machine corrections (resurface target = the retained row).
+    #[serde(default = "dismissal_source_user")]
+    pub source: String,
+}
+
+/// Serde default for [`DismissalState::source`] — legacy JSON without the field
+/// (and the DB default) reads back as a user dismissal.
+fn dismissal_source_user() -> String {
+    "user".to_string()
 }
 
 /// Render-only projection of a [`DismissalState`] for the "Dismissed" archive in
@@ -279,6 +298,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(ConclusionStatus::Faded).unwrap(),
             json!("faded")
+        );
+        assert_eq!(
+            serde_json::to_value(ConclusionStatus::Superseded).unwrap(),
+            json!("superseded")
         );
         assert_eq!(
             serde_json::to_value(EvidenceStance::Contradict).unwrap(),
@@ -392,6 +415,8 @@ mod tests {
                 activity_title: Some("Wrote tests".to_string()),
                 activity_started_at_ms: Some(1_000),
             }],
+            replaced_statement: Some("ships slow".to_string()),
+            replaced_at_ms: Some(250),
         };
         let value = serde_json::to_value(&conclusion).unwrap();
         assert_eq!(
@@ -413,7 +438,9 @@ mod tests {
                         "activityTitle": "Wrote tests",
                         "activityStartedAtMs": 1_000
                     }
-                ]
+                ],
+                "replacedStatement": "ships slow",
+                "replacedAtMs": 250
             })
         );
         let round_tripped: Conclusion = serde_json::from_value(value).unwrap();
@@ -584,6 +611,7 @@ mod tests {
             evidence_fingerprint: "abc123".to_string(),
             evidence_activity_count: 3,
             dismissed_at_ms: 999,
+            source: "user".to_string(),
         };
         let value = serde_json::to_value(&dismissal).unwrap();
         assert_eq!(
@@ -593,11 +621,22 @@ mod tests {
                 "statement": "exercises daily",
                 "evidenceFingerprint": "abc123",
                 "evidenceActivityCount": 3,
-                "dismissedAtMs": 999
+                "dismissedAtMs": 999,
+                "source": "user"
             })
         );
         let round_tripped: DismissalState = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, dismissal);
+        // Legacy JSON without `source` reads back as a user dismissal (serde default).
+        let legacy = json!({
+            "subject": "health",
+            "statement": "exercises daily",
+            "evidenceFingerprint": "abc123",
+            "evidenceActivityCount": 3,
+            "dismissedAtMs": 999
+        });
+        let legacy_parsed: DismissalState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy_parsed.source, "user");
     }
 
     #[test]

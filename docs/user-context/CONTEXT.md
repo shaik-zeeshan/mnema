@@ -41,10 +41,16 @@ _Avoid_: capture session, recording, timeline row, raw frame, per-app slice, app
 An open-ended, plain-language statement about the user (for example "Has been increasingly
 interested in Apple", "Prefers async communication", "Is in a Rust learning phase"). Each
 **Conclusion** carries a **Subject** it is about, a **Confidence** that rises and falls over time,
-and links to the **Activity** values that are its evidence. Open-ended rather than a fixed
+and links to the **Activity** values that are its evidence. A **Conclusion** is **one atomic
+belief** — a single claim that can independently gain evidence, be confirmed, dismissed, or fade —
+so a **Subject** holds **as many Conclusion values as the user has distinct beliefs about it**
+(Gaming holds "plays Genshin", "plays 007 First Light", and "watches gaming streams" as separate
+Conclusion values, each with its own evidence and **Confidence** trajectory), not one compound
+sentence bundling several claims. Open-ended rather than a fixed
 `subject+attribute+value` schema, because the set of things worth noticing about a person is
 unbounded.
-_Avoid_: tag, sentiment score, structured fact, static profile attribute, personality trait
+_Avoid_: tag, sentiment score, structured fact, static profile attribute, personality trait,
+compound multi-claim statement, one canonical belief per subject
 
 **Reasoning Engine**:
 The user-selected model that derives both **Activity** and **Conclusion** values. It may be a
@@ -65,9 +71,11 @@ own view on the **Insights** surface that shows every **Conclusion** about it, e
 **confidence-over-time line** — the literal picture of warming up to a thing and then cooling off
 (the founding "likes Apple, then cools" example). The Subject page shows the *individual* Conclusions
 and their trajectories, NOT a single rolled-up "sentiment score" (that would resurrect the structured
-sentiment model rejected in the **Conclusion** definition). A **Subject** is also the **identity key
-for reinforcement**: recurring evidence about the same subject reinforces its existing **Conclusion**
-rather than minting a reworded duplicate (see the subject-centric reinforcement Relationships below).
+sentiment model rejected in the **Conclusion** definition). A **Subject** **groups** its **Conclusion** values but is **not itself the reinforcement
+identity**: recurring evidence reinforces the **specific matching Conclusion within the subject**
+(identity is **per-belief**), not one rolled-up canonical row — the distiller is shown the subject's
+existing **Conclusion** values and decides which a fresh belief reinforces, coining a new one only
+for a genuinely new belief (see the per-belief reinforcement Relationships below).
 _Avoid_: knowledge-graph node, single net sentiment score, rolled-up stance scalar, search-filter-only
 
 **Confidence History**:
@@ -334,20 +342,39 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   between doing something and its appearing as an **Activity** is accepted.
 - A **Conclusion** is open-ended natural language, not a structured `subject+attribute+value`
   row; its **Subject** is a grouping handle, not a rigid schema slot.
-- **Conclusion identity is subject-centric, so recurring evidence reinforces rather than duplicates.**
-  The upsert matches on **Subject alone** (case-insensitive, non-dismissed) and reinforces that
-  subject's **canonical row — highest **Confidence**, ties broken by lowest id** — rather than matching
-  the `(subject, statement)` pair; a new row is inserted only for a genuinely new subject. On reinforce
-  it bumps **Confidence**, replaces evidence, and snapshots the up-step into **Confidence History**, but
-  **freezes the statement text** (the displayed phrasing stays as first formed — an accepted cosmetic
-  cost) to keep one clean per-row trajectory and dodge the `UNIQUE(subject, statement)` index, which
-  stays as a safety net. This is **forward-only**: the legacy near-duplicate rows (the pre-fix sprawl,
-  e.g. one subject with 133 reworded rows) are left to **self-fade** under decay rather than collapsed
-  by a migration. See [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md).
+- **Conclusion identity is per-belief within a Subject, so recurring evidence reinforces the matching
+  belief rather than duplicating it or collapsing a subject's distinct beliefs into one row.** A
+  **Subject** holds multiple atomic **Conclusion** values; a fresh belief reinforces the **specific
+  existing Conclusion it restates** (the distiller decides the match and cites that Conclusion's `id`,
+  below), and a new row is inserted for a genuinely new belief — including a new belief about an
+  *existing* subject, the case the old subject-only match wrongly reinforced. The store **trusts the
+  cited `id`**: an absent, stale, foreign-subject, or dismissed id degrades to a fresh row and never
+  writes the wrong belief. On reinforce it bumps **Confidence**, replaces **that belief's** evidence
+  with the fresh supporting **Activity** values, snapshots the up-step into **Confidence History**, and
+  **freezes the statement text** — under per-belief identity the freeze is no longer a compromise: the
+  frozen wording is that belief's own and its evidence is that belief's own, so the two cannot drift
+  (the drift bug was the subject-only collapse overwriting one frozen row's evidence with whatever
+  recent **Activity** reinforced the *subject*). `UNIQUE(subject, statement)` stays as the exact-repeat
+  net; a new statement under an existing subject inserts cleanly. This **supersedes the subject-centric
+  / one-canonical-row write rule of [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md)**
+  (which fixed duplicate *subjects* + warming but collapsed a subject's distinct beliefs) while keeping
+  0042's candidate-recall legs and Subject-vector machinery. Warming stays reachable — the up-step
+  snapshot is per-belief and the **Subject** view already aggregates trend across a subject's
+  conclusions. **Forward-only, no migration** (the cited `id` is transient; nothing new is stored):
+  legacy collapsed/compound rows self-fade under decay, and **Wipe User Context** is the opt-in clean
+  rebuild. See [ADR 0043](../adr/0043-conclusion-identity-is-per-belief-within-a-subject.md).
 - **The distillation Reasoning Engine is the matcher; it is shown the beliefs it already holds.**
-  The distillation prompt now carries a **"KNOWN SUBJECTS — reuse these handles"** block (alongside the
+  The distillation prompt carries a **"KNOWN SUBJECTS"** block (alongside the
   user-authored and dismissed blocks) and a preamble instruction to reuse a handle verbatim when a
-  belief is about an existing subject and coin a new one only for a genuinely new subject. Lexical
+  belief is about an existing subject and coin a new one only for a genuinely new subject. **Each
+  candidate subject in the block also lists its existing Conclusion values (`id: statement`,
+  confidence-ordered, char-budgeted), and the preamble tells the model to reinforce one — citing its
+  `id` — when a fresh atomic belief restates it, emitting a new belief (no id) otherwise; the store
+  then reinforces exactly the cited Conclusion (per-belief identity,
+  [ADR 0043](../adr/0043-conclusion-identity-is-per-belief-within-a-subject.md)) instead of guessing by
+  subject.** The recall legs below therefore select not just which *handles* to show but whose
+  *conclusions* ride along — the belief-level match is the same LLM-as-matcher pattern, one level
+  deeper. Lexical
   *matching* (as the identity decider) was rejected at the source (measured rephrasing overlap ~31%, too
   low to decide identity) — but lexical overlap is a fine *recall* signal, so the candidate handles are
   the **union of three recall legs**, deduped case-insensitively with the **recency floor first** so the

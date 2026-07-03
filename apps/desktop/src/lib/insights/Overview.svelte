@@ -1087,6 +1087,11 @@
     void listen("user_context_changed", () => {
       void loadStatus();
       void loadEngine();
+      // The engine beat is the only live signal during recording, so refresh the
+      // usage tiles (time-per-app / heatmap / transitions) and the vs-previous
+      // baseline here too — otherwise they freeze while the engine tiles update.
+      void loadFree();
+      void loadPrev();
       // Same range → cache hit; keeps the current lede up until fresh prose.
       void loadDigest();
     }).then((fn) => {
