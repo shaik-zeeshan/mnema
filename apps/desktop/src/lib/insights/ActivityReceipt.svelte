@@ -593,11 +593,12 @@
      tokens + structure mirror docs/mockups/dayflow/04-timelapse.html. */
   .receipt {
     position: fixed; inset: 0; z-index: 2000;
-    display: grid; place-items: center; padding: 28px;
+    display: grid; place-items: center; padding: 16px;
     background: var(--app-overlay-bg); backdrop-filter: blur(4px);
   }
   .modal-card {
-    width: min(760px, 100%); overflow: hidden; background: var(--app-surface);
+    width: 82vw; height: 90vh; display: flex; flex-direction: column;
+    overflow: hidden; background: var(--app-surface);
     border: 1px solid var(--app-border-strong); border-radius: 12px;
     box-shadow: var(--app-shadow-popover);
   }
@@ -632,7 +633,7 @@
 
   /* Viewer — no transition on the img: instant frame swaps are the video feel. */
   .viewer {
-    position: relative; aspect-ratio: 16 / 9.6; overflow: hidden;
+    position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden;
     background: var(--app-bg); border-bottom: 1px solid var(--app-border);
   }
   .viewer__img { display: block; width: 100%; height: 100%; object-fit: contain; }
