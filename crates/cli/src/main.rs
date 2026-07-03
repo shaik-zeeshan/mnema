@@ -1,4 +1,4 @@
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use std::time::Duration;
 use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
 
@@ -11,17 +11,16 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::process::Command;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use tokio::time::timeout;
+#[cfg(any(unix, windows))]
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::UnixStream,
-};
+use tokio::net::UnixStream;
 use uuid::Uuid;
 
 const APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
 const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
 const INFERRED_AGENT_ENV_LABELS: &[(&str, &str)] = &[
@@ -282,7 +281,7 @@ struct AuthorizationDuration {
     preferred_seconds: u64,
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthorizationResponse {
@@ -628,7 +627,167 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
     }
 }
 
-#[cfg(not(unix))]
+// Windows Broker Authorization Channel client transport (named pipe).
+//
+// The desktop app and the CLI do not share a module, so the pure pipe-name
+// derivation is duplicated here; it must match the server's derivation
+// byte-for-byte (see ADR 0045).
+
+/// Pure named-pipe name derivation, unit-testable on every OS. Must match the
+/// desktop server's derivation byte-for-byte.
+fn pipe_name_for(identifier: &str, sid: &str) -> String {
+    format!(r"\\.\pipe\{identifier}-{sid}-cli-access")
+}
+
+// Win32 error codes returned when opening the client end of a named pipe.
+/// `ERROR_FILE_NOT_FOUND`: no server instance exists — the app is not running.
+const ERROR_FILE_NOT_FOUND: i32 = 2;
+/// `ERROR_PIPE_BUSY`: every server instance is busy — a transient race while the
+/// server pre-creates the next instance, so the caller should retry.
+const ERROR_PIPE_BUSY: i32 = 231;
+
+#[derive(Debug, PartialEq)]
+enum PipeConnectOutcome {
+    Unavailable,
+    Retry,
+}
+
+fn classify_pipe_open_error(raw_os_error: Option<i32>) -> PipeConnectOutcome {
+    match raw_os_error {
+        Some(ERROR_PIPE_BUSY) => PipeConnectOutcome::Retry,
+        Some(ERROR_FILE_NOT_FOUND) => PipeConnectOutcome::Unavailable,
+        _ => PipeConnectOutcome::Unavailable,
+    }
+}
+
+#[cfg(windows)]
+fn current_user_sid_string() -> Result<String, CliError> {
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE, HLOCAL};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(app_unavailable_error());
+        }
+
+        // Size probe, then fill.
+        let mut length: u32 = 0;
+        GetTokenInformation(token, TokenUser, ptr::null_mut(), 0, &mut length);
+        if length == 0 {
+            CloseHandle(token);
+            return Err(app_unavailable_error());
+        }
+        let mut buffer = vec![0u8; length as usize];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            length,
+            &mut length,
+        ) == 0
+        {
+            CloseHandle(token);
+            return Err(app_unavailable_error());
+        }
+
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut sid_wide: *mut u16 = ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_wide) == 0 {
+            CloseHandle(token);
+            return Err(app_unavailable_error());
+        }
+
+        // Copy the wide, NUL-terminated string into an owned String.
+        let mut len = 0usize;
+        while *sid_wide.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(sid_wide, len);
+        let sid = String::from_utf16_lossy(slice);
+
+        LocalFree(sid_wide as HLOCAL);
+        CloseHandle(token);
+
+        Ok(sid)
+    }
+}
+
+#[cfg(windows)]
+fn authorization_pipe_name() -> Result<String, CliError> {
+    if let Ok(name) = env::var("MNEMA_CLI_ACCESS_PIPE_NAME") {
+        return Ok(name);
+    }
+    Ok(pipe_name_for(APP_IDENTIFIER, &current_user_sid_string()?))
+}
+
+#[cfg(windows)]
+async fn send_authorization_request(request: &AuthorizationRequest) -> Result<(), CliError> {
+    use tokio::net::windows::named_pipe::ClientOptions;
+
+    let pipe_name = authorization_pipe_name()?;
+
+    // The server pre-creates the next instance, so a busy pipe is a transient
+    // race; retry a bounded number of times before giving up.
+    const MAX_RETRIES: u32 = 3;
+    let mut attempt = 0;
+    let client = loop {
+        match timeout(Duration::from_secs(2), async {
+            ClientOptions::new().open(&pipe_name)
+        })
+        .await
+        .map_err(|_| app_unavailable_error())?
+        {
+            Ok(client) => break client,
+            Err(error) => match classify_pipe_open_error(error.raw_os_error()) {
+                PipeConnectOutcome::Retry if attempt < MAX_RETRIES => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                _ => return Err(app_unavailable_error()),
+            },
+        }
+    };
+
+    let raw = serde_json::to_string(request).map_err(|error| CliError {
+        exit: 21,
+        code: "output_serialization_failed",
+        message: error.to_string(),
+        retryable: false,
+    })?;
+    let mut client = client;
+    client
+        .write_all(format!("{raw}\n").as_bytes())
+        .await
+        .map_err(|_| app_unavailable_error())?;
+    let mut response = String::new();
+    timeout(
+        AUTHORIZATION_TIMEOUT,
+        BufReader::new(client).read_line(&mut response),
+    )
+    .await
+    .map_err(|_| timeout_error())?
+    .map_err(|_| app_unavailable_error())?;
+    let response: AuthorizationResponse =
+        serde_json::from_str(&response).map_err(|_| app_unavailable_error())?;
+    if response.request_id != request.request_id {
+        return Err(app_unavailable_error());
+    }
+    match response.decision.as_str() {
+        "approved" => Ok(()),
+        "denied" => Err(authorization_denied_error()),
+        "unavailable" => Err(app_unavailable_error()),
+        _ => Err(app_unavailable_error()),
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
 async fn send_authorization_request(_request: &AuthorizationRequest) -> Result<(), CliError> {
     Err(app_unavailable_error())
 }
@@ -652,7 +811,7 @@ async fn launch_mnema_app() -> Result<(), CliError> {
         .await;
     #[cfg(target_os = "windows")]
     let status = Command::new("cmd")
-        .args(["/C", "start", "", "mnema"])
+        .args(["/C", "start", "", "mnema://access/request"])
         .status()
         .await;
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -927,7 +1086,7 @@ fn auth_required_error() -> CliError {
     }
 }
 
-#[cfg(any(test, unix))]
+#[cfg(any(test, unix, windows))]
 fn timeout_error() -> CliError {
     CliError {
         exit: 11,
@@ -946,7 +1105,7 @@ fn app_unavailable_error() -> CliError {
     }
 }
 
-#[cfg(any(test, unix))]
+#[cfg(any(test, unix, windows))]
 fn authorization_denied_error() -> CliError {
     CliError {
         exit: 10,
@@ -1056,6 +1215,31 @@ mod tests {
             authorization_socket_path(),
             config_dir.join("cli-access.sock")
         );
+    }
+
+    #[test]
+    fn pipe_name_uses_configured_identifier_and_sid() {
+        assert_eq!(
+            pipe_name_for("com.example.mnema-test", "S-1-5-21-1-2-3-1001"),
+            r"\\.\pipe\com.example.mnema-test-S-1-5-21-1-2-3-1001-cli-access"
+        );
+    }
+
+    #[test]
+    fn pipe_open_error_maps_missing_to_unavailable_and_busy_to_retry() {
+        assert_eq!(
+            classify_pipe_open_error(Some(2)),
+            PipeConnectOutcome::Unavailable
+        );
+        assert_eq!(
+            classify_pipe_open_error(Some(231)),
+            PipeConnectOutcome::Retry
+        );
+        assert_eq!(
+            classify_pipe_open_error(Some(5)),
+            PipeConnectOutcome::Unavailable
+        );
+        assert_eq!(classify_pipe_open_error(None), PipeConnectOutcome::Unavailable);
     }
 
     #[test]
