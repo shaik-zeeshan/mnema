@@ -1,7 +1,7 @@
 // Pure playback helpers for the Activity Receipt (ActivityReceipt.svelte): a
 // bounded LRU for decoded frame previews, index stepping with clamped bounds,
-// even filmstrip sampling, nearest-sample lookup, a speed→fps mapping, and a
-// gap-based capture-segment count. No DOM, no Svelte — unit-testable in bun.
+// a speed→fps mapping, and a gap-based capture-segment count. No DOM, no
+// Svelte — unit-testable in bun.
 
 /**
  * Bounded insertion-order LRU. `get`/`set` mark a key most-recently-used;
@@ -58,35 +58,6 @@ export function clampIndex(i: number, count: number): number {
 /** Step an index by `delta`, clamped to the strip bounds. */
 export function stepIndex(current: number, delta: number, count: number): number {
   return clampIndex(current + delta, count);
-}
-
-/**
- * Evenly sample up to `samples` strip indices across `[0, count-1]`, inclusive
- * of both ends. Fewer frames than samples → one thumb per frame.
- */
-export function sampleIndices(count: number, samples: number): number[] {
-  if (count <= 0) return [];
-  const n = Math.min(samples, count);
-  if (n === 1) return [0];
-  const out: number[] = [];
-  for (let i = 0; i < n; i++) {
-    out.push(Math.round((i * (count - 1)) / (n - 1)));
-  }
-  return out;
-}
-
-/** Array-position of the sample nearest `target` (−1 when empty). Ties take the earlier. */
-export function nearestSampleIndex(samples: number[], target: number): number {
-  let best = -1;
-  let bestDist = Infinity;
-  for (let p = 0; p < samples.length; p++) {
-    const dist = Math.abs(samples[p] - target);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = p;
-    }
-  }
-  return best;
 }
 
 /** The initial poster index: the headline frame if it's in the strip, else the middle. */

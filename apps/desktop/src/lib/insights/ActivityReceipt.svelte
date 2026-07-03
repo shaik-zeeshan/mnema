@@ -26,8 +26,6 @@
     countCaptureSegments,
     framesPerSecond,
     initialPosterIndex,
-    nearestSampleIndex,
-    sampleIndices,
     SPEEDS,
     type Speed,
   } from "$lib/insights/receipt-playback";
@@ -51,7 +49,6 @@
   const BEHIND = 1; // frames to keep warm behind it
   const PREVIEW_CACHE_CAP = 40; // LRU of decoded previews
   const META_CACHE_CAP = 40; // LRU of per-frame FrameDto meta
-  const FILM_THUMBS = 12; // filmstrip cells
 
   type StripFrame = { id: number; ms: number };
 
@@ -63,6 +60,7 @@
   let loading = $state(true);
   let cacheBump = $state(0); // bumped when a preview lands (display dep)
   let currentMeta = $state<FrameDto | null>(null);
+  let thumbUrls = $state<Record<number, string>>({}); // frameId → preview URL
 
   // ── Non-reactive machinery (guarded by loadGen / display via cacheBump) ─
   let previews = new LruCache<FramePreviewDto>(PREVIEW_CACHE_CAP);
@@ -75,7 +73,11 @@
   let lastTs = 0;
   let frameAccum = 0;
   let trackEl = $state<HTMLDivElement | null>(null);
+  let filmEl = $state<HTMLDivElement | null>(null);
   let scrubbing = false;
+  const thumbQueue: number[] = [];
+  const thumbInFlight = new Set<number>();
+  let thumbObserver: IntersectionObserver | null = null;
 
   // ── Derived view model ───────────────────────────────────────────────
   const catColorVar = $derived(
@@ -125,19 +127,7 @@
     return out;
   });
 
-  const thumbs = $derived(sampleIndices(strip.length, FILM_THUMBS));
-  const citedThumbPositions = $derived.by(() => {
-    const s = new Set<number>();
-    for (const e of frameEvidence) {
-      const j = strip.findIndex((f) => f.id === e.subjectId);
-      if (j >= 0) {
-        const p = nearestSampleIndex(thumbs, j);
-        if (p >= 0) s.add(p);
-      }
-    }
-    return s;
-  });
-  const currentThumbPosition = $derived(nearestSampleIndex(thumbs, index));
+  const citedIds = $derived(new Set(frameEvidence.map((e) => e.subjectId)));
   const segmentCount = $derived(countCaptureSegments(strip.map((f) => f.ms)));
 
   // ── Wall-clock formatters (evidence answers WHEN, not elapsed) ────────
@@ -173,6 +163,8 @@
     metaCache = new LruCache(META_CACHE_CAP);
     inFlight.clear();
     failed.clear();
+    thumbUrls = {};
+    thumbQueue.length = 0;
     index = 0;
     try {
       const summaries = await invoke<FrameSummaryDto[]>(
@@ -254,6 +246,63 @@
     } finally {
       inFlight.delete(fid);
       if (gen === loadGen) pumpDecodes();
+    }
+  }
+
+  // Filmstrip thumbnails: every frame gets a cell; an IntersectionObserver
+  // queues a cell's preview as it scrolls into view and a DECODE_CONCURRENCY
+  // pump keeps decode load bounded. URLs live outside the playback LRU so
+  // eviction during playback never blanks a loaded thumb.
+  // ponytail: no cell virtualization — a multi-hour activity renders one
+  // <button> per frame; virtualize the strip if that ever gets janky.
+  function thumbCell(node: HTMLElement, fid: number) {
+    node.dataset.fid = String(fid);
+    thumbObserver ??= new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        thumbObserver?.unobserve(entry.target);
+        requestThumb(Number((entry.target as HTMLElement).dataset.fid));
+      }
+    });
+    thumbObserver.observe(node);
+    return {
+      destroy() {
+        thumbObserver?.unobserve(node);
+      },
+    };
+  }
+
+  function requestThumb(fid: number): void {
+    if (!Number.isFinite(fid) || thumbUrls[fid]) return;
+    if (thumbInFlight.has(fid) || thumbQueue.includes(fid)) return;
+    thumbQueue.push(fid);
+    pumpThumbs();
+  }
+
+  function pumpThumbs(): void {
+    while (thumbInFlight.size < DECODE_CONCURRENCY) {
+      const fid = thumbQueue.shift();
+      if (fid === undefined) return;
+      thumbInFlight.add(fid);
+      void fetchThumb(fid, loadGen);
+    }
+  }
+
+  async function fetchThumb(fid: number, gen: number): Promise<void> {
+    try {
+      const dto =
+        previews.peek(fid) ??
+        (await invoke<FramePreviewDto | null>("get_frame_preview", {
+          request: { frameId: fid } satisfies GetFramePreviewRequest,
+        }));
+      if (gen === loadGen && dto) {
+        thumbUrls[fid] = framePreviewAssetUrl(dto.filePath);
+      }
+    } catch {
+      // cell keeps its placeholder
+    } finally {
+      thumbInFlight.delete(fid);
+      pumpThumbs();
     }
   }
 
@@ -441,9 +490,16 @@
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   });
 
-  // Cancel any dangling rAF on unmount.
+  // Keep the current frame's cell in view as playback/scrubbing advances.
+  $effect(() => {
+    const cell = filmEl?.children[index] as HTMLElement | undefined;
+    cell?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  });
+
+  // Cancel any dangling rAF and the thumb observer on unmount.
   $effect(() => () => {
     if (rafId != null) cancelAnimationFrame(rafId);
+    thumbObserver?.disconnect();
   });
 </script>
 
@@ -542,16 +598,21 @@
         </div>
       </div>
 
-      <div class="film">
-        {#each thumbs as ti, p (p)}
+      <div class="film" bind:this={filmEl}>
+        {#each strip as f, ti (f.id)}
           <button
             type="button"
             class="film__cell"
-            class:cur={p === currentThumbPosition}
-            class:ev={citedThumbPositions.has(p)}
-            aria-label={`Seek to ${clock(strip[ti].ms)}`}
+            class:cur={ti === index}
+            class:cited={citedIds.has(f.id)}
+            aria-label={`Seek to ${clock(f.ms)}`}
+            use:thumbCell={f.id}
             onclick={() => seek(ti)}
-          ></button>
+          >
+            {#if thumbUrls[f.id]}
+              <img class="film__img" src={thumbUrls[f.id]} alt="" />
+            {/if}
+          </button>
         {/each}
       </div>
 
@@ -697,19 +758,30 @@
   }
 
   /* Filmstrip */
-  .film { display: grid; grid-template-columns: repeat(12, 1fr); gap: 5px; padding: 8px 16px 0; }
+  .film {
+    /* A scroll container's automatic min-height is 0, so the modal's flex
+       column would crush it — pin it to its natural (cell aspect) height. */
+    flex: 0 0 auto;
+    display: grid; grid-auto-flow: column; gap: 5px; padding: 8px 16px 8px;
+    grid-auto-columns: calc((100% - 55px) / 12); /* 12 cells in view, rest scroll (55px = 11 gaps) */
+    overflow-x: auto; overflow-y: hidden;
+  }
   .film__cell {
     position: relative; aspect-ratio: 16 / 10; padding: 0; cursor: pointer;
     background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%);
-    border: 1px solid var(--app-border); border-radius: 4px;
+    border: 1px solid var(--app-border); border-radius: 4px; overflow: hidden;
   }
   .film__cell::after {
     content: ""; position: absolute; inset: 25% 18% 30%;
     background: var(--app-surface-hover); border-radius: 2px;
   }
+  .film__img {
+    position: absolute; inset: 0; z-index: 1; /* above the ::after placeholder */
+    width: 100%; height: 100%; object-fit: cover;
+  }
   .film__cell.cur { border-color: var(--app-accent); box-shadow: 0 0 0 1px var(--app-accent); }
-  .film__cell.ev::before {
-    content: ""; position: absolute; top: 3px; right: 3px; z-index: 1;
+  .film__cell.cited::before {
+    content: ""; position: absolute; top: 3px; right: 3px; z-index: 2;
     width: 5px; height: 5px; background: var(--app-accent); border-radius: 50%;
   }
 

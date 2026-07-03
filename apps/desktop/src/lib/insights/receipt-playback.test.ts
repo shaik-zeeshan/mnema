@@ -5,8 +5,6 @@ import {
   LruCache,
   clampIndex,
   stepIndex,
-  sampleIndices,
-  nearestSampleIndex,
   initialPosterIndex,
   countCaptureSegments,
 } from "./receipt-playback";
@@ -66,33 +64,6 @@ describe("index stepping bounds", () => {
     expect(stepIndex(0, -1, 5)).toBe(0); // can't go below 0
     expect(stepIndex(4, 1, 5)).toBe(4); // can't exceed last
     expect(stepIndex(2, 1, 5)).toBe(3);
-  });
-});
-
-describe("filmstrip sampling", () => {
-  it("samples both endpoints across the strip", () => {
-    const s = sampleIndices(100, 12);
-    expect(s.length).toBe(12);
-    expect(s[0]).toBe(0);
-    expect(s[s.length - 1]).toBe(99);
-  });
-  it("returns one thumb per frame when frames < samples", () => {
-    expect(sampleIndices(3, 12)).toEqual([0, 1, 2]);
-  });
-  it("is empty for an empty strip", () => {
-    expect(sampleIndices(0, 12)).toEqual([]);
-  });
-});
-
-describe("nearestSampleIndex", () => {
-  it("finds the array position of the closest sample", () => {
-    const samples = [0, 25, 50, 75, 99];
-    expect(nearestSampleIndex(samples, 24)).toBe(1);
-    expect(nearestSampleIndex(samples, 60)).toBe(2);
-    expect(nearestSampleIndex(samples, 99)).toBe(4);
-  });
-  it("returns -1 for empty samples", () => {
-    expect(nearestSampleIndex([], 3)).toBe(-1);
   });
 });
 
