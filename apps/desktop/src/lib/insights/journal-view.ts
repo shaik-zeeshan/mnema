@@ -32,6 +32,18 @@ export function buildRiver(
   return rows;
 }
 
+/**
+ * Activities shorter than this render as compact one-line rows instead of full
+ * cards. 5 minutes — deliberately the same magnitude as `AWAY_GAP_MIN_MS` and
+ * the capture segment cap.
+ */
+export const SHORT_ACTIVITY_MAX_MS = 300_000;
+
+/** True when the activity's duration is under `SHORT_ACTIVITY_MAX_MS`. */
+export function isShortActivity(a: { startedAtMs: number; endedAtMs: number }): boolean {
+  return a.endedAtMs - a.startedAtMs < SHORT_ACTIVITY_MAX_MS;
+}
+
 /** Local time-of-day band for a timestamp: <12 Morning, <17 Afternoon, else Evening. */
 export function bandOf(ms: number): BandLabel {
   const hour = new Date(ms).getHours();

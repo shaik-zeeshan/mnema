@@ -4,12 +4,14 @@
   // banded river + pending model (built by the parent from `buildJournalDay` +
   // `journal-view.ts`) it renders the `.slot` grid (when | spine | card), the
   // away-gaps, the live-edge pending slot, plus the loading skeleton and the two
-  // empty-state panels. It owns no data loading — pure presentation.
+  // empty-state panels. Activities under 5 minutes (`isShortActivity`) render as
+  // compact one-line rows instead of full cards to keep the river dense. It owns
+  // no data loading — pure presentation.
   import { untrack } from "svelte";
   import type { Activity, ActivityFocus } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import type { RiverBand } from "$lib/insights/journal-view";
-  import { pendingReasonCopy } from "$lib/insights/journal-view";
+  import { isShortActivity, pendingReasonCopy } from "$lib/insights/journal-view";
   import {
     CATEGORY_COLOR,
     UNCATEGORIZED_COLOR,
@@ -18,6 +20,7 @@
     humanizeMs,
   } from "$lib/insights/activity-helpers";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import ScrollTimeBubble from "$lib/insights/ScrollTimeBubble.svelte";
 
   interface Props {
     bands: RiverBand[];
@@ -109,20 +112,36 @@
   </section>
 {:else if hasCards}
   <section class="river" aria-label="Activity journal">
+    <ScrollTimeBubble />
     {#each bands as band (band.label + band.rows[0].atMs)}
       <div class="day-rule"><span>{band.label}</span><span class="rule"></span></div>
       {#each band.rows as row (row.kind + row.atMs)}
         {#if row.kind === "gap"}
-          <div class="gap-note">
+          <div class="gap-note" data-at-ms={row.atMs}>
             <div class="when"></div>
             <div class="spine"></div>
             <div class="txt">
               {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · away — no capture
             </div>
           </div>
+        {:else if isShortActivity(row.slot.activity)}
+          {@const a = row.slot.activity}
+          <div class="slot slot--compact" data-at-ms={row.atMs}>
+            <div class="when">
+              {clock(a.startedAtMs)}
+              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
+            </div>
+            <div class="spine">
+              <span class="node" style="background:{catVar(a.category)};"></span>
+            </div>
+            <button type="button" class="row-compact" onclick={() => onOpenActivity(a)}>
+              <span class="swatch" style="background:{catVar(a.category)};"></span>
+              <span class="row-title">{a.title}</span>
+            </button>
+          </div>
         {:else}
           {@const a = row.slot.activity}
-          <div class="slot">
+          <div class="slot" data-at-ms={row.atMs}>
             <div class="when">
               {clock(a.startedAtMs)}
               <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
@@ -317,6 +336,59 @@
     color: var(--app-text-faint);
     padding: 4px 0;
     font-style: italic;
+  }
+
+  /* Compact row — activities under 5 minutes render as one quiet clickable
+     line (swatch + title) instead of a full card; the click opens the receipt.
+     Tighter paddings + node top keep the spine node centered on the single
+     text line (row lands ~32px tall). */
+  .slot--compact .when {
+    padding-top: 7px;
+  }
+  .slot--compact .node {
+    top: 9px;
+  }
+  .row-compact {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
+    text-align: left;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    padding: 7px 10px;
+    font: inherit;
+    color: inherit;
+    cursor: pointer;
+    transition: background 0.12s ease;
+  }
+  .row-compact:hover {
+    background: var(--app-surface-hover);
+  }
+  .row-compact:hover .row-title {
+    color: var(--app-text-strong);
+  }
+  .row-compact:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .row-compact .swatch {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .row-compact .row-title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--text-sm);
+    line-height: 1.35;
+    color: var(--app-text-muted);
+    transition: color 0.12s ease;
   }
 
   /* Card — a full-width button so the whole card opens the receipt (keyboard

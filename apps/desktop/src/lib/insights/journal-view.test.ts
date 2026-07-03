@@ -1,7 +1,14 @@
 // @ts-nocheck — run under `bun test`; bun:test types aren't in the svelte-check
 // tsconfig, so skip static checking here (same as journal-day.test.ts).
 import { describe, expect, it } from "bun:test";
-import { buildRiver, bandOf, bandRiver, pendingReasonCopy } from "./journal-view";
+import {
+  SHORT_ACTIVITY_MAX_MS,
+  buildRiver,
+  bandOf,
+  bandRiver,
+  isShortActivity,
+  pendingReasonCopy,
+} from "./journal-view";
 
 const DAY = new Date(2026, 6, 3, 0, 0, 0, 0).getTime();
 const at = (h, m = 0) => new Date(2026, 6, 3, h, m, 0, 0).getTime();
@@ -18,6 +25,14 @@ describe("buildRiver", () => {
     const rows = buildRiver([slot(at(9)), slot(at(13))], [gap(at(11), at(12))]);
     expect(rows.map((r) => r.kind)).toEqual(["card", "gap", "card"]);
     expect(rows.map((r) => r.atMs)).toEqual([at(9), at(11), at(13)]);
+  });
+});
+
+describe("isShortActivity", () => {
+  it("is short strictly below the threshold; exactly 5 minutes is not short", () => {
+    const start = at(9);
+    expect(isShortActivity({ startedAtMs: start, endedAtMs: start + SHORT_ACTIVITY_MAX_MS - 1 })).toBe(true);
+    expect(isShortActivity({ startedAtMs: start, endedAtMs: start + SHORT_ACTIVITY_MAX_MS })).toBe(false);
   });
 });
 
