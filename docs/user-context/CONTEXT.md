@@ -181,10 +181,42 @@ _Avoid_: dashboard, dashboard timeline, main view
 
 **Insights** (surface):
 The other **Main** surface: the AI **workspace** for understanding yourself. A container hosting
-**sub-surfaces**, not a single view. v1 sub-surfaces are **Overview**, **Chat**, and **Context**;
-**Plugins**, **Automations**, and **Project** are deferred (the shell can grow into them, but they
-are not v1). Capture *inspection* still belongs to **Timeline**; **Insights** is read/understand/ask.
-_Avoid_: analytics dashboard, stats page, single informative view, profile page
+**sub-surfaces**, not a single view. v1 shipped **Overview**, **Chat**, and **Context**; the shell
+has since grown **Subjects** and (decided Jul 2026) **Journal** — new derived-understanding views
+join Insights as sub-surfaces rather than becoming top-level **Main** surfaces. **Plugins**,
+**Automations**, and **Project** remain deferred. Capture *inspection* still belongs to
+**Timeline**; **Insights** is read/understand/ask.
+_Avoid_: analytics dashboard, stats page, single informative view, profile page, third top-level surface
+
+**Journal** (sub-surface):
+The chronological river sub-surface of **Insights**: one local-midnight day of **Activity** values
+rendered as cards on a time spine (title, summary, **Activity Category** color, **Focus
+Classification**, apps touched), led by that day's digest as the lede. Days follow the same
+frontend local-midnight convention as the digest cache — there is no separate "logical day". A
+card's one click action opens its **Receipt**; capture inspection still hands off to **Timeline**.
+The Journal renders as **Cards** only. A **Blocks** alternate (Dayflow's proportional-height
+calendar view) and its Cards⇄Blocks toggle were considered and **dropped** (Jul 2026): proportional
+block heights crush short, fragmented activities into unreadable slivers exactly when the journal
+matters most, and the "shape of the day" glance Blocks offered is already carried by **Overview**'s
+focus heatmap and the Journal's away-gaps. Cards degrades gracefully to a longer scroll where Blocks
+degrades to mush, so it is the sole reading layout and the toggle is not rendered.
+_Avoid_: timeline replacement, per-app usage log, second capture surface, 4am logical day,
+proportional-block calendar view, Cards⇄Blocks toggle
+
+**Receipt**:
+Bounded **evidence playback** for one **Activity**: a modal that scrubs the **Captured Frame**
+pixels behind that Activity's time span, with the engine-cited evidence frames marked on the track
+(the headline frame doubling as poster) and a wall-clock playhead. A Receipt is *proof*, not
+*inspection* — it deliberately never grows OCR text copy/download, audio playback, frame export, or
+navigation beyond the Activity's span; "Open in Timeline" is the handoff for all of those. Because
+**Retention Policy** ages out frames but never the **Activity**
+([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)), an
+expired Receipt ("footage expired", summary retained) is a guaranteed long-term state, not an edge
+case. A Journal card's frame count means **frames still on disk now** — it shrinks as retention
+ages footage out and reads "footage expired" at zero — so the count is always an honest promise of
+what the Receipt will actually play.
+_Avoid_: capture inspection, second timeline, exact-frame actions surface, timelapse video export,
+frame-count-at-derivation-time
 
 **Overview** (sub-surface):
 The charts-and-dossier sub-surface of **Insights** (renamed from the earlier "informative view" to
@@ -195,7 +227,10 @@ Engine** opt-in — is the *color*: the categorized/focus charts (driven by **Ac
 story). The engine "lights up" **Overview**; without it, it still works, just grayscale.
 The layout is **narrative-first** (a "Briefing"): one full-width column led by **"The read"** —
 the engine's synthesis of the range, and the single home for the headline numbers (tracked /
-daily avg / deep-focus % / top category / sparkbar) — with the metric charts **demoted** to a
+daily avg / deep-focus % / top category / sparkbar) *within Overview* — the rule bans a second
+stat tile on the same page (the killed bento band), not other sub-surfaces: the **Journal** lede
+deliberately reuses the same cached digest row plus its day-scoped numbers — with the metric
+charts **demoted** to a
 quieter **"Exhibits"** strip (Time / Categories / Focus) that supports the narrative, then the
 actionable tail (What changed / Needs attention) and a docked Ask bar. FREE swaps the AI hero for
 a deterministic factual read plus an enable-engine invite. This replaced the originally-approved
@@ -293,9 +328,27 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   (**Dismiss**/edit feeds back), and the category taxonomy is fixed in v1 rather than user-defined.
 - The **app-interaction graph** and **time per app/site** are pure counting and stay in the free tier;
   only the *category* and *focus* axes require the engine.
-- Capture *inspection* (exact frame, OCR copy/download, audio playback) stays on the **Timeline**
-  surface; **Insights** is a read/understand surface, and an **Activity** or **Answer Source** hands
-  off to **Timeline** for inspection rather than inspecting in place.
+- Capture *inspection* (OCR copy/download, audio playback, unbounded frame navigation) stays on the
+  **Timeline** surface; **Insights** is a read/understand surface, and an **Activity** or **Answer
+  Source** hands off to **Timeline** for inspection rather than inspecting in place. The one carved
+  exception is the **Receipt**: bounded evidence playback of one Activity's frames inside
+  **Insights** is allowed because it is proof of a derived card, not a second capture surface — the
+  moment a Receipt would need OCR copy, audio, or navigation past the Activity's span, the answer is
+  its "Open in Timeline" handoff, never growing the modal.
+- Cross-surface numbers follow **"same label ⇒ same computation"**: a metric shown in more than one
+  Insights sub-surface must come from one shared computation, never re-derived per tab. "Tracked"
+  is **Usage Charts** app-active time everywhere (capture time — it deliberately does *not* equal
+  the sum of a day's **Activity** durations; gaps and the pending region account for the
+  difference); category % and focus % are **Activity**-based everywhere; capture-density strips are
+  frame coverage, a coverage signal never labeled as time.
+- **Focus Classification** display labels soften the stored values: the stored `distracted` level
+  renders as **"Scattered"** in the UI (deliberate — observation, not scolding, per the
+  conservative posture). The stored enum is unchanged.
+- The **Journal** live edge is explicit, never silent: capture newer than the derivation worker's
+  covered watermark ("summarized up to X", exposed through the User Context status surface) renders
+  as a visible pending region — "Summarizing this window…" while the engine is healthy, the *reason*
+  when it is not (engine off, no key, budget exhausted) — so un-summarized capture is never mistaken
+  for lost data. Windows with no capture at all render as away-time gaps instead.
 - An **Activity** is a handoff anchor, not a Timeline overlay: selecting one in **Insights** lands the
   **Timeline** at the Activity's *span* (start + highlighted range, a small extension to the existing
   **Search Result Anchor** navigation), and the **Timeline stays raw**. v1 does NOT paint a semantic

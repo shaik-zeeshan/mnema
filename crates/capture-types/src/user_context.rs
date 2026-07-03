@@ -78,6 +78,11 @@ pub struct ActivityEvidenceRef {
     pub subject_type: String,
     pub subject_id: i64,
     pub captured_at_ms: Option<i64>,
+    /// The engine-nominated headline frame for the Activity (at most one true
+    /// per Activity). `list_activity_evidence` orders headline rows first, but
+    /// callers that re-sort (e.g. the receipt's time-sorted ticks) rely on this
+    /// flag rather than `evidence[0]` position to find the headline.
+    pub is_headline: bool,
 }
 
 /// A derived episode of what the user did and how (the evidence layer).
@@ -194,6 +199,10 @@ pub struct UserContextStatus {
     pub activity_count: i64,
     pub conclusion_count: i64,
     pub last_derived_at_ms: Option<i64>,
+    /// The worker's summarized-up-to watermark: the `window_end_ms` of the
+    /// most-recently-covered derivation run, so the frontend can render the
+    /// still-pending region. `None` until the first windowed run completes.
+    pub covered_until_ms: Option<i64>,
     /// "building your understanding…" progress state while older windows remain.
     pub backfilling: bool,
     pub token_usage: UserContextTokenUsage,
@@ -315,13 +324,15 @@ mod tests {
             subject_type: "frame".to_string(),
             subject_id: 42,
             captured_at_ms: Some(1_700_000_000_000),
+            is_headline: true,
         };
         assert_eq!(
             serde_json::to_value(&r).unwrap(),
             json!({
                 "subjectType": "frame",
                 "subjectId": 42,
-                "capturedAtMs": 1_700_000_000_000i64
+                "capturedAtMs": 1_700_000_000_000i64,
+                "isHeadline": true
             })
         );
     }
@@ -342,6 +353,7 @@ mod tests {
                 subject_type: "audio_segment".to_string(),
                 subject_id: 9,
                 captured_at_ms: None,
+                is_headline: false,
             }],
         };
         assert_eq!(
@@ -359,7 +371,8 @@ mod tests {
                     {
                         "subjectType": "audio_segment",
                         "subjectId": 9,
-                        "capturedAtMs": null
+                        "capturedAtMs": null,
+                        "isHeadline": false
                     }
                 ]
             })
@@ -530,6 +543,7 @@ mod tests {
             activity_count: 12,
             conclusion_count: 4,
             last_derived_at_ms: None,
+            covered_until_ms: Some(1_700_000_000_000),
             backfilling: true,
             token_usage: UserContextTokenUsage {
                 input_tokens: 1,
@@ -546,8 +560,10 @@ mod tests {
         assert!(obj.contains_key("activityCount"));
         assert!(obj.contains_key("conclusionCount"));
         assert!(obj.contains_key("lastDerivedAtMs"));
+        assert!(obj.contains_key("coveredUntilMs"));
         assert!(obj.contains_key("tokenUsage"));
         assert!(obj.contains_key("lastDistillation"));
+        assert_eq!(obj["coveredUntilMs"], json!(1_700_000_000_000i64));
         assert_eq!(obj["lastDerivedAtMs"], json!(null));
         assert_eq!(obj["lastDistillation"], json!(null));
         assert_eq!(obj["budgetTier"], json!("thorough"));

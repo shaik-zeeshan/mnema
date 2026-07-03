@@ -23,11 +23,12 @@
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { IconComponent } from "$lib/settings/section-icons";
   import IconOverview from "~icons/lucide/layout-dashboard";
+  import IconJournal from "~icons/lucide/calendar-days";
   import IconSubjects from "~icons/lucide/lightbulb";
   import IconContext from "~icons/lucide/notebook-text";
   import IconCollapse from "~icons/lucide/chevrons-left";
 
-  type InsightsTab = "overview" | "subjects" | "context" | "chat";
+  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   interface Props {
     view: InsightsTab;
@@ -65,8 +66,10 @@
     id: Exclude<InsightsTab, "chat">;
     label: string;
     icon: IconComponent;
+    isNew?: boolean;
   }[] = [
     { id: "overview", label: "Overview", icon: IconOverview },
+    { id: "journal", label: "Journal", icon: IconJournal, isNew: true },
     { id: "subjects", label: "Subjects", icon: IconSubjects },
     { id: "context", label: "Context", icon: IconContext },
   ];
@@ -118,6 +121,7 @@
         >
           <Icon aria-hidden="true" />
           {item.label}
+          {#if item.isNew}<span class="new-tag">NEW</span>{/if}
         </button>
       {/each}
     </nav>
@@ -285,6 +289,22 @@
     height: 16px;
     border-radius: 0 2px 2px 0;
     background: var(--app-accent);
+  }
+  /* Quiet "NEW" flag on a freshly-shipped nav item — pushed to the row's right
+     edge, minimal accent outline in the rail's understated register. */
+  .rail-nav-item .new-tag {
+    margin-left: auto;
+    flex: none;
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    line-height: 1;
+    padding: 2px 4px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 3px;
+    color: var(--app-accent-strong);
+  }
+  .rail-nav-item.active .new-tag {
+    color: var(--app-accent);
   }
 
   /* new chat — a full row that shares the nav's geometry exactly: same 28px

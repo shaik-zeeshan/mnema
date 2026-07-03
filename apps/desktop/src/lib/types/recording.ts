@@ -163,6 +163,7 @@ export interface ActivityEvidenceRef {
 	subjectType: string;
 	subjectId: number;
 	capturedAtMs?: number | null;
+	isHeadline: boolean;
 }
 
 /** How engaged the user was during an Activity (issue #109 focus correction). */
@@ -283,6 +284,7 @@ export interface UserContextStatus {
 	activityCount: number;
 	conclusionCount: number;
 	lastDerivedAtMs?: number | null;
+	coveredUntilMs?: number | null;
 	backfilling: boolean;
 	tokenUsage: UserContextTokenUsage;
 	budgetTier: DerivationBudgetTier;

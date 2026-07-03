@@ -461,9 +461,27 @@ impl UserContextStore {
         Ok(rows.into_iter().map(map_activity).collect())
     }
 
+    /// Same range/overlap set as [`Self::list_activities_in_range`], but with each
+    /// row's `evidence` hydrated (headline-first). The Journal's range read needs
+    /// the evidence refs; the Digest deliberately does NOT (it stays on the lean
+    /// method above, sparing a month-wide range one query per row).
+    pub async fn list_activities_in_range_with_evidence(
+        &self,
+        range_start_ms: i64,
+        range_end_ms: i64,
+    ) -> Result<Vec<Activity>> {
+        let mut activities = self
+            .list_activities_in_range(range_start_ms, range_end_ms)
+            .await?;
+        for activity in &mut activities {
+            activity.evidence = self.list_activity_evidence(activity.id).await?;
+        }
+        Ok(activities)
+    }
+
     async fn list_activity_evidence(&self, activity_id: i64) -> Result<Vec<ActivityEvidenceRef>> {
         let rows = sqlx::query(
-            "SELECT subject_type, subject_id, captured_at_ms \
+            "SELECT subject_type, subject_id, captured_at_ms, is_headline \
              FROM user_context_activity_evidence \
              WHERE activity_id = ?1 \
              ORDER BY is_headline DESC, captured_at_ms ASC, id ASC",
@@ -478,6 +496,7 @@ impl UserContextStore {
                 subject_type: row.get("subject_type"),
                 subject_id: row.get("subject_id"),
                 captured_at_ms: row.get("captured_at_ms"),
+                is_headline: row.get::<i64, _>("is_headline") != 0,
             })
             .collect())
     }
@@ -5594,6 +5613,94 @@ mod tests {
             assert!(
                 in_range.iter().all(|a| a.evidence.is_empty()),
                 "digest input does not hydrate evidence"
+            );
+        });
+    }
+
+    /// [`UserContextStore::list_activities_in_range_with_evidence`] hydrates each
+    /// row's evidence headline-first, and `is_headline` survives to the DTO.
+    #[test]
+    fn list_activities_in_range_with_evidence_hydrates_headline_first() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .insert_activity_with_evidence(NewActivity {
+                    title: "focused work".to_string(),
+                    summary: "s".to_string(),
+                    category: None,
+                    focus: None,
+                    started_at_ms: 1_500,
+                    ended_at_ms: 1_600,
+                    derivation_run_id: None,
+                    evidence: vec![
+                        // Chronologically FIRST but not the headline.
+                        NewActivityEvidence {
+                            subject_type: "frame".to_string(),
+                            subject_id: 1,
+                            captured_at_ms: Some(1_500),
+                            is_headline: false,
+                        },
+                        // Later capture, but the engine-nominated headline.
+                        NewActivityEvidence {
+                            subject_type: "frame".to_string(),
+                            subject_id: 2,
+                            captured_at_ms: Some(1_550),
+                            is_headline: true,
+                        },
+                    ],
+                })
+                .await
+                .expect("insert activity");
+
+            let in_range = store
+                .list_activities_in_range_with_evidence(1_000, 2_000)
+                .await
+                .expect("range query");
+            assert_eq!(in_range.len(), 1);
+            let evidence = &in_range[0].evidence;
+            assert_eq!(evidence.len(), 2, "evidence is hydrated");
+            assert!(evidence[0].is_headline, "headline ref is ordered first");
+            assert_eq!(evidence[0].subject_id, 2);
+            assert!(!evidence[1].is_headline);
+        });
+    }
+
+    /// [`UserContextStore::latest_derivation_run_window`] returns the
+    /// `(start, end)` of the run with the max `window_end_ms` — the summarized-up-to
+    /// watermark surfaced as `covered_until_ms`. `None` before any windowed run.
+    #[test]
+    fn latest_derivation_run_window_returns_max_end_watermark() {
+        block_on(async {
+            let store = test_store().await;
+            assert_eq!(
+                store.latest_derivation_run_window().await.expect("empty"),
+                None
+            );
+
+            for (start, end) in [(2_000, 3_000), (5_000, 6_000)] {
+                store
+                    .insert_derivation_run(NewDerivationRun {
+                        kind: "activity".to_string(),
+                        window_start_ms: Some(start),
+                        window_end_ms: Some(end),
+                        status: "completed".to_string(),
+                        activities_derived: 0,
+                        conclusions_derived: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        provider: None,
+                        model: None,
+                        error: None,
+                        gate_drops: DistillationGateDrops::default(),
+                    })
+                    .await
+                    .expect("windowed run");
+            }
+
+            assert_eq!(
+                store.latest_derivation_run_window().await.expect("latest"),
+                Some((5_000, 6_000)),
+                "max window_end_ms run"
             );
         });
     }

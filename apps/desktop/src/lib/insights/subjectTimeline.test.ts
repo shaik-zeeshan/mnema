@@ -249,7 +249,7 @@ describe("buildTimeline", () => {
           title: "Reviewed PR",
           startedAtMs: 4_242,
           category: "creating",
-          evidence: [{ subjectType: "frame", subjectId: 77 }],
+          evidence: [{ subjectType: "frame", subjectId: 77, isHeadline: false }],
         }),
       ],
     ]);
@@ -275,7 +275,7 @@ describe("buildTimeline", () => {
     // Audio source from first ref.
     const c3 = conclusion({ evidence: [evidenceRef({ activityId: 10 })] });
     const acts3 = new Map<number, Activity>([
-      [10, activity({ evidence: [{ subjectType: "audio_segment", subjectId: 5 }] })],
+      [10, activity({ evidence: [{ subjectType: "audio_segment", subjectId: 5, isHeadline: false }] })],
     ]);
     const [ev3] = buildTimeline(c3, undefined, acts3);
     expect(ev3).toMatchObject({ sourceType: "audio", frameId: null });
