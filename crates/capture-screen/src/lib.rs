@@ -1290,6 +1290,12 @@ struct ScreenFrameExportRuntime {
     first_error: Arc<Mutex<Option<CaptureErrorResponse>>>,
     segment_frame_index: Arc<Mutex<ScreenSegmentFrameIndexState>>,
     next_frame_index: u64,
+    // PTS of the first sample appended to this segment's video writer — the
+    // writer session starts at that PTS, so `sample_pts - first_pts` is the
+    // frame's real offset on the finalized video timeline. Exports are
+    // throttled while the video receives every frame, so the offset must come
+    // from the sample itself, never from the export ordinal.
+    first_video_sample_pts: Option<cidre::cm::Time>,
 }
 
 #[cfg(target_os = "macos")]
@@ -1336,7 +1342,20 @@ fn persist_screen_segment_frame_index(
         return Ok(());
     }
 
-    let index = finalized_screen_segment_frame_index(screen_video_output_file, &entries)?;
+    // Offsets were recorded live from each exported sample's PTS. Do NOT
+    // re-derive them from the finalized video: pairing entries with video
+    // samples positionally is wrong whenever the export throttle skipped an
+    // appended frame (the video holds more samples than the index).
+    if !screen_segment_frame_index_offsets_are_monotonic(&entries) {
+        capture_runtime::debug_log!(
+            "[capture-screen] live screen frame index offsets regressed for {}",
+            screen_video_output_file
+        );
+    }
+    let index = ScreenSegmentFrameIndex {
+        version: SCREEN_SEGMENT_FRAME_INDEX_VERSION,
+        entries,
+    };
     let index_path = screen_segment_frame_index_path(Path::new(screen_video_output_file));
     let bytes = encode_screen_segment_frame_index(&index);
     std::fs::write(&index_path, bytes).map_err(|error| CaptureErrorResponse {
@@ -1803,6 +1822,12 @@ fn export_screen_frame_artifact(
     sample_buf: cidre::arc::R<cidre::cm::SampleBuf>,
     captured_frame_equivalence: CapturedFrameEquivalenceOutcome,
 ) -> Result<(), CaptureErrorResponse> {
+    // Every appended sample passes through here (the throttle below only
+    // gates the export), so the first call observes the segment's first
+    // appended sample — the writer session's zero point.
+    let sample_pts = sample_buf.pts();
+    let first_video_sample_pts = *runtime.first_video_sample_pts.get_or_insert(sample_pts);
+
     let now = Instant::now();
     if !should_export_screen_frame(runtime.last_exported_at, now, runtime.minimum_interval) {
         return Ok(());
@@ -1816,10 +1841,17 @@ fn export_screen_frame_artifact(
     let first_error = runtime.first_error.clone();
     let segment_frame_index = runtime.segment_frame_index.clone();
     let file_path = prepared.file_path.clone();
-    let pending_index_entry = Some(ScreenSegmentFrameIndexEntry {
+    let video_offset_ms = sample_time_to_ms(sample_pts.sub(first_video_sample_pts));
+    if video_offset_ms.is_none() {
+        capture_runtime::debug_log!(
+            "[capture-screen] screen frame sample had non-numeric PTS; skipping frame index entry for {}",
+            file_path.display()
+        );
+    }
+    let pending_index_entry = video_offset_ms.map(|video_offset_ms| ScreenSegmentFrameIndexEntry {
         captured_at_unix_ms: prepared.captured_at_unix_ms,
         frame_index: prepared.frame_index,
-        video_offset_ms: 0,
+        video_offset_ms,
     });
 
     callback_queue.async_once(move || {
@@ -1897,6 +1929,7 @@ fn screen_frame_export_runtime(
         first_error: Arc::new(Mutex::new(None)),
         segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
         next_frame_index: 0,
+        first_video_sample_pts: None,
     }))
 }
 
@@ -5508,6 +5541,7 @@ mod tests {
             }))),
             segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
+            first_video_sample_pts: None,
         };
 
         let result = finalize_screen_frame_export(None, Some(&mut runtime));
@@ -5532,6 +5566,7 @@ mod tests {
             }))),
             segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
             next_frame_index: 0,
+            first_video_sample_pts: None,
         };
 
         let completed_for_queue = completed.clone();
@@ -5544,6 +5579,87 @@ mod tests {
         assert!(result.is_ok());
         assert!(completed.load(Ordering::SeqCst));
         assert!(take_frame_export_error(&runtime.first_error).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    fn video_sample_buf_with_pts_ms(pts_ms: i64) -> cidre::arc::R<cidre::cm::SampleBuf> {
+        use cidre::{cm, cv};
+
+        let pixel_buf =
+            cv::PixelBuf::new(8, 8, cv::PixelFormat::_32_BGRA, None).expect("pixel buf");
+        let format_desc =
+            cm::VideoFormatDesc::with_image_buf(&pixel_buf).expect("video format desc");
+        let timing = cm::SampleTimingInfo {
+            duration: cm::Time::new(600, 600),
+            pts: cm::Time::new(pts_ms * 600 / 1000, 600),
+            dts: cm::Time::invalid(),
+        };
+        cm::SampleBuf::with_image_buf(
+            &pixel_buf,
+            true,
+            None,
+            std::ptr::null(),
+            &format_desc,
+            &timing,
+        )
+        .expect("sample buf")
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn persisted_frame_index_offsets_come_from_sample_pts_not_export_ordinal() {
+        let unique = format!(
+            "capture-screen-frame-index-pts-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        let artifact_dir = base_dir.join("frames");
+        std::fs::create_dir_all(&artifact_dir).expect("artifact dir should be created");
+
+        let mut runtime = ScreenFrameExportRuntime {
+            artifact_dir,
+            callback_queue: dispatch::Queue::serial_with_ar_pool(),
+            on_frame_exported: std::sync::Arc::new(|_| {}),
+            minimum_interval: Duration::ZERO,
+            last_exported_at: None,
+            first_error: Arc::new(Mutex::new(None)),
+            segment_frame_index: Arc::new(Mutex::new(ScreenSegmentFrameIndexState::default())),
+            next_frame_index: 0,
+            first_video_sample_pts: None,
+        };
+
+        // The video writer receives every appended frame, but the export
+        // throttle can skip some: simulate exports of the samples at PTS 0ms
+        // and 2000ms while the sample at 1000ms was appended but not exported.
+        // Offsets must be the samples' own PTS deltas, not the export ordinal
+        // (which would claim [0, 1000]).
+        for pts_ms in [0, 2000] {
+            export_screen_frame_artifact(
+                &mut runtime,
+                video_sample_buf_with_pts_ms(pts_ms),
+                CapturedFrameEquivalenceOutcome::quarantined("test"),
+            )
+            .expect("export should succeed");
+        }
+        synchronize_stream_output_queue(Some(runtime.callback_queue.as_ref()));
+        assert!(take_frame_export_error(&runtime.first_error).is_none());
+
+        let video_path = base_dir.join("segment-0001.mov");
+        persist_screen_segment_frame_index(&video_path.to_string_lossy(), &runtime)
+            .expect("persist should succeed without reading the video");
+
+        let bytes = std::fs::read(screen_segment_frame_index_path(&video_path))
+            .expect("sidecar should be written");
+        let index = decode_screen_segment_frame_index(&bytes).expect("sidecar should decode");
+        let offsets: Vec<u64> = index.entries.iter().map(|e| e.video_offset_ms).collect();
+        assert_eq!(offsets, vec![0, 2000]);
+        let indices: Vec<u64> = index.entries.iter().map(|e| e.frame_index).collect();
+        assert_eq!(indices, vec![0, 1]);
+
+        std::fs::remove_dir_all(&base_dir).expect("base dir should be removed");
     }
 
     #[cfg(target_os = "macos")]

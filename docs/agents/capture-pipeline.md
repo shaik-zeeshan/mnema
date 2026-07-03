@@ -42,6 +42,7 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 ## Frame Preview
 
 - Preferred source: per-segment binary sidecar `<session>-segment-####.frame-index.bin` written by `crates/capture-screen` at finalization. Falls back to legacy JSON sidecar, then first-frame timestamp estimate.
+- Sidecar `video_offset_ms` is recorded **live at export time** as `sample_pts − first_appended_sample_pts`. Never derive it by pairing index entries with video samples positionally: the `.mov` receives every appended frame while JPEG exports are throttled, so entry *k* is generally NOT video sample *k* (the old positional pairing drifted up to ~23s per 60s segment). Sidecars written before 2026-07-03 carry those wrong offsets and are deliberately not repaired.
 - `get_frame_preview` returns **asset-backed file paths**, not base64. Stable frames via Tauri asset scope; fallback/video previews materialized under `app_cache_dir()/frame-previews/`.
 - Screen finalization rejects existing-but-unopenable `.mov` files — invalid segments must fail finalization, not be committed.
 - Convert legacy JSON sidecars: `cargo run -p app-infra --bin convert_frame_index_sidecars -- <saveDirectory>/recordings`
