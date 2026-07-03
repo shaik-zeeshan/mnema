@@ -6820,6 +6820,28 @@
           </div>
         {/if}
         <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">app</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.appName ?? "—"}{timelineActive.appBundleId ? ` (${timelineActive.appBundleId})` : ""}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">window</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.windowTitle ?? "—"}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">url</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.url ?? "—"}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">file</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">{timelineActive.filePath}</span>
+        </div>
+        <div class="timeline__overlay-row">
+          <span class="timeline__overlay-key">ocr</span>
+          <span class="timeline__overlay-val timeline__overlay-truncate">
+            {ocrStatus}{ocrSourceFrame?.ocrText ? ` · ${ocrSourceFrame.ocrText.length} chars` : ""}{ocrUsingEarlierFrame && ocrSourceFrame ? ` (from #${ocrSourceFrame.id})` : ""}
+          </span>
+        </div>
+        <div class="timeline__overlay-row">
           <span class="timeline__overlay-key">image</span>
           <span class="timeline__overlay-val">{timelinePreviewDisplay?.source ?? "none"}</span>
         </div>
