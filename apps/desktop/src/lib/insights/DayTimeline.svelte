@@ -22,13 +22,13 @@
     humanizeHours,
     startOfDay,
     windowFor,
-    shiftAnchor,
   } from "$lib/insights/activity-helpers";
   import { computeLedeStats } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, bandRiver } from "$lib/insights/journal-view";
   import { captureControls } from "$lib/capture-controls.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
 
@@ -45,10 +45,6 @@
       day: "numeric",
     }),
   );
-
-  function stepDay(dir: -1 | 1): void {
-    anchorMs = shiftAnchor(anchorMs, "day", dir);
-  }
 
   // No Cards⇄Blocks toggle yet: a one-option Segmented is noise. The toggle
   // ships alongside the Blocks view (mockup 02).
@@ -327,22 +323,12 @@
       <p class="subtitle">Your day, written down while you worked.</p>
     </div>
     <div class="ov-controls">
-      <div class="date-stepper">
-        <button
-          class="nav"
-          type="button"
-          aria-label="Previous day"
-          onclick={() => stepDay(-1)}>‹</button
-        >
-        <span class="range-label">{dayLabel}</span>
-        <button
-          class="nav"
-          type="button"
-          aria-label="Next day"
-          disabled={atLatest}
-          onclick={() => stepDay(1)}>›</button
-        >
-      </div>
+      <JournalDateStepper
+        bind:anchorMs
+        rangeStartMs={range.startMs}
+        {atLatest}
+        {dayLabel}
+      />
     </div>
   </div>
 
@@ -433,6 +419,7 @@
     {showNothingCaptured}
     {showBeingWritten}
     {dayLabel}
+    isToday={atLatest}
     onOpenActivity={(a) => (selectedActivity = a)}
   />
 </section>
@@ -488,48 +475,6 @@
     align-items: center;
     gap: 12px;
     flex: 0 0 auto;
-  }
-  .date-stepper {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
-  }
-  .date-stepper .nav {
-    width: 24px;
-    height: 24px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    cursor: pointer;
-    font: inherit;
-    transition:
-      background 0.12s ease,
-      color 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .date-stepper .nav:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .date-stepper .nav:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .date-stepper .nav:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: default;
-  }
-  .date-stepper .range-label {
-    color: var(--app-text);
-    letter-spacing: 0.02em;
-    font-variant-numeric: tabular-nums;
   }
 
   /* ---- Digest lede (copied token-for-token from Overview) ---- */

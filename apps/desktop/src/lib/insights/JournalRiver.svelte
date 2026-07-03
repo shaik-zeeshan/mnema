@@ -5,6 +5,7 @@
   // `journal-view.ts`) it renders the `.slot` grid (when | spine | card), the
   // away-gaps, the live-edge pending slot, plus the loading skeleton and the two
   // empty-state panels. It owns no data loading — pure presentation.
+  import { untrack } from "svelte";
   import type { Activity, ActivityFocus } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import type { RiverBand } from "$lib/insights/journal-view";
@@ -26,6 +27,7 @@
     showNothingCaptured: boolean;
     showBeingWritten: boolean;
     dayLabel: string;
+    isToday: boolean;
     onOpenActivity: (activity: Activity) => void;
   }
 
@@ -37,8 +39,39 @@
     showNothingCaptured,
     showBeingWritten,
     dayLabel,
+    isToday,
     onOpenActivity,
   }: Props = $props();
+
+  // ---- Live edge (today only): every day opens at the top; the "↓ now" pill
+  // is the opt-in jump to the most recent activity. ----
+  let sentinelEl = $state<HTMLElement | null>(null);
+  let liveEdgeVisible = $state(false);
+
+  $effect(() => {
+    const el = sentinelEl;
+    if (!el) return;
+    const io = new IntersectionObserver((entries) => {
+      liveEdgeVisible = entries[entries.length - 1].isIntersecting;
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  });
+
+  // Follow-bottom: only bands/pending changes retrigger this; visibility is
+  // read untracked so the user scrolling back down never forces a jump.
+  $effect(() => {
+    bands;
+    pending;
+    untrack(() => {
+      if (isToday && liveEdgeVisible) sentinelEl?.scrollIntoView({ block: "end" });
+    });
+  });
+
+  function jumpToNow() {
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    sentinelEl?.scrollIntoView({ block: "end", behavior: reduce ? "auto" : "smooth" });
+  }
 
   function clock(ms: number): string {
     return new Date(ms).toLocaleTimeString(undefined, {
@@ -148,6 +181,13 @@
         </div>
       </div>
     {/if}
+
+    {#if isToday && !liveEdgeVisible}
+      <button type="button" class="jump-now" aria-label="Jump to now" onclick={jumpToNow}>
+        ↓ now
+      </button>
+    {/if}
+    <div class="live-edge" bind:this={sentinelEl} aria-hidden="true"></div>
   </section>
 {:else if showNothingCaptured}
   <div class="empty">
@@ -187,10 +227,17 @@
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
-    margin: 2px 0 14px;
+    /* Sticks to the scrollport top while its band scrolls; part of the old
+       margins became padding so the solid bg covers cards passing beneath. */
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--app-bg);
+    padding: 4px 0 6px;
+    margin: 2px 0 8px;
   }
   .day-rule:not(:first-child) {
-    margin-top: 18px;
+    margin-top: 14px;
   }
   .day-rule .rule {
     flex: 1;
@@ -231,7 +278,9 @@
     width: 1px;
     background: var(--app-border);
   }
-  .river > .slot:last-child .spine::before {
+  /* Last slot can't rely on :last-child — the live-edge sentinel (and at times
+     the jump pill) now render after it. */
+  .river > .slot:not(:has(~ .slot, ~ .gap-note)) .spine::before {
     bottom: 12px;
   }
   .spine .node {
@@ -434,6 +483,40 @@
     margin-top: 3px;
     font-size: var(--text-xs);
     color: var(--app-text-faint);
+  }
+
+  /* ---- Live edge: sentinel + "jump to now" pill ---- */
+  .live-edge {
+    height: 0;
+  }
+  /* Bottom-sticky: floats pinned at the scrollport bottom while its natural
+     spot (end of the river) is below the fold; unmounts at the live edge. */
+  .jump-now {
+    position: sticky;
+    bottom: 18px;
+    z-index: 2;
+    align-self: center;
+    margin-top: 14px;
+    padding: 5px 13px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease;
+  }
+  .jump-now:hover {
+    color: var(--app-accent);
+    border-color: var(--app-accent-border);
+  }
+  .jump-now:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   /* ---- Empty-state panels ---- */
