@@ -4666,6 +4666,7 @@ mod tests {
             let claimed_job_id = match claimed {
                 ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
                 ProcessingJobRunOutcome::Failed(job) => job.id,
+                ProcessingJobRunOutcome::RequeuedForLiveness(job) => job.id,
             };
             assert_eq!(claimed_job_id, unlocked_job.id);
             let locked = infra
@@ -4797,6 +4798,7 @@ mod tests {
             let first_job_id = match first {
                 ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
                 ProcessingJobRunOutcome::Failed(job) => job.id,
+                ProcessingJobRunOutcome::RequeuedForLiveness(job) => job.id,
             };
             assert_eq!(first_job_id, malformed_job.id);
 
@@ -4815,6 +4817,7 @@ mod tests {
                 let job_id = match outcome {
                     ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
                     ProcessingJobRunOutcome::Failed(job) => job.id,
+                    ProcessingJobRunOutcome::RequeuedForLiveness(job) => job.id,
                 };
                 if job_id == valid_job.id {
                     valid_job_ran = true;
@@ -5176,6 +5179,7 @@ mod tests {
             let claimed_job_id = match claimed {
                 ProcessingJobRunOutcome::Completed(completion) => completion.job.id,
                 ProcessingJobRunOutcome::Failed(job) => job.id,
+                ProcessingJobRunOutcome::RequeuedForLiveness(job) => job.id,
             };
             assert_eq!(claimed_job_id, job.id);
         });

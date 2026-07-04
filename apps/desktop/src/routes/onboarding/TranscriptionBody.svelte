@@ -24,18 +24,21 @@
   // Providers are NOT disabled when their model is unavailable: selecting a
   // provider is how you reach the Model section below to download its model, so
   // disabling an unavailable provider would make its model undownloadable.
-  const transcriptionProviderOptions = $derived(
-    (controller.transcriptionModelStatus?.providers ?? []).length > 0
-      ? (controller.transcriptionModelStatus?.providers ?? []).map((provider) => ({
-          value: provider.provider,
-          label: provider.displayName,
-        }))
+  const transcriptionProviderOptions = $derived.by(() => {
+    // ADR 0047: Deepgram is a consent-gated cloud provider that "never appears in onboarding".
+    // The status command now returns it, so filter it out of the onboarding picker (Settings is
+    // the only place it may be selected, behind the blocking consent dialog).
+    const live = (controller.transcriptionModelStatus?.providers ?? []).filter(
+      (provider) => provider.provider !== "deepgram",
+    );
+    return live.length > 0
+      ? live.map((provider) => ({ value: provider.provider, label: provider.displayName }))
       : [
           { value: "local_whisper", label: "Local Whisper" },
           { value: "apple_speech_on_device", label: "Apple Speech (on-device)" },
           { value: "parakeet", label: "Parakeet" },
-        ],
-  );
+        ];
+  });
 
   // Contextual availability hint for the active provider (replaces RadioGroup's
   // per-option subtitle).

@@ -7,6 +7,9 @@ use crate::{AppInfraError, Result};
 pub enum ProcessingJobRunOutcome {
     Completed(ProcessingJobCompletion),
     Failed(ProcessingJob),
+    /// A transient-liveness condition (ADR 0048): the job was requeued with backoff WITHOUT
+    /// spending a failure attempt. Not terminal — the segment waits and retries indefinitely.
+    RequeuedForLiveness(ProcessingJob),
 }
 
 #[derive(Clone)]
@@ -109,6 +112,16 @@ impl ProcessingRuntime {
                 self.store.complete_job(job.id, &result).await?,
             )),
             Err(error) => {
+                if error.is_transient_liveness() {
+                    // ADR 0048: an environmental failure (offline/timeout/rate-limit/5xx, or a
+                    // rejected key for a cloud provider). Requeue with backoff without spending a
+                    // failure attempt so an offline stretch never burns a segment's retry cap.
+                    let requeued = self
+                        .store
+                        .requeue_job_for_transient_liveness(job.id, Some(&error.to_string()))
+                        .await?;
+                    return Ok(ProcessingJobRunOutcome::RequeuedForLiveness(requeued));
+                }
                 let failed = self
                     .store
                     .mark_job_failed(job.id, Some(&error.to_string()))
@@ -257,6 +270,36 @@ mod tests {
         ) -> Result<ProcessingResultDraft> {
             Err(AppInfraError::AudioTranscriptionEngine(
                 "audio engine failed".to_string(),
+            ))
+        }
+    }
+
+    /// A backend that always reports a transient-liveness (ADR 0048) condition, used to exercise
+    /// the no-count requeue lane (offline/mis-keyed cloud provider) versus genuine failure.
+    #[derive(Debug)]
+    struct TransientLivenessBackend {
+        processor: &'static str,
+    }
+
+    impl TransientLivenessBackend {
+        fn new(processor: &'static str) -> Self {
+            Self { processor }
+        }
+    }
+
+    #[async_trait]
+    impl crate::ProcessorBackend for TransientLivenessBackend {
+        fn processor(&self) -> &'static str {
+            self.processor
+        }
+
+        async fn process(
+            &self,
+            _store: &ProcessingStore,
+            _job: &crate::ProcessingJob,
+        ) -> Result<ProcessingResultDraft> {
+            Err(AppInfraError::AudioTranscriptionTransientLiveness(
+                "offline".to_string(),
             ))
         }
     }
@@ -1214,6 +1257,55 @@ mod tests {
     }
 
     #[test]
+    fn transient_liveness_error_requeues_without_spending_a_failure_attempt() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-audio-transient-liveness");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register_arc(Arc::new(TransientLivenessBackend::new(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))),
+            );
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A transient-liveness error requeues (never terminal), leaving the failure cap alone.
+            let ProcessingJobRunOutcome::RequeuedForLiveness(requeued) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt the audio job")
+                .expect("a queued audio job should exist")
+            else {
+                panic!("expected a transient-liveness requeue, not a terminal failure");
+            };
+            assert_eq!(requeued.id, job.id);
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 0,
+                "transient liveness must never spend a failure attempt"
+            );
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(after.status, ProcessingJobStatus::Queued);
+            assert_eq!(after.failure_count, 0);
+        });
+    }
+
+    #[test]
     fn newly_enqueued_job_starts_with_zero_failure_count() {
         run_async_test(async {
             let dir = TestDir::new("processing-failure-count-default");
@@ -1234,6 +1326,73 @@ mod tests {
                 job.failure_count, 0,
                 "the failure_count column should default to 0 after migration"
             );
+        });
+    }
+
+    /// ADR 0048: an offline/mis-keyed stretch must NEVER burn a segment. A transient-liveness
+    /// requeue is a clean claim->queued cycle, but `claim` increments `attempt_count` every time,
+    /// so a long offline stretch inflates `attempt_count` past `RECLAIM_ATTEMPT_CEILING` (the
+    /// crash-loop backstop). If the app is then force-quit while the segment is mid-attempt (left
+    /// `running`), the next startup's `reconcile_orphaned_running_jobs` permanently fails it --
+    /// burning the segment purely because the environment was down. The transient lane must not
+    /// let the reclaim ceiling trip.
+    #[test]
+    fn zz_transient_liveness_reclaim_ceiling_does_not_burn_offline_segment() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-transient-liveness-reclaim-ceiling");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A long offline stretch: RECLAIM_ATTEMPT_CEILING clean transient-liveness cycles.
+            // Each claim bumps attempt_count; each transient requeue leaves failure_count at 0.
+            for _ in 0..crate::processing::RECLAIM_ATTEMPT_CEILING {
+                let claimed = store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("claim should succeed")
+                    .expect("queued job should claim");
+                assert_eq!(claimed.status, ProcessingJobStatus::Running);
+                store
+                    .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                    .await
+                    .expect("transient-liveness requeue should succeed");
+            }
+
+            // The app is force-quit while the segment is mid-attempt: it is left running.
+            let running = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("claim should succeed")
+                .expect("queued job should claim");
+            assert_eq!(running.status, ProcessingJobStatus::Running);
+
+            // Next startup reconciles orphaned running jobs.
+            store
+                .reconcile_orphaned_running_jobs()
+                .await
+                .expect("reclamation should succeed");
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_ne!(
+                after.status,
+                ProcessingJobStatus::Failed,
+                "ADR 0048: an offline transient-liveness stretch must never burn the segment via the reclaim ceiling"
+            );
+            assert_eq!(after.failure_count, 0);
         });
     }
 }

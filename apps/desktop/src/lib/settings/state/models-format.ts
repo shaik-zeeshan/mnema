@@ -91,7 +91,15 @@ export function defaultOcrLanguageForProvider(provider: string): string | null {
 export function defaultTranscriptionModelIdForProvider(provider: string): string | null {
   if (provider === "local_whisper") return "base";
   if (provider === "parakeet") return "parakeet-tdt-0.6b-v3-onnx-int8";
+  if (provider === "deepgram") return "nova-3";
   return null;
+}
+
+// Deepgram is the only cloud transcription provider, so switching *to* it (from
+// any on-device provider) gates on a consent dialog; switching between on-device
+// providers, or re-selecting Deepgram when already on it, does not.
+export function shouldConfirmDeepgramSwitch(next: string, current: string): boolean {
+  return next === "deepgram" && current !== "deepgram";
 }
 
 // A Speaker Model Preset is keyed by (provider, modelId); `__os_managed__`

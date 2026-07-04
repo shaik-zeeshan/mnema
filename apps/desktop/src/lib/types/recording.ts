@@ -546,7 +546,8 @@ export interface OcrSettings {
 export type AudioTranscriptionProvider =
 	| "local_whisper"
 	| "apple_speech_on_device"
-	| "parakeet";
+	| "parakeet"
+	| "deepgram";
 
 export type AudioTranscriptionModelStatusKind =
 	| "installed"
