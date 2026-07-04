@@ -91,6 +91,7 @@ export function defaultOcrLanguageForProvider(provider: string): string | null {
 export function defaultTranscriptionModelIdForProvider(provider: string): string | null {
   if (provider === "local_whisper") return "base";
   if (provider === "parakeet") return "parakeet-tdt-0.6b-v3-onnx-int8";
+  if (provider === "deepgram") return "nova-3";
   return null;
 }
 

@@ -38,6 +38,7 @@ const SELECTABLE_TRANSCRIPTION_PROVIDERS: readonly AudioTranscriptionProvider[] 
   "local_whisper",
   "apple_speech_on_device",
   "parakeet",
+  "deepgram",
 ];
 
 export function createProcessingModelsView(rec: RecordingStore, models: ModelStatusStore) {
@@ -166,8 +167,17 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
     const defaultModel = providerStatus.models.find((model) => model.modelId === defaultModelId);
     return defaultModel?.modelId ?? providerStatus.models[0]?.modelId ?? defaultModelId;
   }
-  function chooseTranscriptionProvider(provider: string) {
+  async function chooseTranscriptionProvider(provider: string) {
     if (!isSelectableTranscriptionProvider(provider)) return;
+    if (provider === "deepgram" && rec.draftTranscriptionProvider !== "deepgram") {
+      const ok = await ask(
+        "Switching to Deepgram uploads your microphone and system-audio recordings to Deepgram's "
+          + "cloud service, under your own Deepgram account and data policies. Only audio recorded "
+          + "from now on is affected — existing transcripts stay on your device. Continue?",
+        { title: "Send audio to Deepgram?", kind: "warning", okLabel: "Use Deepgram", cancelLabel: "Cancel" },
+      );
+      if (!ok) return;
+    }
     rec.draftTranscriptionProvider = provider;
     rec.draftTranscriptionModelId = preferredTranscriptionModelIdForProvider(rec.draftTranscriptionProvider);
   }
