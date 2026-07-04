@@ -15,7 +15,7 @@
 //! tokens/PII in its path/query, and a window title can carry document/recipient
 //! names. Because this window is handed to a (possibly cloud) Reasoning Engine, we
 //! reduce the metadata to a privacy-safe form at read time:
-//! [`search_context_from_snapshot`] drops the window title (keeping only the app
+//! [`search_context_from_parsed`] drops the window title (keeping only the app
 //! name) and reduces any browser URL to its bare origin host (scheme/path/query/
 //! fragment stripped). The redacted `result_text` remains the only free text sent.
 
@@ -115,7 +115,15 @@ impl UserContextStore {
             };
             let text: String = row.get("result_text");
             let snapshot_json: Option<String> = row.get("snapshot_json");
-            let (app_label, url) = search_context_from_snapshot(snapshot_json.as_deref());
+            let snapshot = parse_snapshot(snapshot_json.as_deref());
+            // Skip frames of Mnema's own UI (best-effort: frames without a
+            // snapshot cannot be identified and pass through). ponytail: self
+            // frames still eat the SQL LIMIT budget; push the filter into SQL
+            // json_extract if that ever matters.
+            if snapshot.as_ref().is_some_and(is_self_capture) {
+                continue;
+            }
+            let (app_label, url) = snapshot.map_or((None, None), search_context_from_parsed);
 
             items.push(CaptureWindowItem {
                 subject_type: FRAME_SUBJECT_TYPE.to_string(),
@@ -252,8 +260,36 @@ fn dedup_adjacent_frames(items: Vec<CaptureWindowItem>) -> Vec<CaptureWindowItem
     out
 }
 
-/// Builds a privacy-reduced best-effort `(app_label, url)` pair from a frame
-/// metadata snapshot JSON blob, for egress to a (possibly cloud) Reasoning Engine.
+/// Parses a frame metadata snapshot JSON blob; `None` when absent or unparseable.
+fn parse_snapshot(
+    snapshot_json: Option<&str>,
+) -> Option<capture_metadata::FrameMetadataSnapshot> {
+    serde_json::from_str(snapshot_json?).ok()
+}
+
+/// Mnema's own app identities (prod + dev builds). Frames of Mnema's own UI are
+/// excluded from the capture window: otherwise the app OCRs its own generated
+/// insights/digests and re-ingests them as activity evidence (a self-capture
+/// feedback loop).
+const SELF_APP_BUNDLE_IDS: &[&str] = &["com.shaikzeeshan.mnema", "com.shaikzeeshan.mnema.dev"];
+const SELF_APP_NAMES: &[&str] = &["mnema", "mnema-dev"];
+
+/// True when a frame's metadata snapshot identifies Mnema itself: exact bundle-id
+/// match OR case-insensitive app-name match.
+fn is_self_capture(snapshot: &capture_metadata::FrameMetadataSnapshot) -> bool {
+    snapshot
+        .app_bundle_id
+        .as_deref()
+        .is_some_and(|id| SELF_APP_BUNDLE_IDS.contains(&id))
+        || snapshot.app_name.as_deref().is_some_and(|name| {
+            SELF_APP_NAMES
+                .iter()
+                .any(|own| name.eq_ignore_ascii_case(own))
+        })
+}
+
+/// Builds a privacy-reduced best-effort `(app_label, url)` pair from a parsed
+/// frame metadata snapshot, for egress to a (possibly cloud) Reasoning Engine.
 ///
 /// The snapshot metadata is NOT covered by the secret-redaction pipeline (which
 /// only rewrites `result_text`), so this deliberately keeps only the low-risk
@@ -263,18 +299,9 @@ fn dedup_adjacent_frames(items: Vec<CaptureWindowItem>) -> Vec<CaptureWindowItem
 /// - `url` is reduced to its **bare origin host** via [`url_origin_host`]
 ///   (scheme, userinfo, path, query, fragment, and port all stripped) — a
 ///   `BrowserUrlMode::Full` URL can otherwise carry tokens/PII in its path/query.
-fn search_context_from_snapshot(
-    snapshot_json: Option<&str>,
+fn search_context_from_parsed(
+    snapshot: capture_metadata::FrameMetadataSnapshot,
 ) -> (Option<String>, Option<String>) {
-    let Some(snapshot_json) = snapshot_json else {
-        return (None, None);
-    };
-    let Ok(snapshot) =
-        serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(snapshot_json)
-    else {
-        return (None, None);
-    };
-
     // App name only (bundle id fallback). Window title is intentionally dropped.
     let app_label = snapshot.app_name.or(snapshot.app_bundle_id);
     // Reduce any browser URL to its bare origin host before it can egress.
@@ -345,6 +372,13 @@ fn rfc3339_to_ms(value: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Test convenience: parse-then-reduce in one step, as the frame loop does.
+    fn search_context_from_snapshot(
+        snapshot_json: Option<&str>,
+    ) -> (Option<String>, Option<String>) {
+        parse_snapshot(snapshot_json).map_or((None, None), search_context_from_parsed)
+    }
 
     fn frame(id: i64, t: i64, text: &str, app: &str) -> CaptureWindowItem {
         CaptureWindowItem {
@@ -467,5 +501,37 @@ mod tests {
     fn snapshot_none_or_unparseable_yields_no_context() {
         assert_eq!(search_context_from_snapshot(None), (None, None));
         assert_eq!(search_context_from_snapshot(Some("not json")), (None, None));
+    }
+
+    #[test]
+    fn self_capture_matches_mnema_identities_only() {
+        let snap = |name: Option<&str>, bundle: Option<&str>| {
+            capture_metadata::FrameMetadataSnapshot {
+                app_name: name.map(str::to_string),
+                app_bundle_id: bundle.map(str::to_string),
+                ..Default::default()
+            }
+        };
+        // App-name match is case-insensitive, prod and dev.
+        assert!(is_self_capture(&snap(Some("mnema"), None)));
+        assert!(is_self_capture(&snap(Some("Mnema"), None)));
+        assert!(is_self_capture(&snap(Some("MNEMA-DEV"), None)));
+        // Bundle-id-only variants (no app name).
+        assert!(is_self_capture(&snap(None, Some("com.shaikzeeshan.mnema"))));
+        assert!(is_self_capture(&snap(
+            None,
+            Some("com.shaikzeeshan.mnema.dev")
+        )));
+        // Other apps pass through, including near-miss names/bundle ids.
+        assert!(!is_self_capture(&snap(
+            Some("Safari"),
+            Some("com.apple.Safari")
+        )));
+        assert!(!is_self_capture(&snap(Some("mnemanote"), None)));
+        assert!(!is_self_capture(&snap(None, Some("com.other.mnema"))));
+        assert!(!is_self_capture(&snap(None, None)));
+        // The parsed round-trip used by the frame loop detects self frames too.
+        let json = snap(Some("mnema-dev"), Some("com.shaikzeeshan.mnema.dev")).normalized_json();
+        assert!(parse_snapshot(Some(&json)).is_some_and(|s| is_self_capture(&s)));
     }
 }
