@@ -33,9 +33,9 @@
     {#snippet control()}
       <Slider
         bind:value={rec.draftFrameRate}
-        min={1}
-        max={120}
-        step={1}
+        min={0.5}
+        max={10}
+        step={0.5}
         label="Frame rate"
         unit=" fps"
       />

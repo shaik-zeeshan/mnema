@@ -92,7 +92,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 1,
+        screen_frame_rate: 0.5,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -607,7 +607,7 @@ pub(crate) fn compute_effective_screen_bitrate_bps(settings: &RecordingSettings)
             let factor = video_bitrate_preset_factor(preset);
             let (width, height) =
                 resolve_bitrate_dimensions(&settings.screen_resolution).unwrap_or((1920, 1080));
-            (width as f64) * (height as f64) * (settings.screen_frame_rate as f64) * factor
+            (width as f64) * (height as f64) * settings.screen_frame_rate * factor
         }
     };
 
@@ -671,10 +671,10 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if !(1..=120).contains(&request.screen_frame_rate) {
+    if !(0.5..=10.0).contains(&request.screen_frame_rate) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
-            message: "screenFrameRate must be between 1 and 120".to_string(),
+            message: "screenFrameRate must be between 0.5 and 10".to_string(),
         });
     }
 
@@ -2216,7 +2216,7 @@ mod tests {
                 capture_microphone: true,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2278,7 +2278,7 @@ mod tests {
                 capture_microphone: false,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2354,7 +2354,7 @@ mod tests {
                 capture_microphone: false,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2404,7 +2404,7 @@ mod tests {
                 capture_microphone: true,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2458,6 +2458,11 @@ mod tests {
     }
 
     #[test]
+    fn default_recording_settings_capture_screen_at_half_fps() {
+        assert_eq!(default_recording_settings().screen_frame_rate, 0.5);
+    }
+
+    #[test]
     fn load_recording_settings_from_path_defaults_preview_cache_ttl_when_missing() {
         let dir = TestDir::new("preview-cache-ttl-default");
         let path = dir.path().join("recording-settings.json");
@@ -2505,7 +2510,7 @@ mod tests {
             capture_microphone: false,
             capture_system_audio: false,
             segment_duration_seconds: 60,
-            screen_frame_rate: 1,
+            screen_frame_rate: 1.0,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::Original,
             },
