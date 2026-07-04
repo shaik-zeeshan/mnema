@@ -16,10 +16,12 @@ use rmcp::{RoleClient, ServiceExt};
 
 /// A connected, initialized MCP client for one server. The client is an
 /// `RunningService`: dropping it cancels the service loop, which closes the
-/// transport. For stdio that KILLS the child process
-/// (`rmcp::transport::child_process::ChildWithCleanup::drop` → `kill()`), so the
-/// manager needs no explicit child teardown — dropping a cached handle is enough.
-/// (macOS-only verified on this branch; SUPPORTS.md.)
+/// transport. For stdio that KILLS the whole process GROUP
+/// (`rmcp::transport::child_process::ChildWithCleanup::drop` → `kill()` →
+/// `killpg`): the child is spawned as a process-group leader on Unix, so a
+/// launcher's grandchildren (e.g. the real server behind `npx`) die with it.
+/// The manager needs no explicit child teardown — dropping a cached handle is
+/// enough. (Unix-only group semantics; macOS exercised — SUPPORTS.md.)
 pub(crate) type McpClient = RunningService<RoleClient, ()>;
 
 /// A stable fingerprint of the CONNECT-relevant config fields only. When it
@@ -87,7 +89,15 @@ async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<
         command_builder.env(name, secret);
     }
 
-    let transport = TokioChildProcess::new(command_builder)
+    // Spawn as a process-group leader so rmcp's drop-kill (`killpg`) takes out
+    // the whole group — the launcher (`npx`) AND its server grandchildren — not
+    // just the launcher. Unix-only (process-wrap's `JobObject` is the Windows
+    // sibling when that platform is addressed; SUPPORTS.md).
+    let mut command_wrap = process_wrap::tokio::CommandWrap::from(command_builder);
+    #[cfg(unix)]
+    command_wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+
+    let transport = TokioChildProcess::new(command_wrap)
         .map_err(|error| format!("failed to spawn \"{}\": {error}", cfg.label))?;
     ().serve(transport)
         .await
@@ -153,6 +163,64 @@ mod tests {
         let mut reided = stdio_cfg();
         reided.id = "connector-2".to_string();
         assert_eq!(config_fingerprint(&reided), base);
+    }
+
+    /// Dropping the stdio transport must kill the whole process GROUP, not just
+    /// the launcher: a `sh` launcher forks a `sleep 300` grandchild (pid written
+    /// to a pidfile), then execs into a `sleep 60` that never speaks MCP. The
+    /// `connect` handshake therefore hangs; abandoning it drops the transport →
+    /// rmcp drop-kill → `killpg`. Without the `ProcessGroup::leader()` wrap the
+    /// grandchild survives and this test fails its liveness poll.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_a_stdio_transport_kills_the_grandchild_too() {
+        let pidfile = std::env::temp_dir().join(format!(
+            "mnema-mcp-group-kill-{}-{:?}.pid",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&pidfile);
+
+        let mut cfg = stdio_cfg();
+        cfg.id = "group-kill-test".to_string();
+        cfg.secret_env_name = None;
+        cfg.command = Some("sh".to_string());
+        cfg.args = vec![
+            "-c".to_string(),
+            format!("sleep 300 & echo $! > '{}'; exec sleep 60", pidfile.display()),
+        ];
+
+        // The handshake never completes (sleep speaks no MCP) — give the pidfile
+        // time to appear, then abandon the connect. Dropping the timed-out future
+        // drops the transport, which must group-kill launcher + grandchild.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), connect(&cfg)).await;
+
+        let grandchild_pid = std::fs::read_to_string(&pidfile)
+            .expect("launcher should have written the grandchild pidfile before the timeout")
+            .trim()
+            .to_string();
+        let _ = std::fs::remove_file(&pidfile);
+
+        // Poll `kill -0` until the grandchild is gone (drop-kill runs on a spawned
+        // task, so allow it a bounded moment).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &grandchild_pid])
+                .stderr(std::process::Stdio::null())
+                .status()
+                .expect("kill -0 should run")
+                .success();
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "grandchild sleep (pid {grandchild_pid}) survived the transport drop — \
+                 process-group kill did not reach it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
     }
 
     #[test]

@@ -23,8 +23,8 @@
 //! Removed/disabled servers are reaped by `reconcile` (wired into the AI-runtime
 //! settings save); an EDITED server (changed connect fingerprint) is reaped
 //! lazily at `slot_for` on next use. On app exit, dropping a cached handle kills
-//! its child via the child transport's `Drop` (see [`McpClient`]); this is
-//! macOS-only verified on this branch (SUPPORTS.md).
+//! its child's whole process GROUP on Unix — launcher AND grandchildren — via the
+//! child transport's `Drop` (see [`McpClient`]; macOS exercised — SUPPORTS.md).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -44,6 +44,12 @@ use super::{
 /// with only the servers that are ready — npx cold boot can be slow, and a turn
 /// must never block forever on a connector.
 const DISCOVERY_TURN_BUDGET: Duration = Duration::from_secs(15);
+
+/// Hard cap on ONE tool call's execution (the `call_tool` await itself; the
+/// connect is already bounded by [`DISCOVERY_TURN_BUDGET`] inside `ensure_ready`).
+/// A hung MCP server must never freeze a chat turn. Flat, not per-server
+/// configurable, until a real connector proves slower (YAGNI, ADR 0048).
+const CALL_TOOL_BUDGET: Duration = Duration::from_secs(60);
 
 /// One server's live connection plus the tools it advertised at connect. Held
 /// behind an `Arc` so a mid-call clone keeps the child alive even if the slot is
@@ -323,23 +329,7 @@ impl McpManager {
                 format!("MCP server \"{server_id}\" is not enabled (enable it in Settings)")
             })?;
         let slot = self.inner.slot_for(&cfg).await;
-
-        // First attempt on the (possibly cached) connection.
-        match call_once(&slot, &cfg, tool, &params).await {
-            Ok(result) => Ok(result),
-            Err(_first_error) => {
-                // Drop the handle and redial ONCE (failure policy).
-                slot.invalidate().await;
-                call_once(&slot, &cfg, tool, &params)
-                    .await
-                    .map_err(|second_error| {
-                        format!(
-                            "MCP server \"{}\" failed this tool call twice: {second_error}",
-                            cfg.label
-                        )
-                    })
-            }
-        }
+        call_with_redial(&slot, &cfg, tool, &params, CALL_TOOL_BUDGET).await
     }
 
     /// Connect the server ON DEMAND (reusing the app-session cache when it is
@@ -384,16 +374,79 @@ impl McpManager {
     }
 }
 
-/// One connect-then-call attempt. A connect failure surfaces as `Err`; a call
-/// failure invalidates the slot (so the outer retry redials) and surfaces as
-/// `Err`. On success the result is serialized and truncated to the result cap.
+/// One call attempt's failure, classified by whether the request PROVABLY never
+/// reached the server. Only `retryable` failures may be redialed — retrying a
+/// call the server may have already executed would silently duplicate a write
+/// tool's side effects (create issue, send message).
+struct CallFailure {
+    retryable: bool,
+    text: String,
+}
+
+/// Classify an rmcp call error for the redial policy. `TransportSend` is the
+/// one variant that guarantees the request never left the process (the write
+/// to the transport itself failed), so it alone is retryable. Everything else
+/// — `Timeout`, `TransportClosed`, `McpError`, `UnexpectedResponse`,
+/// `Cancelled`, and any future variant (the enum is `#[non_exhaustive]`) —
+/// may have executed server-side and must surface unretried.
+fn classify_service_error(error: rmcp::ServiceError) -> CallFailure {
+    CallFailure {
+        retryable: matches!(error, rmcp::ServiceError::TransportSend(_)),
+        text: error.to_string(),
+    }
+}
+
+/// The failure policy around [`call_once`] (ADR 0048, amended 2026-07-04): a
+/// RETRYABLE failure (never reached the server) drops the handle and redials
+/// ONCE; a non-retryable failure — or a second consecutive one — surfaces as
+/// readable error text the model relays. Split from `call_tool` so tests can
+/// drive it without an `AppHandle`. `budget` is [`CALL_TOOL_BUDGET`] in production;
+/// injectable so tests need not wait a real 60 s (tokio virtual time cannot drive
+/// a real child process).
+async fn call_with_redial(
+    slot: &ServerSlot,
+    cfg: &McpServerConfig,
+    tool: &str,
+    params: &serde_json::Value,
+    budget: Duration,
+) -> Result<String, String> {
+    // First attempt on the (possibly cached) connection.
+    match call_once(slot, cfg, tool, params, budget).await {
+        Ok(result) => Ok(result),
+        Err(failure) if failure.retryable => {
+            // Provably pre-transmit: redial ONCE ( `call_once` already
+            // invalidated any cached handle on the way out).
+            call_once(slot, cfg, tool, params, budget)
+                .await
+                .map_err(|second_failure| {
+                    format!(
+                        "MCP server \"{}\" failed this tool call twice: {}",
+                        cfg.label, second_failure.text
+                    )
+                })
+        }
+        Err(failure) => Err(format!(
+            "MCP server \"{}\" tool call failed: {}",
+            cfg.label, failure.text
+        )),
+    }
+}
+
+/// One connect-then-call attempt. A connect failure surfaces as a RETRYABLE
+/// `Err` (the request was never formed); a call failure or `budget` elapse
+/// invalidates the slot (so a redial dials fresh) and surfaces classified. On
+/// success the result is serialized and truncated to the result cap.
 async fn call_once(
     slot: &ServerSlot,
     cfg: &McpServerConfig,
     tool: &str,
     params: &serde_json::Value,
-) -> Result<String, String> {
-    let established = slot.ensure_ready(cfg).await?;
+    budget: Duration,
+) -> Result<String, CallFailure> {
+    let established = slot.ensure_ready(cfg).await.map_err(|text| CallFailure {
+        retryable: true,
+        text,
+    })?;
 
     let arguments = match params {
         serde_json::Value::Object(map) => Some(map.clone()),
@@ -405,16 +458,33 @@ async fn call_once(
         request = request.with_arguments(arguments);
     }
 
-    match established.client.call_tool(request).await {
-        Ok(result) => {
-            let json = serde_json::to_string(&result)
-                .map_err(|error| format!("failed to serialize MCP tool result: {error}"))?;
+    match tokio::time::timeout(budget, established.client.call_tool(request)).await {
+        Ok(Ok(result)) => {
+            let json = serde_json::to_string(&result).map_err(|error| CallFailure {
+                retryable: false,
+                text: format!("failed to serialize MCP tool result: {error}"),
+            })?;
             Ok(truncate_tool_result(json))
         }
-        Err(error) => {
-            // Drop the handle so the outer retry redials on a fresh connection.
+        Ok(Err(error)) => {
+            // Drop the handle so any redial dials a fresh connection.
             slot.invalidate().await;
-            Err(error.to_string())
+            Err(classify_service_error(error))
+        }
+        Err(_elapsed) => {
+            // The abandoned in-flight call leaves the shared connection in an
+            // unknown state — drop it so the next call dials fresh. NON-retryable:
+            // the call may have executed server-side, so a redial could duplicate
+            // a write (ADR 0048 documents this residual risk).
+            slot.invalidate().await;
+            Err(CallFailure {
+                retryable: false,
+                text: format!(
+                    "tool call \"{tool}\" on \"{}\" timed out after {} s",
+                    cfg.label,
+                    budget.as_secs(),
+                ),
+            })
         }
     }
 }
@@ -467,23 +537,39 @@ mod tests {
     use super::*;
     use capture_types::McpTransport;
 
-    /// A stdio "server" that spawns but never completes the MCP initialize
-    /// handshake (`sleep` ignores stdin and never writes stdout). rmcp's
-    /// `serve_client` has no internal initialize timeout, so connecting this would
-    /// hang until the child exits without the `ensure_ready` timeout wrapper.
-    fn hung_stdio_cfg() -> McpServerConfig {
+    /// A stdio server config for tests: enabled, no env/secret/curation.
+    fn stdio_cfg(id: &str, label: &str, command: &str, args: Vec<String>) -> McpServerConfig {
         McpServerConfig {
-            id: "test-hung-mcp-server".to_string(),
-            label: "Hung".to_string(),
+            id: id.to_string(),
+            label: label.to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
-            command: Some("sleep".to_string()),
-            args: vec!["60".to_string()],
+            command: Some(command.to_string()),
+            args,
             env: Vec::new(),
             url: None,
             secret_env_name: None,
             enabled_tools: None,
         }
+    }
+
+    /// A fresh slot for `cfg`, as `slot_for` would build it.
+    fn test_slot(cfg: &McpServerConfig) -> ServerSlot {
+        ServerSlot {
+            fingerprint: config_fingerprint(cfg),
+            state: Mutex::new(SlotState::default()),
+        }
+    }
+
+    /// A unique scratch dir for one test's fixture signal files.
+    fn fixture_dir(prefix: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
     }
 
     /// `warm` and `list_server_tools` call `ensure_ready` with no timeout of their
@@ -492,11 +578,10 @@ mod tests {
     /// the slot forever (leaked child/task) and taxes every later turn.
     #[tokio::test]
     async fn ensure_ready_is_bounded_on_a_hung_server() {
-        let cfg = hung_stdio_cfg();
-        let slot = ServerSlot {
-            fingerprint: config_fingerprint(&cfg),
-            state: Mutex::new(SlotState::default()),
-        };
+        // `sleep` ignores stdin and never writes stdout, so the MCP initialize
+        // handshake never completes (rmcp's `serve_client` has no internal timeout).
+        let cfg = stdio_cfg("test-hung-mcp-server", "Hung", "sleep", vec!["60".to_string()]);
+        let slot = test_slot(&cfg);
         // Beyond the discovery budget: a bounded `ensure_ready` returns an error
         // inside its budget; an unbounded one never returns and this outer window
         // elapses.
@@ -509,5 +594,205 @@ mod tests {
             matches!(outcome, Ok(Err(_))),
             "ensure_ready on a hung server must return a bounded error, not hang"
         );
+    }
+
+    // Classification is the whole retry policy: `TransportSend` is the one
+    // variant that provably never reached the server. `McpError`, `Timeout`,
+    // `TransportClosed`, `UnexpectedResponse`, and `Cancelled` are all
+    // constructible in rmcp 2.1.0 (`DynamicTransportError::from_parts` exists
+    // for exactly this), so every variant is covered.
+
+    fn transport_send_error() -> rmcp::ServiceError {
+        rmcp::ServiceError::TransportSend(rmcp::transport::DynamicTransportError::from_parts(
+            "test",
+            std::any::TypeId::of::<()>(),
+            Box::new(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pipe")),
+        ))
+    }
+
+    #[test]
+    fn classify_transport_send_is_retryable() {
+        let failure = classify_service_error(transport_send_error());
+        assert!(failure.retryable, "a failed transport write never reached the server");
+        assert!(failure.text.contains("pipe"), "text must stay readable: {}", failure.text);
+    }
+
+    #[test]
+    fn classify_post_send_errors_are_not_retryable() {
+        let post_send = [
+            rmcp::ServiceError::TransportClosed,
+            rmcp::ServiceError::Timeout {
+                timeout: Duration::from_secs(60),
+            },
+            rmcp::ServiceError::McpError(rmcp::model::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "boom",
+                None,
+            )),
+            rmcp::ServiceError::UnexpectedResponse,
+            rmcp::ServiceError::Cancelled {
+                reason: Some("test".to_string()),
+            },
+        ];
+        for error in post_send {
+            let text = error.to_string();
+            let failure = classify_service_error(error);
+            assert!(
+                !failure.retryable,
+                "{text}: may have executed server-side; a redial could duplicate side effects"
+            );
+            assert_eq!(failure.text, text, "error text must surface unchanged");
+        }
+    }
+
+    /// A scripted stdio MCP server for the retryable-path test. It speaks just
+    /// enough newline-delimited JSON-RPC for rmcp's client: answers
+    /// `initialize` and `tools/list` (ignoring `notifications/initialized`).
+    /// Run 1 then closes its STDIN but keeps running (stdout open), so the
+    /// client's next send fails at the transport write — rmcp's service loop is
+    /// still alive and reports `TransportSend`, the provably-pre-transmit
+    /// failure. (Exiting instead would kill the loop via stdout EOF and yield
+    /// `TransportClosed`, the non-retryable ambiguous case.) Run 2 is a healthy
+    /// server that answers `tools/call`. Each startup appends to a counter file.
+    fn retry_fixture_script(counter: &std::path::Path, stdin_closed: &std::path::Path) -> String {
+        format!(
+            r#"echo run >> "{counter}"
+RUN=$(wc -l < "{counter}")
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fixture","version":"0"}}}}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
+      if [ "$RUN" -eq 1 ]; then
+        exec 0<&-
+        : > "{stdin_closed}"
+        exec sleep 60
+      fi
+      ;;
+    *'"method":"tools/call"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"content":[{{"type":"text","text":"ok"}}],"isError":false}}}}'
+      ;;
+  esac
+done"#,
+            counter = counter.display(),
+            stdin_closed = stdin_closed.display(),
+        )
+    }
+
+    /// The retryable path end to end: a transport-write failure (request never
+    /// transmitted) must redial exactly once and succeed on the fresh
+    /// connection. The counter file proves the second connect happened.
+    #[tokio::test]
+    async fn transport_send_failure_redials_once() {
+        let dir = fixture_dir("mnema-mcp-retry-test");
+        let counter = dir.join("connects");
+        let stdin_closed = dir.join("stdin-closed");
+        let cfg = stdio_cfg(
+            "test-retry-mcp-server",
+            "Retry",
+            "sh",
+            vec![
+                "-c".to_string(),
+                retry_fixture_script(&counter, &stdin_closed),
+            ],
+        );
+        let slot = test_slot(&cfg);
+
+        // Warm the connection on run 1, then wait until the fixture has
+        // PROVABLY closed its stdin — only then is the next write guaranteed to
+        // fail pre-transmit rather than land in the pipe and hang.
+        slot.ensure_ready(&cfg)
+            .await
+            .expect("run 1 handshake must succeed");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while !stdin_closed.exists() {
+            assert!(tokio::time::Instant::now() < deadline, "fixture never signaled stdin close");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            call_with_redial(&slot, &cfg, "echo", &serde_json::json!({}), CALL_TOOL_BUDGET),
+        )
+        .await
+        .expect("call must not hang");
+        assert!(result.is_ok(), "redial onto the healthy run-2 server must succeed: {result:?}");
+        assert!(result.unwrap().contains("ok"), "run 2's tool result must come back");
+
+        let connects = std::fs::read_to_string(&counter).expect("counter file");
+        assert_eq!(connects.lines().count(), 2, "exactly one redial: two connects total");
+
+        drop(slot); // kills run 2's child; run 1's died with its handle
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A scripted stdio MCP server (same framing as [`retry_fixture_script`])
+    /// that answers the handshake + `tools/list`, then STALLS on `tools/call`:
+    /// appends the invocation to a counter file and execs into a `sleep` —
+    /// stdout stays open, no response ever comes, the call await hangs.
+    fn stall_fixture_script(calls: &std::path::Path) -> String {
+        format!(
+            r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"protocolVersion":"2025-06-18","capabilities":{{"tools":{{}}}},"serverInfo":{{"name":"fixture","version":"0"}}}}}}'
+      ;;
+    *'"method":"tools/list"'*)
+      printf '%s\n' '{{"jsonrpc":"2.0","id":'"$id"',"result":{{"tools":[{{"name":"echo","inputSchema":{{"type":"object"}}}}]}}}}'
+      ;;
+    *'"method":"tools/call"'*)
+      echo call >> "{calls}"
+      exec sleep 60
+      ;;
+  esac
+done"#,
+            calls = calls.display(),
+        )
+    }
+
+    /// The execution budget end to end: a server that hangs on `tools/call`
+    /// must yield a bounded, NON-retried error and leave the slot invalidated.
+    /// The counter file proves exactly one `tools/call` reached the fixture (a
+    /// timed-out call may have executed server-side, so a retry could duplicate
+    /// a write — ADR 0048); the emptied slot proves the next call dials fresh.
+    /// The budget is injected small: a real [`CALL_TOOL_BUDGET`] would take a
+    /// minute, and tokio virtual time cannot bound a real child process
+    /// (auto-advance races past real I/O, spuriously elapsing the connect too).
+    #[tokio::test]
+    async fn hung_tool_call_is_bounded_not_retried_and_invalidates_the_slot() {
+        let dir = fixture_dir("mnema-mcp-stall-test");
+        let calls = dir.join("calls");
+        let cfg = stdio_cfg(
+            "test-stall-mcp-server",
+            "Stall",
+            "sh",
+            vec!["-c".to_string(), stall_fixture_script(&calls)],
+        );
+        let slot = test_slot(&cfg);
+
+        let budget = Duration::from_secs(2);
+        let result = tokio::time::timeout(
+            budget + Duration::from_secs(8), // grace covers the (fast) connect
+            call_with_redial(&slot, &cfg, "echo", &serde_json::json!({}), budget),
+        )
+        .await
+        .expect("a hung tools/call must be bounded by the budget, not hang");
+
+        let error = result.expect_err("a timed-out call must surface as an error");
+        assert!(error.contains("timed out after 2 s"), "readable timeout text expected: {error}");
+        let calls_seen = std::fs::read_to_string(&calls).expect("counter file");
+        assert_eq!(calls_seen.lines().count(), 1, "a timed-out call must NOT be retried");
+        assert!(
+            slot.state.lock().await.established.is_none(),
+            "timeout must invalidate the slot so the next call dials fresh"
+        );
+
+        // The stalled fixture already died with its handle (invalidate + return
+        // dropped the last ref); only the scratch dir is left to clean.
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -4595,6 +4595,7 @@ dependencies = [
  "image",
  "objc",
  "ocr",
+ "process-wrap",
  "reqwest 0.12.28",
  "rmcp",
  "schemars 1.2.1",

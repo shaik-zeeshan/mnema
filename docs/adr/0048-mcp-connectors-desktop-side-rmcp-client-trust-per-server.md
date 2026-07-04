@@ -57,10 +57,28 @@ the curation modal both require. So the engine's own MCP path is a dead end for 
    never used this session. On chat-surface open (either door) the manager
    background-connects and `list_tools` for enabled servers; a turn build awaits
    *in-flight* discovery ≤ ~15 s (npx cold boot) then proceeds with the ready
-   servers only. Handles are cached per app session. Failure policy: drop the
-   handle and redial **once** on next use; a second failure returns error text to
-   the model, whose remedy is the server's `enabled` toggle. A Settings edit
-   re-dials that server by id; app exit kills its children.
+   servers only. Handles are cached per app session. Failure policy (amended
+   2026-07-04): drop the handle and redial **once**, but ONLY for failures that
+   provably happened before the request reached the server — a connect failure
+   or a transport-send failure (rmcp `ServiceError::TransportSend`). A failure
+   after the request may have arrived (timeout, transport closed while awaiting
+   the reply, server-reported error) returns error text to the model with **no**
+   auto-retry: retrying there can double-fire a non-idempotent write tool
+   (create-issue, send-message), and a silent duplicate side effect is worse
+   than a visible error. A second consecutive failure likewise returns error
+   text; the remedy is the server's `enabled` toggle. Every tool call is also
+   bounded by a flat **60 s execution budget** (discovery keeps its 15 s): on
+   timeout the handle is dropped so the next call dials fresh instead of queuing
+   behind a hung server, and the timeout surfaces as error text with no
+   auto-retry (the request may have landed — see above). Not configurable per
+   server until a real connector proves slower. A Settings edit re-dials
+   that server by id; app exit kills its children — the whole **process group**
+   (amended 2026-07-04), because the documented spawn mechanism is `npx`, a
+   launcher whose real server is a grandchild: killing only the direct child
+   orphans a running server still holding its secret. Group-kill rides
+   `process-wrap`'s `ProcessGroup` (already an rmcp dependency) and is
+   Unix-only; Windows needs its `JobObject` sibling when that platform becomes
+   real (SUPPORTS.md).
 
 6. **A 32-tool budget with curation.** `enabled_tools: None` → offer the first 32
    tools in server order; the trim is **non-silent** (a tracing log plus one
@@ -104,8 +122,9 @@ the curation modal both require. So the engine's own MCP path is a dead end for 
   polish when real users are confused by dead-server behavior, not before.
 - **Token cost is the control surface.** Each MCP tool costs ≈ 200–400 prompt
   tokens per turn; the 32-cap plus the curation modal is how the user bounds it.
-- **macOS-first.** stdio child handling is cross-platform via `rmcp`/tokio, but
-  only macOS is exercised on this branch (SUPPORTS.md).
+- **macOS-first.** stdio spawn/kill is cross-platform via `rmcp`/tokio, but
+  teardown of the full process group is Unix-only and only macOS is exercised
+  on this branch (SUPPORTS.md).
 
 Reuses the per-instance identity of [ADR 0035](0035-provider-identity-is-a-per-instance-id-not-the-kind.md)
 and the shared engine of [ADR 0033](0033-ask-ai-migrates-onto-shared-reasoning-engine.md).
