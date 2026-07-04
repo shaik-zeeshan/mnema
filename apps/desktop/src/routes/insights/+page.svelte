@@ -380,6 +380,9 @@
     /* Position context for the floating expand button (collapsed state). */
     position: relative;
     overflow-y: auto;
+    /* Reading surfaces never scroll sideways; a stray wide element (long
+       unwrapped token, 1px rounding) must not summon a horizontal scrollbar. */
+    overflow-x: hidden;
     padding: 18px 20px 28px;
   }
   /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /

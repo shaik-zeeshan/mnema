@@ -39,7 +39,7 @@ Key invariants:
 - Capture Segment Duration is capped at 5 minutes.
 - App infra schema changes belong in `crates/app-infra/migrations` (embedded via `sqlx::migrate!`).
 - Deferred startup: window opens fast; maintenance + workers run in `mnema-deferred-startup` thread after the window opens. Do not move maintenance or worker-spawn back into the synchronous path.
-- Display-unavailable (sleep/lock/disconnect) is a transient liveness condition, NOT a privacy failure — keep the session alive, skip finalize, wait for display return. See [ADR 0021](docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md).
+- Display-unavailable (sleep/lock/disconnect) is a transient liveness condition, NOT a privacy failure — keep the session alive, commit the finalized in-flight tail segment, wait for display return. See [ADR 0021](docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md) (amended 2026-07-04: the suspend path commits the tail for all suspension kinds; a delegate-terminated stream skips the doomed second stop but still finalizes writers).
 - Delete Recent Capture ≠ Retention Cleanup: deletes whole overlapping segments; Retention never touches `user_context_*` tables.
 
 ## Verification

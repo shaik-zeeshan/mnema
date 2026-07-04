@@ -62,7 +62,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Sleep/wake recovery for screen/system-audio while preserving microphone continuation.
 - [x] Screen/system-audio liveness reconciliation from AppKit wake notifications and ScreenCaptureKit stream delegate failures.
 - [x] Dark/deep-idle wake recovery via a Core Graphics display-reconfiguration listener (the panel powering back on re-arms capture even when macOS does not post `NSWorkspaceDidWake`, e.g. Power Nap / "Wake from Deep Idle"); `NSWorkspaceDidWake` is kept as an idempotent fast-path fallback. No polling.
-- [x] Display-unavailable recovery: a display sleep/lock/lid-close/disconnect surfaced as a `DisplayUnavailable` privacy-filter apply error suspends screen/system-audio (preserving microphone continuation) and auto-resumes when a display returns, instead of failing the session.
+- [x] Display-unavailable recovery: a display sleep/lock/lid-close/disconnect — surfaced as a `DisplayUnavailable` privacy-filter apply error **or** as a ScreenCaptureKit delegate stream-stop (`-3815`) — suspends screen/system-audio (preserving microphone continuation), commits the finalized in-flight tail segment, and auto-resumes when a display returns, instead of failing the session. Segment rotation suspends rather than fails if the screen session is missing without a suspension owner.
 - [x] Screen frame export, captured-frame equivalence, OCR batching, and frame-index sidecars.
 
 ### Media and processing
