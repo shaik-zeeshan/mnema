@@ -1724,9 +1724,17 @@ impl ProcessingStore {
             .map(|policy| policy.backoff_seconds(job.failure_count))
             .unwrap_or(0);
 
+        // `attempt_count` is ALSO reset to 0 below: every `claim` bumps `attempt_count`, so a long
+        // offline/mis-keyed stretch of transient requeues would otherwise inflate it past
+        // `RECLAIM_ATTEMPT_CEILING`. A clean claim->queued transient cycle is the opposite of an
+        // abandonment (the crash-loop condition the ceiling guards), so it must clear that tally —
+        // otherwise a force-quit while the segment is mid-attempt would let reclamation permanently
+        // fail an offline segment, exactly the "never burn a segment" case ADR 0048 forbids.
+
         let update = sqlx::query(
             "UPDATE processing_jobs \
              SET status = 'queued', \
+                 attempt_count = 0, \
                  last_error = ?2, \
                  next_attempt_at = datetime(CURRENT_TIMESTAMP, ?3), \
                  queued_at = CURRENT_TIMESTAMP, \
@@ -3390,6 +3398,229 @@ mod tests {
             assert_eq!(reclaimed.id, job.id);
             assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
             assert_eq!(reclaimed.failure_count, 0);
+        });
+    }
+
+    /// ADR 0048: the requeue must actually DEFER the job by the processor's first backoff step
+    /// (60s for audio) — not requeue it with a zero/immediate window. Guards a regression the
+    /// sibling "returns to queued" test cannot catch, since that one expires the backoff before
+    /// asserting claimability.
+    #[test]
+    fn transient_liveness_requeue_defers_by_backoff() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+
+            store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+
+            // The first backoff step (~60s) is still in the future, so the automatic drain must
+            // NOT hand the job back yet — a zero-backoff regression would fail here.
+            let too_soon = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should not error while backoff is pending");
+            assert!(
+                too_soon.is_none(),
+                "a transient-liveness requeue must be deferred by its backoff window"
+            );
+
+            // Once the backoff elapses, the same job becomes claimable again.
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable once backoff elapses");
+            assert_eq!(reclaimed.id, job.id);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    /// ADR 0048: the transient lane only moves a *running* job. Calling it on a still-queued job
+    /// is an invalid transition and must leave the row completely untouched.
+    #[test]
+    fn transient_liveness_requeue_on_non_running_job_is_invalid_transition() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            assert_eq!(job.status, ProcessingJobStatus::Queued);
+
+            let result = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(AppInfraError::ProcessingJobInvalidTransition { .. })
+                ),
+                "requeuing a queued (non-running) job must be an invalid transition, got {result:?}"
+            );
+
+            // The failed transition must not have mutated the row.
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("get_job should succeed")
+                .expect("job should still exist");
+            assert_eq!(after.status, ProcessingJobStatus::Queued);
+            assert_eq!(after.failure_count, 0);
+            assert_eq!(after.last_error, None);
+        });
+    }
+
+    /// ADR 0048: an offline/mis-keyed stretch can requeue the same segment indefinitely; it must
+    /// never terminally fail. `attempt_count` resetting to 0 each cycle (the reviewed fix) is what
+    /// keeps reclamation from ever burning the segment.
+    #[test]
+    fn repeated_transient_liveness_requeue_never_terminally_fails() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+
+            for cycle in 0..5 {
+                let claimed = store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("job claim should succeed")
+                    .expect("job should claim");
+                assert_eq!(
+                    claimed.status,
+                    ProcessingJobStatus::Running,
+                    "cycle {cycle}: job should claim into running"
+                );
+
+                let requeued = store
+                    .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                    .await
+                    .expect("transient-liveness requeue should succeed");
+                assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+                assert_eq!(
+                    requeued.failure_count, 0,
+                    "cycle {cycle}: transient liveness must never spend a failure"
+                );
+                assert_eq!(
+                    requeued.attempt_count, 0,
+                    "cycle {cycle}: transient liveness must reset attempt_count"
+                );
+
+                store
+                    .expire_processing_job_retry_backoff_for_test(job.id)
+                    .await
+                    .expect("retry backoff should expire for test");
+            }
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("get_job should succeed")
+                .expect("job should still exist");
+            assert_ne!(
+                after.status,
+                ProcessingJobStatus::Failed,
+                "repeated transient requeues must never terminally fail the segment"
+            );
+        });
+    }
+
+    /// ADR 0048: the transient lane resets `attempt_count` but must PRESERVE `failure_count` — a
+    /// genuine prior failure is not erased by a later offline stretch (nor incremented by it).
+    #[test]
+    fn transient_liveness_requeue_preserves_prior_failure_count() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+
+            // Accrue one genuine failure through the failure lane.
+            store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            let failed = store
+                .mark_job_failed(job.id, Some("boom"))
+                .await
+                .expect("mark_job_failed should succeed");
+            assert_eq!(failed.failure_count, 1);
+
+            store
+                .requeue_failed_job_within_attempt_cap(job.id)
+                .await
+                .expect("failed job requeue should succeed")
+                .expect("job should requeue within the attempt cap");
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable again");
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+            assert_eq!(reclaimed.failure_count, 1);
+
+            // Now a transient requeue on the running job: attempt_count resets, but the prior
+            // failure_count must survive — neither cleared to 0 nor bumped to 2.
+            let requeued = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 1,
+                "transient liveness must preserve a prior genuine failure count"
+            );
+            assert_eq!(
+                requeued.attempt_count, 0,
+                "transient liveness resets attempt_count"
+            );
         });
     }
 }

@@ -1328,4 +1328,71 @@ mod tests {
             );
         });
     }
+
+    /// ADR 0048: an offline/mis-keyed stretch must NEVER burn a segment. A transient-liveness
+    /// requeue is a clean claim->queued cycle, but `claim` increments `attempt_count` every time,
+    /// so a long offline stretch inflates `attempt_count` past `RECLAIM_ATTEMPT_CEILING` (the
+    /// crash-loop backstop). If the app is then force-quit while the segment is mid-attempt (left
+    /// `running`), the next startup's `reconcile_orphaned_running_jobs` permanently fails it --
+    /// burning the segment purely because the environment was down. The transient lane must not
+    /// let the reclaim ceiling trip.
+    #[test]
+    fn zz_transient_liveness_reclaim_ceiling_does_not_burn_offline_segment() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-transient-liveness-reclaim-ceiling");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A long offline stretch: RECLAIM_ATTEMPT_CEILING clean transient-liveness cycles.
+            // Each claim bumps attempt_count; each transient requeue leaves failure_count at 0.
+            for _ in 0..crate::processing::RECLAIM_ATTEMPT_CEILING {
+                let claimed = store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("claim should succeed")
+                    .expect("queued job should claim");
+                assert_eq!(claimed.status, ProcessingJobStatus::Running);
+                store
+                    .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                    .await
+                    .expect("transient-liveness requeue should succeed");
+            }
+
+            // The app is force-quit while the segment is mid-attempt: it is left running.
+            let running = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("claim should succeed")
+                .expect("queued job should claim");
+            assert_eq!(running.status, ProcessingJobStatus::Running);
+
+            // Next startup reconciles orphaned running jobs.
+            store
+                .reconcile_orphaned_running_jobs()
+                .await
+                .expect("reclamation should succeed");
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_ne!(
+                after.status,
+                ProcessingJobStatus::Failed,
+                "ADR 0048: an offline transient-liveness stretch must never burn the segment via the reclaim ceiling"
+            );
+            assert_eq!(after.failure_count, 0);
+        });
+    }
 }
