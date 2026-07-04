@@ -447,6 +447,11 @@
     width: 100%;
     max-width: 720px;
     margin: 0 auto;
+    /* AI-written titles/summaries can carry long unbreakable tokens (URLs,
+       paths); without this they blow out the river's 1fr grid track and give
+       the whole page an x-scroll. `anywhere` (not `break-word`) so the token
+       also stops inflating min-content sizing. */
+    overflow-wrap: anywhere;
   }
   @media (min-width: 1024px) {
     .journal {

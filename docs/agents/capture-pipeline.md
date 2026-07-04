@@ -103,7 +103,7 @@ App startup is split so the window opens fast:
 
 - **Single owning seam**: `apps/desktop/src-tauri/src/native_capture/lifecycle.rs`. Tauri handlers are thin adapters.
 - macOS-oriented; many capture paths and tests are behind `cfg(target_os = "macos")`.
-- ScreenCaptureKit invalidation has two paths: `NSWorkspaceWillSleepNotification` (proactive) and `SCStreamDelegate` (`stream:didStopWithError:`/`streamDidBecomeInactive:`). The Recording Lifecycle reconciles either by dropping only live screen/system-audio state while preserving microphone.
+- ScreenCaptureKit invalidation has two paths: `NSWorkspaceWillSleepNotification` (proactive) and `SCStreamDelegate` (`stream:didStopWithError:`/`streamDidBecomeInactive:`). Will-sleep stops the writer cleanly and drops only live screen/system-audio state while preserving microphone. A delegate-reported stop (`capture_stream_system_stopped`, e.g. `-3815` on display sleep) is terminal (`stream_terminated`): the stop path skips the doomed second `stop_stream` but still finalizes the writers, and the reconcile enters the `DisplayUnavailable` suspension — never a bare state clear, which used to let the next segment rotation fail the whole session. `tick_rotation` has a suspend-instead-of-fail backstop for a missing screen session. See ADR 0021's amendment.
 - On sleep: preserve stale screen/system-audio paths in `current_segment_output_files` even after clearing live handles — wake recovery reads them to derive interrupted segment outputs.
 - When the segment loop ends a session internally (`mark_runtime_session_failed`), it must broadcast `emit_native_capture_session_changed` + `status_bar::refresh` after exiting — user/command stops own this broadcast, but an internal failure has no other announcer.
 

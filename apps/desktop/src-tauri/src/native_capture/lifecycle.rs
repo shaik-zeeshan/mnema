@@ -8,7 +8,7 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
-    screen_planner_for_runtime, system_audio_planner_for_runtime,
+    screen_planner_for_runtime, system_audio_planner_for_runtime, CaptureSuspensionKind,
 };
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
@@ -86,6 +86,67 @@ impl RecordingLifecycle {
         }
 
         true
+    }
+
+    // An unexpected stream death (display sleep/disconnect, a system-initiated
+    // kill) must land in a DisplayUnavailable suspension, not a bare state
+    // clear: the suspension makes the rotation boundary skip and hands the
+    // restart to `attempt_privacy_suspension_recovery`, which waits for a
+    // display and retries with a bounded budget (ADR 0021). A bare clear left
+    // the runtime with screen requested but no session and no owner — the next
+    // segment rotation then rotated into the missing session and failed the
+    // entire recording session fatally.
+    #[cfg(target_os = "macos")]
+    fn suspend_screen_after_unexpected_stop(
+        &mut self,
+        app_handle: Option<&tauri::AppHandle>,
+        error: &CaptureErrorResponse,
+    ) -> TickOutcome {
+        if let Err(stop_error) = super::segments::suspend_screen_system_audio_capture(
+            app_handle,
+            &mut self.runtime,
+            error,
+            CaptureSuspensionKind::DisplayUnavailable,
+        ) {
+            // Suspend only errors when the stop must preserve runtime state
+            // (an in-flight stop timeout); keep the session and let a later
+            // tick or the wake/display recovery paths reconcile it.
+            super::debug_log::log(format!(
+                "capture suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
+                stop_error.code, stop_error.message
+            ));
+        }
+        TickOutcome::SkipRotation
+    }
+
+    // Backstop at the rotation boundary for any path that still reaches it
+    // with screen/system-audio active but no live session (e.g. a system wake
+    // racing the will-sleep teardown before the did-wake recovery re-arms).
+    // Rotating would call into the missing session, hit `invalid_runtime_state`
+    // and end the whole session; suspend instead so recovery restarts capture
+    // when it can.
+    #[cfg(target_os = "macos")]
+    fn suspend_if_screen_session_missing_at_rotation(
+        &mut self,
+        app_handle: Option<&tauri::AppHandle>,
+        active_sources: &CaptureSources,
+    ) -> Option<TickOutcome> {
+        if !(active_sources.screen || active_sources.system_audio)
+            || self.runtime.active_screen_session.is_some()
+        {
+            return None;
+        }
+
+        super::debug_log::log(
+            "segment rotation due but the screen capture session is missing; suspending screen/system-audio until capture can restart",
+        );
+        Some(self.suspend_screen_after_unexpected_stop(
+            app_handle,
+            &CaptureErrorResponse {
+                code: "capture_screen_session_missing".to_string(),
+                message: "Screen capture session missing at segment rotation".to_string(),
+            },
+        ))
     }
 
     pub(crate) fn session(&self) -> NativeCaptureSession {
@@ -355,11 +416,10 @@ impl RecordingLifecycle {
                 return TickOutcome::SkipRotation;
             }
             super::debug_log::log(format!(
-                "screen capture stream stopped unexpectedly; reconciling runtime state: [{}] {}",
+                "screen capture stream stopped unexpectedly; suspending screen/system-audio until capture can restart: [{}] {}",
                 error.code, error.message
             ));
-            let _ = self.clear_screen_state_for_sleep_or_stop();
-            return TickOutcome::SkipRotation;
+            return self.suspend_screen_after_unexpected_stop(Some(app_handle), &error);
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
@@ -662,6 +722,12 @@ impl RecordingLifecycle {
             super::segments::LowDiskBoundaryOutcome::Stopped => {
                 return TickOutcome::StopLoop;
             }
+        }
+
+        if let Some(outcome) =
+            self.suspend_if_screen_session_missing_at_rotation(Some(app_handle), &active_sources)
+        {
+            return outcome;
         }
 
         if apply_runtime_signal(&mut self.runtime, RuntimeSignal::RotateRequested).is_err() {
@@ -1067,5 +1133,135 @@ impl RecordingLifecycle {
         &mut self,
     ) -> Option<MicrophoneVadFallbackNotice> {
         self.runtime.microphone_vad.take_new_fallback_notification()
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use capture_types::CaptureOutputFiles;
+
+    fn screen_only_sources() -> CaptureSources {
+        CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        }
+    }
+
+    // A running screen-only runtime as the delegate-stop reconcile sees it: the
+    // stream is dead, `active_screen_session` already `None`, with the in-flight
+    // segment's finalized `.mov` still tracked as the current output.
+    fn lifecycle_after_unexpected_screen_stop(screen_file: &str) -> RecordingLifecycle {
+        RecordingLifecycle {
+            runtime: NativeCaptureRuntime {
+                is_running: true,
+                requested_sources: Some(screen_only_sources()),
+                current_segment_sources: Some(screen_only_sources()),
+                output_files: Some(empty_output_files()),
+                current_segment_output_files: Some(CaptureOutputFiles {
+                    screen_file: Some(screen_file.to_string()),
+                    screen_files: vec![screen_file.to_string()],
+                    microphone_file: None,
+                    microphone_files: Vec::new(),
+                    system_audio_file: None,
+                    system_audio_files: Vec::new(),
+                }),
+                recording_file: Some(screen_file.to_string()),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn write_openable_screen_segment(dir: &tempfile::TempDir) -> String {
+        let path = dir.path().join("screen-segment.mov");
+        std::fs::write(&path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake openable mov should be written");
+        path.to_string_lossy().into_owned()
+    }
+
+    // Regression: a display sleep killed the ScreenCaptureKit stream (-3815),
+    // the reconcile cleared screen state without entering a suspension, and the
+    // next 60s rotation boundary rotated into the missing session — failing the
+    // entire recording session. The reconcile must instead enter a
+    // DisplayUnavailable suspension that keeps the session alive and commits
+    // the in-flight tail segment.
+    #[test]
+    fn unexpected_screen_stop_suspends_and_commits_tail_instead_of_failing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+        let error = CaptureErrorResponse {
+            code: "capture_stream_system_stopped".to_string(),
+            message: "ScreenCaptureKit stream stopped unexpectedly: Failed to find any displays or windows to capture (code: -3815)".to_string(),
+        };
+
+        let outcome = lifecycle.suspend_screen_after_unexpected_stop(None, &error);
+
+        assert_eq!(outcome, TickOutcome::SkipRotation);
+        let runtime = lifecycle.runtime();
+        assert!(
+            runtime.is_running,
+            "an unexpected stream stop must never end the recording session"
+        );
+        assert_eq!(
+            runtime
+                .capture_suspension
+                .as_ref()
+                .map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::DisplayUnavailable),
+            "the stop must land in the DisplayUnavailable suspension so recovery owns the restart"
+        );
+        assert!(runtime.recording_file.is_none());
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed outputs should exist");
+        assert!(
+            committed.screen_files.contains(&screen_file),
+            "the in-flight tail segment must be committed, not orphaned"
+        );
+    }
+
+    // Regression backstop at the rotation seam: screen active, no live session,
+    // no suspension owner (e.g. a wake racing the will-sleep teardown) must
+    // suspend and skip — before this guard, rotation hit `invalid_runtime_state`
+    // and marked the whole session failed.
+    #[test]
+    fn rotation_with_missing_screen_session_suspends_instead_of_failing() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+
+        let outcome = lifecycle
+            .suspend_if_screen_session_missing_at_rotation(None, &screen_only_sources());
+
+        assert_eq!(outcome, Some(TickOutcome::SkipRotation));
+        let runtime = lifecycle.runtime();
+        assert!(runtime.is_running);
+        assert_eq!(
+            runtime
+                .capture_suspension
+                .as_ref()
+                .map(|suspension| suspension.kind),
+            Some(CaptureSuspensionKind::DisplayUnavailable),
+        );
+    }
+
+    #[test]
+    fn rotation_guard_ignores_audio_only_sources() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+        let sources = CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: false,
+        };
+
+        let outcome = lifecycle.suspend_if_screen_session_missing_at_rotation(None, &sources);
+
+        assert_eq!(outcome, None);
+        assert!(lifecycle.runtime().capture_suspension.is_none());
     }
 }
