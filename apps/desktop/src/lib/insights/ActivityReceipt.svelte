@@ -12,6 +12,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { goto } from "$app/navigation";
   import Segmented from "$lib/components/Segmented.svelte";
+  import { tip } from "$lib/components/tooltip";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { setPendingTimelineFocus } from "$lib/timeline/pending-focus";
   import {
@@ -399,7 +400,7 @@
       <span class="chip">
         <span class="sw" style="background:var({catColorVar})"></span>{catLabel}
       </span>
-      <h2 class="m-title" title={activity.title}>{activity.title}</h2>
+      <h2 class="m-title" use:tip={activity.title}>{activity.title}</h2>
       <span class="when">{rangeLabel}</span>
       <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}>✕</button>
     </div>

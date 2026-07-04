@@ -8,6 +8,7 @@
   // the unified-timeline mockup (.cs-card, lines 153-185).
   import type { Conclusion, SubjectTrajectory } from "$lib/types/recording";
   import Segmented from "$lib/components/Segmented.svelte";
+  import { tip } from "$lib/components/tooltip";
   import { relativeTime } from "$lib/insights/conversationStore.svelte";
   import {
     sortConclusions,
@@ -122,7 +123,7 @@
           role="button"
           tabindex="0"
           aria-pressed={c.id === selectedId}
-          title={c.statement}
+          use:tip={c.statement}
           onclick={() => onSelect(c.id)}
           onkeydown={(e) => handleKeydown(e, c.id)}
         >

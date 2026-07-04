@@ -17,6 +17,7 @@
   import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { trapTabKey } from "$lib/keyboard";
+  import { tip } from "$lib/components/tooltip";
   import FrameOcrOverlay from "$lib/components/FrameOcrOverlay.svelte";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import { formatTimestampCompact } from "$lib/format-time";
@@ -417,7 +418,7 @@
     >
       <header class="frame-modal__header">
         <span class="frame-modal__eyebrow">frame</span>
-        <h1 class="frame-modal__title" title={displayTitle ?? undefined}>
+        <h1 class="frame-modal__title" use:tip={displayTitle}>
           {displayTitle ?? "Captured frame"}
         </h1>
         <button
@@ -510,7 +511,7 @@
         </button>
 
         {#if frameUrl}
-          <button type="button" class="frame-act frame-act--url" title={frameUrl} onclick={openFrameUrl}>
+          <button type="button" class="frame-act frame-act--url" use:tip={frameUrl} onclick={openFrameUrl}>
             <span>{frameUrl}</span>
           </button>
         {/if}
