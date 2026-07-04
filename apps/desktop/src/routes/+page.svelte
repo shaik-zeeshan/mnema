@@ -19,6 +19,16 @@
   import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
+  import {
+    audioDrawerPointerDownAction,
+    audioDrawerWheelAction,
+    type AudioDrawerDismissAction,
+    type AudioDrawerDismissContext,
+  } from "$lib/audio-drawer-dismiss";
+  import {
+    placeSpeakerActionsPopover,
+    type SpeakerPopoverPosition,
+  } from "$lib/speaker-popover-position";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     loadOcrForFrame,
@@ -1494,10 +1504,9 @@
   // Viewport-anchored placement for the speaker-actions popover. The popover
   // renders in the top layer (`popover="manual"`), so neither the transcript's
   // scroll container nor the drawer's `overflow: hidden` can clip it; anchor
-  // it just above the clicked chip and clamp it on-screen.
-  let speakerActionsPopoverPos = $state<{ left: number; bottom: number } | null>(
-    null,
-  );
+  // it just above the clicked chip and clamp it on-screen (the pure clamp
+  // math and its tests live in lib/speaker-popover-position.ts).
+  let speakerActionsPopoverPos = $state<SpeakerPopoverPosition | null>(null);
 
   function toggleSpeakerActions(index: number, event: MouseEvent): void {
     event.preventDefault();
@@ -1508,17 +1517,15 @@
       speakerActionsOpenIndex = null;
       return;
     }
-    const rect = chip.getBoundingClientRect();
-    // Mirror the CSS width `min(42rem, 100vw - 64px)` so the left clamp keeps
-    // the popover fully on-screen.
     const rem =
       Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
       16;
-    const width = Math.min(42 * rem, window.innerWidth - 64);
-    speakerActionsPopoverPos = {
-      left: Math.max(12, Math.min(rect.left, window.innerWidth - width - 12)),
-      bottom: window.innerHeight - rect.top + 6,
-    };
+    speakerActionsPopoverPos = placeSpeakerActionsPopover(
+      chip.getBoundingClientRect(),
+      window.innerWidth,
+      window.innerHeight,
+      rem,
+    );
     speakerActionsOpenIndex = index;
   }
 
@@ -2424,55 +2431,60 @@
   }
 
   // ─── Outside-click & wheel dismissal ─────────────────────────────────────
-  // While the drawer is open, a pointerdown or wheel anywhere outside it
+  // While the drawer is open, a pointerdown or wheel genuinely outside it
   // dismisses it (an open speaker-actions popover collapses first, so
-  // dismissal is layered). The one exception: clicking an audio bar is a
-  // SWITCH — the bar's own click handler reselects and the drawer stays open.
-  // We listen for `wheel` rather than `scroll` because the rail is also
-  // scrolled programmatically (scrub conversion, jump-to-frame, resize
-  // re-anchoring, search-result lane moves) and those must not read as a
-  // user's intent to dismiss.
+  // dismissal is layered — see audioDrawerPointerDownAction/
+  // audioDrawerWheelAction in lib/audio-drawer-dismiss.ts for the policy and
+  // its tests). Two interactions are deliberately NOT dismissals: clicking an
+  // audio bar is a SWITCH (the bar's own click handler reselects), and
+  // scrubbing/clicking the rail or stage keeps the player open so the user
+  // can browse frames while listening (the rail scrolls as it scrubs, which
+  // would otherwise slam the drawer shut on every wheel tick). We listen for
+  // `wheel` rather than `scroll` because the rail is also scrolled
+  // programmatically (scrub conversion, jump-to-frame, resize re-anchoring,
+  // search-result lane moves) and those must not read as a user's intent to
+  // dismiss.
+  function isWithinTimelineSurface(node: Node): boolean {
+    return (
+      stageEl?.contains(node) === true ||
+      timelineRailWrap?.contains(node) === true
+    );
+  }
+
+  function audioDrawerDismissContext(target: Node): AudioDrawerDismissContext {
+    return {
+      drawerOpen: selectedAudioSegmentId != null,
+      insideDrawer: audioDrawerEl?.contains(target) === true,
+      insidePopover:
+        target instanceof Element &&
+        target.closest(".audio-drawer__speaker-popover") != null,
+      onAudioBar:
+        target instanceof Element &&
+        target.closest(".timeline-rail__audio-bar") != null,
+      popoverOpen: speakerActionsOpenIndex != null,
+      insideTimelineSurface: isWithinTimelineSurface(target),
+    };
+  }
+
+  function runAudioDrawerDismissAction(action: AudioDrawerDismissAction): void {
+    if (action === "collapse-popover") closeSpeakerActions();
+    else if (action === "close-drawer") closeAudioDrawer();
+  }
+
   function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
-    if (selectedAudioSegmentId == null) return;
     const target = event.target;
     if (!(target instanceof Node)) return;
-    if (audioDrawerEl?.contains(target)) return;
-    const onAudioBar =
-      target instanceof Element &&
-      target.closest(".timeline-rail__audio-bar") != null;
-    // A click on another segment's bar switches the drawer, never closes it —
-    // collapse a transient speaker-actions popover first, then let the bar's
-    // click handler reselect.
-    if (onAudioBar) {
-      if (speakerActionsOpenIndex != null) closeSpeakerActions();
-      return;
-    }
-    if (speakerActionsOpenIndex != null) {
-      closeSpeakerActions();
-      return;
-    }
-    closeAudioDrawer();
+    runAudioDrawerDismissAction(
+      audioDrawerPointerDownAction(audioDrawerDismissContext(target)),
+    );
   }
 
   function onAudioDrawerOutsideWheel(event: WheelEvent) {
-    if (selectedAudioSegmentId == null) return;
     const target = event.target;
     if (!(target instanceof Node)) return;
-    if (
-      target instanceof Element &&
-      target.closest(".audio-drawer__speaker-popover") != null
-    ) {
-      return;
-    }
-    // The popover is anchored to viewport coordinates, so any wheel outside
-    // it (including scrolling the transcript underneath) collapses it before
-    // it can drift away from its chip.
-    if (speakerActionsOpenIndex != null) {
-      closeSpeakerActions();
-      return;
-    }
-    if (audioDrawerEl?.contains(target)) return;
-    closeAudioDrawer();
+    runAudioDrawerDismissAction(
+      audioDrawerWheelAction(audioDrawerDismissContext(target)),
+    );
   }
 
   $effect(() => {
@@ -2485,14 +2497,25 @@
       onAudioDrawerOutsidePointerDown,
       true,
     );
-    document.addEventListener("wheel", onAudioDrawerOutsideWheel, true);
+    // `passive: true` keeps WebKit's off-main-thread scrolling while the
+    // drawer is open: WKWebView (unlike Chrome) honors the non-passive
+    // default for document-level wheel listeners, which would force every
+    // wheel tick through a synchronous main-thread dispatch. The handler
+    // never calls preventDefault, so passive is behavior-preserving. The old
+    // `scroll` listener was inherently passive — don't regress that.
+    document.addEventListener("wheel", onAudioDrawerOutsideWheel, {
+      capture: true,
+      passive: true,
+    });
     return () => {
       document.removeEventListener(
         "pointerdown",
         onAudioDrawerOutsidePointerDown,
         true,
       );
-      document.removeEventListener("wheel", onAudioDrawerOutsideWheel, true);
+      document.removeEventListener("wheel", onAudioDrawerOutsideWheel, {
+        capture: true,
+      });
     };
   });
 
