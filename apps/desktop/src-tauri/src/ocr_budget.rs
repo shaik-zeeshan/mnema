@@ -655,6 +655,7 @@ fn execution_event_for_outcome(
             (&completion.job, "completed", Some(&completion.result))
         }
         ::app_infra::ProcessingJobRunOutcome::Failed(job) => (job, "failed", None),
+        ::app_infra::ProcessingJobRunOutcome::RequeuedForLiveness(job) => (job, "requeued", None),
     };
     let parsed_payload =
         ::app_infra::FrozenOcrPayload::from_payload_json(job.payload_json.as_deref());

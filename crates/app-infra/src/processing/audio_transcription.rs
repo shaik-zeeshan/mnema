@@ -146,7 +146,12 @@ impl super::ProcessorBackend for AudioTranscriptionProcessorBackend {
 }
 
 fn map_provider_result<T>(result: ProviderResult<T>) -> Result<T> {
-    result.map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))
+    result.map_err(|error| match error {
+        audio_transcription::TranscriptionError::TransientLiveness(message) => {
+            AppInfraError::AudioTranscriptionTransientLiveness(message)
+        }
+        other => AppInfraError::AudioTranscriptionEngine(other.to_string()),
+    })
 }
 
 #[cfg(test)]

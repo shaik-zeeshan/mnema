@@ -1694,6 +1694,73 @@ impl ProcessingStore {
         Ok(Some(requeued))
     }
 
+    /// Requeue a **running** job as a transient-liveness retry (ADR 0048): status running→queued,
+    /// deferred by the processor's backoff, with `failure_count` deliberately UNTOUCHED so an
+    /// offline or mis-keyed stretch never exhausts a segment's failure cap. Distinct from the
+    /// failure lane (`requeue_failed_job_within_attempt_cap`), which is gated on and increments
+    /// `failure_count`. The segment waits indefinitely, exactly like one waiting for a model.
+    pub(crate) async fn requeue_job_for_transient_liveness(
+        &self,
+        job_id: i64,
+        reason: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let mut transaction = self.db.begin_write().await?;
+
+        let job = get_processing_job_optional(&mut *transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+
+        if job.status != ProcessingJobStatus::Running {
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &job.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        // Reuse the processor's saturating backoff schedule (no new tuning constants). Because
+        // `failure_count` is never incremented on this lane, it selects the first backoff step.
+        let backoff_seconds = failure_retry_policy_for_processor(&job.processor)
+            .map(|policy| policy.backoff_seconds(job.failure_count))
+            .unwrap_or(0);
+
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'queued', \
+                 last_error = ?2, \
+                 next_attempt_at = datetime(CURRENT_TIMESTAMP, ?3), \
+                 queued_at = CURRENT_TIMESTAMP, \
+                 started_at = NULL, \
+                 finished_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'running'",
+        )
+        .bind(job_id)
+        .bind(reason)
+        .bind(format!("+{backoff_seconds} seconds"))
+        .execute(&mut *transaction)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut *transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        delete_processing_result_for_job(&mut *transaction, job_id).await?;
+
+        let job = get_processing_job_optional(&mut *transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+        transaction.commit().await?;
+        Ok(job)
+    }
+
     /// Test-only: clear a job's retry backoff so the automatic queue drain treats
     /// it as immediately eligible again, simulating the backoff window elapsing
     /// without waiting in wall-clock time.
@@ -3272,6 +3339,57 @@ mod tests {
                 .expect("legacy sherpa job should be claimable once unlocked");
             assert_eq!(claimed.id, job.id);
             assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    /// ADR 0048: a transient-liveness requeue must return a running job to `queued` without
+    /// spending a failure attempt, and (once its backoff elapses) the job must be claimable again.
+    #[test]
+    fn transient_liveness_requeue_returns_job_to_queued_without_spending_failure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            let claimed = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+
+            let requeued = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 0,
+                "transient liveness must never spend a failure attempt"
+            );
+            assert_eq!(requeued.last_error.as_deref(), Some("offline"));
+
+            // The requeue is deferred by a backoff window; clear it, then confirm the job is
+            // claimable again — the segment simply waits, never terminally failing.
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable again");
+            assert_eq!(reclaimed.id, job.id);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+            assert_eq!(reclaimed.failure_count, 0);
         });
     }
 }

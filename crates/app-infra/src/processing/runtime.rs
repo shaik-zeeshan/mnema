@@ -7,6 +7,9 @@ use crate::{AppInfraError, Result};
 pub enum ProcessingJobRunOutcome {
     Completed(ProcessingJobCompletion),
     Failed(ProcessingJob),
+    /// A transient-liveness condition (ADR 0048): the job was requeued with backoff WITHOUT
+    /// spending a failure attempt. Not terminal — the segment waits and retries indefinitely.
+    RequeuedForLiveness(ProcessingJob),
 }
 
 #[derive(Clone)]
@@ -109,6 +112,16 @@ impl ProcessingRuntime {
                 self.store.complete_job(job.id, &result).await?,
             )),
             Err(error) => {
+                if error.is_transient_liveness() {
+                    // ADR 0048: an environmental failure (offline/timeout/rate-limit/5xx, or a
+                    // rejected key for a cloud provider). Requeue with backoff without spending a
+                    // failure attempt so an offline stretch never burns a segment's retry cap.
+                    let requeued = self
+                        .store
+                        .requeue_job_for_transient_liveness(job.id, Some(&error.to_string()))
+                        .await?;
+                    return Ok(ProcessingJobRunOutcome::RequeuedForLiveness(requeued));
+                }
                 let failed = self
                     .store
                     .mark_job_failed(job.id, Some(&error.to_string()))
@@ -257,6 +270,36 @@ mod tests {
         ) -> Result<ProcessingResultDraft> {
             Err(AppInfraError::AudioTranscriptionEngine(
                 "audio engine failed".to_string(),
+            ))
+        }
+    }
+
+    /// A backend that always reports a transient-liveness (ADR 0048) condition, used to exercise
+    /// the no-count requeue lane (offline/mis-keyed cloud provider) versus genuine failure.
+    #[derive(Debug)]
+    struct TransientLivenessBackend {
+        processor: &'static str,
+    }
+
+    impl TransientLivenessBackend {
+        fn new(processor: &'static str) -> Self {
+            Self { processor }
+        }
+    }
+
+    #[async_trait]
+    impl crate::ProcessorBackend for TransientLivenessBackend {
+        fn processor(&self) -> &'static str {
+            self.processor
+        }
+
+        async fn process(
+            &self,
+            _store: &ProcessingStore,
+            _job: &crate::ProcessingJob,
+        ) -> Result<ProcessingResultDraft> {
+            Err(AppInfraError::AudioTranscriptionTransientLiveness(
+                "offline".to_string(),
             ))
         }
     }
@@ -1210,6 +1253,55 @@ mod tests {
                 .await
                 .expect("runtime poll should succeed")
                 .is_none());
+        });
+    }
+
+    #[test]
+    fn transient_liveness_error_requeues_without_spending_a_failure_attempt() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-audio-transient-liveness");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register_arc(Arc::new(TransientLivenessBackend::new(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))),
+            );
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A transient-liveness error requeues (never terminal), leaving the failure cap alone.
+            let ProcessingJobRunOutcome::RequeuedForLiveness(requeued) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt the audio job")
+                .expect("a queued audio job should exist")
+            else {
+                panic!("expected a transient-liveness requeue, not a terminal failure");
+            };
+            assert_eq!(requeued.id, job.id);
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 0,
+                "transient liveness must never spend a failure attempt"
+            );
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(after.status, ProcessingJobStatus::Queued);
+            assert_eq!(after.failure_count, 0);
         });
     }
 
