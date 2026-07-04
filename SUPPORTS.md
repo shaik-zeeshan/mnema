@@ -123,7 +123,7 @@ Research notes:
 
 ### Bring-up / compilation
 
-- [~] Add Windows CI job for `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`, `cargo check --workspace --all-targets`, and `bun run check`. The `windows-check` job in `.github/workflows/type-check.yml` runs `cargo check --workspace --all-targets` plus `cargo test` of the platform-neutral crates; the manifest-path check and `bun run check` are still outstanding.
+- [x] Add Windows CI job for `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml`, `cargo check --workspace --all-targets`, and `bun run check`. The `windows-check` job in `.github/workflows/type-check.yml` (#77) runs `cargo check --workspace --all-targets` (which covers the desktop crate — a workspace member — so a separate manifest-path check is redundant), builds the desktop lib (exercising the Windows ML native link), builds/links the CLI sidecar (SQLCipher/OpenSSL), and runs `cargo test` for the platform-neutral crates, the Windows capture crates, and the full `mnema` + `app-infra` suites. `bun run check` is deliberately not duplicated on Windows: svelte-check's result is platform-independent and the macOS "Full repo type check" job already runs it on every PR.
 - [ ] Audit all `cfg(target_os = "macos")` / non-mac stubs and ensure Windows builds cleanly with the desktop feature set.
 - [ ] Decide whether capture output remains `.mov`/`.m4a` or becomes Windows-native formats with schema/runtime support for extensions.
 - [ ] Remove user-facing “only macOS” errors once Windows adapters exist.

@@ -206,28 +206,24 @@ jobs:
           -p capture-screen
           -p media-decode
 
-      - name: Test Windows desktop-crate pipeline logic
-        # The mnema desktop crate (apps/desktop/src-tauri) holds the remaining
-        # Windows pipeline tests: the scrub-preview batch (#83/F08 — scaled
-        # per-offset timeout and partial-result survival when a chunk stops
-        # early) and the tray pause/resume exposure (F22). Scoped by test-name
-        # filter to those modules: the full mnema suite still carries pre-existing
-        # Unix-path test failures tracked by #77, so a broad `cargo test -p mnema`
-        # is deferred until that lands. The ML/native link these need was already
-        # built by the "Build desktop crate" step above (cargo test reuses it).
+      - name: Test full desktop-crate and app-infra suites
+        # The FULL `mnema` (apps/desktop/src-tauri) and `app-infra` test suites
+        # (#77): the pre-existing Unix-path failures that forced the old
+        # test-name filter are fixed (fixtures build native paths; the
+        # workspace-prefix DB matching uses `MAIN_SEPARATOR`). The ML/native
+        # link these need was already built by the "Build desktop crate" step
+        # above (cargo test reuses it).
         #
-        # DELIBERATELY NOT RUN HERE:
-        # native_capture::tests::windows_system_suspend_pauses_and_resumes_all_active_families.
-        # It hangs forever on the headless runner: its resume path
-        # (resume_runtime_from_system_suspend -> start_windows_active_segment)
-        # reaches a real capture_screen / WASAPI restart with no timeout when no
-        # display or audio endpoint is present (it passes locally, where the
-        # device answers instantly). Excluded to keep CI green; the headless-safe
-        # fix (full #[cfg(test)] start-hook coverage, or a bounded wait on the
-        # restart) is tracked with the #130 native_capture work / #77 CI
-        # hardening. Re-add the `native_capture::tests::windows_system_suspend`
-        # filter term once that lands.
-        run: >
-          cargo test --locked -p mnema --lib --
-          app_infra::frame_preview
-          status_bar::tests
+        # No ORT_DYLIB_PATH is set here, deliberately: the desktop build loads
+        # ONNX Runtime dynamically (`ort/load-dynamic`, #137), and with the env
+        # unset the Silero VAD adapter fails fast to its non-ORT fallback
+        # (capture-vad `dynamic-ort` feature) instead of letting `ort`
+        # LoadLibrary a system `onnxruntime.dll` — the eager load that
+        # previously deadlocked `windows_system_suspend_*` on this headless
+        # runner (misdiagnosed as a WGC/WASAPI restart; the capture starts are
+        # fully hook-covered in tests). No mnema/app-infra test runs real ORT
+        # inference, so the suites need no staged DLL.
+        #
+        # Bounded so any future headless hang fails in minutes, not the job's 90.
+        timeout-minutes: 30
+        run: cargo test --locked -p mnema --lib -p app-infra
