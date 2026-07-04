@@ -130,6 +130,10 @@
     if (rec.draftTranscriptionProvider === "deepgram") {
       if (!deepgramLoaded) {
         deepgramLoaded = true;
+        // Start each visit with a clean action-result slate — these transient messages only render
+        // inside the deepgram block, so without this they'd re-appear stale on a later re-entry.
+        deepgramCheckResult = null;
+        deepgramSaveError = null;
         void loadDeepgramKeyState();
       }
     } else {

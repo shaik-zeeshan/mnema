@@ -95,6 +95,13 @@ export function defaultTranscriptionModelIdForProvider(provider: string): string
   return null;
 }
 
+// Deepgram is the only cloud transcription provider, so switching *to* it (from
+// any on-device provider) gates on a consent dialog; switching between on-device
+// providers, or re-selecting Deepgram when already on it, does not.
+export function shouldConfirmDeepgramSwitch(next: string, current: string): boolean {
+  return next === "deepgram" && current !== "deepgram";
+}
+
 // A Speaker Model Preset is keyed by (provider, modelId); `__os_managed__`
 // stands in for a null modelId.
 export function speakerPresetKey(provider: string, modelId: string | null): string {
