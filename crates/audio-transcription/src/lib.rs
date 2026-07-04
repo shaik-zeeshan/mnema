@@ -31,6 +31,7 @@ pub const DOWNLOADING_MARKER_FILE_NAME: &str = ".download-in-progress";
 pub const LOCAL_WHISPER_PROVIDER_ID: &str = "local_whisper";
 pub const APPLE_SPEECH_ON_DEVICE_PROVIDER_ID: &str = "apple_speech_on_device";
 pub const PARAKEET_PROVIDER_ID: &str = "parakeet";
+pub const DEEPGRAM_PROVIDER_ID: &str = "deepgram";
 
 const MANIFEST_VERSION: u32 = 1;
 
@@ -332,6 +333,24 @@ pub fn builtin_model_manifest() -> AudioTranscriptionModelManifest {
                     },
                     artifact: Some(parakeet_v3_onnx_int8_artifact()),
                 },
+            },
+            AudioTranscriptionModelDescriptor {
+                provider: DEEPGRAM_PROVIDER_ID.to_string(),
+                model_id: Some("nova-3".to_string()),
+                display_name: "Deepgram Nova-3".to_string(),
+                description: "Deepgram's latest cloud model. Default. Multilingual detection via `language=multi`. Audio is uploaded to your Deepgram account.".to_string(),
+                license_label: None,
+                source_url: Some("https://developers.deepgram.com/docs/models-languages-overview".to_string()),
+                management: ModelManagement::OsManaged,
+            },
+            AudioTranscriptionModelDescriptor {
+                provider: DEEPGRAM_PROVIDER_ID.to_string(),
+                model_id: Some("nova-2".to_string()),
+                display_name: "Deepgram Nova-2".to_string(),
+                description: "Deepgram cloud model with a broader per-language list (`detect_language`). Audio is uploaded to your Deepgram account.".to_string(),
+                license_label: None,
+                source_url: Some("https://developers.deepgram.com/docs/models-languages-overview".to_string()),
+                management: ModelManagement::OsManaged,
             },
         ],
     }
