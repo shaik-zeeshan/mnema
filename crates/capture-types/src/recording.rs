@@ -286,6 +286,7 @@ pub enum AudioTranscriptionProvider {
     LocalWhisper,
     AppleSpeechOnDevice,
     Parakeet,
+    Deepgram,
 }
 
 pub fn default_audio_transcription_enabled() -> bool {

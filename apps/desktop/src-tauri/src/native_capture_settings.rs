@@ -228,6 +228,17 @@ fn validate_audio_transcription_settings(
             }
             Some(model_id.to_string())
         }
+        AudioTranscriptionProvider::Deepgram => {
+            let model_id = model_id.unwrap_or("nova-3");
+            if !matches!(model_id, "nova-3" | "nova-2") {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: "transcription.modelId must be nova-3 or nova-2 for deepgram"
+                        .to_string(),
+                });
+            }
+            Some(model_id.to_string())
+        }
         AudioTranscriptionProvider::AppleSpeechOnDevice => None,
     };
 
