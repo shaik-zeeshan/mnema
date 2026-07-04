@@ -12,28 +12,19 @@ const base = {
   insidePopover: false,
   onAudioBar: false,
   popoverOpen: false,
-  insideTimelineSurface: false,
 };
 
-describe("audio drawer dismissal — browse-frames-while-listening contract", () => {
-  it("keeps the drawer open when the user wheel-scrubs the timeline rail/stage", () => {
-    expect(audioDrawerWheelAction({ ...base, insideTimelineSurface: true })).toBe(
-      "ignore",
+describe("audio drawer dismissal — outside interaction closes", () => {
+  it("closes the drawer when the user wheel-scrubs the timeline rail/stage", () => {
+    expect(audioDrawerWheelAction({ ...base })).toBe("close-drawer");
+  });
+  it("closes the drawer when the user clicks a frame on the rail/stage", () => {
+    expect(audioDrawerPointerDownAction({ ...base })).toBe("close-drawer");
+  });
+  it("collapses an open popover first when scrubbing the rail", () => {
+    expect(audioDrawerWheelAction({ ...base, popoverOpen: true })).toBe(
+      "collapse-popover",
     );
-  });
-  it("keeps the drawer open when the user clicks a frame on the rail/stage", () => {
-    expect(
-      audioDrawerPointerDownAction({ ...base, insideTimelineSurface: true }),
-    ).toBe("ignore");
-  });
-  it("still collapses an open popover when scrubbing the rail (before the carve-out applies)", () => {
-    expect(
-      audioDrawerWheelAction({
-        ...base,
-        insideTimelineSurface: true,
-        popoverOpen: true,
-      }),
-    ).toBe("collapse-popover");
   });
 });
 

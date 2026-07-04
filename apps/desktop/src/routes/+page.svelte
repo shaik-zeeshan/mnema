@@ -2431,26 +2431,15 @@
   }
 
   // ─── Outside-click & wheel dismissal ─────────────────────────────────────
-  // While the drawer is open, a pointerdown or wheel genuinely outside it
-  // dismisses it (an open speaker-actions popover collapses first, so
-  // dismissal is layered — see audioDrawerPointerDownAction/
-  // audioDrawerWheelAction in lib/audio-drawer-dismiss.ts for the policy and
-  // its tests). Two interactions are deliberately NOT dismissals: clicking an
-  // audio bar is a SWITCH (the bar's own click handler reselects), and
-  // scrubbing/clicking the rail or stage keeps the player open so the user
-  // can browse frames while listening (the rail scrolls as it scrubs, which
-  // would otherwise slam the drawer shut on every wheel tick). We listen for
-  // `wheel` rather than `scroll` because the rail is also scrolled
-  // programmatically (scrub conversion, jump-to-frame, resize re-anchoring,
-  // search-result lane moves) and those must not read as a user's intent to
-  // dismiss.
-  function isWithinTimelineSurface(node: Node): boolean {
-    return (
-      stageEl?.contains(node) === true ||
-      timelineRailWrap?.contains(node) === true
-    );
-  }
-
+  // While the drawer is open, a pointerdown or wheel outside it dismisses it
+  // (an open speaker-actions popover collapses first, so dismissal is
+  // layered — see audioDrawerPointerDownAction/audioDrawerWheelAction in
+  // lib/audio-drawer-dismiss.ts for the policy and its tests). Clicking an
+  // audio bar is the one non-dismissal: a SWITCH (the bar's own click handler
+  // reselects). We listen for `wheel` rather than `scroll` because the rail
+  // is also scrolled programmatically (scrub conversion, jump-to-frame,
+  // resize re-anchoring, search-result lane moves) and those must not read
+  // as a user's intent to dismiss.
   function audioDrawerDismissContext(target: Node): AudioDrawerDismissContext {
     return {
       drawerOpen: selectedAudioSegmentId != null,
@@ -2462,7 +2451,6 @@
         target instanceof Element &&
         target.closest(".timeline-rail__audio-bar") != null,
       popoverOpen: speakerActionsOpenIndex != null,
-      insideTimelineSurface: isWithinTimelineSurface(target),
     };
   }
 
