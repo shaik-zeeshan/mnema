@@ -95,11 +95,25 @@
     }, HIDE_DELAY_MS);
   }
 
+  // Coalesce measurement to one pass per animation frame. `sync()` reads layout
+  // for every `[data-at-ms]` row (getBoundingClientRect per row) — a full day is
+  // hundreds of rows — so running it synchronously on every scroll event thrashes
+  // layout. One rAF-scheduled pass per frame bounds it to the display refresh.
+  let syncRaf: number | null = null;
+  function scheduleSync() {
+    if (syncRaf !== null) return;
+    syncRaf = requestAnimationFrame(() => {
+      syncRaf = null;
+      sync();
+      if (scrollable) {
+        visible = true;
+        restartHideTimer();
+      }
+    });
+  }
+
   function onScroll() {
-    sync();
-    if (!scrollable) return;
-    visible = true;
-    restartHideTimer();
+    scheduleSync();
   }
 
   $effect(() => {
@@ -110,11 +124,13 @@
     if (!c) return;
     c.addEventListener("scroll", onScroll, { passive: true });
     // Fires once on observe, giving us the initial scrollable/position state.
-    const ro = new ResizeObserver(() => sync());
+    const ro = new ResizeObserver(() => scheduleSync());
     ro.observe(c);
     return () => {
       c.removeEventListener("scroll", onScroll);
       ro.disconnect();
+      if (syncRaf !== null) cancelAnimationFrame(syncRaf);
+      syncRaf = null;
       clearTimeout(hideTimer);
       container = null;
     };

@@ -76,6 +76,18 @@ function frameTs(frame: FrameSummaryDto): number | null {
 	return Number.isNaN(ms) ? null : ms;
 }
 
+/** First index `i` in the ascending array with `sorted[i] >= target` (else length). */
+function lowerBound(sorted: number[], target: number): number {
+	let lo = 0;
+	let hi = sorted.length;
+	while (lo < hi) {
+		const mid = (lo + hi) >>> 1;
+		if (sorted[mid] < target) lo = mid + 1;
+		else hi = mid;
+	}
+	return lo;
+}
+
 export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	const { activities, frames, coveredUntilMs, engineAvailable, engineReason, dayStartMs, dayEndMs } =
 		input;
@@ -93,15 +105,17 @@ export function buildJournalDay(input: JournalDayInput): JournalDayModel {
 	// Ownership is by start day, not overlap: a midnight-crossing activity is
 	// already split at the boundary by derivation, so overlap semantics would
 	// render yesterday's 11:5x PM half a second time at the top of today.
-	// ponytail: O(activities × frames) frame-count scan — trivial for a single
-	// day; binary-search the sorted timestamps if a day ever gets huge.
+	// `dayFrameTs` is sorted ascending, so each activity's frame count is a
+	// binary-search span — O(activities × log frames), not an O(activities ×
+	// frames) full scan. A full capture day is tens of thousands of frames, and
+	// this model recomputes on every `user_context_changed` beat.
 	const slots: JournalCardSlot[] = activities
 		.filter((a) => a.startedAtMs >= dayStartMs && a.startedAtMs < dayEndMs)
 		.sort((a, b) => a.startedAtMs - b.startedAtMs || a.endedAtMs - b.endedAtMs || a.id - b.id)
 		.map((activity) => {
-			const frameCount = dayFrameTs.filter(
-				(ts) => ts >= activity.startedAtMs && ts < activity.endedAtMs,
-			).length;
+			const lo = lowerBound(dayFrameTs, activity.startedAtMs);
+			const hi = lowerBound(dayFrameTs, activity.endedAtMs);
+			const frameCount = hi - lo;
 			return { activity, frameCount, expired: frameCount === 0 };
 		});
 

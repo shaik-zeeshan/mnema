@@ -87,6 +87,12 @@
     )}`,
   );
 
+  // Frame ids are stable for the loaded strip — derive them once so the
+  // per-tick pump effect below doesn't rebuild an O(strip) array on every
+  // playhead move (index changes ~speed× per second during playback and on
+  // every scrub pointermove; a long activity is thousands of frames).
+  const stripIds = $derived(strip.map((f) => f.id));
+
   const currentFrameId = $derived(strip[index]?.id ?? null);
   const currentMs = $derived(strip[index]?.ms ?? null);
   const currentPos = $derived(currentMs == null ? 0 : posFor(currentMs));
@@ -316,11 +322,10 @@
   });
 
   // Re-pump the preview lookahead whenever the strip loads or the playhead moves.
+  // `stripIds` only recomputes when the strip changes, so a playback tick / scrub
+  // move here is O(lookahead), not O(strip).
   $effect(() => {
-    loader.pump(
-      strip.map((f) => f.id),
-      index,
-    );
+    loader.pump(stripIds, index);
   });
 
   // Load display metadata for the current frame.
