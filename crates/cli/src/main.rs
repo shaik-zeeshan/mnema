@@ -14,7 +14,7 @@ use tokio::process::Command;
 #[cfg(any(unix, windows))]
 use tokio::time::timeout;
 #[cfg(any(unix, windows))]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 #[cfg(unix)]
 use tokio::net::UnixStream;
 use uuid::Uuid;
@@ -22,6 +22,11 @@ use uuid::Uuid;
 const APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 #[cfg(any(unix, windows))]
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Upper bound on the authorization response we will buffer, mirroring the
+/// server's `REQUEST_MAX_BYTES` cap. Bounds memory if a hostile endpoint (e.g. a
+/// pipe-name squatter) streams an unbounded newline-free response.
+#[cfg(any(unix, windows))]
+const RESPONSE_MAX_BYTES: u64 = 64 * 1024;
 const BROKER_AUTHORIZATION_REQUEST_FILE_NAME: &str = "broker-authorization-request.json";
 const INFERRED_AGENT_ENV_LABELS: &[(&str, &str)] = &[
     ("CLAUDECODE", "Claude Code"),
@@ -576,7 +581,26 @@ async fn request_authorization(
         Err(first_error) if should_retry_authorization_with_app_launch(&first_error) => {
             let _ = launch_mnema_app().await;
             let _ = write_legacy_wake_request();
-            authorization_retry_result(first_error, send_authorization_request(&request).await)
+            // The launch command returns before the app has bound its endpoint —
+            // macOS `open -b` waits for launch, but Windows `cmd /C start` and
+            // Linux `xdg-open` return immediately, so a single retry races a
+            // cold-starting app and almost always reports `app_unavailable`. Poll
+            // for a bounded window, stopping early on any non-unavailable outcome
+            // so real decisions (approved/denied/timeout) propagate at once.
+            let mut result = send_authorization_request(&request).await;
+            #[cfg(any(unix, windows))]
+            {
+                const LAUNCH_RETRY_ATTEMPTS: u32 = 30;
+                let mut attempts = 0;
+                while attempts < LAUNCH_RETRY_ATTEMPTS
+                    && matches!(&result, Err(error) if should_retry_authorization_with_app_launch(error))
+                {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    result = send_authorization_request(&request).await;
+                    attempts += 1;
+                }
+            }
+            authorization_retry_result(first_error, result)
         }
         Err(first_error) => Err(first_error),
     }
@@ -609,7 +633,7 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
     let mut response = String::new();
     timeout(
         AUTHORIZATION_TIMEOUT,
-        BufReader::new(stream).read_line(&mut response),
+        BufReader::new(stream.take(RESPONSE_MAX_BYTES)).read_line(&mut response),
     )
     .await
     .map_err(|_| timeout_error())?
@@ -635,23 +659,28 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
 
 /// Pure named-pipe name derivation, unit-testable on every OS. Must match the
 /// desktop server's derivation byte-for-byte.
+#[cfg(any(test, windows))]
 fn pipe_name_for(identifier: &str, sid: &str) -> String {
     format!(r"\\.\pipe\{identifier}-{sid}-cli-access")
 }
 
 // Win32 error codes returned when opening the client end of a named pipe.
 /// `ERROR_FILE_NOT_FOUND`: no server instance exists — the app is not running.
+#[cfg(any(test, windows))]
 const ERROR_FILE_NOT_FOUND: i32 = 2;
 /// `ERROR_PIPE_BUSY`: every server instance is busy — a transient race while the
 /// server pre-creates the next instance, so the caller should retry.
+#[cfg(any(test, windows))]
 const ERROR_PIPE_BUSY: i32 = 231;
 
+#[cfg(any(test, windows))]
 #[derive(Debug, PartialEq)]
 enum PipeConnectOutcome {
     Unavailable,
     Retry,
 }
 
+#[cfg(any(test, windows))]
 fn classify_pipe_open_error(raw_os_error: Option<i32>) -> PipeConnectOutcome {
     match raw_os_error {
         Some(ERROR_PIPE_BUSY) => PipeConnectOutcome::Retry,
@@ -697,9 +726,12 @@ fn current_user_sid_string() -> Result<String, CliError> {
             return Err(app_unavailable_error());
         }
 
-        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        // `buffer` is a `Vec<u8>` (alignment 1); `TOKEN_USER` contains a pointer
+        // and needs pointer alignment, so read it out with `read_unaligned`
+        // rather than forming a (possibly-misaligned) reference, which is UB.
+        let token_user = ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER);
         let mut sid_wide: *mut u16 = ptr::null_mut();
-        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_wide) == 0 {
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_wide) == 0 || sid_wide.is_null() {
             CloseHandle(token);
             return Err(app_unavailable_error());
         }
@@ -722,7 +754,9 @@ fn current_user_sid_string() -> Result<String, CliError> {
 #[cfg(windows)]
 fn authorization_pipe_name() -> Result<String, CliError> {
     if let Ok(name) = env::var("MNEMA_CLI_ACCESS_PIPE_NAME") {
-        return Ok(name);
+        if !name.is_empty() {
+            return Ok(name);
+        }
     }
     Ok(pipe_name_for(APP_IDENTIFIER, &current_user_sid_string()?))
 }
@@ -733,17 +767,15 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
 
     let pipe_name = authorization_pipe_name()?;
 
+    // `ClientOptions::open` is synchronous (an immediate `CreateFile`), so it is
+    // called directly — wrapping it in `tokio::time::timeout` would register a
+    // timer that can never fire, since the future has no await point to preempt.
     // The server pre-creates the next instance, so a busy pipe is a transient
     // race; retry a bounded number of times before giving up.
     const MAX_RETRIES: u32 = 3;
     let mut attempt = 0;
-    let client = loop {
-        match timeout(Duration::from_secs(2), async {
-            ClientOptions::new().open(&pipe_name)
-        })
-        .await
-        .map_err(|_| app_unavailable_error())?
-        {
+    let mut client = loop {
+        match ClientOptions::new().open(&pipe_name) {
             Ok(client) => break client,
             Err(error) => match classify_pipe_open_error(error.raw_os_error()) {
                 PipeConnectOutcome::Retry if attempt < MAX_RETRIES => {
@@ -761,7 +793,6 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
         message: error.to_string(),
         retryable: false,
     })?;
-    let mut client = client;
     client
         .write_all(format!("{raw}\n").as_bytes())
         .await
@@ -769,7 +800,7 @@ async fn send_authorization_request(request: &AuthorizationRequest) -> Result<()
     let mut response = String::new();
     timeout(
         AUTHORIZATION_TIMEOUT,
-        BufReader::new(client).read_line(&mut response),
+        BufReader::new(client.take(RESPONSE_MAX_BYTES)).read_line(&mut response),
     )
     .await
     .map_err(|_| timeout_error())?

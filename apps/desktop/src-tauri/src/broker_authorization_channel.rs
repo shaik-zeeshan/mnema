@@ -19,7 +19,7 @@ use tauri_plugin_dialog::{
 };
 use tokio::sync::oneshot;
 #[cfg(unix)]
-use tokio::net::{UnixListener as TokioUnixListener, UnixStream};
+use tokio::net::UnixListener as TokioUnixListener;
 #[cfg(any(unix, windows))]
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -220,15 +220,8 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
                 return Ok(());
             }
         };
-        let pipe_name = match cli_access_pipe_name(app.config().identifier.as_str()) {
-            Ok(name) => name,
-            Err(error) => {
-                tauri_plugin_log::log::error!(
-                    "failed to resolve CLI access pipe name: {error}"
-                );
-                return Ok(());
-            }
-        };
+        // Reuse the SID resolved above rather than looking it up a second time.
+        let pipe_name = cli_access_pipe_name(app.config().identifier.as_str(), &sid);
 
         // Protected DACL granting GENERIC_ALL only to the current user — no
         // Everyone, no anonymous, no inherited ACE can widen it.
@@ -287,33 +280,31 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
                 }
             };
             loop {
-                if server.connect().await.is_err() {
+                if let Err(error) = server.connect().await {
+                    // A failed connect leaves this instance unusable; replace it
+                    // with a fresh one rather than re-polling the same handle in
+                    // a tight (potentially 100% CPU) loop, keeping the channel
+                    // alive rather than killing it for the app's lifetime.
+                    tauri_plugin_log::log::error!("CLI access pipe connect failed: {error}");
+                    server =
+                        create_next_pipe_instance_with_backoff(&pipe_name, security_attributes_addr)
+                            .await;
                     continue;
                 }
                 let connected = server;
-                // Pre-create the next instance (with the same DACL, without
-                // `first_pipe_instance`) before handling this one, so a second
-                // client can connect and receive the fast `busy` response.
-                server = match unsafe {
-                    ServerOptions::new()
-                        .reject_remote_clients(true)
-                        .create_with_security_attributes_raw(
-                            &pipe_name,
-                            security_attributes_addr as *mut c_void,
-                        )
-                } {
-                    Ok(next) => next,
-                    Err(error) => {
-                        tauri_plugin_log::log::error!(
-                            "failed to create next CLI access pipe instance: {error}"
-                        );
-                        return;
-                    }
-                };
-                let app = app.clone();
+                // Hand off the connected client first, so a failure to create the
+                // *next* listening instance can never drop an already-connected
+                // client or permanently kill the channel.
+                let handler_app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    handle_connection(app, connected).await;
+                    handle_connection(handler_app, connected).await;
                 });
+                // Bring up the next listening instance (same DACL, no
+                // `first_pipe_instance`) so a concurrent second client can
+                // connect and get the fast `busy` response.
+                server =
+                    create_next_pipe_instance_with_backoff(&pipe_name, security_attributes_addr)
+                        .await;
             }
         });
         Ok(())
@@ -801,8 +792,10 @@ fn current_user_sid_string() -> Result<String, String> {
         }
         CloseHandle(token);
 
-        // The SID data lives inside `buffer`, which outlives this borrow.
-        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        // `buffer` is a `Vec<u8>` (alignment 1); `TOKEN_USER` contains a pointer
+        // and needs pointer alignment, so read it out with `read_unaligned`
+        // rather than forming a (possibly-misaligned) reference, which is UB.
+        let token_user = std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER);
         let mut sid_pwstr: windows_sys::core::PWSTR = std::ptr::null_mut();
         if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_pwstr) == 0 || sid_pwstr.is_null() {
             return Err("ConvertSidToStringSidW failed".to_string());
@@ -817,15 +810,53 @@ fn current_user_sid_string() -> Result<String, String> {
     }
 }
 
-/// The CLI-access pipe name, honoring a `MNEMA_CLI_ACCESS_PIPE_NAME` override for
-/// tests (returned verbatim); otherwise derived from the app identifier and the
-/// current user's SID.
+/// The CLI-access pipe name, honoring a non-empty `MNEMA_CLI_ACCESS_PIPE_NAME`
+/// override for tests (returned verbatim); otherwise derived from the app
+/// identifier and the already-resolved current-user SID.
 #[cfg(windows)]
-fn cli_access_pipe_name(identifier: &str) -> Result<String, String> {
+fn cli_access_pipe_name(identifier: &str, sid: &str) -> String {
     if let Ok(name) = std::env::var("MNEMA_CLI_ACCESS_PIPE_NAME") {
-        return Ok(name);
+        if !name.is_empty() {
+            return name;
+        }
     }
-    Ok(pipe_name_for(identifier, &current_user_sid_string()?))
+    pipe_name_for(identifier, sid)
+}
+
+/// Create the next listening pipe instance (same DACL, without
+/// `first_pipe_instance`), retrying transient failures with a capped
+/// exponential backoff so the channel stays alive rather than dying on a
+/// one-off error — while bounding log volume to at most one line per backoff
+/// interval (≤ 30 s at the cap).
+#[cfg(windows)]
+async fn create_next_pipe_instance_with_backoff(
+    pipe_name: &str,
+    security_attributes_addr: usize,
+) -> tokio::net::windows::named_pipe::NamedPipeServer {
+    use std::ffi::c_void;
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut delay = Duration::from_millis(200);
+    loop {
+        let result = unsafe {
+            ServerOptions::new()
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    pipe_name,
+                    security_attributes_addr as *mut c_void,
+                )
+        };
+        match result {
+            Ok(server) => return server,
+            Err(error) => {
+                tauri_plugin_log::log::error!(
+                    "failed to create CLI access pipe instance, retrying in {delay:?}: {error}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -960,6 +991,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(unix, windows))]
     #[test]
     fn request_line_reader_rejects_oversized_requests() {
         tauri::async_runtime::block_on(async {
