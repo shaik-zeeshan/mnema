@@ -567,14 +567,6 @@ fn current_onboarding_state(
     state
 }
 
-#[cfg(unix)]
-pub fn current_onboarding_state_for_app(
-    app: &tauri::AppHandle,
-    store: &OnboardingStateStore,
-) -> OnboardingState {
-    current_onboarding_state(app, store)
-}
-
 fn persist_onboarding_state(
     app: &tauri::AppHandle,
     store: &OnboardingStateStore,
