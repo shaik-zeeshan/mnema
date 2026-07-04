@@ -19,6 +19,13 @@ export interface AccessSettings {
 	/** Per-question Ask AI tool-call cap. `0` disables the cap (unlimited). */
 	askAiMaxToolCalls: number;
 	/**
+	 * Whether Ask AI may re-fetch a page the user actually visited (keyed by an
+	 * opaque capture id — the model never supplies a URL) to check its current
+	 * state. Opt-in; off by default. The address is stripped of secrets before it
+	 * leaves the device.
+	 */
+	askAiWebFetchEnabled: boolean;
+	/**
 	 * rig-core model id Quick Recall should use against the default Reasoning
 	 * Engine (e.g. `claude-haiku-4-5`). `null`/empty lets the engine pick its
 	 * configured default model. (Was historically a PI `provider:modelId` pair;
@@ -86,6 +93,50 @@ export interface AiEngineRef {
 }
 
 /**
+ * The transport an MCP tool connector speaks. `stdio` spawns a child process;
+ * `http` connects to a streamable-HTTP MCP endpoint. (An MCP server is a *tool
+ * connector*, never an inference "provider".)
+ */
+export type McpTransport = "stdio" | "http";
+
+/** One non-secret stdio environment variable for a connector's child process. */
+export interface McpEnvVar {
+	name: string;
+	value: string;
+}
+
+/**
+ * One user-configured MCP tool connector (Workstream C). Flat by transport,
+ * mirroring `AiProviderConfig`. The single optional secret lives ONLY in the OS
+ * keychain keyed by `id`; never here.
+ */
+export interface McpServerConfig {
+	/**
+	 * Stable slug id (`[a-z0-9-]`), assigned once at creation. Keys the keychain
+	 * secret account AND the model-facing `mcp__<id>__<tool>` prefix, so the
+	 * charset is load-bearing.
+	 */
+	id: string;
+	/** User-facing display name. */
+	label: string;
+	/** Whether this connector is offered to the chat agent (disabling ≠ deleting). */
+	enabled: boolean;
+	transport: McpTransport;
+	/** stdio: the child-process command to spawn. */
+	command?: string | null;
+	/** stdio: arguments passed to `command`. */
+	args: string[];
+	/** stdio: non-secret environment variables for the child process. */
+	env: McpEnvVar[];
+	/** http: the streamable-HTTP MCP endpoint URL. */
+	url?: string | null;
+	/** stdio: the env var name the single keychain secret is delivered as. */
+	secretEnvName?: string | null;
+	/** Tool curation: `null`/absent = default-offer; a list = exactly those. */
+	enabledTools?: string[] | null;
+}
+
+/**
  * The provider-centric AI settings domain (ADR 0034): a master switch, the
  * flat list of connected providers, and ONE global default model chosen from
  * the merged pool. Model resolution is thread pin → feature override → this
@@ -95,6 +146,8 @@ export interface AiRuntimeSettings {
 	enabled: boolean;
 	providers: AiProviderConfig[];
 	defaultModel: AiEngineRef | null;
+	/** User-configured MCP tool connectors (Workstream C). */
+	mcpServers: McpServerConfig[];
 }
 
 export interface UpdateAiRuntimeSettingsRequest {
@@ -103,6 +156,8 @@ export interface UpdateAiRuntimeSettingsRequest {
 	providers?: AiProviderConfig[];
 	/** Tri-state: absent = unchanged, `null` = clear, object = set. */
 	defaultModel?: AiEngineRef | null;
+	/** Replacement MCP connector list; omitting leaves the list unchanged. */
+	mcpServers?: McpServerConfig[];
 }
 
 /** Named Derivation Budget intensity tier for a cloud Reasoning Engine. */
@@ -415,6 +470,7 @@ export type UpdateDeveloperSettingsRequest = Partial<
 export interface UpdateAccessSettingsRequest {
 	askAiEnabled: boolean;
 	askAiMaxToolCalls: number;
+	askAiWebFetchEnabled: boolean;
 	/**
 	 * Selected Quick Recall model — a rig-core model id used against the default
 	 * Reasoning Engine (not a PI `provider:modelId` pair); empty clears to the

@@ -60,6 +60,7 @@ import {
   baseUrlHost,
   aiProviderInstanceLabel,
   newAiProviderId,
+  newMcpServerId,
 } from "./ai-providers";
 import type {
   CaptureSupport,
@@ -100,6 +101,7 @@ export class SettingsController {
     setDeveloperOptionsEnabled: (value) => setDeveloperOptionsEnabled(value),
     loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
+    refreshMcpServerSecretPresence: () => void this.aiRuntime.refreshMcpServerSecretPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
     loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
@@ -117,6 +119,7 @@ export class SettingsController {
   about = createAboutStore();
   aiRuntime = createAiRuntimeStore({
     getProviders: () => this.rec.draftAiProviders,
+    getMcpServers: () => this.rec.draftMcpServers,
     isCloudProviderKind: (kind) => this.isCloudAiProviderKind(kind),
     labelForProvider: (id) => this.aiProviderLabelById(id),
     loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
@@ -317,6 +320,52 @@ export class SettingsController {
         this.aiProviderRemoving = false;
       }
     }
+  }
+
+  // ─── MCP connectors ─────────────────────────────────────────────────────────
+  mcpServerIds = $derived(this.rec.draftMcpServers.map((s) => s.id));
+
+  addMcpServer(): void {
+    // ponytail: the id is slugged once (from the empty default label → "connector",
+    // "connector-2", …) and stays stable, because it keys the keychain secret and
+    // the `mcp__<id>__` tool prefix. Renaming the label does NOT re-slug — a later
+    // slice could offer a rename-with-migration if meaningful ids matter enough.
+    const id = newMcpServerId("", this.mcpServerIds);
+    this.rec.draftMcpServers = [
+      ...this.rec.draftMcpServers,
+      {
+        id,
+        label: "",
+        enabled: false,
+        transport: "stdio",
+        command: null,
+        args: [],
+        env: [],
+        url: null,
+        secretEnvName: null,
+        enabledTools: null,
+      },
+    ];
+    void this.aiRuntime.refreshMcpServerSecretPresence();
+  }
+
+  async removeMcpServer(id: string): Promise<void> {
+    const removed = this.rec.draftMcpServers.find((s) => s.id === id);
+    if (!removed) return;
+    const label = removed.label.trim() || id;
+    const confirmed = await confirm(
+      `Removing “${label}” deletes its saved secret from the macOS keychain right away and stops offering its tools to chat.`,
+      {
+        title: "Remove this connector?",
+        kind: "warning",
+        okLabel: "Remove & Delete Secret",
+        cancelLabel: "Keep Connector",
+      },
+    );
+    if (!confirmed) return;
+    this.rec.draftMcpServers = this.rec.draftMcpServers.filter((s) => s.id !== id);
+    // Tear down the keychain secret for the removed connector (best effort).
+    await this.aiRuntime.clearSecretForRemovedMcpServer(id);
   }
 
   // ─── Model-pool picker ──────────────────────────────────────────────────────

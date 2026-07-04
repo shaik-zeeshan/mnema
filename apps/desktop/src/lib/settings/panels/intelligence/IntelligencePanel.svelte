@@ -1,5 +1,6 @@
 <script lang="ts">
   import Providers from "./Providers.svelte";
+  import McpConnectors from "./McpConnectors.svelte";
   import AskAi from "./AskAi.svelte";
   import UserContext from "./UserContext.svelte";
   import Ocr from "./Ocr.svelte";
@@ -10,6 +11,7 @@
 
 <div class="settings-panel" id="settings-panel-intelligence">
   <Providers />
+  <McpConnectors />
   <AskAi />
   <UserContext />
   <Ocr />

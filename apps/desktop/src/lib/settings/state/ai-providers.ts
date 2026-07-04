@@ -106,3 +106,27 @@ export function newAiProviderId(kind: AiProviderKind, existingIds: readonly stri
   }
   return candidate;
 }
+
+/**
+ * Allocate a stable slug id for a new MCP connector, derived from its label. The
+ * charset is LOAD-BEARING: a later slice parses the model-facing
+ * `mcp__<id>__<tool>` prefix, so the id must be `[a-z0-9-]` only. Falls back to
+ * `connector` when the label has no usable characters, and suffixes on collision
+ * (`github`, `github-2`, …). Assigned once — renaming the label does NOT re-slug
+ * (the id keys the keychain secret, which must stay stable).
+ */
+export function newMcpServerId(label: string, existingIds: readonly string[]): string {
+  const base =
+    label
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "connector";
+  if (!existingIds.includes(base)) return base;
+  let suffix = 2;
+  let candidate = `${base}-${suffix}`;
+  while (existingIds.includes(candidate)) {
+    suffix += 1;
+    candidate = `${base}-${suffix}`;
+  }
+  return candidate;
+}

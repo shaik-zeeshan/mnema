@@ -27,6 +27,7 @@ import type {
   UpdateUserContextSettingsRequest,
   AiProviderConfig,
   AiEngineRef,
+  McpServerConfig,
   AppearanceSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
@@ -97,6 +98,23 @@ export type VideoDomainRequest = {
   videoBitrate?: VideoBitrateRequest;
 };
 
+// Map an MCP connector draft to its plain wire object (strips Svelte $state
+// proxies; deep-copies nested `args`/`env`). Same 1:1 shape both directions.
+function toMcpServerWire(server: McpServerConfig): McpServerConfig {
+  return {
+    id: server.id,
+    label: server.label ?? "",
+    enabled: server.enabled ?? false,
+    transport: server.transport,
+    command: server.command ?? null,
+    args: [...(server.args ?? [])],
+    env: (server.env ?? []).map((e) => ({ name: e.name, value: e.value })),
+    url: server.url ?? null,
+    secretEnvName: server.secretEnvName ?? null,
+    enabledTools: server.enabledTools ? [...server.enabledTools] : null,
+  };
+}
+
 export type RecordingDomainRequest =
   | UpdateCaptureSourceSettingsRequest
   | UpdateCaptureTimingSettingsRequest
@@ -148,6 +166,7 @@ export interface RecordingDraftState {
   draftExcludedApps: ExcludedAppEntry[];
 
   draftAskAiEnabled: boolean;
+  draftAskAiWebFetchEnabled: boolean;
   draftAskAiModel: string;
   // The effective persisted tool-call cap (0 = no cap), derived from the
   // limit toggle + numeric value.
@@ -156,6 +175,7 @@ export interface RecordingDraftState {
   draftAiEnabled: boolean;
   draftAiProviders: AiProviderConfig[];
   draftAiDefaultModel: AiEngineRef | null;
+  draftMcpServers: McpServerConfig[];
 
   draftUserContextEnabled: boolean;
   draftUserContextBudgetTier: DerivationBudgetTier;
@@ -349,6 +369,7 @@ export function buildRecDomainRequest(
     case "access":
       return {
         askAiEnabled: rec.draftAskAiEnabled,
+        askAiWebFetchEnabled: rec.draftAskAiWebFetchEnabled,
         askAiMaxToolCalls: rec.effectiveAskAiMaxToolCalls,
         askAiModel: rec.draftAskAiModel,
       };
@@ -369,6 +390,7 @@ export function buildRecDomainRequest(
               model: rec.draftAiDefaultModel.model,
             }
           : null,
+        mcpServers: rec.draftMcpServers.map(toMcpServerWire),
       };
     case "user_context":
       return {
@@ -488,6 +510,7 @@ export function buildRecDomainRequestFromSettings(
     case "access":
       return {
         askAiEnabled: s.access?.askAiEnabled ?? false,
+        askAiWebFetchEnabled: s.access?.askAiWebFetchEnabled ?? false,
         // Mirror the live builder's effective cap: a positive cap is clamped to
         // [1, 64]; 0 (= no cap) passes through. A persisted value above the
         // ceiling (the backend stores the cap verbatim) would otherwise read
@@ -512,6 +535,7 @@ export function buildRecDomainRequestFromSettings(
               model: s.aiRuntime.defaultModel.model,
             }
           : null,
+        mcpServers: (s.aiRuntime?.mcpServers ?? []).map(toMcpServerWire),
       };
     case "user_context":
       return {

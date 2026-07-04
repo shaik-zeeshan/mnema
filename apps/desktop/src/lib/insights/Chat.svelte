@@ -1043,6 +1043,9 @@
   // ── Stream event wiring ──────────────────────────────────────────────────
   onMount(() => {
     void loadAskAvailability();
+    // MCP connectors (Workstream C): warm-on-open discovery — background-connect
+    // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
+    void invoke("mcp_warm_connectors").catch(() => {});
     // The shared store owns the history list + its `conversation_changed`
     // refresh listener (set up once, lives for the app session); ensureStarted()
     // is idempotent, so calling it here just kicks the first fetch.

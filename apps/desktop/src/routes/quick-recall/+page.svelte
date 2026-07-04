@@ -3614,6 +3614,9 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    // MCP connectors (Workstream C): warm-on-open discovery — background-connect
+    // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
+    void invoke("mcp_warm_connectors").catch(() => {});
     void loadSemanticSearchModelInstalled();
     // Warm the captured-app catalog up front so the App value list (whether
     // reached by typing `app:` or via the picker) has selectable rows on first

@@ -25,6 +25,7 @@ import type {
   SettingsOwnershipDomain,
   AiProviderConfig,
   AiEngineRef,
+  McpServerConfig,
   AppearanceSetting,
   AudioTranscriptionMemoryMode,
   AudioTranscriptionProvider,
@@ -84,6 +85,23 @@ function isSelectableOcrProvider(value: string | null | undefined): value is Ocr
   return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
 }
 
+// Deep-copy an MCP connector so edits to the draft never mutate the loaded
+// settings snapshot (nested `args`/`env` are fresh arrays/objects).
+export function cloneMcpServer(server: McpServerConfig): McpServerConfig {
+  return {
+    id: server.id,
+    label: server.label ?? "",
+    enabled: server.enabled ?? false,
+    transport: server.transport,
+    command: server.command ?? null,
+    args: [...(server.args ?? [])],
+    env: (server.env ?? []).map((e) => ({ name: e.name, value: e.value })),
+    url: server.url ?? null,
+    secretEnvName: server.secretEnvName ?? null,
+    enabledTools: server.enabledTools ? [...server.enabledTools] : null,
+  };
+}
+
 // Side-effect + gate dependencies injected from the page / sibling stores.
 export interface RecordingStoreDeps {
   // App-wide theme runtime (lib/theme.svelte): apply the loaded appearance.
@@ -95,6 +113,8 @@ export interface RecordingStoreDeps {
   // AI-runtime store refreshers, re-run after an ai_runtime-domain sync so the
   // key-presence badges + availability reflect the synced provider list.
   refreshAiProviderKeyPresence: () => void;
+  // Re-check which MCP connectors have a keychain secret after an ai_runtime sync.
+  refreshMcpServerSecretPresence: () => void;
   loadAiRuntimeStatus: () => void;
   // Re-check Ask AI availability after an ai_runtime-domain sync so its readiness
   // pill reflects the synced provider list / default model (sibling store).
@@ -178,6 +198,7 @@ export class RecordingStore {
   // Access drafts (Ask AI). Tool-call cap: persisted as a single number where
   // 0 = no cap; the UI splits it into a "limit on/off" toggle + numeric value.
   draftAskAiEnabled = $state(false);
+  draftAskAiWebFetchEnabled = $state(false);
   draftAskAiLimitToolCalls = $state(true);
   draftAskAiMaxToolCalls = $state(ASK_AI_DEFAULT_TOOL_CALL_LIMIT);
   draftAskAiModel = $state("");
@@ -187,6 +208,9 @@ export class RecordingStore {
   draftAiEnabled = $state(false);
   draftAiProviders = $state<AiProviderConfig[]>([]);
   draftAiDefaultModel = $state<AiEngineRef | null>(null);
+  // MCP tool connectors (Workstream C). The per-server secret is keychain-only
+  // and never travels through this draft state.
+  draftMcpServers = $state<McpServerConfig[]>([]);
 
   // User Context (derivation) drafts.
   draftUserContextBudgetTier = $state<DerivationBudgetTier>(DEFAULT_USER_CONTEXT_BUDGET_TIER);
@@ -333,6 +357,7 @@ export class RecordingStore {
 
   syncAccessDrafts(s: RecordingSettings): void {
     this.draftAskAiEnabled = s.access?.askAiEnabled ?? false;
+    this.draftAskAiWebFetchEnabled = s.access?.askAiWebFetchEnabled ?? false;
     const cap = s.access?.askAiMaxToolCalls ?? ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
     this.draftAskAiLimitToolCalls = cap > 0;
     this.draftAskAiMaxToolCalls = cap > 0 ? cap : ASK_AI_DEFAULT_TOOL_CALL_LIMIT;
@@ -351,6 +376,7 @@ export class RecordingStore {
     this.draftAiDefaultModel = s.aiRuntime?.defaultModel
       ? { provider: s.aiRuntime.defaultModel.provider, model: s.aiRuntime.defaultModel.model }
       : null;
+    this.draftMcpServers = (s.aiRuntime?.mcpServers ?? []).map(cloneMcpServer);
   }
 
   syncUserContextDrafts(s: RecordingSettings): void {
@@ -556,6 +582,7 @@ export class RecordingStore {
     }
     if (draftDomain === "ai_runtime" && applyDrafts) {
       this.#deps.refreshAiProviderKeyPresence();
+      this.#deps.refreshMcpServerSecretPresence();
       this.#deps.loadAiRuntimeStatus();
       this.#deps.loadAskAiAvailability();
     }
