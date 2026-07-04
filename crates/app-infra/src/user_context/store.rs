@@ -715,6 +715,25 @@ impl UserContextStore {
         }))
     }
 
+    /// The **summarized-up-to** watermark: the newest `window_end_ms` among
+    /// derivation runs that ACTUALLY covered their window. Distinct from
+    /// [`Self::latest_derivation_run_window`] (the scheduler cursor), which
+    /// counts `failed` runs so the forward pass does not re-pick a window a
+    /// failure already stepped past. A `failed` run summarized nothing, so it
+    /// must NOT raise the coverage watermark — otherwise the Journal renders a
+    /// failed (or still-pending) window as done. `None` before any covering run.
+    pub async fn covered_until_ms(&self) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            "SELECT MAX(window_end_ms) AS covered \
+             FROM user_context_derivation_runs \
+             WHERE window_end_ms IS NOT NULL AND status != 'failed'",
+        )
+        .fetch_one(self.db.read())
+        .await?;
+        // MAX() over an empty (or all-failed) set is SQL NULL → None, never 0.
+        Ok(row.get::<Option<i64>, _>("covered"))
+    }
+
     /// Whether a derivation run already covers exactly `[start_ms, end_ms]`.
     pub async fn derived_window_exists(&self, start_ms: i64, end_ms: i64) -> Result<bool> {
         let row = sqlx::query(
@@ -5701,6 +5720,58 @@ mod tests {
                 store.latest_derivation_run_window().await.expect("latest"),
                 Some((5_000, 6_000)),
                 "max window_end_ms run"
+            );
+        });
+    }
+
+    /// [`UserContextStore::covered_until_ms`] is the user-facing "summarized-up-to"
+    /// watermark. A `failed` run advances the scheduler cursor but summarized
+    /// nothing, so it must NOT count as coverage — else the Journal renders a
+    /// failed (or still-pending) window as done.
+    #[test]
+    fn covered_until_ms_excludes_failed_runs() {
+        block_on(async {
+            let store = test_store().await;
+            let run = |status: &str, start: i64, end: i64| NewDerivationRun {
+                kind: "activity".to_string(),
+                window_start_ms: Some(start),
+                window_end_ms: Some(end),
+                status: status.to_string(),
+                activities_derived: 0,
+                conclusions_derived: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                provider: None,
+                model: None,
+                error: None,
+                gate_drops: DistillationGateDrops::default(),
+            };
+
+            assert_eq!(store.covered_until_ms().await.expect("empty"), None);
+
+            // A completed window [2000,3000] genuinely covered.
+            store
+                .insert_derivation_run(run("completed", 2_000, 3_000))
+                .await
+                .expect("completed");
+            // A LATER window [5000,6000] that FAILED: the scheduler stepped past
+            // it, but summarization produced nothing for it.
+            store
+                .insert_derivation_run(run("failed", 5_000, 6_000))
+                .await
+                .expect("failed");
+
+            // The SCHEDULER cursor still points at the failed edge (unchanged —
+            // so the forward pass does not re-pick it).
+            assert_eq!(
+                store.latest_derivation_run_window().await.expect("cursor"),
+                Some((5_000, 6_000)),
+            );
+            // But COVERAGE stops at the last SUCCESSFUL edge.
+            assert_eq!(
+                store.covered_until_ms().await.expect("covered"),
+                Some(3_000),
+                "a failed window is not summarized coverage",
             );
         });
     }

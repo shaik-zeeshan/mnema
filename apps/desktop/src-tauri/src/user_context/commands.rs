@@ -73,15 +73,12 @@ pub async fn get_user_context_status(
     let activity_count = store.count_activities().await.map_err(|e| e.to_string())?;
     let conclusion_count = store.count_conclusions().await.map_err(|e| e.to_string())?;
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
-    // Summarized-up-to watermark: the end edge of the most-recently-covered
-    // window, so the frontend can render the still-pending region. Best-effort —
-    // a read error degrades to "unknown" rather than failing the whole status.
-    let covered_until_ms = store
-        .latest_derivation_run_window()
-        .await
-        .ok()
-        .flatten()
-        .map(|(_, end)| end);
+    // Summarized-up-to watermark: the end edge of the most-recently-COVERED
+    // window (failed runs advanced the scheduler cursor but summarized nothing,
+    // so they must not raise this), letting the frontend render the still-pending
+    // region. Best-effort — a read error degrades to "unknown" rather than
+    // failing the whole status.
+    let covered_until_ms = store.covered_until_ms().await.ok().flatten();
     let token_usage = store
         .token_usage_totals()
         .await
