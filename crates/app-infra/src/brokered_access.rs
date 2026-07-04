@@ -25,7 +25,7 @@ use crate::{
 // + Ask AI source mappers) via the crate-root `guard_browser_url` re-export.
 mod url_guard;
 
-pub use url_guard::guard_url;
+pub use url_guard::{guard_url, secret_scrubbed_fetch_target};
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
 const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";

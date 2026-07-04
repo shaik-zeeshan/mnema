@@ -85,6 +85,8 @@ url = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+htmd = "0.5.4"
+rmcp = { version = "2.1.0", default-features = false, features = ["client", "macros", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-io", "transport-async-rw"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

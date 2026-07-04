@@ -223,14 +223,33 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
     //         segment are still caught — secrets never span a `/`.
     let guarded_authority = redact_known_shape(&authority);
 
+    let mut guarded_path = redact_path(path);
+    if path_overflowed {
+        // The path exceeded the guard's bound and was cut. The dropped remainder
+        // could be (part of) a secret token, so emit a redaction marker in its
+        // place rather than silently truncating.
+        guarded_path.push_str(ARMED_TOKEN_PLACEHOLDER);
+    }
+
+    Some(format!("{guarded_authority}{guarded_path}"))
+}
+
+/// Apply the per-path-sub-part arming + redaction passes to one already-cut
+/// path and return the guarded path string. Shared by [`guard_url`] (the
+/// model-text boundary) and [`secret_scrubbed_fetch_target`] (the fetch-target
+/// boundary) so BOTH redact magic-link / reset / share tokens in the path
+/// identically — a redacted path 404s at the origin, which is the fetch
+/// target's fail-closed behavior.
+///
+/// `path` always begins with '/' for http(s) URLs. Splitting on '/' keeps the
+/// empty leading/trailing segments so we can rejoin faithfully. The `url` crate
+/// leaves `%2F` verbatim in `path()`, so we additionally split each segment on
+/// `%2F`/`%2f` into sub-parts (see `process_segment`) and run the same arming
+/// logic across the sub-parts.
+fn redact_path(path: &str) -> String {
     let mut redacted_count = 0usize;
     let mut passed_count = 0usize;
 
-    // `path` always begins with '/' for http(s) URLs. Splitting on '/' keeps
-    // the empty leading/trailing segments so we can rejoin faithfully. The
-    // `url` crate leaves `%2F` verbatim in `path()`, so we additionally split
-    // each segment on `%2F`/`%2f` into sub-parts (see `process_segment`) and
-    // run the same arming logic across the sub-parts.
     let segments: Vec<&str> = path.split('/').collect();
     let mut out: Vec<String> = Vec::with_capacity(segments.len());
     // Track the previous NON-EMPTY raw sub-part as the arming predecessor;
@@ -249,22 +268,120 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
         );
         out.push(processed);
     }
-    let mut guarded_path = out.join("/");
-    if path_overflowed {
-        // The path exceeded the guard's bound and was cut. The dropped remainder
-        // could be (part of) a secret token, so emit a redaction marker in its
-        // place rather than silently truncating — and count it.
-        guarded_path.push_str(ARMED_TOKEN_PLACEHOLDER);
-        redacted_count += 1;
-    }
 
-    // 6. Observability: one debug line per call. Never logs URL contents at
-    //    info level; the counts keep the residual observable.
+    // Observability: one debug line per call. Never logs URL contents at info
+    // level; the counts keep the residual observable.
     log::debug!(
         "brokered url_guard positional-arming: redacted={redacted_count} passed={passed_count}"
     );
 
-    Some(format!("{guarded_authority}{guarded_path}"))
+    out.join("/")
+}
+
+/// Query-parameter NAMES that mark a credential-bearing param (compared after
+/// [`normalize_keyword`], which lowercases and drops non-alphanumerics, so
+/// `access_token`, `Access-Token`, and `accesstoken` all collapse to
+/// `accesstoken`). Used only by [`secret_scrubbed_fetch_target`]: a param with
+/// one of these names is DROPPED from the fetch target regardless of its value.
+const CREDENTIAL_PARAM_NAMES: &[&str] = &[
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "code",
+    "auth",
+    "authorization",
+    "bearer",
+    "jwt",
+    "key",
+    "apikey",
+    "apisecret",
+    "secret",
+    "clientsecret",
+    "password",
+    "passwd",
+    "pwd",
+    "session",
+    "sessionid",
+    "sid",
+    "sig",
+    "signature",
+    "otp",
+    "credential",
+    "credentials",
+];
+
+/// True when a query-param NAME is credential-shaped (member of
+/// [`CREDENTIAL_PARAM_NAMES`] after normalization).
+fn is_credential_param_name(name: &str) -> bool {
+    CREDENTIAL_PARAM_NAMES.contains(&normalize_keyword(name).as_str())
+}
+
+/// True when a query-param VALUE is secret-shaped per the module's deterministic
+/// detector: a known fixed-prefix token (`ghp_`, `sk-`, JWT, …) OR a
+/// high-entropy backstop token. Reuses the exact machinery `guard_url` applies
+/// to path segments, so the two boundaries judge secrets identically.
+fn is_secret_value(value: &str) -> bool {
+    redact_known_shape(value) != value || is_backstop_token(value)
+}
+
+/// Fetch-target boundary: raw captured URL -> `Option<absolute URL string>` that
+/// is safe to send to the ORIGIN over the network.
+///
+/// Contrast with [`guard_url`], the MODEL-TEXT boundary (strips the whole query
+/// and emits only `host[:port]/path`). The origin already knows its own URL, so
+/// here we keep everything EXCEPT secrets (the "two-boundary" design, grill G6):
+///
+/// - Scheme forced to **https**.
+/// - **Query params**: a param is DROPPED when its NAME is credential-shaped
+///   ([`is_credential_param_name`]) OR its VALUE is secret-shaped
+///   ([`is_secret_value`]); every other param is kept verbatim (`?v=`, `?id=`,
+///   `?tab=`, `?page=` survive).
+/// - **Path**: the SAME per-segment secret redaction [`guard_url`] applies via
+///   [`redact_path`], so a magic-link / reset path token becomes a
+///   `[REDACTED_SECRET: …]` placeholder and the target 404s at the origin —
+///   fail closed by design.
+/// - **Fragment**: dropped (never sent to the origin anyway).
+///
+/// Returns `None` for a non-`http(s)` or unparseable input.
+pub fn secret_scrubbed_fetch_target(raw_url: &str) -> Option<String> {
+    let parsed = Url::parse(raw_url).ok()?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+
+    let mut target = parsed.clone();
+    // Force https. http and https are both "special" schemes, so this switch is
+    // always permitted; a failure here means an unexpected input, so bail.
+    if target.set_scheme("https").is_err() {
+        return None;
+    }
+
+    // Path: redact secrets exactly as the model-text boundary does. A redacted
+    // magic-link / reset token becomes a nonsense path -> 404 at the origin.
+    let redacted_path = redact_path(parsed.path());
+    target.set_path(&redacted_path);
+
+    // Query: keep every param whose name is not credential-shaped and whose
+    // value is not secret-shaped. `query_pairs()` percent-decodes; re-appending
+    // through `query_pairs_mut` re-encodes, so kept params round-trip faithfully.
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(name, value)| !is_credential_param_name(name) && !is_secret_value(value))
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    if kept.is_empty() {
+        target.set_query(None);
+    } else {
+        target.query_pairs_mut().clear();
+        for (name, value) in &kept {
+            target.query_pairs_mut().append_pair(name, value);
+        }
+    }
+
+    target.set_fragment(None);
+    Some(target.to_string())
 }
 
 /// Process one '/'-delimited path segment, which may itself contain one or more
@@ -1401,5 +1518,83 @@ mod tests {
             "oversized-token output stays bounded: {} bytes",
             out.len()
         );
+    }
+
+    // --- Fetch-target boundary (`secret_scrubbed_fetch_target`) ---
+
+    #[test]
+    fn fetch_target_drops_credential_named_param_keeps_others() {
+        let out =
+            secret_scrubbed_fetch_target("https://site.com/page?token=abcSECRET123&v=2").unwrap();
+        assert!(!out.contains("token"), "credential-named param must drop: {out}");
+        assert!(!out.contains("abcSECRET123"), "its value must not leak: {out}");
+        assert!(out.contains("v=2"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_drops_secret_valued_param() {
+        // A known-shape GitHub token as a value with an innocent NAME (`x`) is
+        // still dropped by the value detector.
+        let out = secret_scrubbed_fetch_target(
+            "https://site.com/page?x=ghp_1234567890abcdefABCDEF1234567890abcd&id=42",
+        )
+        .unwrap();
+        assert!(
+            !out.contains("ghp_1234567890abcdefABCDEF1234567890abcd"),
+            "secret-valued param must drop: {out}"
+        );
+        assert!(out.contains("id=42"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_drops_jwt_valued_param() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N";
+        let out =
+            secret_scrubbed_fetch_target(&format!("https://site.com/p?ref={jwt}&page=3")).unwrap();
+        assert!(!out.contains(jwt), "JWT-valued param must drop: {out}");
+        assert!(out.contains("page=3"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_keeps_innocent_params_verbatim() {
+        let out =
+            secret_scrubbed_fetch_target("https://github.com/o/r/pulls?v=2&id=42&tab=files").unwrap();
+        assert!(out.contains("v=2"), "{out}");
+        assert!(out.contains("id=42"), "{out}");
+        assert!(out.contains("tab=files"), "{out}");
+        assert_eq!(out, "https://github.com/o/r/pulls?v=2&id=42&tab=files");
+    }
+
+    #[test]
+    fn fetch_target_still_redacts_path_secret_fail_closed() {
+        // A magic-link token in the PATH is redacted in the fetch target too, so
+        // the origin sees a nonsense path and 404s — fail closed by design.
+        let out =
+            secret_scrubbed_fetch_target("https://app.com/reset-password/AbC9xK2mP4qR7sT0").unwrap();
+        assert!(
+            !out.contains("AbC9xK2mP4qR7sT0"),
+            "path secret must be redacted in the fetch target: {out}"
+        );
+        assert!(out.contains("reset-password"), "keyword stays: {out}");
+    }
+
+    #[test]
+    fn fetch_target_upgrades_http_to_https() {
+        let out = secret_scrubbed_fetch_target("http://example.com/page?v=1").unwrap();
+        assert!(out.starts_with("https://"), "scheme must be forced to https: {out}");
+        assert_eq!(out, "https://example.com/page?v=1");
+    }
+
+    #[test]
+    fn fetch_target_rejects_non_http_scheme() {
+        assert_eq!(secret_scrubbed_fetch_target("file:///Users/me/secret.txt"), None);
+        assert_eq!(secret_scrubbed_fetch_target("not a url"), None);
+    }
+
+    #[test]
+    fn fetch_target_preserves_port_and_drops_fragment() {
+        let out =
+            secret_scrubbed_fetch_target("https://example.com:8443/dashboard?tab=x#frag").unwrap();
+        assert_eq!(out, "https://example.com:8443/dashboard?tab=x");
     }
 }

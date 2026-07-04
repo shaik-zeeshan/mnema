@@ -1191,6 +1191,10 @@ fn apply_domain_patch_to_settings(
                 settings.access.ask_ai_enabled = value;
                 touched = true;
             }
+            if let Some(value) = request.ask_ai_web_fetch_enabled {
+                settings.access.ask_ai_web_fetch_enabled = value;
+                touched = true;
+            }
             if let Some(value) = request.ask_ai_max_tool_calls {
                 settings.access.ask_ai_max_tool_calls = value;
                 touched = true;
@@ -1214,6 +1218,11 @@ fn apply_domain_patch_to_settings(
                 // Replacement provider list (wholesale, like additionalEngines
                 // before it); normalization (trim/dedupe) happens in validation.
                 settings.ai_runtime.providers = value;
+                touched = true;
+            }
+            if let Some(value) = request.mcp_servers {
+                // Replacement MCP connector list (wholesale, like providers).
+                settings.ai_runtime.mcp_servers = value;
                 touched = true;
             }
             if let Some(value) = request.default_model {
@@ -1500,6 +1509,7 @@ mod tests {
     #[test]
     fn default_recording_settings_disable_ask_ai_access() {
         assert!(!default_recording_settings().access.ask_ai_enabled);
+        assert!(!default_recording_settings().access.ask_ai_web_fetch_enabled);
     }
 
     #[test]
@@ -1828,12 +1838,14 @@ mod tests {
             RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
                 ask_ai_enabled: Some(true),
                 ask_ai_max_tool_calls: Some(0),
+                ask_ai_web_fetch_enabled: Some(true),
                 ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
             }),
         )
         .expect("access patch should validate");
 
         assert!(updated.access.ask_ai_enabled);
+        assert!(updated.access.ask_ai_web_fetch_enabled);
         assert_eq!(updated.access.ask_ai_max_tool_calls, 0);
         assert_eq!(
             updated.access.ask_ai_model.as_deref(),
@@ -1860,6 +1872,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1923,6 +1936,7 @@ mod tests {
                 ]),
                 // Explicit `null` over the wire clears the default model.
                 default_model: Some(None),
+                mcp_servers: None,
             }),
         )
         .expect("ai runtime patch should validate");

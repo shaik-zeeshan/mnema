@@ -274,6 +274,20 @@ pub struct AiRuntimeProviderRequest {
     provider: String,
 }
 
+/// Set/clear the single secret of an MCP tool connector, keyed by server id.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerSecretRequest {
+    id: String,
+    secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerRequest {
+    id: String,
+}
+
 /// Map a cloud provider kind onto the engine crate's provider enum. `None`
 /// for the local kinds.
 fn cloud_provider_kind(kind: AiProviderKind) -> Option<ai_engine::CloudProvider> {
@@ -508,6 +522,49 @@ pub async fn ai_runtime_has_provider_key(
         return Err("a provider id is required".to_string());
     }
     tokio::task::spawn_blocking(move || app_infra::has_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+// MCP connector secrets: same keychain-off-the-main-thread pattern as the
+// provider keys above, keyed by the MCP server instance id (which also keys the
+// `mcp__<id>__` tool prefix a later slice parses).
+#[tauri::command]
+pub async fn mcp_set_server_secret(request: McpServerSecretRequest) -> Result<(), String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    let secret = request.secret.trim().to_string();
+    if secret.is_empty() {
+        return Err("a secret is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::store_mcp_server_secret(&id, &secret))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mcp_clear_server_secret(request: McpServerRequest) -> Result<(), String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::delete_mcp_server_secret(&id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mcp_has_server_secret(request: McpServerRequest) -> Result<bool, String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::has_mcp_server_secret(&id))
         .await
         .map_err(|error| error.to_string())?
         .map_err(|error| error.to_string())
@@ -982,6 +1039,7 @@ mod tests {
                 provider: "ollama".to_string(),
                 model: "llama-default".to_string(),
             }),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1120,6 +1178,7 @@ mod tests {
                 provider: "ollama".to_string(),
                 model: "default-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
 
         // Pin to the second instance resolves to ITS endpoint.
@@ -1151,6 +1210,7 @@ mod tests {
                 provider: "openai_compatible".to_string(),
                 model: "some-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         // The base-URL check fires before any keychain access.
         assert_eq!(
@@ -1297,6 +1357,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
@@ -1319,6 +1380,7 @@ mod tests {
                 provider: "openai_compatible-2".to_string(),
                 model: "some-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         let result = resolve_engine_config(&custom, None, None);
         if let Err(reason) = result {
