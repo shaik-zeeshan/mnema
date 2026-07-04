@@ -119,7 +119,10 @@
   // on any browser-specific RTL `scrollLeft` convention.
 
   const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
-  const TIMELINE_APP_GROUP_MAX_GAP_MS = 2_000;
+  // At the default 0.5 fps capture rate frames land ~2s apart, so this must
+  // comfortably exceed one frame interval or a single skipped frame (privacy
+  // exclusion, self-capture skip) splits an app run in two.
+  const TIMELINE_APP_GROUP_MAX_GAP_MS = 10_000;
   const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a
