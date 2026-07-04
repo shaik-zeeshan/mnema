@@ -48,6 +48,21 @@ impl fmt::Debug for SileroVadAdapter {
 impl SileroVadAdapter {
     #[cfg(feature = "silero")]
     pub(super) fn load_default() -> Result<Self, SileroVadLoadError> {
+        // Under a dynamically-loaded ONNX Runtime (`ort/load-dynamic`, enabled
+        // on Windows through the `dynamic-ort` feature), an unset
+        // ORT_DYLIB_PATH makes `ort` fall back to LoadLibrary'ing whatever
+        // `onnxruntime.dll` the system search path finds: never the DLL we
+        // ship, version-unchecked, and observed to deadlock the loader on
+        // hosts that carry a system copy (Windows ML). Fail fast so the VAD
+        // runtime drops to its non-ORT fallback instead of hanging.
+        #[cfg(all(target_os = "windows", feature = "dynamic-ort"))]
+        if std::env::var_os("ORT_DYLIB_PATH").map_or(true, |value| value.is_empty()) {
+            return Err(SileroVadLoadError::RuntimeUnavailable {
+                model_path: None,
+                reason: "ORT_DYLIB_PATH is not set; the dynamically loaded ONNX Runtime is unavailable".to_string(),
+            });
+        }
+
         match resolve_model_path(default_model_candidates()) {
             Ok(model_path) => Self::load_from_model_path(model_path),
             Err(SileroVadLoadError::MissingModel { .. }) => Self::load_bundled(),

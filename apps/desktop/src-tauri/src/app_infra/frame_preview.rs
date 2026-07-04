@@ -1453,6 +1453,49 @@ pub(super) fn test_video_preview_extractor_state(
     STATE.get_or_init(|| Mutex::new(None))
 }
 
+/// Serializes every test that installs the process-global preview-extractor
+/// seam — both this module's scrub-batch tests and the parent `app_infra`
+/// preview tests. Without a single shared lock, two guard-using tests running
+/// concurrently stomp each other's extractor (one guard's `Drop` clears the
+/// seam mid-run for the other).
+#[cfg(test)]
+static SCRUB_SEAM_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+/// RAII installer for the test preview-extractor seam. Holds
+/// [`SCRUB_SEAM_TEST_LOCK`] for its whole lifetime so guard-using tests run
+/// serially. Every lock here recovers from poisoning: a failing guard-holding
+/// test must only fail itself, not poison the seam into cascading
+/// panics-in-drop (a double panic aborts the whole test process).
+#[cfg(test)]
+pub(super) struct TestVideoPreviewExtractorGuard {
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl TestVideoPreviewExtractorGuard {
+    pub(super) fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
+        let serial = SCRUB_SEAM_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *test_video_preview_extractor_state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(extractor);
+        Self { _serial: serial }
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestVideoPreviewExtractorGuard {
+    fn drop(&mut self) {
+        // Clear the seam before releasing the serialization lock (the
+        // `_serial` field drops after this body runs), so the next
+        // guard-using test starts from a clean `None` state.
+        *test_video_preview_extractor_state()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+}
+
 #[cfg(test)]
 fn run_test_video_preview_extractor(
     video_path: &Path,
@@ -1460,7 +1503,7 @@ fn run_test_video_preview_extractor(
 ) -> Option<Result<(Vec<u8>, &'static str), String>> {
     let extractor = test_video_preview_extractor_state()
         .lock()
-        .expect("test video preview extractor poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     extractor.map(|extractor| extractor(video_path.to_path_buf(), offset_seconds))
 }
@@ -1762,7 +1805,7 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
     #[cfg(test)]
     if test_video_preview_extractor_state()
         .lock()
-        .expect("test video preview extractor poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_some()
     {
         let mut results = HashMap::new();
@@ -1968,7 +2011,7 @@ fn extract_scrub_preview_images_from_video_batch_blocking(
     #[cfg(test)]
     if test_video_preview_extractor_state()
         .lock()
-        .expect("test video preview extractor poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .is_some()
     {
         // Mirror the production loop's cancel/deadline handling (below) so the
@@ -2368,7 +2411,14 @@ pub(super) async fn get_frame_preview_inner(
         ))
     })?;
 
-    let workspace_prefix = format!("{}/", segment_paths.workspace_dir.to_string_lossy());
+    // Terminate with the native separator: frame rows are written from
+    // `PathBuf::join`-built paths, so on Windows a `/`-terminated prefix would
+    // never LIKE-match the stored `\`-separated rows.
+    let workspace_prefix = format!(
+        "{}{}",
+        segment_paths.workspace_dir.to_string_lossy(),
+        std::path::MAIN_SEPARATOR
+    );
     let related_frames = infra
         .list_frames_for_segment_workspace(&frame.session_id, &workspace_prefix)
         .await?;
@@ -3260,45 +3310,6 @@ mod tests {
         let error = render_scrub_preview_jpeg(&[0u8; 3], 2, 2, SCRUB_PREVIEW_MAX_PIXEL_SIZE)
             .expect_err("undersized buffer must fail");
         assert!(error.contains("does not match"));
-    }
-
-    #[cfg(target_os = "windows")]
-    /// Serializes the tests that install a process-global preview-extractor seam.
-    /// The extractor lives in a shared `OnceLock`, so two such tests running
-    /// concurrently would stomp each other (one guard's `Drop` clearing the seam
-    /// mid-run, making the other fall through to the real MF path). The guard
-    /// holds this lock for its whole lifetime, so guard-using tests run serially.
-    #[cfg(target_os = "windows")]
-    static SCRUB_SEAM_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    #[cfg(target_os = "windows")]
-    struct TestVideoPreviewExtractorGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-    }
-
-    #[cfg(target_os = "windows")]
-    impl TestVideoPreviewExtractorGuard {
-        fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
-            let serial = SCRUB_SEAM_TEST_LOCK
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            *test_video_preview_extractor_state()
-                .lock()
-                .expect("test video preview extractor poisoned") = Some(extractor);
-            Self { _serial: serial }
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    impl Drop for TestVideoPreviewExtractorGuard {
-        fn drop(&mut self) {
-            // Clear the seam before releasing the serialization lock (the
-            // `_serial` field drops after this body runs), so the next
-            // guard-using test starts from a clean `None` state.
-            *test_video_preview_extractor_state()
-                .lock()
-                .expect("test video preview extractor poisoned") = None;
-        }
     }
 
     // Windows scrub batch integration through the injectable extractor seam:

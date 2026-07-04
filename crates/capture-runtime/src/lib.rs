@@ -165,8 +165,19 @@ impl SegmentPlanner {
     }
 
     /// Base directory for this session's date: `<save_root>/YYYY/MM/DD`
+    ///
+    /// The `"YYYY/MM/DD"` prefix carries literal `/`s; join it component-wise so
+    /// every derived path string is fully native-separated on Windows. These
+    /// strings are persisted (frame/segment rows) and string-compared against
+    /// `read_dir`-scanned paths (hidden-workspace repair, active-workspace
+    /// skipping), which always yield native separators — a single `join` of the
+    /// whole prefix would embed the `/`s verbatim and break those comparisons.
     fn date_dir(&self) -> PathBuf {
-        Path::new(&self.save_root_dir).join(&self.date_prefix)
+        self.date_prefix
+            .split('/')
+            .fold(PathBuf::from(&self.save_root_dir), |dir, component| {
+                dir.join(component)
+            })
     }
 
     /// Per-segment workspace directory for screen artifacts (frames, etc.).

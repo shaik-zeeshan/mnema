@@ -2066,10 +2066,18 @@ mod tests {
                 .await
                 .expect("in-memory db should open");
             create_retention_cleanup_tables(&pool).await;
+            // Absolute on every platform: "/tmp/..." has no drive prefix on
+            // Windows, so delete_path_if_safe would refuse it as relative and
+            // the run would end "completed_with_file_errors".
+            let orphan_frame_path = std::env::temp_dir()
+                .join("mnema-expired-orphan-frame.jpg")
+                .to_string_lossy()
+                .to_string();
             sqlx::query(
                 "INSERT INTO frames (session_id, file_path, captured_at, capture_segment_id, frame_batch_id)
-                 VALUES ('screen-source-1', '/tmp/mnema-expired-orphan-frame.jpg', '2026-05-10T15:01:50Z', NULL, NULL)",
+                 VALUES ('screen-source-1', ?1, '2026-05-10T15:01:50Z', NULL, NULL)",
             )
+            .bind(&orphan_frame_path)
             .execute(&pool)
             .await
             .expect("orphan frame should insert");

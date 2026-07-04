@@ -236,17 +236,20 @@ mod tests {
 
     #[test]
     fn is_safe_frame_artifact_path_accepts_valid_paths() {
-        assert!(is_safe_frame_artifact_path(Path::new(
-            "/data/session/session-a-segment-0001/frames/frame-1717000123456-000042.png"
+        // Anchor to temp_dir() so the paths are absolute on every platform
+        // ("/data/..." has no drive prefix and is not absolute on Windows).
+        let base = std::env::temp_dir();
+        assert!(is_safe_frame_artifact_path(&base.join(
+            "session/session-a-segment-0001/frames/frame-1717000123456-000042.png"
         )));
-        assert!(is_safe_frame_artifact_path(Path::new(
-            "/tmp/my-session-segment-0001/frames/frame-1.png"
+        assert!(is_safe_frame_artifact_path(&base.join(
+            "my-session-segment-0001/frames/frame-1.png"
         )));
-        assert!(is_safe_frame_artifact_path(Path::new(
-            "/tmp/my-session-segment-0001/frames/frame-1.jpg"
+        assert!(is_safe_frame_artifact_path(&base.join(
+            "my-session-segment-0001/frames/frame-1.jpg"
         )));
-        assert!(is_safe_frame_artifact_path(Path::new(
-            "/tmp/my-session-segment-0001/frames/frame-1.jpeg"
+        assert!(is_safe_frame_artifact_path(&base.join(
+            "my-session-segment-0001/frames/frame-1.jpeg"
         )));
     }
 

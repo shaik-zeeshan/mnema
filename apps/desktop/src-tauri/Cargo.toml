@@ -117,6 +117,13 @@ tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 # feature with the base (default-features = false) entry above, mirroring the
 # macOS target entry, so only macOS + Windows pull speakrs.
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
+# The Windows app loads ONNX Runtime dynamically (`ort/load-dynamic`, #137):
+# tell the Silero VAD adapter so it requires ORT_DYLIB_PATH and falls back
+# fast instead of letting `ort` LoadLibrary a system `onnxruntime.dll`
+# (version-unchecked; observed to deadlock the loader when a Windows ML copy
+# exists). Cargo unions this with the base entry above on Windows only —
+# standalone `capture-vad` builds keep their statically linked ORT untouched.
+capture-vad = { path = "../../../crates/capture-vad", features = ["dynamic-ort"] }
 ocr = { path = "../../../crates/ocr", features = ["tesseract-embedded"] }
 media-decode = { path = "../../../crates/media-decode" }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_LibraryLoader", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Accessibility", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

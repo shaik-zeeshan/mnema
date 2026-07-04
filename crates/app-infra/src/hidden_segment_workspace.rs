@@ -159,7 +159,11 @@ impl HiddenSegmentWorkspaceRepair {
             return Ok(None);
         };
 
-        let workspace_prefix = format!("{}/", paths.workspace_dir);
+        // DB frame paths are written with the platform's native separator, so
+        // the range-scan prefix must use it too: a hardcoded "/" would never
+        // match the "\"-separated rows on Windows and every workspace would
+        // misclassify as NoReferences (and get reclaimed prematurely).
+        let workspace_prefix = format!("{}{}", paths.workspace_dir, std::path::MAIN_SEPARATOR);
         let SegmentWorkspaceFrameBatchReferences {
             frame_count,
             batch_references,
@@ -501,27 +505,30 @@ mod tests {
 
     #[test]
     fn hidden_segment_workspace_paths_resolve_visible_segment_path() {
-        let frame_path = PathBuf::from(
-            "/tmp/2026/04/12/.session-abc-segment-0004/frames/frame-1744459200123-7.png",
-        );
+        // Derive the expected strings via the same PathBuf joins the resolver
+        // uses so the assertions hold with either platform's separator.
+        let day_dir = std::env::temp_dir().join("2026").join("04").join("12");
+        let workspace_dir = day_dir.join(".session-abc-segment-0004");
+        let frame_path = workspace_dir
+            .join("frames")
+            .join("frame-1744459200123-7.png");
 
         let paths = HiddenSegmentWorkspacePaths::from_frame_artifact_path(&frame_path)
             .expect("hidden workspace paths should resolve");
 
-        assert_eq!(
-            paths.workspace_dir,
-            "/tmp/2026/04/12/.session-abc-segment-0004"
-        );
+        assert_eq!(paths.workspace_dir, workspace_dir.to_string_lossy());
         assert_eq!(
             paths.frames_dir,
-            "/tmp/2026/04/12/.session-abc-segment-0004/frames"
+            workspace_dir.join("frames").to_string_lossy()
         );
         assert_eq!(
             paths.visible_segment_path,
-            format!(
-                "/tmp/2026/04/12/session-abc-segment-0004.{}",
-                capture_runtime::screen_segment_extension()
-            )
+            day_dir
+                .join(format!(
+                    "session-abc-segment-0004.{}",
+                    capture_runtime::screen_segment_extension()
+                ))
+                .to_string_lossy()
         );
     }
 
@@ -984,7 +991,11 @@ mod tests {
             let store = crate::FrameBatchStore::new(pool.clone());
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
 
             let safe_workspace_dir = day_dir.join(".session-safe-segment-0001");
             let safe_frames_dir = safe_workspace_dir.join("frames");
@@ -1167,7 +1178,13 @@ mod tests {
             // Dead segment: no visible .mov, a lingering DB frame row, and an empty
             // frames/ dir (artifacts already consumed). Nothing left to protect, so
             // the periodic repair should reclaim the husk rather than skip it.
-            let workspace_dir = recordings_root.join("2026/04/12/.session-dead-segment-0001");
+            // Component-wise joins so the DB frame path shares the exact
+            // string prefix of the read_dir-scanned workspace on any platform.
+            let workspace_dir = recordings_root
+                .join("2026")
+                .join("04")
+                .join("12")
+                .join(".session-dead-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             std::fs::create_dir_all(&frames_dir).expect("frames dir should exist");
             processing
@@ -1214,7 +1231,11 @@ mod tests {
                 processing.clone(),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
 
             // Dead segment: a truncated, never-finalized .mov (no moov atom), an
             // empty frames/ dir (artifacts already consumed), and a lingering DB
@@ -1223,7 +1244,8 @@ mod tests {
             let workspace_dir = day_dir.join(".session-dead-segment-0001");
             std::fs::create_dir_all(workspace_dir.join("frames"))
                 .expect("frames dir should exist");
-            let dead_mov = day_dir.join("session-dead-segment-0001.mov");
+            let dead_mov =
+                day_dir.join(visible_segment_file_name("session-dead-segment-0001"));
             std::fs::write(&dead_mov, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
                 .expect("dead visible segment should exist");
             processing
@@ -1307,7 +1329,11 @@ mod tests {
                 crate::ProcessingStore::new(pool),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
 
             std::fs::create_dir_all(workspace_dir.join("frames"))
@@ -1351,7 +1377,11 @@ mod tests {
                 crate::ProcessingStore::new(pool),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
             let old_workspace_dir = day_dir.join(".active-screen-session-segment-0001");
             let current_workspace_dir = day_dir.join(".active-screen-session-segment-0002");
 

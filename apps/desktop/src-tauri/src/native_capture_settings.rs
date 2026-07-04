@@ -1857,6 +1857,17 @@ mod tests {
         apply_domain_patch_for_test_with_capture_support(settings, patch, true)
     }
 
+    /// OCR settings as a caller observes them after settings normalization.
+    /// `validate_ocr_settings` intentionally enriches the Tesseract provider
+    /// (the Windows default) with its pinned model id and language, so
+    /// preserve-unrelated-fields tests must compare against the normalized
+    /// form of their base OCR settings rather than the raw default (which
+    /// carries `model_id: None` / `language: None`). On macOS the Apple
+    /// Vision default normalizes to itself, so this is a no-op there.
+    fn normalized_ocr_settings(ocr: OcrSettings) -> OcrSettings {
+        validate_ocr_settings(ocr).expect("test base ocr settings should validate")
+    }
+
     #[test]
     fn domain_update_preserves_unrelated_settings_fields() {
         let mut base = default_recording_settings();
@@ -1877,7 +1888,7 @@ mod tests {
 
         assert!(!updated.capture_microphone);
         assert_eq!(updated.capture_screen, base.capture_screen);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
     }
@@ -1914,7 +1925,7 @@ mod tests {
         // Unrelated fields are untouched.
         assert!(updated.capture_microphone);
         assert_eq!(updated.save_directory, base.save_directory);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
     }
 
     #[test]
@@ -2038,7 +2049,7 @@ mod tests {
             Some("anthropic:claude-opus-4")
         );
         assert_eq!(updated.capture_microphone, base.capture_microphone);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
     }
@@ -2363,7 +2374,7 @@ mod tests {
             updated.developer_options_enabled,
             base.developer_options_enabled
         );
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
     }
 
     #[test]
@@ -2385,7 +2396,7 @@ mod tests {
         assert!(updated.developer_options_enabled);
         assert!(updated.native_capture_debug_logging_enabled);
         assert_eq!(updated.capture_microphone, base.capture_microphone);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(
             updated.preview_cache_ttl_seconds,
             base.preview_cache_ttl_seconds
@@ -2791,7 +2802,7 @@ mod tests {
         );
         assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(loaded.appearance, default_appearance());
-        assert_eq!(loaded.ocr, default_ocr_settings());
+        assert_eq!(loaded.ocr, normalized_ocr_settings(default_ocr_settings()));
         assert_eq!(loaded.access, AccessSettings::default());
         assert_eq!(loaded.transcription, default_audio_transcription_settings());
     }

@@ -5996,31 +5996,6 @@ mod tests {
         );
     }
 
-    struct TestVideoPreviewExtractorGuard;
-
-    impl TestVideoPreviewExtractorGuard {
-        fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
-            let mut state = test_video_preview_extractor_state()
-                .lock()
-                .expect("test video preview extractor poisoned");
-            assert!(
-                state.is_none(),
-                "test video preview extractor should not already be installed"
-            );
-            *state = Some(extractor);
-            Self
-        }
-    }
-
-    impl Drop for TestVideoPreviewExtractorGuard {
-        fn drop(&mut self) {
-            let mut state = test_video_preview_extractor_state()
-                .lock()
-                .expect("test video preview extractor poisoned");
-            *state = None;
-        }
-    }
-
     #[test]
     fn debug_insert_frame_processing_request_maps_optional_dimensions() {
         let request = DebugInsertFrameAndEnqueueProcessingJobRequest {
@@ -6611,7 +6586,10 @@ mod tests {
 
             let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
             let sibling_frame_path = frames_dir.join("frame-1744459201000-0.png");
-            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            let video_path = segment_dir.join(format!(
+                "session-preview-segment-0001.{}",
+                capture_runtime::screen_segment_extension()
+            ));
             let sibling_bytes = b"segment-frame-preview-bytes";
             fs::write(&sibling_frame_path, sibling_bytes)
                 .expect("sibling frame preview file should be written");
@@ -6672,7 +6650,10 @@ mod tests {
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
 
             let target_frame_path = frames_dir.join("frame-1744459201500-1.png");
-            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            let video_path = segment_dir.join(format!(
+                "session-preview-segment-0001.{}",
+                capture_runtime::screen_segment_extension()
+            ));
             fs::write(&video_path, b"").expect("visible segment video should be written");
 
             let target_frame = infra
@@ -6702,7 +6683,44 @@ mod tests {
 
     #[test]
     fn get_frame_preview_inner_serializes_video_extraction_per_segment() {
-        run_multithread_async_test(async {
+        let concurrent_calls = Arc::new(AtomicUsize::new(0));
+        let max_concurrent_calls = Arc::new(AtomicUsize::new(0));
+        // Install the seam OUTSIDE the async block: the guard's serialization
+        // MutexGuard is !Send and must not be held across awaits on the
+        // multithread runtime (and whole-test-scoped install serializes against
+        // the other guard-using tests for the test's entire lifetime).
+        let _extractor_guard = TestVideoPreviewExtractorGuard::install(Arc::new({
+            let concurrent_calls = Arc::clone(&concurrent_calls);
+            let max_concurrent_calls = Arc::clone(&max_concurrent_calls);
+            move |path, _offset_seconds| {
+                struct ActiveCallGuard {
+                    concurrent_calls: Arc<AtomicUsize>,
+                }
+
+                impl Drop for ActiveCallGuard {
+                    fn drop(&mut self) {
+                        self.concurrent_calls.fetch_sub(1, Ordering::SeqCst);
+                    }
+                }
+
+                let active = concurrent_calls.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent_calls.fetch_max(active, Ordering::SeqCst);
+                let _active_call_guard = ActiveCallGuard {
+                    concurrent_calls: Arc::clone(&concurrent_calls),
+                };
+
+                thread::sleep(Duration::from_millis(40));
+                if active > 1 {
+                    return Err(format!(
+                        "test extractor saw concurrent access for {}",
+                        path.display()
+                    ));
+                }
+
+                Ok((b"preview-bytes".to_vec(), "image/png"))
+            }
+        }));
+        run_multithread_async_test(async move {
             let dir = TestDir::new("frame-preview-video-serialization");
             let infra = Arc::new(
                 ::app_infra::AppInfra::initialize(dir.path())
@@ -6715,7 +6733,10 @@ mod tests {
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
 
-            let video_path = segment_dir.join("session-preview-segment-0001.mov");
+            let video_path = segment_dir.join(format!(
+                "session-preview-segment-0001.{}",
+                capture_runtime::screen_segment_extension()
+            ));
             fs::write(&video_path, b"\0\0\0\x14ftypqt  \0\0\0\0qt  moov mdat")
                 .expect("visible segment video should be written");
 
@@ -6733,40 +6754,6 @@ mod tests {
                     .expect("frame should be inserted");
                 frame_ids.push(frame.id);
             }
-
-            let concurrent_calls = Arc::new(AtomicUsize::new(0));
-            let max_concurrent_calls = Arc::new(AtomicUsize::new(0));
-            let _extractor_guard = TestVideoPreviewExtractorGuard::install(Arc::new({
-                let concurrent_calls = Arc::clone(&concurrent_calls);
-                let max_concurrent_calls = Arc::clone(&max_concurrent_calls);
-                move |path, _offset_seconds| {
-                    struct ActiveCallGuard {
-                        concurrent_calls: Arc<AtomicUsize>,
-                    }
-
-                    impl Drop for ActiveCallGuard {
-                        fn drop(&mut self) {
-                            self.concurrent_calls.fetch_sub(1, Ordering::SeqCst);
-                        }
-                    }
-
-                    let active = concurrent_calls.fetch_add(1, Ordering::SeqCst) + 1;
-                    max_concurrent_calls.fetch_max(active, Ordering::SeqCst);
-                    let _active_call_guard = ActiveCallGuard {
-                        concurrent_calls: Arc::clone(&concurrent_calls),
-                    };
-
-                    thread::sleep(Duration::from_millis(40));
-                    if active > 1 {
-                        return Err(format!(
-                            "test extractor saw concurrent access for {}",
-                            path.display()
-                        ));
-                    }
-
-                    Ok((b"preview-bytes".to_vec(), "image/png"))
-                }
-            }));
 
             let mut tasks = Vec::new();
             for frame_id in frame_ids {
@@ -7690,13 +7677,20 @@ mod tests {
             let recordings_root =
                 crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
                     .recordings_root();
-            let day_dir = recordings_root.join("2026/04/12");
+            // Join the day components one at a time so the active-set entry
+            // below is byte-identical to the workspace path the repair scan
+            // discovers via `read_dir` (a `join("2026/04/12")` fixture keeps
+            // the literal `/` on Windows while the scan yields `\`).
+            let day_dir = recordings_root.join("2026").join("04").join("12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
             fs::create_dir_all(workspace_dir.join("frames"))
                 .expect("workspace frames dir should be created");
             fs::write(
-                day_dir.join("active-screen-session-segment-0001.mov"),
-                b"fake mov",
+                day_dir.join(format!(
+                    "active-screen-session-segment-0001.{}",
+                    capture_runtime::screen_segment_extension()
+                )),
+                b"fake segment",
             )
             .expect("visible segment should be written");
 
