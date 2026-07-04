@@ -215,9 +215,17 @@
     }
   }
 
+  // The busy flag gets its own sequence: `digestToken` is shared with
+  // `loadDigest`, and the `user_context_changed` listener fires loadDigest on
+  // every worker beat — routine during a multi-second re-read. A token-gated
+  // reset would then never run, leaving the button stuck on "reading…"
+  // (re-entry is blocked by the `digestRegenerating` guard). The result writes
+  // stay `digestToken`-gated so a newer load still wins the data.
+  let regenSeq = 0;
   async function regenerateDigest(): Promise<void> {
     if (!engineOn || digestRegenerating) return;
     const token = ++digestToken;
+    const regen = ++regenSeq;
     digestRegenerating = true;
     digestLoading = false;
     digestError = null;
@@ -235,7 +243,7 @@
         digestError =
           error instanceof Error ? error.message : "Couldn't write a read.";
     } finally {
-      if (token === digestToken) digestRegenerating = false;
+      if (regen === regenSeq) digestRegenerating = false;
     }
   }
 
