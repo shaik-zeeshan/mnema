@@ -1099,14 +1099,13 @@ pub(super) fn suspend_screen_system_audio_capture(
     }
     runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
     runtime.capture_suspension = Some(CaptureSuspension::with_kind(kind, error));
-    // A display-unavailable suspension means macOS already tore the screen stream
-    // down, so the in-flight segment's `.mov` is incomplete/unopenable. Trying to
-    // finalize it only emits a spurious "screen output missing" error every time
-    // the display sleeps; the prior segments are already committed and recovery
-    // starts a fresh segment, so skip the doomed commit for that kind.
-    if kind != CaptureSuspensionKind::DisplayUnavailable {
-        commit_suspended_screen_system_outputs(app_handle, runtime);
-    }
+    // Commit the in-flight segment for every suspension kind, including
+    // DisplayUnavailable: the stop above finalizes the writers even when the
+    // delegate already reported the stream dead (terminated streams skip the
+    // doomed second stop but still finish their writers), so the tail `.mov` is
+    // openable and committing it preserves the last partial segment instead of
+    // orphaning it. A finalize failure is logged and skipped inside.
+    commit_suspended_screen_system_outputs(app_handle, runtime);
     runtime.recording_file = None;
     runtime.system_audio_recording_file = None;
     preserve_live_microphone_continuation_outputs(runtime);
@@ -4756,12 +4755,13 @@ mod tests {
     }
 
     #[test]
-    fn display_unavailable_suspension_skips_dead_segment_commit_and_stays_running() {
-        // A display-unavailable suspension means macOS already tore the screen
-        // stream down, so the in-flight segment is unrecoverable. Even with an
-        // (otherwise openable) current segment, the suspend path must skip the
-        // commit — and must not fail the session — so a screen-only recording can
-        // resume automatically when the display returns.
+    fn display_unavailable_suspension_commits_tail_segment_and_stays_running() {
+        // A display-unavailable suspension used to skip committing the in-flight
+        // segment because the dead stream left it truncated. The stop path now
+        // finalizes the writers even for a delegate-terminated stream, so the
+        // tail `.mov` is openable — the suspend path must commit it (not orphan
+        // it) and must not fail the session, so a screen-only recording resumes
+        // automatically when the display returns (ADR 0021 amendment).
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let screen_path = temp_dir.path().join("screen-segment.mov");
         std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
@@ -4814,15 +4814,15 @@ mod tests {
                 .map(|suspension| suspension.kind),
             Some(CaptureSuspensionKind::DisplayUnavailable)
         );
-        // The dead in-flight segment is dropped, not committed.
+        // The finalized in-flight tail segment is committed, not orphaned.
         assert!(runtime.current_segment_output_files.is_none());
         assert!(runtime.recording_file.is_none());
         let output_files = runtime
             .output_files
             .expect("output files collection should be preserved");
         assert!(
-            output_files.screen_file.is_none() && output_files.screen_files.is_empty(),
-            "the unrecoverable in-flight segment must not be committed"
+            output_files.screen_files.contains(&screen_path),
+            "the finalized in-flight tail segment must be committed"
         );
     }
 

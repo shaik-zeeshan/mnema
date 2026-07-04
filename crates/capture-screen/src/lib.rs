@@ -2107,6 +2107,7 @@ mod stream_delegate {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             state.stream_live = false;
+            state.stream_terminated = true;
             state.stop_error = Some(stop_error);
         }
 
@@ -2392,6 +2393,12 @@ struct ScreenCaptureKitCaptureSession {
 #[derive(Debug, Clone)]
 struct ScreenCaptureKitLifecycleState {
     stream_live: bool,
+    // Set once by the delegate's did-stop-with-error callback and never
+    // cleared: a stream ScreenCaptureKit reported stopped is terminal — it can
+    // neither deliver more samples nor be stopped again (a second stop only
+    // errors). Distinct from `stream_live`, which the did-become-inactive /
+    // did-become-active callbacks toggle for resumable interruptions.
+    stream_terminated: bool,
     stop_error: Option<CaptureErrorResponse>,
 }
 
@@ -2400,6 +2407,7 @@ impl Default for ScreenCaptureKitLifecycleState {
     fn default() -> Self {
         Self {
             stream_live: true,
+            stream_terminated: false,
             stop_error: None,
         }
     }
@@ -2591,6 +2599,13 @@ impl ScreenCaptureKitCaptureSession {
             .stream_live
     }
 
+    fn is_stream_terminated(&self) -> bool {
+        self.lifecycle_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .stream_terminated
+    }
+
     fn take_stop_error(&mut self) -> Option<CaptureErrorResponse> {
         self.lifecycle_state
             .lock()
@@ -2647,20 +2662,31 @@ impl ScreenCaptureKitCaptureSession {
     ) -> Result<(), CaptureErrorResponse> {
         let mut stop_error: Option<CaptureErrorResponse> = None;
 
-        let stream_stopped = match Self::stop_stream(&self.stream, "capture_stop_incomplete") {
-            Ok(()) => true,
-            Err(error) => {
-                if Self::is_stop_timeout_code(error.code.as_str()) {
-                    log_capture_error("ScreenCaptureKit stream stop timed out", &error);
-                    return Err(error);
-                }
+        // A stream the delegate reported stopped-with-error (display sleep or
+        // disconnect, a system-initiated kill) is terminal: asking SCK to stop
+        // it again only returns an error, and bailing on that error used to
+        // skip writer finalization — abandoning the in-flight segment as a
+        // truncated, unopenable `.mov`. The samples appended before the stream
+        // died still make a valid movie, so skip the doomed stop call and
+        // proceed straight to finalizing the writers.
+        let stream_stopped = if self.is_stream_terminated() {
+            true
+        } else {
+            match Self::stop_stream(&self.stream, "capture_stop_incomplete") {
+                Ok(()) => true,
+                Err(error) => {
+                    if Self::is_stop_timeout_code(error.code.as_str()) {
+                        log_capture_error("ScreenCaptureKit stream stop timed out", &error);
+                        return Err(error);
+                    }
 
-                log_capture_error("ScreenCaptureKit stream stop failed", &error);
-                if stop_error.is_none() {
-                    stop_error = Some(error);
-                }
+                    log_capture_error("ScreenCaptureKit stream stop failed", &error);
+                    if stop_error.is_none() {
+                        stop_error = Some(error);
+                    }
 
-                false
+                    false
+                }
             }
         };
 
@@ -4921,6 +4947,7 @@ mod tests {
         let state = ScreenCaptureKitLifecycleState::default();
 
         assert!(state.stream_live);
+        assert!(!state.stream_terminated);
         assert!(state.stop_error.is_none());
     }
 
