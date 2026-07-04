@@ -4771,7 +4771,7 @@ mod tests {
                 width: 1280,
                 height: 720,
             },
-            1,
+            1.0,
             &ScreenCaptureSources {
                 screen: true,
                 system_audio: false,
@@ -4781,6 +4781,29 @@ mod tests {
         assert_eq!(cfg.width(), 1280);
         assert_eq!(cfg.height(), 720);
         assert_eq!(cfg.pixel_format(), cidre::cv::PixelFormat::_32_BGRA);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn configured_screen_capture_kit_stream_cfg_supports_sub_1hz_frame_intervals() {
+        let resolution = ScreenCaptureResolution {
+            width: 1280,
+            height: 720,
+        };
+        let sources = ScreenCaptureSources {
+            screen: true,
+            system_audio: false,
+        };
+
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 0.5, &sources)
+            .minimum_frame_interval();
+        assert_eq!(interval.value, 1000);
+        assert_eq!(interval.scale, 500);
+
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 10.0, &sources)
+            .minimum_frame_interval();
+        assert_eq!(interval.value, 1000);
+        assert_eq!(interval.scale, 10000);
     }
 
     // --- output_files_for_session path-layout regression ---
