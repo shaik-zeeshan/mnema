@@ -966,14 +966,14 @@ pub struct UpdateUserContextSettingsRequest {
     pub backfill_go_deeper: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
     pub capture_screen: bool,
     pub capture_microphone: bool,
     pub capture_system_audio: bool,
     pub segment_duration_seconds: u64,
-    pub screen_frame_rate: u32,
+    pub screen_frame_rate: f64,
     #[serde(default = "default_screen_resolution")]
     pub screen_resolution: ScreenResolution,
     #[serde(default = "default_video_bitrate")]
@@ -1057,7 +1057,7 @@ pub enum SettingsOwnershipDomain {
     OneTimePromptState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettingsDomainUpdateResponse {
     pub domain: SettingsOwnershipDomain,
@@ -1071,7 +1071,7 @@ pub struct UpdateRecordingSettingsRequest {
     pub capture_microphone: bool,
     pub capture_system_audio: bool,
     pub segment_duration_seconds: u64,
-    pub screen_frame_rate: u32,
+    pub screen_frame_rate: f64,
     #[serde(default = "default_screen_resolution")]
     pub screen_resolution: ScreenResolution,
     #[serde(default = "default_video_bitrate")]
@@ -1165,7 +1165,7 @@ pub struct UpdateCaptureTimingSettingsRequest {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateVideoSettingsRequest {
-    pub screen_frame_rate: Option<u32>,
+    pub screen_frame_rate: Option<f64>,
     pub screen_resolution: Option<ScreenResolution>,
     pub video_bitrate: Option<VideoBitrateSettings>,
 }

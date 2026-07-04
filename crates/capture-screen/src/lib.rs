@@ -3181,7 +3181,7 @@ fn delegate_start_callbacks() -> &'static Mutex<StartCallbackMap> {
 pub fn start_capture_session(
     session_dir: &Path,
     sources: &ScreenCaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
@@ -3203,7 +3203,7 @@ pub fn start_capture_session_with_options(
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
@@ -3433,7 +3433,7 @@ fn start_screen_capture_kit_session(
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
@@ -3637,7 +3637,7 @@ fn start_screen_capture_kit_session(
 #[cfg(target_os = "macos")]
 fn configured_screen_capture_kit_stream_cfg(
     stream_resolution: &ScreenCaptureResolution,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     sources: &ScreenCaptureSources,
 ) -> cidre::arc::R<cidre::sc::StreamCfg> {
     use cidre::{cm, sc};
@@ -3645,7 +3645,9 @@ fn configured_screen_capture_kit_stream_cfg(
     let mut screen_stream_cfg = sc::StreamCfg::new();
     screen_stream_cfg.set_width(stream_resolution.width as usize);
     screen_stream_cfg.set_height(stream_resolution.height as usize);
-    screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(1, screen_frame_rate as i32));
+    // Fractional rates (e.g. 0.5 fps) need a sub-1Hz interval, so express it in ms.
+    screen_stream_cfg
+        .set_minimum_frame_interval(cm::Time::new(1000, (screen_frame_rate * 1000.0) as i32));
     // Request a packed 32-bit buffer so live captured-frame equivalence can read
     // interleaved pixels directly instead of falling back to the exported JPEG.
     screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
@@ -4274,7 +4276,7 @@ pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
 pub fn start_capture_session(
     _session_dir: &Path,
     _sources: &ScreenCaptureSources,
-    _screen_frame_rate: u32,
+    _screen_frame_rate: f64,
     _screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
@@ -4290,7 +4292,7 @@ pub fn start_capture_session_with_options(
     _screen_output_file: Option<&Path>,
     _system_audio_output_path: Option<&Path>,
     _sources: &ScreenCaptureSources,
-    _screen_frame_rate: u32,
+    _screen_frame_rate: f64,
     _screen_resolution: &ScreenResolution,
     _video_bitrate_bps: Option<u32>,
     _options: ScreenCaptureSessionOptions,

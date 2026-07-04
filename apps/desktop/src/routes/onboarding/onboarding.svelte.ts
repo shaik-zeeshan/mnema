@@ -85,7 +85,7 @@ export class OnboardingController {
   draftCaptureScreen = $state(true);
   draftCaptureMicrophone = $state(false);
   draftCaptureSystemAudio = $state(false);
-  draftFrameRate = $state(1);
+  draftFrameRate = $state(0.5);
   draftSegmentDuration = $state(60);
   draftResolutionMode = $state<ResolutionMode>("original");
   draftResolutionPreset = $state<ResolutionPreset>("1080p");
