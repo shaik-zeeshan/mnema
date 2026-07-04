@@ -2458,6 +2458,11 @@ mod tests {
     }
 
     #[test]
+    fn default_recording_settings_capture_screen_at_half_fps() {
+        assert_eq!(default_recording_settings().screen_frame_rate, 0.5);
+    }
+
+    #[test]
     fn load_recording_settings_from_path_defaults_preview_cache_ttl_when_missing() {
         let dir = TestDir::new("preview-cache-ttl-default");
         let path = dir.path().join("recording-settings.json");

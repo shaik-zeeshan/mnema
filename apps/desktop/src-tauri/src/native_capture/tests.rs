@@ -1455,15 +1455,42 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
 }
 
 #[test]
+fn validate_recording_settings_accepts_frame_rate_bounds() {
+    for rate in [0.5, 10.0] {
+        validate_recording_settings(UpdateRecordingSettingsRequest {
+            screen_frame_rate: rate,
+            ..update_recording_settings_request_fixture()
+        })
+        .unwrap_or_else(|error| panic!("frame rate {rate} must be accepted: {error:?}"));
+    }
+}
+
+#[test]
+fn validate_recording_settings_rejects_out_of_range_frame_rates() {
+    for rate in [0.4, 10.1, 0.0, -1.0, 30.0, 120.0, f64::NAN] {
+        let error = validate_recording_settings(UpdateRecordingSettingsRequest {
+            screen_frame_rate: rate,
+            ..update_recording_settings_request_fixture()
+        })
+        .expect_err(&format!("frame rate {rate} must be rejected"));
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(error.message, "screenFrameRate must be between 0.5 and 10");
+    }
+}
+
+#[test]
 fn compute_effective_screen_bitrate_uses_preset_formula() {
     let settings = RecordingSettings {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30.0,
+        // 1920 * 1080 * 4.5 * 0.10 = 933,120 rounds to 1,000,000; an integer-truncated
+        // rate (4.0) would round to 750,000, so this pins the fractional f64 path.
+        screen_frame_rate: 4.5,
         screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::P720,
+            preset: ScreenResolutionPreset::P1080,
         },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Preset,
@@ -1499,7 +1526,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
     let bitrate = compute_effective_screen_bitrate_bps(&settings)
         .expect("screen capture should produce a bitrate");
 
-    assert_eq!(bitrate, 2_750_000);
+    assert_eq!(bitrate, 1_000_000);
 }
 
 #[test]
