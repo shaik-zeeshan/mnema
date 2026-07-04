@@ -351,6 +351,17 @@ pub fn secret_scrubbed_fetch_target(raw_url: &str) -> Option<String> {
         return None;
     }
 
+    // SSRF fail-closed: never produce a fetch target for a loopback / private /
+    // link-local / metadata host. The captured URL comes from the user's own
+    // browsing history, which can legitimately include `http://localhost:3000`,
+    // a LAN device (`https://192.168.1.1`), or a link-local address — fetching it
+    // and streaming the body into a (possibly cloud) model exfiltrates
+    // internal-network / localhost service content. Screened here (initial
+    // target) AND on every redirect hop (see `is_disallowed_fetch_url`).
+    if is_disallowed_fetch_url(&parsed) {
+        return None;
+    }
+
     let mut target = parsed.clone();
     // Force https. http and https are both "special" schemes, so this switch is
     // always permitted; a failure here means an unexpected input, so bail.
@@ -391,6 +402,75 @@ pub fn secret_scrubbed_fetch_target(raw_url: &str) -> Option<String> {
 
     target.set_fragment(None);
     Some(target.to_string())
+}
+
+/// SSRF host screen for the `fetch_url` egress. Returns `true` when `url`'s host
+/// must NEVER be fetched: a loopback, private (RFC 1918), link-local (incl. the
+/// cloud metadata IP `169.254.169.254`), unique-local, carrier-grade-NAT, or
+/// unspecified address, or the `localhost` name. Applied to BOTH the initial
+/// fetch target ([`secret_scrubbed_fetch_target`]) and every redirect hop (the
+/// origin controls `Location`, so a benign captured URL can be redirected into
+/// internal infrastructure). The `url` crate parses decimal / hex / octal IPv4
+/// literals (`http://2130706433`, `http://0x7f000001`) into `Host::Ipv4`, so
+/// those encodings are screened too.
+///
+/// Residual (documented, not fixed here): a DNS *name* that resolves to a private
+/// IP (a rebinding vector) is NOT caught — that needs a resolving connector. IP
+/// literals and `localhost` — the concrete, testable vectors — are closed.
+pub fn is_disallowed_fetch_url(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ipv4_is_disallowed(ip),
+        Some(url::Host::Ipv6(ip)) => ipv6_is_disallowed(ip),
+        Some(url::Host::Domain(host)) => host_is_local_name(host),
+        // No host (opaque / non-network URL) — never fetch.
+        None => true,
+    }
+}
+
+/// SSRF screen on a RESOLVED connection address. This is the real boundary the
+/// fetch client's custom DNS resolver applies: it catches a public host NAME that
+/// resolves to a private IP (split-horizon DNS / DNS-rebinding) — the case
+/// [`is_disallowed_fetch_url`] (URL host only) cannot see — as well as IP-literal
+/// hosts and every redirect hop's connection. Returns `true` when the client must
+/// refuse to connect to `ip`.
+pub fn ip_is_disallowed_fetch_target(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => ipv4_is_disallowed(v4),
+        std::net::IpAddr::V6(v6) => ipv6_is_disallowed(v6),
+    }
+}
+
+/// True for an IPv4 address the fetch client must never reach.
+fn ipv4_is_disallowed(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_private()          // 10/8, 172.16/12, 192.168/16
+        || ip.is_loopback()  // 127/8
+        || ip.is_link_local()// 169.254/16 (incl. metadata 169.254.169.254)
+        || ip.is_unspecified()// 0.0.0.0
+        || ip.is_broadcast() // 255.255.255.255
+        || a == 0            // 0.0.0.0/8 "this network"
+        || (a == 100 && (b & 0xc0) == 64) // 100.64/10 carrier-grade NAT
+}
+
+/// True for an IPv6 address the fetch client must never reach.
+fn ipv6_is_disallowed(ip: std::net::Ipv6Addr) -> bool {
+    // An IPv4-mapped address (`::ffff:a.b.c.d`) reaches the same host — screen its
+    // embedded v4 with the v4 rules so `[::ffff:169.254.169.254]` is caught.
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return ipv4_is_disallowed(v4);
+    }
+    let first = ip.segments()[0];
+    ip.is_loopback()              // ::1
+        || ip.is_unspecified()    // ::
+        || (first & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+        || (first & 0xffc0) == 0xfe80 // fe80::/10 link-local
+}
+
+/// True when a host NAME is a loopback name (`localhost` or a `*.localhost`
+/// subdomain, which RFC 6761 reserves to loopback).
+fn host_is_local_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
 }
 
 /// Process one '/'-delimited path segment, which may itself contain one or more
@@ -1619,5 +1699,113 @@ mod tests {
         assert!(!out.contains("hunter2"), "password must not leak: {out}");
         assert!(!out.contains("user:"), "username must not leak: {out}");
         assert_eq!(out, "https://internal.example.com/dash?v=1");
+    }
+}
+
+#[cfg(test)]
+mod ssrf_review_security_a {
+    use super::secret_scrubbed_fetch_target;
+
+    // SSRF: the fetch target reaches the network and its body is streamed into a
+    // (potentially CLOUD) model's context. A captured or attacker-redirected URL
+    // whose host is loopback / private / link-local / metadata must NOT produce a
+    // fetch target — otherwise internal-network / localhost service content is
+    // exfiltrated to the cloud model. `secret_scrubbed_fetch_target` is the
+    // fetch-target boundary; it must fail closed (None) on such hosts.
+    #[test]
+    fn fetch_target_refuses_private_and_loopback_hosts() {
+        for raw in [
+            "https://127.0.0.1/admin",
+            "http://localhost:3000/admin",
+            "https://[::1]:8443/",
+            "https://192.168.1.1/router",
+            "https://10.0.0.5/internal",
+            "https://172.16.9.9/internal",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://0.0.0.0/",
+        ] {
+            assert_eq!(
+                secret_scrubbed_fetch_target(raw),
+                None,
+                "private/loopback host must not produce a fetch target: {raw}"
+            );
+        }
+    }
+
+    // A normal public host still produces a fetch target (no false-positive that
+    // would break the feature outright).
+    #[test]
+    fn fetch_target_still_allows_public_hosts() {
+        assert!(secret_scrubbed_fetch_target("https://github.com/o/r/pull/1?v=2").is_some());
+        assert!(secret_scrubbed_fetch_target("https://example.com/page").is_some());
+    }
+
+    // The classifier is also applied on every redirect hop. Cover the hop path
+    // (reqwest's `Attempt` is not constructible in a unit test) and the numeric
+    // IPv4 encodings the `url` crate normalizes, so a decimal/hex-encoded loopback
+    // redirect (`http://2130706433`) is screened too.
+    #[test]
+    fn classifier_blocks_private_hosts_including_numeric_encodings() {
+        use super::is_disallowed_fetch_url;
+        use url::Url;
+        for raw in [
+            "https://127.0.0.1/",
+            "http://localhost/",
+            "https://[::1]/",
+            "https://10.1.2.3/",
+            "https://169.254.169.254/",
+            "https://2130706433/",   // decimal 127.0.0.1
+            "https://0x7f000001/",   // hex 127.0.0.1
+            "https://[::ffff:10.0.0.1]/",
+        ] {
+            let url = Url::parse(raw).unwrap();
+            assert!(
+                is_disallowed_fetch_url(&url),
+                "must be screened as a disallowed fetch host: {raw}"
+            );
+        }
+        for raw in ["https://github.com/", "https://8.8.8.8/", "https://example.com/"] {
+            let url = Url::parse(raw).unwrap();
+            assert!(
+                !is_disallowed_fetch_url(&url),
+                "public host must be allowed: {raw}"
+            );
+        }
+    }
+
+    // The connect-time (resolved-IP) screen is what closes the realistic exploit:
+    // a public host NAME with a valid public cert that resolves to a private IP
+    // (enterprise split-horizon DNS / DNS rebinding). The URL host is a domain, so
+    // only the resolved-IP predicate can catch it. Assert the predicate directly.
+    #[test]
+    fn resolved_ip_predicate_blocks_private_and_metadata_addresses() {
+        use super::ip_is_disallowed_fetch_target;
+        use std::net::IpAddr;
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.9.9",
+            "192.168.1.1",
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",
+            "::1",
+            "fc00::1",         // unique-local
+            "fe80::1",         // link-local
+            "::ffff:10.0.0.1", // v4-mapped private
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(
+                ip_is_disallowed_fetch_target(ip),
+                "resolved private/metadata address must be refused: {ip}"
+            );
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "140.82.121.3", "2606:4700:4700::1111"] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(
+                !ip_is_disallowed_fetch_target(ip),
+                "public address must be allowed: {ip}"
+            );
+        }
     }
 }

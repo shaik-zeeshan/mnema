@@ -114,14 +114,45 @@ async fn connect_http(cfg: &McpServerConfig, secret: Option<String>) -> Result<M
 
     let mut config = StreamableHttpClientTransportConfig::with_uri(url);
     // HTTP secret delivery: the reqwest streamable-HTTP client turns this into an
-    // `Authorization: Bearer <secret>` header on every request.
+    // `Authorization: Bearer <secret>` header on every request. A bearer secret
+    // must ride TLS only — refuse to attach it to a cleartext remote endpoint,
+    // where it would leak to any on-path eavesdropper (loopback is exempt, since
+    // that traffic never leaves the machine).
     if let Some(secret) = secret {
+        if !secret_may_ride_url(url) {
+            return Err(format!(
+                "http connector \"{}\" has a secret but its URL is not HTTPS (and not loopback); \
+                 refusing to send the secret in cleartext — use an https:// endpoint",
+                cfg.label
+            ));
+        }
         config = config.auth_header(secret);
     }
     let transport = StreamableHttpClientTransport::from_config(config);
     ().serve(transport)
         .await
         .map_err(|error| format!("failed to connect to \"{}\": {error}", cfg.label))
+}
+
+/// Whether the connector's bearer secret may be attached to a request to `raw`.
+/// A secret rides TLS only, EXCEPT for a loopback endpoint (a local MCP server on
+/// this machine, where cleartext never leaves the host). An unparseable URL is
+/// treated as unsafe (the secret is withheld and the connect refused).
+fn secret_may_ride_url(raw: &str) -> bool {
+    match url::Url::parse(raw) {
+        Ok(parsed) => parsed.scheme() == "https" || url_host_is_loopback(&parsed),
+        Err(_) => false,
+    }
+}
+
+/// A host is loopback if it is `localhost` or a loopback IP (`127.0.0.0/8`, `::1`).
+fn url_host_is_loopback(parsed: &url::Url) -> bool {
+    match parsed.host() {
+        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -248,5 +279,66 @@ mod tests {
                 "a connect-relevant edit must change the fingerprint"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod http_secret_scheme_review_security_b {
+    use super::*;
+
+    fn http_cfg(url: &str) -> McpServerConfig {
+        McpServerConfig {
+            id: "http-connector".to_string(),
+            label: "Remote".to_string(),
+            enabled: true,
+            transport: McpTransport::Http,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            url: Some(url.to_string()),
+            secret_env_name: None,
+            enabled_tools: None,
+        }
+    }
+
+    /// A remote (non-loopback) `http://` endpoint must NEVER receive the bearer
+    /// secret: attaching `Authorization: Bearer <secret>` to a cleartext request
+    /// ships the keychain token to any on-path eavesdropper. `connect_http` must
+    /// REFUSE before dialing rather than send it.
+    ///
+    /// Uses RFC 5737 TEST-NET-1 (192.0.2.1, guaranteed unroutable) so that in the
+    /// unfixed (vulnerable) state the connect merely hangs against a dead address
+    /// — it never actually transmits the secret from the test.
+    #[tokio::test]
+    async fn a_remote_http_url_refuses_to_send_the_secret_in_cleartext() {
+        let cfg = http_cfg("http://192.0.2.1/");
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_http(&cfg, Some("bearer-secret".to_string())),
+        )
+        .await;
+        let error = outcome
+            .expect("connect_http must refuse a cleartext secret fast, not hang dialing")
+            .expect_err("a cleartext remote URL carrying a secret must be refused");
+        assert!(
+            error.contains("cleartext") || error.to_lowercase().contains("https"),
+            "expected a cleartext/https refusal, got: {error}"
+        );
+    }
+
+    /// The scheme guard: TLS and loopback may carry the secret; a remote
+    /// cleartext endpoint (or a junk URL) may not.
+    #[test]
+    fn secret_only_rides_tls_or_loopback() {
+        // Allowed: TLS to anywhere, cleartext only to loopback.
+        assert!(secret_may_ride_url("https://mcp.example.com/"));
+        assert!(secret_may_ride_url("http://127.0.0.1:8080/"));
+        assert!(secret_may_ride_url("http://localhost:3000/mcp"));
+        assert!(secret_may_ride_url("http://[::1]:9/"));
+        // Denied: cleartext to a remote host, or an unparseable URL.
+        assert!(!secret_may_ride_url("http://mcp.example.com/"));
+        assert!(!secret_may_ride_url("http://10.0.0.5/"));
+        assert!(!secret_may_ride_url("ftp://mcp.example.com/"));
+        assert!(!secret_may_ride_url("not a url"));
     }
 }

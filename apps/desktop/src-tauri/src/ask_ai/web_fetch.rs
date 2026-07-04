@@ -20,8 +20,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use app_infra::brokered_access::{
-    guard_url, secret_scrubbed_fetch_target, signed_opaque_capture_reference,
-    BrokerOpaqueCaptureReference,
+    guard_url, is_disallowed_fetch_url, secret_scrubbed_fetch_target,
+    signed_opaque_capture_reference, BrokerOpaqueCaptureReference,
 };
 use futures_util::StreamExt;
 use htmd::HtmlToMarkdown;
@@ -139,11 +139,53 @@ fn fetch_client() -> &'static reqwest::Client {
             .user_agent(USER_AGENT)
             .timeout(REQUEST_TIMEOUT)
             .redirect(https_only_redirect_policy())
+            // SSRF: screen the RESOLVED connection address of every host — the
+            // initial target AND each redirect hop. This is the real boundary:
+            // it catches a public host NAME that resolves to a private/loopback/
+            // metadata IP (enterprise split-horizon DNS / DNS rebinding), which
+            // the URL-host checks cannot see, so internal-network content can
+            // never be fetched and streamed into the (possibly cloud) model.
+            .dns_resolver(std::sync::Arc::new(PrivateIpBlockingResolver))
             .build()
             // A build failure is a programmer error (rustls is always compiled
             // in); fall back to the default rather than panicking the turn.
             .unwrap_or_default()
     })
+}
+
+/// Custom DNS resolver that refuses to resolve a host to any private, loopback,
+/// link-local, or metadata address. reqwest consults it for every connection —
+/// the initial fetch and each redirect hop — so it screens IP-literal hosts,
+/// hostnames that resolve to a private IP, and redirect targets in one place.
+/// Rejects the whole resolution if ANY returned address is disallowed (a mixed
+/// public/private DNS answer cannot smuggle a private connect).
+struct PrivateIpBlockingResolver;
+
+impl reqwest::dns::Resolve for PrivateIpBlockingResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str().to_string();
+            // Port 0: reqwest overrides the port after resolution; we only need
+            // the addresses to screen. Do the DNS lookup ourselves (reqwest's
+            // default resolver is not publicly constructible).
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            if addrs
+                .iter()
+                .any(|addr| is_disallowed_fetch_target_ip(addr.ip()))
+            {
+                return Err(Box::<dyn std::error::Error + Send + Sync>::from(
+                    "fetch_url refuses a host that resolves to a private or loopback address",
+                ));
+            }
+            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Local alias so the resolver reads cleanly; the policy lives in `app-infra`.
+fn is_disallowed_fetch_target_ip(ip: std::net::IpAddr) -> bool {
+    app_infra::brokered_access::ip_is_disallowed_fetch_target(ip)
 }
 
 /// Redirect policy: refuse any hop whose scheme is not https, and cap the chain
@@ -161,6 +203,16 @@ fn https_only_redirect_policy() -> reqwest::redirect::Policy {
                 "fetch_url refuses a non-https redirect hop",
             ));
         }
+        // SSRF: the origin controls `Location`, so a benign captured URL can be
+        // redirected into internal infrastructure. Re-screen every hop's host —
+        // a redirect to a loopback / private / link-local / metadata address is
+        // refused, matching the initial-target screen in
+        // `secret_scrubbed_fetch_target`.
+        if is_disallowed_fetch_url(attempt.url()) {
+            return attempt.error(std::io::Error::other(
+                "fetch_url refuses a redirect to a private or loopback host",
+            ));
+        }
         attempt.follow()
     })
 }
@@ -175,20 +227,26 @@ struct FetchedPage {
     truncated: bool,
 }
 
-/// Stream the response body into a buffer, stopping at `cap` bytes.
-async fn read_capped_body(response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
+/// Stream the response body into a buffer, stopping at `cap` bytes. Returns
+/// `(bytes, capped)` where `capped` is true only when the body actually exceeded
+/// `cap` and real bytes were dropped — an exactly-`cap` body is NOT flagged. The
+/// caller ORs `capped` into the model-facing `truncated` flag so a body cut is
+/// never reported as a complete page.
+async fn read_capped_body(response: reqwest::Response, cap: usize) -> Result<(Vec<u8>, bool), String> {
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
+    let mut capped = false;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk
             .map_err(|error| format!("failed to read the page body: {}", error.without_url()))?;
         buffer.extend_from_slice(&chunk);
-        if buffer.len() >= cap {
+        if buffer.len() > cap {
             buffer.truncate(cap);
+            capped = true;
             break;
         }
     }
-    Ok(buffer)
+    Ok((buffer, capped))
 }
 
 /// GET `target_url`, gate on content type, stream the body under the cap, and
@@ -223,7 +281,7 @@ plain text, or json",
             )
         })?;
 
-    let body = read_capped_body(response, MAX_BODY_BYTES).await?;
+    let (body, body_capped) = read_capped_body(response, MAX_BODY_BYTES).await?;
     let text = String::from_utf8_lossy(&body);
 
     let (title, content, truncated) = match kind {
@@ -243,7 +301,11 @@ plain text, or json",
         final_url_raw,
         title,
         content,
-        truncated,
+        // A body cut at MAX_BODY_BYTES drops real bytes even when the extracted
+        // markdown fits under the 24k cap (e.g. a huge skipped <script> before the
+        // real content). Report that as truncated so the model never treats a
+        // body-capped page as complete.
+        truncated: truncated || body_capped,
     })
 }
 
@@ -492,6 +554,90 @@ mod tests {
         assert_eq!(
             tool.parameters_schema["required"],
             serde_json::json!(["opaqueId"])
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_fetch_body_cap_review_dataint_a {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// A response body larger than `MAX_BODY_BYTES` is silently cut in
+    /// `read_capped_body`. When the extracted markdown still fits under the 24k
+    /// cap (a huge skipped `<script>` before the real content is the common SPA
+    /// case), the model-facing `truncated` flag MUST still be true — otherwise
+    /// the model treats a body-capped page as the complete page and answers from
+    /// content it never saw.
+    #[test]
+    fn body_over_cap_sets_truncated_even_when_markdown_fits() {
+        // Tiny visible content BEFORE a >2 MiB skipped <script>. The markdown is
+        // just "VISIBLESENTINEL" (well under 24k), but the raw body far exceeds
+        // MAX_BODY_BYTES, so the 2 MiB cut drops real bytes.
+        let filler = "A".repeat(MAX_BODY_BYTES + 4096);
+        let html =
+            format!("<html><body><p>VISIBLESENTINEL</p><script>{filler}</script></body></html>");
+        let body = html.into_bytes();
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf); // drain request headers; partial is fine
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            // The client caps its read at MAX_BODY_BYTES and drops the connection,
+            // so the tail write races a broken pipe — expected, ignore it.
+            let _ = sock.write_all(&body);
+            let _ = sock.flush();
+        });
+
+        let target = format!("http://{addr}/");
+        let page = tauri::async_runtime::block_on(fetch_page(&target)).expect("fetch ok");
+        let _ = server.join();
+
+        assert_eq!(page.status, 200);
+        assert!(
+            page.content.contains("VISIBLESENTINEL"),
+            "pre-cut content should still extract: {}",
+            page.content
+        );
+        assert!(
+            page.content.chars().count() <= MAX_MARKDOWN_CHARS,
+            "markdown fits under the 24k cap, so the 24k cap is not what truncated it"
+        );
+        assert!(
+            page.truncated,
+            "body exceeded MAX_BODY_BYTES and was cut; truncated must be true"
+        );
+    }
+}
+
+#[cfg(test)]
+mod ssrf_resolver_review_security_a {
+    use super::PrivateIpBlockingResolver;
+    use std::str::FromStr;
+
+    // SSRF connect-time boundary: the fetch client's custom resolver must REFUSE a
+    // host that resolves to a private / loopback address — the case a URL-host
+    // check cannot catch (a public hostname pointed at an internal IP via
+    // split-horizon DNS / rebinding). `localhost` resolves via /etc/hosts to
+    // 127.0.0.1 / ::1 with no network, so this is offline-deterministic: the
+    // resolver must return an error rather than the loopback address, so an
+    // internal service can never be fetched and streamed into the cloud model.
+    #[test]
+    fn resolver_refuses_host_resolving_to_loopback() {
+        let resolver = PrivateIpBlockingResolver;
+        let name = reqwest::dns::Name::from_str("localhost").expect("localhost is a valid dns name");
+        let result = tauri::async_runtime::block_on(reqwest::dns::Resolve::resolve(&resolver, name));
+        assert!(
+            result.is_err(),
+            "resolver must refuse a host that resolves to loopback (SSRF), got Ok"
         );
     }
 }
