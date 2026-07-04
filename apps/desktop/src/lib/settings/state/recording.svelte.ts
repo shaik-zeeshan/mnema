@@ -133,7 +133,7 @@ export class RecordingStore {
   draftCaptureMicrophone = $state(false);
   draftCaptureSystemAudio = $state(false);
   draftSegmentDuration = $state(60);
-  draftFrameRate = $state(1);
+  draftFrameRate = $state(0.5);
   draftSaveDirectory = $state("");
   draftAutoStart = $state(false);
 
