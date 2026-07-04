@@ -2461,6 +2461,28 @@ mod tests {
     }
 
     #[test]
+    fn validate_audio_transcription_settings_deepgram_model_rules() {
+        let deepgram = |model_id: Option<&str>| {
+            let mut settings = default_audio_transcription_settings();
+            settings.provider = AudioTranscriptionProvider::Deepgram;
+            settings.model_id = model_id.map(str::to_string);
+            validate_audio_transcription_settings(settings)
+        };
+
+        // Explicit supported model is preserved.
+        let ok = deepgram(Some("nova-2")).expect("nova-2 should validate");
+        assert_eq!(ok.model_id.as_deref(), Some("nova-2"));
+
+        // Missing model falls back to the nova-3 default.
+        let defaulted = deepgram(None).expect("missing model should default");
+        assert_eq!(defaulted.model_id.as_deref(), Some("nova-3"));
+
+        // Unsupported model is rejected.
+        let err = deepgram(Some("whisper-large")).expect_err("whisper-large should be rejected");
+        assert_eq!(err.code, "invalid_recording_settings");
+    }
+
+    #[test]
     fn default_recording_settings_include_preview_cache_ttl() {
         assert_eq!(
             default_recording_settings().preview_cache_ttl_seconds,

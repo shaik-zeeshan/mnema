@@ -36,6 +36,7 @@ pub struct DeepgramProvider {
     auth_status: DeepgramAuthStatus,
     client: reqwest::Client,
     endpoint: String,
+    auth_endpoint: String,
 }
 
 impl DeepgramProvider {
@@ -49,6 +50,7 @@ impl DeepgramProvider {
                 .build()
                 .expect("reqwest client with rustls TLS should build"),
             endpoint: DEEPGRAM_ENDPOINT.to_string(),
+            auth_endpoint: DEEPGRAM_AUTH_ENDPOINT.to_string(),
         }
     }
 
@@ -58,8 +60,10 @@ impl DeepgramProvider {
         auth_status: DeepgramAuthStatus,
         endpoint: impl Into<String>,
     ) -> Self {
+        let endpoint = endpoint.into();
         Self {
-            endpoint: endpoint.into(),
+            auth_endpoint: endpoint.clone(),
+            endpoint,
             ..Self::new(key_loader, auth_status)
         }
     }
@@ -136,7 +140,7 @@ impl DeepgramProvider {
 
         let response = self
             .client
-            .get(DEEPGRAM_AUTH_ENDPOINT)
+            .get(&self.auth_endpoint)
             .header("Authorization", format!("Token {key}"))
             .send()
             .await
@@ -389,5 +393,310 @@ mod tests {
         let genuine = error_for_failure_status(400, "bad audio", &auth);
         assert!(matches!(genuine, TranscriptionError::Transcription(_)));
         assert!(auth.lock().expect("lock").is_none());
+    }
+
+    // --- Group 1: pure / no-network -------------------------------------------------
+
+    #[test]
+    fn joins_multiple_utterances_with_space() {
+        let body = r#"{
+            "results": {
+                "channels": [ { "alternatives": [ { "transcript": "ignored channel", "confidence": 0.9 } ] } ],
+                "utterances": [
+                    { "start": 0.0, "end": 0.5, "confidence": 0.9, "transcript": "hello" },
+                    { "start": 1.2346, "end": 2.6782, "confidence": 0.8, "transcript": "world" }
+                ]
+            }
+        }"#;
+
+        let output = parse_deepgram_response(body, &request()).expect("parse should succeed");
+        assert_eq!(output.text, "hello world");
+        assert_eq!(output.metadata.segments.len(), 2);
+        // Second segment's ms are rounded from ITS OWN start/end, not the first's.
+        let second = &output.metadata.segments[1];
+        assert_eq!(second.text, "world");
+        assert_eq!(second.start_ms, 1235); // 1.2346 * 1000 = 1234.6 → 1235
+        assert_eq!(second.end_ms, 2678); //   2.6782 * 1000 = 2678.2 → 2678
+    }
+
+    #[test]
+    fn no_utterances_uses_channel_transcript() {
+        let body = r#"{
+            "results": {
+                "channels": [ { "alternatives": [ { "transcript": "from channel", "confidence": 0.9 } ] } ],
+                "utterances": []
+            }
+        }"#;
+
+        let output = parse_deepgram_response(body, &request()).expect("parse should succeed");
+        assert_eq!(output.text, "from channel");
+        assert!(output.metadata.segments.is_empty());
+    }
+
+    #[test]
+    fn all_empty_utterances_documents_current_behavior() {
+        let body = r#"{
+            "results": {
+                "channels": [],
+                "utterances": [
+                    { "start": 0.0, "end": 0.5, "confidence": 0.9, "transcript": "" },
+                    { "start": 0.5, "end": 1.0, "confidence": 0.9, "transcript": "" }
+                ]
+            }
+        }"#;
+
+        let output = parse_deepgram_response(body, &request()).expect("parse should succeed");
+        // ponytail: pins today's whitespace-join behavior — two empty utterances join to a single
+        // space, which is NON-empty, so this is NOT treated as no_speech. Change this test
+        // deliberately if that behavior is ever fixed.
+        assert_eq!(output.text, " ");
+        assert_eq!(output.metadata.segments.len(), 2);
+    }
+
+    #[test]
+    fn unparseable_body_is_transcription_error() {
+        let error = parse_deepgram_response("not json", &request()).expect_err("should fail");
+        assert!(matches!(error, TranscriptionError::Transcription(_)));
+    }
+
+    #[test]
+    fn no_key_is_provider_unavailable() {
+        let provider = DeepgramProvider::new(
+            Arc::new(|| Option::<String>::None),
+            DeepgramAuthStatus::default(),
+        );
+        block_on(async {
+            let transcribe_error = provider
+                .transcribe(request())
+                .await
+                .expect_err("no key should be unavailable");
+            assert!(matches!(
+                transcribe_error,
+                TranscriptionError::ProviderUnavailable(_)
+            ));
+
+            let health_error = provider
+                .check_health()
+                .await
+                .expect_err("no key should be unavailable");
+            assert!(matches!(
+                health_error,
+                TranscriptionError::ProviderUnavailable(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn unreadable_audio_is_invalid_request() {
+        let provider = DeepgramProvider::new(
+            Arc::new(|| Some("k".to_string())),
+            DeepgramAuthStatus::default(),
+        );
+        let missing = std::env::temp_dir().join("mnema-deepgram-nonexistent-audio.m4a");
+        let _ = std::fs::remove_file(&missing);
+        let request = TranscriptionRequest::new(
+            &missing,
+            DEEPGRAM_PROVIDER_ID,
+            Some("nova-3".to_string()),
+            "auto",
+        );
+        block_on(async {
+            let error = provider
+                .transcribe(request)
+                .await
+                .expect_err("unreadable audio should fail");
+            assert!(matches!(error, TranscriptionError::InvalidRequest(_)));
+        });
+    }
+
+    // --- Group 2: HTTP round-trip (ADR 0048 auth-cell invariant) --------------------
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(future)
+    }
+
+    fn temp_audio(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("mnema-deepgram-test-{name}.m4a"));
+        std::fs::write(&path, b"fake-audio-bytes").expect("write temp audio");
+        path
+    }
+
+    fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        haystack.windows(needle.len()).position(|w| w == needle)
+    }
+
+    fn content_length(head: &[u8]) -> usize {
+        String::from_utf8_lossy(head)
+            .lines()
+            .find_map(|line| {
+                line.to_ascii_lowercase()
+                    .strip_prefix("content-length:")
+                    .and_then(|rest| rest.trim().parse().ok())
+            })
+            .unwrap_or(0)
+    }
+
+    /// One-shot mock HTTP server: binds `127.0.0.1:0`, accepts ONE connection, reads the full
+    /// request (line + headers + declared body), replies with `status_line` + a JSON body, then
+    /// yields the captured raw request head for assertions. Runs on the test's current-thread
+    /// runtime, so it is driven cooperatively while the reqwest client awaits.
+    async fn spawn_mock_server(
+        status_line: &'static str,
+        json_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock server");
+        let port = listener.local_addr().expect("mock addr").port();
+        let handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 2048];
+            loop {
+                if let Some(end) = find_subslice(&buf, b"\r\n\r\n") {
+                    if buf.len() - (end + 4) >= content_length(&buf[..end]) {
+                        break;
+                    }
+                }
+                let n = socket.read(&mut chunk).await.expect("read request");
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            let response = format!(
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{json_body}",
+                json_body.len()
+            );
+            socket
+                .write_all(response.as_bytes())
+                .await
+                .expect("write response");
+            socket.flush().await.expect("flush response");
+            String::from_utf8_lossy(&buf).into_owned()
+        });
+        (format!("http://127.0.0.1:{port}"), handle)
+    }
+
+    #[test]
+    fn transcribe_success_clears_auth_cell_and_sends_token_auth_and_query() {
+        block_on(async {
+            let body = r#"{"results":{"channels":[{"alternatives":[{"transcript":"hi","confidence":0.9}]}],"utterances":[{"start":0.0,"end":0.4,"confidence":0.9,"transcript":"hi"}]}}"#;
+            let (base, handle) = spawn_mock_server("HTTP/1.1 200 OK", body).await;
+
+            let auth = DeepgramAuthStatus::default();
+            *auth.lock().expect("lock") = Some("stale".to_string());
+            let provider = DeepgramProvider::with_endpoint(
+                Arc::new(|| Some("k".to_string())),
+                auth.clone(),
+                format!("{base}/v1/listen"),
+            );
+            let audio = temp_audio("transcribe-success");
+            let request = TranscriptionRequest::new(
+                &audio,
+                DEEPGRAM_PROVIDER_ID,
+                Some("nova-3".to_string()),
+                "auto",
+            );
+
+            let output = provider
+                .transcribe(request)
+                .await
+                .expect("transcribe should succeed");
+            let captured = handle.await.expect("mock task");
+
+            assert_eq!(output.text, "hi");
+            assert!(auth.lock().expect("lock").is_none());
+            assert!(captured.to_lowercase().contains("authorization: token k"));
+            assert!(captured.contains("smart_format=true"));
+            assert!(captured.contains("utterances=true"));
+        });
+    }
+
+    #[test]
+    fn transcribe_auth_reject_sets_cell_and_is_transient() {
+        block_on(async {
+            let (base, handle) =
+                spawn_mock_server("HTTP/1.1 401 Unauthorized", r#"{"err":"unauthorized"}"#).await;
+
+            let auth = DeepgramAuthStatus::default();
+            let provider = DeepgramProvider::with_endpoint(
+                Arc::new(|| Some("k".to_string())),
+                auth.clone(),
+                format!("{base}/v1/listen"),
+            );
+            let audio = temp_audio("transcribe-auth-reject");
+            let request = TranscriptionRequest::new(
+                &audio,
+                DEEPGRAM_PROVIDER_ID,
+                Some("nova-3".to_string()),
+                "auto",
+            );
+
+            let error = provider
+                .transcribe(request)
+                .await
+                .expect_err("401 should error");
+            let _ = handle.await;
+
+            assert!(matches!(error, TranscriptionError::TransientLiveness(_)));
+            assert_eq!(
+                auth.lock().expect("lock").as_deref(),
+                Some("Deepgram rejected your API key")
+            );
+        });
+    }
+
+    #[test]
+    fn check_health_success_clears_cell() {
+        block_on(async {
+            let (base, handle) = spawn_mock_server("HTTP/1.1 200 OK", "{}").await;
+
+            let auth = DeepgramAuthStatus::default();
+            *auth.lock().expect("lock") = Some("stale".to_string());
+            let provider = DeepgramProvider::with_endpoint(
+                Arc::new(|| Some("k".to_string())),
+                auth.clone(),
+                format!("{base}/v1/auth/token"),
+            );
+
+            provider.check_health().await.expect("health should pass");
+            let captured = handle.await.expect("mock task");
+
+            assert!(auth.lock().expect("lock").is_none());
+            assert!(captured.to_lowercase().contains("authorization: token k"));
+        });
+    }
+
+    #[test]
+    fn check_health_auth_reject_sets_cell() {
+        block_on(async {
+            let (base, handle) =
+                spawn_mock_server("HTTP/1.1 401 Unauthorized", r#"{"err":"nope"}"#).await;
+
+            let auth = DeepgramAuthStatus::default();
+            let provider = DeepgramProvider::with_endpoint(
+                Arc::new(|| Some("k".to_string())),
+                auth.clone(),
+                format!("{base}/v1/auth/token"),
+            );
+
+            let error = provider
+                .check_health()
+                .await
+                .expect_err("401 should error");
+            let _ = handle.await;
+
+            assert!(matches!(error, TranscriptionError::TransientLiveness(_)));
+            assert_eq!(
+                auth.lock().expect("lock").as_deref(),
+                Some("Deepgram rejected your API key")
+            );
+        });
     }
 }
