@@ -422,6 +422,14 @@ pub(crate) fn selected_audio_transcription_model_available(
             .available,
         );
     }
+    if descriptor.provider == audio_transcription::DEEPGRAM_PROVIDER_ID {
+        // ADR 0047: Deepgram availability = an API key is present (the manifest
+        // entry is OsManaged, so `detect_model_status` reports it always installed).
+        return Ok(
+            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT)
+                .unwrap_or(false),
+        );
+    }
 
     Ok(true)
 }
@@ -1004,6 +1012,7 @@ pub(crate) fn provider_id_for_settings(provider: AudioTranscriptionProvider) -> 
             audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID
         }
         AudioTranscriptionProvider::Parakeet => audio_transcription::PARAKEET_PROVIDER_ID,
+        AudioTranscriptionProvider::Deepgram => audio_transcription::DEEPGRAM_PROVIDER_ID,
     }
 }
 
@@ -1090,6 +1099,16 @@ fn model_status_dto(
             }
         }
     }
+    if descriptor.provider == audio_transcription::DEEPGRAM_PROVIDER_ID {
+        // ADR 0047: availability = API key present. The OsManaged entry reports
+        // always-installed, so key presence is the real gate.
+        available = app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT)
+            .unwrap_or(false);
+        if !available && failure_message.is_none() {
+            failure_message =
+                Some("Add a Deepgram API key in Settings to enable cloud transcription.".to_string());
+        }
+    }
 
     AudioTranscriptionModelStatusDto {
         provider: status.provider,
@@ -1130,6 +1149,7 @@ fn provider_display_name(provider: &str) -> &'static str {
         audio_transcription::LOCAL_WHISPER_PROVIDER_ID => "Local Whisper",
         audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID => "Apple Speech (on-device)",
         audio_transcription::PARAKEET_PROVIDER_ID => "Parakeet",
+        audio_transcription::DEEPGRAM_PROVIDER_ID => "Deepgram (cloud)",
         _ => "Unknown provider",
     }
 }

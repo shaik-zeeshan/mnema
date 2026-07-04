@@ -428,6 +428,9 @@ export class OnboardingController {
   }
 
   chooseTranscriptionProvider(value: string): void {
+    // ADR 0047: cloud transcription is Settings-only, behind a consent gate — never in onboarding.
+    // Defensive guard in case the provider ever leaks back into the onboarding picker.
+    if (value === "deepgram") return;
     this.draftTranscriptionProvider = value as AudioTranscriptionProvider;
     this.draftTranscriptionModelId = this.transcriptionStore.preferredTranscriptionModelIdForProvider(
       this.draftTranscriptionProvider,

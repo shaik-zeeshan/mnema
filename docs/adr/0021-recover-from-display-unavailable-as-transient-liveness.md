@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted.
+Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment).
 
 ## Context
 
@@ -41,3 +41,13 @@ This stays inside the app-only privacy model of [ADR 0006](0006-use-app-level-li
 ## Consequences
 
 A display sleeping, locking, closing, or disconnecting during a recording now suspends screen/system-audio quietly, preserves microphone continuation, keeps the session alive, and resumes screen capture automatically when a display returns — with one informative log line instead of a session-killing cascade. The status-bar tray and dashboard stay truthful when a session ends internally. Distinguishing the two suspension reasons requires a `kind` field and kind-aware retry policy on `PrivacyCaptureSuspension`, and adds a small CoreGraphics display-availability seam in `crates/capture-screen`. Genuine privacy-filter apply failures are unchanged: still capped, still escalate to the manual-restart notification.
+
+## Amendment (2026-07-04): the delegate-stop door must suspend too
+
+This ADR's suspension was only entered from the privacy-refresh apply failure. In production (macOS 26), ScreenCaptureKit kills the stream **immediately** when the display sleeps and reports it through the stream delegate (`capture_stream_system_stopped`, `-3815`) — and once the delegate flags the stream dead, `apply_privacy_filter_update` no-ops on the not-live session, so the privacy door could never fire. The delegate-stop reconcile in `tick_inactivity` merely cleared screen state without a suspension owner, leaving "screen requested, no session, no suspension"; the next segment rotation (60s for short segment settings) rotated into the missing session, hit `invalid_runtime_state`, and killed the entire session — the exact failure mode this ADR was written to remove, through a door it didn't cover. Observed 2026-07-03 18:18 IST: display slept mid-segment, recovery lost the ~20s race to the boundary, and the session silently ended for the rest of the day.
+
+Changes:
+
+- **Delegate-stop reconcile suspends.** An unexpected stream-stop error taken in `tick_inactivity` now enters the `DisplayUnavailable` suspension (same owner, recovery, and retry policy as the privacy door) instead of a bare state clear.
+- **Rotation-boundary backstop.** `tick_rotation` suspends (rather than fatally rotating) if screen/system-audio is active but the screen session is missing with no suspension owner — covering any remaining path into that state, e.g. a wake racing the will-sleep teardown.
+- **The tail segment is preserved, superseding "no doomed work".** A delegate-reported stop is terminal (`stream_terminated`), so the stop path skips the doomed second `stop_stream` call but still finalizes the writers — the samples appended before the stream died make an openable `.mov`. With the tail no longer truncated, the suspend path commits the in-flight segment for all suspension kinds instead of skipping the commit for `DisplayUnavailable`; the "spurious finalize error" this ADR avoided no longer occurs because the file is valid.

@@ -146,7 +146,20 @@ impl super::ProcessorBackend for AudioTranscriptionProcessorBackend {
 }
 
 fn map_provider_result<T>(result: ProviderResult<T>) -> Result<T> {
-    result.map_err(|error| AppInfraError::AudioTranscriptionEngine(error.to_string()))
+    use audio_transcription::TranscriptionError;
+    result.map_err(|error| match error {
+        // ADR 0048: liveness/availability gaps requeue without spending a failure attempt.
+        // `TransientLiveness` covers offline/timeout/429/5xx and a rejected key (401/403).
+        // `ProviderUnavailable` ("no key configured", a keychain read that collapsed to `None`,
+        // or a not-yet-available local model) is likewise an availability condition — NOT a
+        // per-segment defect (the type contract reserves that for `Transcription`/`InvalidRequest`)
+        // — so it must not burn a segment's retry cap and lose its transcript permanently.
+        TranscriptionError::TransientLiveness(message)
+        | TranscriptionError::ProviderUnavailable(message) => {
+            AppInfraError::AudioTranscriptionTransientLiveness(message)
+        }
+        other => AppInfraError::AudioTranscriptionEngine(other.to_string()),
+    })
 }
 
 #[cfg(test)]
@@ -318,5 +331,28 @@ mod tests {
             assert_eq!(requests[0].audio_path, PathBuf::from("/tmp/mic-1.m4a"));
             assert_eq!(requests[0].model_id.as_deref(), Some("base"));
         });
+    }
+
+    /// ADR 0048 (INV-nokey-burn): a Deepgram job that runs while the key is absent or unreadable
+    /// (the user removed it, or a transient keychain read collapsed to `None` via `.ok().flatten()`)
+    /// surfaces as `TranscriptionError::ProviderUnavailable`. That is an availability/liveness gap —
+    /// the type contract reserves the genuine per-segment failure lane for `Transcription`/
+    /// `InvalidRequest` — so it must requeue WITHOUT spending a failure attempt, exactly like a
+    /// rejected key (401) or a segment waiting for a model. Routing it onto the genuine-failure lane
+    /// burns the bounded retry cap and permanently loses the segment's transcript even after the key
+    /// is re-added.
+    #[test]
+    fn zz_dataintegrity_provider_unavailable_is_transient_liveness_not_a_burned_attempt() {
+        let mapped = map_provider_result::<()>(Err(
+            audio_transcription::TranscriptionError::ProviderUnavailable(
+                "no Deepgram API key is configured".to_string(),
+            ),
+        ));
+        let error = mapped.expect_err("provider-unavailable input must map to an error");
+        assert!(
+            error.is_transient_liveness(),
+            "a missing/unreadable provider key is an availability gap that must requeue \
+             without burning a failure attempt, got {error:?}"
+        );
     }
 }

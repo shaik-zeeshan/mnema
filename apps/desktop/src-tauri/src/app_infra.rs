@@ -1602,6 +1602,7 @@ impl Drop for AppInfraDirectoryLock {
 
 fn desktop_processing_registry(
     app_handle: &tauri::AppHandle,
+    deepgram_auth_status: audio_transcription::providers::DeepgramAuthStatus,
 ) -> Result<::app_infra::ProcessorRegistry, String> {
     let app_data_dir = app_handle.path().app_data_dir().map_err(|error| {
         format!("failed to resolve app data directory for processing registry: {error}")
@@ -1632,6 +1633,16 @@ fn desktop_processing_registry(
                 Arc::new(
                     audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
                 ),
+                Arc::new(audio_transcription::providers::DeepgramProvider::new(
+                    Arc::new(|| {
+                        ::app_infra::load_ai_provider_key(
+                            crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT,
+                        )
+                        .ok()
+                        .flatten()
+                    }),
+                    deepgram_auth_status.clone(),
+                )) as Arc<dyn audio_transcription::TranscriptionProvider>,
             ]),
         )
         .register(::app_infra::SpeakerAnalysisProcessorBackend::from_provider_arcs([
@@ -1673,8 +1684,11 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             }
         })?;
 
+    let deepgram_auth_status: audio_transcription::providers::DeepgramAuthStatus =
+        Arc::new(Mutex::new(None));
     let processing_registry =
-        desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
+        desktop_processing_registry(&app_handle, deepgram_auth_status.clone())
+            .map_err(AppInfraInitializeError::Other)?;
     let infra = tauri::async_runtime::block_on(
         ::app_infra::AppInfra::initialize_fast_with_processing_registry(
             &resolved_base_dir.base_dir,
@@ -1731,6 +1745,17 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "background workers state was already initialized".to_string(),
+        ));
+    }
+
+    if !app.manage(crate::transcription_deepgram::DeepgramAuthStatusState(
+        deepgram_auth_status,
+    )) {
+        crate::native_capture::debug_log::log_error(
+            "deepgram auth status state was already initialized; refusing duplicate setup",
+        );
+        return Err(AppInfraInitializeError::Other(
+            "deepgram auth status state was already initialized".to_string(),
         ));
     }
 

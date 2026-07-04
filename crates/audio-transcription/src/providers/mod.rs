@@ -1,4 +1,5 @@
 pub mod apple_speech;
+pub mod deepgram;
 pub mod local_whisper;
 pub mod parakeet;
 
@@ -6,6 +7,7 @@ pub use apple_speech::{
     AppleSpeechOnDeviceAvailability, AppleSpeechOnDeviceAvailabilityStatus,
     AppleSpeechOnDeviceProvider,
 };
+pub use deepgram::{DeepgramAuthStatus, DeepgramKeyLoader, DeepgramProvider};
 pub use local_whisper::{
     ConfiguredLocalWhisperProvider, LocalWhisperModelSelection, LocalWhisperProvider,
 };

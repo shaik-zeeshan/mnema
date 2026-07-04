@@ -19,6 +19,16 @@
   import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
+  import {
+    audioDrawerPointerDownAction,
+    audioDrawerWheelAction,
+    type AudioDrawerDismissAction,
+    type AudioDrawerDismissContext,
+  } from "$lib/audio-drawer-dismiss";
+  import {
+    placeSpeakerActionsPopover,
+    type SpeakerPopoverPosition,
+  } from "$lib/speaker-popover-position";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     loadOcrForFrame,
@@ -1491,11 +1501,32 @@
     }
   }
 
+  // Viewport-anchored placement for the speaker-actions popover. The popover
+  // renders in the top layer (`popover="manual"`), so neither the transcript's
+  // scroll container nor the drawer's `overflow: hidden` can clip it; anchor
+  // it just above the clicked chip and clamp it on-screen (the pure clamp
+  // math and its tests live in lib/speaker-popover-position.ts).
+  let speakerActionsPopoverPos = $state<SpeakerPopoverPosition | null>(null);
+
   function toggleSpeakerActions(index: number, event: MouseEvent): void {
     event.preventDefault();
     event.stopPropagation();
-    speakerActionsReturnFocusEl = event.currentTarget as HTMLElement;
-    speakerActionsOpenIndex = speakerActionsOpenIndex === index ? null : index;
+    const chip = event.currentTarget as HTMLElement;
+    speakerActionsReturnFocusEl = chip;
+    if (speakerActionsOpenIndex === index) {
+      speakerActionsOpenIndex = null;
+      return;
+    }
+    const rem =
+      Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
+      16;
+    speakerActionsPopoverPos = placeSpeakerActionsPopover(
+      chip.getBoundingClientRect(),
+      window.innerWidth,
+      window.innerHeight,
+      rem,
+    );
+    speakerActionsOpenIndex = index;
   }
 
   function closeSpeakerActions(): void {
@@ -1507,6 +1538,9 @@
     let cancelled = false;
     void tick().then(() => {
       if (cancelled || speakerActionsOpenIndex == null) return;
+      // Promote the freshly-rendered popover into the top layer before
+      // focusing it (a `[popover]` element is display:none until shown).
+      speakerActionsPopoverEl?.showPopover?.();
       const first = getFocusableElements(speakerActionsPopoverEl)[0] ?? speakerActionsPopoverEl;
       first?.focus({ preventScroll: true });
     });
@@ -2396,16 +2430,20 @@
     return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
   }
 
-  // ─── Outside-click & scroll dismissal ────────────────────────────────────
-  // While the drawer is open, a pointerdown genuinely outside the timeline
-  // surface dismisses it. Two interactions are deliberately NOT dismissals:
-  //   1. Clicking a *different* segment's bar is a SWITCH — the bar's own
-  //      click handler reselects; the drawer stays open on the new segment.
-  //   2. Scrubbing/scrolling the rail or stage keeps the player open so the
-  //      user can browse frames while listening (the rail scrolls as it
-  //      scrubs, which used to slam the drawer shut on every wheel tick).
-  // Close therefore stays reserved for the X button, Escape, and a true click
-  // or scroll outside the timeline surface.
+  // ─── Outside-click & wheel dismissal ─────────────────────────────────────
+  // While the drawer is open, a pointerdown or wheel genuinely outside it
+  // dismisses it (an open speaker-actions popover collapses first, so
+  // dismissal is layered — see audioDrawerPointerDownAction/
+  // audioDrawerWheelAction in lib/audio-drawer-dismiss.ts for the policy and
+  // its tests). Two interactions are deliberately NOT dismissals: clicking an
+  // audio bar is a SWITCH (the bar's own click handler reselects), and
+  // scrubbing/clicking the rail or stage keeps the player open so the user
+  // can browse frames while listening (the rail scrolls as it scrubs, which
+  // would otherwise slam the drawer shut on every wheel tick). We listen for
+  // `wheel` rather than `scroll` because the rail is also scrolled
+  // programmatically (scrub conversion, jump-to-frame, resize re-anchoring,
+  // search-result lane moves) and those must not read as a user's intent to
+  // dismiss.
   function isWithinTimelineSurface(node: Node): boolean {
     return (
       stageEl?.contains(node) === true ||
@@ -2413,42 +2451,40 @@
     );
   }
 
-  function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
-    if (selectedAudioSegmentId == null) return;
-    const target = event.target;
-    if (!(target instanceof Node)) return;
-    if (audioDrawerEl?.contains(target)) return;
-    const onAudioBar =
-      target instanceof Element &&
-      target.closest(".timeline-rail__audio-bar") != null;
-    // A click on another segment's bar switches the drawer, never closes it —
-    // collapse a transient speaker-actions popover first, then let the bar's
-    // click handler reselect.
-    if (onAudioBar) {
-      if (speakerActionsOpenIndex != null) closeSpeakerActions();
-      return;
-    }
-    if (speakerActionsOpenIndex != null) {
-      closeSpeakerActions();
-      return;
-    }
-    // Scrubbing or clicking the rail/stage keeps the drawer open.
-    if (isWithinTimelineSurface(target)) return;
-    closeAudioDrawer();
+  function audioDrawerDismissContext(target: Node): AudioDrawerDismissContext {
+    return {
+      drawerOpen: selectedAudioSegmentId != null,
+      insideDrawer: audioDrawerEl?.contains(target) === true,
+      insidePopover:
+        target instanceof Element &&
+        target.closest(".audio-drawer__speaker-popover") != null,
+      onAudioBar:
+        target instanceof Element &&
+        target.closest(".timeline-rail__audio-bar") != null,
+      popoverOpen: speakerActionsOpenIndex != null,
+      insideTimelineSurface: isWithinTimelineSurface(target),
+    };
   }
 
-  function onAudioDrawerOutsideScroll(event: Event) {
-    if (selectedAudioSegmentId == null) return;
+  function runAudioDrawerDismissAction(action: AudioDrawerDismissAction): void {
+    if (action === "collapse-popover") closeSpeakerActions();
+    else if (action === "close-drawer") closeAudioDrawer();
+  }
+
+  function onAudioDrawerOutsidePointerDown(event: PointerEvent) {
     const target = event.target;
-    if (target instanceof Node && audioDrawerEl?.contains(target)) return;
-    // Rail/stage scrubbing must not dismiss the player — only a scroll
-    // genuinely elsewhere collapses speaker actions or closes the drawer.
-    if (target instanceof Node && isWithinTimelineSurface(target)) return;
-    if (speakerActionsOpenIndex != null) {
-      closeSpeakerActions();
-      return;
-    }
-    closeAudioDrawer();
+    if (!(target instanceof Node)) return;
+    runAudioDrawerDismissAction(
+      audioDrawerPointerDownAction(audioDrawerDismissContext(target)),
+    );
+  }
+
+  function onAudioDrawerOutsideWheel(event: WheelEvent) {
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    runAudioDrawerDismissAction(
+      audioDrawerWheelAction(audioDrawerDismissContext(target)),
+    );
   }
 
   $effect(() => {
@@ -2461,16 +2497,25 @@
       onAudioDrawerOutsidePointerDown,
       true,
     );
-    // `scroll` does not bubble, so listen in capture phase and treat any
-    // scroll outside the drawer as an intent to get back to the page.
-    document.addEventListener("scroll", onAudioDrawerOutsideScroll, true);
+    // `passive: true` keeps WebKit's off-main-thread scrolling while the
+    // drawer is open: WKWebView (unlike Chrome) honors the non-passive
+    // default for document-level wheel listeners, which would force every
+    // wheel tick through a synchronous main-thread dispatch. The handler
+    // never calls preventDefault, so passive is behavior-preserving. The old
+    // `scroll` listener was inherently passive — don't regress that.
+    document.addEventListener("wheel", onAudioDrawerOutsideWheel, {
+      capture: true,
+      passive: true,
+    });
     return () => {
       document.removeEventListener(
         "pointerdown",
         onAudioDrawerOutsidePointerDown,
         true,
       );
-      document.removeEventListener("scroll", onAudioDrawerOutsideScroll, true);
+      document.removeEventListener("wheel", onAudioDrawerOutsideWheel, {
+        capture: true,
+      });
     };
   });
 
@@ -7432,9 +7477,12 @@
                     id={`speaker-actions-${group.clusterId}`}
                     class="audio-drawer__speaker-popover"
                     role="dialog"
+                    popover="manual"
                     tabindex="-1"
                     aria-label={`Speaker actions for ${speakerDisplayLabel(group)}`}
                     bind:this={speakerActionsPopoverEl}
+                    style:left={`${speakerActionsPopoverPos?.left ?? 12}px`}
+                    style:bottom={`${speakerActionsPopoverPos?.bottom ?? 12}px`}
                     onpointerdown={(event) => event.stopPropagation()}
                   >
                     <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--name">
@@ -8408,10 +8456,19 @@
   }
 
   .audio-drawer__speaker-popover {
-    position: absolute;
-    left: 8px;
-    bottom: calc(100% + 6px);
-    z-index: 2;
+    /* Top-layer popover (`popover="manual"`): escapes the transcript's
+       scroll clip and the drawer's `overflow: hidden`. The inline
+       `left`/`bottom` (viewport coords, computed from the clicked chip)
+       win over `inset: auto`; the margin/overflow resets undo the UA
+       `[popover]` defaults so nested dropdowns aren't clipped. */
+    position: fixed;
+    inset: auto;
+    /* The UA sheet also sets `height: fit-content`, which WebKit resolves to
+       the full space between the viewport top and the inline `bottom` —
+       stretching the popover into a giant panel. Reset it to content height. */
+    height: auto;
+    margin: 0;
+    overflow: visible;
     display: grid;
     gap: 7px;
     width: min(42rem, calc(100vw - 64px));
@@ -8419,6 +8476,9 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 8px;
     background: var(--app-surface-raised);
+    /* The UA `[popover]` style sets `color: CanvasText`; restore the app
+       palette the popover used to inherit from the drawer. */
+    color: var(--app-text);
     box-shadow: var(--app-shadow-popover);
   }
 

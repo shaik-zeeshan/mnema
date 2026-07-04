@@ -1020,6 +1020,7 @@ fn audio_transcription_provider_label(provider: AudioTranscriptionProvider) -> &
         AudioTranscriptionProvider::LocalWhisper => "Local Whisper",
         AudioTranscriptionProvider::AppleSpeechOnDevice => "Apple Speech on-device recognition",
         AudioTranscriptionProvider::Parakeet => "Parakeet",
+        AudioTranscriptionProvider::Deepgram => "Deepgram (cloud)",
     }
 }
 

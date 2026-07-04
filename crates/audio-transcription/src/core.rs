@@ -11,6 +11,13 @@ pub enum TranscriptionError {
     Transcription(String),
     #[error("invalid transcription request: {0}")]
     InvalidRequest(String),
+    /// A transient environmental failure (offline, timeout, rate limit, server error, or a
+    /// rejected API key for a cloud provider). ADR 0048: the processing queue requeues the job
+    /// with backoff WITHOUT consuming a retry attempt, so an offline or mis-keyed stretch never
+    /// burns a segment's failure cap. Distinct from `Transcription`/`InvalidRequest`, which are
+    /// genuine per-segment failures on the bounded-retry path.
+    #[error("audio transcription provider is temporarily unavailable: {0}")]
+    TransientLiveness(String),
 }
 
 pub type TranscriptionResult<T> = std::result::Result<T, TranscriptionError>;

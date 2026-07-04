@@ -432,7 +432,11 @@ export class RecordingStore {
     this.draftTranscriptionProvider = s.transcription?.provider ?? "local_whisper";
     this.draftTranscriptionModelId =
       s.transcription?.modelId ??
-      (this.draftTranscriptionProvider === "apple_speech_on_device" ? null : "base");
+      (this.draftTranscriptionProvider === "apple_speech_on_device"
+        ? null
+        : this.draftTranscriptionProvider === "deepgram"
+          ? "nova-3"
+          : "base");
     this.draftTranscriptionLanguage = s.transcription?.language ?? "auto";
     this.draftTranscriptionMemoryMode = s.transcription?.memoryMode ?? "balanced";
     // Clamp idle/chunk on load to the SAME ceilings `buildProcessingRequest`

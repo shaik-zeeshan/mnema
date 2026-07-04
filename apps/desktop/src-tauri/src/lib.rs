@@ -22,6 +22,7 @@ mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
 mod third_party_notices;
+mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
 mod windows;
@@ -594,6 +595,11 @@ pub fn run() {
             ai_runtime::mcp_set_server_secret,
             ai_runtime::mcp_clear_server_secret,
             ai_runtime::mcp_has_server_secret,
+            transcription_deepgram::transcription_set_deepgram_key,
+            transcription_deepgram::transcription_has_deepgram_key,
+            transcription_deepgram::transcription_clear_deepgram_key,
+            transcription_deepgram::transcription_deepgram_auth_status,
+            transcription_deepgram::transcription_test_deepgram,
             ai_runtime::get_ai_runtime_status,
             ai_runtime::ai_runtime_test_connection,
             ai_runtime::ai_runtime_list_models,

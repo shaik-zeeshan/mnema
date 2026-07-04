@@ -21,6 +21,7 @@ ndarray = { version = "0.17", optional = true }
 # off fastembed/`ort` to candle in ADR 0037, so the old cross-crate lockstep with
 # crates/semantic-search no longer applies.) See ADR 0036 / issue #122.
 ort = { version = "=2.0.0-rc.12", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 tokio = { version = "1", features = ["rt"], optional = true }
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }

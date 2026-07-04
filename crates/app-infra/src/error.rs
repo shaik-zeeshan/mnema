@@ -61,6 +61,10 @@ pub enum AppInfraError {
     OcrEngine(String),
     #[error("audio transcription error: {0}")]
     AudioTranscriptionEngine(String),
+    /// A transient-liveness audio transcription failure (ADR 0048): the queue requeues the job
+    /// with backoff without incrementing its failure count. Carries the provider's message.
+    #[error("audio transcription provider is temporarily unavailable: {0}")]
+    AudioTranscriptionTransientLiveness(String),
     #[error("speaker analysis error: {0}")]
     SpeakerAnalysisEngine(String),
     #[error("{0}")]
@@ -91,4 +95,12 @@ pub enum AppInfraError {
     EmptyFrameBatch { batch_id: i64 },
     #[error("failed to finalize frame batch: {0}")]
     FrameBatchFinalize(String),
+}
+
+impl AppInfraError {
+    /// Whether this error is a transient-liveness condition that should requeue the job without
+    /// spending a failure attempt (ADR 0048), rather than walking the bounded-retry failure path.
+    pub fn is_transient_liveness(&self) -> bool {
+        matches!(self, Self::AudioTranscriptionTransientLiveness(_))
+    }
 }
