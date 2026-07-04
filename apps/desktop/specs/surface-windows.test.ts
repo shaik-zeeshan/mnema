@@ -15,6 +15,9 @@ import { describe, expect, mock, test } from "bun:test";
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async () => {},
+  // bun module mocks fix the export-name set process-wide; later test files
+  // transitively import convertFileSrc (frame-preview), so it must exist here.
+  convertFileSrc: (p: string) => p,
 }));
 mock.module("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({ label: "main" }),

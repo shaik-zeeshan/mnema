@@ -31,8 +31,12 @@ export interface ReceiptFrameEvents {
 	onMeta(meta: FrameDto): void;
 }
 
+/** `invoke`-shaped IPC entry point, injectable so tests can stub Tauri. */
+export type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
+
 export class ReceiptFrameLoader {
 	#events: ReceiptFrameEvents;
+	#invoke: InvokeFn;
 	#previews = new LruCache<FramePreviewDto>(PREVIEW_CACHE_CAP);
 	#metaCache = new LruCache<FrameDto>(META_CACHE_CAP);
 	#inFlight = new Set<number>();
@@ -45,8 +49,9 @@ export class ReceiptFrameLoader {
 	#gen = 0; // bumped per reset; stale async work drops
 	#metaToken = 0; // last-requested-meta wins
 
-	constructor(events: ReceiptFrameEvents) {
+	constructor(events: ReceiptFrameEvents, invokeFn: InvokeFn = invoke) {
 		this.#events = events;
+		this.#invoke = invokeFn;
 	}
 
 	/** New activity: drop caches/queues and invalidate all in-flight work. */
@@ -86,7 +91,7 @@ export class ReceiptFrameLoader {
 
 	async #fetchPreview(fid: number, gen: number): Promise<void> {
 		try {
-			const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
+			const dto = await this.#invoke<FramePreviewDto | null>("get_frame_preview", {
 				request: { frameId: fid } satisfies GetFramePreviewRequest,
 			});
 			if (gen !== this.#gen) return; // superseded — drop
@@ -134,7 +139,7 @@ export class ReceiptFrameLoader {
 		try {
 			const dto =
 				this.#previews.peek(fid) ??
-				(await invoke<FramePreviewDto | null>("get_frame_preview", {
+				(await this.#invoke<FramePreviewDto | null>("get_frame_preview", {
 					request: { frameId: fid } satisfies GetFramePreviewRequest,
 				}));
 			if (gen === this.#gen && dto) {
@@ -152,15 +157,18 @@ export class ReceiptFrameLoader {
 	// ── Display-only per-frame metadata (app / window / OCR-present) ──────
 	// Token-guarded so a slow response never paints onto a newer frame.
 	async loadMeta(fid: number): Promise<void> {
+		// Claim the latest-meta token up front — even a cache hit must supersede
+		// an older still-in-flight request, or that slow fetch would resolve and
+		// paint its (now-stale) chips over the frame we just jumped to.
+		const token = ++this.#metaToken;
 		const cached = this.#metaCache.peek(fid);
 		if (cached) {
 			this.#events.onMeta(cached);
 			return;
 		}
-		const token = ++this.#metaToken;
 		const gen = this.#gen;
 		try {
-			const dto = await invoke<FrameDto | null>("get_frame", {
+			const dto = await this.#invoke<FrameDto | null>("get_frame", {
 				request: { frameId: fid },
 			});
 			if (token !== this.#metaToken || gen !== this.#gen) return;

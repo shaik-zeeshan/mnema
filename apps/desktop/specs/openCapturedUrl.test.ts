@@ -9,7 +9,12 @@ const invoke = mock(
 );
 const message = mock(async (_msg: string, _opts?: unknown): Promise<void> => {});
 
-mock.module("@tauri-apps/api/core", () => ({ invoke }));
+mock.module("@tauri-apps/api/core", () => ({
+  invoke,
+  // bun module mocks fix the export-name set process-wide; later test files
+  // transitively import convertFileSrc (frame-preview), so it must exist here.
+  convertFileSrc: (p: string) => p,
+}));
 mock.module("@tauri-apps/plugin-dialog", () => ({ message }));
 
 const { openCapturedUrl } = await import("../src/lib/open-captured-url");
