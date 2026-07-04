@@ -36,7 +36,9 @@ use tauri::Manager;
 use tokio::sync::Mutex;
 
 use super::transport::{config_fingerprint, connect, McpClient};
-use super::{model_tool_name, offered_tools, truncate_tool_result, ToolInfo};
+use super::{
+    bound_tool_description, model_tool_name, offered_tools, truncate_tool_result, ToolInfo,
+};
 
 /// Total budget a turn build waits for in-flight discovery before proceeding
 /// with only the servers that are ready — npx cold boot can be slow, and a turn
@@ -80,16 +82,30 @@ impl ServerSlot {
         if let Some(established) = state.established.as_ref() {
             return Ok(Arc::clone(established));
         }
-        match connect_and_list(cfg).await {
-            Ok(established) => {
+        // Bound the connect. rmcp's `serve` runs an UNBOUNDED initialize handshake
+        // (no internal timeout), and this lock is held across it — so without a cap
+        // the untimed `warm`/`list_server_tools` callers would hold the slot lock
+        // forever on a server that hangs mid-handshake, leaking the child + task and
+        // taxing every later turn (which waits on this lock). On elapse the dropped
+        // future drops the transport → the child is killed and the slot is freed.
+        match tokio::time::timeout(DISCOVERY_TURN_BUDGET, connect_and_list(cfg)).await {
+            Ok(Ok(established)) => {
                 let established = Arc::new(established);
                 state.established = Some(Arc::clone(&established));
                 state.consecutive_failures = 0;
                 Ok(established)
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 state.consecutive_failures = state.consecutive_failures.saturating_add(1);
                 Err(error)
+            }
+            Err(_elapsed) => {
+                state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+                Err(format!(
+                    "timed out connecting to \"{}\" after {}s",
+                    cfg.label,
+                    DISCOVERY_TURN_BUDGET.as_secs()
+                ))
             }
         }
     }
@@ -117,7 +133,9 @@ async fn connect_and_list(cfg: &McpServerConfig) -> Result<Established, String> 
 fn tool_info_from_rmcp(tool: rmcp::model::Tool) -> ToolInfo {
     ToolInfo {
         name: tool.name.into_owned(),
-        description: tool.description.map(|description| description.into_owned()),
+        description: tool
+            .description
+            .map(|description| bound_tool_description(description.into_owned())),
         input_schema: serde_json::Value::Object((*tool.input_schema).clone()),
     }
 }
@@ -442,4 +460,54 @@ pub async fn mcp_list_server_tools(
             description: tool.description,
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capture_types::McpTransport;
+
+    /// A stdio "server" that spawns but never completes the MCP initialize
+    /// handshake (`sleep` ignores stdin and never writes stdout). rmcp's
+    /// `serve_client` has no internal initialize timeout, so connecting this would
+    /// hang until the child exits without the `ensure_ready` timeout wrapper.
+    fn hung_stdio_cfg() -> McpServerConfig {
+        McpServerConfig {
+            id: "test-hung-mcp-server".to_string(),
+            label: "Hung".to_string(),
+            enabled: true,
+            transport: McpTransport::Stdio,
+            command: Some("sleep".to_string()),
+            args: vec!["60".to_string()],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: None,
+            enabled_tools: None,
+        }
+    }
+
+    /// `warm` and `list_server_tools` call `ensure_ready` with no timeout of their
+    /// own, and `ensure_ready` holds the per-slot lock across the connect. A server
+    /// that hangs during initialize must therefore be bounded here, or it poisons
+    /// the slot forever (leaked child/task) and taxes every later turn.
+    #[tokio::test]
+    async fn ensure_ready_is_bounded_on_a_hung_server() {
+        let cfg = hung_stdio_cfg();
+        let slot = ServerSlot {
+            fingerprint: config_fingerprint(&cfg),
+            state: Mutex::new(SlotState::default()),
+        };
+        // Beyond the discovery budget: a bounded `ensure_ready` returns an error
+        // inside its budget; an unbounded one never returns and this outer window
+        // elapses.
+        let outcome = tokio::time::timeout(
+            DISCOVERY_TURN_BUDGET + Duration::from_secs(3),
+            slot.ensure_ready(&cfg),
+        )
+        .await;
+        assert!(
+            matches!(outcome, Ok(Err(_))),
+            "ensure_ready on a hung server must return a bounded error, not hang"
+        );
+    }
 }

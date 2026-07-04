@@ -358,6 +358,15 @@ pub fn secret_scrubbed_fetch_target(raw_url: &str) -> Option<String> {
         return None;
     }
 
+    // Strip URL-embedded Basic-auth credentials (`user:pass@`). They are a secret,
+    // and the cookie-less fetch client can never ride the user's authenticated
+    // session — keeping userinfo would send the credential over the network as an
+    // `Authorization: Basic` header and do exactly that. Fail closed (a 401 is the
+    // safe outcome), matching the model-text boundary (`guard_url`), which already
+    // emits only host+port and never userinfo.
+    let _ = target.set_username("");
+    let _ = target.set_password(None);
+
     // Path: redact secrets exactly as the model-text boundary does. A redacted
     // magic-link / reset token becomes a nonsense path -> 404 at the origin.
     let redacted_path = redact_path(parsed.path());
@@ -1596,5 +1605,19 @@ mod tests {
         let out =
             secret_scrubbed_fetch_target("https://example.com:8443/dashboard?tab=x#frag").unwrap();
         assert_eq!(out, "https://example.com:8443/dashboard?tab=x");
+    }
+
+    #[test]
+    fn fetch_target_strips_userinfo_credentials() {
+        // A URL-embedded Basic-auth credential is a secret. The fetch target must
+        // NOT carry it: the cookie-less client would turn `user:pass@` into an
+        // `Authorization: Basic` header, leaking the credential to the origin and
+        // riding the user's session. The model-text boundary (`guard_url`) already
+        // drops userinfo; fail closed here too.
+        let out = secret_scrubbed_fetch_target("https://user:hunter2@internal.example.com/dash?v=1")
+            .unwrap();
+        assert!(!out.contains("hunter2"), "password must not leak: {out}");
+        assert!(!out.contains("user:"), "username must not leak: {out}");
+        assert_eq!(out, "https://internal.example.com/dash?v=1");
     }
 }

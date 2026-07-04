@@ -27,6 +27,10 @@ const MCP_DEFAULT_TOOL_CAP: usize = 32;
 /// Cap on a single MCP tool result handed back to the model (~24k chars), so one
 /// rogue tool cannot flood a turn. A visible marker is appended when it bites.
 const MCP_TOOL_RESULT_CHAR_CAP: usize = 24_000;
+/// Cap on a server-supplied tool DESCRIPTION before it enters the model prompt.
+/// Descriptions are far shorter than results in practice; this only bites a
+/// pathological/hostile server trying to context-stuff via the tool declaration.
+const MCP_TOOL_DESCRIPTION_CHAR_CAP: usize = 4_000;
 
 /// One tool discovered from an MCP server — our trimmed view of rmcp's `Tool`.
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +118,23 @@ pub(crate) fn truncate_tool_result(result: String) -> String {
     out
 }
 
+/// Cap a server-supplied tool DESCRIPTION before it enters the model prompt. The
+/// description is untrusted third-party text (an MCP server the user connected,
+/// whose payloads are only semi-trusted); like the result cap, this stops a
+/// malicious or compromised server from shipping a multi-megabyte description
+/// that stuffs the model context on every turn.
+pub(crate) fn bound_tool_description(description: String) -> String {
+    if description.chars().count() <= MCP_TOOL_DESCRIPTION_CHAR_CAP {
+        return description;
+    }
+    let mut out: String = description
+        .chars()
+        .take(MCP_TOOL_DESCRIPTION_CHAR_CAP)
+        .collect();
+    out.push_str(" […truncated by Mnema]");
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +149,21 @@ mod tests {
 
     fn tools(names: &[&str]) -> Vec<ToolInfo> {
         names.iter().map(|name| tool(name)).collect()
+    }
+
+    #[test]
+    fn bound_tool_description_caps_a_giant_server_description() {
+        // A malicious/compromised MCP server ships a multi-megabyte tool
+        // description; it must be bounded before it enters the model prompt so one
+        // rogue server cannot stuff the context on every turn.
+        let bounded = bound_tool_description("z".repeat(1_000_000));
+        assert!(
+            bounded.chars().count() <= MCP_TOOL_DESCRIPTION_CHAR_CAP + 32,
+            "description must be bounded, got {} chars",
+            bounded.chars().count()
+        );
+        // A short description is passed through untouched.
+        assert_eq!(bound_tool_description("hi".to_string()), "hi");
     }
 
     #[test]

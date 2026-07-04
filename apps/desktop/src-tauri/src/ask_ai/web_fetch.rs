@@ -180,7 +180,8 @@ async fn read_capped_body(response: reqwest::Response, cap: usize) -> Result<Vec
     let mut stream = response.bytes_stream();
     let mut buffer: Vec<u8> = Vec::new();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| format!("failed to read the page body: {error}"))?;
+        let chunk = chunk
+            .map_err(|error| format!("failed to read the page body: {}", error.without_url()))?;
         buffer.extend_from_slice(&chunk);
         if buffer.len() >= cap {
             buffer.truncate(cap);
@@ -198,7 +199,10 @@ async fn fetch_page(target_url: &str) -> Result<FetchedPage, String> {
         .get(target_url)
         .send()
         .await
-        .map_err(|error| format!("failed to fetch the page: {error}"))?;
+        // `without_url()` strips the URL reqwest embeds in its Display — the raw
+        // fetch-target (query included) must never cross the model boundary; the
+        // model only ever sees the query-stripped `guard_url` form.
+        .map_err(|error| format!("failed to fetch the page: {}", error.without_url()))?;
 
     let status = response.status().as_u16();
     let final_url_raw = response.url().to_string();
@@ -338,6 +342,28 @@ pub(crate) async fn execute_web_fetch(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fetch_error_does_not_leak_target_url_to_model() {
+        // The two-boundary rule: the model may only ever see the query-stripped
+        // `guard_url` form. A failed fetch stringifies the reqwest error, whose
+        // Display appends ` for url (<target>)` — the raw fetch-target incl. the
+        // non-credential query params `guard_url` hides. `without_url()` strips it.
+        // A refused loopback port fails immediately and offline.
+        let target = "https://127.0.0.1:9/inbox?email=alice@corp.com&team=secret-project";
+        let err = match tauri::async_runtime::block_on(fetch_page(target)) {
+            Ok(_) => panic!("a connect to a refused port must fail"),
+            Err(err) => err,
+        };
+        assert!(
+            !err.contains("secret-project") && !err.contains("team") && !err.contains("email"),
+            "fetch error leaked query params to the model: {err}"
+        );
+        assert!(
+            !err.contains("127.0.0.1"),
+            "fetch error leaked the target host/URL to the model: {err}"
+        );
+    }
 
     #[test]
     fn content_type_gate_accepts_text_kinds() {

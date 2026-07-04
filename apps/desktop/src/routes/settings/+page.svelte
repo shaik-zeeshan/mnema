@@ -86,6 +86,7 @@
   // the same store methods, just bound to local names for the mount effect.
   const rec = c.rec;
   const refreshAiProviderKeyPresence = () => c.aiRuntime.refreshAiProviderKeyPresence();
+  const refreshMcpServerSecretPresence = () => c.aiRuntime.refreshMcpServerSecretPresence();
   const loadAiRuntimeStatus = () => c.aiRuntime.loadAiRuntimeStatus();
   const refreshUserContext = () => c.userContext.refreshUserContext();
   const loadCaptureSupport = () => c.loadCaptureSupport();
@@ -434,7 +435,10 @@
       // refreshAiProviderKeyPresence reads rec.draftAiProviders, which loadRecordingSettings
       // only populates after its async fetch resolves. Chain it so the "key in keychain"
       // badge reflects saved keys on load instead of seeing a still-empty provider list.
-      void rec.loadRecordingSettings().then(() => refreshAiProviderKeyPresence());
+      // refreshMcpServerSecretPresence shares that draft-list dependency (the MCP card's
+      // "secret in keychain" badge, placeholder, and Clear button read the draft connector
+      // list), so chain it off the same load.
+      void rec.loadRecordingSettings().then(() => refreshAiProviderKeyPresence()).then(() => refreshMcpServerSecretPresence());
       loadKeyboardBindingsSettings();
       loadMicState();
       loadOcrModelStatus();

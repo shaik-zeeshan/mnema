@@ -2460,6 +2460,41 @@ mod tests {
         assert_eq!(identity.source, BrokerClientIdentitySource::Inferred);
     }
 
+    #[test]
+    fn build_ask_ai_tools_gates_fetch_url_on_the_setting() {
+        // Security invariant: the network-fetch tool is opt-in. It must be ABSENT
+        // from the model's toolset when the setting is off, and PRESENT when on.
+        let off = build_ask_ai_tools(false, Vec::new());
+        assert!(
+            !off.iter().any(|t| t.name == "fetch_url"),
+            "fetch_url must not be offered when web-fetch is disabled"
+        );
+        let on = build_ask_ai_tools(true, Vec::new());
+        assert!(
+            on.iter().any(|t| t.name == "fetch_url"),
+            "fetch_url must be offered when web-fetch is enabled"
+        );
+    }
+
+    #[test]
+    fn build_ask_ai_tools_always_offers_app_control_and_appends_mcp() {
+        let mcp = vec![ai_engine::AgentTool {
+            name: "mcp__github__create_issue".to_string(),
+            description: "(via GitHub) create an issue".to_string(),
+            parameters_schema: serde_json::json!({ "type": "object" }),
+        }];
+        let tools = build_ask_ai_tools(false, mcp);
+        // App-control tools are unconditional (no setting gates them).
+        for name in ["capture_status", "start_capture", "stop_capture", "pause_capture", "resume_capture"] {
+            assert!(
+                tools.iter().any(|t| t.name == name),
+                "app-control tool `{name}` must always be present"
+            );
+        }
+        // Passed MCP tools are appended verbatim.
+        assert!(tools.iter().any(|t| t.name == "mcp__github__create_issue"));
+    }
+
     fn sample_result() -> BrokerSearchResult {
         BrokerSearchResult {
             opaque_id: "op-1".to_string(),

@@ -113,3 +113,72 @@ async fn connect_http(cfg: &McpServerConfig, secret: Option<String>) -> Result<M
         .await
         .map_err(|error| format!("failed to connect to \"{}\": {error}", cfg.label))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stdio_cfg() -> McpServerConfig {
+        McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: McpTransport::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "server-github".to_string()],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: None,
+        }
+    }
+
+    // The fingerprint is the slot-reuse key: a connect-relevant edit must change it
+    // (→ the manager drops the old child and redials), while a cosmetic edit must
+    // NOT (→ no needless reconnect mid-session).
+
+    #[test]
+    fn fingerprint_is_stable_for_cosmetic_edits() {
+        let base = config_fingerprint(&stdio_cfg());
+
+        let mut relabeled = stdio_cfg();
+        relabeled.label = "Renamed".to_string();
+        assert_eq!(config_fingerprint(&relabeled), base, "label rename must not redial");
+
+        let mut recurated = stdio_cfg();
+        recurated.enabled_tools = Some(vec!["search".to_string()]);
+        assert_eq!(config_fingerprint(&recurated), base, "curation change must not redial");
+
+        // `id` is the slot key, not a connect field; it is not part of the fingerprint.
+        let mut reided = stdio_cfg();
+        reided.id = "connector-2".to_string();
+        assert_eq!(config_fingerprint(&reided), base);
+    }
+
+    #[test]
+    fn fingerprint_changes_for_connect_relevant_edits() {
+        let base = config_fingerprint(&stdio_cfg());
+
+        for mutate in [
+            |c: &mut McpServerConfig| c.command = Some("node".to_string()),
+            |c: &mut McpServerConfig| c.args.push("--flag".to_string()),
+            |c: &mut McpServerConfig| c.env.push(capture_types::McpEnvVar {
+                name: "A".to_string(),
+                value: "b".to_string(),
+            }),
+            |c: &mut McpServerConfig| c.secret_env_name = Some("OTHER_TOKEN".to_string()),
+            |c: &mut McpServerConfig| {
+                c.transport = McpTransport::Http;
+                c.url = Some("https://mcp.example.com".to_string());
+            },
+        ] {
+            let mut edited = stdio_cfg();
+            mutate(&mut edited);
+            assert_ne!(
+                config_fingerprint(&edited),
+                base,
+                "a connect-relevant edit must change the fingerprint"
+            );
+        }
+    }
+}
