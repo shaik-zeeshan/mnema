@@ -15,6 +15,7 @@
     RecordingSettings,
   } from "$lib/types/recording";
   import Overview from "$lib/insights/Overview.svelte";
+  import DayTimeline from "$lib/insights/DayTimeline.svelte";
   import Subjects from "$lib/insights/Subjects.svelte";
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
   import Context from "$lib/insights/Context.svelte";
@@ -23,7 +24,7 @@
   import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
-  type InsightsTab = "overview" | "subjects" | "context" | "chat";
+  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
   // the Subjects tab held in `selectedSubject` (null = the index).
@@ -338,6 +339,8 @@
     {/if}
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
+    {:else if view === "journal"}
+      <DayTimeline />
     {:else if view === "subjects"}
       {#if selectedSubject}
         <div class="breadcrumb">

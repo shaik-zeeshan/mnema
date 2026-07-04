@@ -73,6 +73,12 @@ pub async fn get_user_context_status(
     let activity_count = store.count_activities().await.map_err(|e| e.to_string())?;
     let conclusion_count = store.count_conclusions().await.map_err(|e| e.to_string())?;
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
+    // Summarized-up-to watermark: the end edge of the most-recently-COVERED
+    // window (failed runs advanced the scheduler cursor but summarized nothing,
+    // so they must not raise this), letting the frontend render the still-pending
+    // region. Best-effort — a read error degrades to "unknown" rather than
+    // failing the whole status.
+    let covered_until_ms = store.covered_until_ms().await.ok().flatten();
     let token_usage = store
         .token_usage_totals()
         .await
@@ -145,6 +151,7 @@ pub async fn get_user_context_status(
         activity_count,
         conclusion_count,
         last_derived_at_ms,
+        covered_until_ms,
         backfilling,
         token_usage,
         budget_tier: user_context.derivation_budget_tier,
@@ -159,8 +166,8 @@ pub async fn get_user_context_status(
 /// range-scoped view (e.g. Overview's selected day/week/month) gets the whole
 /// period rather than a recency-capped slice — fixing the case where a busy
 /// month exceeds the limit or a past range falls outside the newest page.
-/// Range results are NOT evidence-hydrated (the range consumers read only the
-/// Activity's own fields; skipping hydration keeps a month-wide fetch cheap).
+/// Range results ARE evidence-hydrated (the Journal's range read needs the
+/// evidence refs); the Digest reads the lean, non-hydrated store method directly.
 ///
 /// With no bounds it keeps the legacy `limit`/`offset` recency-paged behavior
 /// (newest-first, evidence hydrated) for the preview / evidence-resolution
@@ -176,7 +183,7 @@ pub async fn list_user_context_activities(
     if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
         return infra
             .user_context()
-            .list_activities_in_range(start_ms, end_ms)
+            .list_activities_in_range_with_evidence(start_ms, end_ms)
             .await
             .map_err(|e| e.to_string());
     }

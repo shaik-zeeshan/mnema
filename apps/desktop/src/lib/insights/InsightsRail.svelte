@@ -23,11 +23,12 @@
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { IconComponent } from "$lib/settings/section-icons";
   import IconOverview from "~icons/lucide/layout-dashboard";
+  import IconJournal from "~icons/lucide/calendar-days";
   import IconSubjects from "~icons/lucide/lightbulb";
   import IconContext from "~icons/lucide/notebook-text";
   import IconCollapse from "~icons/lucide/chevrons-left";
 
-  type InsightsTab = "overview" | "subjects" | "context" | "chat";
+  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   interface Props {
     view: InsightsTab;
@@ -67,6 +68,7 @@
     icon: IconComponent;
   }[] = [
     { id: "overview", label: "Overview", icon: IconOverview },
+    { id: "journal", label: "Journal", icon: IconJournal },
     { id: "subjects", label: "Subjects", icon: IconSubjects },
     { id: "context", label: "Context", icon: IconContext },
   ];
@@ -286,7 +288,6 @@
     border-radius: 0 2px 2px 0;
     background: var(--app-accent);
   }
-
   /* new chat — a full row that shares the nav's geometry exactly: same 28px
      height, same 0 8px padding, same 8px gap, and a 16px leading-glyph box. That
      puts the ＋ on the SAME vertical guide as the nav icons and the label on the

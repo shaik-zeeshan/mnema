@@ -23,6 +23,9 @@ mock.module("@tauri-apps/api/core", () => ({
     invokeCalls++;
     return [];
   },
+  // bun module mocks fix the export-name set process-wide; later test files
+  // transitively import convertFileSrc (frame-preview), so it must exist here.
+  convertFileSrc: (p: string) => p,
 }));
 
 async function settle() {

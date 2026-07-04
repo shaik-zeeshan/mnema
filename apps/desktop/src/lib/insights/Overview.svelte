@@ -56,6 +56,7 @@
     type ActivityThread,
     type RangeMode,
   } from "$lib/insights/activity-helpers";
+  import { computeLedeStats } from "$lib/insights/lede-stats";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
   import FocusDetailModal from "$lib/insights/FocusDetailModal.svelte";
@@ -357,6 +358,20 @@
     );
   });
 
+  // The three lede-footer stats (tracked / deep focus % / top category),
+  // computed once in a shared pure helper so Overview and the Journal surface
+  // derive the same label from the same computation. Overview reads back into
+  // `summary` (tracked / deep %) and `topCategory` below — output unchanged.
+  const ledeStats = $derived(
+    computeLedeStats({
+      timePerApp: usage?.timePerApp ?? [],
+      rangeActivities,
+      rangeStartMs: range.startMs,
+      rangeEndMs: range.endMs,
+      engineOn,
+    }),
+  );
+
   const categorySegments = $derived.by(() => {
     const { startMs, endMs } = range;
     const totals = new Map<string, number>();
@@ -423,14 +438,9 @@
     return segments;
   });
 
-  // Surface the busiest NAMED category in the lede. `categorySegments` already
-  // ranks by time, but skip the synthetic "Other" fold so the lede never reads
-  // a grey aggregate bucket as a real top category.
-  const topCategory = $derived(
-    [...categorySegments]
-      .filter((s) => s.label !== "Other")
-      .sort((a, b) => b.value - a.value)[0],
-  );
+  // Surface the busiest category in the lede — the shared helper reproduces the
+  // old `categorySegments`-minus-"Other" pick exactly (see lede-stats.ts).
+  const topCategory = $derived(ledeStats.topCategory);
 
   // ── ENGINE TILE 3: focus heatmap (day rows × time-of-day slots) ───────
   // Twelve 2h slots covering the full local day (12a-12a); cell value = avg
@@ -492,11 +502,9 @@
   // ── FREE TILE 4: this-range summary stats ─────────────────────────────
   const summary = $derived.by(() => {
     const buckets = usage?.activityHeatmap ?? [];
-    // Total tracked time ≈ sum of app active time (the honest "time on app").
-    const totalMs = (usage?.timePerApp ?? []).reduce(
-      (acc, a) => acc + a.activeMs,
-      0,
-    );
+    // Total tracked time ≈ sum of app active time (the honest "time on app") —
+    // shared helper so the "tracked" figure matches the Journal surface.
+    const totalMs = ledeStats.trackedMs;
     // Active days = distinct local-calendar days with any heatmap intensity.
     const activeDays = new Set<number>();
     const perDay = new Map<number, number>();
@@ -522,19 +530,8 @@
         : startOfDay(b.bucketStartMs);
       perBucket.set(key, (perBucket.get(key) ?? 0) + b.intensityCount);
     }
-    // Deep-focus % over range activities (engine tier only).
-    let deepPct: number | null = null;
-    if (engineOn) {
-      let deep = 0;
-      let counted = 0;
-      for (const a of rangeActivities) {
-        const focus = a.focus;
-        if (focus == null) continue;
-        counted += 1;
-        if (focus === "deep") deep += 1;
-      }
-      deepPct = counted > 0 ? Math.round((deep / counted) * 100) : null;
-    }
+    // Deep-focus % over range activities (engine tier only) — shared helper.
+    const deepPct = ledeStats.deepPct;
     // Period-aware spark for the mini bar strip (ordered by bucket start).
     const spark = [...perBucket.entries()]
       .sort((a, b) => a[0] - b[0])

@@ -16,6 +16,7 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import ActionSelect from "$lib/components/ActionSelect.svelte";
   import TimelineJumper from "$lib/timeline/TimelineJumper.svelte";
+  import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
@@ -118,7 +119,10 @@
   // on any browser-specific RTL `scrollLeft` convention.
 
   const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
-  const TIMELINE_APP_GROUP_MAX_GAP_MS = 2_000;
+  // At the default 0.5 fps capture rate frames land ~2s apart, so this must
+  // comfortably exceed one frame interval or a single skipped frame (privacy
+  // exclusion, self-capture skip) splits an app run in two.
+  const TIMELINE_APP_GROUP_MAX_GAP_MS = 10_000;
   const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a
@@ -5500,6 +5504,23 @@
   // listener's on-mount `.then` — keeps the latest load from racing the jump and
   // clobbering it (which landed the user on the newest frame instead).
   async function initializeTimeline(): Promise<void> {
+    // A receipt "Open in Timeline" queues a frame focus before this page mounts
+    // (frontend-only handoff across the /insights→/ route switch). Consume it
+    // first so the jump wins over the normal latest-first load.
+    const focus = takePendingTimelineFocus();
+    if (focus) {
+      try {
+        const frame = await invoke<FrameDto | null>("get_frame", {
+          request: { frameId: focus.frameId },
+        });
+        if (frame) {
+          await jumpToFrameWithBanner(frame);
+          return;
+        }
+      } catch {
+        /* fall through to normal init */
+      }
+    }
     const handled = await drainPendingBrokerOpenCaptureResults();
     if (!handled || timelineFrames.length === 0) {
       await loadTimelinePage(true);
