@@ -2794,7 +2794,12 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
         return Ok(());
     }
 
-    if !runtime.inactivity.is_screen_paused() {
+    // The writer must be detached whenever the backing stream is alive — even
+    // while the screen family is soft-paused (the ScreenCaptureKit stream stays
+    // live through a screen soft-pause and keeps feeding the writer). Gating
+    // this on screen-pause state used to leave the writer attached and
+    // recording while the family was marked paused.
+    {
         if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
             let system_audio_recording_file = runtime.system_audio_recording_file.clone();
             // Soft-pause: tell the screen backend to finalize and detach its
@@ -2962,6 +2967,39 @@ pub(super) fn resume_microphone_from_inactivity(
     Ok(())
 }
 
+/// How a system-audio inactivity resume must act given the screen backend
+/// state. The wrong arm here is what silently drops system audio: marking the
+/// family resumed without attaching a writer leaves
+/// `system_audio_recording_file` as `None`, so the screen soft-resume path
+/// skips the writer and nothing records until the next rotation replans it.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SystemAudioResumeAction {
+    /// Screen session live and the screen family active: attach a fresh writer.
+    ResumeWriter,
+    /// Cannot attach a writer right now (screen family soft-paused on a live
+    /// stream, or the session is gone outside a screen pause). Keep the family
+    /// marked paused so the tick after conditions clear re-fires this resume
+    /// and actually attaches the writer.
+    DeferKeepPaused,
+    /// Cold screen pause (session torn down): no writer can exist yet, but the
+    /// cold screen-resume path honors the unpaused flag and recreates the
+    /// writer with the new session, so flipping the flag now is correct.
+    MarkResumedOnly,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn system_audio_resume_action(
+    session_live: bool,
+    screen_paused: bool,
+) -> SystemAudioResumeAction {
+    match (session_live, screen_paused) {
+        (true, false) => SystemAudioResumeAction::ResumeWriter,
+        (false, true) => SystemAudioResumeAction::MarkResumedOnly,
+        (true, true) | (false, false) => SystemAudioResumeAction::DeferKeepPaused,
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn resume_system_audio_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
@@ -2985,44 +3023,50 @@ pub(super) fn resume_system_audio_from_inactivity(
 
     // If system audio was soft-paused while the screen session is still live,
     // allocate a fresh output path and resume the writer in-place.
-    if sources.system_audio && sources.screen && !runtime.inactivity.is_screen_paused() {
-        if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
-            // No active screen session — system audio cannot resume without one.
-            // Keep pause/source state unchanged so the inactivity system does not
-            // lose track of the paused writer.
-            return Ok(());
-        }
+    if sources.system_audio && sources.screen {
+        match system_audio_resume_action(
+            capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+            runtime.inactivity.is_screen_paused(),
+        ) {
+            SystemAudioResumeAction::DeferKeepPaused => return Ok(()),
+            SystemAudioResumeAction::MarkResumedOnly => {}
+            SystemAudioResumeAction::ResumeWriter => {
+                refresh_runtime_planner_dates(runtime);
+                // Always try to seed the planner for real writer resumes so future
+                // resumes/rotations preserve the dedicated system-audio session.
+                let system_audio_planner = ensure_system_audio_planner_for_runtime(
+                    runtime,
+                    "resuming system audio from inactivity",
+                )?;
 
-        refresh_runtime_planner_dates(runtime);
-        // Always try to seed the planner for real writer resumes so future
-        // resumes/rotations preserve the dedicated system-audio session.
-        let system_audio_planner = ensure_system_audio_planner_for_runtime(
-            runtime,
-            "resuming system audio from inactivity",
-        )?;
+                let planner = system_audio_planner.ok_or_else(|| CaptureErrorResponse {
+                    code: "invalid_runtime_state".to_string(),
+                    message: "Capture system-audio planner missing while resuming system audio"
+                        .to_string(),
+                })?;
+                let audio_dir = planner.audio_dir();
+                std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
+                    code: "io_error".to_string(),
+                    message: format!("Failed to create capture audio directory: {error}"),
+                })?;
+                let new_system_audio_file = planner
+                    .system_audio_resume_file(
+                        runtime.current_segment_index,
+                        super::runtime::now_unix_ms(),
+                    )
+                    .to_string_lossy()
+                    .to_string();
 
-        let planner = system_audio_planner.ok_or_else(|| CaptureErrorResponse {
-            code: "invalid_runtime_state".to_string(),
-            message: "Capture system-audio planner missing while resuming system audio".to_string(),
-        })?;
-        let audio_dir = planner.audio_dir();
-        std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
-            code: "io_error".to_string(),
-            message: format!("Failed to create capture audio directory: {error}"),
-        })?;
-        let new_system_audio_file = planner
-            .system_audio_resume_file(runtime.current_segment_index, super::runtime::now_unix_ms())
-            .to_string_lossy()
-            .to_string();
+                capture_screen::resume_system_audio_writer(
+                    &mut runtime.active_screen_session,
+                    &new_system_audio_file,
+                )?;
 
-        capture_screen::resume_system_audio_writer(
-            &mut runtime.active_screen_session,
-            &new_system_audio_file,
-        )?;
-
-        runtime.system_audio_recording_file = Some(new_system_audio_file.clone());
-        if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-            set_current_system_audio_output_file(output_files, new_system_audio_file);
+                runtime.system_audio_recording_file = Some(new_system_audio_file.clone());
+                if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+                    set_current_system_audio_output_file(output_files, new_system_audio_file);
+                }
+            }
         }
     }
 

@@ -403,6 +403,58 @@ impl RecordingLifecycle {
         self.clear_screen_state_for_sleep_or_stop()
     }
 
+    /// Watchdog for a silently dead ScreenCaptureKit audio tap: silence still
+    /// produces audio sample callbacks, so a stale sample marker on a live
+    /// stream with a drawable display means the OS stopped delivering audio
+    /// buffers entirely (a stream-scoped condition only a session restart
+    /// clears). Logs — rate-limited — so field occurrences are attributable.
+    #[cfg(target_os = "macos")]
+    fn warn_if_system_audio_samples_stalled(&mut self) {
+        const STALL_WARN_AFTER_MS: u64 = 30_000;
+        const STALL_WARN_INTERVAL_MS: u64 = 60_000;
+        static LAST_WARN_MONOTONIC_MS: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(0);
+
+        if self.runtime.capture_suspension.is_some()
+            || !self
+                .runtime
+                .requested_sources
+                .as_ref()
+                .is_some_and(|sources| sources.system_audio)
+            || !capture_screen::screen_capture_session_is_live(
+                self.runtime.active_screen_session.as_ref(),
+            )
+            || !capture_screen::screen_display_available()
+        {
+            return;
+        }
+
+        // No sample marker yet (fresh session) is measured against the capture
+        // clock so a dead-from-start tap is caught too.
+        let stalled_ms = match capture_screen::system_audio_activity_idle_ms() {
+            Some(idle_ms) => idle_ms,
+            None => match self.runtime.capture_clock.as_ref() {
+                Some(clock) => clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                None => return,
+            },
+        };
+        if stalled_ms < STALL_WARN_AFTER_MS {
+            return;
+        }
+
+        let now = super::runtime::now_monotonic_marker_ms();
+        let last_warn = LAST_WARN_MONOTONIC_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if now.saturating_sub(last_warn) < STALL_WARN_INTERVAL_MS {
+            return;
+        }
+        LAST_WARN_MONOTONIC_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+
+        super::debug_log::log(format!(
+            "system audio stream has delivered no sample buffers for {}s while the capture session is live; the ScreenCaptureKit audio tap appears dead (stop/start recording recovers it)",
+            stalled_ms / 1000
+        ));
+    }
+
     #[cfg(target_os = "macos")]
     pub(crate) fn tick_inactivity(&mut self, app_handle: &tauri::AppHandle) -> TickOutcome {
         if self.runtime.user_capture_paused {
@@ -421,6 +473,8 @@ impl RecordingLifecycle {
             ));
             return self.suspend_screen_after_unexpected_stop(Some(app_handle), &error);
         }
+
+        self.warn_if_system_audio_samples_stalled();
 
         let now = super::runtime::now_monotonic_marker_ms();
         let activity_snapshot = current_activity_snapshot(&mut self.runtime);
