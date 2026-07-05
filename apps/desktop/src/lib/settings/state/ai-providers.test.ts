@@ -8,8 +8,6 @@ describe("newMcpServerId", () => {
     expect(newMcpServerId("GitHub", [])).toBe("github");
     expect(newMcpServerId("My Cool Server!", [])).toBe("my-cool-server");
     expect(newMcpServerId("  spaced  ", [])).toBe("spaced");
-    // Only [a-z0-9-] survives — the prefix parser depends on it.
-    expect(newMcpServerId("GitHub", [])).toMatch(/^[a-z0-9-]+$/);
   });
 
   it("falls back to `connector` when the label has no usable characters", () => {

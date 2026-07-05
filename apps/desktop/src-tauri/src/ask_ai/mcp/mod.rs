@@ -73,6 +73,21 @@ pub(crate) fn parse_mcp_tool_name(name: &str) -> Option<(&str, &str)> {
     Some((server_id, tool))
 }
 
+/// Whether a MODEL-FACING tool name satisfies the provider tool-name contract
+/// `^[a-zA-Z0-9_-]{1,64}$` (Anthropic and OpenAI both enforce it). Checked over
+/// the FULL `mcp__<id>__<tool>` name at discovery: one violating name (a dot, a
+/// space, or sheer length) makes the provider reject the ENTIRE request — every
+/// tool, the whole turn — so an invalid tool is DROPPED there, never truncated
+/// (a rewritten name would no longer route back through [`parse_mcp_tool_name`]
+/// and could collide with a sibling tool).
+pub(crate) fn is_valid_model_tool_name(name: &str) -> bool {
+    // Byte length equals char length here: the charset check admits ASCII only.
+    (1..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+}
+
 /// Curate a server's discovered tools into the set offered to the model.
 ///
 /// - `enabled_tools = None` → the FIRST [`MCP_DEFAULT_TOOL_CAP`] tools in server
@@ -222,6 +237,41 @@ mod tests {
         assert_eq!(parse_mcp_tool_name("mcp__github"), None); // no second `__`
         assert_eq!(parse_mcp_tool_name("mcp____tool"), None); // empty id
         assert_eq!(parse_mcp_tool_name("mcp__srv__"), None); // empty tool
+    }
+
+    // The provider tool-name contract (`^[a-zA-Z0-9_-]{1,64}$`) is enforced over
+    // the FULL model-facing name at discovery; one violating name would make the
+    // provider reject the whole request, dropping every tool for the turn.
+
+    #[test]
+    fn a_simple_model_tool_name_is_valid() {
+        assert!(is_valid_model_tool_name(&model_tool_name(
+            "github",
+            "create_issue"
+        )));
+    }
+
+    #[test]
+    fn a_tool_name_with_a_dot_is_invalid() {
+        assert!(!is_valid_model_tool_name(&model_tool_name(
+            "srv",
+            "list.files"
+        )));
+    }
+
+    #[test]
+    fn a_model_tool_name_over_64_chars_is_invalid() {
+        // `mcp__srv__` is 10 chars, so a 55-char tool name lands on 65.
+        let over = model_tool_name("srv", &"t".repeat(55));
+        assert_eq!(over.len(), 65);
+        assert!(!is_valid_model_tool_name(&over));
+    }
+
+    #[test]
+    fn a_model_tool_name_at_exactly_64_chars_is_valid() {
+        let at_cap = model_tool_name("srv", &"t".repeat(54));
+        assert_eq!(at_cap.len(), 64);
+        assert!(is_valid_model_tool_name(&at_cap));
     }
 
     #[test]

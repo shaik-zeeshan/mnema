@@ -454,16 +454,25 @@ fn ipv4_is_disallowed(ip: std::net::Ipv4Addr) -> bool {
 
 /// True for an IPv6 address the fetch client must never reach.
 fn ipv6_is_disallowed(ip: std::net::Ipv6Addr) -> bool {
-    // An IPv4-mapped address (`::ffff:a.b.c.d`) reaches the same host — screen its
-    // embedded v4 with the v4 rules so `[::ffff:169.254.169.254]` is caught.
-    if let Some(v4) = ip.to_ipv4_mapped() {
+    // An address embedding an IPv4 reaches the same host — screen the embedded v4
+    // with the v4 rules. `to_ipv4()` covers both IPv4-mapped (`::ffff:a.b.c.d`)
+    // and the deprecated IPv4-compatible form (`::a.b.c.d`, e.g. `::7f00:1`), so
+    // `[::ffff:169.254.169.254]` and `[::7f00:1]` are caught. (`::1`/`::` land
+    // here too, as 0.0.0.1/0.0.0.0 — both disallowed v4s, same verdict.)
+    if let Some(v4) = ip.to_ipv4() {
         return ipv4_is_disallowed(v4);
     }
-    let first = ip.segments()[0];
+    let seg = ip.segments();
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052) also embeds an IPv4 in the
+    // low 32 bits — screen it the same way.
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let v4 = std::net::Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7]));
+        return ipv4_is_disallowed(v4);
+    }
     ip.is_loopback()              // ::1
         || ip.is_unspecified()    // ::
-        || (first & 0xfe00) == 0xfc00 // fc00::/7 unique-local
-        || (first & 0xffc0) == 0xfe80 // fe80::/10 link-local
+        || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+        || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
 }
 
 /// True when a host NAME is a loopback name (`localhost` or a `*.localhost`
@@ -1793,6 +1802,8 @@ mod ssrf_review_security_a {
             "fc00::1",         // unique-local
             "fe80::1",         // link-local
             "::ffff:10.0.0.1", // v4-mapped private
+            "::7f00:1",        // deprecated v4-compatible loopback (127.0.0.1)
+            "64:ff9b::7f00:1", // NAT64 loopback (127.0.0.1)
         ] {
             let ip: IpAddr = ip.parse().unwrap();
             assert!(
@@ -1800,7 +1811,13 @@ mod ssrf_review_security_a {
                 "resolved private/metadata address must be refused: {ip}"
             );
         }
-        for ip in ["8.8.8.8", "1.1.1.1", "140.82.121.3", "2606:4700:4700::1111"] {
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "140.82.121.3",
+            "2606:4700:4700::1111",
+            "64:ff9b::808:808", // NAT64 8.8.8.8 — public, stays allowed
+        ] {
             let ip: IpAddr = ip.parse().unwrap();
             assert!(
                 !ip_is_disallowed_fetch_target(ip),

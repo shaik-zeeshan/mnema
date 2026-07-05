@@ -37,8 +37,8 @@ use tokio::sync::Mutex;
 
 use super::transport::{config_fingerprint, connect, McpClient};
 use super::{
-    bound_tool_description, bound_tool_schema, model_tool_name, offered_tools, truncate_tool_result,
-    ToolInfo,
+    bound_tool_description, bound_tool_schema, is_valid_model_tool_name, model_tool_name,
+    offered_tools, truncate_tool_result, ToolInfo,
 };
 
 /// Total budget a turn build waits for in-flight discovery before proceeding
@@ -58,6 +58,10 @@ const CALL_TOOL_BUDGET: Duration = Duration::from_secs(60);
 struct Established {
     client: McpClient,
     tools: Vec<ToolInfo>,
+    /// Tools DROPPED at discovery because their model-facing `mcp__<id>__<name>`
+    /// violates the provider tool-name contract (see [`is_valid_model_tool_name`]).
+    /// Surfaced as one preamble note per turn — non-silent, like the 32-cap trim.
+    dropped_invalid_names: usize,
 }
 
 /// Per-server connection slot, keyed by instance id. Its inner `Mutex` serializes
@@ -132,19 +136,40 @@ async fn connect_and_list(cfg: &McpServerConfig) -> Result<Established, String> 
         .list_all_tools()
         .await
         .map_err(|error| format!("failed to list tools for \"{}\": {error}", cfg.label))?;
-    let tools = tools.into_iter().map(tool_info_from_rmcp).collect();
-    Ok(Established { client, tools })
+    let listed = tools.len();
+    let tools: Vec<ToolInfo> = tools
+        .into_iter()
+        .filter_map(|tool| tool_info_from_rmcp(&cfg.id, tool))
+        .collect();
+    let dropped_invalid_names = listed - tools.len();
+    Ok(Established {
+        client,
+        tools,
+        dropped_invalid_names,
+    })
 }
 
-/// Project rmcp's `Tool` onto our trimmed [`ToolInfo`] (name, description, schema).
-fn tool_info_from_rmcp(tool: rmcp::model::Tool) -> ToolInfo {
-    ToolInfo {
-        name: tool.name.into_owned(),
+/// Project rmcp's `Tool` onto our trimmed [`ToolInfo`] (name, description,
+/// schema) — or DROP it (`None`) when its model-facing `mcp__<id>__<name>` would
+/// violate the provider tool-name contract (`^[a-zA-Z0-9_-]{1,64}$`): providers
+/// reject the ENTIRE request over one bad name, killing every tool for the turn.
+/// Never truncate — a rewritten name would no longer route (`parse_mcp_tool_name`).
+fn tool_info_from_rmcp(server_id: &str, tool: rmcp::model::Tool) -> Option<ToolInfo> {
+    let name = tool.name.into_owned();
+    if !is_valid_model_tool_name(&model_tool_name(server_id, &name)) {
+        tauri_plugin_log::log::info!(
+            "Ask AI MCP tool \"{name}\" on \"{server_id}\" dropped: its model-facing name \
+             violates the provider tool-name contract (^[a-zA-Z0-9_-]{{1,64}}$)"
+        );
+        return None;
+    }
+    Some(ToolInfo {
+        name,
         description: tool
             .description
             .map(|description| bound_tool_description(description.into_owned())),
         input_schema: bound_tool_schema(serde_json::Value::Object((*tool.input_schema).clone())),
-    }
+    })
 }
 
 /// Guarantee a tool's params schema is a JSON object (MCP servers always send
@@ -157,6 +182,70 @@ fn normalize_schema(schema: serde_json::Value) -> serde_json::Value {
     } else {
         serde_json::json!({ "type": "object", "additionalProperties": true, "properties": {} })
     }
+}
+
+/// Assemble the offered tool set for one turn from already-fetched per-server
+/// discovery results — for each server, either its `(discovered tools, count of
+/// invalid-name drops)` or the connect/list error. Applies curation + the
+/// 32-cap (noting a trim), the invalid-name drop note, the `(via <label>)`
+/// description prefix, model-facing naming, and schema normalization/bounding.
+/// Pure (no AppHandle, no awaits) so the assembly rules are unit-testable; an
+/// errored server is skipped, never failing the whole turn.
+fn assemble_turn_tools(
+    fetched: Vec<(McpServerConfig, Result<(Vec<ToolInfo>, usize), String>)>,
+) -> (Vec<ai_engine::AgentTool>, Vec<String>) {
+    let mut tools: Vec<ai_engine::AgentTool> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for (cfg, fetched) in fetched {
+        let (discovered, dropped_invalid_names) = match fetched {
+            Ok(fetched) => fetched,
+            Err(error) => {
+                // Connect/list failed within the budget: skip this server this
+                // turn (remedy is the enabled toggle; next turn retries).
+                tauri_plugin_log::log::warn!(
+                    "Ask AI MCP connector \"{}\" unavailable this turn: {error}",
+                    cfg.label
+                );
+                continue;
+            }
+        };
+
+        if dropped_invalid_names > 0 {
+            // Non-silent drop (mirrors the 32-cap trim): log AND one preamble note.
+            let line = format!(
+                "MCP server \"{}\" has {dropped_invalid_names} tool(s) whose names the model \
+                 cannot accept; they are unavailable",
+                cfg.label
+            );
+            tauri_plugin_log::log::info!("Ask AI {line}");
+            notes.push(line);
+        }
+        let (offered, note) = offered_tools(&discovered, cfg.enabled_tools.as_deref());
+        if let Some(note) = note {
+            // Non-silent trim: log AND surface one preamble note.
+            let line = format!("MCP server \"{}\" {}", cfg.label, note);
+            tauri_plugin_log::log::info!("Ask AI {line}");
+            notes.push(line);
+        }
+        for tool in offered {
+            let description = match tool.description {
+                Some(description) => format!("(via {}) {description}", cfg.label),
+                None => format!("(via {})", cfg.label),
+            };
+            tools.push(ai_engine::AgentTool {
+                name: model_tool_name(&cfg.id, &tool.name),
+                description,
+                parameters_schema: bound_tool_schema(normalize_schema(tool.input_schema)),
+            });
+        }
+    }
+    (tools, notes)
+}
+
+/// Drop every slot whose id is not in `keep` (a reaped slot's child dies on
+/// last ref). The pure core of [`McpManager::reconcile`].
+fn reap_slots(keep: &HashSet<String>, slots: &mut HashMap<String, Arc<ServerSlot>>) {
+    slots.retain(|id, _slot| keep.contains(id));
 }
 
 /// The ENABLED MCP servers from current settings (with a non-empty id). Only
@@ -216,6 +305,16 @@ impl McpManager {
     /// which it awaits). Nothing here blocks; a failed warm is logged and left for
     /// the turn / next-use retry. Runs only on chat-surface open, never at app
     /// launch (deferred-startup invariant).
+    ///
+    /// Documented deferral (ADR 0048, same minimalism as the health seam): a warm
+    /// task racing a settings save can resurrect a JUST-disabled server — if
+    /// `reconcile` reaps the slot first, this task's `slot_for` re-inserts it and
+    /// connects a child that lingers (holding its keychain secret) until the next
+    /// settings save or app exit. The window is milliseconds at chat-door open,
+    /// and `tools_for_turn`/`call_tool` re-filter on `enabled_servers`, so the
+    /// stale child is never offered or called — it only idles. Closing it needs a
+    /// settings re-read inside each spawned task; do NOT add that until a real
+    /// lingering child bothers someone.
     pub(crate) fn warm(&self, app_handle: &tauri::AppHandle) {
         for cfg in enabled_servers(app_handle) {
             let manager = self.clone();
@@ -259,20 +358,17 @@ impl McpManager {
         }))
         .await;
 
-        let mut tools: Vec<ai_engine::AgentTool> = Vec::new();
-        let mut notes: Vec<String> = Vec::new();
-        for (cfg, ready) in ready {
-            let established = match ready {
-                Ok(Ok(established)) => established,
-                Ok(Err(error)) => {
-                    // Connect/list failed within the budget: skip this server this
-                    // turn (remedy is the enabled toggle; next turn retries).
-                    tauri_plugin_log::log::warn!(
-                        "Ask AI MCP connector \"{}\" unavailable this turn: {error}",
-                        cfg.label
-                    );
-                    continue;
-                }
+        // Peel the AppHandle/await-bound part off here; the assembly rules are
+        // pure in `assemble_turn_tools` so they stay unit-testable.
+        let fetched = ready
+            .into_iter()
+            .filter_map(|(cfg, ready)| match ready {
+                Ok(result) => Some((
+                    cfg,
+                    result.map(|established| {
+                        (established.tools.clone(), established.dropped_invalid_names)
+                    }),
+                )),
                 Err(_elapsed) => {
                     // Still connecting when the budget expired: proceed without it;
                     // the in-flight connect keeps running for the next turn.
@@ -281,30 +377,11 @@ impl McpManager {
                         cfg.label,
                         DISCOVERY_TURN_BUDGET.as_secs()
                     );
-                    continue;
+                    None
                 }
-            };
-
-            let (offered, note) = offered_tools(&established.tools, cfg.enabled_tools.as_deref());
-            if let Some(note) = note {
-                // Non-silent trim: log AND surface one preamble note.
-                let line = format!("MCP server \"{}\" {}", cfg.label, note);
-                tauri_plugin_log::log::info!("Ask AI {line}");
-                notes.push(line);
-            }
-            for tool in offered {
-                let description = match tool.description {
-                    Some(description) => format!("(via {}) {description}", cfg.label),
-                    None => format!("(via {})", cfg.label),
-                };
-                tools.push(ai_engine::AgentTool {
-                    name: model_tool_name(&cfg.id, &tool.name),
-                    description,
-                    parameters_schema: normalize_schema(tool.input_schema),
-                });
-            }
-        }
-        (tools, notes)
+            })
+            .collect();
+        assemble_turn_tools(fetched)
     }
 
     /// Execute one MCP tool call. `server_id`/`tool` are the parts the executor
@@ -367,11 +444,7 @@ impl McpManager {
             .into_iter()
             .map(|cfg| cfg.id)
             .collect();
-        self.inner
-            .slots
-            .lock()
-            .await
-            .retain(|id, _slot| keep.contains(id));
+        reap_slots(&keep, &mut *self.inner.slots.lock().await);
     }
 }
 
@@ -596,7 +669,7 @@ mod tests {
             serde_json::json!("z".repeat(1_000_000)),
         );
         let tool = rmcp::model::Tool::new("echo", "does things", std::sync::Arc::new(schema));
-        let info = tool_info_from_rmcp(tool);
+        let info = tool_info_from_rmcp("srv", tool).expect("a valid tool name must survive");
         let schema_len = serde_json::to_string(&info.input_schema)
             .expect("schema serializes")
             .len();
@@ -604,6 +677,176 @@ mod tests {
             schema_len <= 20_000,
             "a server-controlled input schema reached the model unbounded ({schema_len} chars) — \
              it must be capped like the tool result and description (INV-B5)"
+        );
+    }
+
+    /// A server tool name the provider would reject (a dot, or `mcp__<id>__<name>`
+    /// over 64 chars) must be DROPPED at discovery — offered anyway, the provider
+    /// rejects the ENTIRE request and every tool vanishes for the turn.
+    #[test]
+    fn tool_info_from_rmcp_drops_provider_invalid_tool_names() {
+        let schema = || std::sync::Arc::new(serde_json::Map::new());
+        let dotted = rmcp::model::Tool::new("list.files", "dotted", schema());
+        assert!(tool_info_from_rmcp("srv", dotted).is_none());
+        // `mcp__srv__` + 55 chars = 65 > 64.
+        let long = rmcp::model::Tool::new("t".repeat(55), "long", schema());
+        assert!(tool_info_from_rmcp("srv", long).is_none());
+        let valid = rmcp::model::Tool::new("list_files", "fine", schema());
+        assert!(tool_info_from_rmcp("srv", valid).is_some());
+    }
+
+    // ---- assemble_turn_tools: the pure per-turn assembly rules ----
+
+    /// A discovered tool as `connect_and_list` would cache it.
+    fn discovered_tool(name: &str) -> ToolInfo {
+        ToolInfo {
+            name: name.to_string(),
+            description: Some(format!("does {name}")),
+            input_schema: serde_json::json!({ "type": "object" }),
+        }
+    }
+
+    /// One bad connector must cost only its own tools, never the turn.
+    #[test]
+    fn assemble_skips_an_errored_server_without_failing_the_turn() {
+        let fetched = vec![
+            (
+                stdio_cfg("bad", "Bad", "sh", Vec::new()),
+                Err("connection refused".to_string()),
+            ),
+            (
+                stdio_cfg("good", "Good", "sh", Vec::new()),
+                Ok((vec![discovered_tool("echo")], 0)),
+            ),
+        ];
+        let (tools, notes) = assemble_turn_tools(fetched);
+        assert_eq!(tools.len(), 1, "the healthy server's tools must survive");
+        assert_eq!(tools[0].name, "mcp__good__echo");
+        assert!(notes.is_empty(), "an errored server is skipped, not noted");
+    }
+
+    /// The default tool budget: an uncurated server over the 32-cap is trimmed
+    /// to the first 32 in server order, and the trim is NON-silent (one note).
+    #[test]
+    fn assemble_caps_an_uncurated_server_and_notes_the_trim() {
+        let discovered: Vec<ToolInfo> = (0..40)
+            .map(|i| discovered_tool(&format!("t{i}")))
+            .collect();
+        let fetched = vec![(stdio_cfg("big", "Big", "sh", Vec::new()), Ok((discovered, 0)))];
+        let (tools, notes) = assemble_turn_tools(fetched);
+        assert_eq!(tools.len(), 32);
+        assert_eq!(tools[0].name, "mcp__big__t0");
+        assert_eq!(tools[31].name, "mcp__big__t31");
+        assert_eq!(notes.len(), 1, "the trim must surface exactly one note");
+        assert!(notes[0].contains("\"Big\""), "note names the server: {}", notes[0]);
+        assert!(notes[0].contains("40") && notes[0].contains("32"));
+    }
+
+    /// Offered tools carry the model-facing `mcp__<id>__<name>` and a
+    /// `(via <label>)` description prefix (with or without a server description).
+    #[test]
+    fn assemble_applies_model_naming_and_via_label_descriptions() {
+        let mut undescribed = discovered_tool("bare");
+        undescribed.description = None;
+        let fetched = vec![(
+            stdio_cfg("github-2", "GitHub", "sh", Vec::new()),
+            Ok((vec![discovered_tool("create_issue"), undescribed], 0)),
+        )];
+        let (tools, _notes) = assemble_turn_tools(fetched);
+        assert_eq!(tools[0].name, "mcp__github-2__create_issue");
+        assert_eq!(tools[0].description, "(via GitHub) does create_issue");
+        assert_eq!(tools[1].description, "(via GitHub)");
+    }
+
+    /// Offered schemas are normalized (a non-object becomes a permissive object)
+    /// and bounded (a giant object is replaced) before reaching the model.
+    #[test]
+    fn assemble_normalizes_and_bounds_offered_schemas() {
+        let mut non_object = discovered_tool("a");
+        non_object.input_schema = serde_json::json!("not an object");
+        let mut giant = discovered_tool("b");
+        giant.input_schema =
+            serde_json::json!({ "type": "object", "description": "z".repeat(50_000) });
+        let fetched = vec![(
+            stdio_cfg("srv", "Srv", "sh", Vec::new()),
+            Ok((vec![non_object, giant], 0)),
+        )];
+        let (tools, _notes) = assemble_turn_tools(fetched);
+        assert!(tools[0].parameters_schema.is_object(), "non-object must normalize");
+        let bounded = serde_json::to_string(&tools[1].parameters_schema).expect("serializes");
+        assert!(bounded.len() <= 20_000, "giant schema must be bounded: {} chars", bounded.len());
+    }
+
+    /// Invalid-name drops recorded at discovery surface as one preamble note per
+    /// turn — non-silent, mirroring the 32-cap trim.
+    #[test]
+    fn assemble_notes_invalid_name_drops_from_discovery() {
+        let fetched = vec![(
+            stdio_cfg("srv", "Srv", "sh", Vec::new()),
+            Ok((vec![discovered_tool("ok")], 2)),
+        )];
+        let (tools, notes) = assemble_turn_tools(fetched);
+        assert_eq!(tools.len(), 1, "surviving tools are still offered");
+        assert_eq!(notes.len(), 1, "the drop must surface exactly one note");
+        assert!(notes[0].contains("\"Srv\"") && notes[0].contains('2'), "{}", notes[0]);
+    }
+
+    /// `reap_slots` (the pure core of `reconcile`) retains only enabled ids;
+    /// a reaped slot's child dies with its last ref.
+    #[test]
+    fn reap_slots_retains_only_enabled_ids() {
+        let keep_cfg = stdio_cfg("keep", "Keep", "sh", Vec::new());
+        let gone_cfg = stdio_cfg("gone", "Gone", "sh", Vec::new());
+        let mut slots = HashMap::new();
+        slots.insert("keep".to_string(), Arc::new(test_slot(&keep_cfg)));
+        slots.insert("gone".to_string(), Arc::new(test_slot(&gone_cfg)));
+        let keep: HashSet<String> = ["keep".to_string()].into();
+        reap_slots(&keep, &mut slots);
+        assert_eq!(slots.len(), 1);
+        assert!(slots.contains_key("keep"));
+    }
+
+    /// `slot_for` is the slot cache's whole policy: an unchanged config must
+    /// REUSE the slot (no needless redial mid-session); a connect-relevant edit
+    /// must REPLACE it (the old child dies on last ref, next use dials fresh).
+    #[tokio::test]
+    async fn slot_for_reuses_an_unchanged_config_and_replaces_an_edited_one() {
+        let inner = Inner::default();
+        let cfg = stdio_cfg("srv", "Srv", "sh", Vec::new());
+        let first = inner.slot_for(&cfg).await;
+        let second = inner.slot_for(&cfg).await;
+        assert!(Arc::ptr_eq(&first, &second), "same config must reuse the slot");
+
+        let mut edited = cfg.clone();
+        edited.args.push("--flag".to_string());
+        let third = inner.slot_for(&edited).await;
+        assert!(!Arc::ptr_eq(&second, &third), "an edited config must replace the slot");
+        let cached = Arc::clone(inner.slots.lock().await.get("srv").expect("slot present"));
+        assert!(Arc::ptr_eq(&cached, &third), "the map must hold the NEW slot");
+    }
+
+    /// The bounded second-failure arm of the redial policy: a server that fails
+    /// twice in a row (here: a command that cannot even spawn) must surface the
+    /// readable "failed twice" error, not retry forever.
+    #[tokio::test]
+    async fn a_connect_that_fails_twice_surfaces_the_failed_twice_error() {
+        let cfg = stdio_cfg(
+            "test-gone-mcp-server",
+            "Gone",
+            "/nonexistent/mnema-mcp-no-such-binary",
+            Vec::new(),
+        );
+        let slot = test_slot(&cfg);
+        let result = tokio::time::timeout(
+            Duration::from_secs(20),
+            call_with_redial(&slot, &cfg, "echo", &serde_json::json!({}), CALL_TOOL_BUDGET),
+        )
+        .await
+        .expect("a spawn failure must fail fast, not hang");
+        let error = result.expect_err("an unspawnable server must fail the call");
+        assert!(
+            error.contains("failed this tool call twice"),
+            "the redial's second failure must surface the bounded twice-failed arm: {error}"
         );
     }
 
