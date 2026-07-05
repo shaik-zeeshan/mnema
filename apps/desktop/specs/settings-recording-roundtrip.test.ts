@@ -61,6 +61,7 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   privacy: { excludedApps: [] },
   access: {
     askAiEnabled: true,
+    askAiWebFetchEnabled: false,
     askAiMaxToolCalls: ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
     askAiModel: "claude-haiku-4-5",
   },
@@ -68,6 +69,24 @@ const CANONICAL_SETTINGS: RecordingSettings = {
     enabled: true,
     providers: [{ id: "anthropic", kind: "anthropic", label: "", baseUrl: "" }],
     defaultModel: { provider: "anthropic", model: "claude-haiku-4-5" },
+    // A fully-specified connector so `toMcpServerWire`'s deep-copy of
+    // args/env/enabledTools is actually exercised (an empty list would leave a
+    // dropped field undetected). Every field is present, so the wire mapper's
+    // `?? default` fallbacks are all no-ops and the round-trip is identity.
+    mcpServers: [
+      {
+        id: "connector",
+        label: "Connector",
+        enabled: true,
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "some-mcp-server"],
+        env: [{ name: "MCP_ENV", value: "value" }],
+        url: null,
+        secretEnvName: "MCP_TOKEN",
+        enabledTools: ["search", "fetch"],
+      },
+    ],
   },
   userContext: {
     enabled: false,
@@ -161,10 +180,12 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftExcludedApps: [...s.privacy.excludedApps],
 
     draftAskAiEnabled: s.access.askAiEnabled,
+    draftAskAiWebFetchEnabled: s.access.askAiWebFetchEnabled,
     draftAskAiModel: s.access.askAiModel ?? "",
     effectiveAskAiMaxToolCalls: cap,
 
     draftAiEnabled: s.aiRuntime.enabled,
+    draftMcpServers: (s.aiRuntime.mcpServers ?? []).map((server) => ({ ...server })),
     draftAiProviders: s.aiRuntime.providers.map((p) => ({
       id: (p.id ?? "").trim() || p.kind,
       kind: p.kind,

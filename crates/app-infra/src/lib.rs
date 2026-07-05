@@ -14,6 +14,7 @@ mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
 mod lexical;
+mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
 pub mod retry_policy;
@@ -30,6 +31,9 @@ use sqlx::SqlitePool;
 
 pub use ai_provider_key_store::{
     delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key, store_ai_provider_key,
+};
+pub use mcp_server_secret_store::{
+    delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret, store_mcp_server_secret,
 };
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,

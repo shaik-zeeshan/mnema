@@ -509,6 +509,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
 
         let json = serde_json::to_value(&settings).expect("serialize");
@@ -538,6 +539,73 @@ mod tests {
         assert!(settings.enabled);
         assert!(settings.providers.is_empty());
         assert!(settings.default_model.is_none());
+    }
+
+    #[test]
+    fn ai_runtime_settings_round_trips_mcp_servers() {
+        // Both transports, curated (Some) + uncurated (None) tool lists must
+        // survive a serialize→deserialize round trip on the camelCase wire.
+        let settings = AiRuntimeSettings {
+            enabled: true,
+            providers: Vec::new(),
+            default_model: None,
+            mcp_servers: vec![
+                McpServerConfig {
+                    id: "github".to_string(),
+                    label: "GitHub".to_string(),
+                    enabled: true,
+                    transport: McpTransport::Stdio,
+                    command: Some("npx".to_string()),
+                    args: vec![
+                        "-y".to_string(),
+                        "@modelcontextprotocol/server-github".to_string(),
+                    ],
+                    env: vec![McpEnvVar {
+                        name: "GH_HOST".to_string(),
+                        value: "github.com".to_string(),
+                    }],
+                    url: None,
+                    secret_env_name: Some("GITHUB_TOKEN".to_string()),
+                    enabled_tools: Some(vec!["search_issues".to_string()]),
+                },
+                McpServerConfig {
+                    id: "linear".to_string(),
+                    label: "Linear".to_string(),
+                    enabled: false,
+                    transport: McpTransport::Http,
+                    command: None,
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    url: Some("https://mcp.linear.app/mcp".to_string()),
+                    secret_env_name: None,
+                    enabled_tools: None,
+                },
+            ],
+        };
+
+        let json = serde_json::to_value(&settings).expect("serialize");
+        assert_eq!(json["mcpServers"][0]["id"], "github");
+        assert_eq!(json["mcpServers"][0]["transport"], "stdio");
+        assert_eq!(json["mcpServers"][0]["secretEnvName"], "GITHUB_TOKEN");
+        assert_eq!(json["mcpServers"][0]["env"][0]["name"], "GH_HOST");
+        assert_eq!(json["mcpServers"][0]["enabledTools"][0], "search_issues");
+        assert_eq!(json["mcpServers"][1]["transport"], "http");
+        assert_eq!(json["mcpServers"][1]["url"], "https://mcp.linear.app/mcp");
+        // Uncurated (`None`) serializes as JSON null, not an empty list.
+        assert!(json["mcpServers"][1]["enabledTools"].is_null());
+
+        let round: AiRuntimeSettings =
+            serde_json::from_value(json).expect("deserialize round-trip");
+        assert_eq!(round, settings);
+    }
+
+    #[test]
+    fn ai_runtime_settings_without_mcp_servers_key_deserializes_to_empty_list() {
+        // A settings JSON that predates MCP connectors (no `mcpServers` key) must
+        // deserialize to an empty list, not fail.
+        let settings: AiRuntimeSettings =
+            serde_json::from_str(r#"{ "enabled": true, "providers": [] }"#).expect("deserialize");
+        assert!(settings.mcp_servers.is_empty());
     }
 
     #[test]

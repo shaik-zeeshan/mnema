@@ -19,11 +19,15 @@ import type {
   AiProviderConfig,
   AiRuntimeStatus,
   AiRuntimeTestResult,
+  McpServerConfig,
 } from "$lib/types";
 
 export interface AiRuntimeStoreDeps {
   // The current connected provider instances (page draft state).
   getProviders: () => AiProviderConfig[];
+  // The current MCP tool connectors (page draft state) — for secret presence
+  // refresh and the "still in the list" guard on a late save.
+  getMcpServers: () => McpServerConfig[];
   // Is this provider kind a cloud provider (cloud → has a keychain key)?
   isCloudProviderKind: (kind: string) => boolean;
   // Human label for a provider instance id (resolved against the draft list).
@@ -266,6 +270,120 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     }
   }
 
+  // ─── MCP connector secrets ──────────────────────────────────────────────────
+  // The single optional secret per MCP server, keyed by server instance id (the
+  // keychain account). MCP ids are unique slugs assigned once at creation and
+  // never reused, so this needs none of the same-kind re-add race handling the
+  // provider-key store above carries — a per-id in-flight guard + confirm-on-clear
+  // is enough.
+  let mcpSecretInputs = $state<Record<string, string>>({});
+  let mcpSecretSavedById = $state<Record<string, boolean>>({});
+  let mcpSecretSavingId = $state<string | null>(null);
+  let mcpSecretErrors = $state<Record<string, string>>({});
+  const mcpSecretInFlight = new Set<string>();
+
+  // Re-check which MCP connectors have a secret in the keychain (keyed by id).
+  async function refreshMcpServerSecretPresence() {
+    const ids = deps.getMcpServers().map((s) => s.id);
+    const probed: Record<string, boolean> = {};
+    for (const id of ids) {
+      try {
+        probed[id] = await invoke<boolean>("mcp_has_server_secret", { request: { id } });
+      } catch (error) {
+        mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+      }
+    }
+    mcpSecretSavedById = probed;
+  }
+
+  // Probe for a Node runtime on the user's login-shell PATH (local stdio
+  // presets spawn via npx). Resolves to the version string ("v22.11.0") or
+  // null when Node is missing.
+  function checkNode(): Promise<string | null> {
+    return invoke<string | null>("mcp_check_node");
+  }
+
+  function mcpServerStillPresent(id: string): boolean {
+    return deps.getMcpServers().some((s) => s.id === id);
+  }
+
+  async function saveMcpServerSecret(id: string) {
+    if (mcpSecretInFlight.has(id)) return;
+    const secret = (mcpSecretInputs[id] ?? "").trim();
+    if (!secret) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: "Enter a secret first." };
+      return;
+    }
+    // The server may have been removed between render and this click — bail
+    // before touching the keychain so a late save can't orphan a secret.
+    if (!mcpServerStillPresent(id)) return;
+    mcpSecretInFlight.add(id);
+    mcpSecretSavingId = id;
+    const { [id]: _saveErr, ...restErrors } = mcpSecretErrors;
+    mcpSecretErrors = restErrors;
+    try {
+      await invoke("mcp_set_server_secret", { request: { id, secret } });
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: "" };
+      await refreshMcpServerSecretPresence();
+    } catch (error) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+    } finally {
+      mcpSecretInFlight.delete(id);
+      mcpSecretSavingId = null;
+    }
+  }
+
+  async function clearMcpServerSecret(id: string) {
+    if (mcpSecretInFlight.has(id)) return;
+    // Deleting the keychain secret has no undo — gate on an explicit confirm,
+    // matching the provider-key flow. Arm the latch before the awaited dialog.
+    mcpSecretInFlight.add(id);
+    try {
+      const confirmed = await confirm(
+        `Deleting the saved secret for this connector removes it from the macOS keychain right away. The connector will stop authenticating until you enter a new secret.`,
+        {
+          title: "Delete this secret?",
+          kind: "warning",
+          okLabel: "Delete Secret",
+          cancelLabel: "Keep Secret",
+        },
+      );
+      if (!confirmed) return;
+    } catch {
+      return;
+    } finally {
+      mcpSecretInFlight.delete(id);
+    }
+    if (mcpSecretInFlight.has(id)) return;
+    mcpSecretInFlight.add(id);
+    mcpSecretSavingId = id;
+    const { [id]: _clearErr, ...restErrors } = mcpSecretErrors;
+    mcpSecretErrors = restErrors;
+    try {
+      await invoke("mcp_clear_server_secret", { request: { id } });
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: "" };
+      await refreshMcpServerSecretPresence();
+    } catch (error) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+    } finally {
+      mcpSecretInFlight.delete(id);
+      mcpSecretSavingId = null;
+    }
+  }
+
+  // Clear the keychain secret for an MCP connector the user just removed. Best
+  // effort: a failure only leaves an orphaned secret (recorded under an id no
+  // longer rendered), never blocks the removal.
+  async function clearSecretForRemovedMcpServer(id: string): Promise<void> {
+    try {
+      await invoke("mcp_clear_server_secret", { request: { id } });
+    } catch {
+      // The secret is orphaned in the keychain; nothing renders this id anymore.
+    }
+    const { [id]: _cleared, ...rest } = mcpSecretSavedById;
+    mcpSecretSavedById = rest;
+  }
+
   // Clear the last test-connection banner (result + error). The banner reports
   // the provider/model that was tested; after the user changes the default model
   // or removes the tested provider it no longer reflects the live config, so the
@@ -312,6 +430,19 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     clearKeyForRemovedProvider,
     resetTestResult,
     runAiRuntimeTestConnection,
+    // MCP connector secrets.
+    get mcpSecretInputs() { return mcpSecretInputs; },
+    setMcpSecretInput(id: string, value: string) {
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: value };
+    },
+    get mcpSecretSavedById() { return mcpSecretSavedById; },
+    get mcpSecretSavingId() { return mcpSecretSavingId; },
+    get mcpSecretErrors() { return mcpSecretErrors; },
+    refreshMcpServerSecretPresence,
+    saveMcpServerSecret,
+    clearMcpServerSecret,
+    clearSecretForRemovedMcpServer,
+    checkNode,
   };
 }
 

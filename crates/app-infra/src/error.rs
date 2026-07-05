@@ -87,6 +87,8 @@ pub enum AppInfraError {
     CaptureIndexEncryption(String),
     #[error("ai provider key store error: {0}")]
     AiProviderKeyStore(String),
+    #[error("mcp server secret store error: {0}")]
+    McpServerSecretStore(String),
     #[error("frame batch {batch_id} is not ready because OCR is still pending")]
     FrameBatchOcrPending { batch_id: i64 },
     #[error("frame batch {batch_id} has no frames to finalize")]

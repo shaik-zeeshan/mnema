@@ -292,6 +292,9 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     },
     access: {
       askAiEnabled: draft.draftAskAiEnabled,
+      // Round-trip the opt-in web-fetch toggle (set on the Settings page); this
+      // full save is authoritative, so omitting it would reset it to off.
+      askAiWebFetchEnabled: base.access?.askAiWebFetchEnabled ?? false,
       askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
       // `access` is sent whole and is authoritative, so we must round-trip the
       // Ask AI model selection (chosen on the Settings page); omitting it would
@@ -317,6 +320,9 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       defaultModel: draft.ai.draftAiDefaultModel
         ? { provider: draft.ai.draftAiDefaultModel.provider, model: draft.ai.draftAiDefaultModel.model }
         : null,
+      // Onboarding doesn't configure MCP connectors — preserve any the returning
+      // user already has (the Settings page owns this list).
+      mcpServers: base.aiRuntime?.mcpServers ?? [],
     },
   };
 }

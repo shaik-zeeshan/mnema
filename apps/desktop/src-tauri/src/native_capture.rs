@@ -3046,11 +3046,23 @@ pub fn update_ai_runtime_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
+    let response = update_recording_settings_domain(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::AiRuntime(request),
-    )
+    )?;
+    // MCP teardown (ADR 0048): reconcile the connection cache against the
+    // just-saved settings so removed/disabled connectors' handles — and their
+    // child processes — are dropped. Fire-and-forget: teardown never blocks the
+    // save, and an EDITED connector is reaped lazily on next use.
+    if let Some(manager) = app_handle.try_state::<crate::ask_ai::mcp::McpManager>() {
+        let manager = (*manager).clone();
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            manager.reconcile(&app_handle).await;
+        });
+    }
+    Ok(response)
 }
 
 #[tauri::command]

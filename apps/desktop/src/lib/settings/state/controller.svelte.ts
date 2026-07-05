@@ -61,6 +61,8 @@ import {
   aiProviderInstanceLabel,
   newAiProviderId,
 } from "./ai-providers";
+import { createMcpConnectorActions } from "./controller-mcp";
+import type { McpPreset } from "./mcp-presets";
 import type {
   CaptureSupport,
   OcrProvider,
@@ -69,6 +71,7 @@ import type {
   AiProviderKind,
   AiProviderConfig,
   AiEngineRef,
+  McpServerConfig,
   BrowserUrlMode,
   SemanticSearchModelStatus,
 } from "$lib/types";
@@ -100,6 +103,7 @@ export class SettingsController {
     setDeveloperOptionsEnabled: (value) => setDeveloperOptionsEnabled(value),
     loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
+    refreshMcpServerSecretPresence: () => void this.aiRuntime.refreshMcpServerSecretPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
     loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
@@ -117,6 +121,7 @@ export class SettingsController {
   about = createAboutStore();
   aiRuntime = createAiRuntimeStore({
     getProviders: () => this.rec.draftAiProviders,
+    getMcpServers: () => this.rec.draftMcpServers,
     isCloudProviderKind: (kind) => this.isCloudAiProviderKind(kind),
     labelForProvider: (id) => this.aiProviderLabelById(id),
     loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
@@ -317,6 +322,29 @@ export class SettingsController {
         this.aiProviderRemoving = false;
       }
     }
+  }
+
+  // ─── MCP connectors ─────────────────────────────────────────────────────────
+  // Actions live in controller-mcp.ts (800-line cap); thin delegates here keep
+  // call sites on the controller. The blank-draft addMcpServer died with the
+  // inline form — the picker (preset / Custom) is the only add path now.
+  mcp = createMcpConnectorActions({
+    rec: this.rec,
+    aiRuntime: this.aiRuntime,
+    saveAiRuntime: () => this.saveRecordingDomain("ai_runtime"),
+  });
+
+  addMcpServerDraft(draft: McpServerConfig): string {
+    return this.mcp.addMcpServerDraft(draft);
+  }
+  addMcpServerFromPreset(preset: McpPreset, overrides?: Partial<McpServerConfig>): string {
+    return this.mcp.addMcpServerFromPreset(preset, overrides);
+  }
+  removeMcpServer(id: string, opts?: { confirm?: boolean }): Promise<void> {
+    return this.mcp.removeMcpServer(id, opts);
+  }
+  flushAiRuntimeSave(): Promise<void> {
+    return this.mcp.flushAiRuntimeSave();
   }
 
   // ─── Model-pool picker ──────────────────────────────────────────────────────

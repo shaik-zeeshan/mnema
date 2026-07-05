@@ -1202,6 +1202,10 @@ fn apply_domain_patch_to_settings(
                 settings.access.ask_ai_enabled = value;
                 touched = true;
             }
+            if let Some(value) = request.ask_ai_web_fetch_enabled {
+                settings.access.ask_ai_web_fetch_enabled = value;
+                touched = true;
+            }
             if let Some(value) = request.ask_ai_max_tool_calls {
                 settings.access.ask_ai_max_tool_calls = value;
                 touched = true;
@@ -1225,6 +1229,11 @@ fn apply_domain_patch_to_settings(
                 // Replacement provider list (wholesale, like additionalEngines
                 // before it); normalization (trim/dedupe) happens in validation.
                 settings.ai_runtime.providers = value;
+                touched = true;
+            }
+            if let Some(value) = request.mcp_servers {
+                // Replacement MCP connector list (wholesale, like providers).
+                settings.ai_runtime.mcp_servers = value;
                 touched = true;
             }
             if let Some(value) = request.default_model {
@@ -1511,6 +1520,7 @@ mod tests {
     #[test]
     fn default_recording_settings_disable_ask_ai_access() {
         assert!(!default_recording_settings().access.ask_ai_enabled);
+        assert!(!default_recording_settings().access.ask_ai_web_fetch_enabled);
     }
 
     #[test]
@@ -1839,12 +1849,14 @@ mod tests {
             RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
                 ask_ai_enabled: Some(true),
                 ask_ai_max_tool_calls: Some(0),
+                ask_ai_web_fetch_enabled: Some(true),
                 ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
             }),
         )
         .expect("access patch should validate");
 
         assert!(updated.access.ask_ai_enabled);
+        assert!(updated.access.ask_ai_web_fetch_enabled);
         assert_eq!(updated.access.ask_ai_max_tool_calls, 0);
         assert_eq!(
             updated.access.ask_ai_model.as_deref(),
@@ -1871,6 +1883,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1934,6 +1947,7 @@ mod tests {
                 ]),
                 // Explicit `null` over the wire clears the default model.
                 default_model: Some(None),
+                mcp_servers: None,
             }),
         )
         .expect("ai runtime patch should validate");
@@ -1957,6 +1971,82 @@ mod tests {
             ]
         );
         assert_eq!(updated.ai_runtime.default_model, None);
+    }
+
+    #[test]
+    fn ai_runtime_patch_persists_mcp_servers_on_some() {
+        // The MCP connector list is what reconcile/warm/turn all read. The other
+        // ai_runtime patch tests pass `mcp_servers: None`, so the wholesale-replace
+        // branch (native_capture_settings.rs) never runs — a regression that
+        // dropped the write would go unnoticed. Exercise the `Some` branch.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+
+        let server = capture_types::McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Stdio,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: Some(vec!["search".to_string()]),
+        };
+
+        let updated = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: None,
+                providers: None,
+                default_model: None,
+                mcp_servers: Some(vec![server.clone()]),
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert_eq!(updated.ai_runtime.mcp_servers, vec![server]);
+    }
+
+    #[test]
+    fn ai_runtime_patch_mcp_servers_none_leaves_existing_list_unchanged() {
+        // `mcp_servers: None` means "leave unchanged", not "clear". This exact
+        // partial-update shape is reachable via `wipe_user_context`, whose
+        // `enabled: Some(false)` patch must not drop configured connectors.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+        base.ai_runtime.mcp_servers = vec![capture_types::McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Stdio,
+            command: Some("npx".to_string()),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: Some(vec!["search".to_string()]),
+        }];
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert!(!updated.ai_runtime.enabled);
+        assert_eq!(
+            updated.ai_runtime.mcp_servers,
+            base.ai_runtime.mcp_servers,
+            "mcp_servers: None must leave the existing connector list unchanged"
+        );
     }
 
     #[test]

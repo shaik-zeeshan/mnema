@@ -58,6 +58,29 @@
   </SettingRow>
 
   <SettingRow
+    label="Fetch pages you visited"
+    description="Lets Ask AI re-request a page you visited (its address minus any secrets) over the network to check its current state. Off by default."
+    full
+  >
+    {#snippet aside()}
+      <Switch
+        bind:checked={rec.draftAskAiWebFetchEnabled}
+        disabled={!rec.draftAskAiEnabled}
+        ariaLabel="Fetch pages you visited"
+      />
+    {/snippet}
+    {#snippet control()}
+      <p class="group-hint">
+        When answering needs a page's current state — a PR's status, a live
+        article — Ask AI can re-fetch a page you actually visited, keyed to the
+        capture (it never types a URL of its own). The address is scrubbed of
+        tokens and secrets before it leaves this machine, and the response text
+        is redacted before any model sees it.
+      </p>
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow
     label="Limit tool calls per question"
     description="Cap how many follow-up searches Ask AI can run for one question. Off means no cap."
     full

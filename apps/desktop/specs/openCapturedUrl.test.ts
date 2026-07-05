@@ -15,7 +15,14 @@ mock.module("@tauri-apps/api/core", () => ({
   // transitively import convertFileSrc (frame-preview), so it must exist here.
   convertFileSrc: (p: string) => p,
 }));
-mock.module("@tauri-apps/plugin-dialog", () => ({ message }));
+// Same export-name-set rule as convertFileSrc above: controller-mcp.test.ts
+// (later in the run) imports `confirm`, so it must exist in this first-
+// registered dialog mock; that file re-mocks the implementations it asserts on.
+mock.module("@tauri-apps/plugin-dialog", () => ({
+  message,
+  confirm: async () => true,
+  ask: async () => false,
+}));
 
 const { openCapturedUrl } = await import("../src/lib/open-captured-url");
 

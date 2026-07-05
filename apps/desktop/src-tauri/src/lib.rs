@@ -397,6 +397,9 @@ pub fn run() {
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
+        // MCP tool connectors (Workstream C, ADR 0048): persistent connection
+        // manager. Lazy — nothing connects here at launch; it dials on first use.
+        .manage(ask_ai::mcp::McpManager::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
                 return;
@@ -475,6 +478,9 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
+            ask_ai::mcp::manager::mcp_warm_connectors,
+            ask_ai::mcp::manager::mcp_list_server_tools,
+            ask_ai::mcp::node_check::mcp_check_node,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
@@ -587,6 +593,9 @@ pub fn run() {
             ai_runtime::ai_runtime_set_provider_key,
             ai_runtime::ai_runtime_clear_provider_key,
             ai_runtime::ai_runtime_has_provider_key,
+            ai_runtime::mcp_set_server_secret,
+            ai_runtime::mcp_clear_server_secret,
+            ai_runtime::mcp_has_server_secret,
             transcription_deepgram::transcription_set_deepgram_key,
             transcription_deepgram::transcription_has_deepgram_key,
             transcription_deepgram::transcription_clear_deepgram_key,

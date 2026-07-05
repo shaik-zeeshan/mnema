@@ -195,16 +195,69 @@ pub(crate) fn format_tool_activity(
                 app_icon_path: None,
             }
         }
-        other => ToolActivityEntry {
-            kind: "other".to_string(),
-            label: if other.is_empty() {
-                "Working".to_string()
-            } else {
-                format!("Running {other}")
-            },
+        // App-control tools (Workstream A) — fixed labels, no app scope.
+        "capture_status" => ToolActivityEntry {
+            kind: "app_control".to_string(),
+            label: "Checking capture status".to_string(),
             app: None,
             app_icon_path: None,
         },
+        "start_capture" => ToolActivityEntry {
+            kind: "app_control".to_string(),
+            label: "Starting capture".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
+        "stop_capture" => ToolActivityEntry {
+            kind: "app_control".to_string(),
+            label: "Stopping capture".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
+        "pause_capture" => ToolActivityEntry {
+            kind: "app_control".to_string(),
+            label: "Pausing capture".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
+        "resume_capture" => ToolActivityEntry {
+            kind: "app_control".to_string(),
+            label: "Resuming capture".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
+        // fetch_url (Workstream B) — fixed label, no app scope.
+        "fetch_url" => ToolActivityEntry {
+            kind: "fetch_url".to_string(),
+            label: "Fetching a page you visited".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
+        other => ToolActivityEntry {
+            kind: "other".to_string(),
+            label: fallback_tool_label(other),
+            app: None,
+            app_icon_path: None,
+        },
+    }
+}
+
+/// Human "Running …" label for a tool with no bespoke case. MCP connector tools
+/// arrive model-namespaced as `mcp__<server>__<tool>`; strip that wire prefix and
+/// de-snake the tool so the activity line reads "Running pull request read", not
+/// "Running mcp__connector__pull_request_read".
+fn fallback_tool_label(tool: &str) -> String {
+    if tool.is_empty() {
+        return "Working".to_string();
+    }
+    match super::mcp::parse_mcp_tool_name(tool) {
+        // `_`/`-` → spaces, whitespace collapsed (a tool's own `__` survives the
+        // parser as one segment, so it de-snakes cleanly here).
+        Some((_server, name)) => {
+            let words = name.replace(['_', '-'], " ");
+            format!("Running {}", words.split_whitespace().collect::<Vec<_>>().join(" "))
+        }
+        None => format!("Running {tool}"),
     }
 }
 
@@ -504,11 +557,64 @@ mod tests {
     }
 
     #[test]
+    fn app_control_tools_have_fixed_labels_and_no_app_scope() {
+        let stop = format_tool_activity("stop_capture", &json!({}), NOW, NO_OFFSET);
+        assert_eq!(stop.kind, "app_control");
+        assert_eq!(stop.label, "Stopping capture");
+        assert_eq!(stop.app, None);
+
+        let status = format_tool_activity("capture_status", &json!({}), NOW, NO_OFFSET);
+        assert_eq!(status.kind, "app_control");
+        assert_eq!(status.label, "Checking capture status");
+
+        assert_eq!(
+            format_tool_activity("start_capture", &json!({}), NOW, NO_OFFSET).label,
+            "Starting capture"
+        );
+        assert_eq!(
+            format_tool_activity("pause_capture", &json!({}), NOW, NO_OFFSET).label,
+            "Pausing capture"
+        );
+        assert_eq!(
+            format_tool_activity("resume_capture", &json!({}), NOW, NO_OFFSET).label,
+            "Resuming capture"
+        );
+    }
+
+    #[test]
+    fn fetch_url_has_fixed_label_and_no_app_scope() {
+        let entry = format_tool_activity("fetch_url", &json!({ "opaqueId": "op-1" }), NOW, NO_OFFSET);
+        assert_eq!(entry.kind, "fetch_url");
+        assert_eq!(entry.label, "Fetching a page you visited");
+        assert_eq!(entry.app, None);
+        assert_eq!(entry.app_icon_path, None);
+    }
+
+    #[test]
     fn unknown_tool_runs_named() {
         let entry = format_tool_activity("foo", &json!({}), NOW, NO_OFFSET);
         assert_eq!(entry.kind, "other");
         assert_eq!(entry.label, "Running foo");
         assert_eq!(entry.app, None);
+    }
+
+    #[test]
+    fn mcp_tool_name_is_humanized_not_shown_raw() {
+        let entry =
+            format_tool_activity("mcp__connector__pull_request_read", &json!({}), NOW, NO_OFFSET);
+        assert_eq!(entry.kind, "other");
+        assert_eq!(entry.label, "Running pull request read");
+
+        // A tool name that itself contains `__` de-snakes without doubling spaces.
+        assert_eq!(
+            format_tool_activity("mcp__srv__list__things", &json!({}), NOW, NO_OFFSET).label,
+            "Running list things"
+        );
+        // Malformed mcp-ish names (bare prefix) fall through to the raw name.
+        assert_eq!(
+            format_tool_activity("mcp__github", &json!({}), NOW, NO_OFFSET).label,
+            "Running mcp__github"
+        );
     }
 
     #[test]
