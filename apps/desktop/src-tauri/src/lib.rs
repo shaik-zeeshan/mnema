@@ -480,6 +480,7 @@ pub fn run() {
             ask_ai::ask_ai_snapshot,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
+            ask_ai::mcp::node_check::mcp_check_node,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,

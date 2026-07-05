@@ -12,6 +12,7 @@
 //! broker tools — the engine never learns what the tools are.
 
 pub(crate) mod manager;
+pub(crate) mod node_check;
 mod transport;
 
 pub(crate) use manager::McpManager;

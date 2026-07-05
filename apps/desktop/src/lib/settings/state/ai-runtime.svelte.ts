@@ -296,6 +296,13 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     mcpSecretSavedById = probed;
   }
 
+  // Probe for a Node runtime on the user's login-shell PATH (local stdio
+  // presets spawn via npx). Resolves to the version string ("v22.11.0") or
+  // null when Node is missing.
+  function checkNode(): Promise<string | null> {
+    return invoke<string | null>("mcp_check_node");
+  }
+
   function mcpServerStillPresent(id: string): boolean {
     return deps.getMcpServers().some((s) => s.id === id);
   }
@@ -435,6 +442,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     saveMcpServerSecret,
     clearMcpServerSecret,
     clearSecretForRemovedMcpServer,
+    checkNode,
   };
 }
 

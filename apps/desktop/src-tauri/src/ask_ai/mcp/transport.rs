@@ -115,7 +115,7 @@ async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<
 /// treats PATH as a path variable and joins it with colons in quoted expansion.
 /// Any failure (no shell, bad exit, empty output) yields None → child inherits
 /// the app's PATH unchanged, i.e. the pre-fix behavior.
-fn login_shell_path() -> Option<&'static str> {
+pub(crate) fn login_shell_path() -> Option<&'static str> {
     static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     PATH.get_or_init(|| {
         let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
