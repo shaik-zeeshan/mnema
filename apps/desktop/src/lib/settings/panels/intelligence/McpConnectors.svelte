@@ -1,14 +1,12 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import Switch from "$lib/components/Switch.svelte";
-  import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import McpToolListModal from "./McpToolListModal.svelte";
+  import McpConnectorPicker from "./McpConnectorPicker.svelte";
   import { activeToolCount } from "$lib/settings/state/mcp-tool-curation";
   import IconCheck from "~icons/lucide/check";
-  import IconTrash from "~icons/lucide/trash-2";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -16,7 +14,7 @@
 
   // Tool-list modal: the id of the connector being curated (null = closed), and
   // discovered tool counts keyed by id (populated on a successful list) so the
-  // per-server caption can show "N tools · M active" once known.
+  // per-row caption can show "N tools · M active" once known.
   let toolModalServerId = $state<string | null>(null);
   let toolCounts = $state<Record<string, number>>({});
   const toolModalServer = $derived(
@@ -32,21 +30,46 @@
     if (server) server.enabledTools = enabledTools;
   };
 
-  // Store-read aliases (keychain secret state, keyed by server id).
-  const mcpSecretInputs = $derived(aiRuntime.mcpSecretInputs);
   const mcpSecretSavedById = $derived(aiRuntime.mcpSecretSavedById);
-  const mcpSecretSavingId = $derived(aiRuntime.mcpSecretSavingId);
-  const mcpSecretErrors = $derived(aiRuntime.mcpSecretErrors);
 
-  const addMcpServer = () => c.addMcpServer();
-  const removeMcpServer = (id: string) => void c.removeMcpServer(id);
-  const saveMcpServerSecret = (id: string) => aiRuntime.saveMcpServerSecret(id);
-  const clearMcpServerSecret = (id: string) => aiRuntime.clearMcpServerSecret(id);
+  // Node probe for stdio rows: one probe per settings visit, cached here.
+  // undefined = not probed (or still in flight), string = found version,
+  // null = Node missing → warn badge on every stdio row.
+  let nodeVersion = $state<string | null | undefined>(undefined);
+  if (rec.draftMcpServers.some((s) => s.transport === "stdio")) {
+    void aiRuntime.checkNode().then((v) => {
+      nodeVersion = v;
+    });
+  }
 
-  const TRANSPORT_OPTIONS = [
-    { value: "stdio", label: "stdio (local process)" },
-    { value: "http", label: "HTTP (remote)" },
-  ];
+  // Picker modal: add mode (editId null) or edit mode for one connector.
+  let pickerOpen = $state(false);
+  let pickerEditId = $state<string | null>(null);
+  // One-shot flash for a just-added row (mockup row-flash). Plain local state,
+  // never cached on the draft objects; cleared on animationend.
+  let flashId = $state<string | null>(null);
+
+  const openPicker = () => {
+    pickerEditId = null;
+    pickerOpen = true;
+  };
+  const openConfigure = (id: string) => {
+    pickerEditId = id;
+    pickerOpen = true;
+  };
+
+  const onPickerAdded = (id: string) => {
+    flashId = id;
+    // First stdio connector may have been added via the picker after this
+    // panel's mount-time probe was skipped — probe now so the warn badge can
+    // show when Node is missing. (mcp_check_node is a cheap invoke; the
+    // picker's own probe result is component-local.)
+    if (nodeVersion === undefined && rec.draftMcpServers.some((s) => s.transport === "stdio")) {
+      void aiRuntime.checkNode().then((v) => {
+        nodeVersion = v;
+      });
+    }
+  };
 </script>
 
 <SettingGroup
@@ -57,222 +80,56 @@
     {#snippet control()}
       <div class="mcp-stack">
         {#if rec.draftMcpServers.length === 0}
-          <p class="group-hint">No connectors yet. Add one below, fill in how to reach it, then enable it.</p>
+          <p class="group-hint">No connectors yet. Add one below, then enable it.</p>
         {:else}
           <ul class="mcp-list">
             {#each rec.draftMcpServers as server (server.id)}
-              <li class="mcp-row">
-                <div class="mcp-row__head">
+              <li
+                class="mcp-row"
+                class:mcp-row--new={flashId === server.id}
+                onanimationend={(e) => {
+                  // Child animations (saved-badge-in) bubble too — only the
+                  // row's own flash ending should clear the one-shot state.
+                  if (e.target === e.currentTarget && flashId === server.id) flashId = null;
+                }}
+              >
+                <div class="mcp-row__main">
                   <span class="mcp-row__name">{server.label.trim() || server.id}</span>
                   <span class="mcp-row__tag">{server.transport}</span>
                   {#if mcpSecretSavedById[server.id]}
                     <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span>
                   {/if}
-                  <div class="mcp-row__head-actions">
-                    <Switch
-                      bind:checked={server.enabled}
-                      ariaLabel="Enable {server.label.trim() || server.id}"
-                    />
-                    <button
-                      class="btn btn--danger btn--sm"
-                      type="button"
-                      onclick={() => removeMcpServer(server.id)}
-                    >
-                      <IconTrash aria-hidden="true" />
-                      Remove
-                    </button>
-                  </div>
-                </div>
-
-                <label class="field-label" for="mcp-label-{server.id}">Name</label>
-                <input
-                  id="mcp-label-{server.id}"
-                  class="text-input"
-                  autocomplete="off"
-                  placeholder="e.g. GitHub"
-                  bind:value={server.label}
-                />
-
-                <span class="field-label">Transport</span>
-                <Segmented
-                  bind:value={server.transport}
-                  ariaLabel="Transport for {server.label.trim() || server.id}"
-                  options={TRANSPORT_OPTIONS}
-                />
-
-                {#if server.transport === "stdio"}
-                  <label class="field-label" for="mcp-command-{server.id}">Command</label>
-                  <input
-                    id="mcp-command-{server.id}"
-                    class="text-input"
-                    autocomplete="off"
-                    placeholder="npx"
-                    bind:value={
-                      () => server.command ?? "",
-                      (v) => { server.command = v; }
-                    }
-                  />
-
-                  <span class="field-label">Arguments</span>
-                  {#each server.args as _, i (i)}
-                    <div class="mcp-inline-row">
-                      <input
-                        class="text-input"
-                        autocomplete="off"
-                        placeholder="argument"
-                        aria-label="Argument {i + 1}"
-                        bind:value={server.args[i]}
-                      />
-                      <button
-                        class="btn btn--ghost btn--sm"
-                        type="button"
-                        aria-label="Remove argument {i + 1}"
-                        onclick={() => { server.args = server.args.filter((_, idx) => idx !== i); }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  {/each}
-                  <div class="row-actions">
-                    <button
-                      class="btn btn--ghost btn--sm"
-                      type="button"
-                      onclick={() => { server.args = [...server.args, ""]; }}
-                    >
-                      + Argument
-                    </button>
-                  </div>
-
-                  <span class="field-label">Environment variables</span>
-                  <p class="group-hint">Non-secret values only. The one secret below is delivered separately via the keychain.</p>
-                  {#each server.env as _, i (i)}
-                    <div class="mcp-inline-row">
-                      <input
-                        class="text-input"
-                        autocomplete="off"
-                        placeholder="NAME"
-                        aria-label="Env var {i + 1} name"
-                        bind:value={server.env[i].name}
-                      />
-                      <input
-                        class="text-input"
-                        autocomplete="off"
-                        placeholder="value"
-                        aria-label="Env var {i + 1} value"
-                        bind:value={server.env[i].value}
-                      />
-                      <button
-                        class="btn btn--ghost btn--sm"
-                        type="button"
-                        aria-label="Remove env var {i + 1}"
-                        onclick={() => { server.env = server.env.filter((_, idx) => idx !== i); }}
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  {/each}
-                  <div class="row-actions">
-                    <button
-                      class="btn btn--ghost btn--sm"
-                      type="button"
-                      onclick={() => { server.env = [...server.env, { name: "", value: "" }]; }}
-                    >
-                      + Variable
-                    </button>
-                  </div>
-
-                  <label class="field-label" for="mcp-secret-env-{server.id}">Secret delivered as env var</label>
-                  <input
-                    id="mcp-secret-env-{server.id}"
-                    class="text-input"
-                    autocomplete="off"
-                    placeholder="e.g. GITHUB_TOKEN"
-                    bind:value={
-                      () => server.secretEnvName ?? "",
-                      (v) => { server.secretEnvName = v; }
-                    }
-                  />
-                  <p class="group-hint">The keychain secret below is injected into the child process under this env var name.</p>
-                {:else}
-                  <label class="field-label" for="mcp-url-{server.id}">URL</label>
-                  <input
-                    id="mcp-url-{server.id}"
-                    class="text-input"
-                    class:text-input--empty={(server.url ?? "").trim().length === 0}
-                    autocomplete="off"
-                    placeholder="https://mcp.example.com/mcp"
-                    aria-invalid={(server.url ?? "").trim().length === 0}
-                    bind:value={
-                      () => server.url ?? "",
-                      (v) => { server.url = v; }
-                    }
-                  />
-                  {#if (server.url ?? "").trim().length === 0}
-                    <p class="group-hint group-hint--warn">An HTTP connector needs a URL.</p>
+                  {#if server.transport === "stdio" && nodeVersion === null}
+                    <span class="badge badge--warn badge--sm">needs Node — install from nodejs.org</span>
                   {/if}
-                  <p class="group-hint">The keychain secret below is sent as an <code>Authorization: Bearer</code> header.</p>
-                {/if}
-
-                <label class="field-label" for="mcp-secret-{server.id}">Secret</label>
-                <input
-                  id="mcp-secret-{server.id}"
-                  class="text-input"
-                  class:text-input--error={!!mcpSecretErrors[server.id]}
-                  type="password"
-                  autocomplete="off"
-                  placeholder={mcpSecretSavedById[server.id] ? "A secret is saved — enter a new one to replace it" : "Optional bearer token / secret"}
-                  aria-invalid={!!mcpSecretErrors[server.id]}
-                  aria-describedby={mcpSecretErrors[server.id] ? `mcp-secret-error-${server.id}` : undefined}
-                  disabled={mcpSecretSavingId === server.id}
-                  bind:value={
-                    () => mcpSecretInputs[server.id] ?? "",
-                    (v) => { aiRuntime.setMcpSecretInput(server.id, v); }
-                  }
-                />
-                <div class="row-actions">
                   <button
-                    class="btn btn--ghost btn--sm"
-                    type="button"
-                    disabled={mcpSecretSavingId !== null || (mcpSecretInputs[server.id] ?? "").trim().length === 0}
-                    aria-busy={mcpSecretSavingId === server.id}
-                    onclick={() => saveMcpServerSecret(server.id)}
-                  >
-                    {#if mcpSecretSavingId === server.id}<ButtonSpinner />Saving{:else}Save secret{/if}
-                  </button>
-                  <button
-                    class="btn btn--ghost btn--sm"
-                    type="button"
-                    disabled={mcpSecretSavingId !== null || !mcpSecretSavedById[server.id]}
-                    onclick={() => clearMcpServerSecret(server.id)}
-                  >
-                    Clear
-                  </button>
-                </div>
-                {#if mcpSecretErrors[server.id]}
-                  <p class="error-text" id="mcp-secret-error-{server.id}" role="alert">{mcpSecretErrors[server.id]}</p>
-                {:else if (mcpSecretInputs[server.id] ?? "").trim().length > 0 && mcpSecretSavingId !== server.id}
-                  <p class="group-hint group-hint--warn">Unsaved secret — click <strong>Save secret</strong> to store it in the keychain.</p>
-                {/if}
-
-                <span class="field-label">Tools</span>
-                <div class="mcp-tools-row">
-                  <button
-                    class="btn btn--ghost btn--sm"
+                    class="mcp-row__count"
                     type="button"
                     disabled={!server.enabled}
+                    title={server.enabled ? "See and curate this connector's tools" : "Enable this connector to list its tools."}
                     onclick={() => { toolModalServerId = server.id; }}
                   >
-                    See tool list
+                    {#if toolCounts[server.id] !== undefined}
+                      {toolCounts[server.id]} tools · {activeToolCount(toolCounts[server.id], server.enabledTools)} active
+                    {:else if server.enabledTools}
+                      {server.enabledTools.length} active
+                    {:else}
+                      see tools
+                    {/if}
                   </button>
-                  {#if !server.enabled}
-                    <span class="group-hint">Enable this connector to list its tools.</span>
-                  {:else if toolCounts[server.id] !== undefined}
-                    <span class="mcp-tools-row__count">{toolCounts[server.id]} tools · {activeToolCount(toolCounts[server.id], server.enabledTools)} active</span>
-                  {:else if server.enabledTools}
-                    <span class="mcp-tools-row__count">{server.enabledTools.length} active — open the list to load all tools</span>
-                  {:else}
-                    <span class="group-hint">Not connected yet — open the list to see its tools.</span>
-                  {/if}
+                </div>
+                <div class="mcp-row__meta">
+                  <button
+                    class="btn btn--ghost btn--sm"
+                    type="button"
+                    onclick={() => openConfigure(server.id)}
+                  >
+                    Configure
+                  </button>
+                  <Switch
+                    bind:checked={server.enabled}
+                    ariaLabel="Enable {server.label.trim() || server.id}"
+                  />
                 </div>
               </li>
             {/each}
@@ -280,7 +137,7 @@
         {/if}
 
         <div class="row-actions">
-          <button class="btn btn--ghost btn--sm" type="button" onclick={addMcpServer}>
+          <button class="btn btn--ghost btn--sm" type="button" onclick={openPicker}>
             + Add connector
           </button>
         </div>
@@ -298,6 +155,14 @@
   onToolsDiscovered={(id, count) => { toolCounts = { ...toolCounts, [id]: count }; }}
 />
 
+<McpConnectorPicker
+  open={pickerOpen}
+  editId={pickerEditId}
+  onClose={() => { pickerOpen = false; pickerEditId = null; }}
+  onAdded={onPickerAdded}
+  onToolsDiscovered={(id, count) => { toolCounts = { ...toolCounts, [id]: count }; }}
+/>
+
 <style>
   .mcp-stack {
     display: flex;
@@ -308,52 +173,79 @@
   .mcp-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
     margin: 0;
     padding: 0;
     list-style: none;
   }
   .mcp-row {
     display: flex;
-    flex-direction: column;
-    gap: 6px;
-    padding: 12px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 12px;
     border: 1px solid var(--settings-border, rgba(255, 255, 255, 0.1));
     border-radius: 8px;
   }
-  .mcp-row__head {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
+  /* Just-added row flash (mockup row-flash), cleared on animationend. */
+  .mcp-row--new {
+    animation: mcp-row-flash 1.4s ease-out;
   }
-  .mcp-row__name {
-    font-weight: 600;
+  @keyframes mcp-row-flash {
+    from {
+      background: color-mix(in srgb, var(--app-accent) 10%, transparent);
+    }
+    to {
+      background: transparent;
+    }
   }
-  .mcp-row__head-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-left: auto;
+  @media (prefers-reduced-motion: reduce) {
+    .mcp-row--new {
+      animation: none;
+    }
   }
-  .mcp-inline-row {
-    display: flex;
-    gap: 8px;
-    align-items: center;
-  }
-  .mcp-inline-row .text-input {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .mcp-tools-row {
+  .mcp-row__main {
     display: flex;
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
+    min-width: 0;
   }
-  .mcp-tools-row__count {
-    font-size: 11px;
+  .mcp-row__name {
+    font-weight: 600;
+  }
+  .mcp-row__tag {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--app-text-muted);
+    background: var(--app-surface);
+    border: 1px solid var(--app-border-strong);
+    border-radius: 5px;
+    padding: 2px 6px;
+  }
+  .mcp-row__count {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-family: inherit;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .mcp-row__count:hover:not(:disabled) {
+    color: var(--app-text-strong);
+    text-decoration: underline;
+  }
+  .mcp-row__count:disabled {
+    cursor: default;
+    opacity: 0.5;
+  }
+  .mcp-row__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
   }
 </style>

@@ -60,8 +60,9 @@ import {
   baseUrlHost,
   aiProviderInstanceLabel,
   newAiProviderId,
-  newMcpServerId,
 } from "./ai-providers";
+import { createMcpConnectorActions } from "./controller-mcp";
+import type { McpPreset } from "./mcp-presets";
 import type {
   CaptureSupport,
   OcrProvider,
@@ -70,6 +71,7 @@ import type {
   AiProviderKind,
   AiProviderConfig,
   AiEngineRef,
+  McpServerConfig,
   BrowserUrlMode,
   SemanticSearchModelStatus,
 } from "$lib/types";
@@ -323,49 +325,26 @@ export class SettingsController {
   }
 
   // ─── MCP connectors ─────────────────────────────────────────────────────────
-  mcpServerIds = $derived(this.rec.draftMcpServers.map((s) => s.id));
+  // Actions live in controller-mcp.ts (800-line cap); thin delegates here keep
+  // call sites on the controller. The blank-draft addMcpServer died with the
+  // inline form — the picker (preset / Custom) is the only add path now.
+  mcp = createMcpConnectorActions({
+    rec: this.rec,
+    aiRuntime: this.aiRuntime,
+    saveAiRuntime: () => this.saveRecordingDomain("ai_runtime"),
+  });
 
-  addMcpServer(): void {
-    // ponytail: the id is slugged once (from the empty default label → "connector",
-    // "connector-2", …) and stays stable, because it keys the keychain secret and
-    // the `mcp__<id>__` tool prefix. Renaming the label does NOT re-slug — a later
-    // slice could offer a rename-with-migration if meaningful ids matter enough.
-    const id = newMcpServerId("", this.mcpServerIds);
-    this.rec.draftMcpServers = [
-      ...this.rec.draftMcpServers,
-      {
-        id,
-        label: "",
-        enabled: false,
-        transport: "stdio",
-        command: null,
-        args: [],
-        env: [],
-        url: null,
-        secretEnvName: null,
-        enabledTools: null,
-      },
-    ];
-    void this.aiRuntime.refreshMcpServerSecretPresence();
+  addMcpServerDraft(draft: McpServerConfig): string {
+    return this.mcp.addMcpServerDraft(draft);
   }
-
-  async removeMcpServer(id: string): Promise<void> {
-    const removed = this.rec.draftMcpServers.find((s) => s.id === id);
-    if (!removed) return;
-    const label = removed.label.trim() || id;
-    const confirmed = await confirm(
-      `Removing “${label}” deletes its saved secret from the macOS keychain right away and stops offering its tools to chat.`,
-      {
-        title: "Remove this connector?",
-        kind: "warning",
-        okLabel: "Remove & Delete Secret",
-        cancelLabel: "Keep Connector",
-      },
-    );
-    if (!confirmed) return;
-    this.rec.draftMcpServers = this.rec.draftMcpServers.filter((s) => s.id !== id);
-    // Tear down the keychain secret for the removed connector (best effort).
-    await this.aiRuntime.clearSecretForRemovedMcpServer(id);
+  addMcpServerFromPreset(preset: McpPreset, overrides?: Partial<McpServerConfig>): string {
+    return this.mcp.addMcpServerFromPreset(preset, overrides);
+  }
+  removeMcpServer(id: string, opts?: { confirm?: boolean }): Promise<void> {
+    return this.mcp.removeMcpServer(id, opts);
+  }
+  flushAiRuntimeSave(): Promise<void> {
+    return this.mcp.flushAiRuntimeSave();
   }
 
   // ─── Model-pool picker ──────────────────────────────────────────────────────
