@@ -2010,6 +2010,46 @@ mod tests {
     }
 
     #[test]
+    fn ai_runtime_patch_mcp_servers_none_leaves_existing_list_unchanged() {
+        // `mcp_servers: None` means "leave unchanged", not "clear". This exact
+        // partial-update shape is reachable via `wipe_user_context`, whose
+        // `enabled: Some(false)` patch must not drop configured connectors.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+        base.ai_runtime.mcp_servers = vec![capture_types::McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Stdio,
+            command: Some("npx".to_string()),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: Some(vec!["search".to_string()]),
+        }];
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert!(!updated.ai_runtime.enabled);
+        assert_eq!(
+            updated.ai_runtime.mcp_servers,
+            base.ai_runtime.mcp_servers,
+            "mcp_servers: None must leave the existing connector list unchanged"
+        );
+    }
+
+    #[test]
     fn load_recording_settings_from_path_migrates_legacy_engine_centric_ai_runtime() {
         // ADR 0034: an existing recording-settings.json with the old
         // engine-centric aiRuntime block loads into the provider-centric shape

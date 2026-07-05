@@ -213,32 +213,40 @@ fn is_disallowed_fetch_target_ip(ip: std::net::IpAddr) -> bool {
     app_infra::brokered_access::ip_is_disallowed_fetch_target(ip)
 }
 
+/// Pure screen for ONE redirect hop: refuse a hop past [`MAX_REDIRECTS`], any
+/// non-https target (an https→http downgrade included), and a private /
+/// loopback / link-local / metadata host. Extracted from the redirect policy
+/// closure so the decision is unit-testable (`reqwest::redirect::Attempt`
+/// cannot be constructed in tests). `prior_hops` is the redirect chain length
+/// BEFORE this hop.
+fn screen_redirect_hop(next: &reqwest::Url, prior_hops: usize) -> Result<(), &'static str> {
+    if prior_hops > MAX_REDIRECTS {
+        return Err("fetch_url exceeded the redirect limit");
+    }
+    if next.scheme() != "https" {
+        return Err("fetch_url refuses a non-https redirect hop");
+    }
+    // SSRF: the origin controls `Location`, so a benign captured URL can be
+    // redirected into internal infrastructure. Re-screen every hop's host —
+    // a redirect to a loopback / private / link-local / metadata address is
+    // refused, matching the initial-target screen in
+    // `secret_scrubbed_fetch_target`.
+    if is_disallowed_fetch_url(next) {
+        return Err("fetch_url refuses a redirect to a private or loopback host");
+    }
+    Ok(())
+}
+
 /// Redirect policy: refuse any hop whose scheme is not https, and cap the chain
 /// at [`MAX_REDIRECTS`]. A redirect to http (or any non-https scheme) aborts the
-/// fetch rather than downgrading the transport.
+/// fetch rather than downgrading the transport. Thin adapter over
+/// [`screen_redirect_hop`].
 fn https_only_redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() > MAX_REDIRECTS {
-            return attempt.error(std::io::Error::other(
-                "fetch_url exceeded the redirect limit",
-            ));
+        match screen_redirect_hop(attempt.url(), attempt.previous().len()) {
+            Err(reason) => attempt.error(std::io::Error::other(reason)),
+            Ok(()) => attempt.follow(),
         }
-        if attempt.url().scheme() != "https" {
-            return attempt.error(std::io::Error::other(
-                "fetch_url refuses a non-https redirect hop",
-            ));
-        }
-        // SSRF: the origin controls `Location`, so a benign captured URL can be
-        // redirected into internal infrastructure. Re-screen every hop's host —
-        // a redirect to a loopback / private / link-local / metadata address is
-        // refused, matching the initial-target screen in
-        // `secret_scrubbed_fetch_target`.
-        if is_disallowed_fetch_url(attempt.url()) {
-            return attempt.error(std::io::Error::other(
-                "fetch_url refuses a redirect to a private or loopback host",
-            ));
-        }
-        attempt.follow()
     })
 }
 
@@ -573,6 +581,67 @@ mod tests {
     }
 
     #[test]
+    fn screen_redirect_hop_refuses_https_to_http_downgrade() {
+        // The origin controls `Location`; a downgrade to http would move the
+        // rest of the fetch off TLS. Any non-https hop is refused.
+        let http = reqwest::Url::parse("http://example.com/next").expect("parse");
+        assert_eq!(
+            screen_redirect_hop(&http, 1),
+            Err("fetch_url refuses a non-https redirect hop")
+        );
+    }
+
+    #[test]
+    fn screen_redirect_hop_refuses_private_and_loopback_hosts() {
+        for target in [
+            "https://127.0.0.1/internal",
+            "https://[::1]/internal",
+            "https://10.0.0.8/internal",
+            "https://192.168.1.1/router",
+            "https://169.254.169.254/latest/meta-data/",
+            // CGNAT (100.64.0.0/10), broadcast, and the RFC 6761 loopback names.
+            "https://100.64.0.1/",
+            "https://100.127.255.255/",
+            "https://255.255.255.255/",
+            "https://localhost/",
+            "https://app.localhost/",
+        ] {
+            let url = reqwest::Url::parse(target).expect("parse");
+            assert_eq!(
+                screen_redirect_hop(&url, 1),
+                Err("fetch_url refuses a redirect to a private or loopback host"),
+                "{target} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn screen_redirect_hop_allows_public_https_and_caps_hops() {
+        // Host-name screening only (no DNS), so a public domain is offline-safe.
+        let url = reqwest::Url::parse("https://example.com/page").expect("parse");
+        assert_eq!(screen_redirect_hop(&url, MAX_REDIRECTS), Ok(()));
+        assert_eq!(
+            screen_redirect_hop(&url, MAX_REDIRECTS + 1),
+            Err("fetch_url exceeded the redirect limit")
+        );
+    }
+
+    #[test]
+    fn disallowed_fetch_target_ip_covers_cgnat_and_broadcast() {
+        // The resolver-side screen shares `ipv4_is_disallowed` with the URL
+        // screen; pin the CGNAT and broadcast branches directly.
+        for ip in ["100.64.0.1", "100.127.255.255", "255.255.255.255"] {
+            let ip: std::net::IpAddr = ip.parse().expect("parse ip");
+            assert!(is_disallowed_fetch_target_ip(ip), "{ip} must be refused");
+        }
+        // The CGNAT block is exactly /10 — its neighbors stay reachable.
+        for ip in ["100.63.255.255", "100.128.0.0", "8.8.8.8"] {
+            let ip: std::net::IpAddr = ip.parse().expect("parse ip");
+            assert!(!is_disallowed_fetch_target_ip(ip), "{ip} must be allowed");
+        }
+    }
+
+    #[test]
     fn web_fetch_tool_shape() {
         let tool = web_fetch_tool();
         assert_eq!(tool.name, "fetch_url");
@@ -728,6 +797,53 @@ mod web_fetch_charset_review_dataint_a {
             page.content.contains("café") && page.content.contains("résumé"),
             "windows-1252 bytes must decode to their real characters, not be dropped: {}",
             page.content
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_fetch_redirect_screen {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// End-to-end wiring check that [`screen_redirect_hop`] actually gates the
+    /// shared client: a canned 302 whose `Location` is an http URL must abort
+    /// the fetch. The policy runs BEFORE any connection to the redirect target,
+    /// so this is fully offline; the specific refusal reasons are pinned by the
+    /// pure `screen_redirect_hop_*` tests (reqwest's error Display does not
+    /// chain the policy's message — only its "error following redirect" kind).
+    #[test]
+    fn redirect_to_http_aborts_the_fetch() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        // Points back at this listener, but the scheme alone refuses the hop —
+        // no second connection is ever attempted (the accept below is the only
+        // one served, so a followed redirect could not succeed either).
+        let location = format!("http://{addr}/next");
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf); // drain request headers; partial is fine
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(response.as_bytes());
+            let _ = sock.flush();
+        });
+
+        let target = format!("http://{addr}/");
+        let err = match tauri::async_runtime::block_on(fetch_page(&target)) {
+            Ok(page) => panic!(
+                "a redirect to http must abort the fetch, got status {}",
+                page.status
+            ),
+            Err(err) => err,
+        };
+        let _ = server.join();
+        assert!(
+            err.contains("error following redirect"),
+            "the abort must come from the redirect policy, not a connect failure: {err}"
         );
     }
 }

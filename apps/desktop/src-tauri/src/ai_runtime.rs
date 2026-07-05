@@ -1390,4 +1390,36 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn mcp_secret_commands_guard_blank_ids_and_secrets() {
+        // The guards return BEFORE any spawn_blocking, so these calls never
+        // touch the keychain / secret store — safe to run against the real
+        // commands with no fixture.
+        let err = tauri::async_runtime::block_on(mcp_set_server_secret(McpServerSecretRequest {
+            id: "  ".to_string(),
+            secret: "token".to_string(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
+
+        let err = tauri::async_runtime::block_on(mcp_set_server_secret(McpServerSecretRequest {
+            id: "github".to_string(),
+            secret: "  ".to_string(),
+        }))
+        .expect_err("blank secret must be rejected");
+        assert_eq!(err, "a secret is required");
+
+        let err = tauri::async_runtime::block_on(mcp_clear_server_secret(McpServerRequest {
+            id: String::new(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
+
+        let err = tauri::async_runtime::block_on(mcp_has_server_secret(McpServerRequest {
+            id: " ".to_string(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
+    }
 }

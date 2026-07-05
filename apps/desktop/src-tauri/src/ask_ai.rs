@@ -1273,6 +1273,51 @@ repeat call replaces the prior set). This does NOT count against the tool-call b
     tools
 }
 
+/// Where an Ask AI tool call routes. The dispatch closure checks these in
+/// precedence order: app-control → `fetch_url` → MCP connector → broker.
+/// Call-time curation is intentionally offer-time-only (INV-B1): this routes a
+/// name, it never filters which tools may be called.
+#[derive(Debug, PartialEq, Eq)]
+enum ToolRoute<'a> {
+    /// Recording-lifecycle control (Workstream A).
+    AppControl,
+    /// The opt-in web re-fetch tool (Workstream B).
+    FetchUrl,
+    /// An MCP connector tool `mcp__<server-id>__<tool>` (Workstream C).
+    Mcp { server_id: &'a str, tool: &'a str },
+    /// Everything else: the brokered data tools (`search`/`timeline`/…).
+    Broker,
+}
+
+/// Pure routing for one tool name, in the documented precedence order.
+fn classify_ask_ai_tool(name: &str) -> ToolRoute<'_> {
+    if app_control::is_app_control_tool(name) {
+        return ToolRoute::AppControl;
+    }
+    if name == "fetch_url" {
+        return ToolRoute::FetchUrl;
+    }
+    if let Some((server_id, tool)) = mcp::parse_mcp_tool_name(name) {
+        return ToolRoute::Mcp { server_id, tool };
+    }
+    ToolRoute::Broker
+}
+
+/// The connector display-label suffix for an MCP tool's activity line, e.g.
+/// `" from GitHub"`. `None` for non-MCP names, unknown server ids, and
+/// blank/whitespace labels (no suffix beats an empty `" from "`).
+fn mcp_connector_suffix(
+    name: &str,
+    labels: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let (server_id, _) = mcp::parse_mcp_tool_name(name)?;
+    labels
+        .get(server_id)
+        .map(|label| label.trim())
+        .filter(|label| !label.is_empty())
+        .map(|label| format!(" from {label}"))
+}
+
 #[tauri::command]
 pub async fn ask_ai_availability(
     app_handle: tauri::AppHandle,
@@ -1792,27 +1837,34 @@ async fn run_ask_ai_turn(
                 if let Ok(mut buffer) = tool_activities.lock() {
                     buffer.push(serde_json::json!({ "tool": tool, "params": params }));
                 }
-                // App-control tools (Workstream A) act on the recording lifecycle
-                // instead of the broker. Kept after the activity push so the
-                // control action still shows in the working line.
-                if app_control::is_app_control_tool(&tool) {
-                    return app_control::execute_app_control_tool(&app_handle, &tool).await;
-                }
-                // `fetch_url` (Workstream B): re-fetch a page the user visited.
-                // Desktop-side (not brokered); rechecks its opt-in setting.
-                if tool == "fetch_url" {
-                    return web_fetch::execute_web_fetch(&app_handle, params).await;
-                }
-                // MCP connector tools (Workstream C): a `mcp__<server-id>__<tool>`
-                // name routes to that server's tool via the manager. This is the
-                // SINGLE MCP dispatch choke-point — a per-call approval hook would
-                // insert HERE; trust-per-server is the consent (enabling the server
-                // in Settings), so there is no per-call prompt in v1 (ADR 0048).
-                if let Some((server_id, mcp_tool)) = mcp::parse_mcp_tool_name(&tool) {
-                    let manager = (*app_handle.state::<mcp::McpManager>()).clone();
-                    return manager
-                        .call_tool(&app_handle, server_id, mcp_tool, params)
-                        .await;
+                match classify_ask_ai_tool(&tool) {
+                    // App-control tools (Workstream A) act on the recording
+                    // lifecycle instead of the broker. Kept after the activity
+                    // push so the control action still shows in the working line.
+                    ToolRoute::AppControl => {
+                        return app_control::execute_app_control_tool(&app_handle, &tool).await;
+                    }
+                    // `fetch_url` (Workstream B): re-fetch a page the user visited.
+                    // Desktop-side (not brokered); rechecks its opt-in setting.
+                    ToolRoute::FetchUrl => {
+                        return web_fetch::execute_web_fetch(&app_handle, params).await;
+                    }
+                    // MCP connector tools (Workstream C): a `mcp__<server-id>__<tool>`
+                    // name routes to that server's tool via the manager. This is the
+                    // SINGLE MCP dispatch choke-point — a per-call approval hook would
+                    // insert HERE; trust-per-server is the consent (enabling the server
+                    // in Settings), so there is no per-call prompt in v1 (ADR 0048).
+                    ToolRoute::Mcp {
+                        server_id,
+                        tool: mcp_tool,
+                    } => {
+                        let manager = (*app_handle.state::<mcp::McpManager>()).clone();
+                        return manager
+                            .call_tool(&app_handle, server_id, mcp_tool, params)
+                            .await;
+                    }
+                    // Everything else falls through to the broker seam below.
+                    ToolRoute::Broker => {}
                 }
                 let request = broker_request_from_tool(&tool, params)?;
                 let response = execute_ask_ai_broker_request(app_handle, request).await?;
@@ -2046,10 +2098,8 @@ async fn run_ask_ai_turn(
                 // Runtime enrich (settings-dependent, like the icon step below):
                 // suffix an MCP tool's line with its connector's display label, e.g.
                 // "Running pull request read from GitHub".
-                if let Some((server_id, _)) = mcp::parse_mcp_tool_name(&name) {
-                    if let Some(label) = mcp_labels.get(server_id).filter(|l| !l.trim().is_empty()) {
-                        entry.label.push_str(&format!(" from {}", label.trim()));
-                    }
+                if let Some(suffix) = mcp_connector_suffix(&name, &mcp_labels) {
+                    entry.label.push_str(&suffix);
                 }
                 emit_live_update(
                     &app_handle,
@@ -2493,6 +2543,71 @@ mod tests {
         }
         // Passed MCP tools are appended verbatim.
         assert!(tools.iter().any(|t| t.name == "mcp__github__create_issue"));
+    }
+
+    #[test]
+    fn classify_ask_ai_tool_routes_in_precedence_order() {
+        // App-control first (Workstream A).
+        for name in [
+            "capture_status",
+            "start_capture",
+            "stop_capture",
+            "pause_capture",
+            "resume_capture",
+        ] {
+            assert_eq!(
+                classify_ask_ai_tool(name),
+                ToolRoute::AppControl,
+                "{name} must route app-control"
+            );
+        }
+        // Then `fetch_url` (Workstream B).
+        assert_eq!(classify_ask_ai_tool("fetch_url"), ToolRoute::FetchUrl);
+        // Then MCP connectors (Workstream C), split into server id + tool.
+        assert_eq!(
+            classify_ask_ai_tool("mcp__github__create_issue"),
+            ToolRoute::Mcp {
+                server_id: "github",
+                tool: "create_issue"
+            }
+        );
+        // Everything else — data tools, unknowns, and malformed `mcp__` names
+        // (no `__` separator, empty halves) — falls through to the broker.
+        for name in [
+            "search",
+            "timeline",
+            "show_text",
+            "recall_context",
+            "mcp__",
+            "mcp__nounderscore",
+            "mcp__id__",
+            "unknown_tool",
+        ] {
+            assert_eq!(
+                classify_ask_ai_tool(name),
+                ToolRoute::Broker,
+                "{name} must fall through to the broker"
+            );
+        }
+    }
+
+    #[test]
+    fn mcp_connector_suffix_uses_trimmed_label_and_filters_blanks() {
+        let labels: std::collections::HashMap<String, String> = [
+            ("github".to_string(), " GitHub ".to_string()),
+            ("blank".to_string(), "   ".to_string()),
+        ]
+        .into();
+        // A known connector's label is trimmed into the suffix.
+        assert_eq!(
+            mcp_connector_suffix("mcp__github__create_issue", &labels).as_deref(),
+            Some(" from GitHub")
+        );
+        // A blank/whitespace label yields NO suffix, not an empty " from ".
+        assert_eq!(mcp_connector_suffix("mcp__blank__tool", &labels), None);
+        // Unknown server ids and non-MCP names get no suffix.
+        assert_eq!(mcp_connector_suffix("mcp__unknown__tool", &labels), None);
+        assert_eq!(mcp_connector_suffix("search", &labels), None);
     }
 
     fn sample_result() -> BrokerSearchResult {
