@@ -39,7 +39,8 @@ use super::segments::{
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
     should_defer_screen_resume_for_missing_display,
-    segment_loop_sleep_duration, stop_capture_runtime, StartedSegmentState,
+    segment_loop_sleep_duration, stop_capture_runtime, system_audio_resume_action,
+    StartedSegmentState, SystemAudioResumeAction,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -7674,6 +7675,96 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
     // Screen bookkeeping should not be touched
     assert!(runtime.recording_file.is_some());
     assert!(output_files.screen_file.is_some());
+}
+
+// --- System-audio inactivity transitions while the screen family is paused ---
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_audio_resume_action_never_marks_resumed_without_a_writer_on_a_live_stream() {
+    // The wedge this pins down: system audio pauses (writer detached,
+    // bookkeeping cleared), the screen family then soft-pauses (stream stays
+    // live), audio starts playing. Resuming here used to mark the family
+    // unpaused without attaching a writer, so nothing recorded until the next
+    // rotation — and the screen soft-resume path skipped the writer too
+    // because system_audio_recording_file was still None.
+    assert_eq!(
+        system_audio_resume_action(true, true),
+        SystemAudioResumeAction::DeferKeepPaused,
+        "live stream + screen soft-paused must defer and stay paused"
+    );
+    assert_eq!(
+        system_audio_resume_action(true, false),
+        SystemAudioResumeAction::ResumeWriter,
+        "live stream + active screen family attaches the writer"
+    );
+    assert_eq!(
+        system_audio_resume_action(false, true),
+        SystemAudioResumeAction::MarkResumedOnly,
+        "cold screen pause marks resumed; the cold screen-resume recreates the writer"
+    );
+    assert_eq!(
+        system_audio_resume_action(false, false),
+        SystemAudioResumeAction::DeferKeepPaused,
+        "missing session outside a screen pause must defer and stay paused"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_system_audio_clears_bookkeeping_even_when_screen_paused() {
+    // Pausing system audio while the screen family is already paused used to
+    // skip all backend and bookkeeping work, leaving a stale
+    // system_audio_recording_file that later paths could re-commit.
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 1,
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+            system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+        }),
+        recording_file: None,
+        system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+        active_screen_session: None,
+        active_microphone_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            screen_paused: true,
+            is_paused: true,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_system_audio_for_inactivity(&mut runtime)
+        .expect("pause while screen paused should succeed");
+
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(
+        runtime.system_audio_recording_file.is_none(),
+        "system_audio_recording_file must be cleared even while the screen family is paused"
+    );
+    let output_files = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("output files struct should still exist");
+    assert!(output_files.system_audio_file.is_none());
+    assert!(output_files.system_audio_files.is_empty());
 }
 
 // --- Slice 3b9: restart failure reconciles paused/source bookkeeping ---
