@@ -67,12 +67,17 @@ async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<
         .filter(|command| !command.is_empty())
         .ok_or_else(|| format!("stdio connector \"{}\" has no command", cfg.label))?;
 
-    // ponytail: bare command name — a packaged macOS app has a minimal PATH (see
-    // the macOS-GUI-PATH note in CLAUDE.md), so `npx` resolves only if the user
-    // gives a PATH-reachable or absolute command. PATH augmentation would go here
-    // if bare-`npx` configs prove common; not built until they do.
     let mut command_builder = tokio::process::Command::new(command);
     command_builder.args(&cfg.args);
+    // A packaged macOS app inherits launchd's minimal PATH (no Homebrew/nvm), so
+    // a bare `npx` doesn't resolve — and even an ABSOLUTE npx dies, because its
+    // `#!/usr/bin/env node` shebang can't find `node` either. Give the child the
+    // user's login-shell PATH: Rust resolves the program via the PATH set on the
+    // Command, and the shebang's `env` lookup inherits it. A user-provided PATH
+    // env row below still overrides this.
+    if let Some(path) = tokio::task::spawn_blocking(login_shell_path).await.ok().flatten() {
+        command_builder.env("PATH", path);
+    }
     // Non-secret env rows are plain settings values.
     for env in &cfg.env {
         command_builder.env(&env.name, &env.value);
@@ -102,6 +107,28 @@ async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<
     ().serve(transport)
         .await
         .map_err(|error| format!("failed to connect to \"{}\": {error}", cfg.label))
+}
+
+/// The user's login-shell PATH, resolved once per process (the shell invocation
+/// costs ~100ms, so it runs on first connect only, off the async runtime via
+/// `spawn_blocking`). `"$PATH"` quotes correctly across zsh/bash AND fish — fish
+/// treats PATH as a path variable and joins it with colons in quoted expansion.
+/// Any failure (no shell, bad exit, empty output) yields None → child inherits
+/// the app's PATH unchanged, i.e. the pre-fix behavior.
+fn login_shell_path() -> Option<&'static str> {
+    static PATH: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+        let output = std::process::Command::new(shell)
+            .args(["-l", "-c", r#"printf '%s' "$PATH""#])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())?;
+        let path = String::from_utf8(output.stdout).ok()?;
+        let path = path.trim();
+        (!path.is_empty()).then(|| path.to_string())
+    })
+    .as_deref()
 }
 
 async fn connect_http(cfg: &McpServerConfig, secret: Option<String>) -> Result<McpClient, String> {
@@ -252,6 +279,18 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+    }
+
+    /// The login-shell PATH resolves and is a plausible PATH string. If the shell
+    /// invocation breaks (bad flags, fish quoting regression), this returns None
+    /// or junk and stdio connectors silently regress to the minimal launchd PATH.
+    #[test]
+    fn login_shell_path_resolves() {
+        let path = login_shell_path().expect("login shell should yield a PATH");
+        assert!(
+            path.split(':').any(|dir| std::path::Path::new(dir).is_dir()),
+            "PATH should contain at least one existing directory: {path}"
+        );
     }
 
     #[test]
