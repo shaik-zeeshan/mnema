@@ -44,6 +44,18 @@ pub struct CaptureWindowItem {
     pub app_label: Option<String>,
     /// Search Context URL, if available (frames only, best-effort).
     pub url: Option<String>,
+    /// Audio only — the capture source: `"microphone"` (the user's own voice) or
+    /// `"system_audio"` (the other party). `None` for frames. Lets the derivation
+    /// prompt tag speech `you` vs `other-side` so words spoken TO the user are not
+    /// misattributed as words the user said (ADR 0050).
+    pub source_kind: Option<String>,
+    /// Audio only — diarized speaker turns as `(cluster_id, transcript_text)`,
+    /// time-ordered. ANONYMOUS BY CONSTRUCTION (ADR 0050): the reader never selects
+    /// a `person_id` / `display_name` / any name column into this, so a recognized
+    /// person's name is UNREPRESENTABLE here and can never reach the (possibly
+    /// cloud) Reasoning Engine — names resolve on-device only. Empty for frames and
+    /// for audio whose diarization has produced no turns (yet).
+    pub speaker_turns: Vec<(i64, String)>,
 }
 
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
@@ -132,6 +144,8 @@ impl UserContextStore {
                 text,
                 app_label,
                 url,
+                source_kind: None,
+                speaker_turns: Vec::new(),
             });
         }
 
@@ -143,6 +157,7 @@ impl UserContextStore {
         let audio_rows = sqlx::query(
             "SELECT audio_segments.id AS subject_id, \
                     audio_segments.started_at AS started_at, \
+                    audio_segments.source_kind AS source_kind, \
                     processing_results.result_text AS result_text \
              FROM audio_segments \
              JOIN (\
@@ -170,14 +185,41 @@ impl UserContextStore {
             let Some(captured_at_ms) = rfc3339_to_ms(&started_at) else {
                 continue;
             };
+            let subject_id: i64 = row.get("subject_id");
             let text: String = row.get("result_text");
+            let source_kind: Option<String> = row.get("source_kind");
+
+            // Anonymous diarized turns for this segment (ADR 0050): read ONLY
+            // (cluster_id, transcript_text) — deliberately NOT `person_id` /
+            // `display_name` / any name column — so a recognized person's name is
+            // UNREPRESENTABLE in the window handed to the (possibly cloud) engine.
+            // Names resolve on-device only, never over the wire.
+            // ponytail: one query per audio segment (N+1), bounded by max_items;
+            // batch by `audio_segment_id IN (...)` only if a wide window makes it matter.
+            let turn_rows = sqlx::query(
+                "SELECT cluster_id, transcript_text \
+                 FROM speaker_turns \
+                 WHERE audio_segment_id = ?1 \
+                   AND LENGTH(TRIM(COALESCE(transcript_text, ''))) > 0 \
+                 ORDER BY start_ms ASC, end_ms ASC, id ASC",
+            )
+            .bind(subject_id)
+            .fetch_all(self.pool())
+            .await?;
+            let speaker_turns: Vec<(i64, String)> = turn_rows
+                .iter()
+                .map(|turn| (turn.get::<i64, _>("cluster_id"), turn.get::<String, _>("transcript_text")))
+                .collect();
+
             items.push(CaptureWindowItem {
                 subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
-                subject_id: row.get("subject_id"),
+                subject_id,
                 captured_at_ms,
                 text,
                 app_label: None,
                 url: None,
+                source_kind,
+                speaker_turns,
             });
         }
 
@@ -388,10 +430,12 @@ mod tests {
             text: text.to_string(),
             app_label: Some(app.to_string()),
             url: None,
+            source_kind: None,
+            speaker_turns: Vec::new(),
         }
     }
 
-    fn audio(id: i64, t: i64, text: &str) -> CaptureWindowItem {
+    fn audio(id: i64, t: i64, text: &str, source: &str) -> CaptureWindowItem {
         CaptureWindowItem {
             subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
             subject_id: id,
@@ -399,6 +443,8 @@ mod tests {
             text: text.to_string(),
             app_label: None,
             url: None,
+            source_kind: Some(source.to_string()),
+            speaker_turns: Vec::new(),
         }
     }
 
@@ -422,7 +468,7 @@ mod tests {
             frame(1, 100, &s("12%"), "Hitch"),       // run representative
             frame(2, 101, &s("12%"), "Hitch"),       // identical dup -> dropped
             frame(3, 102, &s("12% bonus"), "Hitch"), // near-dup + richer -> new representative
-            audio(4, 103, "spoken words here"),      // audio breaks the run
+            audio(4, 103, "spoken words here", "microphone"), // audio breaks the run
             frame(5, 104, &s("12%"), "Hitch"),       // new run after audio -> kept
             frame(6, 105, &s("12%"), "Zen"),         // app switch -> kept
         ];

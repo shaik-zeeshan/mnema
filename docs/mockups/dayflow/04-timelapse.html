@@ -138,6 +138,40 @@
   .m-foot { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px dashed var(--border); font-size: 10.5px; color: var(--text-subtle); flex-wrap: wrap; }
   .m-foot .sep { color: var(--text-faint); }
 
+  /* ── Audio evidence: cited spoken segments (ADR 0049) ─────────────
+     A second tick channel BELOW the spine — frames above, audio below the same
+     wall-clock track. Lavender = voice, distinct from the green frame ticks.
+     Each is clickable → plays a bounded 1× synchronized audio+screen clip. */
+  .track .ev-a { position: absolute; bottom: -7px; width: 9px; height: 9px; transform: translateX(-50%); border-radius: 50%; background: var(--cat-communication); border: 1.5px solid #0b0b12; opacity: .8; cursor: pointer; }
+  .track .ev-a--hl { opacity: 1; box-shadow: 0 0 7px rgba(192,176,255,.7); }
+  .track .ev-a:hover { opacity: 1; }
+  /* snippet tooltip for an audio tick — sits BELOW the track (arrow up). Unlike a
+     frame tick it carries the cited transcript (the clip's label) + a play hint;
+     bounded, no scroll, no speaker turns (those stay on Timeline). */
+  .tip-a { position: absolute; top: 22px; transform: translateX(-50%); width: 264px; padding: 8px 11px; border: 1px solid var(--cat-communication); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 24px rgba(0,0,0,.45); z-index: 3; }
+  .tip-a::after { content: ""; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-bottom-color: var(--cat-communication); }
+  .tip-a .lbl { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--cat-communication); margin-bottom: 4px; }
+  .tip-a .snip { font-size: 11px; line-height: 1.55; color: var(--text); }
+  .tip-a .go { margin-top: 6px; font-size: 10px; color: var(--cat-communication); }
+
+  /* "playing a cited moment" — a caption band on the viewer while a bounded clip
+     runs: real audio at 1×, the frame viewer clocked by it (one playhead). */
+  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: linear-gradient(0deg, #14111f 60%, rgba(20,17,31,.85)); border-top: 1px solid var(--cat-communication); }
+  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--cat-communication); }
+  .clip-bar .live .d { width: 6px; height: 6px; border-radius: 50%; background: var(--cat-communication); box-shadow: 0 0 0 3px rgba(192,176,255,.18); }
+  .clip-bar .cap { flex: 1; min-width: 0; font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .clip-bar .rate { flex: none; font-size: 10px; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+
+  /* audio-only Activity: no frames (never captured, or expired but audio survives)
+     — the viewer becomes a bounded audio player, NOT a false "footage expired". */
+  .viewer--audio { aspect-ratio: 16/7; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
+  .viewer--audio .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--cat-communication); background: rgba(192,176,255,.08); color: var(--cat-communication); font-size: 17px; cursor: pointer; }
+  .viewer--audio .a-cap { max-width: 470px; padding: 0 20px; font-size: 12px; line-height: 1.6; color: var(--text); }
+  .viewer--audio .a-when { font-size: 10.5px; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+  .viewer--audio .a-spk { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--cat-communication); }
+  .viewer--audio .a-spk b { color: var(--text-strong); }
+  .viewer--audio .a-spk .rb { margin-left: 6px; font-size: 9px; letter-spacing: 0; text-transform: none; color: var(--text-subtle); }
+
   /* ── State variant: footage expired ───────────────────────────── */
   .states { margin-top: 40px; }
   .state-panel { border: 1px solid var(--border); border-radius: 12px; background: var(--app-bg); overflow: hidden; max-width: 760px; margin: 0 auto; }
@@ -279,13 +313,23 @@
 
         <div class="scrub">
           <div class="track">
+            <!-- frame citations: green ticks ABOVE the spine (unchanged) -->
             <span class="ev" style="left:6%"></span>
             <span class="ev" style="left:21%"></span>
             <span class="ev ev--hl" style="left:38%"></span>
             <span class="ev" style="left:57%"></span>
             <span class="ev" style="left:74%"></span>
             <span class="ev" style="left:91%"></span>
-            <span class="tick-tip">cited as evidence · headline frame</span>
+            <!-- audio citations: lavender dots BELOW the spine, clickable → clip -->
+            <span class="ev-a" style="left:12%"></span>
+            <span class="ev-a ev-a--hl" style="left:44%"></span>
+            <span class="ev-a" style="left:63%"></span>
+            <!-- hovering a cited audio tick reveals its transcript + play hint -->
+            <div class="tip-a" style="left:44%">
+              <div class="lbl">◆ You (microphone) · spoken evidence · headline</div>
+              <div class="snip">"…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path."</div>
+              <div class="go">▶ Play this moment — screen + audio, 1×</div>
+            </div>
             <div class="fill"></div>
             <div class="head">10:04 AM</div>
           </div>
@@ -306,17 +350,118 @@
 
         <div class="m-foot">
           <span>341 frames across 4 capture segments</span><span class="sep">·</span>
-          <span>6 cited as evidence</span>
+          <span>6 frames + 3 spoken segments cited</span>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ═══════════════════ STATE VARIANT ═══════════════════ -->
+  <!-- ═══════════════════ STATE VARIANTS ═══════════════════ -->
   <section class="states">
-    <div class="ann-head"><span>◆ State · footage expired — the receipt every long-term user will eventually open</span><span class="rule"></span></div>
+
+    <!-- ── State: playing a cited spoken moment (ADR 0049) ── -->
+    <div class="ann-head"><span>◆ State · reliving a cited moment — screen + audio at 1×, bounded to one Activity</span><span class="rule"></span></div>
     <div class="state-panel">
-      <div class="cap">Same receipt, opened months later · frames removed by Retention Cleanup</div>
+      <div class="cap">Click a lavender audio tick → the single playhead plays that segment's real audio at 1× while the frame viewer runs the same window, clocked by the audio</div>
+      <div class="modal-card">
+        <div class="m-head">
+          <span class="chip"><span class="sw" style="background:var(--cat-creating)"></span>Creating</span>
+          <h2>Debugging OpenBLAS static linking in build.rs</h2>
+          <span class="when">9:10 – 10:35 · 1h 25m</span>
+          <button class="m-close">✕</button>
+        </div>
+        <div class="viewer">
+          <div class="shot">
+            <div class="shot-bar"><i></i><i></i><i></i><span class="t">build.rs — mnema — Zed</span></div>
+            <div class="shot-body">
+              <div class="shot-side"><i style="width:80%"></i><i style="width:60%"></i><i style="width:88%"></i><i style="width:52%"></i></div>
+              <div class="shot-code">
+                <div class="ln"><b></b><i style="width:34%; background:#3a3a5a"></i></div>
+                <div class="ln"><b></b><i style="width:56%; background:#2c3a4a"></i></div>
+                <div class="ln"><b></b><i style="width:48%; background:#2c3a30"></i></div>
+                <div class="ln"><b></b><i style="width:66%; background:#2c3a4a"></i></div>
+              </div>
+            </div>
+          </div>
+          <div class="clip-bar">
+            <span class="live"><span class="d"></span>You · microphone</span>
+            <span class="cap">"…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path."</span>
+            <span class="rate">microphone · 10:04:02–10:05:47 · 1×</span>
+          </div>
+        </div>
+        <div class="scrub">
+          <div class="track">
+            <span class="ev" style="left:6%"></span>
+            <span class="ev" style="left:21%"></span>
+            <span class="ev ev--hl" style="left:38%"></span>
+            <span class="ev" style="left:57%"></span>
+            <span class="ev" style="left:74%"></span>
+            <span class="ev" style="left:91%"></span>
+            <span class="ev-a" style="left:12%"></span>
+            <span class="ev-a ev-a--hl" style="left:44%"></span>
+            <span class="ev-a" style="left:63%"></span>
+            <div class="fill" style="width:46%; background:var(--cat-communication)"></div>
+            <div class="head" style="left:46%; background:var(--cat-communication); color:#0c0c12">10:04 AM</div>
+          </div>
+          <div class="scrub-caps"><span>9:10 AM</span><span>10:35 AM</span></div>
+        </div>
+        <div class="controls">
+          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)">⏸</button>
+          <span class="speed" style="border-color:var(--cat-communication)"><b class="on" style="background:rgba(192,176,255,.12); color:var(--cat-communication)">1× · audio</b></span>
+          <span class="counter"><span class="now">10:04:44 AM</span> · spoken segment 2 / 3</span>
+          <span class="ctl-spacer"></span>
+          <button class="open-tl">Open in Timeline →</button>
+        </div>
+        <div class="m-foot">
+          <span>▶ Reliving 1 of 3 cited spoken segments — bounded to this Activity</span><span class="sep">·</span>
+          <span>full audio &amp; speaker turns on Timeline</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── State: audio-grounded Activity, no screen frames ── -->
+    <div class="ann-head"><span>◆ State · audio-grounded — the receipt is a bounded audio player, never a false "footage expired"</span><span class="rule"></span></div>
+    <div class="state-panel">
+      <div class="cap">An Activity the engine derived from spoken evidence with no frames on the track (screen off / mic-only, or frames expired while audio survives) — honest, and still playable</div>
+      <div class="modal-card">
+        <div class="m-head">
+          <span class="chip"><span class="sw" style="background:var(--cat-meetings)"></span>Meetings</span>
+          <h2>Standup and follow-up thread</h2>
+          <span class="when">9:00 – 9:20 · 20m</span>
+          <button class="m-close">✕</button>
+        </div>
+        <div class="viewer viewer--audio">
+          <button class="big-play">▶</button>
+          <div class="a-spk">Other side · <b>Alice</b><span class="rb">system audio · name resolved live by id</span></div>
+          <div class="a-cap">"…let's hold the release on the OpenBLAS crash — the static-link fix is landing today, retest on an M1 before we cut."</div>
+          <div class="a-when">segment 2 of 3 · 9:07–9:09 AM · captured as audio</div>
+        </div>
+        <div class="scrub">
+          <div class="track">
+            <span class="ev-a" style="left:8%"></span>
+            <span class="ev-a ev-a--hl" style="left:35%"></span>
+            <span class="ev-a" style="left:78%"></span>
+            <div class="head" style="left:35%; background:var(--cat-communication); color:#0c0c12">9:07 AM</div>
+          </div>
+          <div class="scrub-caps"><span>9:00 AM</span><span>9:20 AM</span></div>
+        </div>
+        <div class="controls">
+          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)">▶</button>
+          <span class="counter">spoken segment 2 / 3 · 9:07 AM</span>
+          <span class="ctl-spacer"></span>
+          <button class="open-tl">Open in Timeline →</button>
+        </div>
+        <div class="m-foot">
+          <span>0 screen frames — captured as audio</span><span class="sep">·</span>
+          <span>You · Alice · Speaker 2 (unnamed → name in Timeline)</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── State: footage expired (no audio evidence either) ── -->
+    <div class="ann-head"><span>◆ State · footage expired — a visual Activity with no audio, frames aged out</span><span class="rule"></span></div>
+    <div class="state-panel">
+      <div class="cap">Same receipt, opened months later · frames removed by Retention Cleanup and nothing spoken was ever cited</div>
       <div class="modal-card">
         <div class="m-head">
           <span class="chip"><span class="sw" style="background:var(--cat-creating)"></span>Creating</span>
@@ -328,12 +473,12 @@
           <div class="exp">
             <div class="glyph">▸ ▸ ▸</div>
             <h4>Footage expired</h4>
-            <p>The raw frames behind this card were removed by Retention Cleanup. The card, its summary, and its evidence list are kept — only the pixels age out.</p>
+            <p>The raw frames behind this card were removed by Retention Cleanup. The card, its summary, and its evidence list are kept — only the pixels age out. This Activity had no audio evidence, so there is nothing to play.</p>
           </div>
         </div>
         <div class="m-foot">
           <span>0 of 341 frames still on disk</span><span class="sep">·</span>
-          <span>summary retained</span>
+          <span>summary retained · no audio evidence</span>
         </div>
       </div>
     </div>
@@ -345,8 +490,10 @@
     <div class="ann-grid">
       <div class="ann">
         <h2>What it does</h2>
-        <p>Dayflow stitches each card's screenshots into a timelapse video. Mnema already stores the actual frames — so the receipt is a scrubable frame strip over the card's time range: play at 8×, drag the scrubber, or click a filmstrip thumb. Accent ticks mark the frames the engine actually cited as evidence for the card (the bright tick is the headline frame, which doubles as the poster).</p>
-        <p>This is the "proof" layer for the whole Journal: every AI-written sentence is one click from the pixels it summarizes. "Open in Timeline →" lands the raw Timeline surface on the current frame. The playhead pill reads <strong>wall-clock time</strong> ("10:04 AM"), not elapsed time — for evidence, when it happened is the answer.</p>
+        <p>Dayflow stitches each card's screenshots into a timelapse video. Mnema already stores the actual frames — so the receipt is a scrubable frame strip over the card's time range: play at 8×, drag the scrubber, or click a filmstrip thumb. Green ticks <em>above</em> the spine mark the frames the engine cited as evidence (the bright tick is the headline frame, which doubles as the poster).</p>
+        <p>But an Activity's evidence is frames <em>and</em> spoken audio — the engine cites both. So the track carries a second channel: <strong>lavender ticks below the spine</strong> mark the cited <strong>Audio Transcription Spans</strong>. Click one and the single playhead plays that segment's real audio at 1× while the frame viewer runs the same window, clocked by the audio — a bounded "relive this moment" clip. Hovering a tick shows the cited transcript (the clip's label) so you know what you'll hear. An Activity grounded only in audio (a call with the screen off) plays as a bounded audio player instead of lying "footage expired".</p>
+        <p>Each cited moment also shows <strong>who spoke</strong> — you (microphone) vs the other side (system audio), plus a recognized name when known — <strong>read-only</strong>, resolved live by id so a voice you name later shows its real name (never a frozen "Speaker 2"). This is where you catch the engine's speaker-blind misattributions ("someone spoke to me, the card says <em>I</em> said it"); fixing them hands off — naming a voice stays Timeline, a wrong card routes to the Activity's own Dismiss. The blindness itself gets its <em>root</em> fix in source-aware derivation (ADR 0050 — a separate follow-up).</p>
+        <p>This is the <strong>proof-and-bounded-inspection</strong> layer for the whole Journal: every AI-written sentence is one interaction from its evidence — from "see the cited pixel" to "hear the cited moment", all scoped to the one Activity's span. "Open in Timeline →" hands off anything wider: the raw frame, or (for audio) the full transcript, speaker turns, and unbounded scrub in Timeline's audio drawer. The playhead pill reads <strong>wall-clock time</strong> ("10:04 AM"), not elapsed. The line the receipt holds is <strong>bounded, not silent</strong> (ADR 0049).</p>
         <p class="not">Design provenance: Dayflow's review scrubber (wall-clock playhead pill; its poster is the middle frame — ours does better with the engine's cited headline frame), Loom (chapter ticks on the track + denser thumbnail sampling near markers), QuickTime (hold a control for frame-by-frame precision).</p>
       </div>
       <div class="ann">
@@ -355,8 +502,9 @@
         <ul>
           <li>fetches frame ids with the existing <code>list_frames</code> over <code>[startedAtMs, endedAtMs]</code></li>
           <li>renders frames lazily via the existing <code>get_frame_preview</code> — playback = swapping previews on requestAnimationFrame, with lookahead prefetch into a small LRU (~40 frames) and decodes outside the window cancelled on scrub; the playhead moves via transform with no transitions (that combination is what makes raw frames feel like video)</li>
-          <li>overlays evidence ticks from <code>user_context_activity_evidence</code>, with <code>is_headline</code> as the poster frame</li>
-          <li>"Open in Timeline" calls the existing <code>get_timeline_window_around_frame</code> and switches the surface toggle to Timeline</li>
+          <li>overlays frame ticks (above) and audio ticks (below) from <code>user_context_activity_evidence</code> — <code>subject_type</code> splits them; <code>is_headline</code> is the poster frame / lead spoken moment</li>
+          <li>a cited audio tick plays the bounded clip via the existing <code>get_audio_segment_media</code> at 1×, driving the frame index off <code>started_at + audio.currentTime</code> — same frame-swap trick, now clocked by an <code>&lt;audio&gt;</code> element instead of the rAF timer; stops at the segment end</li>
+          <li>"Open in Timeline" carries a frame id <em>or</em> an audio segment id — the frontend handoff slot (<code>pending-focus</code>) opens Timeline's audio drawer on the segment when there's no frame</li>
         </ul>
         <p>No video is ever encoded — scrubbing the frame strip gives the timelapse feel with zero media pipeline. The viewer shows a frame-shaped skeleton while previews load; evidence ticks explain themselves via hover tooltip (shown) instead of a permanent caption. Keyboard: ←/→ steps frames, space plays, esc closes.</p>
       </div>
@@ -366,16 +514,17 @@
           <li>One frontend modal, e.g. <code>apps/desktop/src/lib/insights/ActivityReceipt.svelte</code>, opened from the Journal card's "receipt" affordance</li>
           <li>Reuses the frame-preview plumbing in <code>apps/desktop/src/lib/frame-preview.ts</code> and the commands already registered in <code>apps/desktop/src-tauri/src/lib.rs</code> (<code>app_infra::list_frames</code>, <code>app_infra::frame_preview::get_frame_preview</code>, <code>app_infra::get_timeline_window_around_frame</code>)</li>
         </ul>
-        <p class="not"><strong>Not built:</strong> no new tables, no new Tauri commands, no new worker, and deliberately no mp4 stitching/export (Dayflow's approach) — encoding adds an ffmpeg-shaped dependency for something the frame strip already delivers. Export can come later if anyone asks. Evidence refs (incl. <code>is_headline</code>, now on the wire) arrive pre-hydrated on the Journal's range read — the receipt adds no data plumbing of its own.</p>
+        <p class="not"><strong>Not built:</strong> no new tables, no new Tauri commands, no new worker, and deliberately no mp4 stitching/export (Dayflow's approach) — encoding adds an ffmpeg-shaped dependency for something the frame strip already delivers. The audio clip reuses <code>get_audio_segment_media</code> (already Timeline's) — still no new backend. Export can come later if anyone asks. Evidence refs (frame <em>and</em> <code>audio_segment</code>, incl. <code>is_headline</code>) arrive pre-hydrated on the Journal's range read — the receipt adds no data plumbing of its own.</p>
       </div>
       <div class="ann">
         <h2>Data it uses</h2>
         <ul>
           <li>Raw frames per capture segment (app, window title, URL, OCR metadata ride along — shown in the frame-meta chips, same data the Timeline overlay shows today)</li>
-          <li><code>user_context_activity_evidence</code> — cited frame refs + the <code>is_headline</code> flag</li>
+          <li><code>user_context_activity_evidence</code> — cited frame <em>and</em> <code>audio_segment</code> refs + the <code>is_headline</code> flag</li>
+          <li>audio segment media + its redacted transcript via <code>get_audio_segment_media</code> / <code>get_audio_segment</code> (the caption serves the same redacted text Timeline shows; playback carries the same posture as Timeline already does for that segment)</li>
         </ul>
         <p>Privacy: excluded apps never produced frames, so they simply don't appear; OCR redaction applied at capture is what the preview serves. The asymmetry from ADR 0029 cuts the other way here — <strong>frames are subject to Retention Cleanup while the card is not</strong> — so the expired state above is guaranteed, not an edge case. Delete Recent Capture removes whole overlapping segments, which can blank part of a receipt: missing segments render as dead zones on the scrubber track, with the surviving frames still scrubable.</p>
-        <p class="not"><strong>Grill outcomes (Jul 3, docs/user-context/CONTEXT.md):</strong> the receipt is <em>bounded evidence playback</em>, the one carved exception to "inspection stays on Timeline" — it never grows OCR copy/download, audio playback, or navigation past the activity's span; "Open in Timeline" is always the answer instead. Known accepted slop: <code>get_frame_preview</code> seeks by <code>video_offset_ms</code>, so pre-fix sidecars (captured before Jul 3 2026) show pixels ~16s off their tick — same fidelity as the Timeline, no receipt-specific handling.</p>
+        <p class="not"><strong>Grill outcomes (Jul 5, docs/user-context/CONTEXT.md + ADR 0049):</strong> the receipt is <em>bounded evidence playback and inspection</em> of one Activity — it now plays cited audio as bounded 1× synced clips, <strong>reversing</strong> the Jul 3 "never grows audio playback" rule. The line moved from <em>silent → audible</em> to <strong>bounded → unbounded</strong>: OCR copy/download, frame export, cross-Activity navigation, and audio scrubbing <em>past this Activity's cited moments</em> still belong to Timeline, and "Open in Timeline" is the answer for those. Speakers are <strong>shown but not managed</strong> here (surface-and-handoff): who-spoke is read-only and late-bound by id, naming voices stays Timeline, and the engine's own speaker-blindness gets its root fix in source-aware derivation (ADR 0050, separate follow-up). Known accepted slop: <code>get_frame_preview</code> seeks by <code>video_offset_ms</code>, so pre-fix sidecars (captured before Jul 3 2026) show pixels ~16s off their tick — same fidelity as the Timeline, no receipt-specific handling.</p>
       </div>
     </div>
   </section>
