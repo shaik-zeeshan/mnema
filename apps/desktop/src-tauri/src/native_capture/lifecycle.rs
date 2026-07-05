@@ -542,7 +542,9 @@ impl RecordingLifecycle {
                 if handle_inactivity_resume_error(&mut self.runtime, error) {
                     return TickOutcome::StopLoop;
                 }
-            } else {
+            } else if !self.runtime.inactivity.is_screen_paused() {
+                // Ok with the screen still paused means the resume was deferred
+                // (no drawable display yet) — nothing to announce.
                 let screen_eval = self
                     .runtime
                     .inactivity

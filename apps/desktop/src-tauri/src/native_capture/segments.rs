@@ -3275,10 +3275,32 @@ fn mark_screen_paused_for_inactivity(runtime: &mut NativeCaptureRuntime) {
 }
 
 #[cfg(target_os = "macos")]
+/// Whether an activity-triggered screen resume should wait instead of starting
+/// capture: with the ScreenCaptureKit stream torn down and no drawable display
+/// (lid closed, display asleep or unplugged), a cold start is doomed to fail
+/// with `capture_display_unavailable`. Deferring keeps the screen paused so the
+/// next tick re-evaluates — the same wait-quietly stance display-unavailable
+/// suspension recovery takes (ADR 0021), which this path previously lacked,
+/// letting dark-wake activity blips hammer ScreenCaptureKit multiple times per
+/// second.
+pub(super) fn should_defer_screen_resume_for_missing_display(
+    screen_stream_live: bool,
+    display_available: bool,
+) -> bool {
+    !screen_stream_live && !display_available
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn resume_screen_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
+    if should_defer_screen_resume_for_missing_display(
+        capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+        capture_screen::screen_display_available(),
+    ) {
+        return Ok(());
+    }
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);

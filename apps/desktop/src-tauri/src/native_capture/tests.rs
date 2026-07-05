@@ -38,6 +38,7 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
+    should_defer_screen_resume_for_missing_display,
     segment_loop_sleep_duration, stop_capture_runtime, StartedSegmentState,
 };
 use super::segments::{
@@ -5433,6 +5434,21 @@ fn resume_screen_from_inactivity_requires_requested_sources() {
         resume_screen_from_inactivity(&mut runtime, None).expect_err("missing sources should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn screen_resume_waits_quietly_while_no_display_is_available() {
+    // Regression: during a dark wake with the lid closed (2026-07-05), screen
+    // "activity" blips triggered a doomed cold ScreenCaptureKit start on every
+    // segment-loop iteration (~3/sec), each failing capture_display_unavailable.
+    // A dead stream with no drawable display must defer, not start.
+    assert!(should_defer_screen_resume_for_missing_display(false, false));
+    // Display returned: attempt the cold start.
+    assert!(!should_defer_screen_resume_for_missing_display(false, true));
+    // Live stream soft-resume path never defers; it never cold-starts.
+    assert!(!should_defer_screen_resume_for_missing_display(true, false));
+    assert!(!should_defer_screen_resume_for_missing_display(true, true));
 }
 
 #[cfg(target_os = "macos")]
