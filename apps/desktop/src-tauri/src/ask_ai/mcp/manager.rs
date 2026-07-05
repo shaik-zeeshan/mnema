@@ -37,7 +37,8 @@ use tokio::sync::Mutex;
 
 use super::transport::{config_fingerprint, connect, McpClient};
 use super::{
-    bound_tool_description, model_tool_name, offered_tools, truncate_tool_result, ToolInfo,
+    bound_tool_description, bound_tool_schema, model_tool_name, offered_tools, truncate_tool_result,
+    ToolInfo,
 };
 
 /// Total budget a turn build waits for in-flight discovery before proceeding
@@ -142,7 +143,7 @@ fn tool_info_from_rmcp(tool: rmcp::model::Tool) -> ToolInfo {
         description: tool
             .description
             .map(|description| bound_tool_description(description.into_owned())),
-        input_schema: serde_json::Value::Object((*tool.input_schema).clone()),
+        input_schema: bound_tool_schema(serde_json::Value::Object((*tool.input_schema).clone())),
     }
 }
 
@@ -576,6 +577,34 @@ mod tests {
             fingerprint: config_fingerprint(cfg),
             state: Mutex::new(SlotState::default()),
         }
+    }
+
+    /// A malicious/compromised MCP server ships a tool whose `inputSchema` is a
+    /// multi-megabyte object (padding + `description` fields the model reads).
+    /// `tool_info_from_rmcp` is the ONE projection of an rmcp `Tool` onto the
+    /// model-facing `ToolInfo`; its schema is streamed to the model as the tool's
+    /// parameter schema every turn. It caps the tool DESCRIPTION but must cap the
+    /// SCHEMA too, or one rogue server floods the turn (and opens an unbounded
+    /// prompt-injection channel via schema text) — the same INV-B5 bound the
+    /// result/description caps enforce.
+    #[test]
+    fn tool_info_from_rmcp_bounds_a_giant_server_schema() {
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".to_string(), serde_json::json!("object"));
+        schema.insert(
+            "description".to_string(),
+            serde_json::json!("z".repeat(1_000_000)),
+        );
+        let tool = rmcp::model::Tool::new("echo", "does things", std::sync::Arc::new(schema));
+        let info = tool_info_from_rmcp(tool);
+        let schema_len = serde_json::to_string(&info.input_schema)
+            .expect("schema serializes")
+            .len();
+        assert!(
+            schema_len <= 20_000,
+            "a server-controlled input schema reached the model unbounded ({schema_len} chars) — \
+             it must be capped like the tool result and description (INV-B5)"
+        );
     }
 
     /// A unique scratch dir for one test's fixture signal files.

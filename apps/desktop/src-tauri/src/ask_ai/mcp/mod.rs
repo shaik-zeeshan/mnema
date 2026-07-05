@@ -32,6 +32,13 @@ const MCP_TOOL_RESULT_CHAR_CAP: usize = 24_000;
 /// Descriptions are far shorter than results in practice; this only bites a
 /// pathological/hostile server trying to context-stuff via the tool declaration.
 const MCP_TOOL_DESCRIPTION_CHAR_CAP: usize = 4_000;
+/// Cap on a server-supplied tool input SCHEMA (serialized) before it enters the
+/// model prompt as the tool's parameter schema. Like the description cap, this
+/// stops a malicious/compromised server from shipping a multi-megabyte schema
+/// (padding, or injection text in property `description` fields the model reads)
+/// that stuffs the model context on every turn. Generous, since a legitimate
+/// tool schema is a few KB at most; it only bites a pathological one.
+const MCP_TOOL_SCHEMA_CHAR_CAP: usize = 16_000;
 
 /// One tool discovered from an MCP server — our trimmed view of rmcp's `Tool`.
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +141,22 @@ pub(crate) fn bound_tool_description(description: String) -> String {
         .collect();
     out.push_str(" […truncated by Mnema]");
     out
+}
+
+/// Bound a server-supplied tool input schema before it reaches the model as the
+/// tool's parameter schema. A JSON object cannot be safely char-truncated (it
+/// would no longer parse), so an over-cap schema is DROPPED for a permissive
+/// empty-object schema — the same fallback a non-object schema gets — ensuring
+/// no unbounded server-controlled text rides the schema channel into the model.
+pub(crate) fn bound_tool_schema(schema: serde_json::Value) -> serde_json::Value {
+    let within_cap = serde_json::to_string(&schema)
+        .map(|serialized| serialized.len() <= MCP_TOOL_SCHEMA_CHAR_CAP)
+        .unwrap_or(false);
+    if within_cap {
+        schema
+    } else {
+        serde_json::json!({ "type": "object", "additionalProperties": true, "properties": {} })
+    }
 }
 
 #[cfg(test)]

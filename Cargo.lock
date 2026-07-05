@@ -4589,6 +4589,7 @@ dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
  "core-graphics 0.25.0",
+ "encoding_rs",
  "fs2",
  "futures-util",
  "htmd",

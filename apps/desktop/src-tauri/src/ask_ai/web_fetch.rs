@@ -80,6 +80,31 @@ fn content_type_kind(content_type: &str) -> Option<BodyKind> {
     }
 }
 
+/// Decode the raw response body using the charset declared in its `Content-Type`
+/// header, defaulting to UTF-8 when the label is absent or unrecognized. We read
+/// the body as raw bytes (to enforce the 2 MB cap), so — unlike reqwest's
+/// `.text()` — no charset decoding happens for free: a legacy page served as
+/// `windows-1252` / `shift_jis` / `iso-8859-1` would otherwise be mangled into
+/// U+FFFD by a bare `from_utf8_lossy`, silently corrupting the content the model
+/// reads while `truncated` stays false. `encoding_rs::decode` also strips a
+/// leading BOM and substitutes on genuinely undecodable bytes.
+fn decode_body(body: &[u8], content_type: Option<&str>) -> String {
+    let label = content_type.and_then(|ct| {
+        ct.split(';').skip(1).find_map(|param| {
+            let param = param.trim();
+            let rest = param.strip_prefix("charset")?.trim_start();
+            let value = rest.strip_prefix('=')?.trim();
+            Some(value.trim_matches('"').to_string())
+        })
+    });
+    let encoding = label
+        .as_deref()
+        .and_then(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
+    let (text, _, _) = encoding.decode(body);
+    text.into_owned()
+}
+
 /// Cap `text` at `max_chars` on a char boundary. Returns `(text, truncated)`.
 fn cap_text(text: &str, max_chars: usize) -> (String, bool) {
     if text.chars().count() <= max_chars {
@@ -282,7 +307,9 @@ plain text, or json",
         })?;
 
     let (body, body_capped) = read_capped_body(response, MAX_BODY_BYTES).await?;
-    let text = String::from_utf8_lossy(&body);
+    // Decode by the declared charset, not a bare UTF-8 assumption — a legacy
+    // non-UTF-8 page must not be silently corrupted into replacement chars.
+    let text = decode_body(&body, content_type.as_deref());
 
     let (title, content, truncated) = match kind {
         BodyKind::Html => {
@@ -638,6 +665,69 @@ mod ssrf_resolver_review_security_a {
         assert!(
             result.is_err(),
             "resolver must refuse a host that resolves to loopback (SSRF), got Ok"
+        );
+    }
+}
+
+#[cfg(test)]
+mod web_fetch_charset_review_dataint_a {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// A page served in a NON-UTF-8 charset it explicitly declares (windows-1252 /
+    /// iso-8859-1 is still common on legacy sites) is decoded with
+    /// `String::from_utf8_lossy`, which replaces every non-ASCII byte with U+FFFD.
+    /// The extracted content the (possibly cloud) model reads is corrupted — real
+    /// characters are silently dropped — yet `truncated` stays false, so the model
+    /// answers as if it saw the complete page. Falsifies INV-A3 ("real content
+    /// dropped but truncated:false").
+    #[test]
+    fn declared_charset_body_is_not_lossily_corrupted() {
+        // "café résumé" encoded in windows-1252/latin-1: é is the single byte 0xE9,
+        // which is invalid UTF-8 on its own, so `from_utf8_lossy` maps it to U+FFFD.
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(b"<html><body><p>caf");
+        body.push(0xE9);
+        body.extend_from_slice(b" r");
+        body.push(0xE9);
+        body.extend_from_slice(b"sum");
+        body.push(0xE9);
+        body.extend_from_slice(b"</p></body></html>");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=windows-1252\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(header.as_bytes());
+            let _ = sock.write_all(&body);
+            let _ = sock.flush();
+        });
+
+        let target = format!("http://{addr}/");
+        let page = tauri::async_runtime::block_on(fetch_page(&target)).expect("fetch ok");
+        let _ = server.join();
+
+        assert_eq!(page.status, 200);
+        assert!(
+            !page.truncated,
+            "small complete page must not report truncated"
+        );
+        assert!(
+            !page.content.contains('\u{FFFD}'),
+            "declared-charset body must not be lossily corrupted into U+FFFD: {}",
+            page.content
+        );
+        assert!(
+            page.content.contains("café") && page.content.contains("résumé"),
+            "windows-1252 bytes must decode to their real characters, not be dropped: {}",
+            page.content
         );
     }
 }
