@@ -4394,7 +4394,7 @@ impl ScreenCaptureSession for ActiveCaptureSession {
 fn unsupported_platform_error() -> CaptureErrorResponse {
     CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Native capture is currently supported only on macOS".to_string(),
+        message: "Native capture is not supported on this platform".to_string(),
     }
 }
 
@@ -4423,11 +4423,11 @@ pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
 pub fn new_session_id() -> Result<String, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Native capture is currently supported only on macOS".to_string(),
+        message: "Native capture is not supported on this platform".to_string(),
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn start_capture_session(
     _session_dir: &Path,
     _sources: &ScreenCaptureSources,
@@ -4437,7 +4437,7 @@ pub fn start_capture_session(
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Native capture is currently supported only on macOS".to_string(),
+        message: "Native capture is not supported on this platform".to_string(),
     })
 }
 
@@ -4478,42 +4478,42 @@ pub fn start_capture_session_with_options(
 ) -> Result<StartedCaptureSession, CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Native capture is currently supported only on macOS".to_string(),
+        message: "Native capture is not supported on this platform".to_string(),
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn pause_system_audio_writer(
     _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "System audio soft-pause is currently supported only on macOS".to_string(),
+        message: "System audio soft-pause is not supported on this platform".to_string(),
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn resume_system_audio_writer(
     _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _output_path: &str,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "System audio soft-resume is currently supported only on macOS".to_string(),
+        message: "System audio soft-resume is not supported on this platform".to_string(),
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn pause_screen_outputs_for_inactivity(
     _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Screen soft-pause is currently supported only on macOS".to_string(),
+        message: "Screen soft-pause is not supported on this platform".to_string(),
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn resume_screen_outputs(
     _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _segment_dir: &Path,
@@ -4521,7 +4521,7 @@ pub fn resume_screen_outputs(
 ) -> Result<(), CaptureErrorResponse> {
     Err(CaptureErrorResponse {
         code: "unsupported_platform".to_string(),
-        message: "Screen soft-resume is currently supported only on macOS".to_string(),
+        message: "Screen soft-resume is not supported on this platform".to_string(),
     })
 }
 
