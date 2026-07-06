@@ -64,6 +64,22 @@ pub(crate) async fn connect(cfg: &McpServerConfig) -> Result<McpClient, String> 
 }
 
 async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<McpClient, String> {
+    // The keychain slot is polymorphic (bearer string OR OAuth Token Set). A
+    // connector edited from http+OAuth to stdio KEEPS auth_mode=OAuth (auth_mode
+    // is ignored for stdio). The settings-save flip-clear keys on the EFFECTIVE
+    // auth mode so that edit does clear the slot — but a failed delete or any
+    // other path leaving a stale Token Set must still never reach a child:
+    // injecting it into the env var would hand the refresh token to that process
+    // verbatim. Mirror of connect_http's bearer-path backstop, in the stdio
+    // direction — never deliver an OAuth payload as a static secret.
+    if secret.as_deref().is_some_and(secret_is_oauth_token_set) {
+        return Err(format!(
+            "stdio connector \"{}\" holds an OAuth Token Set in its keychain slot; refusing to \
+             inject it into the child process environment — remove and re-add the connector (or \
+             clear its secret)",
+            cfg.label
+        ));
+    }
     let command = cfg
         .command
         .as_deref()
@@ -166,6 +182,19 @@ async fn connect_http(cfg: &McpServerConfig, secret: Option<String>) -> Result<M
                 cfg.label
             ));
         }
+        // The keychain slot is polymorphic (bearer string OR OAuth Token Set).
+        // After an OAuth→Bearer mode flip that never disconnected, the slot can
+        // still hold the Token Set JSON — attaching THAT as a bearer header
+        // would send the refresh token to the server verbatim. Mirror of
+        // `oauth_token_present`'s parse gate, in the other direction.
+        if secret_is_oauth_token_set(&secret) {
+            return Err(format!(
+                "connector \"{}\" is set to Bearer auth but its keychain slot holds an OAuth \
+                 Token Set; refusing to send it as a bearer header — enter a bearer secret \
+                 (or switch the connector back to OAuth)",
+                cfg.label
+            ));
+        }
         config = config.auth_header(secret);
     }
     let transport = StreamableHttpClientTransport::from_config(config);
@@ -250,6 +279,17 @@ async fn connect_http_oauth(cfg: &McpServerConfig, url: &str) -> Result<McpClien
     ().serve(transport)
         .await
         .map_err(|error| format!("failed to connect to \"{}\": {error}", cfg.label))
+}
+
+/// Whether a keychain-slot payload is a serialized OAuth Token Set rather than a
+/// plain bearer secret. The slot is polymorphic; this is the bearer-attach
+/// counterpart of `oauth_flow::oauth_token_present`'s parse gate — each mode
+/// refuses the other mode's payload, so a Bearer↔OAuth flip that skipped
+/// Disconnect can never leak the leftover payload down the wrong path.
+// ponytail: a genuine bearer secret that happens to parse as StoredCredentials
+// JSON is not a real case (same accepted ceiling as `oauth_token_present`).
+fn secret_is_oauth_token_set(secret: &str) -> bool {
+    serde_json::from_str::<rmcp::transport::auth::StoredCredentials>(secret).is_ok()
 }
 
 /// Whether the connector's bearer secret may be attached to a request to `raw`.
@@ -389,6 +429,45 @@ mod tests {
         );
     }
 
+    /// The polymorphic-slot backstop, stdio side (ADR 0051 deferred finding). A
+    /// connector edited from http+OAuth to stdio KEEPS `auth_mode=OAuth` (the
+    /// frontend passes authMode verbatim, and auth_mode is ignored for stdio, so
+    /// the settings-save flip-clear — keyed on the auth mode — never fires). Its
+    /// keychain slot still holds the serialized OAuth Token Set. `connect_stdio`
+    /// must REFUSE to inject that JSON into the child process env: it carries the
+    /// refresh token, and a mismatched payload must never ride the wrong path.
+    #[tokio::test]
+    async fn a_stale_oauth_token_set_never_rides_into_the_child_env() {
+        let mut cfg = stdio_cfg();
+        cfg.auth_mode = McpAuthMode::OAuth;
+        let token_set = serde_json::to_string(&rmcp::transport::auth::StoredCredentials::new(
+            "client-xyz".to_string(),
+            None,
+            Vec::new(),
+            None,
+        ))
+        .expect("serialize token set");
+
+        // The backstop fires BEFORE resolving the command / spawning the child,
+        // so this resolves fast with the refusal — in the unfixed state it would
+        // inject the JSON into GITHUB_TOKEN and spawn.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_stdio(&cfg, Some(token_set)),
+        )
+        .await;
+        let error = outcome
+            .expect("the stdio Token-Set backstop must refuse before spawning, not hang")
+            .expect_err("a Token Set payload must never be injected into the child env");
+        assert!(
+            error.contains("Token Set"),
+            "expected the Token-Set refusal, got: {error}"
+        );
+
+        // A plain opaque bearer secret still passes the gate (delivered to stdio).
+        assert!(!secret_is_oauth_token_set("ghp_opaque_stdio_secret"));
+    }
+
     #[test]
     fn fingerprint_changes_for_connect_relevant_edits() {
         let base = config_fingerprint(&stdio_cfg());
@@ -487,6 +566,48 @@ mod http_secret_scheme_review_security_b {
             error.contains("cleartext") || error.to_lowercase().contains("https"),
             "expected a cleartext/https refusal, got: {error}"
         );
+    }
+
+    /// The polymorphic-slot backstop (ADR 0051 deferred finding): a connector
+    /// flipped OAuth→Bearer without disconnecting still holds the serialized
+    /// OAuth Token Set in its keychain slot. The bearer path must REFUSE to
+    /// attach that JSON as `Authorization: Bearer …` — it carries the refresh
+    /// token (and client id) verbatim. Mirror of the read-side gate that stops
+    /// a stale bearer secret reading as OAuth-authorized.
+    #[tokio::test]
+    async fn a_stale_oauth_token_set_never_rides_as_a_bearer_header() {
+        let mut cfg = http_cfg("https://mcp.example.com/");
+        cfg.auth_mode = McpAuthMode::Bearer;
+        let token_set = serde_json::to_string(&rmcp::transport::auth::StoredCredentials::new(
+            "client-xyz".to_string(),
+            None,
+            Vec::new(),
+            None,
+        ))
+        .expect("serialize token set");
+
+        // The backstop fires BEFORE dialing, so this resolves fast with the
+        // refusal — in the unfixed state it would attach the JSON and dial.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            connect_http(&cfg, Some(token_set)),
+        )
+        .await;
+        let error = outcome
+            .expect("the Token-Set backstop must refuse before dialing, not hang")
+            .expect_err("a Token Set payload must never be attached as a bearer header");
+        assert!(
+            error.contains("Token Set"),
+            "expected the Token-Set refusal, got: {error}"
+        );
+
+        // A plain opaque bearer secret passes the gate — and so does a
+        // JSON-shaped one that is not a Token Set: the gate keys on the
+        // StoredCredentials SHAPE (client_id required), not on "is this JSON",
+        // so a real JSON bearer secret is never refused.
+        assert!(!secret_is_oauth_token_set("lin_bearer_secret_abc"));
+        assert!(!secret_is_oauth_token_set("{}"));
+        assert!(!secret_is_oauth_token_set("{\"foo\":1}"));
     }
 
     /// The scheme guard: TLS and loopback may carry the secret; a remote

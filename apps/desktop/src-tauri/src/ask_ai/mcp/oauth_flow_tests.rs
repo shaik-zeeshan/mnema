@@ -92,8 +92,14 @@ async fn disconnect_local_drop_forgets_the_token_unconditionally() {
     );
 
     let inner = Inner::default();
-    // Seed the in-memory traces the drop must also clear.
-    lock_recover(&inner.oauth_reconnect_needed).insert(id.to_string());
+    // Seed the in-memory traces the drop must also clear (a current-generation
+    // warm write, the way `warm` sets the flag).
+    {
+        let mut reconnect = lock_recover(&inner.oauth_reconnect_needed);
+        let generation = reconnect.generation(id);
+        reconnect.apply_if_current(id, generation, ReconnectFlag::Set);
+        assert!(reconnect.contains(id));
+    }
 
     drop_oauth_local(&inner, id).await;
 
@@ -365,4 +371,39 @@ fn reconnect_flag_update_flags_a_dead_held_token_but_not_an_unauthorized_connect
     assert_eq!(reconnect_flag_update(true, false), ReconnectFlag::Clear);
     assert_eq!(reconnect_flag_update(false, true), ReconnectFlag::Set);
     assert_eq!(reconnect_flag_update(false, false), ReconnectFlag::Leave);
+}
+
+/// The warm-race guard (ADR 0051: reconnect state converges under any
+/// interleaving of warm tasks / authorize / disconnect). A warm task captures
+/// the generation BEFORE its connect; a browser re-authorize that completes
+/// while the connect is in flight clears the flag AND bumps the generation, so
+/// when the warm task's `Err` (dialed with the now-dead OLD token) resolves
+/// late, its `Set` is guarded by a stale generation and dropped — a freshly
+/// authorized connector must not flash back to *Needs reconnect*.
+#[test]
+fn a_stale_warm_write_after_a_newer_authorize_is_dropped() {
+    let mut state = ReconnectState::default();
+    let id = "gh";
+
+    // warm captures the generation, then starts its (slow) connect…
+    let stale_generation = state.generation(id);
+    // …the callback lands a fresh token meanwhile: clear + bump…
+    state.clear_and_bump(id);
+    // …then the warm connect with the OLD token resolves Err and tries to flag.
+    state.apply_if_current(id, stale_generation, ReconnectFlag::Set);
+    assert!(
+        !state.contains(id),
+        "a warm write guarded by a stale generation must be dropped after authorize"
+    );
+
+    // A warm write against the CURRENT generation still lands (the guard drops
+    // stale writes, not the signal itself)…
+    let current_generation = state.generation(id);
+    state.apply_if_current(id, current_generation, ReconnectFlag::Set);
+    assert!(state.contains(id), "an up-to-date warm failure must still flag");
+
+    // …and disconnect bumps again, so THAT write is now stale too.
+    state.clear_and_bump(id);
+    state.apply_if_current(id, current_generation, ReconnectFlag::Set);
+    assert!(!state.contains(id), "disconnect must invalidate in-flight warm writes");
 }

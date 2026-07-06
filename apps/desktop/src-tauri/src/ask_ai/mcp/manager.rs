@@ -282,8 +282,11 @@ pub(super) struct Inner {
     pub(super) oauth_pending: std::sync::Mutex<HashMap<String, PendingOAuth>>,
     /// Connector ids whose stored Token Set failed to refresh at the last
     /// warm-on-open — the *Needs reconnect* signal Settings (slice 6) reads.
-    /// Refreshed at warm, cleared on a successful (re)authorization or disconnect.
-    pub(super) oauth_reconnect_needed: std::sync::Mutex<HashSet<String>>,
+    /// Refreshed at warm, cleared on a successful (re)authorization or
+    /// disconnect. Carries a per-id generation counter so a warm task that
+    /// resolves AFTER a newer authorize/disconnect cannot resurrect the flag
+    /// (see [`super::oauth_flow::ReconnectState`]).
+    pub(super) oauth_reconnect_needed: std::sync::Mutex<super::oauth_flow::ReconnectState>,
 }
 
 /// Lock a `std::sync::Mutex`, recovering the guard from a poisoned lock (a thread
@@ -345,6 +348,14 @@ impl McpManager {
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
                 let slot = manager.inner.slot_for(&cfg).await;
+                // Capture the reconnect generation BEFORE the connect: this task's
+                // verdict is about the token held NOW. If an authorize/disconnect
+                // lands while the connect is in flight, it bumps the generation
+                // and the guarded write below is dropped — a stale warm failure
+                // must not resurrect "Needs reconnect" on a freshly authorized
+                // connector.
+                let oauth_generation = (cfg.auth_mode == McpAuthMode::OAuth)
+                    .then(|| lock_recover(&manager.inner.oauth_reconnect_needed).generation(&cfg.id));
                 let ready = slot.ensure_ready(&cfg).await;
                 // ponytail: the OAuth "needs reconnect" flag is refreshed HERE, at
                 // warm-on-open — not continuously. A connector that HELD a token
@@ -354,20 +365,15 @@ impl McpManager {
                 // already surfaces the readable "needs reconnecting" error at turn
                 // time. A continuous health probe would be added in the manager's
                 // failure seam, not here, and only if dead-token status confuses.
-                if cfg.auth_mode == McpAuthMode::OAuth {
-                    use super::oauth_flow::{oauth_token_present, reconnect_flag_update, ReconnectFlag};
+                if let Some(generation) = oauth_generation {
+                    use super::oauth_flow::{oauth_token_present, reconnect_flag_update};
                     // Keychain read only on the Err path — Ok clears regardless.
                     let has_token = ready.is_err() && oauth_token_present(&cfg.id);
-                    match reconnect_flag_update(ready.is_ok(), has_token) {
-                        ReconnectFlag::Set => {
-                            lock_recover(&manager.inner.oauth_reconnect_needed)
-                                .insert(cfg.id.clone());
-                        }
-                        ReconnectFlag::Clear => {
-                            lock_recover(&manager.inner.oauth_reconnect_needed).remove(&cfg.id);
-                        }
-                        ReconnectFlag::Leave => {}
-                    }
+                    lock_recover(&manager.inner.oauth_reconnect_needed).apply_if_current(
+                        &cfg.id,
+                        generation,
+                        reconnect_flag_update(ready.is_ok(), has_token),
+                    );
                 }
                 if let Err(error) = ready {
                     tauri_plugin_log::log::info!(

@@ -2721,6 +2721,26 @@ fn finish_recording_settings_update(
         }
     }
 
+    // An MCP connector whose auth mode flipped (Bearer↔OAuth) leaves the OLD
+    // mode's payload in its polymorphic keychain slot — worst case the OAuth
+    // Token Set JSON attached verbatim as an `Authorization: Bearer` header.
+    // Clear the slot at the save that lands the flip, so neither path can read
+    // the other mode's leftover (ADR 0051; the transport also refuses a
+    // mismatched payload as a backstop).
+    for id in crate::ask_ai::mcp::auth_mode_flipped_ids(
+        &previous_settings.ai_runtime.mcp_servers,
+        &settings.ai_runtime.mcp_servers,
+    ) {
+        match app_infra::delete_mcp_server_secret(&id) {
+            Ok(()) => debug_log::log_info(format!(
+                "cleared the keychain secret for MCP connector \"{id}\" after its auth mode changed"
+            )),
+            Err(error) => debug_log::log_error(format!(
+                "failed to clear the keychain secret for MCP connector \"{id}\" after its auth mode changed: {error}"
+            )),
+        }
+    }
+
     if previous_settings.retention_policy != settings.retention_policy {
         if let Some(background_workers) =
             app_handle.try_state::<crate::app_infra::BackgroundWorkersState>()

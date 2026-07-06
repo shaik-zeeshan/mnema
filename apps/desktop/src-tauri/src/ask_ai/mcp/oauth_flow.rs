@@ -9,7 +9,7 @@
 //! mints/claims browser flows and drops the cached slot so the next turn redials
 //! with the fresh token.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -269,8 +269,9 @@ impl McpManager {
                 },
             );
         }
-        // Starting a fresh authorize clears any stale *Needs reconnect* flag.
-        lock_recover(&self.inner().oauth_reconnect_needed).remove(id);
+        // Starting a fresh authorize clears any stale *Needs reconnect* flag and
+        // bumps the generation so an in-flight warm write can't resurrect it.
+        lock_recover(&self.inner().oauth_reconnect_needed).clear_and_bump(id);
         tauri_plugin_log::log::info!(
             "Ask AI MCP OAuth authorization began for \"{}\"",
             cfg.label
@@ -332,9 +333,11 @@ impl McpManager {
             match pending.manager.exchange_code_for_token(&code, &state).await {
                 Ok(_token) => {
                     // The Token Set is now in the keychain (auto-persisted). Clear
-                    // the reconnect flag and drop any cached (pre-auth, failing)
-                    // slot so the next turn dials with the fresh token.
-                    lock_recover(&manager.inner().oauth_reconnect_needed).remove(&id);
+                    // the reconnect flag (bumping the generation, so a warm task
+                    // still connecting with the OLD token can't re-flag a freshly
+                    // authorized connector) and drop any cached (pre-auth,
+                    // failing) slot so the next turn dials with the fresh token.
+                    lock_recover(&manager.inner().oauth_reconnect_needed).clear_and_bump(&id);
                     manager.inner().slots.lock().await.remove(&id);
                     tauri_plugin_log::log::info!(
                         "Ask AI MCP OAuth authorization completed for \"{id}\""
@@ -393,7 +396,7 @@ async fn drop_oauth_local(inner: &Inner, id: &str) {
             "Ask AI MCP failed to delete the OAuth Token Set for \"{id}\": {error}"
         );
     }
-    lock_recover(&inner.oauth_reconnect_needed).remove(id);
+    lock_recover(&inner.oauth_reconnect_needed).clear_and_bump(id);
     lock_recover(&inner.oauth_pending).retain(|_state, entry| entry.connector_id != id);
     inner.slots.lock().await.remove(id);
 }
@@ -575,6 +578,60 @@ pub(super) fn reconnect_flag_update(ready_ok: bool, has_token: bool) -> Reconnec
         (true, _) => ReconnectFlag::Clear,
         (false, true) => ReconnectFlag::Set,
         (false, false) => ReconnectFlag::Leave,
+    }
+}
+
+/// The *Needs reconnect* set plus a per-connector GENERATION counter that makes
+/// warm-race writes lose to newer truth instead of to task completion order. A
+/// warm task connects with whatever token was held when it STARTED; if a browser
+/// re-authorize (or disconnect) lands while that connect is in flight, the warm
+/// task's eventual verdict is about a token that no longer exists and must not
+/// resurrect (or clear) the flag. Authorize/disconnect bump the generation as
+/// they clear; a warm task captures the generation before its connect and its
+/// write is applied only if the generation still matches (ADR 0051: the
+/// reconnect state converges under any interleaving).
+#[derive(Default)]
+pub(super) struct ReconnectState {
+    flagged: HashSet<String>,
+    generation: HashMap<String, u64>,
+}
+
+impl ReconnectState {
+    /// The current generation for one connector — captured by a warm task
+    /// BEFORE its connect attempt, to guard the write after it.
+    pub(super) fn generation(&self, id: &str) -> u64 {
+        self.generation.get(id).copied().unwrap_or(0)
+    }
+
+    /// Newer truth arrived (a fresh authorize began, a callback persisted a new
+    /// token, or the connector disconnected): clear the flag and bump the
+    /// generation so every in-flight warm write against the OLD token is
+    /// rejected when it resolves.
+    pub(super) fn clear_and_bump(&mut self, id: &str) {
+        self.flagged.remove(id);
+        *self.generation.entry(id.to_string()).or_insert(0) += 1;
+    }
+
+    /// Apply a warm-task verdict ONLY if `generation` (captured before the
+    /// connect) is still current — a stale verdict is dropped, whatever it says.
+    pub(super) fn apply_if_current(&mut self, id: &str, generation: u64, update: ReconnectFlag) {
+        if generation != self.generation(id) {
+            return;
+        }
+        match update {
+            ReconnectFlag::Set => {
+                self.flagged.insert(id.to_string());
+            }
+            ReconnectFlag::Clear => {
+                self.flagged.remove(id);
+            }
+            ReconnectFlag::Leave => {}
+        }
+    }
+
+    /// Whether the connector currently shows *Needs reconnect*.
+    pub(super) fn contains(&self, id: &str) -> bool {
+        self.flagged.contains(id)
     }
 }
 
