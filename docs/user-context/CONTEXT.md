@@ -48,7 +48,12 @@ so a **Subject** holds **as many Conclusion values as the user has distinct beli
 Conclusion values, each with its own evidence and **Confidence** trajectory), not one compound
 sentence bundling several claims. Open-ended rather than a fixed
 `subject+attribute+value` schema, because the set of things worth noticing about a person is
-unbounded.
+unbounded. **Behavioral Routines are in scope** (decided Jul 2026): observable, evidenced habits of
+what the user does and when — "checks Slack first thing in the morning", "most focused work lands
+in afternoons" — are Conclusion-shaped (they gain evidence daily, fade when the habit breaks, and
+are dismissible). Personality/character judgments ("is impatient", "is an introvert") remain
+out of scope: uncorrectable by evidence and too close to the **Sensitive Category Guardrail**
+trust line.
 _Avoid_: tag, sentiment score, structured fact, static profile attribute, personality trait,
 compound multi-claim statement, one canonical belief per subject
 
@@ -97,6 +102,16 @@ A strength value on a **Conclusion** that is **recency-weighted evidence**: rece
 values push it down faster. One rule yields both the quiet fade and the active reversal, and it
 falls out of the grounding — the evidence links' recency *is* the confidence.
 _Avoid_: static score, relevance rank, probability, contradiction-only revision
+
+**Recurrence Digest**:
+A compact, deterministic aggregate block in the **Conclusion**-distillation prompt that gives the
+**Reasoning Engine** the multi-week horizon a **Behavioral Routine** needs: plain counting over the
+stored **Activity** record (per-hour-of-day category/app histograms, first-activity-of-day
+patterns, focus-by-hour) — no LLM, negligible tokens, the **Usage Charts** counting shape. It is
+derivation *input only*, never stored evidence: routine Conclusions cite recent in-window exemplar
+Activities as their evidence links.
+_Avoid_: wider raw Activity window, separate routine-detection pass, aggregate-as-evidence,
+stored statistics table
 
 **History Backfill**:
 What the **Reasoning Engine** does to existing retained captures when first enabled. It is **paced
@@ -501,6 +516,26 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   ([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)). The embedder
   reuses the **Semantic Search** machinery ([ADR 0036](../adr/0036-semantic-search-v1-hybrid-fastembed-vectors-with-fts5.md) /
   [ADR 0037](../adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md)).
+- **Behavioral Routines are distilled from a Recurrence Digest, not a wider raw window** (decided
+  Jul 2026). The distillation pass stays at its bounded recent-Activity window, but the prompt gains
+  a compact deterministic **Recurrence Digest** block: plain counting over the stored **Activity**
+  record for the last few weeks (per-hour-of-day category/app histograms, first-activity-of-day
+  patterns, focus-by-hour) — no LLM, no meaningful token cost, the same counting shape as **Usage
+  Charts**. Distillation timestamps switch from labeled UTC to **local time** (the Digest's offset
+  approach) so "morning" is representable at all, and the preamble's exemplars include
+  routine-shaped beliefs. The aggregate is derivation *input*, never stored evidence: a routine
+  **Conclusion** cites the recent in-window exemplar Activities as its evidence links, so the
+  grounded-Conclusion invariant holds; its clickable proof is a handful of recent exemplars, with
+  the recurrence claim justified by the aggregate (accepted trade). A wider raw Activity window
+  (token blowup for a slow-moving signal) and a separate routine-detection worker beat (machinery
+  before need) were rejected. Focus-shaped routines follow the **observation posture** (the
+  **Focus Classification** "Scattered" softening, extended): the engine states *when focused work
+  happens* ("Deep-focus work tends to land in the afternoons"), never a productivity verdict
+  ("most productive in the afternoon") — same retrievable knowledge, no grade of the user stored
+  as a standing belief. Routines get **no reserved subject taxonomy**: the engine coins subjects
+  naturally (a routine about a thing files under the thing's existing subject — "watches gaming
+  streams every evening" lands under Gaming), and near-duplicate routine handles are the existing
+  recall legs' problem to catch, calibration — not a taxonomy — being the fix if they miss.
 - Derivation runs on **two cadences**: **Activity** derivation is opportunistic and frequent
   (batched, preferring idle time or just-after-recording, the **OCR Catch-Up** pattern, off the hot
   path), while **Conclusion** re-distillation runs on a slower beat over accumulated Activities, plus
