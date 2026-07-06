@@ -208,15 +208,18 @@ proportional-block calendar view, Cards⇄Blocks toggle
 **Receipt**:
 Bounded **evidence playback and inspection** for one **Activity**: a modal that scrubs the
 **Captured Frame** pixels behind the Activity's span (engine-cited frames marked on the track, the
-headline frame as poster, a wall-clock playhead) **and** plays the Activity's cited **Audio
-Transcription Span** moments as **bounded, synchronized audio-plus-screen clips** — a cited
-segment's real audio at 1× while the frame viewer runs over that same window, clocked by the audio
-(`get_audio_segment_media` per segment). A Receipt is **both proof and inspection of one
-Activity**: the founding promise that every AI-written sentence is one interaction from its
-evidence, extended from "see the cited pixel" to "hear the cited moment." The line it holds is
-**bounded, not silent** — every affordance stays inside the Activity's own span; the fast frame
-**timelapse** (2×/8×/16× scan) and a slow real-time cited **audio clip** are two speeds of the same
-bounded surface. **Unbounded** inspection — continuous cross-Activity audio scrubbing, OCR text
+headline frame as poster, a wall-clock playhead) **and** surfaces the Activity's speech as a
+**Speaker-Turn Lane** + **synced transcript reader** over **every diarized turn within the span**
+(cited turns marked, the headline turn ringed — proof stays legible amid context). Selecting any
+turn plays *that segment's* real audio at 1× while the frame viewer runs over the same window,
+clocked by the audio (`get_audio_segment_media` per segment) — a **bounded, synchronized
+audio-plus-screen** relive that stops at the segment end (no cross-segment stitching). A Receipt is
+**both proof and inspection of one Activity**: the founding promise that every AI-written sentence is
+one interaction from its evidence, extended from "see the cited pixel" to "hear the cited moment."
+The line it holds is **bounded, not silent** — every affordance stays inside the Activity's own span
+(the transcript reader shows all *in-span* turns, still bounded; turns past the span and
+cross-Activity transcript are **Timeline**'s); the fast frame **timelapse** (2×/8×/16× silent scan)
+and a slow real-time per-turn **audio relive** (1× only) are two speeds of the same bounded surface. **Unbounded** inspection — continuous cross-Activity audio scrubbing, OCR text
 copy/download, frame/audio export, navigation past the span — still belongs to **Timeline**, and
 "Open in Timeline" is the handoff for anything wider than this Activity. Because **Retention
 Policy** ages out raw frames and audio but never the **Activity**

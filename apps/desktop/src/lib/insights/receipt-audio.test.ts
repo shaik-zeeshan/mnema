@@ -2,9 +2,9 @@
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
 import {
+  assignSpeakerColors,
   audioFooterLeft,
-  audioSpeakerSummary,
-  audioTickViews,
+  buildTurnViews,
   captionFromTurns,
   frameIndexForMs,
   isFallbackSpeaker,
@@ -13,6 +13,7 @@ import {
   sourceKindLabel,
   sourceKindReadable,
   speakerDisplay,
+  turnSpeakerRoster,
 } from "./receipt-audio";
 
 const evidence = [
@@ -109,47 +110,122 @@ describe("captionFromTurns", () => {
   });
 });
 
-describe("audio view models", () => {
-  const citations = [
-    {
-      audioSegmentId: 2,
-      capturedAtMs: 1500,
-      isHeadline: true,
-      sourceKind: "microphone",
-      startMs: 1500,
-      endMs: 1800,
-      turns: [{ personId: null, speakerLabel: "Unknown Speaker 1", transcriptText: "hi" }],
-      caption: "hi",
-    },
-    {
-      audioSegmentId: 4,
-      capturedAtMs: 2500,
-      isHeadline: false,
-      sourceKind: "system_audio",
-      startMs: 2500,
-      endMs: 2900,
-      turns: [{ personId: 7, speakerLabel: "Unknown Speaker 2", transcriptText: "yo" }],
-      caption: "yo",
-    },
-  ];
-  const profiles = [{ id: 7, displayName: "Alice" }];
-
-  it("positions ticks by captured start across the span", () => {
-    const ticks = audioTickViews(citations, profiles, 1000, 3000);
-    expect(ticks.map((t) => t.pos)).toEqual([0.25, 0.75]);
-    expect(ticks[0].headline).toBe(true);
-    expect(ticks[0].speaker).toBe("You");
-    expect(ticks[1].speaker).toBe("Alice");
+describe("turnSpeakerRoster", () => {
+  it("lists distinct speakers in turn order and nudges an unnamed voice", () => {
+    const turns = [
+      { speaker: "You", isFallback: false },
+      { speaker: "Alice", isFallback: false },
+      { speaker: "You", isFallback: false }, // repeat dropped
+      { speaker: "Speaker 2", isFallback: true },
+    ];
+    expect(turnSpeakerRoster(turns)).toBe("You · Alice · Speaker 2 (unnamed → name in Timeline)");
   });
-
-  it("summarizes the footer roster from mic + named/unnamed system speakers", () => {
-    expect(audioSpeakerSummary(citations, profiles)).toBe("You · Alice");
-    const unnamed = [{ ...citations[1], turns: [{ personId: null, speakerLabel: "Unknown Speaker 2" }] }];
-    expect(audioSpeakerSummary(unnamed, profiles)).toBe("Speaker 2 (unnamed → name in Timeline)");
+  it("is empty for no turns", () => {
+    expect(turnSpeakerRoster([])).toBe("");
   });
+});
 
-  it("footer left copy is honest about expired vs never-captured frames", () => {
+describe("audioFooterLeft", () => {
+  it("is honest about expired vs never-captured frames", () => {
     expect(audioFooterLeft(0)).toBe("0 screen frames — captured as audio");
     expect(audioFooterLeft(3)).toBe("0 screen frames — screen frames have expired");
+  });
+});
+
+describe("assignSpeakerColors", () => {
+  it("pins You to the audio channel lavender", () => {
+    expect(assignSpeakerColors(["You"]).get("You")).toBe("--cat-communication");
+  });
+  it("gives other names distinct palette colors in first-appearance order", () => {
+    const colors = assignSpeakerColors(["Bob", "Carol"]);
+    expect(colors.get("Bob")).toBe("--cat-meetings");
+    expect(colors.get("Carol")).toBe("--cat-research");
+    expect(colors.get("Bob")).not.toBe(colors.get("Carol"));
+  });
+  it("reuses the same color for a repeated name and never spends a slot on You", () => {
+    const colors = assignSpeakerColors(["Bob", "You", "Carol", "Bob"]);
+    expect(colors.get("Bob")).toBe("--cat-meetings");
+    expect(colors.get("You")).toBe("--cat-communication");
+    expect(colors.get("Carol")).toBe("--cat-research"); // You did not consume a slot
+  });
+});
+
+describe("buildTurnViews", () => {
+  const micStart = "2026-07-06T10:00:00.000Z";
+  const sysStart = "2026-07-06T10:10:00.000Z";
+  const segMic = { id: 10, sourceKind: "microphone", startedAt: micStart, endedAt: "2026-07-06T10:05:00.000Z" };
+  const segSys = { id: 20, sourceKind: "system_audio", startedAt: sysStart, endedAt: "2026-07-06T10:15:00.000Z" };
+  const segments = [
+    // deliberately out of order to prove the builder sorts by absolute start
+    {
+      segment: segSys,
+      turns: [
+        { id: 2, personId: 7, speakerLabel: "Unknown Speaker 2", startMs: 1000, endMs: 3000, transcriptText: "hi there" },
+        { id: 3, personId: null, speakerLabel: "Unknown Speaker 3", startMs: 4000, endMs: 6000, transcriptText: "back to me" },
+        // Over-cluster artifact: a real diarizer cluster with no transcribed
+        // words. Must be dropped (Timeline's `if (!text) continue`), never a
+        // phantom "Speaker 4".
+        { id: 4, personId: null, speakerLabel: "Unknown Speaker 4", startMs: 7000, endMs: 8000, transcriptText: null },
+      ],
+    },
+    {
+      segment: segMic,
+      turns: [
+        { id: 1, personId: null, speakerLabel: "Unknown Speaker 1", startMs: 2000, endMs: 5000, transcriptText: "hello from mic" },
+      ],
+    },
+  ];
+  const profiles = [{ id: 7, displayName: "Bob" }];
+  const citedRefs = [{ subjectId: 20, isHeadline: true }];
+
+  it("lifts each turn to absolute epoch = segment start + in-segment offset", () => {
+    const views = buildTurnViews(segments, citedRefs, profiles);
+    const byKey = Object.fromEntries(views.map((v) => [v.key, v]));
+    expect(byKey["10:1"].startMs).toBe(Date.parse(micStart) + 2000);
+    expect(byKey["10:1"].endMs).toBe(Date.parse(micStart) + 5000);
+    expect(byKey["20:2"].startMs).toBe(Date.parse(sysStart) + 1000);
+    expect(byKey["20:3"].endMs).toBe(Date.parse(sysStart) + 6000);
+    expect(byKey["20:2"].sourceMeta).toBe("system audio");
+    expect(byKey["10:1"].sourceMeta).toBe("microphone");
+  });
+
+  it("orders ascending by absolute startMs across segments", () => {
+    const views = buildTurnViews(segments, citedRefs, profiles);
+    expect(views.map((v) => v.key)).toEqual(["10:1", "20:2", "20:3"]);
+    for (let i = 1; i < views.length; i++) {
+      expect(views[i].startMs).toBeGreaterThanOrEqual(views[i - 1].startMs);
+    }
+  });
+
+  it("marks cited by ref-set membership and flags the headline segment's turns", () => {
+    const views = buildTurnViews(segments, citedRefs, profiles);
+    const mic = views.find((v) => v.key === "10:1");
+    const sys = views.find((v) => v.key === "20:2");
+    expect(mic.cited).toBe(false); // segment 10 not cited
+    expect(mic.isHeadline).toBe(false);
+    expect(sys.cited).toBe(true); // segment 20 is cited
+    expect(sys.isHeadline).toBe(true); // 20 is the headline ref
+  });
+
+  it("resolves speaker live: mic → You, personId → profile name, else Speaker N", () => {
+    const views = buildTurnViews(segments, citedRefs, profiles);
+    const byKey = Object.fromEntries(views.map((v) => [v.key, v]));
+    expect(byKey["10:1"].speaker).toBe("You");
+    expect(byKey["10:1"].isFallback).toBe(false);
+    expect(byKey["20:2"].speaker).toBe("Bob"); // personId 7 resolves live
+    expect(byKey["20:3"].speaker).toBe("Speaker 3"); // unnamed fallback
+    expect(byKey["20:3"].isFallback).toBe(true);
+    // colors: You pinned, Bob + Speaker 3 get distinct palette entries
+    expect(byKey["10:1"].colorVar).toBe("--cat-communication");
+    expect(byKey["20:2"].colorVar).toBe("--cat-meetings");
+    expect(byKey["20:3"].colorVar).toBe("--cat-research");
+  });
+
+  it("drops a wordless turn so an over-cluster never adds a phantom speaker", () => {
+    const views = buildTurnViews(segments, citedRefs, profiles);
+    expect(views.find((v) => v.key === "20:4")).toBeUndefined(); // wordless → gone
+    expect(views.some((v) => v.speaker === "Speaker 4")).toBe(false); // no phantom
+    expect(views.find((v) => v.key === "20:3").text).toBe("back to me"); // words kept
+    expect(views.find((v) => v.key === "20:2").text).toBe("hi there");
   });
 });

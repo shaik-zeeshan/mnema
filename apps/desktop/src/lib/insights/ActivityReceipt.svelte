@@ -1,24 +1,27 @@
 <script lang="ts">
   // ActivityReceipt — bounded evidence playback for one Journal activity card.
-  // It plays back the real captured frames over the card's time range as a
-  // scrubbable "timelapse": no video is ever encoded — playback swaps frame
-  // previews on requestAnimationFrame. Evidence ticks mark engine-cited frames
-  // (the headline doubles as the poster), a wall-clock playhead reads WHEN each
-  // frame happened, and "Open in Timeline →" hands the current frame off to the
-  // raw Timeline surface.
-  //
-  // Per ADR 0049 it ALSO plays cited *audio*: a lavender tick per cited spoken
-  // segment plays that segment's real audio at 1× while the frame viewer runs
-  // the same window, clocked by the <audio> element (bounded → the segment IS
-  // the bound). Audio-only Activities become a plain bounded audio player, never
-  // a false "footage expired". It DISPLAYS read-only speaker attribution, late-
-  // bound by id (resolved live from person profiles, never frozen). The boundary
-  // is now bounded→unbounded: Timeline still owns unbounded audio scrub, OCR
-  // copy/download, export, cross-Activity nav, and speaker naming/merging.
-  // "Open in Timeline" remains the answer for anything wider than this Activity.
+  // Plays the real captured frames over the card's span as a scrubbable
+  // "timelapse" (no video is encoded — playback swaps frame previews on rAF);
+  // ticks mark engine-cited frames (headline = poster) and a wall-clock playhead
+  // reads WHEN each frame happened. Per ADR 0049 it ALSO plays cited *audio* via
+  // a synced transcript reader: each spoken turn is a click-first row colored per
+  // speaker; selecting one plays that segment's real audio at 1× while the frame
+  // viewer runs the same window, clocked by the <audio> element, then auto-
+  // advances to the next segment so the span plays through. Clicking the scrub
+  // bar lands playback at that instant. The reader highlights the turn under the
+  // current playhead.
+  // 2×/8×/16× is
+  // the silent frame timelapse. Audio-only Activities become a bounded audio
+  // player, never a false "footage expired". Attribution is read-only, late-bound
+  // by id. "Open in Timeline" handles anything wider (OCR copy, export, scrub).
 
   import { invoke } from "@tauri-apps/api/core";
   import { goto } from "$app/navigation";
+  import IconArrowRight from "~icons/lucide/arrow-right";
+  import IconClose from "~icons/lucide/x";
+  import IconExpired from "~icons/lucide/history";
+  import IconPause from "~icons/lucide/pause";
+  import IconPlay from "~icons/lucide/play";
   import Segmented from "$lib/components/Segmented.svelte";
   import { tip } from "$lib/components/tooltip";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
@@ -34,22 +37,22 @@
     countCaptureSegments,
     framesPerSecond,
     initialPosterIndex,
+    isAudibleSpeed,
     SPEEDS,
     type Speed,
   } from "$lib/insights/receipt-playback";
   import { ReceiptFrameLoader } from "$lib/insights/receipt-frames";
   import {
-    type AudioCitation,
-    audioCurrentView,
     audioFooterLeft,
-    audioSpeakerSummary,
-    audioTickViews,
-    clipRateLabelOf,
     frameIndexForMs,
     partitionEvidence,
     receiptViewState,
+    turnSpeakerRoster,
+    type TurnView,
   } from "$lib/insights/receipt-audio";
+  import { activeKeyAt, defaultSelectedKey, nextClipTurn, turnAtMs } from "$lib/insights/receipt-lane";
   import { ReceiptAudioLoader } from "$lib/insights/receipt-audio-loader";
+  import ReceiptTranscript from "$lib/insights/ReceiptTranscript.svelte";
   import type { Activity } from "$lib/types/recording";
   import type {
     FrameDto,
@@ -70,19 +73,19 @@
   let strip = $state<StripFrame[]>([]); // frames over the span, ascending
   let index = $state(0); // current frame index
   let playing = $state(false);
-  let speed = $state<Speed>(8); // 8× per mockup default
+  let speed = $state<Speed>(8); // 8× silent-timelapse default; onTurns drops to 1× when audio exists
   let loading = $state(true);
   let cacheBump = $state(0); // bumped when a preview lands (display dep)
   let currentMeta = $state<FrameDto | null>(null);
   let thumbUrls = $state<Record<number, string>>({}); // frameId → preview URL
 
-  // ── Cited-audio state (ADR 0049) ─────────────────────────────────────
-  let audioCitations = $state<AudioCitation[]>([]); // hydrated, sorted by start
+  // ── Span-wide turns + selection (ADR 0049 redesign) ──────────────────
+  let turns = $state<TurnView[]>([]); // every spoken turn over the span, ordered
+  let selectedKey = $state<string | null>(null); // the one selection the lane + reader share
   let profiles = $state<PersonProfileDto[]>([]); // for live name resolution
-  let clipMode = $state(false); // a bounded 1× clip is running (audio clocks)
   let clipPlaying = $state(false); // the <audio> element's play/pause state
-  let clipStartMs = $state(0); // active clip's segment start (wall-clock)
-  let activeClipId = $state<number | null>(null);
+  let clipStartMs = $state(0); // active clip's segment start (wall-clock epoch)
+  let activeClipId = $state<number | null>(null); // the segment whose audio is loaded
   let audioEl = $state<HTMLAudioElement | null>(null);
   let clipToken = 0; // guards the async media fetch; a new clip/activity drops it
 
@@ -95,10 +98,16 @@
     onThumb: (fid, url) => (thumbUrls[fid] = url),
     onMeta: (meta) => (currentMeta = meta),
   });
-  // Cited-audio hydration (profiles + per-segment source/turns) + clip media.
+  // Cited-audio hydration: shared profiles + the span's ordered TurnView[].
   const audioLoader = new ReceiptAudioLoader({
     onProfiles: (p) => (profiles = p),
-    onCitations: (c) => (audioCitations = c),
+    onTurns: (t) => {
+      turns = t;
+      selectedKey = defaultSelectedKey(t);
+      // Audio available → default to 1× so Play relives the spoken moment with
+      // real audio; a silent frame-only activity keeps the 8× timelapse default.
+      speed = t.length > 0 ? 1 : 8;
+    },
   });
   let loadGen = 0; // bumped per activity load; a stale strip fetch drops
   let rafId: number | null = null;
@@ -145,19 +154,33 @@
   // Which viewer to render: frames win; else audio if any spoken evidence
   // survives; else the honest expired panel.
   const viewState = $derived(receiptViewState(strip.length, audioEvidence.length));
-
-  // Audio view models (assembled by pure helpers so this block stays one-liners).
-  const stripMs = $derived(strip.map((f) => f.ms));
-  const audioTicks = $derived(audioTickViews(audioCitations, profiles, activity.startedAtMs, activity.endedAtMs));
-  const audioCurrent = $derived(audioCurrentView(audioCitations, profiles, activeClipId));
-  const clipRateLabel = $derived(clipRateLabelOf(audioCurrent.citation, clockSec));
   const isAudioOnly = $derived(viewState === "audio-only");
-  const audible = $derived(isAudioOnly || clipMode); // the <audio> owns the playhead
-  const playIcon = $derived(audible ? (clipPlaying ? "⏸" : "▶") : playing ? "⏸" : "▶");
-  const audioHeadMs = $derived(audioCurrent.citation?.capturedAtMs ?? null);
-  // The wall-clock playhead: audio segment start when audio-only, else the frame.
-  const headPos = $derived(isAudioOnly ? (audioHeadMs == null ? 0 : posFor(audioHeadMs)) : currentPos);
-  const headClock = $derived(isAudioOnly ? (audioHeadMs == null ? "" : clock(audioHeadMs)) : currentMs == null ? "" : clock(currentMs));
+
+  const stripMs = $derived(strip.map((f) => f.ms));
+  const selectedTurn = $derived(turns.find((t) => t.key === selectedKey) ?? null);
+  const selOrdinal = $derived(selectedKey == null ? 0 : turns.findIndex((t) => t.key === selectedKey) + 1);
+
+  // 1× relives the selected turn (its real audio clocks the frames); 2×/8×/16×
+  // is a silent frame timelapse. Audio-only is always audible.
+  const audible = $derived(isAudioOnly || isAudibleSpeed(speed));
+  const clipActive = $derived(activeClipId != null); // a segment's audio is loaded
+  const isPlaying = $derived(audible ? clipPlaying : playing);
+  const relivingClip = $derived(audible && selectedTurn != null && clipActive);
+
+  // The wall-clock playhead: the selected turn's start when audio-only, else the
+  // current frame (which the clip drives via onAudioTimeUpdate while reliving).
+  const headMs = $derived(isAudioOnly ? (selectedTurn?.startMs ?? null) : currentMs);
+  const headPos = $derived(headMs == null ? 0 : posFor(headMs));
+  const headClock = $derived(headMs == null ? "" : clock(headMs));
+
+  // The transcript row to light up: the turn under the playhead. While a clip
+  // plays, restrict to that segment's turns so consecutive same-segment turns
+  // light up in sequence as their audio plays (and an overlapping mic/system turn
+  // never steals the highlight); otherwise track across every turn — idle at the
+  // poster, scrubbing, or the silent timelapse.
+  const clipTurns = $derived(activeClipId == null ? turns : turns.filter((t) => t.audioSegmentId === activeClipId));
+  const activeKey = $derived(activeKeyAt(clipTurns, headMs) ?? selectedKey);
+
   const headlineFrameId = $derived(frameEvidence.find((e) => e.isHeadline)?.subjectId ?? null);
   const ticks = $derived.by(() => {
     const out: { pos: number; headline: boolean }[] = [];
@@ -179,6 +202,10 @@
   }
   function clockSec(ms: number): string {
     return new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+  }
+  // Lane/transcript time: the wall clock without the AM/PM suffix (matches the mockup).
+  function clockShort(ms: number): string {
+    return clock(ms).replace(/\s?[AP]M$/i, "");
   }
   function posFor(ms: number): number {
     const span = activity.endedAtMs - activity.startedAtMs;
@@ -238,9 +265,9 @@
     return { destroy: () => thumbObserver?.unobserve(node) };
   }
 
-  // ── Playback loop (frame-swap timelapse) ─────────────────────────────
+  // ── Playback loop (frame-swap timelapse; silent 2×/8×/16× only) ──────
   function tick(ts: number): void {
-    if (!playing || clipMode) {
+    if (!playing) {
       rafId = null;
       return;
     }
@@ -263,7 +290,7 @@
   }
 
   function play(): void {
-    if (clipMode || strip.length === 0) return;
+    if (strip.length === 0) return;
     if (index >= strip.length - 1) index = 0; // replay from the top
     playing = true;
     lastTs = 0;
@@ -278,91 +305,115 @@
   }
 
   // Play/Pause routes to whichever clock owns the surface: the <audio> element
-  // while a clip runs, the frame timelapse while frames play, or (audio-only)
-  // starting the current segment's clip.
+  // when audible (audio-only, or 1× reliving) — starting the selected turn's clip
+  // if none is loaded — else the silent frame timelapse.
   function togglePlay(): void {
-    if (clipMode) {
+    if (audible) {
       if (!audioEl) return;
+      if (activeClipId == null) {
+        if (selectedTurn) void playClip(selectedTurn);
+        return;
+      }
       audioEl.paused ? void audioEl.play().catch(() => {}) : audioEl.pause();
       return;
     }
-    if (strip.length > 0) {
-      playing ? pause() : play();
-      return;
-    }
-    const id = audioCurrent.citation?.audioSegmentId;
-    if (id != null) void playClip(id);
+    if (strip.length > 0) playing ? pause() : play();
   }
 
   function seek(i: number): void {
-    if (clipMode) stopClip();
+    stopClip(); // a manual frame move preempts the audio clock
     pause();
     index = clampIndex(i, strip.length);
   }
 
   function step(delta: number): void {
-    if (clipMode) stopClip();
+    stopClip();
     pause();
     index = clampIndex(index + delta, strip.length);
   }
 
+  // ── Selection = play (ADR 0049): a lane block and its transcript row are one
+  // selection; clicking either plays that spoken moment at 1×. ────────────────
+  function onSelect(key: string): void {
+    selectedKey = key;
+    const turn = turns.find((t) => t.key === key);
+    if (!turn) return;
+    speed = 1;
+    void playClip(turn);
+  }
+
   function onSpeedChange(v: string): void {
-    if (clipMode) return; // speed is inert during a 1× clip
     speed = Number(v) as Speed;
+    if (isAudibleSpeed(speed) && selectedTurn) void playClip(selectedTurn);
+    else stopClip(); // silent timelapse; leave paused
   }
 
   // ── Bounded, synchronized audio+screen clip (ADR 0049) ───────────────
-  // Clicking a cited audio tick plays that segment's real audio at 1×; on each
-  // timeupdate the frame viewer jumps to the strip frame at/just-before the
-  // audio's wall-clock position, so one playhead drives both.
-  async function playClip(id: number): Promise<void> {
-    const c = audioCitations.find((x) => x.audioSegmentId === id);
-    if (!c || c.capturedAtMs == null || !audioEl) return;
+  // Play the selected turn's segment audio at 1×; on each timeupdate the frame
+  // viewer jumps to the strip frame at/just-before the audio's wall-clock
+  // position, so one playhead drives both. It plays the segment through, then
+  // auto-advances to the next (onended). Pass `seekToMs` to start at a chosen
+  // wall-clock instant within the segment (scrub-bar click) instead of its head.
+  async function playClip(turn: TurnView, seekToMs?: number): Promise<void> {
+    if (!audioEl) return;
     pause(); // stop the rAF timelapse; the audio clocks from here
     const token = ++clipToken;
-    const src = await audioLoader.fetchMediaSrc(id);
+    const src = await audioLoader.fetchMediaSrc(turn.audioSegmentId);
     if (token !== clipToken || !src || !audioEl) return; // superseded / failed
-    clipStartMs = c.capturedAtMs;
-    activeClipId = id;
-    clipMode = true;
+    clipStartMs = turn.segmentStartMs;
+    activeClipId = turn.audioSegmentId;
     audioEl.src = src;
-    void audioEl.play().catch(() => {
-      clipMode = false;
-    });
+    // currentTime only sticks once the source's metadata is in, so defer the
+    // seek to loadedmetadata (a fresh src fires it) and clamp to the real length.
+    const offsetSec = seekToMs == null ? 0 : Math.max(0, (seekToMs - turn.segmentStartMs) / 1000);
+    if (offsetSec > 0) {
+      const el = audioEl;
+      el.addEventListener(
+        "loadedmetadata",
+        () => { el.currentTime = Number.isFinite(el.duration) ? Math.min(offsetSec, el.duration) : offsetSec; },
+        { once: true },
+      );
+    }
+    void audioEl.play().catch(() => {});
   }
 
   function onAudioTimeUpdate(): void {
-    if (!clipMode || !audioEl) return;
+    if (activeClipId == null || !audioEl) return;
     const targetMs = clipStartMs + audioEl.currentTime * 1000;
     if (stripMs.length > 0) index = frameIndexForMs(stripMs, targetMs);
   }
 
-  // Clip finished: drop out of clip mode but leave the viewer on the last frame
-  // / the segment just heard (keep activeClipId so its caption stays shown).
+  // Clip finished: auto-advance to the next segment's clip so the whole span
+  // plays continuously (ADR 0049 amendment 2026-07-06); stop at the last
+  // segment. A manual pause fires onpause, not onended, so pausing never
+  // auto-advances.
   function onAudioEnded(): void {
-    clipMode = false;
     clipPlaying = false;
+    const next = nextClipTurn(turns, activeClipId);
+    if (!next) return; // last segment — stop at the span's end
+    selectedKey = next.key;
+    void playClip(next);
   }
 
-  // Stop any running clip and drop an in-flight media fetch (new activity or a
-  // manual frame move preempts the audio clock).
+  // Stop any running clip and drop an in-flight media fetch (new activity, a
+  // manual frame move, or a switch to a silent speed preempts the audio clock).
   function stopClip(): void {
     clipToken++;
     audioEl?.pause();
-    clipMode = false;
     clipPlaying = false;
     activeClipId = null;
   }
 
-  // Hydrate the cited spoken segments for the current activity.
+  // Hydrate the span's spoken turns for the current activity.
   function loadAudio(): void {
     stopClip();
-    audioCitations = [];
-    void audioLoader.load(audioEvidence);
+    turns = [];
+    selectedKey = null;
+    void audioLoader.loadSpan(activity.startedAtMs, activity.endedAtMs, audioEvidence);
   }
   const speedOptions = SPEEDS.map((s) => ({ value: String(s), label: `${s}×` }));
 
-  // ── Scrubbing ────────────────────────────────────────────────────────
+  // ── Scrubbing (frames follow the pointer; on release the audio lands there) ──
   function scrubToClientX(clientX: number): void {
     const el = trackEl;
     if (!el || strip.length === 0) return;
@@ -370,9 +421,31 @@
     const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
     index = Math.round(frac * (strip.length - 1));
   }
+  // Scrub-bar x → the wall-clock instant it points at over the activity span.
+  function msForClientX(clientX: number): number | null {
+    const el = trackEl;
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    return activity.startedAtMs + frac * (activity.endedAtMs - activity.startedAtMs);
+  }
+  // Release on the timeline lands the audio at that instant: load the segment
+  // covering it and play from the chosen offset (ADR 0049 amendment). A release
+  // over a silent gap clears the clip — the frame scrub already moved there.
+  function seekAudioAt(clientX: number): void {
+    if (turns.length === 0) return;
+    const ms = msForClientX(clientX);
+    if (ms == null) return;
+    const turn = turnAtMs(turns, ms);
+    if (!turn) { stopClip(); return; }
+    selectedKey = turn.key;
+    speed = 1;
+    void playClip(turn, ms);
+  }
   function onTrackPointerDown(e: PointerEvent): void {
-    if (clipMode) stopClip();
-    pause();
+    if (strip.length === 0) return; // audio-only track stays a read-only playhead
+    pause(); // stop the silent rAF timelapse
+    audioEl?.pause(); // silence the running clip while dragging; release re-lands it
     scrubbing = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     scrubToClientX(e.clientX);
@@ -382,17 +455,19 @@
     scrubToClientX(e.clientX);
   }
   function onTrackPointerUp(e: PointerEvent): void {
+    const wasScrubbing = scrubbing;
     scrubbing = false;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch { /* pointer already released */ }
+    if (wasScrubbing) seekAudioAt(e.clientX); // land audio at the released instant
   }
 
   // ── Open in Timeline handoff (frontend-only, no backend command) ─────
   // Hand off the current frame; for an audio-only receipt (no frame) hand off
-  // the current/headline audio segment instead.
+  // the selected spoken segment instead.
   function openInTimeline(): void {
-    const audioSegmentId = audioCurrent.citation?.audioSegmentId;
+    const audioSegmentId = selectedTurn?.audioSegmentId ?? null;
     if (currentFrameId != null) setPendingTimelineFocus({ frameId: currentFrameId });
     else if (audioSegmentId != null) setPendingTimelineFocus({ audioSegmentId });
     else return;
@@ -406,7 +481,7 @@
   }
 
   // ── Effects ──────────────────────────────────────────────────────────
-  // Reload the strip AND re-hydrate cited audio when the activity changes
+  // Reload the strip AND re-hydrate the spoken turns when the activity changes
   // (also runs on mount).
   $effect(() => {
     activity.id;
@@ -429,7 +504,7 @@
 
   // Window capture-phase keyboard — WKWebView doesn't focus <button> on click,
   // so element focus is unreliable; a window listener is the seam. Lives only
-  // while the receipt is mounted (Slice 3 renders it conditionally).
+  // while the receipt is mounted.
   $effect(() => {
     function onKey(e: KeyboardEvent): void {
       // Let the speed Segmented keep its own arrow-key nav when it's focused;
@@ -472,7 +547,7 @@
       </span>
       <h2 class="m-title" use:tip={activity.title}>{activity.title}</h2>
       <span class="when">{rangeLabel}</span>
-      <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}>✕</button>
+      <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}><IconClose /></button>
     </div>
 
     <!-- The compact journal rows show no summary, so the receipt is where the
@@ -492,35 +567,6 @@
       style="display:none"
     ></audio>
 
-    <!-- Lavender ticks below the spine: one per cited spoken segment, click →
-         bounded 1× clip. Hovering reveals the mockup's .tip-a (ADR 0049):
-         attribution label + cited transcript + play hint — CSS-shown, not a
-         plain-text `title`, so it matches the receipt's audio channel. -->
-    {#snippet audioTickRow()}
-      {#each audioTicks as t (t.id)}
-        <button
-          type="button"
-          class="ev-a"
-          class:ev-a--hl={t.headline}
-          style="left:{t.pos * 100}%"
-          aria-label={`Play spoken moment — ${t.speaker}, screen + audio, 1×`}
-          onpointerdown={(e) => e.stopPropagation()}
-          onclick={() => playClip(t.id)}
-        ></button>
-        <!-- Clamp the centered tooltip to [half-width, track − half-width] so an
-             edge tick doesn't push it past the modal's overflow-clip. -->
-        <div
-          class="tip-a"
-          style="left: clamp(180px, {t.pos * 100}%, calc(100% - 180px))"
-          aria-hidden="true"
-        >
-          <div class="lbl">◆ {t.label}</div>
-          {#if t.caption}<div class="snip">“{t.caption}”</div>{/if}
-          <div class="go">▶ Play this moment — screen + audio, 1×</div>
-        </div>
-      {/each}
-    {/snippet}
-
     {#if loading}
       <div class="viewer"><div class="skeleton" aria-hidden="true"></div></div>
       <div class="m-foot"><span>Loading footage…</span></div>
@@ -529,7 +575,7 @@
            spoken was cited, so this expired state is honest, not an edge case. -->
       <div class="viewer viewer--expired">
         <div class="exp">
-          <div class="exp__glyph">▸ ▸ ▸</div>
+          <div class="exp__glyph" aria-hidden="true"><IconExpired /></div>
           <h4>Footage expired</h4>
           <p>
             The raw frames behind this card were removed by Retention Cleanup. The
@@ -544,29 +590,23 @@
       </div>
     {:else}
       <!-- One surface, two viewers (ADR 0049): the frame timelapse, or a bounded
-           audio player when no frames survive. Scrub/controls/footer are shared. -->
+           audio player when no frames survive. Scrub/lane/reader are shared. -->
       {#if isAudioOnly}
         <div class="viewer viewer--audio">
           <button
             type="button"
             class="big-play"
-            aria-label={clipPlaying ? "Pause spoken evidence" : "Play spoken evidence"}
-            disabled={audioCurrent.citation == null}
-            onclick={togglePlay}>{clipPlaying ? "⏸" : "▶"}</button
-          >
-          {#if audioCurrent.citation}
-            <div class="a-spk">
-              {#if audioCurrent.source && audioCurrent.source !== audioCurrent.name}{audioCurrent.source} · {/if}<b
-                >{audioCurrent.name}</b
-              ><span class="rb">{audioCurrent.readable} · name resolved live by id</span>
+            aria-label={isPlaying ? "Pause spoken evidence" : "Play spoken evidence"}
+            disabled={selectedTurn == null}
+            onclick={togglePlay}
+          >{#if isPlaying}<IconPause />{:else}<IconPlay />{/if}</button>
+          {#if selectedTurn}
+            <div class="a-spk" style="--_c: var({selectedTurn.colorVar});">
+              <span class="a-spk__dot"></span>
+              <b class="a-spk__name" class:is-fallback={selectedTurn.isFallback}>{selectedTurn.speaker}</b>
+              {#if selectedTurn.sourceMeta}<span class="a-spk__meta">via {selectedTurn.sourceMeta}</span>{/if}
             </div>
-            {#if audioCurrent.citation.caption}<div class="a-cap">{audioCurrent.citation.caption}</div>{/if}
-            <div class="a-when">
-              segment {audioCurrent.ordinal} of {audioCurrent.total}{#if audioCurrent.citation.startMs != null} · {clock(
-                  audioCurrent.citation.startMs,
-                )}{#if audioCurrent.citation.endMs != null}–{clock(audioCurrent.citation.endMs)}{/if}{/if} · captured
-              as audio
-            </div>
+            <div class="a-when">spoken segment · {clock(selectedTurn.startMs)}–{clock(selectedTurn.endMs)} · captured as audio</div>
           {:else}
             <div class="a-when">Loading spoken evidence…</div>
           {/if}
@@ -588,17 +628,15 @@
             {#if metaApp}<span class="frame-meta__chip frame-meta__chip--app">{metaApp}</span>{/if}
             {#if metaTitle}<span class="frame-meta__chip">{metaTitle}</span>{/if}
             {#if currentMs != null}<span class="frame-meta__chip">{clockSec(currentMs)}</span>{/if}
-            {#if hasOcr}<span class="frame-meta__chip">OCR ✓</span>{/if}
+            {#if hasOcr}<span class="frame-meta__chip">OCR</span>{/if}
           </div>
-          {#if clipMode && audioCurrent.citation}
-            <!-- "reliving a cited moment": one playhead, real audio at 1× -->
-            <div class="clip-bar">
-              <span class="live"><span class="d"></span>{audioCurrent.source}{audioCurrent.readable
-                  ? ` · ${audioCurrent.readable}`
-                  : ""}</span
-              >
-              <span class="cap">{audioCurrent.citation.caption}</span>
-              <span class="rate">{clipRateLabel}</span>
+          {#if relivingClip && selectedTurn}
+            <!-- "reliving a cited moment": one playhead, real audio at 1×. The
+                 speaker NAME leads; the channel is demoted to a quiet meta tag. -->
+            <div class="clip-bar" style="--_c: var({selectedTurn.colorVar});">
+              <span class="live"><span class="d"></span><b>{selectedTurn.speaker}</b>{#if selectedTurn.sourceMeta}<span class="via">· {selectedTurn.sourceMeta}</span>{/if}</span>
+              <span class="cap">{selectedTurn.text}</span>
+              <span class="rate">{clockSec(selectedTurn.startMs)}–{clockSec(selectedTurn.endMs)} · 1×</span>
             </div>
           {/if}
         </div>
@@ -622,14 +660,19 @@
             {#each ticks as t, i (i)}
               <span class="ev" class:ev--hl={t.headline} style="left:{t.pos * 100}%"></span>
             {/each}
-            <div class="fill" class:fill--audio={clipMode} style="width:{currentPos * 100}%"></div>
+            <div class="fill" class:fill--audio={clipActive} style="width:{currentPos * 100}%"></div>
           {/if}
-          {@render audioTickRow()}
-          <div class="head" class:head--audio={audible} style="left:{headPos * 100}%">{headClock}</div>
+          <div class="head" class:head--audio={isAudioOnly || clipActive} style="left:{headPos * 100}%">{headClock}</div>
         </div>
         <div class="scrub-caps">
           <span>{clock(activity.startedAtMs)}</span><span>{clock(activity.endedAtMs)}</span>
         </div>
+
+        <!-- Synced transcript reader — the active row tracks the playhead; click
+             a row to relive that spoken moment at 1×. -->
+        {#if turns.length > 0}
+          <ReceiptTranscript {turns} selectedKey={activeKey} {onSelect} clock={clockShort} />
+        {/if}
       </div>
 
       {#if !isAudioOnly}
@@ -655,43 +698,36 @@
           type="button"
           class="play"
           class:play--audio={audible}
-          aria-label={audible ? (clipPlaying ? "Pause" : "Play") : playing ? "Pause" : "Play"}
-          disabled={isAudioOnly && audioCurrent.citation == null}
-          onclick={togglePlay}>{playIcon}</button
-        >
+          aria-label={isPlaying ? "Pause" : "Play"}
+          disabled={isAudioOnly && selectedTurn == null}
+          onclick={togglePlay}
+        >{#if isPlaying}<IconPause />{:else}<IconPlay />{/if}</button>
         {#if !isAudioOnly}
-          {#if clipMode}
-            <span class="speed-audio">1× · audio</span>
-          {:else}
-            <Segmented
-              options={speedOptions}
-              value={String(speed)}
-              onValueChange={onSpeedChange}
-              ariaLabel="Playback speed"
-              compact
-            />
-          {/if}
+          <Segmented
+            options={speedOptions}
+            value={String(speed)}
+            onValueChange={onSpeedChange}
+            ariaLabel="Playback speed"
+            compact
+          />
         {/if}
         <span class="counter">
           {#if isAudioOnly}
-            spoken segment {audioCurrent.ordinal} / {audioCurrent.total}{#if headClock} · {headClock}{/if}
-          {:else if clipMode}
-            <span class="counter__now">{currentMs != null ? clockSec(currentMs) : ""}</span> · spoken segment {audioCurrent.ordinal}
-            / {audioCurrent.total}
+            spoken turn {selOrdinal} / {turns.length}{#if headClock} · {headClock}{/if}
+          {:else if relivingClip && selectedTurn}
+            <span class="counter__now">{currentMs != null ? clockSec(currentMs) : ""}</span> · {selectedTurn.speaker} · 1×
           {:else}
-            <span class="counter__now">frame {index + 1}</span> / {strip.length}{#if currentMs != null} · {clockSec(
-                currentMs,
-              )}{/if}
+            <span class="counter__now">frame {index + 1}</span> / {strip.length}{#if currentMs != null} · {clockSec(currentMs)}{/if}
           {/if}
         </span>
         <span class="ctl-spacer"></span>
-        <button type="button" class="open-tl" onclick={openInTimeline}>Open in Timeline →</button>
+        <button type="button" class="open-tl" onclick={openInTimeline}>Open in Timeline <IconArrowRight /></button>
       </div>
 
       <div class="m-foot">
         {#if isAudioOnly}
           <span>{audioFooterLeft(frameEvidence.length)}</span><span class="sep">·</span>
-          <span>{audioSpeakerSummary(audioCitations, profiles)}</span>
+          <span>{turnSpeakerRoster(turns)}</span>
         {:else}
           <span>
             {strip.length}
@@ -707,11 +743,15 @@
 </div>
 
 <style>
-  /* One declaration per line to keep this component under the 800-line ceiling
+  /* One selector per line to keep this component under the 800-line ceiling
      (repo rule); tokens + structure mirror docs/mockups/dayflow/04-timelapse.html.
      Audio channel (ADR 0049) uses --cat-communication (lavender) for voice. */
   .receipt { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 16px; background: var(--app-overlay-bg); backdrop-filter: blur(4px); }
   .modal-card { width: 82vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface); border: 1px solid var(--app-border-strong); border-radius: 12px; box-shadow: var(--app-shadow-popover); }
+  /* The frame .viewer is the ONE elastic region; every other row is pinned so the
+     added lane + transcript trade against the frame height, never overflow the
+     modal (mirrors the mockup's `.modal .modal-card` rule). */
+  .m-head, .m-summary, .scrub, .film, .controls, .m-foot { flex: 0 0 auto; }
   .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--app-border); }
   .chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-muted); }
   .sw { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
@@ -719,7 +759,8 @@
   .when { flex: 0 0 auto; font-size: 11px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; font: inherit; cursor: pointer; color: var(--app-text-subtle); background: transparent; border: 1px solid var(--app-border); border-radius: 5px; }
   .m-close:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
-  .m-summary { flex: 0 0 auto; margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.65; color: var(--app-text-muted); }
+  .m-close :global(svg) { width: 13px; height: 13px; }
+  .m-summary { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.65; color: var(--app-text-muted); }
 
   /* Viewer — no transition on the img: instant frame swaps are the video feel. */
   .viewer { position: relative; flex: 1 1 auto; min-height: 0; overflow: hidden; background: var(--app-bg); border-bottom: 1px solid var(--app-border); }
@@ -733,29 +774,36 @@
 
   .viewer--expired { aspect-ratio: 16 / 6; display: flex; align-items: center; justify-content: center; }
   .exp { max-width: 440px; padding: 24px; text-align: center; }
-  .exp__glyph { margin-bottom: 10px; font-size: 16px; letter-spacing: 0.3em; color: var(--app-text-faint); }
+  .exp__glyph { display: flex; justify-content: center; margin-bottom: 10px; color: var(--app-text-faint); }
+  .exp__glyph :global(svg) { width: 30px; height: 30px; }
   .exp h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--app-text-strong); }
   .exp p { margin: 0; font-size: 11.5px; line-height: 1.7; color: var(--app-text-muted); }
 
-  /* Audio-only viewer — a bounded audio player, never a false "footage expired". */
-  .viewer--audio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
-  .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; font-size: 17px; cursor: pointer; border-radius: 50%; color: var(--cat-communication); background: var(--app-accent-bg); border: 1px solid var(--cat-communication); }
+  /* Audio-only viewer — a bounded audio player, never a false "footage expired".
+     Leads with WHO spoke; the channel is quiet secondary meta. */
+  .viewer--audio { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; }
+  .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 50%; color: var(--cat-communication); background: var(--app-accent-bg); border: 1px solid var(--cat-communication); }
   .big-play:disabled { opacity: 0.5; cursor: default; }
-  .a-spk { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--cat-communication); }
-  .a-spk b { color: var(--app-text-strong); }
-  .a-spk .rb { margin-left: 6px; font-size: 9px; letter-spacing: 0; text-transform: none; color: var(--app-text-subtle); }
-  .a-cap { max-width: 470px; padding: 0 20px; font-size: 12px; line-height: 1.6; color: var(--app-text); }
+  .big-play :global(svg) { width: 17px; height: 17px; }
+  .a-spk { display: inline-flex; align-items: center; gap: 8px; }
+  .a-spk__dot { flex: none; width: 9px; height: 9px; border-radius: 50%; background: var(--_c); box-shadow: 0 0 7px var(--_c); }
+  .a-spk__name { font-size: 15px; font-weight: 600; color: var(--app-text-strong); }
+  .a-spk__name.is-fallback { color: var(--_c); }
+  .a-spk__meta { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
   .a-when { font-size: 10.5px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
 
-  /* Clip caption band on the viewer while a bounded 1× clip runs. */
-  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 9px 16px; backdrop-filter: blur(4px); background: var(--app-overlay-bg); border-top: 1px solid var(--cat-communication); }
-  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cat-communication); }
-  .clip-bar .live .d { width: 6px; height: 6px; border-radius: 50%; background: var(--cat-communication); box-shadow: 0 0 5px var(--cat-communication); }
-  .clip-bar .cap { flex: 1; min-width: 0; font-size: 11px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* "Reliving a cited moment" caption band while a bounded 1× clip runs. */
+  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 12px; padding: 9px 16px; backdrop-filter: blur(4px); background: var(--app-overlay-bg); border-top: 1px solid var(--cat-communication); }
+  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--app-text-strong); }
+  .clip-bar .live .d { width: 8px; height: 8px; border-radius: 50%; background: var(--_c, var(--cat-communication)); box-shadow: 0 0 5px var(--_c, var(--cat-communication)); }
+  .clip-bar .live b { color: var(--app-text-strong); font-weight: 600; }
+  .clip-bar .live .via { font-size: 9px; font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
+  .clip-bar .cap { flex: 1; min-width: 0; font-size: 11.5px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .clip-bar .rate { flex: none; font-size: 10px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
 
-  /* Scrubber — frame ticks above the spine, lavender audio ticks below it. */
-  .scrub { padding: 14px 16px 6px; }
+  /* Scrubber — frame ticks above the spine; the Speaker-Turn Lane + transcript
+     reader sit BELOW it (their own components) inside this pinned block. */
+  .scrub { padding: 14px 16px 8px; }
   .track { position: relative; height: 6px; border-radius: 3px; background: var(--app-surface-hover); cursor: pointer; touch-action: none; }
   .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--app-accent-strong); pointer-events: none; }
   .fill--audio { background: var(--cat-communication); }
@@ -763,27 +811,11 @@
   .head--audio { background: var(--cat-communication); color: var(--app-bg); }
   .ev { position: absolute; top: -4px; width: 2px; height: 14px; background: var(--app-accent); border-radius: 1px; opacity: 0.5; pointer-events: none; }
   .ev--hl { opacity: 1; box-shadow: 0 0 6px var(--app-accent); }
-  /* Sits below the spine, nudged down + above the head pill (z-index) so a cited
-     dot stays visible when the scrubber head parks on top of it. */
-  .ev-a { position: absolute; bottom: -11px; left: 0; width: 9px; height: 9px; padding: 0; transform: translateX(-50%); border-radius: 50%; cursor: pointer; opacity: 0.8; background: var(--cat-communication); border: 1.5px solid var(--app-bg); z-index: 2; }
-  .ev-a:hover, .ev-a:focus-visible { opacity: 1; }
-  .ev-a--hl { opacity: 1; box-shadow: 0 0 7px var(--cat-communication); }
-  /* Snippet tooltip for an audio tick — sits BELOW the track (arrow up), shown
-     on hover/focus of its adjacent tick. Non-interactive (pointer-events:none),
-     so play still happens on the tick click. Mirrors .tip-a in the mockup. */
-  .tip-a { display: none; position: absolute; bottom: calc(100% + 12px); transform: translateX(-50%); width: max-content; max-width: 360px; padding: 9px 12px; border: 1px solid var(--cat-communication); border-radius: 7px; background: var(--app-surface-raised); box-shadow: var(--app-shadow-popover); pointer-events: none; text-align: left; z-index: 3; }
-  .ev-a:hover + .tip-a, .ev-a:focus-visible + .tip-a { display: block; }
-  .tip-a::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top-color: var(--cat-communication); }
-  .tip-a .lbl { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cat-communication); margin-bottom: 4px; }
-  .tip-a .snip { font-size: 11px; line-height: 1.55; color: var(--app-text); }
-  /* Play hint styled as the audio channel's chip (not clickable — the tick is
-     the target; pointer-events stay off), so it reads as the action. */
-  .tip-a .go { margin-top: 9px; display: inline-flex; align-items: center; padding: 4px 10px; font-size: 10px; font-weight: 500; white-space: nowrap; color: var(--cat-communication); background: color-mix(in srgb, var(--cat-communication) 12%, transparent); border: 1px solid var(--cat-communication); border-radius: 6px; }
   .scrub-caps { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--app-text-faint); }
 
   /* Filmstrip — a scroll container's auto min-height is 0, so flex:0 0 auto pins
      it to its natural cell-aspect height instead of getting crushed. */
-  .film { flex: 0 0 auto; display: grid; grid-auto-flow: column; gap: 5px; padding: 8px 16px 8px; grid-auto-columns: calc((100% - 55px) / 12); overflow-x: auto; overflow-y: hidden; }
+  .film { display: grid; grid-auto-flow: column; gap: 5px; padding: 8px 16px 8px; grid-auto-columns: calc((100% - 55px) / 12); overflow-x: auto; overflow-y: hidden; }
   .film__cell { position: relative; aspect-ratio: 16 / 10; padding: 0; cursor: pointer; background: linear-gradient(160deg, var(--app-surface-raised), var(--app-bg) 70%); border: 1px solid var(--app-border); border-radius: 4px; overflow: hidden; }
   .film__cell::after { content: ""; position: absolute; inset: 25% 18% 30%; background: var(--app-surface-hover); border-radius: 2px; }
   .film__img { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; object-fit: cover; }
@@ -792,14 +824,15 @@
 
   /* Controls */
   .controls { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
-  .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; font-size: 13px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 7px; }
+  .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 7px; }
   .play:hover, .open-tl:hover { border-color: var(--app-accent); }
   .play--audio { color: var(--cat-communication); background: var(--app-accent-bg); border-color: var(--cat-communication); }
-  .speed-audio { padding: 3px 9px; font-size: 10px; border-radius: 6px; color: var(--cat-communication); background: var(--app-accent-bg); border: 1px solid var(--cat-communication); }
+  .play :global(svg), .open-tl :global(svg) { width: 14px; height: 14px; }
   .counter { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
   .counter__now { color: var(--app-text-strong); }
   .ctl-spacer { flex: 1 1 auto; }
   .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font: inherit; font-size: 11px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 6px; }
+  .open-tl :global(svg) { width: 13px; height: 13px; }
 
   /* Footer */
   .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font-size: 10.5px; color: var(--app-text-subtle); border-top: 1px dashed var(--app-border); }

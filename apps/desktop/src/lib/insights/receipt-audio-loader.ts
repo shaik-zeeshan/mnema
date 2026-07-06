@@ -1,12 +1,12 @@
 // receipt-audio-loader — the invoke-touching hydration behind the Activity
 // Receipt's audio evidence (ADR 0049), split out (mirroring receipt-frames.ts)
 // to keep ActivityReceipt.svelte under the 800-line ceiling: resolves the
-// shared person profiles once, hydrates each cited audio segment (source kind
-// + speaker turns → an AudioCitation), and fetches a clip's playable media on
-// demand. Generation-guarded — a new activity drops any stale hydration.
+// shared person profiles once, hydrates every audio segment in the span into an
+// ordered `TurnView[]`, and fetches a clip's playable media on demand.
+// Generation-guarded — a new activity drops any stale hydration.
 
 import { invoke } from "@tauri-apps/api/core";
-import { audioDataUrl, buildCitation, type AudioCitation } from "$lib/insights/receipt-audio";
+import { audioDataUrl, buildTurnViews, type TurnView } from "$lib/insights/receipt-audio";
 import type {
   AudioSegmentDto,
   AudioSegmentMediaDto,
@@ -17,8 +17,8 @@ import type {
 export interface ReceiptAudioEvents {
   /** Shared people directory — resolved once, drives live name attribution. */
   onProfiles(profiles: PersonProfileDto[]): void;
-  /** The cited audio segments, hydrated and sorted by start (ascending). */
-  onCitations(citations: AudioCitation[]): void;
+  /** Span-wide diarized turn view models (the receipt's one audio surface). */
+  onTurns?(turns: TurnView[]): void;
 }
 
 /** `invoke`-shaped IPC entry point, injectable so tests can stub Tauri. */
@@ -47,39 +47,38 @@ export class ReceiptAudioLoader {
   }
 
   /**
-   * Hydrate shared profiles + each cited segment's source kind and turns.
-   * ponytail: fetches every cited segment then reports once (not incrementally)
-   * — cited audio is bounded to a handful per Activity; add streaming reporting
-   * only if an Activity ever cites enough segments to make the wait visible.
+   * Span-wide hydration: every audio segment in `[startMs, endMs]` → all its
+   * speaker turns → an ordered `TurnView[]`. Generation-guarded like `load()`.
+   * Reports the shared profiles (for live name resolution) then the turns.
    */
-  async load(refs: AudioRef[]): Promise<void> {
+  async loadSpan(
+    startMs: number,
+    endMs: number,
+    citedRefs: { subjectId: number; isHeadline: boolean }[],
+  ): Promise<void> {
     const gen = ++this.#gen;
-    if (refs.length === 0) {
-      this.#events.onCitations([]);
-      return;
-    }
     const profiles = await this.#invoke<PersonProfileDto[]>("list_person_profiles").catch(
       () => [] as PersonProfileDto[],
     );
     if (gen !== this.#gen) return;
     this.#events.onProfiles(profiles);
-    const citations = await Promise.all(
-      refs.map(async (ref) => {
-        const [segment, turns] = await Promise.all([
-          this.#invoke<AudioSegmentDto | null>("get_audio_segment", {
-            request: { audioSegmentId: ref.subjectId },
-          }).catch(() => null),
-          this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
-            request: { audioSegmentId: ref.subjectId },
-          }).catch(() => [] as SpeakerTurnDto[]),
-        ]);
-        return buildCitation(ref, segment, turns);
+    const segments = await this.#invoke<AudioSegmentDto[]>("list_audio_segments", {
+      request: {
+        capturedAtStart: new Date(startMs).toISOString(),
+        capturedAtEnd: new Date(endMs).toISOString(),
+      },
+    }).catch(() => [] as AudioSegmentDto[]);
+    const hydrated = await Promise.all(
+      segments.map(async (segment) => {
+        const turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
+          request: { audioSegmentId: segment.id },
+        }).catch(() => [] as SpeakerTurnDto[]);
+        return { segment, turns };
       }),
     );
+    const turns = buildTurnViews(hydrated, citedRefs, profiles);
     if (gen !== this.#gen) return;
-    // Ascending by segment start so ticks, ordinals, and the roster all align.
-    citations.sort((a, b) => (a.capturedAtMs ?? 0) - (b.capturedAtMs ?? 0));
-    this.#events.onCitations(citations);
+    this.#events.onTurns?.(turns);
   }
 
   /** Fetch a segment's playable media as a data: URL. Null on failure. */

@@ -19,6 +19,14 @@
     --cat-research: #60b0ff; --cat-entertainment: #ff7a4d;
     --focus-deep: #3dffa0; --focus-mid: #d6a14a; --focus-distracted: #ff6b7a;
     --mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, SFMono-Regular, Menlo, monospace;
+    /* Human speech renders in sans; machine/system text stays mono. */
+    --font-human: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    /* Per-speaker identity colors: You = the audio channel's lavender; other
+       diarized voices get distinct hues so turns read apart. */
+    --spk-1: #c0b0ff; --spk-2: #ff9fd0; --spk-3: #60b0ff;
+    /* Softer than a light-mode drop shadow: on dark, depth reads from the raised
+       surface + colored edge, not a heavy shadow. */
+    --shadow-popover: 0 16px 44px rgba(0, 0, 0, .44);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #060608; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.6; -webkit-font-smoothing: antialiased; padding: 36px 28px 64px; }
@@ -77,13 +85,30 @@
 
   /* ── Receipt modal ────────────────────────────────────────────── */
   .modal { position: absolute; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center; padding: 28px; }
-  .modal-card { width: min(760px, 100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.22), 0 32px 80px rgba(0,0,0,.5); overflow: hidden; }
+  .modal-card { width: min(760px, 100%); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 12px; box-shadow: var(--shadow-popover); overflow: hidden; }
   .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--border); }
   .m-head .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
   .m-head h2 { font-size: 14px; font-weight: 600; color: var(--text-strong); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .m-head .when { font-size: 11px; color: var(--text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
   .m-close { width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text-subtle); font: inherit; cursor: pointer; }
+  .m-close svg { width: 13px; height: 13px; }
   .m-close:hover { color: var(--text-strong); border-color: var(--border-hover); }
+  .m-close:active { color: var(--text-strong); background: var(--surface-hover); border-color: var(--border-hover); }
+  .m-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* Primary receipt modal caps to its window (mirrors the shipped 90vh modal in
+     ActivityReceipt.svelte): a flex column bounded to the window, where the frame
+     .viewer is the ONE elastic region — it shrinks/grows to absorb every other
+     row, so the transcript reader trades against the frame-preview height instead
+     of pushing the modal past the window edge. Scoped to `.modal` so the static
+     state-variant panels below keep their fixed aspect ratios. */
+  .modal .modal-card { display: flex; flex-direction: column; height: calc(100% - 48px); overflow: hidden; }
+  .modal .modal-card > .m-head,
+  .modal .modal-card > .scrub,
+  .modal .modal-card > .film,
+  .modal .modal-card > .controls,
+  .modal .modal-card > .m-foot { flex: 0 0 auto; }
+  .modal .modal-card > .viewer { flex: 1 1 auto; min-height: 200px; aspect-ratio: auto; }
 
   /* fake screenshot: an editor + terminal drawn abstractly */
   .viewer { position: relative; aspect-ratio: 16/9.6; background: #0a0a10; border-bottom: 1px solid var(--border); overflow: hidden; }
@@ -107,16 +132,53 @@
   .frame-meta .app { color: var(--text); }
   .redact { position: absolute; border-radius: 3px; background: repeating-linear-gradient(45deg, #1a1a24, #1a1a24 4px, #14141c 4px, #14141c 8px); border: 1px dashed #33334a; }
 
-  /* scrubber */
-  .scrub { padding: 14px 16px 6px; }
+  /* scrubber — seek track keeps ONLY green frame ticks + playhead (seek only) */
+  .scrub { padding: 12px 16px 12px; }
   .track { position: relative; height: 6px; border-radius: 3px; background: var(--surface-hover); }
   .track .fill { position: absolute; left: 0; top: 0; bottom: 0; width: 38%; border-radius: 3px; background: var(--accent-strong); }
   .track .head { position: absolute; left: 38%; top: 50%; transform: translate(-50%,-50%); padding: 2px 8px; border-radius: 999px; background: var(--accent); color: #06140c; font-size: 9px; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; box-shadow: 0 0 0 3px rgba(61,255,160,.18); }
   .track .ev { position: absolute; top: -4px; width: 2px; height: 14px; border-radius: 1px; background: var(--accent); opacity: .5; }
   .track .ev--hl { opacity: 1; box-shadow: 0 0 6px rgba(61,255,160,.6); }
-  .tick-tip { position: absolute; bottom: 16px; left: 38%; transform: translateX(-50%); white-space: nowrap; padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface-raised); color: var(--text-muted); font-size: 10px; box-shadow: 0 8px 24px rgba(0,0,0,.4); z-index: 2; }
-  .tick-tip::after { content: ""; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 4px solid transparent; border-top-color: var(--border-strong); }
-  .scrub-caps { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-faint); margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .scrub-caps { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 10px; color: var(--text-faint); margin-top: 6px; font-variant-numeric: tabular-nums; }
+
+  /* speaker legend — inline in the caps row (start-time · legend · end-time) */
+  .legend { display: inline-flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .legend .li { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .02em; color: var(--text-muted); }
+  .legend .sw2 { width: 8px; height: 8px; border-radius: 50%; background: var(--_c); box-shadow: 0 0 5px var(--_c); }
+
+  /* ── Speaker-Turn Lane (ADR 0049) — a dedicated row UNDER the seek track (never
+     on it, so turn hit targets and the thin seek line can't collide). One WIDE
+     block per spoken turn, placed left→right by start time, width ∝ duration,
+     colored by speaker (--_c per block): tinted fill + solid speaker-colored left
+     edge. Big, click-first targets; selecting one updates the transcript below. */
+  .turn-lane { position: relative; height: 34px; margin-top: 10px; border-radius: 7px; background: var(--surface-subtle); border: 1px solid var(--border); }
+  .turn { position: absolute; top: 3px; bottom: 3px; min-width: 46px; display: flex; align-items: center; gap: 5px; padding: 0 8px; font: inherit; font-size: 10px; color: var(--text); cursor: pointer; border: 1px solid color-mix(in srgb, var(--_c) 45%, transparent); border-left: 3px solid var(--_c); border-radius: 5px; background: color-mix(in srgb, var(--_c) 15%, var(--surface-raised)); overflow: hidden; white-space: nowrap; transition: transform .1s ease, background .12s ease, box-shadow .12s ease; }
+  .turn__cite { flex: none; color: var(--_c); display: inline-flex; }
+  .turn__cite svg { width: 9px; height: 9px; }
+  .turn__lbl { overflow: hidden; text-overflow: ellipsis; }
+  .turn__lbl b { color: var(--text-strong); font-weight: 600; }
+  .turn__t { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .turn:hover { background: color-mix(in srgb, var(--_c) 24%, var(--surface-raised)); transform: translateY(-1px); }
+  .turn:active { transform: translateY(0); }
+  .turn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .turn--hl { box-shadow: 0 0 0 1px var(--_c), 0 0 10px color-mix(in srgb, var(--_c) 50%, transparent); }
+  .turn.is-selected { background: color-mix(in srgb, var(--_c) 30%, var(--surface-raised)); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3px var(--_c); }
+
+  /* ── Synced transcript reader — the "karaoke" transcript. Bounded (~90px,
+     scrolls); every turn's FULL text shows and WRAPS (never truncated). Active
+     row = full opacity + speaker-colored left bar + stronger text; the rest
+     dimmed for context. Time+speaker mono, quote sans; hanging indent so wrapped
+     lines align under the text, not the time. Rows are JS-built from the lane. */
+  .script { max-height: 90px; overflow-y: auto; margin-top: 8px; padding: 4px; border: 1px solid var(--border); border-radius: 7px; background: var(--surface-subtle); }
+  .script__row { display: grid; grid-template-columns: 44px 1fr; column-gap: 8px; align-items: baseline; width: 100%; padding: 4px 8px; border: 0; border-left: 2px solid transparent; border-radius: 5px; background: transparent; font: inherit; text-align: left; color: var(--text-muted); opacity: .55; cursor: pointer; transition: opacity .12s ease, background .12s ease; }
+  .script__row:hover { opacity: .85; background: var(--surface-hover); }
+  .script__row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; opacity: 1; }
+  .script__row.is-active { opacity: 1; border-left-color: var(--_c); background: color-mix(in srgb, var(--_c) 10%, transparent); }
+  .script__t { font-family: var(--mono); font-size: 10px; font-variant-numeric: tabular-nums; color: var(--text-subtle); }
+  .script__row.is-active .script__t { color: var(--text-muted); }
+  .script__body { font-family: var(--font-human); font-size: 12px; line-height: 1.5; color: inherit; }
+  .script__row.is-active .script__body { color: var(--text); }
+  .script__spk { font-family: var(--mono); font-weight: 700; color: var(--_c); }
 
   .film { display: grid; grid-template-columns: repeat(12, 1fr); gap: 5px; padding: 8px 16px 0; }
   .film i { aspect-ratio: 16/10; border-radius: 4px; background: linear-gradient(160deg, #14141e 0%, #101016 70%); border: 1px solid var(--border); position: relative; overflow: hidden; cursor: pointer; }
@@ -125,52 +187,54 @@
   .film i.ev::before { content: ""; position: absolute; top: 3px; right: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); z-index: 1; }
 
   .controls { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
-  .play { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--accent-bg); color: var(--accent); font-size: 13px; cursor: pointer; }
+  .play { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--accent-bg); color: var(--accent); font-size: 13px; cursor: pointer; transition: transform .1s ease, border-color .12s ease; }
   .play:hover { border-color: var(--accent); }
+  .play:active { transform: translateY(1px); border-color: var(--accent); }
+  .play:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* Play button wears the audio/lavender tint at 1× (a per-turn relive carries its
+     segment's audio); plain green for the silent 2×/8×/16× frame timelapse. */
+  .play--audio { border-color: var(--cat-communication); background: rgba(192,176,255,.1); color: var(--cat-communication); }
+  .play svg, .big-play svg { width: 14px; height: 14px; }
   .speed { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-subtle); }
   .speed b { font-weight: 400; font-size: 10px; padding: 2px 8px; border-radius: 4px; color: var(--text-subtle); cursor: pointer; }
+  .speed b:hover { color: var(--text-muted); }
   .speed b.on { background: var(--accent-bg); color: var(--accent); }
   .counter { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
   .counter .now { color: var(--text-strong); }
   .ctl-spacer { flex: 1; }
-  .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--accent-border); border-radius: 6px; background: var(--accent-bg); color: var(--accent); font: inherit; font-size: 11px; cursor: pointer; }
+  .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--accent-border); border-radius: 6px; background: var(--accent-bg); color: var(--accent); font: inherit; font-size: 11px; cursor: pointer; transition: transform .1s ease, border-color .12s ease; }
+  .open-tl svg { width: 13px; height: 13px; }
   .open-tl:hover { border-color: var(--accent); }
+  .open-tl:active { transform: translateY(1px); border-color: var(--accent); }
+  .open-tl:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .m-foot { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-top: 1px dashed var(--border); font-size: 10.5px; color: var(--text-subtle); flex-wrap: wrap; }
   .m-foot .sep { color: var(--text-faint); }
 
-  /* ── Audio evidence: cited spoken segments (ADR 0049) ─────────────
-     A second tick channel BELOW the spine — frames above, audio below the same
-     wall-clock track. Lavender = voice, distinct from the green frame ticks.
-     Each is clickable → plays a bounded 1× synchronized audio+screen clip. */
-  .track .ev-a { position: absolute; bottom: -7px; width: 9px; height: 9px; transform: translateX(-50%); border-radius: 50%; background: var(--cat-communication); border: 1.5px solid #0b0b12; opacity: .8; cursor: pointer; }
-  .track .ev-a--hl { opacity: 1; box-shadow: 0 0 7px rgba(192,176,255,.7); }
-  .track .ev-a:hover { opacity: 1; }
-  /* snippet tooltip for an audio tick — sits BELOW the track (arrow up). Unlike a
-     frame tick it carries the cited transcript (the clip's label) + a play hint;
-     bounded, no scroll, no speaker turns (those stay on Timeline). */
-  .tip-a { position: absolute; top: 22px; transform: translateX(-50%); width: 264px; padding: 8px 11px; border: 1px solid var(--cat-communication); border-radius: 6px; background: var(--surface-raised); box-shadow: 0 8px 24px rgba(0,0,0,.45); z-index: 3; }
-  .tip-a::after { content: ""; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-bottom-color: var(--cat-communication); }
-  .tip-a .lbl { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; color: var(--cat-communication); margin-bottom: 4px; }
-  .tip-a .snip { font-size: 11px; line-height: 1.55; color: var(--text); }
-  .tip-a .go { margin-top: 6px; font-size: 10px; color: var(--cat-communication); }
-
-  /* "playing a cited moment" — a caption band on the viewer while a bounded clip
-     runs: real audio at 1×, the frame viewer clocked by it (one playhead). */
-  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 10px; padding: 9px 16px; background: linear-gradient(0deg, #14111f 60%, rgba(20,17,31,.85)); border-top: 1px solid var(--cat-communication); }
-  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--cat-communication); }
-  .clip-bar .live .d { width: 6px; height: 6px; border-radius: 50%; background: var(--cat-communication); box-shadow: 0 0 0 3px rgba(192,176,255,.18); }
-  .clip-bar .cap { flex: 1; min-width: 0; font-size: 11px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* "playing a cited moment" caption band. The speaker NAME leads; the microphone
+     / system-audio channel is demoted to a quiet meta tag. */
+  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: linear-gradient(0deg, #14111f 60%, rgba(20,17,31,.85)); border-top: 1px solid var(--cat-communication); }
+  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--text-strong); }
+  .clip-bar .live .d { width: 8px; height: 8px; border-radius: 50%; background: var(--_c, var(--cat-communication)); box-shadow: 0 0 0 3px rgba(192,176,255,.18); }
+  .clip-bar .live .via { font-size: 9px; font-weight: 400; letter-spacing: .06em; text-transform: uppercase; color: var(--text-subtle); }
+  .clip-bar .cap { flex: 1; min-width: 0; font-family: var(--font-human); font-size: 11.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .clip-bar .rate { flex: none; font-size: 10px; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
 
   /* audio-only Activity: no frames (never captured, or expired but audio survives)
      — the viewer becomes a bounded audio player, NOT a false "footage expired". */
-  .viewer--audio { aspect-ratio: 16/7; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; }
-  .viewer--audio .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--cat-communication); background: rgba(192,176,255,.08); color: var(--cat-communication); font-size: 17px; cursor: pointer; }
-  .viewer--audio .a-cap { max-width: 470px; padding: 0 20px; font-size: 12px; line-height: 1.6; color: var(--text); }
+  .viewer--audio { aspect-ratio: 16/7; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 9px; text-align: center; }
+  .viewer--audio .big-play { width: 48px; height: 48px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--cat-communication); background: rgba(192,176,255,.08); color: var(--cat-communication); font-size: 17px; cursor: pointer; transition: transform .12s ease; }
+  .viewer--audio .big-play:hover { transform: scale(1.05); }
+  .viewer--audio .big-play:active { transform: scale(.96); }
+  .viewer--audio .big-play:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
   .viewer--audio .a-when { font-size: 10.5px; color: var(--text-subtle); font-variant-numeric: tabular-nums; }
-  .viewer--audio .a-spk { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--cat-communication); }
-  .viewer--audio .a-spk b { color: var(--text-strong); }
-  .viewer--audio .a-spk .rb { margin-left: 6px; font-size: 9px; letter-spacing: 0; text-transform: none; color: var(--text-subtle); }
+  /* Speaker NAME is the identity; channel is quiet secondary meta; an unnamed
+     voice gets a human hint chip (no late-binding-by-id jargon in the copy). */
+  .a-spk { display: inline-flex; align-items: center; gap: 8px; }
+  .a-spk__dot { width: 9px; height: 9px; flex: none; border-radius: 50%; background: var(--_c); box-shadow: 0 0 7px var(--_c); }
+  .a-spk__name { font-size: 15px; font-weight: 600; color: var(--text-strong); }
+  .a-spk__name.is-fallback { color: var(--_c); }
+  .a-spk__meta { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--text-subtle); }
+  .a-spk__hint { padding: 1px 7px; font-size: 9.5px; color: var(--text-muted); border: 1px dashed var(--border-strong); border-radius: 999px; }
 
   /* ── State variant: footage expired ───────────────────────────── */
   .states { margin-top: 40px; }
@@ -179,7 +243,8 @@
   .state-panel .modal-card { width: 100%; border: none; border-radius: 0; box-shadow: none; }
   .viewer--expired { aspect-ratio: 16/6; display: flex; align-items: center; justify-content: center; }
   .exp { text-align: center; max-width: 440px; padding: 24px; }
-  .exp .glyph { font-size: 16px; color: var(--text-faint); letter-spacing: .3em; margin-bottom: 10px; }
+  .exp .glyph { color: var(--text-faint); margin-bottom: 10px; display: flex; justify-content: center; }
+  .exp .glyph svg { width: 30px; height: 30px; }
   .exp h4 { font-size: 13px; font-weight: 600; color: var(--text-strong); margin-bottom: 6px; }
   .exp p { font-size: 11.5px; line-height: 1.7; color: var(--text-muted); }
 
@@ -278,7 +343,7 @@
           <span class="chip"><span class="sw" style="background:var(--cat-creating)"></span>Creating</span>
           <h2>Debugging OpenBLAS static linking in build.rs</h2>
           <span class="when">9:10 – 10:35 · 1h 25m</span>
-          <button class="m-close">✕</button>
+          <button class="m-close" aria-label="Close receipt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
 
         <div class="viewer">
@@ -312,28 +377,69 @@
         </div>
 
         <div class="scrub">
+          <!-- seek track: green frame ticks ABOVE the spine + playhead — seek only -->
           <div class="track">
-            <!-- frame citations: green ticks ABOVE the spine (unchanged) -->
             <span class="ev" style="left:6%"></span>
             <span class="ev" style="left:21%"></span>
             <span class="ev ev--hl" style="left:38%"></span>
             <span class="ev" style="left:57%"></span>
             <span class="ev" style="left:74%"></span>
             <span class="ev" style="left:91%"></span>
-            <!-- audio citations: lavender dots BELOW the spine, clickable → clip -->
-            <span class="ev-a" style="left:12%"></span>
-            <span class="ev-a ev-a--hl" style="left:44%"></span>
-            <span class="ev-a" style="left:63%"></span>
-            <!-- hovering a cited audio tick reveals its transcript + play hint -->
-            <div class="tip-a" style="left:44%">
-              <div class="lbl">◆ You (microphone) · spoken evidence · headline</div>
-              <div class="snip">"…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path."</div>
-              <div class="go">▶ Play this moment — screen + audio, 1×</div>
-            </div>
             <div class="fill"></div>
             <div class="head">10:04 AM</div>
           </div>
-          <div class="scrub-caps"><span>9:10 AM</span><span>10:35 AM</span></div>
+          <div class="scrub-caps">
+            <span>9:10 AM</span>
+            <span class="legend">
+              <span class="li" style="--_c:var(--spk-1)"><span class="sw2"></span>You</span>
+              <span class="li" style="--_c:var(--spk-2)"><span class="sw2"></span>Speaker 2 (unnamed)</span>
+            </span>
+            <span>10:35 AM</span>
+          </div>
+
+          <!-- Speaker-Turn Lane: one wide block per turn, big hit targets; click a
+               block (or a transcript row below) to select it. -->
+          <div class="turn-lane" aria-label="Speaker turns">
+            <button type="button" class="turn" style="left:3%;  width:12%; --_c:var(--spk-1)" title="You · 9:22 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:22 AM" data-pos="9"
+              data-quote="Okay — the from-source OpenBLAS build links its own test programs, and that's the step blowing up.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">9:22</span></span>
+            </button>
+            <button type="button" class="turn" style="left:16%; width:13%; --_c:var(--spk-1)" title="You · 9:41 AM · cited"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:41 AM" data-pos="21"
+              data-quote="gfortran's on the machine, so why is its archive dir not on the linker search line?">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>You</b> <span class="turn__t">9:41</span></span>
+            </button>
+            <button type="button" class="turn" style="left:31%; width:9%; --_c:var(--spk-2)" title="Speaker 2 · 9:58 AM"
+              data-color="var(--spk-2)" data-spk="Speaker 2" data-fallback="1" data-meta="microphone" data-time="9:58 AM" data-pos="33"
+              data-quote="Did you check LIBRARY_PATH inside the build script's env? It doesn't inherit your shell.">
+              <span class="turn__lbl"><b>S2</b> <span class="turn__t">9:58</span></span>
+            </button>
+            <button type="button" class="turn turn--hl is-selected" style="left:42%; width:16%; --_c:var(--spk-1)" title="You · 10:04 AM · headline"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:04 AM" data-pos="44"
+              data-quote="…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>You</b> <span class="turn__t">10:04</span></span>
+            </button>
+            <button type="button" class="turn" style="left:60%; width:9%; --_c:var(--spk-1)" title="You · 10:14 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:14 AM" data-pos="60"
+              data-quote="Right — discover the archive dir from the compiler at build time instead of hardcoding it.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">10:14</span></span>
+            </button>
+            <button type="button" class="turn" style="left:71%; width:11%; --_c:var(--spk-2)" title="Speaker 2 · 10:22 AM · cited"
+              data-color="var(--spk-2)" data-spk="Speaker 2" data-fallback="1" data-meta="microphone" data-time="10:22 AM" data-pos="71"
+              data-quote="That'll survive a gcc bump too. Ship it behind the build.rs discovery.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>S2</b> <span class="turn__t">10:22</span></span>
+            </button>
+            <button type="button" class="turn" style="left:84%; width:13%; --_c:var(--spk-1)" title="You · 10:30 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:30 AM" data-pos="84"
+              data-quote="Green. Static link resolved — no libopenblas dylib dependency in the binary.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">10:30</span></span>
+            </button>
+          </div>
+
+          <!-- Synced transcript reader — every turn's FULL text, active line
+               highlighted, scrolls in sync. Rows built from the lane data by JS. -->
+          <div class="script" aria-label="Transcript"></div>
         </div>
 
         <div class="film">
@@ -341,11 +447,12 @@
         </div>
 
         <div class="controls">
-          <button class="play">▶</button>
-          <span class="speed"><b>2×</b><b class="on">8×</b><b>16×</b></span>
-          <span class="counter"><span class="now">frame 132</span> / 341 · 10:04:12 AM</span>
+          <button class="play play--audio" aria-label="Play"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+          <!-- 1× = relive the selected turn's audio (default); 2×/8×/16× = silent frame timelapse -->
+          <span class="speed"><b class="on">1×</b><b>2×</b><b>8×</b><b>16×</b></span>
+          <span class="counter"><span class="now">1×</span> · <span data-mode>reliving spoken segment 2 / 3</span></span>
           <span class="ctl-spacer"></span>
-          <button class="open-tl">Open in Timeline →</button>
+          <button class="open-tl">Open in Timeline <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
         </div>
 
         <div class="m-foot">
@@ -362,13 +469,13 @@
     <!-- ── State: playing a cited spoken moment (ADR 0049) ── -->
     <div class="ann-head"><span>◆ State · reliving a cited moment — screen + audio at 1×, bounded to one Activity</span><span class="rule"></span></div>
     <div class="state-panel">
-      <div class="cap">Click a lavender audio tick → the single playhead plays that segment's real audio at 1× while the frame viewer runs the same window, clocked by the audio</div>
+      <div class="cap">Click a block in the Speaker-Turn Lane → the single playhead plays that turn's real audio at 1× while the frame viewer runs the same window, clocked by the audio</div>
       <div class="modal-card">
         <div class="m-head">
           <span class="chip"><span class="sw" style="background:var(--cat-creating)"></span>Creating</span>
           <h2>Debugging OpenBLAS static linking in build.rs</h2>
           <span class="when">9:10 – 10:35 · 1h 25m</span>
-          <button class="m-close">✕</button>
+          <button class="m-close" aria-label="Close receipt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div class="viewer">
           <div class="shot">
@@ -383,10 +490,10 @@
               </div>
             </div>
           </div>
-          <div class="clip-bar">
-            <span class="live"><span class="d"></span>You · microphone</span>
-            <span class="cap">"…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path."</span>
-            <span class="rate">microphone · 10:04:02–10:05:47 · 1×</span>
+          <div class="clip-bar" style="--_c:var(--spk-1)">
+            <span class="live"><span class="d"></span><span class="nm">You</span><span class="via">· microphone</span></span>
+            <span class="cap">“…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path.”</span>
+            <span class="rate">10:04:02–10:05:47 · 1×</span>
           </div>
         </div>
         <div class="scrub">
@@ -397,23 +504,66 @@
             <span class="ev" style="left:57%"></span>
             <span class="ev" style="left:74%"></span>
             <span class="ev" style="left:91%"></span>
-            <span class="ev-a" style="left:12%"></span>
-            <span class="ev-a ev-a--hl" style="left:44%"></span>
-            <span class="ev-a" style="left:63%"></span>
-            <div class="fill" style="width:46%; background:var(--cat-communication)"></div>
-            <div class="head" style="left:46%; background:var(--cat-communication); color:#0c0c12">10:04 AM</div>
+            <div class="fill" style="width:44%; background:var(--cat-communication)"></div>
+            <div class="head" style="left:44%; background:var(--cat-communication); color:#0c0c12">10:04 AM</div>
           </div>
-          <div class="scrub-caps"><span>9:10 AM</span><span>10:35 AM</span></div>
+          <div class="scrub-caps">
+            <span>9:10 AM</span>
+            <span class="legend">
+              <span class="li" style="--_c:var(--spk-1)"><span class="sw2"></span>You</span>
+              <span class="li" style="--_c:var(--spk-2)"><span class="sw2"></span>Speaker 2 (unnamed)</span>
+            </span>
+            <span>10:35 AM</span>
+          </div>
+
+          <!-- same lane; clicking a block re-cues the now-playing bar above -->
+          <div class="turn-lane" aria-label="Speaker turns">
+            <button type="button" class="turn" style="left:3%;  width:12%; --_c:var(--spk-1)" title="You · 9:22 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:22 AM" data-pos="9" data-rate="9:22:10–9:22:48 · 1×"
+              data-quote="Okay — the from-source OpenBLAS build links its own test programs, and that's the step blowing up.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">9:22</span></span>
+            </button>
+            <button type="button" class="turn" style="left:16%; width:13%; --_c:var(--spk-1)" title="You · 9:41 AM · cited"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:41 AM" data-pos="21" data-rate="9:41:02–9:41:55 · 1×"
+              data-quote="gfortran's on the machine, so why is its archive dir not on the linker search line?">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>You</b> <span class="turn__t">9:41</span></span>
+            </button>
+            <button type="button" class="turn" style="left:31%; width:9%; --_c:var(--spk-2)" title="Speaker 2 · 9:58 AM"
+              data-color="var(--spk-2)" data-spk="Speaker 2" data-fallback="1" data-meta="microphone" data-time="9:58 AM" data-pos="33" data-rate="9:58:20–9:58:47 · 1×"
+              data-quote="Did you check LIBRARY_PATH inside the build script's env? It doesn't inherit your shell.">
+              <span class="turn__lbl"><b>S2</b> <span class="turn__t">9:58</span></span>
+            </button>
+            <button type="button" class="turn turn--hl is-selected" style="left:42%; width:16%; --_c:var(--spk-1)" title="You · 10:04 AM · now playing"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:04 AM" data-pos="44" data-rate="10:04:02–10:05:47 · 1×"
+              data-quote="…so the OpenBLAS static link fails at the test-program link — it wants -lgfortran on the search path.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>You</b> <span class="turn__t">10:04</span></span>
+            </button>
+            <button type="button" class="turn" style="left:60%; width:9%; --_c:var(--spk-1)" title="You · 10:14 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:14 AM" data-pos="60" data-rate="10:14:09–10:14:41 · 1×"
+              data-quote="Right — discover the archive dir from the compiler at build time instead of hardcoding it.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">10:14</span></span>
+            </button>
+            <button type="button" class="turn" style="left:71%; width:11%; --_c:var(--spk-2)" title="Speaker 2 · 10:22 AM · cited"
+              data-color="var(--spk-2)" data-spk="Speaker 2" data-fallback="1" data-meta="microphone" data-time="10:22 AM" data-pos="71" data-rate="10:22:33–10:23:10 · 1×"
+              data-quote="That'll survive a gcc bump too. Ship it behind the build.rs discovery.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>S2</b> <span class="turn__t">10:22</span></span>
+            </button>
+            <button type="button" class="turn" style="left:84%; width:13%; --_c:var(--spk-1)" title="You · 10:30 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="10:30 AM" data-pos="84" data-rate="10:30:05–10:30:52 · 1×"
+              data-quote="Green. Static link resolved — no libopenblas dylib dependency in the binary.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">10:30</span></span>
+            </button>
+          </div>
         </div>
         <div class="controls">
-          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)">⏸</button>
+          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)" aria-label="Pause"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></svg></button>
           <span class="speed" style="border-color:var(--cat-communication)"><b class="on" style="background:rgba(192,176,255,.12); color:var(--cat-communication)">1× · audio</b></span>
           <span class="counter"><span class="now">10:04:44 AM</span> · spoken segment 2 / 3</span>
           <span class="ctl-spacer"></span>
-          <button class="open-tl">Open in Timeline →</button>
+          <button class="open-tl">Open in Timeline <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
         </div>
         <div class="m-foot">
-          <span>▶ Reliving 1 of 3 cited spoken segments — bounded to this Activity</span><span class="sep">·</span>
+          <span><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true" style="width:10px;height:10px;vertical-align:-1px"><polygon points="6 3 20 12 6 21 6 3"/></svg> Reliving 1 of 3 cited spoken segments — bounded to this Activity</span><span class="sep">·</span>
           <span>full audio &amp; speaker turns on Timeline</span>
         </div>
       </div>
@@ -428,28 +578,81 @@
           <span class="chip"><span class="sw" style="background:var(--cat-meetings)"></span>Meetings</span>
           <h2>Standup and follow-up thread</h2>
           <span class="when">9:00 – 9:20 · 20m</span>
-          <button class="m-close">✕</button>
+          <button class="m-close" aria-label="Close receipt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div class="viewer viewer--audio">
-          <button class="big-play">▶</button>
-          <div class="a-spk">Other side · <b>Alice</b><span class="rb">system audio · name resolved live by id</span></div>
-          <div class="a-cap">"…let's hold the release on the OpenBLAS crash — the static-link fix is landing today, retest on an M1 before we cut."</div>
-          <div class="a-when">segment 2 of 3 · 9:07–9:09 AM · captured as audio</div>
+          <button class="big-play" aria-label="Play audio"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
+          <div class="a-spk" style="--_c:var(--spk-2)">
+            <span class="a-spk__dot"></span>
+            <b class="a-spk__name">Alice</b>
+            <span class="a-spk__meta">via system audio</span>
+          </div>
+          <div class="a-when">cited segment 2 of 3 · 9:07–9:09 AM · captured as audio</div>
         </div>
         <div class="scrub">
+          <!-- no frame ticks (audio-only); the track is just a seek line + playhead -->
           <div class="track">
-            <span class="ev-a" style="left:8%"></span>
-            <span class="ev-a ev-a--hl" style="left:35%"></span>
-            <span class="ev-a" style="left:78%"></span>
             <div class="head" style="left:35%; background:var(--cat-communication); color:#0c0c12">9:07 AM</div>
           </div>
-          <div class="scrub-caps"><span>9:00 AM</span><span>9:20 AM</span></div>
+          <div class="scrub-caps">
+            <span>9:00 AM</span>
+            <span class="legend">
+              <span class="li" style="--_c:var(--spk-1)"><span class="sw2"></span>You</span>
+              <span class="li" style="--_c:var(--spk-2)"><span class="sw2"></span>Alice</span>
+              <span class="li" style="--_c:var(--spk-3)"><span class="sw2"></span>Speaker 2 (unnamed)</span>
+            </span>
+            <span>9:20 AM</span>
+          </div>
+
+          <!-- Speaker-Turn Lane feeds the speaker header (a-spk) above and the
+               synced transcript reader below; clicking a block selects that turn. -->
+          <div class="turn-lane" aria-label="Speaker turns">
+            <button type="button" class="turn" style="left:3%;  width:9%; --_c:var(--spk-1)" title="You · 9:01 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:01 AM" data-pos="6"
+              data-seg="9:01 AM · captured as audio" data-quote="Quick standup — where are we on the release blockers?">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">9:01</span></span>
+            </button>
+            <button type="button" class="turn" style="left:14%; width:13%; --_c:var(--spk-2)" title="Alice · 9:04 AM · cited"
+              data-color="var(--spk-2)" data-spk="Alice" data-fallback="0" data-meta="system audio" data-time="9:04 AM" data-pos="18"
+              data-seg="cited segment 1 of 3 · 9:04–9:05 AM · captured as audio" data-quote="The OpenBLAS crash is the last blocker. I've got a fix but it needs a real-device retest.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>Alice</b> <span class="turn__t">9:04</span></span>
+            </button>
+            <button type="button" class="turn turn--hl is-selected" style="left:29%; width:17%; --_c:var(--spk-2)" title="Alice · 9:07 AM · headline"
+              data-color="var(--spk-2)" data-spk="Alice" data-fallback="0" data-meta="system audio" data-time="9:07 AM" data-pos="35"
+              data-seg="cited segment 2 of 3 · 9:07–9:09 AM · captured as audio" data-quote="…let's hold the release on the OpenBLAS crash — the static-link fix is landing today, retest on an M1 before we cut.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>Alice</b> <span class="turn__t">9:07</span></span>
+            </button>
+            <button type="button" class="turn" style="left:48%; width:11%; --_c:var(--spk-3)" title="Speaker 2 · 9:11 AM"
+              data-color="var(--spk-3)" data-spk="Speaker 2" data-fallback="1" data-meta="system audio" data-time="9:11 AM" data-pos="48"
+              data-seg="9:11 AM · captured as audio" data-quote="I can take the M1 retest this afternoon once it's merged.">
+              <span class="turn__lbl"><b>S2</b> <span class="turn__t">9:11</span></span>
+            </button>
+            <button type="button" class="turn" style="left:61%; width:9%; --_c:var(--spk-1)" title="You · 9:13 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:13 AM" data-pos="60"
+              data-seg="9:13 AM · captured as audio" data-quote="Perfect — I'll ping the channel when the build's up.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">9:13</span></span>
+            </button>
+            <button type="button" class="turn" style="left:72%; width:13%; --_c:var(--spk-3)" title="Speaker 2 · 9:16 AM · cited"
+              data-color="var(--spk-3)" data-spk="Speaker 2" data-fallback="1" data-meta="system audio" data-time="9:16 AM" data-pos="78"
+              data-seg="cited segment 3 of 3 · 9:16–9:17 AM · captured as audio" data-quote="Sounds good — I'll update the release ticket with the retest result.">
+              <span class="turn__cite"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><path d="M2.7 10.3a2.41 2.41 0 0 0 0 3.41l7.59 7.59a2.41 2.41 0 0 0 3.41 0l7.59-7.59a2.41 2.41 0 0 0 0-3.41L13.7 2.71a2.41 2.41 0 0 0-3.41 0Z"/></svg></span><span class="turn__lbl"><b>S2</b> <span class="turn__t">9:16</span></span>
+            </button>
+            <button type="button" class="turn" style="left:87%; width:10%; --_c:var(--spk-1)" title="You · 9:18 AM"
+              data-color="var(--spk-1)" data-spk="You" data-fallback="0" data-meta="microphone" data-time="9:18 AM" data-pos="90"
+              data-seg="9:18 AM · captured as audio" data-quote="Great — that's standup.">
+              <span class="turn__lbl"><b>You</b> <span class="turn__t">9:18</span></span>
+            </button>
+          </div>
+
+          <!-- Same synced transcript reader as the primary state, fed by the lane
+               above; replaces the single clipped quote — full text, scrolls. -->
+          <div class="script" aria-label="Transcript"></div>
         </div>
         <div class="controls">
-          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)">▶</button>
+          <button class="play" style="border-color:var(--cat-communication); background:rgba(192,176,255,.1); color:var(--cat-communication)" aria-label="Play"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true"><polygon points="6 3 20 12 6 21 6 3"/></svg></button>
           <span class="counter">spoken segment 2 / 3 · 9:07 AM</span>
           <span class="ctl-spacer"></span>
-          <button class="open-tl">Open in Timeline →</button>
+          <button class="open-tl">Open in Timeline <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
         </div>
         <div class="m-foot">
           <span>0 screen frames — captured as audio</span><span class="sep">·</span>
@@ -467,11 +670,11 @@
           <span class="chip"><span class="sw" style="background:var(--cat-creating)"></span>Creating</span>
           <h2>Debugging OpenBLAS static linking in build.rs</h2>
           <span class="when">Apr 12 · 9:10 – 10:35</span>
-          <button class="m-close">✕</button>
+          <button class="m-close" aria-label="Close receipt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>
         <div class="viewer viewer--expired">
           <div class="exp">
-            <div class="glyph">▸ ▸ ▸</div>
+            <div class="glyph"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg></div>
             <h4>Footage expired</h4>
             <p>The raw frames behind this card were removed by Retention Cleanup. The card, its summary, and its evidence list are kept — only the pixels age out. This Activity had no audio evidence, so there is nothing to play.</p>
           </div>
@@ -490,9 +693,9 @@
     <div class="ann-grid">
       <div class="ann">
         <h2>What it does</h2>
-        <p>Dayflow stitches each card's screenshots into a timelapse video. Mnema already stores the actual frames — so the receipt is a scrubable frame strip over the card's time range: play at 8×, drag the scrubber, or click a filmstrip thumb. Green ticks <em>above</em> the spine mark the frames the engine cited as evidence (the bright tick is the headline frame, which doubles as the poster).</p>
-        <p>But an Activity's evidence is frames <em>and</em> spoken audio — the engine cites both. So the track carries a second channel: <strong>lavender ticks below the spine</strong> mark the cited <strong>Audio Transcription Spans</strong>. Click one and the single playhead plays that segment's real audio at 1× while the frame viewer runs the same window, clocked by the audio — a bounded "relive this moment" clip. Hovering a tick shows the cited transcript (the clip's label) so you know what you'll hear. An Activity grounded only in audio (a call with the screen off) plays as a bounded audio player instead of lying "footage expired".</p>
-        <p>Each cited moment also shows <strong>who spoke</strong> — you (microphone) vs the other side (system audio), plus a recognized name when known — <strong>read-only</strong>, resolved live by id so a voice you name later shows its real name (never a frozen "Speaker 2"). This is where you catch the engine's speaker-blind misattributions ("someone spoke to me, the card says <em>I</em> said it"); fixing them hands off — naming a voice stays Timeline, a wrong card routes to the Activity's own Dismiss. The blindness itself gets its <em>root</em> fix in source-aware derivation (ADR 0050 — a separate follow-up).</p>
+        <p>Dayflow stitches each card's screenshots into a timelapse video. Mnema already stores the actual frames — so the receipt is a scrubable frame strip over the card's time range: play it back, drag the scrubber, or click a filmstrip thumb. Playback is two speeds of one bounded surface: <strong>1×</strong> relives the selected turn — that segment's real audio synced to its frames, stopping at the segment end; <strong>2×/8×/16×</strong> is a silent frame timelapse across the span. There is no sped-up audio — audio exists only as the bounded 1× relive, so the play button just carries a lavender audio tint at 1× and plain green while scanning. Green ticks <em>above</em> the spine mark the frames the engine cited as evidence (the bright tick is the headline frame, which doubles as the poster).</p>
+        <p>But an Activity's evidence is frames <em>and</em> spoken audio — the engine cites both. So the seek track stays for seeking, and directly below it sits a dedicated <strong>Speaker-Turn Lane</strong>: one <strong>wide block per spoken turn</strong>, laid out left→right by time and sized by duration, colored by speaker (cited turns marked ◆, the headline turn ringed; a small legend names the speakers). The blocks are big, click-first hit targets, physically separated from the thin seek line so the two never collide. Below the lane, a bounded <strong>synced transcript reader</strong> shows every turn's <strong>full text</strong> — wrapped, never clipped — with the active line emphasized in its speaker colour and the rest dimmed for context, scrolling the active line into view like a Spotify or Otter transcript. Lane and transcript are two views of one selection: click a block <em>or</em> a line and both update together (click-only, never on hover). Selecting a turn drives the single playhead through that segment's real audio at 1× while the frame viewer runs the same window — a bounded "relive this moment" clip. The modal caps to the window like the shipped <code>90vh</code> receipt, with the frame viewer as the single elastic region that shrinks to absorb the scrubber, lane, transcript, filmstrip and controls, so nothing overflows. An Activity grounded only in audio (a call with the screen off) plays as a bounded audio player, the same lane and reader feeding it, instead of lying "footage expired".</p>
+        <p>Each cited moment leads with <strong>who spoke</strong> — the resolved speaker name as the identity (You, or a recognized name like Alice), with the microphone / system-audio channel shown as quiet <strong>secondary meta</strong>. Attribution is <strong>read-only</strong> and late-bound by id, so a voice you name later shows its real name; an as-yet-unnamed voice reads "Speaker 2 · name in Timeline" rather than a frozen label. This is where you catch the engine's speaker-blind misattributions ("someone spoke to me, the card says <em>I</em> said it"); fixing them hands off — naming a voice stays Timeline, a wrong card routes to the Activity's own Dismiss. The blindness itself gets its <em>root</em> fix in source-aware derivation (ADR 0050 — a separate follow-up).</p>
         <p>This is the <strong>proof-and-bounded-inspection</strong> layer for the whole Journal: every AI-written sentence is one interaction from its evidence — from "see the cited pixel" to "hear the cited moment", all scoped to the one Activity's span. "Open in Timeline →" hands off anything wider: the raw frame, or (for audio) the full transcript, speaker turns, and unbounded scrub in Timeline's audio drawer. The playhead pill reads <strong>wall-clock time</strong> ("10:04 AM"), not elapsed. The line the receipt holds is <strong>bounded, not silent</strong> (ADR 0049).</p>
         <p class="not">Design provenance: Dayflow's review scrubber (wall-clock playhead pill; its poster is the middle frame — ours does better with the engine's cited headline frame), Loom (chapter ticks on the track + denser thumbnail sampling near markers), QuickTime (hold a control for frame-by-frame precision).</p>
       </div>
@@ -502,11 +705,11 @@
         <ul>
           <li>fetches frame ids with the existing <code>list_frames</code> over <code>[startedAtMs, endedAtMs]</code></li>
           <li>renders frames lazily via the existing <code>get_frame_preview</code> — playback = swapping previews on requestAnimationFrame, with lookahead prefetch into a small LRU (~40 frames) and decodes outside the window cancelled on scrub; the playhead moves via transform with no transitions (that combination is what makes raw frames feel like video)</li>
-          <li>overlays frame ticks (above) and audio ticks (below) from <code>user_context_activity_evidence</code> — <code>subject_type</code> splits them; <code>is_headline</code> is the poster frame / lead spoken moment</li>
-          <li>a cited audio tick plays the bounded clip via the existing <code>get_audio_segment_media</code> at 1×, driving the frame index off <code>started_at + audio.currentTime</code> — same frame-swap trick, now clocked by an <code>&lt;audio&gt;</code> element instead of the rAF timer; stops at the segment end</li>
+          <li>overlays frame ticks (above the spine) and a <strong>speaker-turn lane</strong> (below it) from <code>user_context_activity_evidence</code> — <code>subject_type</code> splits them; <code>is_headline</code> is the poster frame / lead spoken moment</li>
+          <li>clicking a turn plays the bounded clip via the existing <code>get_audio_segment_media</code> at 1×, driving the frame index off <code>started_at + audio.currentTime</code> — same frame-swap trick, now clocked by an <code>&lt;audio&gt;</code> element instead of the rAF timer; stops at the segment end</li>
           <li>"Open in Timeline" carries a frame id <em>or</em> an audio segment id — the frontend handoff slot (<code>pending-focus</code>) opens Timeline's audio drawer on the segment when there's no frame</li>
         </ul>
-        <p>No video is ever encoded — scrubbing the frame strip gives the timelapse feel with zero media pipeline. The viewer shows a frame-shaped skeleton while previews load; evidence ticks explain themselves via hover tooltip (shown) instead of a permanent caption. Keyboard: ←/→ steps frames, space plays, esc closes.</p>
+        <p>No video is ever encoded — scrubbing the frame strip gives the timelapse feel with zero media pipeline. The viewer shows a frame-shaped skeleton while previews load; the frame ticks above the spine are plain evidence markers, while the Speaker-Turn Lane below carries the interactive per-turn detail (click a block or a transcript line to select it). Keyboard: ←/→ steps frames, space plays, esc closes.</p>
       </div>
       <div class="ann">
         <h2>Net-new code</h2>
@@ -529,5 +732,119 @@
     </div>
   </section>
 </div>
+
+<script>
+  // The DOM is the source of truth: each .turn carries its own data-* fields.
+  const q = "“", qq = "”"; // curly quotes wrap the (quote-free) clip-bar caption
+
+  // Build the synced transcript reader from the lane's turn data (one source of
+  // truth). Each row shows the turn's FULL text — it wraps, never clips.
+  function buildScript(card) {
+    const script = card.querySelector(".script");
+    if (!script) return;
+    card.querySelectorAll(".turn-lane .turn").forEach((turn, i) => {
+      const d = turn.dataset;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "script__row";
+      row.dataset.i = i;
+      row.style.setProperty("--_c", d.color);
+      const t = document.createElement("span");
+      t.className = "script__t";
+      t.textContent = d.time.replace(/\s?[AP]M$/, ""); // 10:04 AM → 10:04
+      const body = document.createElement("span");
+      body.className = "script__body";
+      const spk = document.createElement("span");
+      spk.className = "script__spk";
+      spk.textContent = d.spk;
+      body.append(spk, document.createTextNode(": " + d.quote));
+      row.append(t, body);
+      script.appendChild(row);
+    });
+  }
+
+  // A lane block and its transcript row are two views of ONE selection.
+  function selectTurn(turn) {
+    const card = turn.closest(".modal-card");
+    const d = turn.dataset;
+    card.querySelectorAll(".turn").forEach((t) => t.classList.toggle("is-selected", t === turn));
+
+    // move the seek playhead (+ fill) to the turn's wall-clock spot
+    const head = card.querySelector(".track .head");
+    if (head) { head.style.left = d.pos + "%"; head.textContent = d.time; }
+    const fill = card.querySelector(".track .fill");
+    if (fill) fill.style.width = d.pos + "%";
+
+    // synced transcript: emphasize the active line, dim the rest, scroll it in
+    const script = card.querySelector(".script");
+    if (script) {
+      const i = [...card.querySelectorAll(".turn-lane .turn")].indexOf(turn);
+      const rows = script.querySelectorAll(".script__row");
+      rows.forEach((r, k) => r.classList.toggle("is-active", k === i));
+      if (rows[i]) rows[i].scrollIntoView({ block: "nearest" });
+    }
+
+    // audio-only: keep the in-viewer speaker + segment header in sync
+    const aspk = card.querySelector(".a-spk");
+    if (aspk) {
+      aspk.style.setProperty("--_c", d.color);
+      const nm = aspk.querySelector(".a-spk__name");
+      nm.textContent = d.spk;
+      nm.classList.toggle("is-fallback", d.fallback === "1");
+      aspk.querySelector(".a-spk__meta").textContent = "via " + d.meta;
+      const when = card.querySelector(".a-when");
+      if (when && d.seg) when.textContent = d.seg;
+    }
+
+    // reliving: the now-playing clip-bar
+    const clip = card.querySelector(".clip-bar");
+    if (clip) {
+      clip.style.setProperty("--_c", d.color);
+      clip.querySelector(".nm").textContent = d.spk;
+      clip.querySelector(".via").textContent = "· " + d.meta;
+      clip.querySelector(".cap").textContent = q + d.quote + qq;
+      if (d.rate) clip.querySelector(".rate").textContent = d.rate;
+    }
+  }
+
+  // Speed selector (primary modal). 1× = relive the selected turn's audio (the play
+  // button wears the lavender audio tint); 2×/8×/16× = silent frame timelapse over
+  // the whole span. Audio exists only as the bounded 1× relive — there is no toggle.
+  function setSpeed(card) {
+    const on = card.querySelector(".speed b.on");
+    if (!on) return;
+    const fast = parseInt(on.textContent, 10) > 1; // "8×" → 8
+    const play = card.querySelector(".play");
+    if (play) play.classList.toggle("play--audio", !fast); // audio only at 1×
+    const now = card.querySelector(".counter .now");
+    if (now) now.textContent = on.textContent;
+    const mode = card.querySelector(".counter [data-mode]");
+    if (mode) mode.textContent = fast ? "silent scan · frame 132 / 341" : "reliving spoken segment 2 / 3";
+  }
+
+  // Click: a lane block, a transcript row (→ its lane turn), or a speed chip.
+  document.addEventListener("click", (e) => {
+    const turn = e.target.closest(".turn");
+    if (turn) { selectTurn(turn); return; }
+    const row = e.target.closest(".script__row");
+    if (row) {
+      const card = row.closest(".modal-card");
+      selectTurn(card.querySelectorAll(".turn-lane .turn")[+row.dataset.i]);
+      return;
+    }
+    const chip = e.target.closest(".speed b");
+    if (chip) {
+      const group = chip.parentElement;
+      if (group.querySelectorAll("b").length < 2) return; // single-chip speed labels are static
+      group.querySelectorAll("b").forEach((b) => b.classList.toggle("on", b === chip));
+      setSpeed(chip.closest(".modal-card"));
+    }
+  });
+
+  // Build readers, pre-select each headline turn, then set the primary speed.
+  document.querySelectorAll(".modal-card").forEach(buildScript);
+  document.querySelectorAll(".turn-lane .turn.is-selected").forEach(selectTurn);
+  document.querySelectorAll(".modal .modal-card").forEach(setSpeed);
+</script>
 </body>
 </html>

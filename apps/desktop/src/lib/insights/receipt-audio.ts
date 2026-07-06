@@ -1,9 +1,9 @@
 // receipt-audio — pure, DOM-free helpers for the Activity Receipt's audio
 // evidence (ADR 0049): evidence partitioning, the audio-clock→frame-index map,
 // the empty-state discriminator, speaker attribution (late-bound by id), and
-// the tick / clip / footer view models the component renders. No Svelte, no
-// invoke — unit-tested in bun. The invoke-touching hydration that produces the
-// `AudioCitation[]` these consume lives in receipt-audio-loader.ts.
+// the span-wide turn view model the component renders. No Svelte, no invoke —
+// unit-tested in bun. The invoke-touching hydration that produces the
+// `TurnView[]` these consume lives in receipt-audio-loader.ts.
 
 import type { ActivityEvidenceRef } from "$lib/types/recording";
 import type {
@@ -13,22 +13,6 @@ import type {
   PersonProfileDto,
   SpeakerTurnDto,
 } from "$lib/types/app-infra";
-
-/**
- * A cited audio segment, hydrated for display. `turns` are held raw (never a
- * frozen name) so speaker attribution resolves live against the current
- * `PersonProfileDto[]` at render — naming a voice in Timeline shows on reopen.
- */
-export interface AudioCitation {
-  audioSegmentId: number;
-  capturedAtMs: number | null; // segment start (wall-clock) → tick + clip start
-  isHeadline: boolean;
-  sourceKind: AudioSegmentSourceKind | null;
-  startMs: number | null;
-  endMs: number | null;
-  turns: SpeakerTurnDto[];
-  caption: string;
-}
 
 /** Split an Activity's evidence into frame refs and audio-segment refs. */
 export function partitionEvidence(evidence: ActivityEvidenceRef[]): {
@@ -76,13 +60,6 @@ export function receiptViewState(
   if (frameCount > 0) return "frames";
   if (audioEvidenceCount > 0) return "audio-only";
   return "expired";
-}
-
-/** Fraction [0,1] of `ms` across a span (mirrors the component's posFor). */
-export function posFraction(ms: number, startMs: number, endMs: number): number {
-  const span = endMs - startMs;
-  if (span <= 0) return 0;
-  return Math.min(1, Math.max(0, (ms - startMs) / span));
 }
 
 /** microphone ≈ the user, system_audio ≈ whoever they were with. */
@@ -154,25 +131,6 @@ export function captionFromTurns(
   return `${text.slice(0, maxLen - 1).trimEnd()}…`;
 }
 
-/** Assemble a display citation from a cited ref + its hydrated DTOs (pure). */
-export function buildCitation(
-  ref: { subjectId: number; capturedAtMs?: number | null; isHeadline: boolean },
-  segment: AudioSegmentDto | null,
-  turns: SpeakerTurnDto[],
-): AudioCitation {
-  const startMs = segment ? Date.parse(segment.startedAt) : (ref.capturedAtMs ?? null);
-  return {
-    audioSegmentId: ref.subjectId,
-    capturedAtMs: ref.capturedAtMs ?? startMs,
-    isHeadline: ref.isHeadline,
-    sourceKind: segment?.sourceKind ?? null,
-    startMs,
-    endMs: segment ? Date.parse(segment.endedAt) : null,
-    turns,
-    caption: captionFromTurns(turns),
-  };
-}
-
 /** The data: URL an <audio> element plays (matches how Timeline plays audio). */
 export function audioDataUrl(media: AudioSegmentMediaDto): string {
   return `data:${media.mimeType};base64,${media.dataBase64}`;
@@ -185,108 +143,126 @@ export function audioFooterLeft(frameEvidenceCount: number): string {
     : "0 screen frames — captured as audio";
 }
 
+// ── Span-wide turn model (Receipt redesign, slice 1) ─────────────────────────
+
+/** One diarized speaker turn within an Activity's span, hydrated for display.
+ *  Absolute epoch times, live-resolved speaker + color; ordered by start. */
+export interface TurnView {
+  key: string; // stable selection key: `${audioSegmentId}:${turnId}`
+  turnId: number;
+  audioSegmentId: number;
+  segmentStartMs: number; // absolute epoch = Date.parse(seg.startedAt); clocks clip frames
+  startMs: number; // absolute epoch = Date.parse(seg.startedAt) + turn.startMs
+  endMs: number; // absolute epoch = Date.parse(seg.startedAt) + turn.endMs
+  speaker: string; // "You" for mic, else speakerDisplay(turn, profiles) — live-resolved
+  isFallback: boolean; // the unnamed "Speaker N" form
+  colorVar: string; // a CSS custom-property NAME, e.g. "--cat-communication"
+  sourceKind: AudioSegmentSourceKind | null;
+  sourceMeta: string; // "microphone" / "system audio"; "" when null
+  text: string; // trimmed per-turn transcript; always non-empty (wordless turns are dropped)
+  cited: boolean; // audioSegmentId is in the cited ref-set
+  isHeadline: boolean; // audioSegmentId === the headline cited ref's subjectId
+}
+
+/** One hydrated segment + its turns, as returned by the loader. */
+export interface HydratedSegment {
+  segment: AudioSegmentDto;
+  turns: SpeakerTurnDto[];
+}
+
+/** Non-"You" speaker color cycle (category channels), assigned in first-
+ *  appearance order and wrapping past four distinct other speakers. */
+const SPEAKER_COLOR_PALETTE = [
+  "--cat-meetings",
+  "--cat-research",
+  "--cat-entertainment",
+  "--cat-creating",
+];
+
 /**
- * The audio-only footer's speaker roster: mic segments contribute "You",
- * system segments contribute each live-resolved name (an unnamed "Speaker N"
- * gets the "name in Timeline" nudge). Distinct, order = citation order.
+ * Speaker-name → CSS var-name. "You" is pinned to --cat-communication (the
+ * audio channel lavender) and never consumes a palette slot; other distinct
+ * names cycle {@link SPEAKER_COLOR_PALETTE} in first-appearance order. Same
+ * name always maps to the same var. Pure.
  */
-export function audioSpeakerSummary(
-  citations: AudioCitation[],
-  profiles: PersonProfileDto[],
-): string {
-  const out = new Set<string>();
-  for (const c of citations) {
-    if (c.sourceKind === "microphone") {
-      out.add("You");
+export function assignSpeakerColors(orderedNames: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  let next = 0;
+  for (const name of orderedNames) {
+    if (out.has(name)) continue;
+    if (name === "You") {
+      out.set(name, "--cat-communication");
       continue;
     }
-    if (c.turns.length === 0) {
-      out.add("Other side");
-      continue;
-    }
-    for (const name of distinctSpeakerNames(c.turns, profiles)) {
-      out.add(isFallbackSpeaker(name) ? `${name} (unnamed → name in Timeline)` : name);
-    }
+    out.set(name, SPEAKER_COLOR_PALETTE[next % SPEAKER_COLOR_PALETTE.length]);
+    next++;
   }
-  return [...out].join(" · ");
+  return out;
 }
 
-// ── Render view models (keep the .svelte $derived block to one-liners) ──────
-
-export interface AudioTickView {
-  id: number;
-  pos: number;
-  headline: boolean;
-  speaker: string;
-  /** Attribution line — the tooltip's lavender uppercase label. */
-  label: string;
-  /** Cited transcript snippet ("" when the segment had no transcribed turns). */
-  caption: string;
-}
-
-/** One clickable lavender tick per cited audio segment, with its tooltip copy. */
-export function audioTickViews(
-  citations: AudioCitation[],
+/**
+ * Build the ordered turn view model: flatten every turn across `segments`,
+ * lift each to absolute epoch (segment start + in-segment offset), resolve its
+ * speaker (mic→"You" else live `speakerDisplay`), mark cited/headline by segment
+ * id, and color by first-appearance order. Ascending by `startMs` (tie-break
+ * `turnId`). Never throws. Wordless turns (no transcript text) are dropped —
+ * matching Timeline — so a diarizer that over-clusters one voice into a real
+ * cluster + a silent one never surfaces the silent one as a phantom speaker.
+ */
+export function buildTurnViews(
+  segments: HydratedSegment[],
+  citedRefs: { subjectId: number; isHeadline: boolean }[],
   profiles: PersonProfileDto[],
-  startMs: number,
-  endMs: number,
-): AudioTickView[] {
-  return citations.map((c) => {
-    const source = c.sourceKind ? sourceKindLabel(c.sourceKind) : "";
-    const readable = c.sourceKind ? sourceKindReadable(c.sourceKind) : "";
-    const names = distinctSpeakerNames(c.turns, profiles);
-    const speaker = c.sourceKind === "microphone" ? "You" : (names[0] ?? "Other side");
-    const label = [
-      source && `${source}${readable ? ` (${readable})` : ""}`,
-      "spoken evidence",
-      c.isHeadline && "headline",
-    ]
-      .filter(Boolean)
-      .join(" · ");
-    return {
-      id: c.audioSegmentId,
-      pos: c.capturedAtMs == null ? 0 : posFraction(c.capturedAtMs, startMs, endMs),
-      headline: c.isHeadline,
-      speaker,
-      label,
-      caption: c.caption ?? "",
-    };
-  });
+): TurnView[] {
+  const citedIds = new Set(citedRefs.map((r) => r.subjectId));
+  const headlineId = citedRefs.find((r) => r.isHeadline)?.subjectId ?? null;
+
+  const rows = segments
+    .flatMap(({ segment, turns }) => {
+      const segStart = Date.parse(segment.startedAt);
+      const isMic = segment.sourceKind === "microphone";
+      return turns.map((turn) => {
+        const speaker = isMic ? "You" : speakerDisplay(turn, profiles);
+        return {
+          key: `${segment.id}:${turn.id}`,
+          turnId: turn.id,
+          audioSegmentId: segment.id,
+          segmentStartMs: segStart,
+          startMs: segStart + turn.startMs,
+          endMs: segStart + turn.endMs,
+          speaker,
+          isFallback: isFallbackSpeaker(speaker),
+          sourceKind: segment.sourceKind ?? null,
+          sourceMeta: segment.sourceKind ? sourceKindReadable(segment.sourceKind) : "",
+          text: (turn.transcriptText ?? "").trim(),
+          cited: citedIds.has(segment.id),
+          isHeadline: segment.id === headlineId,
+        };
+      });
+    })
+    // A diarizer cluster with no transcribed words is not a speaker; drop it
+    // before roster/color assignment so it never adds a phantom "Speaker N" whose
+    // rows are all "—" (the exact `if (!text) continue` rule the Timeline reader
+    // uses). ponytail: an all-wordless cited segment therefore shows no turns —
+    // acceptable, it has no spoken evidence to read; the frame/audio player stays.
+    .filter((r) => r.text.length > 0);
+
+  rows.sort((a, b) => a.startMs - b.startMs || a.turnId - b.turnId);
+  const colors = assignSpeakerColors(rows.map((r) => r.speaker));
+  return rows.map((r) => ({ ...r, colorVar: colors.get(r.speaker) ?? "" }));
 }
 
-export interface AudioCurrentView {
-  citation: AudioCitation | null;
-  ordinal: number;
-  total: number;
-  source: string;
-  readable: string;
-  name: string;
-}
-
-/** The segment the audio surface is showing: the active clip, else the
- *  headline (else the first) — plus its live-resolved attribution. */
-export function audioCurrentView(
-  citations: AudioCitation[],
-  profiles: PersonProfileDto[],
-  activeClipId: number | null,
-): AudioCurrentView {
-  const headline = citations.find((c) => c.isHeadline) ?? citations[0] ?? null;
-  const currentId = activeClipId ?? headline?.audioSegmentId ?? null;
-  const citation = citations.find((c) => c.audioSegmentId === currentId) ?? headline;
-  const ordinal = citation
-    ? citations.findIndex((c) => c.audioSegmentId === citation.audioSegmentId) + 1
-    : 0;
-  const source = citation?.sourceKind ? sourceKindLabel(citation.sourceKind) : "";
-  const readable = citation?.sourceKind ? sourceKindReadable(citation.sourceKind) : "";
-  const names = citation ? distinctSpeakerNames(citation.turns, profiles) : [];
-  const name = citation?.sourceKind === "microphone" ? "You" : (names[0] ?? "Other side");
-  return { citation, ordinal, total: citations.length, source, readable, name };
-}
-
-/** "microphone · 10:04:02–10:05:47 · 1×" — the inert rate line on a clip. */
-export function clipRateLabelOf(c: AudioCitation | null, fmt: (ms: number) => string): string {
-  if (!c) return "1×";
-  const readable = c.sourceKind ? sourceKindReadable(c.sourceKind) : "audio";
-  const span = c.startMs != null && c.endMs != null ? `${fmt(c.startMs)}–${fmt(c.endMs)} · ` : "";
-  return `${readable} · ${span}1×`;
+/**
+ * Audio-only footer roster: distinct live-resolved speaker names in turn order;
+ * an unnamed voice gets the "name in Timeline" nudge.
+ */
+export function turnSpeakerRoster(turns: TurnView[]): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const t of turns) {
+    if (seen.has(t.speaker)) continue;
+    seen.add(t.speaker);
+    out.push(t.isFallback ? `${t.speaker} (unnamed → name in Timeline)` : t.speaker);
+  }
+  return out.join(" · ");
 }

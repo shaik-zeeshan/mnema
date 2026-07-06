@@ -88,8 +88,14 @@ export function desiredWindow(
   return out;
 }
 
-export const SPEEDS = [2, 8, 16] as const;
+export const SPEEDS = [1, 2, 8, 16] as const;
 export type Speed = (typeof SPEEDS)[number];
+
+/** 1× is the audible per-turn relive; every faster speed is a silent timelapse.
+ *  Drives the play-button tint and whether the <audio> clocks playback. */
+export function isAudibleSpeed(speed: Speed): boolean {
+  return speed === 1;
+}
 
 /**
  * Playback speed → source-frames advanced per wall-second. Retained anchor
@@ -97,6 +103,9 @@ export type Speed = (typeof SPEEDS)[number];
  * frames-per-second gives a timelapse feel (2× slow, 8× default, 16× fast).
  * ponytail: naive constant cadence; exact fps isn't tested — tune the factor
  * here if playback feels off on a given capture rate.
+ * ponytail: only the silent speeds (2/8/16) rAF-drive at this fps; 1× is
+ * audio-clocked (frameIndexForMs in receipt-audio.ts), so framesPerSecond(1)
+ * is unused by the timelapse path.
  */
 export function framesPerSecond(speed: Speed): number {
   return speed;

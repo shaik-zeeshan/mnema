@@ -8,6 +8,8 @@ import {
   desiredWindow,
   initialPosterIndex,
   countCaptureSegments,
+  SPEEDS,
+  isAudibleSpeed,
 } from "./receipt-playback";
 
 describe("LruCache eviction order", () => {
@@ -92,6 +94,19 @@ describe("desiredWindow", () => {
   });
   it("is empty for an empty strip", () => {
     expect(desiredWindow([], 0, 2, 1)).toEqual([]);
+  });
+});
+
+describe("SPEEDS / isAudibleSpeed", () => {
+  it("includes 1× and leads with it (the audible relive chip)", () => {
+    expect(SPEEDS[0]).toBe(1);
+    expect([...SPEEDS]).toEqual([1, 2, 8, 16]);
+  });
+  it("marks only 1× as audible; the timelapse speeds are silent", () => {
+    expect(isAudibleSpeed(1)).toBe(true);
+    expect(isAudibleSpeed(2)).toBe(false);
+    expect(isAudibleSpeed(8)).toBe(false);
+    expect(isAudibleSpeed(16)).toBe(false);
   });
 });
 
