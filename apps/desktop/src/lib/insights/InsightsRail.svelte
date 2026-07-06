@@ -27,12 +27,19 @@
   import IconSubjects from "~icons/lucide/lightbulb";
   import IconContext from "~icons/lucide/notebook-text";
   import IconCollapse from "~icons/lucide/chevrons-left";
+  import IconLock from "~icons/lucide/lock";
 
   type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   interface Props {
     view: InsightsTab;
     onOpenTab: (tab: InsightsTab) => void;
+    // Continuous derivation (User Context opt-in) is off while the runtime is
+    // otherwise set up. All four nav sub-surfaces are derivation-fed, so they
+    // render locked (dim + lock glyph + tooltip) and clicking one deeplinks to
+    // the derivation setting instead of switching tabs. Chat stays live.
+    derivationOff: boolean;
+    onOpenDerivationSettings: () => void;
     engineOn: boolean;
     modelLabel: string;
     statusLoaded: boolean;
@@ -51,6 +58,8 @@
   let {
     view,
     onOpenTab,
+    derivationOff,
+    onOpenDerivationSettings,
     engineOn,
     modelLabel,
     statusLoaded,
@@ -115,11 +124,19 @@
           type="button"
           class="rail-nav-item"
           class:active={view === item.id}
+          class:locked={derivationOff}
           aria-current={view === item.id ? "page" : undefined}
-          onclick={() => onOpenTab(item.id)}
+          use:tip={derivationOff
+            ? "Continuous derivation is off — click to turn it on in Settings"
+            : undefined}
+          onclick={() =>
+            derivationOff ? onOpenDerivationSettings() : onOpenTab(item.id)}
         >
           <Icon aria-hidden="true" />
           {item.label}
+          {#if derivationOff}
+            <IconLock class="rail-lock" role="img" aria-label="Requires continuous derivation" />
+          {/if}
         </button>
       {/each}
     </nav>
@@ -287,6 +304,33 @@
     height: 16px;
     border-radius: 0 2px 2px 0;
     background: var(--app-accent);
+  }
+  /* Locked (derivation off) — dimmed row with a trailing lock glyph. Still a
+     live control: clicking deeplinks to the derivation setting, so hover keeps
+     the pointer + a quiet tint but never the accent "openable" treatment. */
+  .rail-nav-item.locked {
+    color: var(--app-text-faint);
+  }
+  .rail-nav-item.locked :global(svg) {
+    opacity: 0.6;
+  }
+  .rail-nav-item.locked:hover {
+    color: var(--app-text-muted);
+    background: var(--app-surface-hover);
+  }
+  /* Keyboard-focus accent must survive the `.locked` dim (same specificity,
+     later in source). */
+  .rail-nav-item.locked:focus-visible {
+    color: var(--app-accent);
+  }
+  .rail-nav-item :global(.rail-lock) {
+    margin-left: auto;
+    width: 12px;
+    height: 12px;
+  }
+  /* The lock explains the locked state — keep it full-strength, not dimmed. */
+  .rail-nav-item.locked :global(.rail-lock) {
+    opacity: 1;
   }
   /* new chat — a full row that shares the nav's geometry exactly: same 28px
      height, same 0 8px padding, same 8px gap, and a 16px leading-glyph box. That
