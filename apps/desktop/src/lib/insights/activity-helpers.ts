@@ -97,8 +97,13 @@ export function shiftAnchor(
 }
 
 // ── Humanisers ─────────────────────────────────────────────────────────
+// Adaptive duration: seconds under a minute (so a short activity reads "45s",
+// not a rounded-to-zero "0m"), minutes under an hour, else "Xh"/"Xh Ym". One
+// unit granularity — the coarsest unit that isn't zero, plus its remainder.
 export function humanizeMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
   const totalMin = Math.round(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;
