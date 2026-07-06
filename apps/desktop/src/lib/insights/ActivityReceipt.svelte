@@ -630,15 +630,6 @@
             {#if currentMs != null}<span class="frame-meta__chip">{clockSec(currentMs)}</span>{/if}
             {#if hasOcr}<span class="frame-meta__chip">OCR</span>{/if}
           </div>
-          {#if relivingClip && selectedTurn}
-            <!-- "reliving a cited moment": one playhead, real audio at 1×. The
-                 speaker NAME leads; the channel is demoted to a quiet meta tag. -->
-            <div class="clip-bar" style="--_c: var({selectedTurn.colorVar});">
-              <span class="live"><span class="d"></span><b>{selectedTurn.speaker}</b>{#if selectedTurn.sourceMeta}<span class="via">· {selectedTurn.sourceMeta}</span>{/if}</span>
-              <span class="cap">{selectedTurn.text}</span>
-              <span class="rate">{clockSec(selectedTurn.startMs)}–{clockSec(selectedTurn.endMs)} · 1×</span>
-            </div>
-          {/if}
         </div>
       {/if}
 
@@ -791,15 +782,6 @@
   .a-spk__name.is-fallback { color: var(--_c); }
   .a-spk__meta { font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
   .a-when { font-size: 10.5px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
-
-  /* "Reliving a cited moment" caption band while a bounded 1× clip runs. */
-  .clip-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 3; display: flex; align-items: center; gap: 12px; padding: 9px 16px; backdrop-filter: blur(4px); background: var(--app-overlay-bg); border-top: 1px solid var(--cat-communication); }
-  .clip-bar .live { flex: none; display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: var(--app-text-strong); }
-  .clip-bar .live .d { width: 8px; height: 8px; border-radius: 50%; background: var(--_c, var(--cat-communication)); box-shadow: 0 0 5px var(--_c, var(--cat-communication)); }
-  .clip-bar .live b { color: var(--app-text-strong); font-weight: 600; }
-  .clip-bar .live .via { font-size: 9px; font-weight: 400; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-subtle); }
-  .clip-bar .cap { flex: 1; min-width: 0; font-size: 11.5px; color: var(--app-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .clip-bar .rate { flex: none; font-size: 10px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
 
   /* Scrubber — frame ticks above the spine; the Speaker-Turn Lane + transcript
      reader sit BELOW it (their own components) inside this pinned block. */
