@@ -119,25 +119,28 @@ export function audioDataUrl(media: AudioSegmentMediaDto): string {
 }
 
 /**
- * Defer a freshly-set clip's start seek to `loadedmetadata` (currentTime only
- * sticks once metadata is in) and clamp it to the real length. `offsetSec <= 0`
- * means "start at the head".
+ * Seek a clip to `offsetSec`, clamped to the real length. `offsetSec <= 0`
+ * means "start at the head" (no seek). A same-segment re-seek (scrub click within
+ * the already-loaded clip) keeps `readyState >= 1` and never re-fires
+ * `loadedmetadata` — WKWebView won't re-fire it for an identical/unchanged src —
+ * so apply the seek NOW when metadata is already in; only defer to
+ * `loadedmetadata` for a freshly-set src (currentTime doesn't stick until then).
  *
- * Uses the single-slot `onloadedmetadata` PROPERTY, not an addEventListener
- * {once} listener: a {once} listener is removed only when it FIRES, not when the
- * element's `src` is swapped, so a pending seek from a superseded clip survives
- * and fires against the LATER src — seeking the new clip to the old offset.
- * Assigning the property replaces any still-pending seek; `offsetSec <= 0`
- * clears it so a plain (head-start) clip never inherits a prior scrub's offset.
+ * Always clears any stale pending seek first, and uses the single-slot
+ * `onloadedmetadata` PROPERTY, not an addEventListener {once} listener: a {once}
+ * listener is removed only when it FIRES, not when the element's `src` is
+ * swapped, so a pending seek from a superseded clip would survive and fire
+ * against the LATER src. Assigning/clearing the property drops any still-pending
+ * seek so a plain (head-start) clip never inherits a prior scrub's offset.
  */
 export function scheduleClipSeek(el: HTMLAudioElement, offsetSec: number): void {
-  if (offsetSec <= 0) {
-    el.onloadedmetadata = null;
-    return;
-  }
-  el.onloadedmetadata = () => {
+  el.onloadedmetadata = null; // drop any superseded pending seek
+  if (offsetSec <= 0) return; // head-start: nothing to seek
+  const apply = () => {
     el.currentTime = Number.isFinite(el.duration) ? Math.min(offsetSec, el.duration) : offsetSec;
   };
+  if (el.readyState >= 1) apply();
+  else el.onloadedmetadata = apply;
 }
 
 /** The audio-only footer's left cell: honest about why there are no frames. */

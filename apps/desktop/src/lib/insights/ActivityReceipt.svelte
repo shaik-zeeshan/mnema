@@ -118,6 +118,7 @@
   let trackEl = $state<HTMLDivElement | null>(null);
   let filmEl = $state<HTMLDivElement | null>(null);
   let scrubbing = false;
+  let wasPlaying = false; // audio play state captured at scrub start; resume on release iff true
   let thumbObserver: IntersectionObserver | null = null;
 
   // ── Derived view model ───────────────────────────────────────────────
@@ -317,7 +318,9 @@
     if (audible) {
       if (!audioEl) return;
       if (activeClipId == null) {
-        if (selectedTurn) void playClip(selectedTurn);
+        // Start under the pill, not the segment head: seek to the current head
+        // (poster frame / selected turn) so audio and playhead share one clock.
+        if (selectedTurn) void playClip(selectedTurn, headMs ?? undefined);
         return;
       }
       audioEl.paused ? void audioEl.play().catch(() => {}) : audioEl.pause();
@@ -360,9 +363,18 @@
   // position, so one playhead drives both. It plays the segment through, then
   // auto-advances to the next (onended). Pass `seekToMs` to start at a chosen
   // wall-clock instant within the segment (scrub-bar click) instead of its head.
-  async function playClip(turn: TurnView, seekToMs?: number): Promise<void> {
+  async function playClip(turn: TurnView, seekToMs?: number, autoplay = true): Promise<void> {
     if (!audioEl) return;
     pause(); // stop the rAF timelapse; the audio clocks from here
+    const offsetSec = seekToMs == null ? 0 : Math.max(0, (seekToMs - turn.segmentStartMs) / 1000);
+    // Same segment already loaded → seek in place. Reassigning an identical data:
+    // URL can reset readyState to 0 in WKWebView and re-arm the metadata-defer
+    // path (the audio never moves), so a same-segment re-seek must NOT touch src.
+    if (activeClipId === turn.audioSegmentId && audioEl.src) {
+      scheduleClipSeek(audioEl, offsetSec);
+      if (autoplay) void audioEl.play().catch(() => {});
+      return;
+    }
     clipHeadMs = null; // fall back to the new turn's start until its audio plays
     const token = ++clipToken;
     const src = await audioLoader.fetchMediaSrc(turn.audioSegmentId);
@@ -370,12 +382,11 @@
     clipStartMs = turn.segmentStartMs;
     activeClipId = turn.audioSegmentId;
     audioEl.src = src;
-    // Defer the start seek to loadedmetadata and clamp to the real length. Uses
-    // a single-slot property so a superseding clip drops any stale seek (a
-    // {once} listener would leak across the src swap and re-seek the new clip).
-    const offsetSec = seekToMs == null ? 0 : Math.max(0, (seekToMs - turn.segmentStartMs) / 1000);
+    // New src: metadata isn't in yet, so scheduleClipSeek defers the seek to
+    // loadedmetadata via a single-slot property (a superseding clip drops any
+    // stale seek; a {once} listener would leak across the src swap).
     scheduleClipSeek(audioEl, offsetSec);
-    void audioEl.play().catch(() => {});
+    if (autoplay) void audioEl.play().catch(() => {});
   }
 
   function onAudioTimeUpdate(): void {
@@ -435,35 +446,40 @@
   // Release on the timeline lands the audio at that instant: load the segment
   // covering it and play from the chosen offset (ADR 0049 amendment). A release
   // over a silent gap clears the clip — the frame scrub already moved there.
-  function seekAudioAt(clientX: number): void {
+  function seekAudioAt(clientX: number, shouldPlay: boolean): void {
     if (turns.length === 0) return;
     const ms = msForClientX(clientX);
     if (ms == null) return;
     const turn = turnAtMs(turns, ms);
-    if (!turn) { stopClip(); return; }
+    if (!turn) { stopClip(); return; } // released over a silent gap — the frame already moved
     selectedKey = turn.key;
     speed = 1;
-    void playClip(turn, ms);
+    void playClip(turn, ms, shouldPlay); // seek there; resume playback only if it was playing
   }
   function onTrackPointerDown(e: PointerEvent): void {
     if (strip.length === 0) return; // audio-only track stays a read-only playhead
+    wasPlaying = !!audioEl && !audioEl.paused; // resume on release only if we interrupt playback
     pause(); // stop the silent rAF timelapse
     audioEl?.pause(); // silence the running clip while dragging; release re-lands it
     scrubbing = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    scrubToClientX(e.clientX);
+    scrubToClientX(e.clientX); // frame/pill jump to the pressed instant (a click is a 0-length drag)
   }
   function onTrackPointerMove(e: PointerEvent): void {
     if (!scrubbing) return;
-    scrubToClientX(e.clientX);
+    scrubToClientX(e.clientX); // frame/pill follow the cursor
   }
   function onTrackPointerUp(e: PointerEvent): void {
-    const wasScrubbing = scrubbing;
+    if (!scrubbing) return;
     scrubbing = false;
-    try {
-      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-    } catch { /* pointer already released */ }
-    if (wasScrubbing) seekAudioAt(e.clientX); // land audio at the released instant
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    seekAudioAt(e.clientX, wasPlaying); // land audio at the released instant; resume iff it was playing
+  }
+  function onTrackPointerCancel(e: PointerEvent): void {
+    if (!scrubbing) return;
+    scrubbing = false;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* already released */ }
+    // Cancelled (gesture stolen): keep the scrubbed frame where it landed, never resume.
   }
 
   // ── Open in Timeline handoff (frontend-only, no backend command) ─────
@@ -649,6 +665,7 @@
           onpointerdown={onTrackPointerDown}
           onpointermove={onTrackPointerMove}
           onpointerup={onTrackPointerUp}
+          onpointercancel={onTrackPointerCancel}
         >
           {#if !isAudioOnly}
             {#each ticks as t, i (i)}

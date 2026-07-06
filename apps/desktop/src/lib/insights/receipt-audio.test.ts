@@ -241,6 +241,7 @@ function fakeAudio() {
     currentTime: 0,
     duration: 120,
     src: "",
+    readyState: 0, // 0 = HAVE_NOTHING (fresh src); ≥1 = HAVE_METADATA (same-segment re-seek)
     onloadedmetadata: null,
     addEventListener(type, fn, opts) {
       if (type === "loadedmetadata") once.push({ fn, once: !!opts?.once });
@@ -296,5 +297,31 @@ describe("scheduleClipSeek — stale metadata-seek listener (ADR 0049 scrub→se
     scheduleClipSeek(el, 5);
     el.fireLoadedMetadata();
     expect(el.currentTime).toBe(5);
+  });
+});
+
+describe("scheduleClipSeek — same-segment re-seek (readyState≥1 applies now)", () => {
+  it("seeks immediately when metadata is already loaded, with NO loadedmetadata event", () => {
+    const el = fakeAudio();
+    el.readyState = 1; // HAVE_METADATA — a same-segment re-seek never re-fires loadedmetadata
+    scheduleClipSeek(el, 30);
+    expect(el.currentTime).toBe(30); // applied synchronously, not deferred
+    expect(el.onloadedmetadata).toBeNull(); // no pending deferred seek left armed
+  });
+
+  it("clamps an immediate (readyState≥1) seek to the real duration", () => {
+    const el = fakeAudio();
+    el.readyState = 1;
+    el.duration = 20;
+    scheduleClipSeek(el, 30);
+    expect(el.currentTime).toBe(20);
+  });
+
+  it("still defers to loadedmetadata when metadata isn't loaded yet (fresh src)", () => {
+    const el = fakeAudio(); // readyState 0
+    scheduleClipSeek(el, 30);
+    expect(el.currentTime).toBe(0); // not applied until metadata is in
+    el.fireLoadedMetadata();
+    expect(el.currentTime).toBe(30);
   });
 });
