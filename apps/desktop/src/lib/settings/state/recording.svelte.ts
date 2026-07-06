@@ -93,6 +93,9 @@ export function cloneMcpServer(server: McpServerConfig): McpServerConfig {
     label: server.label ?? "",
     enabled: server.enabled ?? false,
     transport: server.transport,
+    // Carry the http auth mode (ADR 0051) through the load clone so an OAuth
+    // connector stays http+oauth in the draft (drives its lifecycle row).
+    authMode: server.authMode,
     command: server.command ?? null,
     args: [...(server.args ?? [])],
     env: (server.env ?? []).map((e) => ({ name: e.name, value: e.value })),

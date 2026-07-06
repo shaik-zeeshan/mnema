@@ -29,8 +29,10 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import McpConnectorCatalog from "./McpConnectorCatalog.svelte";
   import McpConnectorCustomForm from "./McpConnectorCustomForm.svelte";
+  import McpOAuthConnect from "./McpOAuthConnect.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import { MCP_PRESETS, type McpPreset } from "$lib/settings/state/mcp-presets";
+  import { deriveMcpOAuthStage } from "$lib/settings/state/mcp-oauth-stage";
   import { newMcpServerId } from "$lib/settings/state/ai-providers";
   import type { McpServerConfig } from "$lib/types";
 
@@ -48,9 +50,24 @@
     onToolsDiscovered?: (id: string, count: number) => void;
     /** Open in edit mode for this existing connector (skips the catalog). */
     editId?: string | null;
+    /**
+     * Open straight on the OAuth connect panel for this EXISTING http+oauth
+     * connector (row Connect / Reconnect, slice 8b) — no catalog, no add step.
+     */
+    connectId?: string | null;
+    /** "connect" (fresh, `none`) or "reconnect" (`reconnect`) — the panel eyebrow/verb. */
+    connectMode?: "connect" | "reconnect";
   }
 
-  let { open, onClose, onAdded, onToolsDiscovered, editId = null }: Props = $props();
+  let {
+    open,
+    onClose,
+    onAdded,
+    onToolsDiscovered,
+    editId = null,
+    connectId = null,
+    connectMode = "connect",
+  }: Props = $props();
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -201,16 +218,122 @@
 
   // ─── Step 2 derivations ──────────────────────────────────────────────────────
   const title = $derived.by(() => {
+    if (connectServer) return `Connect ${oauthLabel}`;
     if (step === "catalog") return "Pick a service";
     if (edit && editServer) return editServer.label.trim() || editServer.id;
     return selected ? `Connect ${selected.label}` : "Custom connector";
   });
+  const eyebrow = $derived.by(() => {
+    if (connectServer) return connectMode === "reconnect" ? "Reconnect" : "Connect";
+    return edit ? "Edit connector" : "Add connector";
+  });
+  // A hosted OAuth preset (e.g. Notion): no token field, no verify — it signs in
+  // through the browser via the row's Connect flow (slice 8a). slice 8b runs the
+  // Connect inline here instead.
+  const oauthPreset = $derived(selected?.kind === "hosted" && selected.authMode === "oauth");
   const chipTransport = $derived(selected?.kind === "hosted" ? "HTTP" : "STDIO");
   const chipPath = $derived(
     selected?.kind === "hosted"
       ? advUrl.trim().replace(/^https?:\/\//, "")
       : `${advCommand.trim()} ${advArgs.trim()}`.trim(),
   );
+
+  // ─── In-modal OAuth connect flow (slice 8b) ─────────────────────────────────
+  // Two entry doors share ONE derivation: (1) a hosted-OAuth preset picked from
+  // the catalog (added on Connect, then authorized in place), and (2) row
+  // Connect/Reconnect on an EXISTING connector (`connectId`). The stage is
+  // derived from the live store — the `mcp_authorization_changed` → refresh that
+  // McpConnectors runs updates `mcpOAuthStateById`, which flips this panel.
+  const mcpOAuthStateById = $derived(aiRuntime.mcpOAuthStateById);
+  const mcpOAuthErrors = $derived(aiRuntime.mcpOAuthErrors);
+
+  let oauthAttempted = $state(false);
+  let oauthSawAuthorizing = $state(false);
+  // The id minted when a catalog OAuth preset is added at Connect-click (null for
+  // the row path, where `connectId` already names an existing connector).
+  let addedOauthId = $state<string | null>(null);
+
+  // The existing connector being (re)connected from its row.
+  const connectServer = $derived(
+    connectId ? (rec.draftMcpServers.find((s) => s.id === connectId) ?? null) : null,
+  );
+  // Show the OAuth connect panel when: opened for a row connector, OR step-2 for
+  // a hosted-OAuth preset (Custom-OAuth still rides the form + submit()).
+  const oauthConnect = $derived(!!connectServer || (step === "connect" && oauthPreset));
+  // The id whose live state drives the stage (row id, or the just-added preset id).
+  const oauthConnectId = $derived(connectId ?? addedOauthId);
+  const oauthState = $derived(oauthConnectId ? mcpOAuthStateById[oauthConnectId] : undefined);
+  const oauthHasError = $derived(!!(oauthConnectId && mcpOAuthErrors[oauthConnectId]));
+  const oauthStage = $derived(
+    deriveMcpOAuthStage({
+      state: oauthState,
+      attempted: oauthAttempted,
+      hasError: oauthHasError,
+      sawAuthorizing: oauthSawAuthorizing,
+    }),
+  );
+
+  // Latch "we reached authorizing" so a later fall-back to none/reconnect reads
+  // as a denial (not begin-still-in-flight). Write-only flag — no derived cycle.
+  $effect(() => {
+    if (oauthState === "authorizing") oauthSawAuthorizing = true;
+  });
+
+  const oauthVerb = $derived<"Connect" | "Reconnect">(
+    connectMode === "reconnect" ? "Reconnect" : "Connect",
+  );
+  const oauthLabel = $derived(
+    connectServer ? connectServer.label.trim() || connectServer.id : (selected?.label ?? ""),
+  );
+  const oauthLede = $derived(
+    connectServer
+      ? `Chat can use ${oauthLabel}'s tools once you approve access in your browser.`
+      : (selected?.lede ?? ""),
+  );
+  const oauthPath = $derived(
+    (connectServer?.url ?? (oauthPreset ? advUrl : "")).trim().replace(/^https?:\/\//, ""),
+  );
+
+  // Connect: ensure the connector exists (a catalog preset is added + persisted
+  // ONCE — the backend resolves `mcp_oauth_begin` by id from settings), then
+  // begin the browser flow. begin records failures into mcpOAuthErrors[id] (no
+  // throw), so `oauthStage` flips to "denied" on its own.
+  async function oauthConnectStart(): Promise<void> {
+    oauthAttempted = true;
+    oauthSawAuthorizing = false;
+    let id = oauthConnectId;
+    if (!id && selected) {
+      try {
+        id = c.addMcpServerFromPreset(selected, presetOverrides(selected));
+        addedOauthId = id;
+        await c.flushAiRuntimeSave();
+      } catch (err) {
+        submitError = humanizeError(err);
+        console.error("[McpConnectorPicker] OAuth add-before-connect failed", err);
+        // Roll back the orphan draft; drop back to idle so the user can retry.
+        if (id) await c.removeMcpServer(id, { confirm: false });
+        addedOauthId = null;
+        oauthAttempted = false;
+        return;
+      }
+    }
+    if (!id) return;
+    await aiRuntime.beginMcpOAuth(id);
+    await aiRuntime.refreshMcpOAuthStates();
+  }
+
+  function oauthRetry(): void {
+    oauthAttempted = false;
+    oauthSawAuthorizing = false;
+  }
+
+  // Done (authorized). For a catalog-add the connector is brand-new → tell the
+  // parent so it flashes the row + refreshes. For a row Connect/Reconnect the row
+  // already exists and flipped on the same event, so just close.
+  function oauthDone(): void {
+    if (addedOauthId) onAdded(addedOauthId);
+    onClose();
+  }
 
   const addDisabled = $derived.by(() => {
     if (connecting || removing) return true;
@@ -254,6 +377,10 @@
       label,
       enabled: true,
       transport: stdio ? "stdio" : "http",
+      // http auth mode (ADR 0051). Slice 7 lets the form pick OAuth; carry it
+      // onto the draft so it persists as http+oauth (else the backend never
+      // lists it for OAuth and its Connect flow is unreachable).
+      authMode: stdio ? undefined : (m.authMode ?? "bearer"),
       command: stdio ? (m.command ?? "").trim() || null : null,
       args: stdio ? m.args.filter((a) => a.trim() !== "") : [],
       env: stdio ? m.env.filter((e) => e.name.trim() !== "") : [],
@@ -270,15 +397,22 @@
     submitError = null;
     let id: string | null = null;
     const secret = token.trim();
-    // A local preset added while Node is missing can't list tools — skip the
-    // verify and land it disabled instead of failing the add.
-    const skipVerify = selected?.kind === "local" && nodeVersion === null;
+    // slice 8b: the in-modal Connect flow will authorize here before closing.
+    // For now an OAuth connector lands in "needs authorization" — no pasted
+    // secret, and no tool-list verify (an unauthorized connector holds no token,
+    // so listing tools would fail). The user Connects from its row.
+    const oauth = selected
+      ? selected.authMode === "oauth"
+      : customModel.transport === "http" && customModel.authMode === "oauth";
+    // A local preset added while Node is missing can't list tools either — skip
+    // the verify and land it disabled instead of failing the add.
+    const skipVerify = oauth || (selected?.kind === "local" && nodeVersion === null);
     try {
       id = selected
         ? c.addMcpServerFromPreset(selected, presetOverrides(selected))
         : c.addMcpServerDraft(buildCustomDraft());
       await c.flushAiRuntimeSave();
-      if (secret) {
+      if (secret && !oauth) {
         aiRuntime.setMcpSecretInput(id, secret);
         await aiRuntime.saveMcpServerSecret(id);
         // saveMcpServerSecret records failures instead of throwing.
@@ -378,6 +512,9 @@
   $effect(() => {
     if (open && !wasOpen) {
       opener = document.activeElement as HTMLElement | null;
+      oauthAttempted = false;
+      oauthSawAuthorizing = false;
+      addedOauthId = null;
       if (editId) startEdit(editId);
       panelEl?.focus();
       void tick().then(focusFirstField);
@@ -391,6 +528,9 @@
       submitError = null;
       connecting = false;
       removing = false;
+      oauthAttempted = false;
+      oauthSawAuthorizing = false;
+      addedOauthId = null;
       void tick().then(() => trigger?.focus());
     }
     wasOpen = open;
@@ -403,7 +543,9 @@
     if (trapTabKey(e, panelEl)) return;
     if (e.key === "Escape") {
       if (connecting || removing) return;
-      if (step === "connect" && !edit) backToCatalog();
+      // OAuth connect (catalog-add or row) and edit dismiss straight out; only a
+      // non-oauth catalog-add step steps back to the grid.
+      if (step === "connect" && !edit && !oauthConnect) backToCatalog();
       else onClose();
     }
   }}
@@ -427,7 +569,7 @@
     >
       <header class="cat-modal__header">
         <div>
-          <p class="cat-modal__eyebrow">{edit ? "Edit connector" : "Add connector"}</p>
+          <p class="cat-modal__eyebrow">{eyebrow}</p>
           <h2 id="mcp-picker-title">{title}</h2>
         </div>
         <button
@@ -440,7 +582,30 @@
       </header>
 
       <div class="cat-modal__body" bind:this={bodyEl}>
-        {#if step === "catalog"}
+        {#if oauthConnect}
+          <!-- OAuth connect panel: catalog-add of a hosted-OAuth preset, or a
+               row's Connect/Reconnect. Stage is derived from the live store. -->
+          <div class="connect">
+            {#if oauthLede}<p class="connect__lede">{oauthLede}</p>{/if}
+            <div class="chip-row">
+              <span class="chip">HTTP</span>
+              {#if oauthPath}<span class="chip chip--path">{oauthPath}</span>{/if}
+              <span class="chip chip--oauth">OAuth</span>
+            </div>
+            <McpOAuthConnect
+              stage={oauthStage}
+              label={oauthLabel}
+              verb={oauthVerb}
+              onConnect={() => void oauthConnectStart()}
+              onCancel={onClose}
+              onDone={oauthDone}
+              onRetry={oauthRetry}
+            />
+            {#if submitError}
+              <p class="error-text" role="alert">{submitError}</p>
+            {/if}
+          </div>
+        {:else if step === "catalog"}
           <McpConnectorCatalog onPick={selectPreset} onPickCustom={selectCustom} />
         {:else}
           <div class="connect">
@@ -708,6 +873,11 @@
     text-transform: none;
     letter-spacing: 0.01em;
     overflow-wrap: anywhere;
+  }
+  .chip--oauth {
+    color: var(--app-accent);
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
   }
   .field {
     display: flex;

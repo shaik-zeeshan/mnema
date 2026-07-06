@@ -2,29 +2,31 @@
 //
 // Every entry here was VERIFIED against the vendor's current docs (and, for
 // hosted endpoints, a live probe) before inclusion — see the per-preset comment
-// blocks. The v1 rule (plan "Implementation Decisions"): hosted presets must
-// accept a pasted static token via `Authorization: Bearer <token>`, because
-// that is the ONLY way Mnema delivers an HTTP connector's secret
-// (`ask_ai/mcp/transport.rs`). OAuth-only services are dropped, not worked
-// around.
+// blocks. Hosted presets carry an `authMode`: `bearer` (default) accepts a
+// pasted static token via `Authorization: Bearer <token>`; `oauth` (ADR 0051)
+// authorizes in the browser and stores only the returned token in the keychain.
+// Before ADR 0051, OAuth-only services were dropped for want of a bearer token;
+// hosted OAuth is now a first-class auth mode.
 //
 // Dropped from the mockup catalog after verification (2026-07-05):
 //   • Sentry   — hosted mcp.sentry.dev is OAuth-only; static-token auth is an
-//                open upstream request (getsentry/sentry-mcp#833).
+//                open upstream request (getsentry/sentry-mcp#833). Revisit as an
+//                OAuth preset now that ADR 0051 supports the flow.
 //   • Context7 — key is passed via a custom `CONTEXT7_API_KEY` header, not
 //                `Authorization: Bearer`; a live probe showed a bogus Bearer
 //                token is silently accepted (ignored), so a pasted key would
 //                be a silent no-op.
-//   • Notion (hosted) — mcp.notion.com is OAuth-only; replaced by Notion's
-//                official LOCAL server, which takes a static integration token.
 //   • Postgres — `@modelcontextprotocol/server-postgres` is deprecated on npm
 //                ("Package no longer supported"; reference server archived).
+//
+// Notion moved from a LOCAL npx server to hosted mcp.notion.com OAuth once ADR
+// 0051 landed (2026-07-06); the local integration-token variant is gone.
 //
 // Keep this file free of `$state`/`$derived`/`$effect` and of Tauri `invoke`:
 // plain data + pure functions so `bun test` can exercise it directly
 // (mcp-tool-curation.ts / ai-providers.ts precedent).
 
-import type { McpServerConfig } from "$lib/types";
+import type { McpAuthMode, McpServerConfig } from "$lib/types";
 import { newMcpServerId } from "./ai-providers";
 
 export interface McpPreset {
@@ -36,6 +38,8 @@ export interface McpPreset {
 	/** Step-2 capability sentence ("Chat can …"). */
 	lede: string;
 	kind: "hosted" | "local";
+	/** hosted: how the connector authenticates. Absent = `bearer` (pasted token). */
+	authMode?: McpAuthMode;
 	/** hosted: the streamable-HTTP MCP endpoint. */
 	url?: string;
 	/** local: the child-process command (spawned directly, no shell). */
@@ -110,23 +114,18 @@ export const MCP_PRESETS: readonly McpPreset[] = [
 		helpUrl: "https://dashboard.stripe.com/apikeys",
 		brandSvg: SVG_STRIPE,
 	},
-	// Notion — verified 2026-07-05. Hosted mcp.notion.com is OAuth-only, so v1
-	// ships Notion's official LOCAL server instead (static integration token).
-	// Docs: https://github.com/makenotion/notion-mcp-server — `npx -y
-	// @notionhq/notion-mcp-server` with env `NOTION_TOKEN` (ntn_… token from
-	// https://www.notion.so/profile/integrations). npm: @notionhq/notion-mcp-server
-	// v2.4.1, active.
+	// Notion — hosted OAuth (ADR 0051, 2026-07-06). mcp.notion.com is OAuth-only;
+	// authorization runs in the browser via the connector's Connect flow and only
+	// the returned token is stored, in the keychain — nothing is pasted. No
+	// secretLabel/helpUrl (OAuth has no pasted token).
 	{
 		id: "notion",
 		label: "Notion",
-		tagline: "Pages and databases.",
+		tagline: "Pages and databases — sign in with your browser.",
 		lede: "Chat can read and edit your pages and databases.",
-		kind: "local",
-		command: "npx",
-		args: ["-y", "@notionhq/notion-mcp-server"],
-		secretLabel: "Integration token",
-		secretEnvName: "NOTION_TOKEN",
-		helpUrl: "https://www.notion.so/profile/integrations",
+		kind: "hosted",
+		authMode: "oauth",
+		url: "https://mcp.notion.com/mcp",
 		brandSvg: SVG_NOTION,
 	},
 	// Filesystem — verified 2026-07-05. npm: @modelcontextprotocol/server-filesystem
@@ -186,6 +185,8 @@ export function presetToDraft(
 		),
 		enabled: true,
 		transport: preset.kind === "hosted" ? "http" : "stdio",
+		// http auth mode; stdio doesn't use it (undefined → omitted on the draft).
+		authMode: preset.kind === "hosted" ? (preset.authMode ?? "bearer") : undefined,
 		command: preset.kind === "local" ? (preset.command ?? null) : null,
 		args: preset.kind === "local" ? [...(preset.args ?? [])] : [],
 		env: [],

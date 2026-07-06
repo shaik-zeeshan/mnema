@@ -15,7 +15,10 @@ const { createMcpConnectorActions } = await import("./controller-mcp");
 const { MCP_PRESETS } = await import("./mcp-presets");
 
 const githubPreset = MCP_PRESETS.find((p) => p.id === "github");
-const notionPreset = MCP_PRESETS.find((p) => p.id === "notion");
+// A local (stdio) preset for the stdio-while-Node-missing override case. Notion
+// was a local npx server pre-ADR-0051; it is now hosted OAuth, so the stdio path
+// is exercised via filesystem.
+const filesystemPreset = MCP_PRESETS.find((p) => p.id === "filesystem");
 
 // Minimal fakes for the injected stores — only the slice controller-mcp reads.
 // The snapshot is derived from the draft list so add/remove makes the domain
@@ -78,13 +81,12 @@ describe("addMcpServerFromPreset", () => {
   test("overrides win over the preset draft (stdio-while-Node-missing starts disabled)", () => {
     const { rec, actions } = makeDeps();
 
-    actions.addMcpServerFromPreset(notionPreset, { enabled: false });
+    actions.addMcpServerFromPreset(filesystemPreset, { enabled: false });
 
     expect(rec.draftMcpServers[0]).toMatchObject({
       enabled: false,
       transport: "stdio",
-      command: notionPreset.command,
-      secretEnvName: notionPreset.secretEnvName,
+      command: filesystemPreset.command,
     });
   });
 });

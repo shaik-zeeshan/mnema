@@ -8,7 +8,7 @@
 
   import Segmented from "$lib/components/Segmented.svelte";
   import IconCheck from "~icons/lucide/check";
-  import type { McpServerConfig, McpTransport } from "$lib/types";
+  import type { McpAuthMode, McpServerConfig, McpTransport } from "$lib/types";
 
   interface Props {
     model: McpServerConfig;
@@ -34,6 +34,15 @@
     { value: "stdio", label: "stdio (local process)" },
     { value: "http", label: "HTTP (remote)" },
   ];
+
+  const AUTH_OPTIONS = [
+    { value: "bearer", label: "Bearer secret" },
+    { value: "oauth", label: "OAuth" },
+  ];
+
+  // OAuth http hides the pasted-secret field: authorization happens in the
+  // browser via the connector's Connect flow (slice 8), not here.
+  const oauthHttp = $derived(model.transport === "http" && model.authMode === "oauth");
 </script>
 
 <div class="field">
@@ -123,27 +132,43 @@
     {#if (model.url ?? "").trim().length === 0}
       <p class="group-hint group-hint--warn">An HTTP connector needs a URL.</p>
     {/if}
-    <p class="group-hint">The keychain secret below is sent as an <code>Authorization: Bearer</code> header.</p>
+  </div>
+
+  <div class="field">
+    <span class="field-label">Authorization</span>
+    <Segmented
+      value={model.authMode ?? "bearer"}
+      onValueChange={(v) => (model.authMode = v as McpAuthMode)}
+      ariaLabel="Authorization for the connector"
+      options={AUTH_OPTIONS}
+    />
+    {#if oauthHttp}
+      <p class="group-hint">Sign in through your browser when you add this connector — nothing is pasted here. Only the returned token is stored, in your macOS keychain.</p>
+    {:else}
+      <p class="group-hint">The keychain secret below is sent as an <code>Authorization: Bearer</code> header.</p>
+    {/if}
   </div>
 {/if}
 
-<div class="field">
-  <label class="field-label" for="mcp-picker-secret">Secret (optional)</label>
-  <input
-    id="mcp-picker-secret"
-    class="text-input"
-    class:text-input--error={!!submitError}
-    type="password"
-    autocomplete="off"
-    placeholder={edit ? "Unchanged — paste a new secret to replace it" : "Token, if the server needs one…"}
-    disabled={connecting}
-    bind:value={token}
-  />
-</div>
-{#if edit && secretSaved}
-  <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span></p>
-{:else}
-  <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>
+{#if !oauthHttp}
+  <div class="field">
+    <label class="field-label" for="mcp-picker-secret">Secret (optional)</label>
+    <input
+      id="mcp-picker-secret"
+      class="text-input"
+      class:text-input--error={!!submitError}
+      type="password"
+      autocomplete="off"
+      placeholder={edit ? "Unchanged — paste a new secret to replace it" : "Token, if the server needs one…"}
+      disabled={connecting}
+      bind:value={token}
+    />
+  </div>
+  {#if edit && secretSaved}
+    <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span></p>
+  {:else}
+    <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>
+  {/if}
 {/if}
 
 {#if submitError}

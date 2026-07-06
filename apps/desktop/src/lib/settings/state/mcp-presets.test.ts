@@ -42,16 +42,35 @@ describe("catalog invariants", () => {
       expect(p.url).toBeUndefined();
     }
   });
+
+  it("Notion is hosted OAuth (ADR 0051) — no local npx variant, no pasted secret", () => {
+    const notion = byId("notion");
+    expect(notion.kind).toBe("hosted");
+    expect(notion.authMode).toBe("oauth");
+    expect(notion.url).toBe("https://mcp.notion.com/mcp");
+    // OAuth has no pasted token and no local process.
+    expect(notion.command).toBeUndefined();
+    expect(notion.args).toBeUndefined();
+    expect(notion.secretEnvName).toBeUndefined();
+    expect(notion.secretLabel).toBeUndefined();
+  });
+
+  it("bearer presets leave authMode absent or bearer", () => {
+    for (const p of MCP_PRESETS.filter((p) => p.kind === "hosted" && p.id !== "notion")) {
+      expect([undefined, "bearer"]).toContain(p.authMode);
+    }
+  });
 });
 
 describe("presetToDraft", () => {
-  it("hosted → http draft with url set, stdio fields cleared", () => {
+  it("hosted bearer → http draft with url set, authMode bearer, stdio fields cleared", () => {
     const draft = presetToDraft(byId("github"), []);
     expect(draft).toEqual({
       id: "github",
       label: "GitHub",
       enabled: true,
       transport: "http",
+      authMode: "bearer",
       command: null,
       args: [],
       env: [],
@@ -61,12 +80,20 @@ describe("presetToDraft", () => {
     });
   });
 
-  it("local → stdio draft with command/args/secretEnvName, url cleared", () => {
+  it("hosted OAuth (Notion) → http draft with authMode oauth, no bearer secret path", () => {
     const draft = presetToDraft(byId("notion"), []);
+    expect(draft.transport).toBe("http");
+    expect(draft.authMode).toBe("oauth");
+    expect(draft.url).toBe("https://mcp.notion.com/mcp");
+    expect(draft.command).toBeNull();
+    expect(draft.secretEnvName).toBeNull();
+  });
+
+  it("local → stdio draft with command/args, url cleared", () => {
+    const draft = presetToDraft(byId("filesystem"), []);
     expect(draft.transport).toBe("stdio");
     expect(draft.command).toBe("npx");
-    expect(draft.args).toEqual(["-y", "@notionhq/notion-mcp-server"]);
-    expect(draft.secretEnvName).toBe("NOTION_TOKEN");
+    expect(draft.args).toEqual(["-y", "@modelcontextprotocol/server-filesystem", "~/Documents"]);
     expect(draft.url).toBeNull();
   });
 

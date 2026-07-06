@@ -19,6 +19,8 @@ import type {
   AiProviderConfig,
   AiRuntimeStatus,
   AiRuntimeTestResult,
+  McpOAuthState,
+  McpOAuthStatus,
   McpServerConfig,
 } from "$lib/types";
 
@@ -384,6 +386,56 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     mcpSecretSavedById = rest;
   }
 
+  // ─── MCP connector OAuth authorization (ADR 0051) ───────────────────────────
+  // The browser-authorization lifecycle state per http+oauth connector, keyed by
+  // id. Mirrors the secret-presence machinery above: a snapshot the panel reads,
+  // refreshed on demand and on the `mcp_authorization_changed` event so rows flip
+  // live. A failed `begin` (e.g. the server has no dynamic client registration)
+  // is recorded per-id — like `mcpSecretErrors` — so the row can surface why the
+  // browser never opened, instead of throwing into the click handler.
+  let mcpOAuthStateById = $state<Record<string, McpOAuthState>>({});
+  let mcpOAuthErrors = $state<Record<string, string>>({});
+
+  // Re-fetch every http+oauth connector's authorization state and rebuild the
+  // map. Swallow/log failures (transient) like `refreshMcpServerSecretPresence`.
+  async function refreshMcpOAuthStates(): Promise<void> {
+    try {
+      const statuses = await invoke<McpOAuthStatus[]>("mcp_oauth_statuses");
+      const next: Record<string, McpOAuthState> = {};
+      for (const s of statuses) next[s.id] = s.state;
+      mcpOAuthStateById = next;
+    } catch (error) {
+      console.error("[ai-runtime] refreshMcpOAuthStates failed", error);
+    }
+  }
+
+  // Begin the browser authorization flow (opens the browser, inserts a pending
+  // entry). Used for BOTH Connect and Reconnect. The bare `{ id }` arg shape is
+  // the oauth command contract (NOT the `{ request: { id } }` of the secret
+  // commands). Errors land in `mcpOAuthErrors[id]` so the row shows them.
+  async function beginMcpOAuth(id: string): Promise<void> {
+    const { [id]: _prev, ...rest } = mcpOAuthErrors;
+    mcpOAuthErrors = rest;
+    try {
+      await invoke("mcp_oauth_begin", { id });
+    } catch (error) {
+      mcpOAuthErrors = { ...mcpOAuthErrors, [id]: humanizeError(error) };
+    }
+  }
+
+  // Best-effort revoke + drop the token, returning the connector to "needs
+  // authorization". Refresh after so the row flips even without the event.
+  async function disconnectMcpOAuth(id: string): Promise<void> {
+    const { [id]: _prev, ...rest } = mcpOAuthErrors;
+    mcpOAuthErrors = rest;
+    try {
+      await invoke("mcp_oauth_disconnect", { id });
+    } catch (error) {
+      mcpOAuthErrors = { ...mcpOAuthErrors, [id]: humanizeError(error) };
+    }
+    await refreshMcpOAuthStates();
+  }
+
   // Clear the last test-connection banner (result + error). The banner reports
   // the provider/model that was tested; after the user changes the default model
   // or removes the tested provider it no longer reflects the live config, so the
@@ -443,6 +495,12 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     clearMcpServerSecret,
     clearSecretForRemovedMcpServer,
     checkNode,
+    // MCP connector OAuth (ADR 0051).
+    get mcpOAuthStateById() { return mcpOAuthStateById; },
+    get mcpOAuthErrors() { return mcpOAuthErrors; },
+    refreshMcpOAuthStates,
+    beginMcpOAuth,
+    disconnectMcpOAuth,
   };
 }
 
