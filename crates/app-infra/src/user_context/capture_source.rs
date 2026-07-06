@@ -729,6 +729,107 @@ mod tests {
         });
     }
 
+    /// The DB→item `source_kind` projection (ADR 0050). Every audio item must
+    /// carry its segment's capture source — `microphone` (the user's own voice)
+    /// vs `system_audio` (the other party) — so the derivation prompt can tag
+    /// speech `you` vs `other-side`; a frame item carries `None`. Drop the
+    /// `source_kind` column read in the audio SELECT (or bind `None`) and the
+    /// source-kind asserts below fail — the teeth.
+    #[test]
+    fn read_capture_window_projects_audio_source_kind() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the vec0 migrator).
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // One microphone segment (the user's own voice) and one system_audio
+            // segment (the other party), each with a transcription result.
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) VALUES \
+                    (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'), \
+                    (2, 'system_audio', '2026-01-01T00:00:10Z', '2026-01-01T00:01:10Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segments");
+            for (subject_id, text) in [(1_i64, "i said this"), (2, "they said that")] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                )
+                .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+                .bind(subject_id)
+                .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed transcription");
+            }
+
+            // A frame + OCR result — its projected source_kind must be None.
+            sqlx::query(
+                "INSERT INTO frames (id, captured_at, metadata_snapshot_id) \
+                 VALUES (1, '2026-01-01T00:00:05Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed frame");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (2, ?1, 1, ?2, 'on-screen text')",
+            )
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed ocr");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            let source_of = |id: i64| {
+                window
+                    .items
+                    .iter()
+                    .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE && i.subject_id == id)
+                    .unwrap_or_else(|| panic!("audio item {id} present"))
+                    .source_kind
+                    .clone()
+            };
+            assert_eq!(source_of(1), Some("microphone".to_string()));
+            assert_eq!(source_of(2), Some("system_audio".to_string()));
+
+            // The frame item carries no capture source.
+            let frame = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == FRAME_SUBJECT_TYPE)
+                .expect("frame item present");
+            assert_eq!(frame.source_kind, None);
+        });
+    }
+
     #[test]
     fn self_capture_matches_mnema_identities_only() {
         let snap = |name: Option<&str>, bundle: Option<&str>| {

@@ -1671,6 +1671,25 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_turn_consumes_no_speaker_label() {
+        // Invariant 3 (ADR 0050): a whitespace-only turn is skipped BEFORE the
+        // A/B label index is computed, so it never burns a Speaker slot on a
+        // LATER distinct cluster. Cluster 1 is whitespace → gets NO label; the
+        // first REAL voice (cluster 2) is still Speaker A, not Speaker B.
+        assert_eq!(
+            render_speaker_turns(&[(1, "   ".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hi\n"
+        );
+        // Contrast: a REAL first turn does take Speaker A, pushing the next
+        // distinct cluster to Speaker B — proving the label index tracks the
+        // order of real (non-whitespace) turns.
+        assert_eq!(
+            render_speaker_turns(&[(1, "hey".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hey\nSpeaker B: hi\n"
+        );
+    }
+
+    #[test]
     fn source_tag_maps_only_known_audio_sources() {
         assert_eq!(source_tag("audio_segment", Some("microphone")), Some("you"));
         assert_eq!(
@@ -1716,6 +1735,33 @@ mod tests {
         assert!(prompt.contains("Speaker B: thanks"));
         // The intro explains the attribution rule.
         assert!(prompt.contains("never render another party's words as the user's own"));
+    }
+
+    #[test]
+    fn build_prompt_separates_items_with_a_blank_line() {
+        // Invariant 4: consecutive items stay separated by a blank line so the
+        // model can tell one item's body from the next's. This guards the
+        // trailing-newline layout: a future edit that drops a per-item newline
+        // must not silently merge two items into one undelimited block.
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![
+                audio_item(1, 1, "alpha", "microphone", vec![]),
+                audio_item(2, 2, "beta", "microphone", vec![]),
+            ],
+        };
+        let prompt = build_prompt(&window);
+        // First item body ends "...alpha"; the second begins "[a2]". Between them
+        // there must be exactly a blank line — a "\n\n" boundary.
+        let first = prompt.find("alpha").expect("first item body present");
+        let second = prompt.find("[a2]").expect("second item header present");
+        assert!(first < second, "items render in order");
+        assert_eq!(
+            &prompt[first + "alpha".len()..second],
+            "\n\n",
+            "items must be separated by exactly a blank line"
+        );
     }
 
     #[test]
