@@ -196,6 +196,13 @@ impl UserContextStore {
             // Names resolve on-device only, never over the wire.
             // ponytail: one query per audio segment (N+1), bounded by max_items;
             // batch by `audio_segment_id IN (...)` only if a wide window makes it matter.
+            // ponytail: this per-segment turn read degrades to empty on error rather
+            // than `?`-failing the whole window — a segment with no turns is already a
+            // valid state (the flat `text` still carries the words), so one flaky
+            // segment (e.g. a transient SQLITE_BUSY) must not fail the entire window
+            // read and advance the derivation cursor past it. Mirrors the frontend
+            // loader's `.catch(() => [])`. Upgrade to a logged/surfaced error only if
+            // silent turn-loss ever needs to be observable.
             let turn_rows = sqlx::query(
                 "SELECT cluster_id, transcript_text \
                  FROM speaker_turns \
@@ -205,7 +212,8 @@ impl UserContextStore {
             )
             .bind(subject_id)
             .fetch_all(self.pool())
-            .await?;
+            .await
+            .unwrap_or_default();
             let speaker_turns: Vec<(i64, String)> = turn_rows
                 .iter()
                 .map(|turn| (turn.get::<i64, _>("cluster_id"), turn.get::<String, _>("transcript_text")))
@@ -652,6 +660,72 @@ mod tests {
                 !dumped.contains(SENTINEL),
                 "recognized person name leaked into the capture window: {dumped}"
             );
+        });
+    }
+
+    /// A failure of the per-segment speaker-turn query must NOT fail the whole
+    /// window read (which would record a `failed` run and advance the derivation
+    /// cursor past the window). The turn read degrades to empty — the flat
+    /// transcript `text` still carries the words. Here the `speaker_turns` table is
+    /// absent, so the query errors deterministically, standing in for any transient
+    /// error (e.g. SQLITE_BUSY). Revert the query's `.unwrap_or_default()` back to
+    /// `?` and `read_capture_window` returns `Err` instead — the teeth.
+    #[test]
+    fn read_capture_window_tolerates_a_failing_speaker_turn_query() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Full read-path schema EXCEPT `speaker_turns`, so the per-segment turn
+            // query fails with "no such table" — a stand-in for a transient error.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'spoken words survive')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("window read must succeed despite the failing turn query");
+
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item still present");
+            // Turns degraded to empty; the flat transcript text is intact.
+            assert!(audio.speaker_turns.is_empty());
+            assert_eq!(audio.text, "spoken words survive");
         });
     }
 
