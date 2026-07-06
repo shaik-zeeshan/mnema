@@ -12,6 +12,22 @@ Supersedes the "OAuth for HTTP servers" deferral in
 amends its "one optional secret per server" credential model (item 4) and its
 "lazy connect, warm-on-open" lifecycle (item 5).
 
+Amended 2026-07-06 (deferred deep-review findings): §5's "the auth mode tells
+the reader which payload to expect" breaks when the mode changes without a
+Disconnect, so three mitigations now apply — (1) the settings-save seam clears
+the keychain slot whenever a connector's **effective** auth mode flips
+(Bearer↔OAuth, including an http+OAuth→stdio transport edit, which keeps the
+raw `auth_mode` but changes the expected payload; `auth_mode_flipped_ids`);
+(2) both transports refuse a mismatched payload as a backstop — the http
+bearer branch and the stdio env-var delivery never ship a payload that parses
+as a `StoredCredentials` Token Set, mirroring the read-side gate that stops a
+stale bearer string reading as OAuth-authorized; (3) the §4 *Needs reconnect*
+flag carries a per-connector generation counter (`ReconnectState`) bumped by
+authorize/callback/disconnect, so a warm task that resolves after newer truth
+cannot resurrect the flag (the state converges under any interleaving). The
+flip-clear deletes locally without §8's best-effort server-side revoke — an
+accepted courtesy gap, matching revoke's non-blocking role.
+
 ## Context
 
 [ADR 0048](0048-mcp-connectors-desktop-side-rmcp-client-trust-per-server.md) gave
