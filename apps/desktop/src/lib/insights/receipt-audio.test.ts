@@ -10,6 +10,7 @@ import {
   isFallbackSpeaker,
   partitionEvidence,
   receiptViewState,
+  scheduleClipSeek,
   sourceKindLabel,
   sourceKindReadable,
   speakerDisplay,
@@ -227,5 +228,74 @@ describe("buildTurnViews", () => {
     expect(views.some((v) => v.speaker === "Speaker 4")).toBe(false); // no phantom
     expect(views.find((v) => v.key === "20:3").text).toBe("back to me"); // words kept
     expect(views.find((v) => v.key === "20:2").text).toBe("hi there");
+  });
+});
+
+// Faithful mini-mock of the <audio> element's listener semantics: an
+// addEventListener {once} listener is removed only when it FIRES, NOT when
+// `src` changes — so a pending metadata-seek from a superseded clip survives a
+// src swap and fires against the LATER src. onloadedmetadata is a single-slot
+// property (assigning replaces the prior handler; null clears it).
+function fakeAudio() {
+  const once = []; // pending addEventListener("loadedmetadata", …, {once:true})
+  return {
+    currentTime: 0,
+    duration: 120,
+    src: "",
+    onloadedmetadata: null,
+    addEventListener(type, fn, opts) {
+      if (type === "loadedmetadata") once.push({ fn, once: !!opts?.once });
+    },
+    // The DOM fires the on* property handler, then addEventListener listeners;
+    // {once} ones are dropped after firing. Setting src never touches `once`.
+    fireLoadedMetadata() {
+      this.onloadedmetadata?.();
+      const survivors = [];
+      for (const l of once) {
+        l.fn();
+        if (!l.once) survivors.push(l);
+      }
+      once.length = 0;
+      once.push(...survivors);
+    },
+  };
+}
+
+describe("scheduleClipSeek — stale metadata-seek listener (ADR 0049 scrub→select)", () => {
+  it("does NOT seek a new clip (offset 0) to a superseded scrub's offset", () => {
+    const el = fakeAudio();
+    // Scrub release lands 30s into the segment → deferred seek scheduled.
+    scheduleClipSeek(el, 30);
+    // Before the first clip's metadata loads, the user clicks a transcript row:
+    // onSelect → playClip with no seekToMs → offset 0 (start at the segment head).
+    // A real <audio> keeps the still-pending {once} listener across the src swap.
+    el.src = "data:audio/second-clip";
+    scheduleClipSeek(el, 0);
+    // The new clip's metadata finally loads.
+    el.fireLoadedMetadata();
+    // It must start at its head, not mid-segment at the previous clip's 30s.
+    expect(el.currentTime).toBe(0);
+  });
+
+  it("still applies and clamps a genuine (un-superseded) scrub seek", () => {
+    const el = fakeAudio();
+    el.duration = 45;
+    scheduleClipSeek(el, 30);
+    el.fireLoadedMetadata();
+    expect(el.currentTime).toBe(30);
+    const clamped = fakeAudio();
+    clamped.duration = 20;
+    scheduleClipSeek(clamped, 30);
+    clamped.fireLoadedMetadata();
+    expect(clamped.currentTime).toBe(20); // clamped to real length
+  });
+
+  it("a later scrub replaces an earlier pending seek", () => {
+    const el = fakeAudio();
+    scheduleClipSeek(el, 30);
+    el.src = "data:audio/second-clip";
+    scheduleClipSeek(el, 5);
+    el.fireLoadedMetadata();
+    expect(el.currentTime).toBe(5);
   });
 });

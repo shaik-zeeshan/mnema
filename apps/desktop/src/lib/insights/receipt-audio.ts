@@ -98,23 +98,6 @@ export function speakerDisplay(
   return speakerCleanLabel(turn.speakerLabel).replace(/^unknown\s+/i, "");
 }
 
-/** Distinct, order-preserving live-resolved speaker names across turns. */
-export function distinctSpeakerNames(
-  turns: SpeakerTurnDto[],
-  profiles: PersonProfileDto[],
-): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const t of turns) {
-    const name = speakerDisplay(t, profiles);
-    if (!seen.has(name)) {
-      seen.add(name);
-      out.push(name);
-    }
-  }
-  return out;
-}
-
 /** The turns' transcript joined (nulls dropped), truncated to `maxLen`.
  *  ponytail: a segment with no transcribed turns yields an empty caption — the
  *  tick/clip-bar then shows attribution only (no snippet), which is honest. */
@@ -134,6 +117,28 @@ export function captionFromTurns(
 /** The data: URL an <audio> element plays (matches how Timeline plays audio). */
 export function audioDataUrl(media: AudioSegmentMediaDto): string {
   return `data:${media.mimeType};base64,${media.dataBase64}`;
+}
+
+/**
+ * Defer a freshly-set clip's start seek to `loadedmetadata` (currentTime only
+ * sticks once metadata is in) and clamp it to the real length. `offsetSec <= 0`
+ * means "start at the head".
+ *
+ * Uses the single-slot `onloadedmetadata` PROPERTY, not an addEventListener
+ * {once} listener: a {once} listener is removed only when it FIRES, not when the
+ * element's `src` is swapped, so a pending seek from a superseded clip survives
+ * and fires against the LATER src — seeking the new clip to the old offset.
+ * Assigning the property replaces any still-pending seek; `offsetSec <= 0`
+ * clears it so a plain (head-start) clip never inherits a prior scrub's offset.
+ */
+export function scheduleClipSeek(el: HTMLAudioElement, offsetSec: number): void {
+  if (offsetSec <= 0) {
+    el.onloadedmetadata = null;
+    return;
+  }
+  el.onloadedmetadata = () => {
+    el.currentTime = Number.isFinite(el.duration) ? Math.min(offsetSec, el.duration) : offsetSec;
+  };
 }
 
 /** The audio-only footer's left cell: honest about why there are no frames. */

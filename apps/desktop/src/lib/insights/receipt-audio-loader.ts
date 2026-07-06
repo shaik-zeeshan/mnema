@@ -24,6 +24,36 @@ export interface ReceiptAudioEvents {
 /** `invoke`-shaped IPC entry point, injectable so tests can stub Tauri. */
 export type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
+// Cap the per-segment turn fan-out. A multi-hour Activity spans dozens of 5-min
+// audio segments (mic+system doubles it), and an unbounded `Promise.all` would
+// open one `list_speaker_turns` IPC per segment at once against the 4-connection
+// owner-reader pool that live capture/OCR also read through. The DB already
+// serializes to 4 connections, so extra parallelism buys nothing past that — a
+// small cap keeps the modal-open burst bounded without adding latency.
+// ponytail: still N round-trips; a batched `list_speaker_turns_in_range`
+// (WHERE audio_segment_id IN (...)) backend command would collapse it to one
+// query — do that if span-hydration latency ever bites.
+const TURN_HYDRATION_CONCURRENCY = 6;
+
+/** Order- and cardinality-preserving bounded-concurrency map. */
+async function mapBounded<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  async function worker(): Promise<void> {
+    for (let i = next++; i < items.length; i = next++) {
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
+  );
+  return results;
+}
+
 /** The cited-audio refs the receipt hands in (subset of ActivityEvidenceRef). */
 export interface AudioRef {
   subjectId: number;
@@ -57,25 +87,33 @@ export class ReceiptAudioLoader {
     citedRefs: { subjectId: number; isHeadline: boolean }[],
   ): Promise<void> {
     const gen = ++this.#gen;
+    // Build the RFC3339 range up front so a NaN / out-of-range span (a corrupt
+    // activity timestamp) degrades to the honest empty state instead of throwing
+    // an unhandled RangeError — `new Date(x).toISOString()` throws synchronously
+    // and would escape the invoke `.catch`. Mirrors loadStrip, whose identical
+    // Date calls sit inside its try. The `.catch(() => [])` invoke fallbacks below
+    // are the "render empty on failure" contract; keep the throw on the same path.
+    let range: { capturedAtStart: string; capturedAtEnd: string };
+    try {
+      range = { capturedAtStart: new Date(startMs).toISOString(), capturedAtEnd: new Date(endMs).toISOString() };
+    } catch {
+      this.#events.onTurns?.([]);
+      return;
+    }
     const profiles = await this.#invoke<PersonProfileDto[]>("list_person_profiles").catch(
       () => [] as PersonProfileDto[],
     );
     if (gen !== this.#gen) return;
     this.#events.onProfiles(profiles);
     const segments = await this.#invoke<AudioSegmentDto[]>("list_audio_segments", {
-      request: {
-        capturedAtStart: new Date(startMs).toISOString(),
-        capturedAtEnd: new Date(endMs).toISOString(),
-      },
+      request: range,
     }).catch(() => [] as AudioSegmentDto[]);
-    const hydrated = await Promise.all(
-      segments.map(async (segment) => {
-        const turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
-          request: { audioSegmentId: segment.id },
-        }).catch(() => [] as SpeakerTurnDto[]);
-        return { segment, turns };
-      }),
-    );
+    const hydrated = await mapBounded(segments, TURN_HYDRATION_CONCURRENCY, async (segment) => {
+      const turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
+        request: { audioSegmentId: segment.id },
+      }).catch(() => [] as SpeakerTurnDto[]);
+      return { segment, turns };
+    });
     const turns = buildTurnViews(hydrated, citedRefs, profiles);
     if (gen !== this.#gen) return;
     this.#events.onTurns?.(turns);

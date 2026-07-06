@@ -549,6 +549,112 @@ mod tests {
         assert_eq!(search_context_from_snapshot(Some("not json")), (None, None));
     }
 
+    /// NAMES-NEVER-TO-CLOUD, exercised against the REAL schema (ADR 0050).
+    ///
+    /// Unlike the pure-function proxy tests, this seeds a state where the spoken
+    /// cluster IS recognized as a named person on-device: `person_profiles` holds
+    /// "Jane Doe" and the `recording_speaker_clusters` row the turn points at has
+    /// `recognition_person_id` set to her. If `read_capture_window`'s projection
+    /// ever joined the cluster to its person (or selected a name column), the name
+    /// would surface in the returned window that is handed to the (possibly cloud)
+    /// engine. The projection reads ONLY `(cluster_id, transcript_text)`, so the
+    /// name must be absent from every field of the returned `CaptureWindow`.
+    #[test]
+    fn read_capture_window_never_surfaces_a_recognized_person_name() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        const SENTINEL: &str = "Jane Doe";
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the full
+            // migrator, which needs the vec0 extension). Mirrors migrations
+            // 0003/0007/0010 for the columns under test.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE person_profiles (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL)",
+                "CREATE TABLE recording_speaker_clusters (id INTEGER PRIMARY KEY, session_id TEXT, provider TEXT, provider_cluster_id TEXT, stable_label TEXT, recognition_person_id INTEGER)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // On-device identity: this cluster resolves to the named person.
+            sqlx::query("INSERT INTO person_profiles (id, display_name) VALUES (1, ?1)")
+                .bind(SENTINEL)
+                .execute(&pool)
+                .await
+                .expect("seed person");
+            sqlx::query(
+                "INSERT INTO recording_speaker_clusters \
+                    (id, session_id, provider, provider_cluster_id, stable_label, recognition_person_id) \
+                 VALUES (1, 's1', 'speakrs', '0', 'Speaker 1', 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed cluster");
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'thanks for the update')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+            sqlx::query(
+                "INSERT INTO speaker_turns \
+                    (audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text) \
+                 VALUES (1, 's1', 1, 0, 1000, 'thanks for the update')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed turn");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            // The audio item and its anonymous turn are present...
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item present");
+            assert_eq!(
+                audio.speaker_turns,
+                vec![(1_i64, "thanks for the update".to_string())]
+            );
+            // ...but the recognized person's name never appears in ANY field of
+            // the window handed to the engine.
+            let dumped = format!("{window:?}");
+            assert!(
+                !dumped.contains(SENTINEL),
+                "recognized person name leaked into the capture window: {dumped}"
+            );
+        });
+    }
+
     #[test]
     fn self_capture_matches_mnema_identities_only() {
         let snap = |name: Option<&str>, bundle: Option<&str>| {

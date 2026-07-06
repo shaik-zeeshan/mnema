@@ -47,6 +47,7 @@
     frameIndexForMs,
     partitionEvidence,
     receiptViewState,
+    scheduleClipSeek,
     turnSpeakerRoster,
     type TurnView,
   } from "$lib/insights/receipt-audio";
@@ -363,17 +364,11 @@
     clipStartMs = turn.segmentStartMs;
     activeClipId = turn.audioSegmentId;
     audioEl.src = src;
-    // currentTime only sticks once the source's metadata is in, so defer the
-    // seek to loadedmetadata (a fresh src fires it) and clamp to the real length.
+    // Defer the start seek to loadedmetadata and clamp to the real length. Uses
+    // a single-slot property so a superseding clip drops any stale seek (a
+    // {once} listener would leak across the src swap and re-seek the new clip).
     const offsetSec = seekToMs == null ? 0 : Math.max(0, (seekToMs - turn.segmentStartMs) / 1000);
-    if (offsetSec > 0) {
-      const el = audioEl;
-      el.addEventListener(
-        "loadedmetadata",
-        () => { el.currentTime = Number.isFinite(el.duration) ? Math.min(offsetSec, el.duration) : offsetSec; },
-        { once: true },
-      );
-    }
+    scheduleClipSeek(audioEl, offsetSec);
     void audioEl.play().catch(() => {});
   }
 
