@@ -44,6 +44,18 @@ pub struct CaptureWindowItem {
     pub app_label: Option<String>,
     /// Search Context URL, if available (frames only, best-effort).
     pub url: Option<String>,
+    /// Audio only — the capture source: `"microphone"` (the user's own voice) or
+    /// `"system_audio"` (the other party). `None` for frames. Lets the derivation
+    /// prompt tag speech `you` vs `other-side` so words spoken TO the user are not
+    /// misattributed as words the user said (ADR 0050).
+    pub source_kind: Option<String>,
+    /// Audio only — diarized speaker turns as `(cluster_id, transcript_text)`,
+    /// time-ordered. ANONYMOUS BY CONSTRUCTION (ADR 0050): the reader never selects
+    /// a `person_id` / `display_name` / any name column into this, so a recognized
+    /// person's name is UNREPRESENTABLE here and can never reach the (possibly
+    /// cloud) Reasoning Engine — names resolve on-device only. Empty for frames and
+    /// for audio whose diarization has produced no turns (yet).
+    pub speaker_turns: Vec<(i64, String)>,
 }
 
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
@@ -132,6 +144,8 @@ impl UserContextStore {
                 text,
                 app_label,
                 url,
+                source_kind: None,
+                speaker_turns: Vec::new(),
             });
         }
 
@@ -143,6 +157,7 @@ impl UserContextStore {
         let audio_rows = sqlx::query(
             "SELECT audio_segments.id AS subject_id, \
                     audio_segments.started_at AS started_at, \
+                    audio_segments.source_kind AS source_kind, \
                     processing_results.result_text AS result_text \
              FROM audio_segments \
              JOIN (\
@@ -170,14 +185,49 @@ impl UserContextStore {
             let Some(captured_at_ms) = rfc3339_to_ms(&started_at) else {
                 continue;
             };
+            let subject_id: i64 = row.get("subject_id");
             let text: String = row.get("result_text");
+            let source_kind: Option<String> = row.get("source_kind");
+
+            // Anonymous diarized turns for this segment (ADR 0050): read ONLY
+            // (cluster_id, transcript_text) — deliberately NOT `person_id` /
+            // `display_name` / any name column — so a recognized person's name is
+            // UNREPRESENTABLE in the window handed to the (possibly cloud) engine.
+            // Names resolve on-device only, never over the wire.
+            // ponytail: one query per audio segment (N+1), bounded by max_items;
+            // batch by `audio_segment_id IN (...)` only if a wide window makes it matter.
+            // ponytail: this per-segment turn read degrades to empty on error rather
+            // than `?`-failing the whole window — a segment with no turns is already a
+            // valid state (the flat `text` still carries the words), so one flaky
+            // segment (e.g. a transient SQLITE_BUSY) must not fail the entire window
+            // read and advance the derivation cursor past it. Mirrors the frontend
+            // loader's `.catch(() => [])`. Upgrade to a logged/surfaced error only if
+            // silent turn-loss ever needs to be observable.
+            let turn_rows = sqlx::query(
+                "SELECT cluster_id, transcript_text \
+                 FROM speaker_turns \
+                 WHERE audio_segment_id = ?1 \
+                   AND LENGTH(TRIM(COALESCE(transcript_text, ''))) > 0 \
+                 ORDER BY start_ms ASC, end_ms ASC, id ASC",
+            )
+            .bind(subject_id)
+            .fetch_all(self.pool())
+            .await
+            .unwrap_or_default();
+            let speaker_turns: Vec<(i64, String)> = turn_rows
+                .iter()
+                .map(|turn| (turn.get::<i64, _>("cluster_id"), turn.get::<String, _>("transcript_text")))
+                .collect();
+
             items.push(CaptureWindowItem {
                 subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
-                subject_id: row.get("subject_id"),
+                subject_id,
                 captured_at_ms,
                 text,
                 app_label: None,
                 url: None,
+                source_kind,
+                speaker_turns,
             });
         }
 
@@ -388,10 +438,12 @@ mod tests {
             text: text.to_string(),
             app_label: Some(app.to_string()),
             url: None,
+            source_kind: None,
+            speaker_turns: Vec::new(),
         }
     }
 
-    fn audio(id: i64, t: i64, text: &str) -> CaptureWindowItem {
+    fn audio(id: i64, t: i64, text: &str, source: &str) -> CaptureWindowItem {
         CaptureWindowItem {
             subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
             subject_id: id,
@@ -399,6 +451,8 @@ mod tests {
             text: text.to_string(),
             app_label: None,
             url: None,
+            source_kind: Some(source.to_string()),
+            speaker_turns: Vec::new(),
         }
     }
 
@@ -422,7 +476,7 @@ mod tests {
             frame(1, 100, &s("12%"), "Hitch"),       // run representative
             frame(2, 101, &s("12%"), "Hitch"),       // identical dup -> dropped
             frame(3, 102, &s("12% bonus"), "Hitch"), // near-dup + richer -> new representative
-            audio(4, 103, "spoken words here"),      // audio breaks the run
+            audio(4, 103, "spoken words here", "microphone"), // audio breaks the run
             frame(5, 104, &s("12%"), "Hitch"),       // new run after audio -> kept
             frame(6, 105, &s("12%"), "Zen"),         // app switch -> kept
         ];
@@ -501,6 +555,279 @@ mod tests {
     fn snapshot_none_or_unparseable_yields_no_context() {
         assert_eq!(search_context_from_snapshot(None), (None, None));
         assert_eq!(search_context_from_snapshot(Some("not json")), (None, None));
+    }
+
+    /// NAMES-NEVER-TO-CLOUD, exercised against the REAL schema (ADR 0050).
+    ///
+    /// Unlike the pure-function proxy tests, this seeds a state where the spoken
+    /// cluster IS recognized as a named person on-device: `person_profiles` holds
+    /// "Jane Doe" and the `recording_speaker_clusters` row the turn points at has
+    /// `recognition_person_id` set to her. If `read_capture_window`'s projection
+    /// ever joined the cluster to its person (or selected a name column), the name
+    /// would surface in the returned window that is handed to the (possibly cloud)
+    /// engine. The projection reads ONLY `(cluster_id, transcript_text)`, so the
+    /// name must be absent from every field of the returned `CaptureWindow`.
+    #[test]
+    fn read_capture_window_never_surfaces_a_recognized_person_name() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        const SENTINEL: &str = "Jane Doe";
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the full
+            // migrator, which needs the vec0 extension). Mirrors migrations
+            // 0003/0007/0010 for the columns under test.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE person_profiles (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL)",
+                "CREATE TABLE recording_speaker_clusters (id INTEGER PRIMARY KEY, session_id TEXT, provider TEXT, provider_cluster_id TEXT, stable_label TEXT, recognition_person_id INTEGER)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // On-device identity: this cluster resolves to the named person.
+            sqlx::query("INSERT INTO person_profiles (id, display_name) VALUES (1, ?1)")
+                .bind(SENTINEL)
+                .execute(&pool)
+                .await
+                .expect("seed person");
+            sqlx::query(
+                "INSERT INTO recording_speaker_clusters \
+                    (id, session_id, provider, provider_cluster_id, stable_label, recognition_person_id) \
+                 VALUES (1, 's1', 'speakrs', '0', 'Speaker 1', 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed cluster");
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'thanks for the update')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+            sqlx::query(
+                "INSERT INTO speaker_turns \
+                    (audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text) \
+                 VALUES (1, 's1', 1, 0, 1000, 'thanks for the update')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed turn");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            // The audio item and its anonymous turn are present...
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item present");
+            assert_eq!(
+                audio.speaker_turns,
+                vec![(1_i64, "thanks for the update".to_string())]
+            );
+            // ...but the recognized person's name never appears in ANY field of
+            // the window handed to the engine.
+            let dumped = format!("{window:?}");
+            assert!(
+                !dumped.contains(SENTINEL),
+                "recognized person name leaked into the capture window: {dumped}"
+            );
+        });
+    }
+
+    /// A failure of the per-segment speaker-turn query must NOT fail the whole
+    /// window read (which would record a `failed` run and advance the derivation
+    /// cursor past the window). The turn read degrades to empty — the flat
+    /// transcript `text` still carries the words. Here the `speaker_turns` table is
+    /// absent, so the query errors deterministically, standing in for any transient
+    /// error (e.g. SQLITE_BUSY). Revert the query's `.unwrap_or_default()` back to
+    /// `?` and `read_capture_window` returns `Err` instead — the teeth.
+    #[test]
+    fn read_capture_window_tolerates_a_failing_speaker_turn_query() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Full read-path schema EXCEPT `speaker_turns`, so the per-segment turn
+            // query fails with "no such table" — a stand-in for a transient error.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'spoken words survive')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("window read must succeed despite the failing turn query");
+
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item still present");
+            // Turns degraded to empty; the flat transcript text is intact.
+            assert!(audio.speaker_turns.is_empty());
+            assert_eq!(audio.text, "spoken words survive");
+        });
+    }
+
+    /// The DB→item `source_kind` projection (ADR 0050). Every audio item must
+    /// carry its segment's capture source — `microphone` (the user's own voice)
+    /// vs `system_audio` (the other party) — so the derivation prompt can tag
+    /// speech `you` vs `other-side`; a frame item carries `None`. Drop the
+    /// `source_kind` column read in the audio SELECT (or bind `None`) and the
+    /// source-kind asserts below fail — the teeth.
+    #[test]
+    fn read_capture_window_projects_audio_source_kind() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the vec0 migrator).
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // One microphone segment (the user's own voice) and one system_audio
+            // segment (the other party), each with a transcription result.
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) VALUES \
+                    (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'), \
+                    (2, 'system_audio', '2026-01-01T00:00:10Z', '2026-01-01T00:01:10Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segments");
+            for (subject_id, text) in [(1_i64, "i said this"), (2, "they said that")] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                )
+                .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+                .bind(subject_id)
+                .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed transcription");
+            }
+
+            // A frame + OCR result — its projected source_kind must be None.
+            sqlx::query(
+                "INSERT INTO frames (id, captured_at, metadata_snapshot_id) \
+                 VALUES (1, '2026-01-01T00:00:05Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed frame");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (2, ?1, 1, ?2, 'on-screen text')",
+            )
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed ocr");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            let source_of = |id: i64| {
+                window
+                    .items
+                    .iter()
+                    .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE && i.subject_id == id)
+                    .unwrap_or_else(|| panic!("audio item {id} present"))
+                    .source_kind
+                    .clone()
+            };
+            assert_eq!(source_of(1), Some("microphone".to_string()));
+            assert_eq!(source_of(2), Some("system_audio".to_string()));
+
+            // The frame item carries no capture source.
+            let frame = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == FRAME_SUBJECT_TYPE)
+                .expect("frame item present");
+            assert_eq!(frame.source_kind, None);
+        });
     }
 
     #[test]

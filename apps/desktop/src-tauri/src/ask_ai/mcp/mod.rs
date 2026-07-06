@@ -13,9 +13,12 @@
 
 pub(crate) mod manager;
 pub(crate) mod node_check;
+pub(crate) mod oauth_flow;
+pub(crate) mod oauth_store;
 mod transport;
 
 pub(crate) use manager::McpManager;
+pub(crate) use oauth_store::OAuthCredentialStore;
 
 /// Model-facing tool-name prefix (Claude Code convention): a chat tool named
 /// `mcp__<server-id>__<tool>` routes to server `<server-id>`'s `<tool>`.
@@ -172,6 +175,44 @@ pub(crate) fn bound_tool_schema(schema: serde_json::Value) -> serde_json::Value 
     } else {
         serde_json::json!({ "type": "object", "additionalProperties": true, "properties": {} })
     }
+}
+
+/// The payload type a connector's keychain slot is EXPECTED to hold. stdio has
+/// no OAuth path — its slot only ever means "static secret delivered as an env
+/// var" — so a config left with `auth_mode: OAuth` after an http→stdio
+/// transport edit (the frontend passes `authMode` through verbatim) still
+/// expects a Bearer payload. Flip detection must key on THIS, not the raw
+/// field, or that edit leaves the OAuth Token Set where the stdio path would
+/// inject it into a child process env.
+fn effective_auth_mode(cfg: &capture_types::McpServerConfig) -> capture_types::McpAuthMode {
+    if cfg.transport == capture_types::McpTransport::Stdio {
+        capture_types::McpAuthMode::Bearer
+    } else {
+        cfg.auth_mode
+    }
+}
+
+/// Connector ids whose EFFECTIVE auth mode changed between two settings
+/// snapshots (ADR 0051 deferred finding). The keychain slot is polymorphic — a
+/// bearer string under Bearer/stdio, a serialized OAuth Token Set under
+/// http+OAuth — so a mode flip that skips Disconnect leaves the OLD mode's
+/// payload where the NEW mode would read it (worst cases: the Token Set JSON
+/// attached verbatim as an `Authorization: Bearer` header, or injected into a
+/// stdio child's env var). The settings-save path clears the slot for every id
+/// this returns. Added/removed connectors are not flips (removal has its own
+/// keychain cleanup) — only an id present in BOTH snapshots counts.
+pub(crate) fn auth_mode_flipped_ids(
+    old: &[capture_types::McpServerConfig],
+    new: &[capture_types::McpServerConfig],
+) -> Vec<String> {
+    new.iter()
+        .filter(|cfg| {
+            old.iter().any(|prev| {
+                prev.id == cfg.id && effective_auth_mode(prev) != effective_auth_mode(cfg)
+            })
+        })
+        .map(|cfg| cfg.id.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -352,5 +393,63 @@ mod tests {
         assert!(out.contains("truncated by Mnema"));
         // The kept prefix is exactly the cap; the rest is the marker.
         assert!(out.starts_with(&"x".repeat(MCP_TOOL_RESULT_CHAR_CAP)));
+    }
+
+    fn connector(id: &str, auth_mode: capture_types::McpAuthMode) -> capture_types::McpServerConfig {
+        capture_types::McpServerConfig {
+            id: id.to_string(),
+            label: id.to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Http,
+            auth_mode,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            url: Some("https://mcp.example.com/".to_string()),
+            secret_env_name: None,
+            enabled_tools: None,
+        }
+    }
+
+    /// The polymorphic keychain slot must be cleared exactly when a connector's
+    /// EFFECTIVE auth mode changed between two saves — both flip directions,
+    /// including an http+OAuth → stdio transport edit (which keeps the raw
+    /// `auth_mode: OAuth` because the frontend passes it through verbatim, but
+    /// changes what payload the slot must hold) — and never for an unchanged,
+    /// added, or removed connector.
+    #[test]
+    fn auth_mode_flips_are_detected_in_both_directions_and_only_for_surviving_ids() {
+        use capture_types::McpAuthMode::{Bearer, OAuth};
+        let old = vec![
+            connector("flip-to-bearer", OAuth),
+            connector("flip-to-oauth", Bearer),
+            connector("unchanged", Bearer),
+            connector("removed", OAuth),
+        ];
+        let new = vec![
+            connector("flip-to-bearer", Bearer),
+            connector("flip-to-oauth", OAuth),
+            connector("unchanged", Bearer),
+            connector("added", OAuth),
+        ];
+        assert_eq!(
+            auth_mode_flipped_ids(&old, &new),
+            vec!["flip-to-bearer".to_string(), "flip-to-oauth".to_string()]
+        );
+
+        // http+OAuth → stdio: raw auth_mode is UNCHANGED (still OAuth on the
+        // wire), but stdio's effective mode is Bearer — the Token Set must be
+        // cleared before the stdio path could inject it into a child env.
+        let old = vec![connector("to-stdio", OAuth)];
+        let mut moved = connector("to-stdio", OAuth);
+        moved.transport = capture_types::McpTransport::Stdio;
+        moved.url = None;
+        moved.command = Some("npx".to_string());
+        let new = vec![moved.clone()];
+        assert_eq!(auth_mode_flipped_ids(&old, &new), vec!["to-stdio".to_string()]);
+
+        // …and a stdio connector with a leftover `auth_mode: OAuth` that stays
+        // stdio is NOT a flip (Bearer→Bearer effective; nothing to clear).
+        assert_eq!(auth_mode_flipped_ids(&new, &[moved]), Vec::<String>::new());
     }
 }

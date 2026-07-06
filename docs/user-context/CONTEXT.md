@@ -175,8 +175,10 @@ _Avoid_: tab, page, dashboard view
 
 **Timeline** (surface):
 The existing capture-timeline view (the older "dashboard timeline"), one of the two **Main**
-surfaces. Owns capture inspection: **Scrub Preview** navigation, exact **Captured Frame** preview,
-OCR copy/download, audio playback.
+surfaces. Owns **unbounded** capture inspection: **Scrub Preview** navigation, exact **Captured
+Frame** preview, OCR copy/download, and continuous audio playback across the whole record. (The
+**Receipt** plays *bounded* cited audio clips scoped to one **Activity**; Timeline is where audio
+scrubbing without those bounds lives.)
 _Avoid_: dashboard, dashboard timeline, main view
 
 **Insights** (surface):
@@ -204,19 +206,36 @@ _Avoid_: timeline replacement, per-app usage log, second capture surface, 4am lo
 proportional-block calendar view, Cards⇄Blocks toggle
 
 **Receipt**:
-Bounded **evidence playback** for one **Activity**: a modal that scrubs the **Captured Frame**
-pixels behind that Activity's time span, with the engine-cited evidence frames marked on the track
-(the headline frame doubling as poster) and a wall-clock playhead. A Receipt is *proof*, not
-*inspection* — it deliberately never grows OCR text copy/download, audio playback, frame export, or
-navigation beyond the Activity's span; "Open in Timeline" is the handoff for all of those. Because
-**Retention Policy** ages out frames but never the **Activity**
-([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)), an
-expired Receipt ("footage expired", summary retained) is a guaranteed long-term state, not an edge
-case. A Journal card's frame count means **frames still on disk now** — it shrinks as retention
-ages footage out and reads "footage expired" at zero — so the count is always an honest promise of
-what the Receipt will actually play.
-_Avoid_: capture inspection, second timeline, exact-frame actions surface, timelapse video export,
-frame-count-at-derivation-time
+Bounded **evidence playback and inspection** for one **Activity**: a modal that scrubs the
+**Captured Frame** pixels behind the Activity's span (engine-cited frames marked on the track, the
+headline frame as poster, a wall-clock playhead) **and** surfaces the Activity's speech as a
+**Speaker-Turn Lane** + **synced transcript reader** over **every diarized turn within the span**
+(cited turns marked, the headline turn ringed — proof stays legible amid context). Selecting any
+turn plays *that segment's* real audio at 1× while the frame viewer runs over the same window,
+clocked by the audio (`get_audio_segment_media` per segment) — a **bounded, synchronized
+audio-plus-screen** relive that stops at the segment end (no cross-segment stitching). A Receipt is
+**both proof and inspection of one Activity**: the founding promise that every AI-written sentence is
+one interaction from its evidence, extended from "see the cited pixel" to "hear the cited moment."
+The line it holds is **bounded, not silent** — every affordance stays inside the Activity's own span
+(the transcript reader shows all *in-span* turns, still bounded; turns past the span and
+cross-Activity transcript are **Timeline**'s); the fast frame **timelapse** (2×/8×/16× silent scan)
+and a slow real-time per-turn **audio relive** (1× only) are two speeds of the same bounded surface. **Unbounded** inspection — continuous cross-Activity audio scrubbing, OCR text
+copy/download, frame/audio export, navigation past the span — still belongs to **Timeline**, and
+"Open in Timeline" is the handoff for anything wider than this Activity. Because **Retention
+Policy** ages out raw frames and audio but never the **Activity**
+([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)), a Receipt
+whose media has aged out (summary + evidence list retained, pixels/audio gone) is a guaranteed
+long-term state, not an edge case — and an Activity **grounded only in audio** that never had
+frames renders as audio evidence, never a false "footage expired". A Journal card's frame count
+means **frames still on disk now**, an honest promise of what the Receipt will play. On a cited
+spoken moment the Receipt also shows **read-only speaker attribution** — *you* (`microphone`) vs
+*the other side* (`system_audio`), plus a recognized name when known — **late-bound by id** so a
+voice named later resolves to its real name rather than a frozen "Speaker 2"; it is
+**surface-and-handoff** (correcting who a voice is stays **Timeline**, never a labeling tool in the
+modal). See [ADR 0049](../adr/0049-receipt-plays-cited-audio-as-bounded-synced-clips.md).
+_Avoid_: second timeline, unbounded audio scrub, cross-activity navigation, in-modal OCR
+copy/download, frame/audio export, silent-only proof, false "footage expired" for audio-grounded
+activities, frame-count-at-derivation-time
 
 **Overview** (sub-surface):
 The charts-and-dossier sub-surface of **Insights** (renamed from the earlier "informative view" to
@@ -328,13 +347,17 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   (**Dismiss**/edit feeds back), and the category taxonomy is fixed in v1 rather than user-defined.
 - The **app-interaction graph** and **time per app/site** are pure counting and stay in the free tier;
   only the *category* and *focus* axes require the engine.
-- Capture *inspection* (OCR copy/download, audio playback, unbounded frame navigation) stays on the
-  **Timeline** surface; **Insights** is a read/understand surface, and an **Activity** or **Answer
-  Source** hands off to **Timeline** for inspection rather than inspecting in place. The one carved
-  exception is the **Receipt**: bounded evidence playback of one Activity's frames inside
-  **Insights** is allowed because it is proof of a derived card, not a second capture surface — the
-  moment a Receipt would need OCR copy, audio, or navigation past the Activity's span, the answer is
-  its "Open in Timeline" handoff, never growing the modal.
+- Capture *inspection* stays on the **Timeline** surface **for anything unbounded** — continuous
+  cross-Activity audio scrubbing, OCR text copy/download, frame/audio export, unbounded frame
+  navigation; **Insights** is a read/understand surface, and an **Activity** or **Answer Source**
+  hands off to **Timeline** for those rather than inspecting in place. The one carved exception is
+  the **Receipt**, which does **bounded inspection of a single Activity**: it scrubs that Activity's
+  frames *and* plays its engine-cited **Audio Transcription Span** moments as bounded, synchronized
+  audio-plus-screen clips, because that is proof of a derived card scoped to its own span, not a
+  second capture surface. The line is **bounded, not silent** — the moment a Receipt would need OCR
+  copy, audio *past this Activity's cited moments*, export, or navigation past the span, the answer
+  is its "Open in Timeline" handoff, never growing the modal
+  ([ADR 0049](../adr/0049-receipt-plays-cited-audio-as-bounded-synced-clips.md)).
 - Cross-surface numbers follow **"same label ⇒ same computation"**: a metric shown in more than one
   Insights sub-surface must come from one shared computation, never re-derived per tab. "Tracked"
   is **Usage Charts** app-active time everywhere (capture time — it deliberately does *not* equal
@@ -492,6 +515,17 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
 - When the selected **Reasoning Engine** is a cloud model, only redacted text (recognized screen
   text and transcripts, through the existing broker redaction) crosses the wire — never raw frame
   images or audio; when it is a local model, nothing leaves the device.
+- **Derivation is speaker- and source-blind today** (the audio window feeds only transcript
+  `result_text`, no `source_kind`, no speaker turns), so the engine can **misattribute** — rendering
+  words spoken *to* the user as words the user said. The **Receipt** exposes this by displaying
+  read-only speaker attribution on cited segments; the **root fix** is to make derivation
+  **source-aware** — tag each `a<id>` as *you* (`microphone`) vs *other side* (`system_audio`), with
+  anonymous "Speaker A/B" turns as an optional next layer — so it stops misattributing at the source
+  and a later speaker correction **propagates** on re-derivation. **Recognized names never cross to a
+  cloud engine** (a new egress of third-party identity past the redacted-text line); speaker identity
+  travels **by id**, resolved to a display name **on-device at read time**, never frozen into derived
+  data. This is a **separate follow-up** from the Receipt's audio playback. See
+  [ADR 0050](../adr/0050-derivation-is-source-aware-names-resolve-on-device.md).
 - The assembled dossier (the set of **Conclusion** values) is stored only on-device regardless of
   engine; a cloud **Reasoning Engine** is stateless reasoning that sees redacted summaries passing
   through and never holds the assembled profile.

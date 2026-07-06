@@ -632,6 +632,20 @@ impl AiProviderConfig {
     }
 }
 
+/// How an `Http` MCP tool connector authenticates. `Bearer` delivers a
+/// user-pasted Static Secret as `Authorization: Bearer` (0048's model, the
+/// back-compat default); `OAuth` runs a browser authorization flow and manages
+/// an OAuth Token Set (ADR 0051). OAuth is an auth MODE on the `Http`
+/// transport, never a distinct transport. Ignored for `Stdio`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthMode {
+    #[default]
+    Bearer,
+    #[serde(rename = "oauth")]
+    OAuth,
+}
+
 /// The transport an MCP tool connector speaks. `stdio` spawns a child process
 /// and talks over its stdin/stdout; `http` connects to a streamable-HTTP MCP
 /// endpoint. (An MCP server is a *tool connector*, never an inference
@@ -672,6 +686,11 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub enabled: bool,
     pub transport: McpTransport,
+    /// Auth mode for an `Http` connector (ADR 0051). Defaults to `Bearer` for
+    /// back-compat; `OAuth` opts into the browser authorization flow. Unused for
+    /// `Stdio`.
+    #[serde(default)]
+    pub auth_mode: McpAuthMode,
     /// stdio: the child-process command to spawn.
     #[serde(default)]
     pub command: Option<String>,

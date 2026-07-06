@@ -58,6 +58,22 @@ _Avoid_: standard always-on-top window, activating window, dashboard popover
 The desktop-owned **Reasoning Engine** orchestration for the User Context dossier (`apps/desktop/src-tauri/src/user_context/`): `derivation.rs` builds the prompts and calls `ai_engine::extract_with_preamble`, mapping results through the Sensitive Category Guardrail / formation-bar / resurface gates before persisting through the app-infra `UserContextStore`; `worker.rs` runs the background derivation loop (`spawn_user_context_worker`); `commands.rs` exposes the Tauri command surface. The model call lives here, not in app-infra, so `rig-core` stays out of the storage crate.
 _Avoid_: app-infra inference, dossier service, ai-runtime-in-storage
 
+**Tool Connector**:
+A user-configured MCP server whose tools join Ask AI, driven desktop-side via `rmcp` (ADR 0048). Has a stable instance `id`, a **transport** (`Stdio` or `Http`), a per-server `enabled` toggle that is itself the trust consent, and an optional **Connector Credential**. Never an inference provider.
+_Avoid_: MCP provider, tool provider, AI provider (an inference term), server plugin
+
+**Connector Credential**:
+The authentication material a **Tool Connector** uses, held in the OS keychain keyed by the connector's instance id. Two kinds: a **Static Secret** (a user-pasted opaque string — delivered as `Authorization: Bearer` on `Http`, or as a named env var on `Stdio`) and an **OAuth Token Set**. A connector has at most one credential (multi-secret is deferred).
+_Avoid_: API key (overloaded with inference keys), password, connector token
+
+**OAuth Token Set**:
+The **Connector Credential** kind for an `Http` connector authenticating by OAuth rather than a **Static Secret**: a machine-managed bundle of access token, refresh token, expiry, and dynamically-registered client id, obtained through a browser authorization flow and refreshed without the user re-pasting anything. OAuth is an **auth mode** on the `Http` transport, not a distinct transport.
+_Avoid_: OAuth transport, HTTP-OAuth transport (it is not a transport), bearer secret
+
+**Connector Authorization State**:
+Whether a **Tool Connector** currently holds a usable **Connector Credential**. A connector is only *used* when it is **both `enabled` and authorized** — the two are independent gates. A **Static Secret** connector is authorized the moment its secret is present. An **OAuth Token Set** connector moves through _Needs authorization_ (added, never connected) → _Authorized_ (token set held; silently refreshed) → _Needs reconnect_ (refresh token expired or revoked). Authorizing is an explicit foreground **Connect** action (a browser round-trip) that stands in for the enable-toggle consent; re-authorizing after failure is a **Reconnect** action; **Disconnect** drops the token set (best-effort server-side revocation, then local delete) and returns the connector to _Needs authorization_ without removing it. `enabled` and authorization are orthogonal: disabling keeps the token set.
+_Avoid_: enabled-means-ready, connected (overloaded with the transport handle), logged-in
+
 ## Relationships
 
 - **App Privacy Exclusion** remains handled through the native **Live Privacy Filter**, not through app-based automatic pause.

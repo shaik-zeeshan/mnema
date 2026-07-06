@@ -1,7 +1,14 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { MCP_PRESETS, presetDisplayLabel, presetToDraft } from "./mcp-presets";
+import {
+  MCP_PRESETS,
+  presetDisplayLabel,
+  presetToDraft,
+  presetForServer,
+  presetOverrides,
+  buildCustomMcpDraft,
+} from "./mcp-presets";
 
 const byId = (id) => MCP_PRESETS.find((p) => p.id === id);
 
@@ -42,16 +49,35 @@ describe("catalog invariants", () => {
       expect(p.url).toBeUndefined();
     }
   });
+
+  it("Notion is hosted OAuth (ADR 0051) — no local npx variant, no pasted secret", () => {
+    const notion = byId("notion");
+    expect(notion.kind).toBe("hosted");
+    expect(notion.authMode).toBe("oauth");
+    expect(notion.url).toBe("https://mcp.notion.com/mcp");
+    // OAuth has no pasted token and no local process.
+    expect(notion.command).toBeUndefined();
+    expect(notion.args).toBeUndefined();
+    expect(notion.secretEnvName).toBeUndefined();
+    expect(notion.secretLabel).toBeUndefined();
+  });
+
+  it("bearer presets leave authMode absent or bearer", () => {
+    for (const p of MCP_PRESETS.filter((p) => p.kind === "hosted" && p.id !== "notion")) {
+      expect([undefined, "bearer"]).toContain(p.authMode);
+    }
+  });
 });
 
 describe("presetToDraft", () => {
-  it("hosted → http draft with url set, stdio fields cleared", () => {
+  it("hosted bearer → http draft with url set, authMode bearer, stdio fields cleared", () => {
     const draft = presetToDraft(byId("github"), []);
     expect(draft).toEqual({
       id: "github",
       label: "GitHub",
       enabled: true,
       transport: "http",
+      authMode: "bearer",
       command: null,
       args: [],
       env: [],
@@ -61,12 +87,20 @@ describe("presetToDraft", () => {
     });
   });
 
-  it("local → stdio draft with command/args/secretEnvName, url cleared", () => {
+  it("hosted OAuth (Notion) → http draft with authMode oauth, no bearer secret path", () => {
     const draft = presetToDraft(byId("notion"), []);
+    expect(draft.transport).toBe("http");
+    expect(draft.authMode).toBe("oauth");
+    expect(draft.url).toBe("https://mcp.notion.com/mcp");
+    expect(draft.command).toBeNull();
+    expect(draft.secretEnvName).toBeNull();
+  });
+
+  it("local → stdio draft with command/args, url cleared", () => {
+    const draft = presetToDraft(byId("filesystem"), []);
     expect(draft.transport).toBe("stdio");
     expect(draft.command).toBe("npx");
-    expect(draft.args).toEqual(["-y", "@notionhq/notion-mcp-server"]);
-    expect(draft.secretEnvName).toBe("NOTION_TOKEN");
+    expect(draft.args).toEqual(["-y", "@modelcontextprotocol/server-filesystem", "~/Documents"]);
     expect(draft.url).toBeNull();
   });
 
@@ -96,6 +130,114 @@ describe("presetToDraft", () => {
     const draft = presetToDraft(byId("github"), existing);
     expect(draft.id).toBe("github-2");
     expect(draft.label).toBe("GitHub");
+  });
+});
+
+describe("presetForServer", () => {
+  const server = (over) => ({ id: "github", transport: "http", ...over });
+
+  it("matches a preset by exact id + transport", () => {
+    expect(presetForServer(server())?.id).toBe("github");
+  });
+
+  it("matches a slugger-suffixed id (github-2)", () => {
+    expect(presetForServer(server({ id: "github-2" }))?.id).toBe("github");
+  });
+
+  it("requires the transport to match — a stdio connector on a hosted preset id is Custom", () => {
+    // An old local-Notion connector (stdio) must NOT match the now-hosted Notion
+    // preset — it falls through to Custom.
+    expect(presetForServer({ id: "notion", transport: "stdio" })).toBeNull();
+    expect(presetForServer(server({ transport: "stdio" }))).toBeNull();
+  });
+
+  it("no id match → null (a custom/legacy connector)", () => {
+    expect(presetForServer({ id: "my-thing", transport: "http" })).toBeNull();
+    // A prefix that isn't the `-<n>` slug shape does not match.
+    expect(presetForServer({ id: "githubbed", transport: "http" })).toBeNull();
+  });
+});
+
+describe("presetOverrides", () => {
+  const adv = (over) => ({ name: "", url: "", command: "", args: "", nodeMissing: false, ...over });
+
+  it("no edits → empty override (preset defaults win)", () => {
+    expect(presetOverrides(byId("github"), adv())).toEqual({});
+  });
+
+  it("a local preset with Node missing lands disabled", () => {
+    expect(presetOverrides(byId("filesystem"), adv({ nodeMissing: true })).enabled).toBe(false);
+    // Node missing is irrelevant to a hosted preset.
+    expect(presetOverrides(byId("github"), adv({ nodeMissing: true })).enabled).toBeUndefined();
+  });
+
+  it("only a changed name/url is carried for a hosted preset", () => {
+    expect(presetOverrides(byId("github"), adv({ name: "GitHub" }))).toEqual({});
+    expect(presetOverrides(byId("github"), adv({ name: "Work GH", url: "https://gh.example/mcp" }))).toEqual({
+      label: "Work GH",
+      url: "https://gh.example/mcp",
+    });
+  });
+
+  it("a changed command/args is carried for a local preset (whitespace split)", () => {
+    const o = presetOverrides(byId("filesystem"), adv({ command: "node", args: "server.js ~/Docs" }));
+    expect(o.command).toBe("node");
+    expect(o.args).toEqual(["server.js", "~/Docs"]);
+    // Emptying args yields an explicit empty list (a real change from the default).
+    expect(presetOverrides(byId("filesystem"), adv({ args: "" })).args).toEqual([]);
+  });
+});
+
+describe("buildCustomMcpDraft", () => {
+  const model = (over) => ({
+    id: "",
+    label: "My API",
+    enabled: true,
+    transport: "http",
+    command: "",
+    args: [],
+    env: [],
+    url: "https://api.example/mcp",
+    secretEnvName: "",
+    enabledTools: null,
+    ...over,
+  });
+
+  it("http model → http draft, bearer default, stdio fields nulled", () => {
+    const d = buildCustomMcpDraft(model(), []);
+    expect(d.transport).toBe("http");
+    expect(d.authMode).toBe("bearer");
+    expect(d.url).toBe("https://api.example/mcp");
+    expect(d.command).toBeNull();
+    expect(d.args).toEqual([]);
+    expect(d.secretEnvName).toBeNull();
+  });
+
+  it("http OAuth model keeps authMode oauth (else its Connect flow is unreachable)", () => {
+    expect(buildCustomMcpDraft(model({ authMode: "oauth" }), []).authMode).toBe("oauth");
+  });
+
+  it("stdio model → stdio draft, authMode undefined, url nulled, blank args/env dropped", () => {
+    const d = buildCustomMcpDraft(
+      model({
+        transport: "stdio",
+        command: " my-server ",
+        args: ["--flag", "  ", ""],
+        env: [{ name: "TOKEN", value: "x" }, { name: "  ", value: "" }],
+        url: "https://ignored",
+      }),
+      [],
+    );
+    expect(d.transport).toBe("stdio");
+    expect(d.authMode).toBeUndefined();
+    expect(d.command).toBe("my-server");
+    expect(d.args).toEqual(["--flag"]);
+    expect(d.env).toEqual([{ name: "TOKEN", value: "x" }]);
+    expect(d.url).toBeNull();
+  });
+
+  it("slugs the id off the trimmed label, avoiding existing ids", () => {
+    expect(buildCustomMcpDraft(model({ label: "My API" }), ["my-api"]).id).toBe("my-api-2");
   });
 });
 

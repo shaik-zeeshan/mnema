@@ -1,7 +1,32 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { windowFor, shiftAnchor } from "./activity-helpers";
+import { windowFor, shiftAnchor, humanizeMs } from "./activity-helpers";
+
+// A duration should read in the coarsest non-zero unit: sub-minute activities as
+// seconds (never a rounded "0m"), minutes, then hours with a minute remainder.
+describe("humanizeMs adaptive units (seconds / minutes / hours)", () => {
+  it("shows seconds under a minute instead of rounding to 0m", () => {
+    expect(humanizeMs(9_000)).toBe("9s");
+    expect(humanizeMs(45_000)).toBe("45s");
+    expect(humanizeMs(59_000)).toBe("59s");
+  });
+  it("shows minutes from a minute up to an hour", () => {
+    expect(humanizeMs(60_000)).toBe("1m");
+    expect(humanizeMs(90_000)).toBe("2m"); // rounds to nearest minute
+    expect(humanizeMs(45 * 60_000)).toBe("45m");
+  });
+  it("shows hours with a minute remainder past an hour", () => {
+    expect(humanizeMs(60 * 60_000)).toBe("1h");
+    expect(humanizeMs(65 * 60_000)).toBe("1h 5m");
+    expect(humanizeMs(150 * 60_000)).toBe("2h 30m");
+  });
+  it("guards zero / invalid input", () => {
+    expect(humanizeMs(0)).toBe("0s");
+    expect(humanizeMs(-5)).toBe("0s");
+    expect(humanizeMs(Number.NaN)).toBe("0s");
+  });
+});
 
 // The Overview range stepper steps `anchor` by one window unit and derives the
 // previous window for the period-over-period delta. Stepping a MONTH must always

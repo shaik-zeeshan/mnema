@@ -260,6 +260,17 @@
     font-size: var(--text-xs);
   }
 
+  /* Muted, non-uppercase pill — an authorized OAuth connector that is switched
+     off (mockup `mcp-row__badge--muted`): the token is kept, but the row is
+     dimmed and reads "authorized" in a quiet register. */
+  .settings-shell .badge--muted {
+    background: var(--app-surface);
+    color: var(--app-text-subtle);
+    border-color: var(--app-border-strong);
+    text-transform: none;
+    letter-spacing: 0.02em;
+  }
+
   /* ── Effective device ─────────────────────────────────────── */
   .settings-shell .effective-device {
     display: flex;

@@ -106,6 +106,10 @@ function toMcpServerWire(server: McpServerConfig): McpServerConfig {
     label: server.label ?? "",
     enabled: server.enabled ?? false,
     transport: server.transport,
+    // http auth mode (ADR 0051). Undefined ⇒ omitted ⇒ Rust `#[serde(default)]`
+    // bearer; "oauth" must survive the round-trip or the backend never lists the
+    // connector as http+oauth and its Connect flow is unreachable.
+    authMode: server.authMode,
     command: server.command ?? null,
     args: [...(server.args ?? [])],
     env: (server.env ?? []).map((e) => ({ name: e.name, value: e.value })),

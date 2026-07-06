@@ -140,6 +140,60 @@ fn item_tag(subject_type: &str, subject_id: i64) -> String {
     }
 }
 
+/// Map an audio item's `source_kind` to the prompt tag telling the model WHO
+/// spoke: `you` = the user's own voice (microphone), `other-side` = the other
+/// party (system audio). `None` for frames or an unknown/absent source, so no
+/// tag is rendered. This is the ADR 0050 attribution signal — it keeps words
+/// spoken TO the user (system audio) from being read as words the user said.
+fn source_tag(subject_type: &str, source_kind: Option<&str>) -> Option<&'static str> {
+    if subject_type != "audio_segment" {
+        return None;
+    }
+    match source_kind {
+        Some("microphone") => Some("you"),
+        Some("system_audio") => Some("other-side"),
+        _ => None,
+    }
+}
+
+/// The Nth ephemeral speaker-label suffix: 0→`A`, 1→`B`, … 25→`Z`, then a numeric
+/// fallback for the (never-in-practice) 27th+ distinct voice in one segment.
+fn speaker_label(index: usize) -> String {
+    if index < 26 {
+        ((b'A' + index as u8) as char).to_string()
+    } else {
+        // ponytail: >26 distinct speakers in one segment does not happen; number it.
+        format!("#{}", index + 1)
+    }
+}
+
+/// Render diarized speaker turns as anonymous per-item "Speaker A/B/…" lines,
+/// mapping each distinct `cluster_id` to an ephemeral label in first-appearance
+/// order (labels are transient, per-item, never stored — like the cited-id tags).
+///
+/// PRIVACY BY CONSTRUCTION (ADR 0050): the input is `(cluster_id, text)` ONLY —
+/// there is NO name field — so a recognized person's display name is
+/// unrepresentable here and cannot leak into the prompt handed to a (possibly
+/// cloud) engine. Names resolve on-device only. Empty string when there are no
+/// turns (the flat transcript text stays the only audio content in that case).
+fn render_speaker_turns(turns: &[(i64, String)]) -> String {
+    let mut labels: HashMap<i64, String> = HashMap::new();
+    let mut out = String::new();
+    for (cluster_id, text) in turns {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let next = labels.len();
+        let label = labels
+            .entry(*cluster_id)
+            .or_insert_with(|| format!("Speaker {}", speaker_label(next)))
+            .clone();
+        out.push_str(&format!("{label}: {text}\n"));
+    }
+    out
+}
+
 /// Parse an `f<id>` / `a<id>` evidence ref back to `(subject_type, subject_id)`.
 /// Returns `None` for refs that are not a known prefix + integer.
 fn parse_ref(reference: &str) -> Option<(&'static str, i64)> {
@@ -225,8 +279,14 @@ fn build_prompt(window: &CaptureWindow) -> String {
     prompt.push_str(
         "Below is a chronological list of capture items from one window of the user's activity. \
 Each item is tagged with an id (f<id> = on-screen text frame, a<id> = audio transcript segment), \
-its capture time, and (when known) the app/URL it came from. All times are UTC. Segment these \
-items into Activity episodes by intent shift and return DerivedActivityBatch.\n\n",
+its capture time, and (when known) the app/URL it came from. All times are UTC. Audio (a<id>) \
+items also carry a speaker source tag: source=you means the user's OWN voice (microphone), \
+source=other-side means the OTHER party (system audio). Attribute speech by this tag — never \
+render another party's words as the user's own, and never render the user's words as someone \
+else's. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
+distinct anonymized voices within that one segment (the labels are local to that item only, not \
+identities). Segment these items into Activity episodes by intent shift and return \
+DerivedActivityBatch.\n\n",
     );
     prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
     prompt.push_str(&format!(
@@ -239,6 +299,9 @@ items into Activity episodes by intent shift and return DerivedActivityBatch.\n\
     for item in &window.items {
         let tag = item_tag(&item.subject_type, item.subject_id);
         prompt.push_str(&format!("[{tag}] t={}", format_utc_ms(item.captured_at_ms)));
+        if let Some(source) = source_tag(&item.subject_type, item.source_kind.as_deref()) {
+            prompt.push_str(&format!(" source={source}"));
+        }
         if let Some(app) = item.app_label.as_deref().filter(|s| !s.trim().is_empty()) {
             prompt.push_str(&format!(" app={app}"));
         }
@@ -248,7 +311,17 @@ items into Activity episodes by intent shift and return DerivedActivityBatch.\n\
         prompt.push('\n');
         let text = truncate_chars(item.text.trim(), ITEM_TEXT_CHAR_CAP);
         prompt.push_str(&text);
-        prompt.push_str("\n\n");
+        prompt.push('\n');
+        // Anonymous per-speaker turn structure beneath the flat transcript (ADR
+        // 0050). Empty for frames and for audio with no diarized turns. Bounded by
+        // the same ITEM_TEXT_CHAR_CAP as the flat text: the turns re-render the
+        // same transcript, so without this cap one long segment's turns would
+        // defeat the per-item prompt budget the flat-text cap exists to enforce.
+        prompt.push_str(&truncate_chars(
+            &render_speaker_turns(&item.speaker_turns),
+            ITEM_TEXT_CHAR_CAP,
+        ));
+        prompt.push('\n');
     }
 
     prompt
@@ -1554,6 +1627,192 @@ mod tests {
         );
         assert!(
             confidence::initial_confidence(3, 1) < confidence::initial_confidence(3, 0)
+        );
+    }
+
+    // === ADR 0050: source-aware, name-blind audio derivation ================
+
+    /// Build a minimal audio [`CaptureWindowItem`] for the prompt-builder tests.
+    fn audio_item(
+        id: i64,
+        t: i64,
+        text: &str,
+        source: &str,
+        turns: Vec<(i64, String)>,
+    ) -> app_infra::CaptureWindowItem {
+        app_infra::CaptureWindowItem {
+            subject_type: "audio_segment".to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: None,
+            url: None,
+            source_kind: Some(source.to_string()),
+            speaker_turns: turns,
+        }
+    }
+
+    #[test]
+    fn speaker_turns_map_clusters_to_a_b_deterministically() {
+        // Two distinct cluster ids → Speaker A / Speaker B in first-appearance
+        // order; a repeat of the first cluster reuses "Speaker A".
+        let rendered = render_speaker_turns(&[
+            (42, "hello".to_string()),
+            (7, "hi there".to_string()),
+            (42, "how are you".to_string()),
+        ]);
+        assert_eq!(
+            rendered,
+            "Speaker A: hello\nSpeaker B: hi there\nSpeaker A: how are you\n"
+        );
+        // Empty / whitespace-only turns render nothing.
+        assert!(render_speaker_turns(&[]).is_empty());
+        assert!(render_speaker_turns(&[(1, "   ".to_string())]).is_empty());
+    }
+
+    #[test]
+    fn whitespace_turn_consumes_no_speaker_label() {
+        // Invariant 3 (ADR 0050): a whitespace-only turn is skipped BEFORE the
+        // A/B label index is computed, so it never burns a Speaker slot on a
+        // LATER distinct cluster. Cluster 1 is whitespace → gets NO label; the
+        // first REAL voice (cluster 2) is still Speaker A, not Speaker B.
+        assert_eq!(
+            render_speaker_turns(&[(1, "   ".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hi\n"
+        );
+        // Contrast: a REAL first turn does take Speaker A, pushing the next
+        // distinct cluster to Speaker B — proving the label index tracks the
+        // order of real (non-whitespace) turns.
+        assert_eq!(
+            render_speaker_turns(&[(1, "hey".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hey\nSpeaker B: hi\n"
+        );
+    }
+
+    #[test]
+    fn source_tag_maps_only_known_audio_sources() {
+        assert_eq!(source_tag("audio_segment", Some("microphone")), Some("you"));
+        assert_eq!(
+            source_tag("audio_segment", Some("system_audio")),
+            Some("other-side")
+        );
+        // Unknown / absent source, and any non-audio subject, get no tag.
+        assert_eq!(source_tag("audio_segment", None), None);
+        assert_eq!(source_tag("audio_segment", Some("bogus")), None);
+        assert_eq!(source_tag("frame", Some("microphone")), None);
+    }
+
+    #[test]
+    fn build_prompt_tags_source_and_renders_anonymous_turns() {
+        let window = CaptureWindow {
+            start_ms: 1_000,
+            end_ms: 2_000,
+            items: vec![
+                audio_item(
+                    1,
+                    1_100,
+                    "let me walk you through it",
+                    "microphone",
+                    vec![(10, "let me walk you through it".to_string())],
+                ),
+                audio_item(
+                    2,
+                    1_200,
+                    "sounds good thanks",
+                    "system_audio",
+                    vec![(20, "sounds good".to_string()), (21, "thanks".to_string())],
+                ),
+            ],
+        };
+        let prompt = build_prompt(&window);
+        // The mic item is tagged `you`; the system-audio item `other-side`.
+        assert!(prompt.contains("[a1] t="));
+        assert!(prompt.contains("source=you"));
+        assert!(prompt.contains("[a2] t="));
+        assert!(prompt.contains("source=other-side"));
+        // The two distinct voices in the system-audio segment render as A/B.
+        assert!(prompt.contains("Speaker A: sounds good"));
+        assert!(prompt.contains("Speaker B: thanks"));
+        // The intro explains the attribution rule.
+        assert!(prompt.contains("never render another party's words as the user's own"));
+    }
+
+    #[test]
+    fn build_prompt_separates_items_with_a_blank_line() {
+        // Invariant 4: consecutive items stay separated by a blank line so the
+        // model can tell one item's body from the next's. This guards the
+        // trailing-newline layout: a future edit that drops a per-item newline
+        // must not silently merge two items into one undelimited block.
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![
+                audio_item(1, 1, "alpha", "microphone", vec![]),
+                audio_item(2, 2, "beta", "microphone", vec![]),
+            ],
+        };
+        let prompt = build_prompt(&window);
+        // First item body ends "...alpha"; the second begins "[a2]". Between them
+        // there must be exactly a blank line — a "\n\n" boundary.
+        let first = prompt.find("alpha").expect("first item body present");
+        let second = prompt.find("[a2]").expect("second item header present");
+        assert!(first < second, "items render in order");
+        assert_eq!(
+            &prompt[first + "alpha".len()..second],
+            "\n\n",
+            "items must be separated by exactly a blank line"
+        );
+    }
+
+    #[test]
+    fn speaker_turns_can_never_carry_a_recognized_person_name() {
+        // NAMES-NEVER-TO-CLOUD guard (ADR 0050). The prompt-builder's turn input is
+        // `(cluster_id, text)` — there is NO name field — so a recognized person's
+        // display name is UNREPRESENTABLE by construction: even if, on device, a
+        // cluster maps to person "Jane Doe", only the anonymous label + the
+        // already-redacted transcript text can ever be rendered. Here neither the
+        // text nor the turns contain the sentinel, and the built prompt must not
+        // either.
+        const SENTINEL: &str = "Jane Doe";
+        let turns = vec![(99, "thanks for the update".to_string())];
+        let rendered = render_speaker_turns(&turns);
+        assert!(rendered.contains("Speaker A: thanks for the update"));
+        assert!(!rendered.contains(SENTINEL), "a name leaked into turns: {rendered}");
+
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![audio_item(1, 5, "thanks for the update", "system_audio", turns)],
+        };
+        let prompt = build_prompt(&window);
+        assert!(!prompt.contains(SENTINEL), "a name leaked into the prompt");
+        // The anonymous label is present; the identity is not.
+        assert!(prompt.contains("Speaker A:"));
+    }
+
+    #[test]
+    fn diarized_turns_cannot_blow_the_per_item_prompt_budget() {
+        // ITEM_TEXT_CHAR_CAP caps the flat transcript "so a single noisy capture
+        // cannot dominate the prompt budget". The diarized turns re-render the SAME
+        // transcript beneath it; if they were uncapped, one long segment would
+        // defeat the cap. A single long single-speaker segment: its flat text
+        // truncates to ITEM_TEXT_CHAR_CAP, so its turn rendering must be bounded by
+        // the same cap — the item's total transcript contribution stays within a
+        // small multiple of the cap.
+        let long = "lorem ipsum ".repeat(2_000); // ~24k chars
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![audio_item(1, 5, &long, "system_audio", vec![(1, long.clone())])],
+        };
+        let prompt = build_prompt(&window);
+        // Fixed intro/header + one item whose flat text AND turn rendering are each
+        // capped at ITEM_TEXT_CHAR_CAP → at most a small multiple of the cap.
+        let budget = 4 * ITEM_TEXT_CHAR_CAP;
+        assert!(
+            prompt.chars().count() <= budget,
+            "one audio item produced a {}-char prompt (budget {budget}); diarized turns bypass ITEM_TEXT_CHAR_CAP",
+            prompt.chars().count()
         );
     }
 }

@@ -1,7 +1,7 @@
 // @ts-nocheck — run under `bun test`; bun:test types aren't in the svelte-check
 // tsconfig, so skip static checking here (same as journal-view.test.ts).
 import { describe, expect, it } from "bun:test";
-import { scrollFraction, dragToScrollTop, topmostVisibleAtMs } from "./scroll-time";
+import { scrollFraction, dragToScrollTop, rowAtViewportY } from "./scroll-time";
 
 describe("scrollFraction", () => {
   it("clamps to [0, 1]", () => {
@@ -32,23 +32,23 @@ describe("dragToScrollTop", () => {
   });
 });
 
-describe("topmostVisibleAtMs", () => {
+describe("rowAtViewportY", () => {
   const rows = [
     { atMs: 1, top: 0, bottom: 40 },
     { atMs: 2, top: 40, bottom: 80 },
     { atMs: 3, top: 80, bottom: 120 },
   ];
-  it("picks the first row whose bottom is past the viewport top", () => {
-    expect(topmostVisibleAtMs(rows, 50)).toBe(2);
+  it("picks the first row whose bottom is past line y", () => {
+    expect(rowAtViewportY(rows, 50)).toBe(2);
   });
-  it("picks the first row when the viewport is above all rows", () => {
-    expect(topmostVisibleAtMs(rows, -100)).toBe(1);
+  it("picks the first row when y is above all rows", () => {
+    expect(rowAtViewportY(rows, -100)).toBe(1);
   });
-  it("treats a row ending exactly at the viewport top as scrolled past", () => {
-    expect(topmostVisibleAtMs(rows, 40)).toBe(2);
+  it("treats a row ending exactly at line y as scrolled past", () => {
+    expect(rowAtViewportY(rows, 40)).toBe(2);
   });
-  it("returns null when scrolled past all rows or with no rows", () => {
-    expect(topmostVisibleAtMs(rows, 120)).toBe(null);
-    expect(topmostVisibleAtMs([], 0)).toBe(null);
+  it("returns null when y is past all rows or with no rows", () => {
+    expect(rowAtViewportY(rows, 120)).toBe(null);
+    expect(rowAtViewportY([], 0)).toBe(null);
   });
 });

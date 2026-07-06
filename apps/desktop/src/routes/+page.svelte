@@ -5537,11 +5537,12 @@
   // listener's on-mount `.then` — keeps the latest load from racing the jump and
   // clobbering it (which landed the user on the newest frame instead).
   async function initializeTimeline(): Promise<void> {
-    // A receipt "Open in Timeline" queues a frame focus before this page mounts
-    // (frontend-only handoff across the /insights→/ route switch). Consume it
-    // first so the jump wins over the normal latest-first load.
+    // A receipt "Open in Timeline" queues a frame OR audio-segment focus before
+    // this page mounts (frontend-only handoff across the /insights→/ route
+    // switch). Consume it first so the jump wins over the normal latest-first
+    // load.
     const focus = takePendingTimelineFocus();
-    if (focus) {
+    if (focus && "frameId" in focus) {
       try {
         const frame = await invoke<FrameDto | null>("get_frame", {
           request: { frameId: focus.frameId },
@@ -5549,6 +5550,25 @@
         if (frame) {
           await jumpToFrameWithBanner(frame);
           return;
+        }
+      } catch {
+        /* fall through to normal init */
+      }
+    } else if (focus && "audioSegmentId" in focus) {
+      // Mirror the audio branch of `openBrokerCaptureResult`: open the drawer on
+      // the segment, then fall through so the normal latest load renders frames
+      // behind it.
+      try {
+        const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", {
+          request: { audioSegmentId: focus.audioSegmentId } as GetAudioSegmentRequest,
+        });
+        const mapped = audio ? mapAudioSegmentDto(audio) : null;
+        if (mapped) {
+          if (!audioSegments.some((segment) => segment.id === mapped.id)) {
+            audioSegments = [...audioSegments, mapped].sort((a, b) => a.startUnixMs - b.startUnixMs);
+          }
+          selectedAudioSegmentPinned = mapped;
+          selectedAudioSegmentId = mapped.id;
         }
       } catch {
         /* fall through to normal init */

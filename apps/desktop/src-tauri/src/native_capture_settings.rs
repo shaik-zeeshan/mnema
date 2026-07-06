@@ -1987,6 +1987,7 @@ mod tests {
             label: "GitHub".to_string(),
             enabled: true,
             transport: capture_types::McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some("npx".to_string()),
             args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
             env: Vec::new(),
@@ -2021,6 +2022,7 @@ mod tests {
             label: "GitHub".to_string(),
             enabled: true,
             transport: capture_types::McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some("npx".to_string()),
             args: vec![
                 "-y".to_string(),

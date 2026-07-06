@@ -99,6 +99,14 @@ export interface AiEngineRef {
  */
 export type McpTransport = "stdio" | "http";
 
+/**
+ * How an `http` MCP tool connector authenticates. `bearer` delivers a
+ * user-pasted static secret as `Authorization: Bearer` (the back-compat
+ * default); `oauth` runs a browser authorization flow (ADR 0051). Auth mode is
+ * an axis on the `http` transport, never a distinct transport.
+ */
+export type McpAuthMode = "bearer" | "oauth";
+
 /** One non-secret stdio environment variable for a connector's child process. */
 export interface McpEnvVar {
 	name: string;
@@ -122,6 +130,8 @@ export interface McpServerConfig {
 	/** Whether this connector is offered to the chat agent (disabling ≠ deleting). */
 	enabled: boolean;
 	transport: McpTransport;
+	/** Auth mode for an http connector; defaults to "bearer". */
+	authMode?: McpAuthMode;
 	/** stdio: the child-process command to spawn. */
 	command?: string | null;
 	/** stdio: arguments passed to `command`. */
@@ -134,6 +144,14 @@ export interface McpServerConfig {
 	secretEnvName?: string | null;
 	/** Tool curation: `null`/absent = default-offer; a list = exactly those. */
 	enabledTools?: string[] | null;
+}
+
+/** OAuth authorization lifecycle state of an http+oauth connector (ADR 0051). */
+export type McpOAuthState = "none" | "authorizing" | "authorized" | "reconnect";
+/** Per-connector OAuth status from `mcp_oauth_statuses`. */
+export interface McpOAuthStatus {
+	id: string;
+	state: McpOAuthState;
 }
 
 /**
