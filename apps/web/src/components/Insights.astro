@@ -10,23 +10,6 @@ const conclusions = [
   },
 ];
 
-const categories = [
-  { label: "creating", percent: 38, top: true },
-  { label: "meetings", percent: 24, top: false },
-  { label: "research", percent: 18, top: false },
-  { label: "communication", percent: 12, top: false },
-  { label: "learning", percent: 8, top: false },
-];
-
-// Focus heatmap: mon–fri, a handful of intensity steps per day (0 = idle).
-const heatmap = [
-  { day: "M", steps: [0.85, 0.6, 0.35, 0.15] },
-  { day: "T", steps: [0.7, 0.9, 0.4, 0.2] },
-  { day: "W", steps: [0.5, 0.45, 0.25, 0.1] },
-  { day: "T", steps: [0.9, 0.75, 0.55, 0.3] },
-  { day: "F", steps: [0.6, 0.4, 0.2, 0.1] },
-];
-
 const subjects = [
   { label: "local-first sync", points: "0,12 8,9 16,6 24,3 32,1", trend: "rising" },
   { label: "type systems", points: "0,2 8,4 16,7 24,9 32,11", trend: "cooling" },
@@ -92,51 +75,7 @@ const benefits = [
           </p>
         </div>
 
-        <div class="dossier-grid" aria-hidden="true">
-          <!-- Block B: category bars -->
-          <div class="dossier-block">
-            <p class="dossier-eyebrow">// where your time goes</p>
-            <ul class="cat-bars">
-              {
-                categories.map((cat) => (
-                  <li class="cat-row">
-                    <span class="cat-label">{cat.label}</span>
-                    <span class="cat-track">
-                      <span
-                        class:list={["cat-fill", { "cat-fill--top": cat.top }]}
-                        style={`width:${cat.percent}%`}
-                      />
-                    </span>
-                    <span class="cat-pct">{cat.percent}%</span>
-                  </li>
-                ))
-              }
-            </ul>
-          </div>
-
-          <!-- Block C: focus heatmap -->
-          <div class="dossier-block">
-            <p class="dossier-eyebrow">// focus over time</p>
-            <div class="heatmap">
-              {
-                heatmap.map((col) => (
-                  <div class="heat-col">
-                    {col.steps.map((v) => (
-                      <span
-                        class="heat-cell"
-                        style={`--heat:${v}`}
-                      />
-                    ))}
-                    <span class="heat-day">{col.day}</span>
-                  </div>
-                ))
-              }
-            </div>
-            <p class="dossier-caption">// focus vs. distraction, this week</p>
-          </div>
-        </div>
-
-        <!-- Block D: subject sparklines -->
+        <!-- Block B: subject sparklines -->
         <div class="dossier-block" aria-hidden="true">
           <p class="dossier-eyebrow">// subjects you keep returning to</p>
           <ul class="subjects">
@@ -338,109 +277,7 @@ const benefits = [
     background: var(--accent-bg);
   }
 
-  /* Block B + C grid */
-
-  .dossier-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: var(--space-md);
-  }
-
-  /* Block B: category bars */
-
-  .cat-bars {
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
-
-  .cat-row {
-    display: grid;
-    grid-template-columns: 7.5em minmax(0, 1fr) 2.5em;
-    align-items: center;
-    gap: 0.5rem;
-    font-family: var(--font-mono);
-    font-size: 0.62rem;
-  }
-
-  .cat-label {
-    color: var(--fg-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .cat-track {
-    height: 7px;
-    background: var(--border);
-    border-radius: 999px;
-    overflow: hidden;
-  }
-
-  .cat-fill {
-    display: block;
-    height: 100%;
-    background: color-mix(in srgb, var(--accent) 40%, var(--border));
-    border-radius: 999px;
-  }
-
-  .cat-fill--top {
-    background: var(--accent);
-  }
-
-  .cat-pct {
-    color: var(--fg-muted);
-    text-align: right;
-  }
-
-  /* Block C: focus heatmap */
-
-  .heatmap {
-    display: flex;
-    gap: 0.4rem;
-    align-items: flex-end;
-  }
-
-  .heat-col {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    flex: 1;
-    align-items: stretch;
-  }
-
-  .heat-cell {
-    height: 12px;
-    border-radius: 3px;
-    background: var(--border);
-  }
-
-  .heat-cell[style*="--heat"] {
-    background: color-mix(
-      in srgb,
-      var(--accent) calc(var(--heat) * 100%),
-      var(--border)
-    );
-  }
-
-  [data-theme="light"] .heat-cell[style*="--heat"] {
-    background: color-mix(
-      in srgb,
-      var(--accent) calc((var(--heat) * 0.7 + 0.3) * 100%),
-      var(--border-strong)
-    );
-  }
-
-  .heat-day {
-    font-family: var(--font-mono);
-    font-size: 0.55rem;
-    color: var(--fg-muted);
-    text-align: center;
-    margin-top: 0.15rem;
-  }
-
-  /* Block D: subject sparklines */
+  /* Block B: subject sparklines */
 
   .subjects {
     list-style: none;
@@ -504,10 +341,6 @@ const benefits = [
 
   @media (max-width: 768px) {
     .conclusions {
-      grid-template-columns: 1fr;
-    }
-
-    .dossier-grid {
       grid-template-columns: 1fr;
     }
 
