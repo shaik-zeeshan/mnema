@@ -5,14 +5,14 @@
   // fades out ~1s after scrolling stops. Dragging it scrubs `scrollTop`.
   // Rendered as a zero-height sticky wrapper (first child of `.river`) so the
   // absolutely-positioned bubble pins to the scrollport's top-right.
-  import { dragToScrollTop, scrollFraction, topmostVisibleAtMs } from "./scroll-time";
+  import { dragToScrollTop, scrollFraction, rowAtViewportY } from "./scroll-time";
 
   // Horizontal inset from the scrollport's right edge — clears the macOS
   // overlay scrollbar so the pill sits beside the thumb, not under it.
   const SCROLLBAR_INSET = 14;
   // Approximate native overlay-scrollbar minimum thumb height.
   const MIN_THUMB = 20;
-  const HIDE_DELAY_MS = 1000;
+  const HIDE_DELAY_MS = 1400;
   const FALLBACK_BUBBLE_H = 24;
 
   // Model the native thumb (height ∝ viewport²/content) so the pill's center
@@ -27,6 +27,9 @@
   let visible = $state(false);
   let scrollable = $state(false);
   let dragging = $state(false);
+  // Pointer resting on the pill freezes the auto-fade so it can't vanish while
+  // the user is reaching to grab it; leaving restarts the timer.
+  let hovering = $state(false);
   let topPx = $state(0);
   // The anchor is only as wide as the river column, which sits centered inside
   // a wider scrollport — a negative `right` pushes the bubble out to the
@@ -83,13 +86,15 @@
       const r = el.getBoundingClientRect();
       return { atMs: Number(el.dataset.atMs), top: r.top, bottom: r.bottom };
     });
-    const atMs = topmostVisibleAtMs(rows, containerTop);
+    // Read the row at the viewport's vertical center so the pill's time matches
+    // what the eye lands on mid-scroll, not the partly-scrolled row up top.
+    const atMs = rowAtViewportY(rows, containerTop + clientHeight / 2);
     if (atMs !== null) label = clock(atMs);
   }
 
   function restartHideTimer() {
     clearTimeout(hideTimer);
-    if (dragging) return;
+    if (dragging || hovering) return;
     hideTimer = setTimeout(() => {
       visible = false;
     }, HIDE_DELAY_MS);
@@ -168,6 +173,16 @@
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     restartHideTimer();
   }
+
+  function onPointerEnter() {
+    hovering = true;
+    clearTimeout(hideTimer);
+  }
+
+  function onPointerLeave() {
+    hovering = false;
+    restartHideTimer();
+  }
 </script>
 
 <!-- Supplementary pointer affordance only — the native scrollbar and wheel
@@ -186,6 +201,8 @@
       onpointermove={onPointerMove}
       onpointerup={onPointerUp}
       onpointercancel={onPointerUp}
+      onpointerenter={onPointerEnter}
+      onpointerleave={onPointerLeave}
     >
       {label}
     </div>
@@ -218,14 +235,28 @@
     touch-action: none;
     opacity: 0;
     pointer-events: none;
-    transition: opacity 0.15s ease;
+    transition:
+      opacity 0.15s ease,
+      background-color 0.12s ease,
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .bubble.visible {
     opacity: 1;
     pointer-events: auto;
   }
+  /* :hover only lands while visible — pointer-events is none when hidden. */
+  .bubble:hover {
+    background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
+  }
   .bubble.dragging {
     cursor: grabbing;
+    background: var(--app-surface-active);
+    border-color: var(--app-accent-border);
+    box-shadow:
+      var(--app-shadow-popover),
+      0 0 0 3px var(--app-accent-glow);
   }
   @media (prefers-reduced-motion: reduce) {
     .bubble {

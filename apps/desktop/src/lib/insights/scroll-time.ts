@@ -27,14 +27,15 @@ export function dragToScrollTop(
   return fraction * maxScroll;
 }
 
-/** First row (document order) still visible at the viewport top: the first
- * whose bottom edge is below `viewportTop`. Null when scrolled past all rows. */
-export function topmostVisibleAtMs(
+/** The row occupying viewport line `y` (client coords): the first, in document
+ * order, whose bottom edge is below `y`. Pass the viewport's vertical center to
+ * read the centered row. Null when scrolled past all rows. */
+export function rowAtViewportY(
   rows: { atMs: number; top: number; bottom: number }[],
-  viewportTop: number,
+  y: number,
 ): number | null {
   for (const row of rows) {
-    if (row.bottom > viewportTop) return row.atMs;
+    if (row.bottom > y) return row.atMs;
   }
   return null;
 }
