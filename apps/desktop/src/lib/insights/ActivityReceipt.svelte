@@ -87,6 +87,7 @@
   let clipPlaying = $state(false); // the <audio> element's play/pause state
   let clipStartMs = $state(0); // active clip's segment start (wall-clock epoch)
   let activeClipId = $state<number | null>(null); // the segment whose audio is loaded
+  let clipHeadMs = $state<number | null>(null); // live audio wall-clock while a clip plays; null when idle (drives audio-only highlight)
   let audioEl = $state<HTMLAudioElement | null>(null);
   let clipToken = 0; // guards the async media fetch; a new clip/activity drops it
 
@@ -168,9 +169,13 @@
   const isPlaying = $derived(audible ? clipPlaying : playing);
   const relivingClip = $derived(audible && selectedTurn != null && clipActive);
 
-  // The wall-clock playhead: the selected turn's start when audio-only, else the
+  // The wall-clock playhead: while an audio-only clip plays, the live audio head
+  // (so consecutive same-segment turns light up in sequence, same as frames mode);
+  // idle audio-only falls back to the selected turn's start; frames mode uses the
   // current frame (which the clip drives via onAudioTimeUpdate while reliving).
-  const headMs = $derived(isAudioOnly ? (selectedTurn?.startMs ?? null) : currentMs);
+  const headMs = $derived(
+    isAudioOnly ? (clipHeadMs ?? selectedTurn?.startMs ?? null) : currentMs,
+  );
   const headPos = $derived(headMs == null ? 0 : posFor(headMs));
   const headClock = $derived(headMs == null ? "" : clock(headMs));
 
@@ -358,6 +363,7 @@
   async function playClip(turn: TurnView, seekToMs?: number): Promise<void> {
     if (!audioEl) return;
     pause(); // stop the rAF timelapse; the audio clocks from here
+    clipHeadMs = null; // fall back to the new turn's start until its audio plays
     const token = ++clipToken;
     const src = await audioLoader.fetchMediaSrc(turn.audioSegmentId);
     if (token !== clipToken || !src || !audioEl) return; // superseded / failed
@@ -375,6 +381,7 @@
   function onAudioTimeUpdate(): void {
     if (activeClipId == null || !audioEl) return;
     const targetMs = clipStartMs + audioEl.currentTime * 1000;
+    clipHeadMs = targetMs; // live head for the audio-only highlight (frames mode ignores it)
     if (stripMs.length > 0) index = frameIndexForMs(stripMs, targetMs);
   }
 
@@ -397,6 +404,7 @@
     audioEl?.pause();
     clipPlaying = false;
     activeClipId = null;
+    clipHeadMs = null;
   }
 
   // Hydrate the span's spoken turns for the current activity.
