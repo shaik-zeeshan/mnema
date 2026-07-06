@@ -2952,6 +2952,21 @@ mod tests {
         });
     }
 
+    #[test]
+    fn corrupt_local_offset_value_degrades_to_none() {
+        // The doc contract: an unparseable stored value reads back as None (UTC
+        // fallback), never an error.
+        block_on(async {
+            let store = test_store().await;
+            sqlx::query("INSERT INTO app_settings (key, value) VALUES (?1, 'not-a-number')")
+                .bind(LOCAL_OFFSET_MINUTES_KEY)
+                .execute(store.db.write())
+                .await
+                .expect("seed corrupt row");
+            assert_eq!(store.local_offset_minutes().await.expect("must not error"), None);
+        });
+    }
+
     async fn seed_activity(store: &UserContextStore, title: &str, started_at_ms: i64) -> i64 {
         store
             .insert_activity_with_evidence(NewActivity {

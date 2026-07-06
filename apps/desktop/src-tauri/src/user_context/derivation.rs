@@ -1887,8 +1887,20 @@ mod tests {
         let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
         let prompt = build_distillation_prompt(&acts, Some(330 * 60_000));
         assert!(prompt.contains("Times are local (UTC+05:30)."), "prompt: {prompt}");
-        assert!(prompt.contains("UTC+05:30"));
+        // The rendered digits must actually shift, not just the label: the epoch
+        // instant at +05:30 reads 1970-01-01 05:30 local.
+        assert!(
+            prompt.contains("[id=1] t=1970-01-01 05:30 UTC+05:30"),
+            "prompt: {prompt}"
+        );
         assert!(!prompt.contains("All times are UTC."));
+
+        // A negative offset shifts backward across the day boundary.
+        let prompt = build_distillation_prompt(&acts, Some(-480 * 60_000));
+        assert!(
+            prompt.contains("[id=1] t=1969-12-31 16:00 UTC-08:00"),
+            "prompt: {prompt}"
+        );
     }
 
     #[test]
@@ -1904,25 +1916,6 @@ mod tests {
         // Regression guard: the neutral-observation wording for focus routines must
         // survive verbatim (never a productivity judgment).
         assert!(conclusion_preamble().contains("neutral observation of the user's rhythm"));
-    }
-
-    #[test]
-    fn recurrence_digest_prepended_with_tz_line_is_non_empty() {
-        // A small fixture with a repeated morning-creating slot yields a non-empty
-        // digest; prepending the tz line keeps it non-empty and names the offset.
-        let h9 = 9 * 3600 * 1000; // 09:00 UTC
-        let acts = vec![
-            distill_activity(1, h9, Some(ActivityCategory::Creating)),
-            distill_activity(2, h9 + 60_000, Some(ActivityCategory::Creating)),
-        ];
-        let now = h9 + 200_000;
-        let offset_ms = 330 * 60_000;
-        let digest = app_infra::user_context::build_recurrence_digest(&acts, offset_ms, now);
-        assert!(!digest.is_empty(), "fixture should produce a digest");
-        let tz_line = format!("Times below are local ({}).", offset_label(offset_ms / 60_000));
-        let block = format!("\n{tz_line}\n{digest}\n");
-        assert!(block.contains("UTC+05:30"));
-        assert!(block.len() > tz_line.len() + 2);
     }
 
     #[test]

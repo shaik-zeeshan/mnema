@@ -163,6 +163,7 @@ mod tests {
     use capture_types::{Activity, ActivityCategory, FocusLevel};
 
     const IST_OFFSET_MS: i64 = 19_800_000; // +05:30
+    const PST_OFFSET_MS: i64 = -28_800_000; // -08:00
 
     fn activity(id: i64, started_at_ms: i64, cat: Option<ActivityCategory>, focus: Option<FocusLevel>, title: &str) -> Activity {
         Activity {
@@ -205,6 +206,62 @@ mod tests {
     }
 
     #[test]
+    fn negative_offset_buckets_hour_and_day_into_previous_local_day() {
+        // 02:00 UTC -> 18:00 PST the PREVIOUS local day. Hour bucket must be 18,
+        // and the day key (div_euclid) must land on 2026-06-30, not 2026-07-01 —
+        // a regression to plain `/` division yields day 0 and passes the
+        // positive-offset tests.
+        let ts = base() + 2 * 3600 * 1000;
+        let acts = vec![activity(1, ts, Some(ActivityCategory::Creating), None, "predawn")];
+        let out = build_recurrence_digest(&acts, PST_OFFSET_MS, ts + 1000);
+        assert!(out.contains("18h creating:1"), "block was:\n{out}");
+        assert!(!out.contains("02h"), "should not bucket at UTC hour:\n{out}");
+        assert!(out.contains("2026-06-30 18:00"), "first-of-day must use the local day:\n{out}");
+
+        // Half-hour negative offset (-09:30): 02:00 UTC -> 16:30 previous day.
+        let out = build_recurrence_digest(&acts, -34_200_000, ts + 1000);
+        assert!(out.contains("16h creating:1"), "block was:\n{out}");
+        assert!(out.contains("2026-06-30 16:30"), "half-hour shift wrong:\n{out}");
+    }
+
+    #[test]
+    fn first_of_day_groups_by_local_day_not_utc_day() {
+        // Both activities share UTC day 2026-07-01 but fall on two different PST
+        // local days -> two first-of-day lines. A regression dropping the offset
+        // from the day key would merge them into one UTC day.
+        let acts = vec![
+            activity(1, base() + 2 * 3600 * 1000, Some(ActivityCategory::Creating), None, "late evening"),
+            activity(2, base() + 15 * 3600 * 1000, Some(ActivityCategory::Research), None, "morning"),
+        ];
+        let out = build_recurrence_digest(&acts, PST_OFFSET_MS, base() + 16 * 3600 * 1000);
+        assert!(out.contains("2026-06-30 18:00 creating late evening"), "block was:\n{out}");
+        assert!(out.contains("2026-07-01 07:00 research morning"), "block was:\n{out}");
+    }
+
+    #[test]
+    fn out_of_window_activities_are_filtered() {
+        let now = base();
+        let stale = || {
+            activity(
+                1,
+                recurrence_digest_window_start_ms(now) - 1000,
+                Some(ActivityCategory::Creating),
+                None,
+                "stale",
+            )
+        };
+        // Non-empty input entirely outside the window -> empty digest (the
+        // in_window.is_empty() early return, distinct from the &[] path).
+        assert_eq!(build_recurrence_digest(&[stale()], 0, now), "");
+        // Mixed: only the in-window activity is counted.
+        let fresh = activity(2, now - 3600 * 1000, Some(ActivityCategory::Research), None, "fresh");
+        let out = build_recurrence_digest(&[stale(), fresh], 0, now);
+        assert!(out.contains("research:1"), "block was:\n{out}");
+        assert!(!out.contains("creating"), "stale activity leaked into digest:\n{out}");
+        assert!(!out.contains("stale"), "stale title leaked:\n{out}");
+    }
+
+    #[test]
     fn category_and_focus_histograms_count_correctly() {
         let h9 = base() + 9 * 3600 * 1000; // 09:00 UTC
         let acts = vec![
@@ -231,25 +288,31 @@ mod tests {
     }
 
     #[test]
-    fn char_cap_is_enforced() {
-        // Many long-titled activities across many days -> would blow the cap.
+    fn char_cap_drops_first_of_day_section_first() {
+        // 21 days x one long-titled activity: sec_first alone (~21 x ~250 chars)
+        // pushes the full block past the cap while the histogram sections stay
+        // tiny. Rung 1 must drop the first-of-day section and keep BOTH
+        // histograms. Rungs 2/3 (dropping the focus histogram, hard truncation)
+        // are practically unreachable once titles are gone: hour lines are
+        // bounded at 24 and category/focus labels at 8/3, so header+histograms
+        // stay well under the cap for any realistic counts.
+        let title = "t".repeat(220);
         let mut acts = Vec::new();
         for d in 0..RECURRENCE_DIGEST_WINDOW_DAYS {
-            for h in 0..24i64 {
-                let ts = base() + d * MS_PER_DAY + h * 3600 * 1000;
-                acts.push(activity(
-                    d * 100 + h,
-                    ts,
-                    Some(ActivityCategory::Creating),
-                    Some(FocusLevel::Deep),
-                    "a very long activity title that eats into the character budget quickly indeed",
-                ));
-            }
+            acts.push(activity(
+                d,
+                base() + d * MS_PER_DAY + 9 * 3600 * 1000,
+                Some(ActivityCategory::Creating),
+                Some(FocusLevel::Deep),
+                &title,
+            ));
         }
         let now = base() + RECURRENCE_DIGEST_WINDOW_DAYS * MS_PER_DAY;
         let out = build_recurrence_digest(&acts, 0, now);
         assert!(out.chars().count() <= RECURRENCE_DIGEST_CHAR_CAP, "cap breached: {}", out.chars().count());
-        // Histograms must survive the truncation.
         assert!(out.contains("By hour-of-day (category counts):"));
+        assert!(out.contains("By hour-of-day (focus counts):"));
+        assert!(!out.contains("First activity each day"), "sec_first must be dropped:\n{out}");
+        assert!(!out.contains(&title), "titles must not survive the cap:\n{out}");
     }
 }
