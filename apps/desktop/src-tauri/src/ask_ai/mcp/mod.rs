@@ -13,9 +13,12 @@
 
 pub(crate) mod manager;
 pub(crate) mod node_check;
+pub(crate) mod oauth_flow;
+pub(crate) mod oauth_store;
 mod transport;
 
 pub(crate) use manager::McpManager;
+pub(crate) use oauth_store::OAuthCredentialStore;
 
 /// Model-facing tool-name prefix (Claude Code convention): a chat tool named
 /// `mcp__<server-id>__<tool>` routes to server `<server-id>`'s `<tool>`.

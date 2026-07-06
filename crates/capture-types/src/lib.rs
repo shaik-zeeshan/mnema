@@ -555,6 +555,7 @@ mod tests {
                     label: "GitHub".to_string(),
                     enabled: true,
                     transport: McpTransport::Stdio,
+                    auth_mode: McpAuthMode::Bearer,
                     command: Some("npx".to_string()),
                     args: vec![
                         "-y".to_string(),
@@ -573,6 +574,7 @@ mod tests {
                     label: "Linear".to_string(),
                     enabled: false,
                     transport: McpTransport::Http,
+                    auth_mode: McpAuthMode::Bearer,
                     command: None,
                     args: Vec::new(),
                     env: Vec::new(),
@@ -606,6 +608,33 @@ mod tests {
         let settings: AiRuntimeSettings =
             serde_json::from_str(r#"{ "enabled": true, "providers": [] }"#).expect("deserialize");
         assert!(settings.mcp_servers.is_empty());
+    }
+
+    #[test]
+    fn mcp_auth_mode_defaults_to_bearer_and_oauth_round_trips() {
+        // (a) A connector persisted before ADR 0051 (no `authMode` key) must
+        // deserialize to Bearer, never fail.
+        let cfg: McpServerConfig = serde_json::from_str(
+            r#"{ "id": "linear", "label": "Linear", "transport": "http",
+                 "url": "https://mcp.linear.app/mcp" }"#,
+        )
+        .expect("deserialize");
+        assert_eq!(cfg.auth_mode, McpAuthMode::Bearer);
+
+        // (b) OAuth serializes to exactly "oauth" (not the snake_case "o_auth")
+        // and round-trips.
+        assert_eq!(
+            serde_json::to_value(McpAuthMode::OAuth).unwrap(),
+            serde_json::json!("oauth")
+        );
+        let oauth_cfg = McpServerConfig {
+            auth_mode: McpAuthMode::OAuth,
+            ..cfg
+        };
+        let json = serde_json::to_value(&oauth_cfg).expect("serialize");
+        assert_eq!(json["authMode"], "oauth");
+        let round: McpServerConfig = serde_json::from_value(json).expect("round-trip");
+        assert_eq!(round, oauth_cfg);
     }
 
     #[test]

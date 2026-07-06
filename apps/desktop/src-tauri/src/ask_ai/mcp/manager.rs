@@ -30,11 +30,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use capture_types::McpServerConfig;
+use capture_types::{McpAuthMode, McpServerConfig};
 use futures_util::future::join_all;
 use tauri::Manager;
 use tokio::sync::Mutex;
 
+use super::oauth_flow::PendingOAuth;
 use super::transport::{config_fingerprint, connect, McpClient};
 use super::{
     bound_tool_description, bound_tool_schema, is_valid_model_tool_name, model_tool_name,
@@ -69,7 +70,7 @@ struct Established {
 /// (warm vs. turn) that arrives mid-connect simply AWAITS the in-flight connect
 /// on the lock — that is how "await in-flight discovery" is realized without a
 /// separate task handle.
-struct ServerSlot {
+pub(super) struct ServerSlot {
     /// The connect-relevant config fingerprint this slot was built for; a Settings
     /// edit changes it and the manager replaces the slot (dropping the old child).
     fingerprint: String,
@@ -268,11 +269,28 @@ pub(crate) struct McpManager {
 }
 
 #[derive(Default)]
-struct Inner {
+pub(super) struct Inner {
     /// server id → its connection slot. The `tokio::Mutex` guards the map itself;
     /// each slot has its own inner mutex for its connect/redial, so per-server
     /// connects never serialize behind one another.
-    slots: Mutex<HashMap<String, Arc<ServerSlot>>>,
+    pub(super) slots: Mutex<HashMap<String, Arc<ServerSlot>>>,
+    /// In-flight browser OAuth flows, keyed by the CSRF `state` param the authorize
+    /// URL carries (and the deep-link callback echoes). A plain `std::sync::Mutex`:
+    /// the critical sections are tiny, purely in-memory map ops with no `.await`
+    /// held across the lock. Evicted on claim, on the TTL sweep at the next
+    /// `begin_oauth`, and on disconnect.
+    pub(super) oauth_pending: std::sync::Mutex<HashMap<String, PendingOAuth>>,
+    /// Connector ids whose stored Token Set failed to refresh at the last
+    /// warm-on-open — the *Needs reconnect* signal Settings (slice 6) reads.
+    /// Refreshed at warm, cleared on a successful (re)authorization or disconnect.
+    pub(super) oauth_reconnect_needed: std::sync::Mutex<HashSet<String>>,
+}
+
+/// Lock a `std::sync::Mutex`, recovering the guard from a poisoned lock (a thread
+/// panicked while holding it) — these maps carry no invariant a panic could
+/// corrupt, so the data stays usable.
+pub(super) fn lock_recover<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl Inner {
@@ -299,6 +317,13 @@ impl Inner {
 }
 
 impl McpManager {
+    /// Borrow the shared [`Inner`] state — the sibling [`super::oauth_flow`] module
+    /// reaches the pending-flow map, reconnect-needed set, and slot cache through
+    /// this so the OAuth lifecycle can live in its own file.
+    pub(super) fn inner(&self) -> &Inner {
+        &self.inner
+    }
+
     /// Warm-on-open discovery: for every enabled server, kick off a BACKGROUND
     /// connect + `list_tools` and return immediately. Both chat doors call this on
     /// mount so a turn build usually finds discovery already done (or in-flight,
@@ -320,7 +345,30 @@ impl McpManager {
             let manager = self.clone();
             tauri::async_runtime::spawn(async move {
                 let slot = manager.inner.slot_for(&cfg).await;
-                if let Err(error) = slot.ensure_ready(&cfg).await {
+                let ready = slot.ensure_ready(&cfg).await;
+                // ponytail: the OAuth "needs reconnect" flag is refreshed HERE, at
+                // warm-on-open — not continuously. A connector that HELD a token
+                // whose refresh now fails gets flagged; a clean connect clears it.
+                // That warm-time refresh is the documented ceiling — slice 6 reads
+                // the flag for the status surface, and the transport OAuth branch
+                // already surfaces the readable "needs reconnecting" error at turn
+                // time. A continuous health probe would be added in the manager's
+                // failure seam, not here, and only if dead-token status confuses.
+                if cfg.auth_mode == McpAuthMode::OAuth {
+                    match &ready {
+                        Err(_) if app_infra::has_mcp_server_secret(&cfg.id).unwrap_or(false) => {
+                            lock_recover(&manager.inner.oauth_reconnect_needed)
+                                .insert(cfg.id.clone());
+                        }
+                        Ok(_) => {
+                            lock_recover(&manager.inner.oauth_reconnect_needed).remove(&cfg.id);
+                        }
+                        // An error with no stored token is *Needs authorization*, not
+                        // *Needs reconnect* — don't flag it.
+                        Err(_) => {}
+                    }
+                }
+                if let Err(error) = ready {
                     tauri_plugin_log::log::info!(
                         "Ask AI MCP warm connect for \"{}\" failed (will retry on use): {error}",
                         cfg.label
@@ -635,6 +683,7 @@ mod tests {
             label: label.to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some(command.to_string()),
             args,
             env: Vec::new(),
@@ -1136,6 +1185,7 @@ done"#;
             label: "HugeError".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some("sh".to_string()),
             args: vec!["-c".to_string(), HUGE_ERROR_SCRIPT.to_string()],
             env: vec![McpEnvVar {
@@ -1222,6 +1272,7 @@ done"#;
             label: "InbandError".to_string(),
             enabled: true,
             transport: McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some("sh".to_string()),
             args: vec!["-c".to_string(), BIG_INBAND_ERROR_SCRIPT.to_string()],
             env: vec![McpEnvVar {
