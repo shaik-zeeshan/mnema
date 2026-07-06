@@ -195,3 +195,88 @@ export function presetToDraft(
 		enabledTools: null,
 	};
 }
+
+/**
+ * Map an existing connector back to its catalog preset (for lede/chips/secret
+ * label in edit mode): the draft id is the preset id or its slugger-suffixed
+ * variant ("github", "github-2", …) AND the transport matches. No match = a
+ * custom/legacy connector, rendered by the Custom full form. An old connector
+ * created from the now-hosted Notion preset stays stdio, so it fails the
+ * transport check and correctly falls through to Custom.
+ */
+export function presetForServer(
+	server: Pick<McpServerConfig, "id" | "transport">,
+	presets: readonly McpPreset[] = MCP_PRESETS,
+): McpPreset | null {
+	return (
+		presets.find(
+			(p) =>
+				server.transport === (p.kind === "hosted" ? "http" : "stdio") &&
+				(server.id === p.id || new RegExp(`^${p.id}-\\d+$`).test(server.id)),
+		) ?? null
+	);
+}
+
+/** The Advanced-panel edits a preset add carries over the preset defaults. */
+export interface PresetAdvancedInput {
+	name: string;
+	url: string;
+	command: string;
+	args: string;
+	/** A local preset whose Node runtime is missing → land it disabled. */
+	nodeMissing: boolean;
+}
+
+/**
+ * The diff a preset add applies over the preset defaults from the Advanced
+ * panel — only fields the user actually changed are included (an unchanged
+ * field falls through to the preset default at add time). Naive whitespace arg
+ * split: preset args carry no quoted values.
+ */
+export function presetOverrides(
+	preset: McpPreset,
+	adv: PresetAdvancedInput,
+): Partial<McpServerConfig> {
+	const o: Partial<McpServerConfig> = {};
+	// Adding while Node is missing is allowed, but the connector starts disabled.
+	if (preset.kind === "local" && adv.nodeMissing) o.enabled = false;
+	const name = adv.name.trim();
+	if (name && name !== preset.label) o.label = name;
+	if (preset.kind === "hosted") {
+		const url = adv.url.trim();
+		if (url && url !== (preset.url ?? "")) o.url = url;
+	} else {
+		const command = adv.command.trim();
+		if (command && command !== (preset.command ?? "")) o.command = command;
+		const args = adv.args.trim();
+		if (args !== (preset.args ?? []).join(" ")) o.args = args ? args.split(/\s+/) : [];
+	}
+	return o;
+}
+
+/**
+ * Build a McpServerConfig draft from the Custom-connector form model. Mirrors
+ * the transport split (stdio vs http): only the chosen transport's fields
+ * survive, and http carries the ADR 0051 auth mode (default bearer) so the
+ * backend lists an OAuth connector and its Connect flow is reachable.
+ */
+export function buildCustomMcpDraft(
+	model: McpServerConfig,
+	existingIds: readonly string[],
+): McpServerConfig {
+	const label = model.label.trim();
+	const stdio = model.transport === "stdio";
+	return {
+		id: newMcpServerId(label, existingIds),
+		label,
+		enabled: true,
+		transport: stdio ? "stdio" : "http",
+		authMode: stdio ? undefined : (model.authMode ?? "bearer"),
+		command: stdio ? (model.command ?? "").trim() || null : null,
+		args: stdio ? model.args.filter((a) => a.trim() !== "") : [],
+		env: stdio ? model.env.filter((e) => e.name.trim() !== "") : [],
+		url: stdio ? null : (model.url ?? "").trim() || null,
+		secretEnvName: stdio ? (model.secretEnvName ?? "").trim() || null : null,
+		enabledTools: null,
+	};
+}

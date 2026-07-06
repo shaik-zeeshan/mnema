@@ -29,11 +29,16 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import McpConnectorCatalog from "./McpConnectorCatalog.svelte";
   import McpConnectorCustomForm from "./McpConnectorCustomForm.svelte";
-  import McpOAuthConnect from "./McpOAuthConnect.svelte";
+  import McpAdvancedFields from "./McpAdvancedFields.svelte";
+  import McpOAuthConnectPanel from "./McpOAuthConnectPanel.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import { MCP_PRESETS, type McpPreset } from "$lib/settings/state/mcp-presets";
-  import { deriveMcpOAuthStage, showMcpOAuthConnectPanel } from "$lib/settings/state/mcp-oauth-stage";
-  import { newMcpServerId } from "$lib/settings/state/ai-providers";
+  import {
+    type McpPreset,
+    presetForServer,
+    presetOverrides,
+    buildCustomMcpDraft,
+  } from "$lib/settings/state/mcp-presets";
+  import { showMcpOAuthConnectPanel } from "$lib/settings/state/mcp-oauth-stage";
   import type { McpServerConfig } from "$lib/types";
 
   interface McpToolDescriptor {
@@ -120,20 +125,6 @@
   let editServer = $state.raw<McpServerConfig | null>(null);
   const edit = $derived(editServer !== null);
   const secretSaved = $derived(!!(editServer && aiRuntime.mcpSecretSavedById[editServer.id]));
-
-  // Map an existing connector back to its catalog preset (lede/chips/secret
-  // label): the draft id is the preset id or its slugger-suffixed variant
-  // ("github", "github-2", …) AND the transport matches. No match = the
-  // Custom full-form body (custom/legacy connectors).
-  function presetForServer(s: McpServerConfig): McpPreset | null {
-    return (
-      MCP_PRESETS.find(
-        (p) =>
-          s.transport === (p.kind === "hosted" ? "http" : "stdio") &&
-          (s.id === p.id || new RegExp(`^${p.id}-\\d+$`).test(s.id)),
-      ) ?? null
-    );
-  }
 
   function startEdit(id: string): void {
     const s = rec.draftMcpServers.find((x) => x.id === id);
@@ -239,19 +230,10 @@
   );
 
   // ─── In-modal OAuth connect flow (slice 8b) ─────────────────────────────────
-  // Two entry doors share ONE derivation: (1) a hosted-OAuth preset picked from
-  // the catalog (added on Connect, then authorized in place), and (2) row
-  // Connect/Reconnect on an EXISTING connector (`connectId`). The stage is
-  // derived from the live store — the `mcp_authorization_changed` → refresh that
-  // McpConnectors runs updates `mcpOAuthStateById`, which flips this panel.
-  const mcpOAuthStateById = $derived(aiRuntime.mcpOAuthStateById);
-  const mcpOAuthErrors = $derived(aiRuntime.mcpOAuthErrors);
-
-  let oauthAttempted = $state(false);
-  let oauthSawAuthorizing = $state(false);
-  // The id minted when a catalog OAuth preset is added at Connect-click (null for
-  // the row path, where `connectId` already names an existing connector).
-  let addedOauthId = $state<string | null>(null);
+  // The connect flow itself lives in McpOAuthConnectPanel (800-line cap split);
+  // the parent only decides WHEN to show it and supplies the entry inputs. Two
+  // entry doors share that one flow: a hosted-OAuth preset picked from the
+  // catalog, or row Connect/Reconnect on an EXISTING connector (`connectId`).
 
   // The existing connector being (re)connected from its row.
   const connectServer = $derived(
@@ -269,80 +251,21 @@
       edit,
     }),
   );
-  // The id whose live state drives the stage (row id, or the just-added preset id).
-  const oauthConnectId = $derived(connectId ?? addedOauthId);
-  const oauthState = $derived(oauthConnectId ? mcpOAuthStateById[oauthConnectId] : undefined);
-  const oauthHasError = $derived(!!(oauthConnectId && mcpOAuthErrors[oauthConnectId]));
-  const oauthStage = $derived(
-    deriveMcpOAuthStage({
-      state: oauthState,
-      attempted: oauthAttempted,
-      hasError: oauthHasError,
-      sawAuthorizing: oauthSawAuthorizing,
-    }),
-  );
-
-  // Latch "we reached authorizing" so a later fall-back to none/reconnect reads
-  // as a denial (not begin-still-in-flight). Write-only flag — no derived cycle.
-  $effect(() => {
-    if (oauthState === "authorizing") oauthSawAuthorizing = true;
-  });
-
-  const oauthVerb = $derived<"Connect" | "Reconnect">(
-    connectMode === "reconnect" ? "Reconnect" : "Connect",
-  );
+  // Label for the modal header; the panel derives its own copy for its body.
   const oauthLabel = $derived(
     connectServer ? connectServer.label.trim() || connectServer.id : (selected?.label ?? ""),
   );
-  const oauthLede = $derived(
-    connectServer
-      ? `Chat can use ${oauthLabel}'s tools once you approve access in your browser.`
-      : (selected?.lede ?? ""),
-  );
-  const oauthPath = $derived(
-    (connectServer?.url ?? (oauthPreset ? advUrl : "")).trim().replace(/^https?:\/\//, ""),
-  );
-
-  // Connect: ensure the connector exists (a catalog preset is added + persisted
-  // ONCE — the backend resolves `mcp_oauth_begin` by id from settings), then
-  // begin the browser flow. begin records failures into mcpOAuthErrors[id] (no
-  // throw), so `oauthStage` flips to "denied" on its own.
-  async function oauthConnectStart(): Promise<void> {
-    oauthAttempted = true;
-    oauthSawAuthorizing = false;
-    let id = oauthConnectId;
-    if (!id && selected) {
-      try {
-        id = c.addMcpServerFromPreset(selected, presetOverrides(selected));
-        addedOauthId = id;
-        await c.flushAiRuntimeSave();
-      } catch (err) {
-        submitError = humanizeError(err);
-        console.error("[McpConnectorPicker] OAuth add-before-connect failed", err);
-        // Roll back the orphan draft; drop back to idle so the user can retry.
-        if (id) await c.removeMcpServer(id, { confirm: false });
-        addedOauthId = null;
-        oauthAttempted = false;
-        return;
-      }
-    }
-    if (!id) return;
-    await aiRuntime.beginMcpOAuth(id);
-    await aiRuntime.refreshMcpOAuthStates();
-  }
-
-  function oauthRetry(): void {
-    oauthAttempted = false;
-    oauthSawAuthorizing = false;
-  }
-
-  // Done (authorized). For a catalog-add the connector is brand-new → tell the
-  // parent so it flashes the row + refreshes. For a row Connect/Reconnect the row
-  // already exists and flipped on the same event, so just close.
-  function oauthDone(): void {
-    if (addedOauthId) onAdded(addedOauthId);
-    onClose();
-  }
+  // The Advanced-panel edits, as the input `presetOverrides` diffs against a
+  // preset (name/url/command/args + the Node-missing → land-disabled rule).
+  const advInput = () => ({
+    name: advName,
+    url: advUrl,
+    command: advCommand,
+    args: advArgs,
+    nodeMissing: nodeVersion === null,
+  });
+  // Preset overrides applied when a catalog OAuth preset is added on Connect.
+  const oauthOverrides = $derived(selected ? presetOverrides(selected, advInput()) : {});
 
   const addDisabled = $derived.by(() => {
     if (connecting || removing) return true;
@@ -352,52 +275,6 @@
       ? (customModel.url ?? "").trim() === ""
       : (customModel.command ?? "").trim() === "";
   });
-
-  // ─── Draft building ──────────────────────────────────────────────────────────
-  function presetOverrides(p: McpPreset): Partial<McpServerConfig> {
-    const o: Partial<McpServerConfig> = {};
-    // Adding while Node is missing is allowed, but the connector starts
-    // disabled (its row carries the warn badge until Node is found).
-    if (p.kind === "local" && nodeVersion === null) o.enabled = false;
-    const name = advName.trim();
-    if (name && name !== p.label) o.label = name;
-    if (p.kind === "hosted") {
-      const url = advUrl.trim();
-      if (url && url !== (p.url ?? "")) o.url = url;
-    } else {
-      const command = advCommand.trim();
-      if (command && command !== (p.command ?? "")) o.command = command;
-      const args = advArgs.trim();
-      // ponytail: naive whitespace split — preset args carry no quoted values.
-      if (args !== (p.args ?? []).join(" ")) o.args = args ? args.split(/\s+/) : [];
-    }
-    return o;
-  }
-
-  function buildCustomDraft(): McpServerConfig {
-    const m = customModel;
-    const label = m.label.trim();
-    const stdio = m.transport === "stdio";
-    return {
-      id: newMcpServerId(
-        label,
-        rec.draftMcpServers.map((s) => s.id),
-      ),
-      label,
-      enabled: true,
-      transport: stdio ? "stdio" : "http",
-      // http auth mode (ADR 0051). Slice 7 lets the form pick OAuth; carry it
-      // onto the draft so it persists as http+oauth (else the backend never
-      // lists it for OAuth and its Connect flow is unreachable).
-      authMode: stdio ? undefined : (m.authMode ?? "bearer"),
-      command: stdio ? (m.command ?? "").trim() || null : null,
-      args: stdio ? m.args.filter((a) => a.trim() !== "") : [],
-      env: stdio ? m.env.filter((e) => e.name.trim() !== "") : [],
-      url: stdio ? null : (m.url ?? "").trim() || null,
-      secretEnvName: stdio ? (m.secretEnvName ?? "").trim() || null : null,
-      enabledTools: null,
-    };
-  }
 
   // ─── Validate-on-add (slice 4) ───────────────────────────────────────────────
   async function submit(): Promise<void> {
@@ -418,8 +295,13 @@
     const skipVerify = oauth || (selected?.kind === "local" && nodeVersion === null);
     try {
       id = selected
-        ? c.addMcpServerFromPreset(selected, presetOverrides(selected))
-        : c.addMcpServerDraft(buildCustomDraft());
+        ? c.addMcpServerFromPreset(selected, presetOverrides(selected, advInput()))
+        : c.addMcpServerDraft(
+            buildCustomMcpDraft(
+              customModel,
+              rec.draftMcpServers.map((s) => s.id),
+            ),
+          );
       await c.flushAiRuntimeSave();
       if (secret && !oauth) {
         aiRuntime.setMcpSecretInput(id, secret);
@@ -521,9 +403,6 @@
   $effect(() => {
     if (open && !wasOpen) {
       opener = document.activeElement as HTMLElement | null;
-      oauthAttempted = false;
-      oauthSawAuthorizing = false;
-      addedOauthId = null;
       if (editId) startEdit(editId);
       panelEl?.focus();
       void tick().then(focusFirstField);
@@ -537,9 +416,6 @@
       submitError = null;
       connecting = false;
       removing = false;
-      oauthAttempted = false;
-      oauthSawAuthorizing = false;
-      addedOauthId = null;
       void tick().then(() => trigger?.focus());
     }
     wasOpen = open;
@@ -592,28 +468,15 @@
 
       <div class="cat-modal__body" bind:this={bodyEl}>
         {#if oauthConnect}
-          <!-- OAuth connect panel: catalog-add of a hosted-OAuth preset, or a
-               row's Connect/Reconnect. Stage is derived from the live store. -->
-          <div class="connect">
-            {#if oauthLede}<p class="connect__lede">{oauthLede}</p>{/if}
-            <div class="chip-row">
-              <span class="chip">HTTP</span>
-              {#if oauthPath}<span class="chip chip--path">{oauthPath}</span>{/if}
-              <span class="chip chip--oauth">OAuth</span>
-            </div>
-            <McpOAuthConnect
-              stage={oauthStage}
-              label={oauthLabel}
-              verb={oauthVerb}
-              onConnect={() => void oauthConnectStart()}
-              onCancel={onClose}
-              onDone={oauthDone}
-              onRetry={oauthRetry}
-            />
-            {#if submitError}
-              <p class="error-text" role="alert">{submitError}</p>
-            {/if}
-          </div>
+          <McpOAuthConnectPanel
+            {connectServer}
+            {selected}
+            {connectMode}
+            advUrl={advUrl}
+            overrides={oauthOverrides}
+            {onAdded}
+            {onClose}
+          />
         {:else if step === "catalog"}
           <McpConnectorCatalog onPick={selectPreset} onPickCustom={selectCustom} />
         {:else}
@@ -680,40 +543,15 @@
                 {/if}
               {/if}
 
-              <div class="adv">
-                <button
-                  type="button"
-                  class="adv__toggle"
-                  aria-expanded={advOpen}
-                  onclick={() => (advOpen = !advOpen)}
-                >
-                  <span>Advanced</span>
-                  <span class="adv__chev" class:adv__chev--open={advOpen} aria-hidden="true">›</span>
-                </button>
-                {#if advOpen}
-                  <div class="adv__body">
-                    <div class="field">
-                      <label class="field-label" for="mcp-picker-adv-name">Name</label>
-                      <input id="mcp-picker-adv-name" class="text-input" autocomplete="off" bind:value={advName} oninput={syncAdvToDraft} />
-                    </div>
-                    {#if p.kind === "hosted"}
-                      <div class="field">
-                        <label class="field-label" for="mcp-picker-adv-url">URL</label>
-                        <input id="mcp-picker-adv-url" class="text-input" autocomplete="off" bind:value={advUrl} oninput={syncAdvToDraft} />
-                      </div>
-                    {:else}
-                      <div class="field">
-                        <label class="field-label" for="mcp-picker-adv-command">Command</label>
-                        <input id="mcp-picker-adv-command" class="text-input" autocomplete="off" bind:value={advCommand} oninput={syncAdvToDraft} />
-                      </div>
-                      <div class="field">
-                        <label class="field-label" for="mcp-picker-adv-args">Arguments</label>
-                        <input id="mcp-picker-adv-args" class="text-input" autocomplete="off" placeholder="space-separated" bind:value={advArgs} oninput={syncAdvToDraft} />
-                      </div>
-                    {/if}
-                  </div>
-                {/if}
-              </div>
+              <McpAdvancedFields
+                bind:open={advOpen}
+                kind={p.kind}
+                bind:name={advName}
+                bind:url={advUrl}
+                bind:command={advCommand}
+                bind:args={advArgs}
+                onInput={syncAdvToDraft}
+              />
 
               {#if submitError && !p.secretLabel}
                 <p class="error-text" role="alert">{submitError}</p>
@@ -883,11 +721,6 @@
     letter-spacing: 0.01em;
     overflow-wrap: anywhere;
   }
-  .chip--oauth {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
   .field {
     display: flex;
     flex-direction: column;
@@ -919,48 +752,6 @@
     text-decoration: underline;
   }
 
-  /* ---- ADVANCED disclosure ---- */
-  .adv {
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    overflow: hidden;
-  }
-  .adv__toggle {
-    width: 100%;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 10px 12px;
-    background: transparent;
-    border: 0;
-    font-family: inherit;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-    cursor: pointer;
-  }
-  .adv__toggle:hover {
-    color: var(--app-text-strong);
-  }
-  .adv__chev {
-    font-size: 11px;
-    transition: transform 0.15s;
-  }
-  .adv__chev--open {
-    transform: rotate(90deg);
-  }
-  .adv__body {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 2px 12px 14px;
-    border-top: 1px solid var(--app-border);
-  }
-
   .connect__footer {
     display: flex;
     align-items: center;
@@ -970,8 +761,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .cat-modal__close,
-    .adv__chev {
+    .cat-modal__close {
       transition: none;
     }
   }
