@@ -143,6 +143,27 @@ export function scheduleClipSeek(el: HTMLAudioElement, offsetSec: number): void 
   else el.onloadedmetadata = apply;
 }
 
+/**
+ * The in-segment start offset (seconds) for reliving `turn` from wall-clock
+ * `atMs`. Returns 0 (the segment head) when `atMs` is null or falls OUTSIDE the
+ * turn's own window [segmentStartMs, endMs]. Pure.
+ *
+ * The guard matters for the Play/Space start-path: in frames mode the head it
+ * passes is the poster FRAME's wall-clock, which in a multi-segment span sits in
+ * a DIFFERENT segment than the selected turn. Without the guard, `(atMs -
+ * segmentStartMs)` is enormous → scheduleClipSeek clamps it to the clip's
+ * duration → the clip plays AT its end → `ended` fires → auto-advance silently
+ * SKIPS the turn the user asked to hear. A scrub-release stays exact because its
+ * `atMs` is chosen to fall inside the resolved turn.
+ */
+export function clipStartOffsetSec(
+  turn: { segmentStartMs: number; endMs: number },
+  atMs: number | null | undefined,
+): number {
+  if (atMs == null || atMs < turn.segmentStartMs || atMs > turn.endMs) return 0;
+  return Math.max(0, (atMs - turn.segmentStartMs) / 1000);
+}
+
 /** The audio-only footer's left cell: honest about why there are no frames. */
 export function audioFooterLeft(frameEvidenceCount: number): string {
   return frameEvidenceCount > 0
@@ -253,7 +274,11 @@ export function buildTurnViews(
     // rows are all "—" (the exact `if (!text) continue` rule the Timeline reader
     // uses). ponytail: an all-wordless cited segment therefore shows no turns —
     // acceptable, it has no spoken evidence to read; the frame/audio player stays.
-    .filter((r) => r.text.length > 0);
+    // Also drop a turn whose segment start won't parse (Date.parse → NaN): a NaN
+    // wall-clock never breaks activeKeyAt's `t.startMs > ms` scan (so it would
+    // steal the karaoke highlight) and never matches turnAtMs' `ms >= startMs`
+    // (scrub-to-relive silently finds nothing). Mirrors loadStrip's finite guard.
+    .filter((r) => r.text.length > 0 && Number.isFinite(r.startMs) && Number.isFinite(r.endMs));
 
   rows.sort((a, b) => a.startMs - b.startMs || a.turnId - b.turnId);
   const colors = assignSpeakerColors(rows.map((r) => r.speaker));

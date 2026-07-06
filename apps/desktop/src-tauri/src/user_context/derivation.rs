@@ -313,8 +313,14 @@ DerivedActivityBatch.\n\n",
         prompt.push_str(&text);
         prompt.push('\n');
         // Anonymous per-speaker turn structure beneath the flat transcript (ADR
-        // 0050). Empty for frames and for audio with no diarized turns.
-        prompt.push_str(&render_speaker_turns(&item.speaker_turns));
+        // 0050). Empty for frames and for audio with no diarized turns. Bounded by
+        // the same ITEM_TEXT_CHAR_CAP as the flat text: the turns re-render the
+        // same transcript, so without this cap one long segment's turns would
+        // defeat the per-item prompt budget the flat-text cap exists to enforce.
+        prompt.push_str(&truncate_chars(
+            &render_speaker_turns(&item.speaker_turns),
+            ITEM_TEXT_CHAR_CAP,
+        ));
         prompt.push('\n');
     }
 
@@ -1736,5 +1742,31 @@ mod tests {
         assert!(!prompt.contains(SENTINEL), "a name leaked into the prompt");
         // The anonymous label is present; the identity is not.
         assert!(prompt.contains("Speaker A:"));
+    }
+
+    #[test]
+    fn diarized_turns_cannot_blow_the_per_item_prompt_budget() {
+        // ITEM_TEXT_CHAR_CAP caps the flat transcript "so a single noisy capture
+        // cannot dominate the prompt budget". The diarized turns re-render the SAME
+        // transcript beneath it; if they were uncapped, one long segment would
+        // defeat the cap. A single long single-speaker segment: its flat text
+        // truncates to ITEM_TEXT_CHAR_CAP, so its turn rendering must be bounded by
+        // the same cap — the item's total transcript contribution stays within a
+        // small multiple of the cap.
+        let long = "lorem ipsum ".repeat(2_000); // ~24k chars
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![audio_item(1, 5, &long, "system_audio", vec![(1, long.clone())])],
+        };
+        let prompt = build_prompt(&window);
+        // Fixed intro/header + one item whose flat text AND turn rendering are each
+        // capped at ITEM_TEXT_CHAR_CAP → at most a small multiple of the cap.
+        let budget = 4 * ITEM_TEXT_CHAR_CAP;
+        assert!(
+            prompt.chars().count() <= budget,
+            "one audio item produced a {}-char prompt (budget {budget}); diarized turns bypass ITEM_TEXT_CHAR_CAP",
+            prompt.chars().count()
+        );
     }
 }

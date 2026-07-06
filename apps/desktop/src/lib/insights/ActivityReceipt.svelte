@@ -44,6 +44,7 @@
   import { ReceiptFrameLoader } from "$lib/insights/receipt-frames";
   import {
     audioFooterLeft,
+    clipStartOffsetSec,
     frameIndexForMs,
     partitionEvidence,
     receiptViewState,
@@ -330,12 +331,14 @@
   }
 
   function seek(i: number): void {
+    if (strip.length === 0) return; // audio-only: no frames to move, don't halt the clip
     stopClip(); // a manual frame move preempts the audio clock
     pause();
     index = clampIndex(i, strip.length);
   }
 
   function step(delta: number): void {
+    if (strip.length === 0) return; // audio-only: arrows have no frame to step, don't halt the clip
     stopClip();
     pause();
     index = clampIndex(index + delta, strip.length);
@@ -366,7 +369,10 @@
   async function playClip(turn: TurnView, seekToMs?: number, autoplay = true): Promise<void> {
     if (!audioEl) return;
     pause(); // stop the rAF timelapse; the audio clocks from here
-    const offsetSec = seekToMs == null ? 0 : Math.max(0, (seekToMs - turn.segmentStartMs) / 1000);
+    // 0 when seekToMs falls outside this turn's segment window — e.g. the frame
+    // playhead in a DIFFERENT segment when Play is pressed — so an out-of-segment
+    // head can't seek the clip past its end and auto-advance-skip the turn.
+    const offsetSec = clipStartOffsetSec(turn, seekToMs);
     // Same segment already loaded → seek in place. Reassigning an identical data:
     // URL can reset readyState to 0 in WKWebView and re-arm the metadata-defer
     // path (the audio never moves), so a same-segment re-seek must NOT touch src.
@@ -545,10 +551,13 @@
     cell?.scrollIntoView({ block: "nearest", inline: "nearest" });
   });
 
-  // Cancel any dangling rAF, stop the clip audio, and drop the thumb observer.
+  // Cancel any dangling rAF, stop the clip audio, drop the thumb observer, and
+  // invalidate any in-flight span hydration so a late onTurns can't fire into
+  // the unmounted component.
   $effect(() => () => {
     if (rafId != null) cancelAnimationFrame(rafId);
     audioEl?.pause();
+    audioLoader.reset();
     thumbObserver?.disconnect();
   });
 </script>

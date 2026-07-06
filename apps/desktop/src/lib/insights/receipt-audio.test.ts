@@ -6,6 +6,7 @@ import {
   audioFooterLeft,
   buildTurnViews,
   captionFromTurns,
+  clipStartOffsetSec,
   frameIndexForMs,
   isFallbackSpeaker,
   partitionEvidence,
@@ -227,6 +228,47 @@ describe("buildTurnViews", () => {
     expect(views.some((v) => v.speaker === "Speaker 4")).toBe(false); // no phantom
     expect(views.find((v) => v.key === "20:3").text).toBe("back to me"); // words kept
     expect(views.find((v) => v.key === "20:2").text).toBe("hi there");
+  });
+
+  it("drops a segment whose startedAt won't parse instead of leaking NaN wall-clock turns", () => {
+    // Date.parse returns NaN (never throws) on a bad timestamp; a NaN startMs would
+    // survive the wordless filter (it has text) and, because `NaN > ms` is always
+    // false, hijack activeKeyAt's playhead scan. Mirror loadStrip's finite guard.
+    const bad = { id: 99, sourceKind: "microphone", startedAt: "not-a-date", endedAt: "also-bad" };
+    const views = buildTurnViews(
+      [
+        {
+          segment: bad,
+          turns: [{ id: 1, personId: null, speakerLabel: "Speaker 1", startMs: 0, endMs: 1000, transcriptText: "ghost" }],
+        },
+      ],
+      [],
+      [],
+    );
+    expect(views).toEqual([]); // NaN-timed turn dropped, never surfaced
+  });
+});
+
+describe("clipStartOffsetSec — Play/Space never seeks a clip past its segment", () => {
+  const turn = { segmentStartMs: 10_000, endMs: 13_000 }; // a 3s turn starting 10s in
+
+  it("returns the in-segment offset when the head sits inside the turn window", () => {
+    expect(clipStartOffsetSec(turn, 11_500)).toBeCloseTo(1.5); // 1.5s into the segment
+    expect(clipStartOffsetSec(turn, 10_000)).toBe(0); // exactly the segment head
+    expect(clipStartOffsetSec(turn, 13_000)).toBeCloseTo(3); // the turn's end
+  });
+
+  it("returns 0 for a head outside the turn — the different-segment poster frame case", () => {
+    // The frame playhead sitting in a LATER segment. The old inline math
+    // (550_000 - 10_000)/1000 = 540s → scheduleClipSeek clamps to the clip's
+    // duration → the clip plays AT its end → `ended` → auto-advance SKIPS the turn.
+    expect(clipStartOffsetSec(turn, 550_000)).toBe(0);
+    expect(clipStartOffsetSec(turn, 5_000)).toBe(0); // before the segment
+  });
+
+  it("returns 0 for a null/absent head (plain Play with no scrub target)", () => {
+    expect(clipStartOffsetSec(turn, null)).toBe(0);
+    expect(clipStartOffsetSec(turn, undefined)).toBe(0);
   });
 });
 

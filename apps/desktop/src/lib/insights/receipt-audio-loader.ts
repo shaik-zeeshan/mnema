@@ -108,6 +108,10 @@ export class ReceiptAudioLoader {
     const segments = await this.#invoke<AudioSegmentDto[]>("list_audio_segments", {
       request: range,
     }).catch(() => [] as AudioSegmentDto[]);
+    // Shed the per-segment turn fan-out for a superseded generation: without this
+    // a stale run still opens up to TURN_HYDRATION_CONCURRENCY list_speaker_turns
+    // IPC against the shared 4-connection reader pool before discarding them.
+    if (gen !== this.#gen) return;
     const hydrated = await mapBounded(segments, TURN_HYDRATION_CONCURRENCY, async (segment) => {
       const turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
         request: { audioSegmentId: segment.id },
