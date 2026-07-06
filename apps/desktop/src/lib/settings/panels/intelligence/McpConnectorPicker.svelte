@@ -32,7 +32,7 @@
   import McpOAuthConnect from "./McpOAuthConnect.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import { MCP_PRESETS, type McpPreset } from "$lib/settings/state/mcp-presets";
-  import { deriveMcpOAuthStage } from "$lib/settings/state/mcp-oauth-stage";
+  import { deriveMcpOAuthStage, showMcpOAuthConnectPanel } from "$lib/settings/state/mcp-oauth-stage";
   import { newMcpServerId } from "$lib/settings/state/ai-providers";
   import type { McpServerConfig } from "$lib/types";
 
@@ -258,8 +258,17 @@
     connectId ? (rec.draftMcpServers.find((s) => s.id === connectId) ?? null) : null,
   );
   // Show the OAuth connect panel when: opened for a row connector, OR step-2 for
-  // a hosted-OAuth preset (Custom-OAuth still rides the form + submit()).
-  const oauthConnect = $derived(!!connectServer || (step === "connect" && oauthPreset));
+  // a hosted-OAuth preset (Custom-OAuth still rides the form + submit()). Edit/
+  // Configure of an existing oauth connector is EXCLUDED — it has no connect id,
+  // so its Connect would re-add a duplicate; it routes to the edit form instead.
+  const oauthConnect = $derived(
+    showMcpOAuthConnectPanel({
+      hasConnectServer: !!connectServer,
+      step,
+      isOAuthPreset: oauthPreset,
+      edit,
+    }),
+  );
   // The id whose live state drives the stage (row id, or the just-added preset id).
   const oauthConnectId = $derived(connectId ?? addedOauthId);
   const oauthState = $derived(oauthConnectId ? mcpOAuthStateById[oauthConnectId] : undefined);

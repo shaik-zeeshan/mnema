@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use capture_types::{McpAuthMode, McpServerConfig, McpTransport};
-use rmcp::transport::auth::{AuthorizationManager, StoredCredentials};
+use rmcp::transport::auth::{AuthorizationManager, AuthorizationMetadata, StoredCredentials};
 use tauri::{Emitter, Manager};
 
 use super::manager::{lock_recover, Inner, McpManager};
@@ -69,6 +69,71 @@ fn evict_expired<V>(
     ttl: Duration,
 ) {
     map.retain(|_state, entry| now.saturating_duration_since(created_at(entry)) <= ttl);
+}
+
+/// Park a fresh in-flight flow under its CSRF `state`: evict expired flows, then
+/// SUPERSEDE any prior flow for the same connector before inserting. A second
+/// Connect for one connector must not leave a claimable stale entry — otherwise
+/// the abandoned earlier flow keeps [`oauth_statuses`] pinned to *Authorizing*
+/// even after the newer flow completes and the connector is Authorized.
+fn park_pending(map: &mut HashMap<String, PendingOAuth>, state: String, pending: PendingOAuth) {
+    evict_expired(map, |entry| entry.created_at, Instant::now(), OAUTH_PENDING_TTL);
+    map.retain(|_state, entry| entry.connector_id != pending.connector_id);
+    map.insert(state, pending);
+}
+
+/// Whether `connector_id` has a LIVE in-flight OAuth flow (a non-expired pending
+/// entry). The status read is not a sweep site, so a Connect the user abandoned in
+/// the browser lingers past its TTL until the next `begin_oauth`/disconnect — it
+/// must NOT read as *Authorizing* forever, so the TTL is applied here at read time.
+fn connector_is_authorizing(
+    map: &HashMap<String, PendingOAuth>,
+    connector_id: &str,
+    now: Instant,
+    ttl: Duration,
+) -> bool {
+    map.values().any(|entry| {
+        entry.connector_id == connector_id
+            && now.saturating_duration_since(entry.created_at) <= ttl
+    })
+}
+
+/// Every OAuth endpoint the flow will actually reach — DISCOVERED at runtime from
+/// the (possibly attacker-influenced) server metadata, not just the user-typed base
+/// URL — must ride TLS-or-loopback, the same guard the base URL got. rmcp enforces
+/// https on the token endpoint only for the client-credentials flow (auth.rs:2440),
+/// never on the authorization/token/registration endpoints of the DCR auth-code
+/// flow this uses, so a hostile or misconfigured discovery document could otherwise
+/// steer the code exchange + the access/refresh-token response onto cleartext http,
+/// readable by any on-path attacker. No endpoint URL is echoed in the error.
+///
+/// `pub(super)` so the transport's OAuth connect path can gate the SAME discovered
+/// endpoints before its turn-time token refresh rides them.
+pub(super) fn discovered_endpoints_secure(md: &AuthorizationMetadata) -> Result<(), String> {
+    let mut endpoints = vec![
+        ("authorization", md.authorization_endpoint.as_str()),
+        ("token", md.token_endpoint.as_str()),
+    ];
+    if let Some(registration) = md.registration_endpoint.as_deref() {
+        endpoints.push(("registration", registration));
+    }
+    if let Some(revocation) = md
+        .additional_fields
+        .get("revocation_endpoint")
+        .and_then(serde_json::Value::as_str)
+    {
+        endpoints.push(("revocation", revocation));
+    }
+    for (name, endpoint) in endpoints {
+        if !secret_may_ride_url(endpoint) {
+            return Err(format!(
+                "the provider advertised a non-HTTPS (and non-loopback) {name} endpoint; \
+                 refusing to run the OAuth flow in cleartext — the exchange would leak the \
+                 token over http"
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl McpManager {
@@ -131,6 +196,16 @@ impl McpManager {
             format!("\"{}\" did not advertise OAuth support: {error}", cfg.label)
         })?;
 
+        // The base URL passed the TLS-or-loopback guard, but discovery is server-
+        // supplied: the authorization/token/registration/revocation endpoints in
+        // `md` can point ELSEWHERE, and rmcp only enforces https on the token
+        // endpoint for the client-credentials flow (auth.rs:2440) — never on the
+        // DCR auth-code endpoints this flow uses. Re-run the same guard on every
+        // discovered endpoint so a hostile/misconfigured discovery doc cannot steer
+        // the code exchange + token response onto cleartext http.
+        discovered_endpoints_secure(&md)
+            .map_err(|reason| format!("oauth connector \"{}\": {reason}", cfg.label))?;
+
         // Read everything off `&md` BEFORE `set_metadata` moves it.
         let scopes: Vec<String> = md.scopes_supported.clone().unwrap_or_default();
         let has_registration = md.registration_endpoint.is_some();
@@ -184,13 +259,8 @@ impl McpManager {
 
         {
             let mut pending = lock_recover(&self.inner().oauth_pending);
-            evict_expired(
+            park_pending(
                 &mut pending,
-                |entry| entry.created_at,
-                Instant::now(),
-                OAUTH_PENDING_TTL,
-            );
-            pending.insert(
                 state,
                 PendingOAuth {
                     manager: Arc::new(manager),
@@ -336,6 +406,18 @@ async fn drop_oauth_local(inner: &Inner, id: &str) {
 /// a gate on local teardown (the caller drops the token locally regardless). No
 /// token material is logged.
 async fn best_effort_revoke(cfg: &McpServerConfig) {
+    // Revocation is a courtesy that must NEVER stall Disconnect's local
+    // teardown (the caller drops the token right after). rmcp's own per-request
+    // timeout is 30 s and discovery can issue several probes, so cap the WHOLE
+    // best-effort revoke here — discovery included, not just the final POST — or
+    // a server that accepts then stalls would block the token drop for tens of
+    // seconds.
+    let _ = tokio::time::timeout(Duration::from_secs(5), revoke_inner(cfg)).await;
+}
+
+/// The network half of [`best_effort_revoke`], time-bounded by its caller so a
+/// stalling discovery/POST can never delay local teardown.
+async fn revoke_inner(cfg: &McpServerConfig) {
     let Some(url) = cfg
         .url
         .as_deref()
@@ -481,6 +563,22 @@ pub struct McpOAuthStatus {
     pub state: McpOAuthState,
 }
 
+/// Whether this connector's keychain slot holds a *loadable* OAuth Token Set —
+/// the real "authorized?" signal. Deliberately NOT `has_mcp_server_secret` (which
+/// only answers "are ANY bytes present?"): the slot is polymorphic and, after a
+/// Bearer↔OAuth mode flip that never disconnected, may still hold a stale plain
+/// bearer secret. A bearer string is not an OAuth grant, so it must not read as
+/// OAuth-authorized — validate the payload actually parses as a Token Set.
+// ponytail: parses to distinguish a Token Set from an opaque bearer string; a
+// bearer secret that is itself StoredCredentials-shaped JSON is not a real case
+// (accepted ceiling).
+pub(super) fn oauth_token_present(id: &str) -> bool {
+    matches!(
+        app_infra::load_mcp_server_secret(id),
+        Ok(Some(json)) if serde_json::from_str::<StoredCredentials>(&json).is_ok()
+    )
+}
+
 impl McpManager {
     /// One [`McpOAuthStatus`] per configured **OAuth** connector (Http + OAuth,
     /// non-empty id). Bearer connectors are skipped (they use the has-secret
@@ -500,10 +598,13 @@ impl McpManager {
                 // `warm` already does at L402 — a handful per Settings open. Move
                 // to spawn_blocking only if OAuth connectors ever number enough
                 // that a few keychain hits stall the command.
-                let has_token = app_infra::has_mcp_server_secret(&cfg.id).unwrap_or(false);
-                let is_authorizing = lock_recover(&self.inner().oauth_pending)
-                    .values()
-                    .any(|pending| pending.connector_id == cfg.id);
+                let has_token = oauth_token_present(&cfg.id);
+                let is_authorizing = connector_is_authorizing(
+                    &lock_recover(&self.inner().oauth_pending),
+                    &cfg.id,
+                    Instant::now(),
+                    OAUTH_PENDING_TTL,
+                );
                 let needs_reconnect =
                     lock_recover(&self.inner().oauth_reconnect_needed).contains(&cfg.id);
                 McpOAuthStatus {
@@ -528,6 +629,53 @@ pub async fn mcp_oauth_statuses(app_handle: tauri::AppHandle) -> Result<Vec<McpO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A connector flipped Bearer->OAuth without disconnecting leaves a PLAIN bearer
+    /// secret in the shared, polymorphic keychain slot. That opaque string is NOT an
+    /// OAuth Token Set, so the connector's `has_token` signal (the input to
+    /// `derive_oauth_state`) must read false -> *Needs authorization*, never a false
+    /// *Authorized* -- else Settings paints a green "authorized" badge for a connector
+    /// whose OAuth connect fails to parse the slot on every turn. A real Token Set
+    /// (even client_id-only) still reads authorized.
+    #[test]
+    fn a_stale_bearer_secret_never_reads_as_oauth_authorized() {
+        let dir = fixture_dir("mnema-mcp-oauth-flip");
+        std::env::set_var("MNEMA_MCP_SERVER_SECRET_DIR", &dir);
+
+        let id = "flip-bearer-to-oauth";
+        // What the bearer path wrote: an opaque `Authorization: Bearer` token --
+        // not JSON, not a StoredCredentials Token Set.
+        app_infra::store_mcp_server_secret(id, "lin_bearer_secret_abc")
+            .expect("store bearer secret");
+        assert!(
+            app_infra::has_mcp_server_secret(id).expect("has"),
+            "bytes are present in the polymorphic slot"
+        );
+
+        // The signal `oauth_statuses` feeds `derive_oauth_state` must reject it.
+        let has_token = oauth_token_present(id);
+        assert!(!has_token, "a plain bearer secret is not an OAuth Token Set");
+        assert_eq!(
+            derive_oauth_state(has_token, false, false),
+            McpOAuthState::None,
+            "a stale bearer secret must read as Needs authorization, not Authorized"
+        );
+
+        // A real Token Set (client_id-only is enough to parse) still reads authorized.
+        let token_set = serde_json::to_string(&StoredCredentials::new(
+            "client-xyz".to_string(),
+            None,
+            Vec::new(),
+            None,
+        ))
+        .expect("serialize token set");
+        app_infra::store_mcp_server_secret(id, &token_set).expect("store token set");
+        assert!(oauth_token_present(id), "a real Token Set must read as authorized");
+
+        let _ = app_infra::delete_mcp_server_secret(id);
+        std::env::remove_var("MNEMA_MCP_SERVER_SECRET_DIR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The pending-OAuth map: two flows key off distinct CSRF `state` strings with
     /// no cross-talk (each is looked up + removed by its own key), and the TTL
@@ -592,6 +740,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Disconnect's best-effort revoke must NEVER stall local teardown. The comment
+    /// promises a ~5 s cap, but only the final POST is bounded — a server that
+    /// ACCEPTS the connection and then stalls during OAuth *discovery* (before the
+    /// POST) hangs `best_effort_revoke` on rmcp's 30 s per-request timeout, and
+    /// `disconnect_oauth` awaits the revoke BEFORE dropping the local token. A dead
+    /// or hostile endpoint must not delay dropping the local token by tens of
+    /// seconds — the revoke itself must be time-bounded.
+    #[tokio::test]
+    async fn best_effort_revoke_is_bounded_against_a_stalling_server() {
+        use std::io::Read;
+        // A loopback TCP server that ACCEPTS then stalls forever (never writes an
+        // HTTP response), so rmcp's discovery GET hangs until its own 30 s timeout.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut s) => {
+                        // Drain the request so the client's write completes, then
+                        // hold the socket open without ever replying.
+                        let mut buf = [0u8; 64];
+                        let _ = s.read(&mut buf);
+                        held.push(s);
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let cfg = McpServerConfig {
+            id: "oauth-revoke-stall".to_string(),
+            label: "Stall".to_string(),
+            enabled: false,
+            transport: McpTransport::Http,
+            auth_mode: McpAuthMode::OAuth,
+            command: None,
+            args: Vec::new(),
+            env: Vec::new(),
+            url: Some(format!("http://127.0.0.1:{port}/")),
+            secret_env_name: None,
+            enabled_tools: None,
+        };
+
+        let outcome =
+            tokio::time::timeout(Duration::from_secs(8), best_effort_revoke(&cfg)).await;
+        assert!(
+            outcome.is_ok(),
+            "best_effort_revoke stalled past 8 s against a hung discovery endpoint — a \
+             dead server must never block Disconnect's local teardown"
+        );
+    }
+
     /// The pure OAuth-state derivation (ADR 0051): the whole truth table plus the
     /// two precedence rules the Settings surface depends on — authorizing wins over
     /// a held token, and reconnect requires a held token (a stray flag with no
@@ -629,6 +830,145 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&status).unwrap(),
             serde_json::json!({ "id": "x", "state": "reconnect" })
+        );
+    }
+
+    /// Invariant #1 (ADR 0051): the TLS-or-loopback guard must cover the endpoints
+    /// DISCOVERED at runtime, not just the user-typed base URL. rmcp does not enforce
+    /// https on the DCR auth-code authorization/token/registration endpoints, so a
+    /// hostile discovery document that advertises a cleartext http token endpoint
+    /// would otherwise POST the authorization code + PKCE verifier and receive the
+    /// access/refresh tokens over http — readable by any on-path attacker. The flow
+    /// must refuse before opening the browser / exchanging the code.
+    #[test]
+    fn a_discovered_cleartext_endpoint_is_refused() {
+        fn md_with(
+            authz: &str,
+            token: &str,
+            reg: Option<&str>,
+            revoke: Option<&str>,
+        ) -> AuthorizationMetadata {
+            let mut md = AuthorizationMetadata::default();
+            md.authorization_endpoint = authz.to_string();
+            md.token_endpoint = token.to_string();
+            md.registration_endpoint = reg.map(str::to_string);
+            if let Some(revoke) = revoke {
+                md.additional_fields.insert(
+                    "revocation_endpoint".to_string(),
+                    serde_json::Value::String(revoke.to_string()),
+                );
+            }
+            md
+        }
+
+        // Cleartext token endpoint (where the code + PKCE verifier are exchanged and
+        // the tokens come back) must be refused even though base/authorize are TLS.
+        let hostile_token = md_with(
+            "https://auth.example.com/authorize",
+            "http://auth.example.com/token",
+            Some("https://auth.example.com/register"),
+            None,
+        );
+        assert!(
+            discovered_endpoints_secure(&hostile_token).is_err(),
+            "a cleartext discovered token endpoint must be refused"
+        );
+
+        // A cleartext registration endpoint (the DCR POST) is refused too.
+        let hostile_reg = md_with(
+            "https://auth.example.com/authorize",
+            "https://auth.example.com/token",
+            Some("http://auth.example.com/register"),
+            None,
+        );
+        assert!(discovered_endpoints_secure(&hostile_reg).is_err());
+
+        // A cleartext revocation endpoint (RFC 7009 carries the refresh token) too.
+        let hostile_revoke = md_with(
+            "https://auth.example.com/authorize",
+            "https://auth.example.com/token",
+            None,
+            Some("http://auth.example.com/revoke"),
+        );
+        assert!(discovered_endpoints_secure(&hostile_revoke).is_err());
+
+        // All-TLS metadata is accepted; a loopback auth server (never leaves the
+        // host) is allowed, matching `secret_may_ride_url`.
+        let clean = md_with(
+            "https://auth.example.com/authorize",
+            "https://auth.example.com/token",
+            Some("https://auth.example.com/register"),
+            Some("https://auth.example.com/revoke"),
+        );
+        assert!(discovered_endpoints_secure(&clean).is_ok());
+        let loopback = md_with(
+            "http://127.0.0.1:9000/authorize",
+            "http://127.0.0.1:9000/token",
+            None,
+            None,
+        );
+        assert!(discovered_endpoints_secure(&loopback).is_ok());
+    }
+
+    /// Build a real [`PendingOAuth`] for one connector at `created_at`.
+    /// `AuthorizationManager::new` is network-free (it only builds an HTTP client
+    /// and parses the base URL), so the pending-map rules are testable offline.
+    async fn pending(connector_id: &str, created_at: Instant) -> PendingOAuth {
+        let manager = AuthorizationManager::new("https://mcp.example.com/")
+            .await
+            .expect("AuthorizationManager::new is network-free");
+        PendingOAuth {
+            manager: Arc::new(manager),
+            connector_id: connector_id.to_string(),
+            created_at,
+        }
+    }
+
+    /// A second Connect for the SAME connector must SUPERSEDE the earlier flow: at
+    /// most one pending entry per connector survives. Otherwise the abandoned first
+    /// flow keeps `connector_is_authorizing` true even after the second flow is
+    /// claimed and the connector is Authorized — a stuck *Authorizing* spinner.
+    #[tokio::test]
+    async fn a_second_connect_supersedes_the_prior_same_connector_flow() {
+        let now = Instant::now();
+        let mut map: HashMap<String, PendingOAuth> = HashMap::new();
+
+        park_pending(&mut map, "state-a".to_string(), pending("gh", now).await);
+        park_pending(&mut map, "state-b".to_string(), pending("gh", now).await);
+
+        assert_eq!(
+            map.len(),
+            1,
+            "a second Connect for one connector must leave exactly one pending flow"
+        );
+        assert!(map.contains_key("state-b"), "the newest flow survives");
+        assert!(!map.contains_key("state-a"), "the superseded flow is gone");
+
+        // Claiming the surviving flow leaves NO stale same-connector entry, so the
+        // connector is no longer read as authorizing.
+        assert!(map.remove("state-b").is_some());
+        assert!(
+            !connector_is_authorizing(&map, "gh", now, OAUTH_PENDING_TTL),
+            "after the live flow is claimed, the connector must not read as Authorizing"
+        );
+    }
+
+    /// An abandoned Connect (never completed, never swept because no later
+    /// `begin_oauth` ran) must not read as *Authorizing* forever: once its TTL has
+    /// lapsed the status read stops counting it.
+    #[tokio::test]
+    async fn an_expired_abandoned_flow_no_longer_reads_as_authorizing() {
+        let base = Instant::now();
+        let mut map: HashMap<String, PendingOAuth> = HashMap::new();
+        map.insert("state-old".to_string(), pending("gh", base).await);
+
+        // Just inside the TTL: still authorizing.
+        assert!(connector_is_authorizing(&map, "gh", base, OAUTH_PENDING_TTL));
+        // Past the TTL (browser abandoned, no sweep ran): no longer authorizing.
+        let later = base + OAUTH_PENDING_TTL + Duration::from_millis(1);
+        assert!(
+            !connector_is_authorizing(&map, "gh", later, OAUTH_PENDING_TTL),
+            "an abandoned flow past its TTL must not pin the status to Authorizing"
         );
     }
 

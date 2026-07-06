@@ -356,7 +356,7 @@ impl McpManager {
                 // failure seam, not here, and only if dead-token status confuses.
                 if cfg.auth_mode == McpAuthMode::OAuth {
                     match &ready {
-                        Err(_) if app_infra::has_mcp_server_secret(&cfg.id).unwrap_or(false) => {
+                        Err(_) if super::oauth_flow::oauth_token_present(&cfg.id) => {
                             lock_recover(&manager.inner.oauth_reconnect_needed)
                                 .insert(cfg.id.clone());
                         }

@@ -43,3 +43,32 @@ export function deriveMcpOAuthStage({
   //   cancelled/denied (or the pending entry lapsed) → denied.
   return sawAuthorizing ? "denied" : "authorizing";
 }
+
+export interface McpOAuthPanelInput {
+  /** Row Connect/Reconnect of an EXISTING connector (a `connectId` resolved a draft). */
+  hasConnectServer: boolean;
+  /** Modal step. */
+  step: "catalog" | "connect";
+  /** The selected preset is a hosted http+oauth preset (the catalog-add path). */
+  isOAuthPreset: boolean;
+  /** Edit/Configure mode of an existing connector. */
+  edit: boolean;
+}
+
+// Whether to show the in-modal OAuth connect panel (McpOAuthConnect) instead of
+// the normal add/edit form. Two doors open it: a row Connect/Reconnect
+// (`hasConnectServer`), or step-2 of a catalog-added hosted-OAuth preset.
+//
+// Edit/Configure of an EXISTING oauth connector must NOT open the connect panel:
+// edit mode carries no connect id (`oauthConnectId` is null), so the panel's
+// Connect button would take the catalog-add branch and re-add a DUPLICATE
+// connector — Configure has to route to the edit form (URL + Remove) instead.
+export function showMcpOAuthConnectPanel({
+  hasConnectServer,
+  step,
+  isOAuthPreset,
+  edit,
+}: McpOAuthPanelInput): boolean {
+  if (hasConnectServer) return true;
+  return step === "connect" && isOAuthPreset && !edit;
+}

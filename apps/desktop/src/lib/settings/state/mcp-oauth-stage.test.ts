@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
-import { deriveMcpOAuthStage } from "./mcp-oauth-stage";
+import { deriveMcpOAuthStage, showMcpOAuthConnectPanel } from "./mcp-oauth-stage";
 
 const stage = (over) =>
   deriveMcpOAuthStage({
@@ -48,5 +48,35 @@ describe("mcp oauth connect stage", () => {
   it("retry resets attempt → back to idle", () => {
     // Retry clears attempted/sawAuthorizing even if a stale error lingers.
     expect(stage({ state: "none", attempted: false, hasError: true })).toBe("idle");
+  });
+});
+
+describe("mcp oauth connect-panel routing", () => {
+  const panel = (over) =>
+    showMcpOAuthConnectPanel({
+      hasConnectServer: false,
+      step: "connect",
+      isOAuthPreset: false,
+      edit: false,
+      ...over,
+    });
+
+  it("row Connect/Reconnect always shows the connect panel", () => {
+    expect(panel({ hasConnectServer: true })).toBe(true);
+  });
+
+  it("catalog-add of a hosted-OAuth preset shows the connect panel", () => {
+    expect(panel({ isOAuthPreset: true })).toBe(true);
+  });
+
+  it("Configure/edit of an existing OAuth connector shows the EDIT form, not the connect panel", () => {
+    // Regression: edit mode carries no connect id, so the connect panel's Connect
+    // button takes the catalog-add branch and re-adds a DUPLICATE connector.
+    expect(panel({ isOAuthPreset: true, edit: true })).toBe(false);
+  });
+
+  it("catalog grid / non-oauth preset never shows the connect panel", () => {
+    expect(panel({ step: "catalog", isOAuthPreset: true })).toBe(false);
+    expect(panel({ isOAuthPreset: false })).toBe(false);
   });
 });

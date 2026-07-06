@@ -204,6 +204,18 @@ async fn connect_http_oauth(cfg: &McpServerConfig, url: &str) -> Result<McpClien
         .map_err(|error| format!("failed to prepare OAuth for \"{}\": {error}", cfg.label))?;
     manager.set_credential_store(OAuthCredentialStore::new(cfg.id.clone()));
 
+    // Discovery is server-supplied and re-run every connect: the token/refresh
+    // endpoint can point ELSEWHERE than the (TLS-guarded) base URL, and rmcp does
+    // not enforce https on it for this flow. Pre-discover and gate every endpoint
+    // through the same guard BEFORE the refresh below rides it — pre-setting the
+    // metadata means `initialize_from_store` reuses it (no second round-trip).
+    let md = manager.discover_metadata().await.map_err(|error| {
+        format!("failed to load OAuth metadata for \"{}\": {error}", cfg.label)
+    })?;
+    super::oauth_flow::discovered_endpoints_secure(&md)
+        .map_err(|reason| format!("oauth connector \"{}\": {reason}", cfg.label))?;
+    manager.set_metadata(md);
+
     // Warm from the keychain-stored Token Set. `false` = nothing persisted → this
     // connector was never authorized (or was disconnected); do NOT start an
     // interactive authorize here — that's the Settings "Connect" button's job.
