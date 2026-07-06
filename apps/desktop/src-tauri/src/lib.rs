@@ -636,6 +636,7 @@ pub fn run() {
             user_context::commands::user_context_update_authored,
             user_context::commands::user_context_delete_authored,
             user_context::commands::wipe_user_context,
+            user_context::commands::user_context_stamp_local_offset,
             conversation::commands::list_conversations,
             conversation::commands::get_conversation,
             conversation::commands::search_conversations,

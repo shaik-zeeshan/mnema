@@ -41,6 +41,7 @@
     type GlobalShortcutId,
   } from "$lib/global-shortcuts";
   import { initKeyboardBindings } from "$lib/keyboard-bindings.svelte";
+  import { askAiClock } from "$lib/askAiClock";
   import {
     detectKeyboardPlatform,
     formatShortcut,
@@ -135,6 +136,22 @@
 
   $effect(() => {
     loadDeveloperOptions();
+  });
+
+  // Stamp the frontend's local UTC offset so the distillation worker can label
+  // Activity times in the user's local clock (the Rust `time` crate can't read
+  // the local offset soundly under Tauri — the frontend is the sound source,
+  // mirroring `askAiClock`). Once on start + on window focus (catches DST /
+  // travel). Fire-and-forget: a failed stamp must never break startup.
+  $effect(() => {
+    const stamp = () => {
+      void invoke("user_context_stamp_local_offset", {
+        offsetMinutes: askAiClock().utcOffsetMinutes,
+      }).catch(() => {});
+    };
+    stamp();
+    window.addEventListener("focus", stamp);
+    return () => window.removeEventListener("focus", stamp);
   });
 
   // Bootstrap shared capture state once for the whole app — the title bar
