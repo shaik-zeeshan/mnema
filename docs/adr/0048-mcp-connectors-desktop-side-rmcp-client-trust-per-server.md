@@ -115,11 +115,13 @@ the curation modal both require. So the engine's own MCP path is a dead end for 
 - **`crates/ai-runtime` is unchanged.** The reasoning engine stays
   provider-agnostic and MCP-ignorant (0033); MCP tools arrive as Tauri-layer
   callbacks alongside the broker tools.
-- **Deferred, documented:** OAuth for HTTP servers; health checks / auto-restart
-  / backoff / a live per-server status indicator; `tools/list_changed`
-  reactivity; disk-cached tool lists. A dead server surfaces as a readable tool
-  error the model relays; the remedy is the `enabled` toggle. Add the operational
-  polish when real users are confused by dead-server behavior, not before.
+- **Deferred, documented:** ~~OAuth for HTTP servers~~ (now shipped as an auth
+  mode on the `Http` transport — [ADR 0051](0051-mcp-oauth-is-an-auth-mode-on-the-http-transport-dcr-only-over-the-deep-link.md));
+  health checks / auto-restart / backoff / a live per-server status indicator;
+  `tools/list_changed` reactivity; disk-cached tool lists. A dead server surfaces
+  as a readable tool error the model relays; the remedy is the `enabled` toggle.
+  Add the operational polish when real users are confused by dead-server
+  behavior, not before.
 - **Token cost is the control surface.** Each MCP tool costs ≈ 200–400 prompt
   tokens per turn; the 32-cap plus the curation modal is how the user bounds it.
 - **macOS-first.** stdio spawn/kill is cross-platform via `rmcp`/tokio, but
