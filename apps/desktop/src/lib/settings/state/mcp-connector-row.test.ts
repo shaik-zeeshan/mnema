@@ -35,6 +35,19 @@ describe("bearer rows", () => {
     expect(row({ authMode: "bearer", hasSecret: true, enabled: false }).dimmed).toBe(true);
     expect(row({ authMode: "bearer", hasSecret: true, enabled: true }).dimmed).toBe(false);
   });
+
+  it("ignores a stray oauthState — no OAuth badge or Disconnect leaks onto a bearer/stdio row", () => {
+    // A bearer id that somehow lands in the oauth-state map must not surface
+    // an "authorized" badge or OAuth actions — the OAuth lifecycle applies to
+    // authMode "oauth" rows only.
+    const bearer = row({ authMode: "bearer", hasSecret: true, oauthState: "authorized" });
+    expect(bearer.badge).toBe("secret");
+    expect(bearer.actions).toEqual({ connect: false, reconnect: false, disconnect: false, configure: true });
+
+    const stdio = row({ authMode: undefined, hasSecret: true, oauthState: "authorized" });
+    expect(stdio.badge).toBe("secret");
+    expect(stdio.actions.disconnect).toBe(false);
+  });
 });
 
 describe("oauth rows", () => {

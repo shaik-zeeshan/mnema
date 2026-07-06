@@ -355,17 +355,18 @@ impl McpManager {
                 // time. A continuous health probe would be added in the manager's
                 // failure seam, not here, and only if dead-token status confuses.
                 if cfg.auth_mode == McpAuthMode::OAuth {
-                    match &ready {
-                        Err(_) if super::oauth_flow::oauth_token_present(&cfg.id) => {
+                    use super::oauth_flow::{oauth_token_present, reconnect_flag_update, ReconnectFlag};
+                    // Keychain read only on the Err path — Ok clears regardless.
+                    let has_token = ready.is_err() && oauth_token_present(&cfg.id);
+                    match reconnect_flag_update(ready.is_ok(), has_token) {
+                        ReconnectFlag::Set => {
                             lock_recover(&manager.inner.oauth_reconnect_needed)
                                 .insert(cfg.id.clone());
                         }
-                        Ok(_) => {
+                        ReconnectFlag::Clear => {
                             lock_recover(&manager.inner.oauth_reconnect_needed).remove(&cfg.id);
                         }
-                        // An error with no stored token is *Needs authorization*, not
-                        // *Needs reconnect* — don't flag it.
-                        Err(_) => {}
+                        ReconnectFlag::Leave => {}
                     }
                 }
                 if let Err(error) = ready {
