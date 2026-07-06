@@ -11,7 +11,6 @@ import {
   partitionEvidence,
   receiptViewState,
   scheduleClipSeek,
-  sourceKindLabel,
   sourceKindReadable,
   speakerDisplay,
   turnSpeakerRoster,
@@ -66,10 +65,8 @@ describe("receiptViewState", () => {
   });
 });
 
-describe("source kind labels", () => {
-  it("maps microphone → You and system_audio → Other side", () => {
-    expect(sourceKindLabel("microphone")).toBe("You");
-    expect(sourceKindLabel("system_audio")).toBe("Other side");
+describe("sourceKindReadable", () => {
+  it("names the capture input (the 'via …' subtitle), not the speaker", () => {
     expect(sourceKindReadable("microphone")).toBe("microphone");
     expect(sourceKindReadable("system_audio")).toBe("system audio");
   });
@@ -208,18 +205,20 @@ describe("buildTurnViews", () => {
     expect(sys.isHeadline).toBe(true); // 20 is the headline ref
   });
 
-  it("resolves speaker live: mic → You, personId → profile name, else Speaker N", () => {
+  it("resolves speaker by diarized voice, not source kind: mic turns are Speaker N too", () => {
     const views = buildTurnViews(segments, citedRefs, profiles);
     const byKey = Object.fromEntries(views.map((v) => [v.key, v]));
-    expect(byKey["10:1"].speaker).toBe("You");
-    expect(byKey["10:1"].isFallback).toBe(false);
+    // The mic turn is NOT forced to "You" — the mic captures the room, so it's
+    // attributed by its diarized cluster like any other voice (name in Timeline).
+    expect(byKey["10:1"].speaker).toBe("Speaker 1");
+    expect(byKey["10:1"].isFallback).toBe(true);
     expect(byKey["20:2"].speaker).toBe("Bob"); // personId 7 resolves live
     expect(byKey["20:3"].speaker).toBe("Speaker 3"); // unnamed fallback
     expect(byKey["20:3"].isFallback).toBe(true);
-    // colors: You pinned, Bob + Speaker 3 get distinct palette entries
-    expect(byKey["10:1"].colorVar).toBe("--cat-communication");
-    expect(byKey["20:2"].colorVar).toBe("--cat-meetings");
-    expect(byKey["20:3"].colorVar).toBe("--cat-research");
+    // colors cycle the palette in first-appearance order (no "You" pin in play)
+    expect(byKey["10:1"].colorVar).toBe("--cat-meetings");
+    expect(byKey["20:2"].colorVar).toBe("--cat-research");
+    expect(byKey["20:3"].colorVar).toBe("--cat-entertainment");
   });
 
   it("drops a wordless turn so an over-cluster never adds a phantom speaker", () => {

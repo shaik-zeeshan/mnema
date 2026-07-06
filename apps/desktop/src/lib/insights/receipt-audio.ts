@@ -62,10 +62,9 @@ export function receiptViewState(
   return "expired";
 }
 
-/** microphone ≈ the user, system_audio ≈ whoever they were with. */
-export function sourceKindLabel(sourceKind: AudioSegmentSourceKind): "You" | "Other side" {
-  return sourceKind === "microphone" ? "You" : "Other side";
-}
+/** The capture input a segment came through — shown as the "via …" subtitle.
+ *  NOT a speaker label: the mic captures the whole room, so it never implies
+ *  "You". Speaker attribution is by diarized voice — see {@link buildTurnViews}. */
 export function sourceKindReadable(sourceKind: AudioSegmentSourceKind): string {
   return sourceKind === "microphone" ? "microphone" : "system audio";
 }
@@ -159,7 +158,7 @@ export interface TurnView {
   segmentStartMs: number; // absolute epoch = Date.parse(seg.startedAt); clocks clip frames
   startMs: number; // absolute epoch = Date.parse(seg.startedAt) + turn.startMs
   endMs: number; // absolute epoch = Date.parse(seg.startedAt) + turn.endMs
-  speaker: string; // "You" for mic, else speakerDisplay(turn, profiles) — live-resolved
+  speaker: string; // live-resolved diarized voice: profile name or "Speaker N" (never source-kind derived)
   isFallback: boolean; // the unnamed "Speaker N" form
   colorVar: string; // a CSS custom-property NAME, e.g. "--cat-communication"
   sourceKind: AudioSegmentSourceKind | null;
@@ -208,8 +207,10 @@ export function assignSpeakerColors(orderedNames: string[]): Map<string, string>
 /**
  * Build the ordered turn view model: flatten every turn across `segments`,
  * lift each to absolute epoch (segment start + in-segment offset), resolve its
- * speaker (mic→"You" else live `speakerDisplay`), mark cited/headline by segment
- * id, and color by first-appearance order. Ascending by `startMs` (tie-break
+ * speaker live via `speakerDisplay` (diarized voice → profile name or
+ * `Speaker N`) — never source-kind derived, since the mic captures the whole
+ * room, not just the owner — mark cited/headline by segment id, and color by
+ * first-appearance order. Ascending by `startMs` (tie-break
  * `turnId`). Never throws. Wordless turns (no transcript text) are dropped —
  * matching Timeline — so a diarizer that over-clusters one voice into a real
  * cluster + a silent one never surfaces the silent one as a phantom speaker.
@@ -225,9 +226,8 @@ export function buildTurnViews(
   const rows = segments
     .flatMap(({ segment, turns }) => {
       const segStart = Date.parse(segment.startedAt);
-      const isMic = segment.sourceKind === "microphone";
       return turns.map((turn) => {
-        const speaker = isMic ? "You" : speakerDisplay(turn, profiles);
+        const speaker = speakerDisplay(turn, profiles);
         return {
           key: `${segment.id}:${turn.id}`,
           turnId: turn.id,
