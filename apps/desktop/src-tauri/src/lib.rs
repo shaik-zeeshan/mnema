@@ -8,6 +8,7 @@ mod cli_access;
 mod conversation;
 mod general_app_log;
 mod keyboard_bindings;
+mod licensing;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_budget;
@@ -394,6 +395,7 @@ pub fn run() {
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
+        .manage(licensing::LicenseGate(Mutex::new(None)))
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
@@ -474,6 +476,9 @@ pub fn run() {
             app_updates::set_app_update_channel,
             app_updates::install_app_update,
             app_updates::restart_after_app_update,
+            licensing::get_license_status,
+            licensing::start_trial,
+            licensing::activate_license,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
