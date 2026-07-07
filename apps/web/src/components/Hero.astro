@@ -17,17 +17,26 @@ const lightScreenshot = await getImage({
 ---
 
 <section class="hero">
+  <div class="hero-frags" aria-hidden="true">
+    <span class="frag frag-1">09:41:07 · figma</span>
+    <span class="frag frag-2">14:22 · terminal · zsh</span>
+    <span class="frag frag-3">seg 0412 · ocr ok</span>
+    <span class="frag frag-4">11:03:56 · safari</span>
+    <span class="frag frag-5">mic · 48kHz</span>
+    <span class="frag frag-6">16:48 · slack · #design</span>
+  </div>
+
   <div class="hero-inner">
-    <p class="kicker">// total recall · fully private</p>
-    <h1 class="headline">
+    <p class="kicker" data-reveal>// total recall · fully private</p>
+    <h1 class="headline" data-reveal style="--reveal-delay: 0.08s">
       Perfect memory for everything you've seen, heard, and done.
     </h1>
-    <p class="subhead">
-      Mnema quietly records your screen, audio, and activity — then lets you
+    <p class="subhead" data-reveal style="--reveal-delay: 0.16s">
+      Mnema quietly records your screen, audio, and activity, then lets you
       search it, scrub back to any moment, and ask an AI about your own past.
       All of it stays on your Mac.
     </p>
-    <div class="hero-actions">
+    <div class="hero-actions" data-reveal style="--reveal-delay: 0.24s">
       <a href={DOWNLOAD_URL} class="btn-primary" data-latest-download-link>
         Download for {PLATFORM_LABEL.split(" · ")[0]}
         <span class="btn-platform">{PLATFORM_LABEL.split(" · ")[1]}</span>
@@ -40,7 +49,16 @@ const lightScreenshot = await getImage({
 
   <div class="hero-showcase">
     <div class="showcase-glow" aria-hidden="true"></div>
-    <div class="showcase-frame">
+    <div class="showcase-shell">
+      <p class="showcase-bar">
+        <span class="bar-group">
+          <span class="showcase-dot" aria-hidden="true"></span>
+          <span class="bar-rec">rec</span>
+          <span class="bar-sep" aria-hidden="true">·</span>
+          screen · audio · activity
+        </span>
+        <span class="bar-group bar-right">local · 0 bytes leave this Mac</span>
+      </p>
       <picture
         class="showcase-picture"
         data-dark-src={darkScreenshot.src}
@@ -57,10 +75,6 @@ const lightScreenshot = await getImage({
         />
       </picture>
     </div>
-    <p class="showcase-status">
-      <span class="showcase-dot" aria-hidden="true"></span>
-      Capturing · on-device
-    </p>
   </div>
 </section>
 
@@ -88,20 +102,48 @@ const lightScreenshot = await getImage({
 
 <style>
   .hero {
-    padding: calc(64px + var(--space-xl)) var(--space-lg) var(--space-lg);
+    position: relative;
+    padding: calc(64px + var(--space-2xl)) var(--space-lg) var(--space-lg);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--space-xl);
+    overflow: hidden;
   }
 
+  /* Ambient mono metadata fragments: memory, hinted at, never shouting. */
+  .hero-frags {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    user-select: none;
+  }
+
+  .frag {
+    position: absolute;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    opacity: 0.22;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  .frag-1 { top: 22%; left: 8%; }
+  .frag-2 { top: 38%; left: 4%; opacity: 0.14; }
+  .frag-3 { top: 55%; left: 10%; opacity: 0.18; }
+  .frag-4 { top: 24%; right: 7%; }
+  .frag-5 { top: 42%; right: 4%; opacity: 0.14; }
+  .frag-6 { top: 58%; right: 9%; opacity: 0.18; }
+
   .hero-inner {
-    max-width: 36rem;
+    max-width: 46rem;
     text-align: center;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--space-sm);
+    position: relative;
   }
 
   .kicker {
@@ -112,15 +154,18 @@ const lightScreenshot = await getImage({
   }
 
   .headline {
-    font-size: var(--text-3xl);
+    font-size: var(--text-display);
+    line-height: 1.05;
+    letter-spacing: -0.03em;
     color: var(--fg);
     max-width: 18ch;
+    text-wrap: balance;
   }
 
   .subhead {
-    font-size: var(--text-base);
+    font-size: var(--text-lg);
     color: var(--fg-muted);
-    max-width: 42ch;
+    max-width: 48ch;
     line-height: 1.6;
     margin-top: var(--space-xs);
   }
@@ -143,18 +188,20 @@ const lightScreenshot = await getImage({
     font-weight: 500;
     color: var(--bg);
     background: var(--accent);
-    padding: 0.6rem 1.25rem;
+    padding: 0.7rem 1.4rem;
     border-radius: var(--radius-md);
     text-decoration: none;
     letter-spacing: 0.02em;
     transition: box-shadow 0.3s var(--ease-out-quart),
-      opacity 0.2s var(--ease-out-quart);
+      opacity 0.2s var(--ease-out-quart),
+      transform 0.25s var(--ease-out-quart);
   }
 
   .btn-primary:hover {
     text-decoration: none;
-    box-shadow: 0 0 24px var(--accent-glow);
+    box-shadow: 0 0 28px var(--accent-glow);
     opacity: 0.92;
+    transform: translateY(-1px);
   }
 
   .btn-platform {
@@ -166,26 +213,29 @@ const lightScreenshot = await getImage({
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--fg-muted);
-    padding: 0.6rem 1rem;
+    padding: 0.7rem 1.1rem;
     border: 1px solid var(--border-strong);
     border-radius: var(--radius-md);
     text-decoration: none;
     letter-spacing: 0.02em;
     transition: color 0.2s var(--ease-out-quart),
-      border-color 0.2s var(--ease-out-quart);
+      border-color 0.2s var(--ease-out-quart),
+      transform 0.25s var(--ease-out-quart);
   }
 
   .btn-secondary:hover {
     color: var(--fg);
     border-color: var(--fg-muted);
     text-decoration: none;
+    transform: translateY(-1px);
   }
 
   .hero-showcase {
     position: relative;
     width: 100%;
-    max-width: 56rem;
+    max-width: var(--container-wide);
     margin: 0 auto;
+    perspective: 1400px;
   }
 
   .showcase-glow {
@@ -193,48 +243,73 @@ const lightScreenshot = await getImage({
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    width: 70%;
-    height: 70%;
+    width: 85%;
+    height: 80%;
     background: radial-gradient(
       ellipse,
       var(--accent-glow) 0%,
-      transparent 70%
+      transparent 68%
     );
-    filter: blur(60px);
+    filter: blur(72px);
     pointer-events: none;
   }
 
-  .showcase-frame {
-    display: grid;
+  .showcase-shell {
+    position: relative;
     border-radius: var(--radius-lg);
     overflow: hidden;
     border: 1px solid var(--border-strong);
-    box-shadow: 0 8px 48px rgba(0, 0, 0, 0.25),
+    background: var(--surface);
+    box-shadow: 0 12px 64px rgba(0, 0, 0, 0.28),
       0 2px 12px rgba(0, 0, 0, 0.08);
     margin: 0 var(--space-lg);
+    animation: showcase-settle 1.1s var(--ease-out-expo) 0.15s both;
   }
 
-  .showcase-picture {
-    display: block;
-    grid-area: 1 / 1;
+  @keyframes showcase-settle {
+    from {
+      opacity: 0;
+      transform: rotateX(7deg) translateY(28px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: rotateX(0deg) translateY(0) scale(1);
+    }
   }
 
-  .showcase-img {
-    width: 100%;
-    height: auto;
-    display: block;
-  }
-
-  .showcase-status {
+  /* Terminal-style status strip: real app chrome, machine voice. */
+  .showcase-bar {
     display: flex;
     align-items: center;
-    justify-content: center;
-    gap: 0.45rem;
-    margin: var(--space-sm) var(--space-lg) 0;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--border);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--fg-muted);
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
+    background: color-mix(in srgb, var(--bg) 60%, var(--surface));
+  }
+
+  .bar-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+  }
+
+  .bar-rec {
+    color: var(--accent);
+  }
+
+  .bar-sep {
+    opacity: 0.5;
+  }
+
+  .bar-right {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .showcase-dot {
@@ -244,6 +319,16 @@ const lightScreenshot = await getImage({
     background: var(--accent);
     flex-shrink: 0;
     animation: hero-pulse 2s ease-in-out infinite;
+  }
+
+  .showcase-picture {
+    display: block;
+  }
+
+  .showcase-img {
+    width: 100%;
+    height: auto;
+    display: block;
   }
 
   @keyframes hero-pulse {
@@ -262,25 +347,37 @@ const lightScreenshot = await getImage({
     .showcase-dot {
       animation: none;
     }
+
+    .showcase-shell {
+      animation: none;
+    }
+  }
+
+  @media (max-width: 900px) {
+    .hero-frags {
+      display: none;
+    }
   }
 
   @media (max-width: 768px) {
     .hero {
-      padding-top: calc(56px + var(--space-lg));
+      padding-top: calc(56px + var(--space-xl));
     }
 
     .headline {
-      font-size: var(--text-2xl);
       max-width: 100%;
     }
 
-    .showcase-frame {
+    .subhead {
+      font-size: var(--text-base);
+    }
+
+    .showcase-shell {
       margin: 0;
     }
 
-    .showcase-status {
-      margin-left: 0;
-      margin-right: 0;
+    .bar-right {
+      display: none;
     }
   }
 </style>
