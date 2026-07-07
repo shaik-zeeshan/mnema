@@ -1,6 +1,6 @@
 # Platform Support
 
-_Last reviewed: 2026-06-24_
+_Last reviewed: 2026-07-07_
 
 This file tracks Mnema platform-specific implementation status. It is intentionally implementation-facing: it names the OS-owned capabilities that must exist behind Mnema's shared capture, processing, privacy, storage, and release seams.
 
@@ -48,6 +48,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Status bar / tray | [x] | [~] | [~] | Tauri tray exists cross-platform; current UX includes macOS-only Exclude Current App behavior. |
 | Global shortcuts | [x] | [~] | [~] | Uses Tauri global shortcut plugin for background start/stop, pause/resume, and show/hide; platform behavior needs verification. |
 | Encrypted Capture Index key store | [x] | [ ] | [ ] | macOS uses Keychain. Windows/Linux platform key stores are missing. |
+| Licensing & Trial | [x] | [ ] | [ ] | Offline one-time License + 30-day Trial → Read-Only Mode, verified on-device against a hardcoded Ed25519 public key ([ADR 0044](docs/adr/0044-monetize-as-one-time-purchase-with-paid-update-window.md)/[0045](docs/adr/0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)). Verification core (`crates/app-infra/src/license_verify.rs`) and the state/gate are cross-platform Rust, but the license-key + trial-record store (`license_token_store.rs`, service `com.shaikzeeshan.mnema.licensing`) is **macOS Keychain only** — the same platform-key-store gap as the rows above. Update-Window enforcement is auto-updater-only (declines builds dated after `update_through`), never a runtime capture lock. |
 | Broker Authorization Channel | [x] | [ ] | [~] | Unix socket implementation works for macOS/Linux shape; Windows needs named pipe/TCP/etc. |
 | CLI sidecar build | [x] | [~] | [~] | Script has target-aware `.exe` handling, but packaging/release not verified. |
 | Release/updater pipeline | [x] | [ ] | [ ] | Current release workflow ships Apple Silicon macOS only. |
