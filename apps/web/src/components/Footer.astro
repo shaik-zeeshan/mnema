@@ -4,29 +4,43 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
 
 <footer class="footer">
   <div class="footer-inner">
-    <div class="footer-brand">
-      <a href="/" class="footer-wordmark" aria-label="mnema home">
-        <img src="/icon.png" alt="" width="20" height="20" class="footer-icon" />
-        <span class="footer-name">mnema</span>
-      </a>
-      <a
-        href={RELEASE_URL}
-        class="footer-version"
-        data-latest-release-link
-        data-latest-release-version
-        target="_blank"
-        rel="noopener noreferrer">latest</a>
+    <div class="footer-top">
+      <div class="footer-brand">
+        <a href="/" class="footer-wordmark" aria-label="mnema home">
+          <img
+            src="/icon.png"
+            alt=""
+            width="20"
+            height="20"
+            class="footer-icon"
+          />
+          <span class="footer-name">mnema</span>
+        </a>
+        <a
+          href={RELEASE_URL}
+          class="footer-version"
+          data-latest-release-link
+          data-latest-release-version
+          target="_blank"
+          rel="noopener noreferrer">latest</a
+        >
+      </div>
+
+      <nav class="footer-links" aria-label="Footer">
+        <a href={DOWNLOAD_URL} data-latest-download-link>Download</a>
+        <a href="/agents">Agents</a>
+        <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
+        <a
+          href={`${GITHUB_URL}/blob/main/LICENSE`}
+          target="_blank"
+          rel="noopener noreferrer">MIT License</a
+        >
+      </nav>
     </div>
 
-    <nav class="footer-links" aria-label="Footer">
-      <a href={DOWNLOAD_URL} data-latest-download-link>Download</a>
-      <a href="/agents">Agents</a>
-      <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
-      <a href={`${GITHUB_URL}/blob/main/LICENSE`} target="_blank" rel="noopener noreferrer">MIT License</a>
-    </nav>
-
     <p class="footer-copy">
-      Everything stays on your machine.
+      <span class="footer-copy-cue" aria-hidden="true">//</span>
+      everything stays on your machine.
     </p>
   </div>
 </footer>
@@ -34,24 +48,30 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
 <style>
   .footer {
     border-top: 1px solid var(--border);
-    padding: var(--space-lg) var(--space-lg);
+    padding: var(--space-xl) var(--space-lg);
     margin-top: var(--space-xl);
   }
 
   .footer-inner {
-    max-width: 56rem;
+    max-width: var(--container-wide);
     margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+  }
+
+  .footer-top {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-sm);
+    gap: var(--space-md);
   }
 
   .footer-brand {
     display: flex;
     align-items: center;
-    gap: var(--space-xs);
+    gap: var(--space-sm);
   }
 
   .footer-wordmark {
@@ -82,16 +102,23 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
     font-size: 0.65rem;
     color: var(--fg-muted);
     text-decoration: none;
-    transition: color 0.2s var(--ease-out-quart);
+    padding: 0.15rem 0.45rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    transition:
+      color 0.2s var(--ease-out-quart),
+      border-color 0.2s var(--ease-out-quart);
   }
 
   .footer-version:hover {
     color: var(--fg);
+    border-color: var(--border-strong);
+    text-decoration: none;
   }
 
   .footer-links {
     display: flex;
-    gap: var(--space-md);
+    gap: var(--space-lg);
   }
 
   .footer-links a {
@@ -105,26 +132,32 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
 
   .footer-links a:hover {
     color: var(--fg);
+    text-decoration: none;
   }
 
   .footer-copy {
     font-family: var(--font-mono);
     font-size: 0.65rem;
+    letter-spacing: 0.04em;
     color: var(--fg-muted);
-    width: 100%;
-    text-align: center;
-    margin-top: var(--space-sm);
+    border-top: 1px solid var(--border);
+    padding-top: var(--space-md);
+  }
+
+  .footer-copy-cue {
+    color: var(--accent);
+    margin-right: 0.2rem;
   }
 
   @media (max-width: 640px) {
-    .footer-inner {
+    .footer-top {
       flex-direction: column;
-      text-align: center;
+      align-items: flex-start;
     }
 
     .footer-links {
       flex-wrap: wrap;
-      justify-content: center;
+      gap: var(--space-md);
     }
   }
 </style>

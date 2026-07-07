@@ -37,6 +37,9 @@ const {
             ? "light"
             : "dark");
         document.documentElement.setAttribute("data-theme", t);
+        // Gates the scroll-reveal hidden state in global.css, so content is
+        // never invisible when JS doesn't run.
+        document.documentElement.classList.add("js");
       })();
     </script>
     <script is:inline>
@@ -166,5 +169,34 @@ const {
   </head>
   <body>
     <slot />
+    <script is:inline>
+      (function () {
+        var els = document.querySelectorAll("[data-reveal]");
+        if (!els.length) return;
+        if (
+          !("IntersectionObserver" in window) ||
+          window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+          els.forEach(function (el) {
+            el.classList.add("is-revealed");
+          });
+          return;
+        }
+        var io = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (entry.isIntersecting) {
+                entry.target.classList.add("is-revealed");
+                io.unobserve(entry.target);
+              }
+            });
+          },
+          { threshold: 0.1, rootMargin: "0px 0px -8% 0px" },
+        );
+        els.forEach(function (el) {
+          io.observe(el);
+        });
+      })();
+    </script>
   </body>
 </html>

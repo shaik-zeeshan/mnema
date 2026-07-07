@@ -102,6 +102,30 @@ img {
   color: var(--bg);
 }
 
+/*
+ * Scroll-reveal system. Components opt in with data-reveal; Base.astro's
+ * IntersectionObserver adds .is-revealed once, on entry. The hidden initial
+ * state is gated on html.js (set by the inline theme script) so content is
+ * never invisible without JS, and on no-preference so reduced-motion users
+ * see everything immediately.
+ * Stagger siblings with an inline custom property: style="--reveal-delay: 0.1s".
+ */
+@media (prefers-reduced-motion: no-preference) {
+  html.js [data-reveal] {
+    opacity: 0;
+    transform: translateY(22px);
+    transition:
+      opacity 0.7s var(--ease-out-quart),
+      transform 0.9s var(--ease-out-expo);
+    transition-delay: var(--reveal-delay, 0s);
+  }
+
+  html.js [data-reveal].is-revealed {
+    opacity: 1;
+    transform: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
