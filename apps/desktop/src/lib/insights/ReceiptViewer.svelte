@@ -18,6 +18,7 @@
 
   interface Props {
     loading: boolean;
+    turnsPending: boolean;
     viewState: ReceiptViewState;
     isPlaying: boolean;
     selectedTurn: TurnView | null;
@@ -31,6 +32,7 @@
   }
   let {
     loading,
+    turnsPending,
     viewState,
     isPlaying,
     selectedTurn,
@@ -76,8 +78,12 @@
         {#if selectedTurn.sourceMeta}<span class="a-spk__meta">via {selectedTurn.sourceMeta}</span>{/if}
       </div>
       <div class="a-when">spoken segment · {clock(selectedTurn.startMs)}–{clock(selectedTurn.endMs)} · captured as audio</div>
-    {:else}
+    {:else if turnsPending}
       <div class="a-when">Loading spoken evidence…</div>
+    {:else}
+      <!-- Hydration finished with nothing readable (silent segments, or every
+           fallback failed) — say so; a fake eternal "Loading…" reads as a hang. -->
+      <div class="a-when">No readable speech in the cited audio</div>
     {/if}
   </div>
 {:else}

@@ -179,6 +179,163 @@ describe("ReceiptAudioLoader.fetchMediaSrc", () => {
   });
 });
 
+describe("ReceiptAudioLoader.loadSpan — transcription fallback for turnless segments", () => {
+  // Real-data bug (activity #2047 etc.): speakrs diarization completes with
+  // {clusters:[],turns:[]} on short/quiet utterances while Deepgram transcription
+  // completes WITH text — derivation cites the segment (it saw the transcript),
+  // but the receipt built its audio surface only on speaker_turns, so the
+  // audio-only receipt hydrated to zero turns and sat on a permanent disabled
+  // "Loading spoken evidence…". The loader must fall back to the segment's
+  // completed audio_transcription result (the same data Timeline renders).
+  const segment = {
+    id: 1286,
+    sourceKind: "microphone",
+    sourceSessionId: "mic-1",
+    segmentIndex: 0,
+    filePath: "/tmp/seg.m4a",
+    startedAt: "2026-07-07T05:52:00.000Z",
+    endedAt: "2026-07-07T05:52:10.000Z",
+    createdAt: "2026-07-07T05:52:00.000Z",
+    updatedAt: "2026-07-07T05:52:00.000Z",
+  };
+  const transcriptionPayload = JSON.stringify({
+    provider: "deepgram",
+    modelId: "nova-3",
+    segments: [
+      { startMs: 480, endMs: 2400, text: "Let me order a card.", confidence: 0.53 },
+      { startMs: 3000, endMs: 4200, text: "What you ordered, please?", confidence: 0.6 },
+    ],
+    words: [],
+  });
+
+  function invokeFor(opts: { turns?: unknown[]; jobs?: unknown[]; result?: unknown }) {
+    return async (cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "list_person_profiles") return [];
+      if (cmd === "list_audio_segments") return [segment];
+      if (cmd === "list_speaker_turns") return opts.turns ?? [];
+      if (cmd === "list_processing_jobs") return opts.jobs ?? [];
+      if (cmd === "get_processing_result") return opts.result ?? null;
+      throw new Error(`unexpected invoke: ${cmd} ${JSON.stringify(args)}`);
+    };
+  }
+
+  it("synthesizes playable turns from the transcription when diarization has none", async () => {
+    let seen: unknown = "never";
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: (t) => (seen = t) },
+      invokeFor({
+        turns: [],
+        jobs: [{ id: 9, processor: "audio_transcription", status: "completed" }],
+        result: { id: 1, jobId: 9, resultText: null, structuredPayloadJson: transcriptionPayload },
+      }),
+    );
+    await loader.loadSpan(Date.parse(segment.startedAt), Date.parse(segment.endedAt), [
+      { subjectId: segment.id, isHeadline: true },
+    ]);
+    const turns = seen as {
+      key: string;
+      audioSegmentId: number;
+      segmentStartMs: number;
+      startMs: number;
+      text: string;
+      cited: boolean;
+    }[];
+    expect(turns).toHaveLength(2);
+    expect(turns[0].audioSegmentId).toBe(segment.id); // playable: real segment id
+    expect(turns[0].segmentStartMs).toBe(Date.parse(segment.startedAt));
+    expect(turns[0].startMs).toBe(Date.parse(segment.startedAt) + 480);
+    expect(turns[0].text).toBe("Let me order a card.");
+    expect(turns[0].cited).toBe(true);
+    expect(new Set(turns.map((t) => t.key)).size).toBe(2); // distinct selection keys
+  });
+
+  it("falls back when diarized turns exist but are ALL wordless", async () => {
+    // Activity #1984's shape: 1 diarized turn, no transcript text on it — the
+    // wordless-turn drop in buildTurnViews would leave zero rows all the same.
+    const wordless = {
+      id: 3,
+      audioSegmentId: segment.id,
+      sessionId: "mic-1",
+      clusterId: 1,
+      segmentClusterId: null,
+      providerClusterId: "c1",
+      speakerLabel: "Speaker 1",
+      personId: null,
+      suggestedPersonId: null,
+      recognitionConfidence: null,
+      recognitionScore: null,
+      startMs: 0,
+      endMs: 900,
+      transcriptText: null,
+      overlaps: false,
+    };
+    let seen: unknown = "never";
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: (t) => (seen = t) },
+      invokeFor({
+        turns: [wordless],
+        jobs: [{ id: 9, processor: "audio_transcription", status: "completed" }],
+        result: { id: 1, jobId: 9, resultText: null, structuredPayloadJson: transcriptionPayload },
+      }),
+    );
+    await loader.loadSpan(Date.parse(segment.startedAt), Date.parse(segment.endedAt), []);
+    expect((seen as unknown[]).length).toBe(2);
+  });
+
+  it("stays honestly empty when the transcription is silent too, and never throws on IPC failure", async () => {
+    let seen: unknown = "never";
+    const invoke = async (cmd: string) => {
+      if (cmd === "list_person_profiles") return [];
+      if (cmd === "list_audio_segments") return [segment];
+      if (cmd === "list_speaker_turns") return [];
+      if (cmd === "list_processing_jobs") throw new Error("ipc down");
+      return null;
+    };
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: (t) => (seen = t) },
+      invoke,
+    );
+    await expect(
+      loader.loadSpan(Date.parse(segment.startedAt), Date.parse(segment.endedAt), []),
+    ).resolves.toBeUndefined();
+    expect(seen).toEqual([]);
+  });
+
+  it("does not touch transcription IPC when diarized turns already carry text", async () => {
+    const spoken = {
+      id: 3,
+      audioSegmentId: segment.id,
+      sessionId: "mic-1",
+      clusterId: 1,
+      segmentClusterId: null,
+      providerClusterId: "c1",
+      speakerLabel: "Speaker 1",
+      personId: null,
+      suggestedPersonId: null,
+      recognitionConfidence: null,
+      recognitionScore: null,
+      startMs: 100,
+      endMs: 900,
+      transcriptText: "hello",
+      overlaps: false,
+    };
+    let transcriptionCalls = 0;
+    const invoke = async (cmd: string) => {
+      if (cmd === "list_person_profiles") return [];
+      if (cmd === "list_audio_segments") return [segment];
+      if (cmd === "list_speaker_turns") return [spoken];
+      transcriptionCalls++;
+      return [];
+    };
+    const loader = new ReceiptAudioLoader(
+      { onProfiles: () => {}, onTurns: () => {} },
+      invoke,
+    );
+    await loader.loadSpan(Date.parse(segment.startedAt), Date.parse(segment.endedAt), []);
+    expect(transcriptionCalls).toBe(0);
+  });
+});
+
 describe("ReceiptAudioLoader.loadSpan — generation guard (rapid activity switch)", () => {
   it("a superseded hydration drops its onTurns AND sheds its turn fan-out", async () => {
     // The user reopens a different Activity mid-hydration. The stale run must not

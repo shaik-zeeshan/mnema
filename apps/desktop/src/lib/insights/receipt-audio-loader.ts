@@ -6,11 +6,19 @@
 // Generation-guarded — a new activity drops any stale hydration.
 
 import { invoke } from "@tauri-apps/api/core";
-import { audioDataUrl, buildTurnViews, type TurnView } from "$lib/insights/receipt-audio";
+import {
+  audioDataUrl,
+  buildTurnViews,
+  parseTranscriptionRuns,
+  syntheticTurnsFromTranscription,
+  type TurnView,
+} from "$lib/insights/receipt-audio";
 import type {
   AudioSegmentDto,
   AudioSegmentMediaDto,
   PersonProfileDto,
+  ProcessingJobDto,
+  ProcessingResultDto,
   SpeakerTurnDto,
 } from "$lib/types/app-infra";
 
@@ -113,14 +121,48 @@ export class ReceiptAudioLoader {
     // IPC against the shared 4-connection reader pool before discarding them.
     if (gen !== this.#gen) return;
     const hydrated = await mapBounded(segments, TURN_HYDRATION_CONCURRENCY, async (segment) => {
-      const turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
+      let turns = await this.#invoke<SpeakerTurnDto[]>("list_speaker_turns", {
         request: { audioSegmentId: segment.id },
       }).catch(() => [] as SpeakerTurnDto[]);
+      // Diarization can complete with zero (or all-wordless) turns on short/
+      // quiet speech that transcription still heard — the words derivation cited.
+      // buildTurnViews drops wordless turns, so without a fallback the audio-only
+      // receipt hydrates to zero rows and its player is dead. Borrow the
+      // segment's transcription (what Timeline renders) as unattributed turns.
+      if (!turns.some((t) => (t.transcriptText ?? "").trim().length > 0)) {
+        const fallback = await this.#transcriptionFallbackTurns(segment);
+        if (fallback.length > 0) turns = fallback;
+      }
       return { segment, turns };
     });
     const turns = buildTurnViews(hydrated, citedRefs, profiles);
     if (gen !== this.#gen) return;
     this.#events.onTurns?.(turns);
+  }
+
+  /** The segment's completed audio_transcription result as synthetic turns
+   *  (the diarization-found-nothing fallback). [] on any failure or absence. */
+  async #transcriptionFallbackTurns(segment: AudioSegmentDto): Promise<SpeakerTurnDto[]> {
+    try {
+      const jobs = await this.#invoke<ProcessingJobDto[]>("list_processing_jobs", {
+        request: { subjectType: "audio_segment", subjectId: segment.id },
+      });
+      const job = jobs
+        .filter((j) => j.processor === "audio_transcription" && j.status === "completed")
+        .sort((a, b) => b.id - a.id)[0];
+      if (!job) return [];
+      const result = await this.#invoke<ProcessingResultDto | null>("get_processing_result", {
+        request: { jobId: job.id },
+      });
+      if (!result) return [];
+      return syntheticTurnsFromTranscription(
+        segment,
+        parseTranscriptionRuns(result.structuredPayloadJson),
+        result.resultText,
+      );
+    } catch {
+      return [];
+    }
   }
 
   /** Fetch a segment's playable media as a data: URL. Null on failure. */

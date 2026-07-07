@@ -9,11 +9,13 @@ import {
   clipStartOffsetSec,
   frameIndexForMs,
   isFallbackSpeaker,
+  parseTranscriptionRuns,
   partitionEvidence,
   receiptViewState,
   scheduleClipSeek,
   sourceKindReadable,
   speakerDisplay,
+  syntheticTurnsFromTranscription,
   turnSpeakerRoster,
 } from "./receipt-audio";
 
@@ -365,5 +367,80 @@ describe("scheduleClipSeek — same-segment re-seek (readyState≥1 applies now)
     expect(el.currentTime).toBe(0); // not applied until metadata is in
     el.fireLoadedMetadata();
     expect(el.currentTime).toBe(30);
+  });
+});
+
+describe("parseTranscriptionRuns", () => {
+  it("parses timed segments, dropping malformed/empty runs and sorting by start", () => {
+    const json = JSON.stringify({
+      segments: [
+        { startMs: 3000, endMs: 4200, text: "second" },
+        { startMs: 480, endMs: 2400, text: " first " },
+        { startMs: "nope", endMs: 1, text: "dropped" },
+        { startMs: 5, endMs: 6, text: "   " },
+      ],
+      words: [],
+    });
+    expect(parseTranscriptionRuns(json)).toEqual([
+      { startMs: 480, endMs: 2400, text: "first" },
+      { startMs: 3000, endMs: 4200, text: "second" },
+    ]);
+  });
+
+  it("falls back to words when segments are absent, and never throws on garbage", () => {
+    const wordsOnly = JSON.stringify({ words: [{ startMs: 10, endMs: 90, text: "hi" }] });
+    expect(parseTranscriptionRuns(wordsOnly)).toEqual([{ startMs: 10, endMs: 90, text: "hi" }]);
+    expect(parseTranscriptionRuns(null)).toEqual([]);
+    expect(parseTranscriptionRuns("not json {")).toEqual([]);
+    expect(parseTranscriptionRuns('"just a string"')).toEqual([]);
+  });
+});
+
+describe("syntheticTurnsFromTranscription", () => {
+  const segment = {
+    id: 9,
+    sourceKind: "microphone",
+    sourceSessionId: "mic-1",
+    segmentIndex: 0,
+    filePath: "/tmp/a.m4a",
+    startedAt: "2026-07-07T05:00:00.000Z",
+    endedAt: "2026-07-07T05:00:10.000Z",
+    createdAt: "2026-07-07T05:00:00.000Z",
+    updatedAt: "2026-07-07T05:00:00.000Z",
+  };
+
+  it("emits one Voice-attributed turn per run with distinct negative ids", () => {
+    const turns = syntheticTurnsFromTranscription(
+      segment,
+      [
+        { startMs: 480, endMs: 2400, text: "a" },
+        { startMs: 3000, endMs: 4200, text: "b" },
+      ],
+      null,
+    );
+    expect(turns.map((t) => t.id)).toEqual([-1, -2]);
+    expect(turns[0].audioSegmentId).toBe(9);
+    expect(turns[0].speakerLabel).toBe("Voice");
+    expect(turns[0].personId).toBeNull();
+    expect(turns[0].transcriptText).toBe("a");
+    // survives the wordless-turn drop AND builds valid absolute times
+    const views = buildTurnViews([{ segment, turns }], [{ subjectId: 9, isHeadline: false }], []);
+    expect(views).toHaveLength(2);
+    expect(views[0].startMs).toBe(Date.parse(segment.startedAt) + 480);
+    expect(views[0].speaker).toBe("Voice");
+    expect(views[0].cited).toBe(true);
+  });
+
+  it("keeps the clip playable via one whole-segment turn when only resultText exists", () => {
+    const turns = syntheticTurnsFromTranscription(segment, [], "  hello there  ");
+    expect(turns).toHaveLength(1);
+    expect(turns[0].startMs).toBe(0);
+    expect(turns[0].endMs).toBe(10_000); // segment duration
+    expect(turns[0].transcriptText).toBe("hello there");
+  });
+
+  it("returns [] when there is genuinely nothing readable", () => {
+    expect(syntheticTurnsFromTranscription(segment, [], null)).toEqual([]);
+    expect(syntheticTurnsFromTranscription(segment, [], "   ")).toEqual([]);
   });
 });

@@ -84,6 +84,7 @@
 
   // ── Span-wide turns + selection (ADR 0049 redesign) ──────────────────
   let turns = $state<TurnView[]>([]); // every spoken turn over the span, ordered
+  let turnsPending = $state(true); // span hydration in flight; false once onTurns lands (even empty)
   let selectedKey = $state<string | null>(null); // the one selection the lane + reader share
   let profiles = $state<PersonProfileDto[]>([]); // for live name resolution
   let clipPlaying = $state(false); // the <audio> element's play/pause state
@@ -107,6 +108,7 @@
     onProfiles: (p) => (profiles = p),
     onTurns: (t) => {
       turns = t;
+      turnsPending = false;
       selectedKey = defaultSelectedKey(t);
       // Audio available → default to 1× so Play relives the spoken moment with
       // real audio; a silent frame-only activity keeps the 8× timelapse default.
@@ -419,6 +421,7 @@
   function loadAudio(): void {
     stopClip();
     turns = [];
+    turnsPending = true;
     selectedKey = null;
     void audioLoader.loadSpan(activity.startedAtMs, activity.endedAtMs, audioEvidence);
   }
@@ -590,6 +593,7 @@
          flex region; ReceiptViewer.svelte owns its markup + styles. -->
     <ReceiptViewer
       {loading}
+      {turnsPending}
       {viewState}
       {isPlaying}
       {selectedTurn}

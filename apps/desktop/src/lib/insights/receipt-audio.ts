@@ -171,6 +171,91 @@ export function audioFooterLeft(frameEvidenceCount: number): string {
     : "0 screen frames — captured as audio";
 }
 
+// ── Transcription fallback for turnless segments ─────────────────────────────
+// speakrs diarization can complete with zero turns on short/quiet utterances
+// while transcription still hears real words (derivation cites such segments —
+// it reads the transcript). The receipt then falls back to the segment's
+// audio_transcription result, mirroring what Timeline's transcript view renders.
+
+/** One timed transcription run (in-segment ms offsets), as stored in the
+ *  audio_transcription result's structured payload. */
+export interface TranscriptionRun {
+  startMs: number;
+  endMs: number;
+  text: string;
+}
+
+function normalizeTranscriptionRuns(raw: unknown): TranscriptionRun[] {
+  if (!Array.isArray(raw)) return [];
+  const out: TranscriptionRun[] = [];
+  for (const item of raw) {
+    const run = item as { startMs?: unknown; endMs?: unknown; text?: unknown };
+    const startMs = typeof run.startMs === "number" ? run.startMs : NaN;
+    const endMs = typeof run.endMs === "number" ? run.endMs : NaN;
+    const text = typeof run.text === "string" ? run.text.trim() : "";
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || text.length === 0) continue;
+    out.push({ startMs, endMs, text });
+  }
+  out.sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  return out;
+}
+
+/** Timed runs from an audio_transcription structured payload: `segments`
+ *  preferred, `words` as the fallback (same precedence as Timeline's
+ *  transcript parsing). Tolerant — [] on any malformed input, never throws. */
+export function parseTranscriptionRuns(json: string | null | undefined): TranscriptionRun[] {
+  if (!json) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  const payload = parsed as { segments?: unknown; words?: unknown };
+  const segments = normalizeTranscriptionRuns(payload?.segments);
+  if (segments.length > 0) return segments;
+  return normalizeTranscriptionRuns(payload?.words);
+}
+
+/**
+ * Synthetic `SpeakerTurnDto`s for a segment whose diarization produced no
+ * text-bearing turns: one turn per transcription run, attributed to the
+ * unattributed "Voice" (no diarized cluster exists to name). Negative ids keep
+ * the `${segmentId}:${turnId}` selection keys distinct without colliding with
+ * real turn ids. When the payload has no timed runs but `resultText` exists,
+ * one whole-segment turn keeps the clip playable.
+ */
+export function syntheticTurnsFromTranscription(
+  segment: AudioSegmentDto,
+  runs: TranscriptionRun[],
+  resultText: string | null | undefined,
+): SpeakerTurnDto[] {
+  let effective = runs;
+  if (effective.length === 0) {
+    const text = (resultText ?? "").trim();
+    if (text.length === 0) return [];
+    const durationMs = Date.parse(segment.endedAt) - Date.parse(segment.startedAt);
+    effective = [{ startMs: 0, endMs: Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0, text }];
+  }
+  return effective.map((run, i) => ({
+    id: -(i + 1),
+    audioSegmentId: segment.id,
+    sessionId: segment.sourceSessionId,
+    clusterId: -1,
+    segmentClusterId: null,
+    providerClusterId: "transcription-fallback",
+    speakerLabel: "Voice",
+    personId: null,
+    suggestedPersonId: null,
+    recognitionConfidence: null,
+    recognitionScore: null,
+    startMs: run.startMs,
+    endMs: run.endMs,
+    transcriptText: run.text,
+    overlaps: false,
+  }));
+}
+
 // ── Span-wide turn model (Receipt redesign, slice 1) ─────────────────────────
 
 /** One diarized speaker turn within an Activity's span, hydrated for display.
@@ -272,8 +357,9 @@ export function buildTurnViews(
     // A diarizer cluster with no transcribed words is not a speaker; drop it
     // before roster/color assignment so it never adds a phantom "Speaker N" whose
     // rows are all "—" (the exact `if (!text) continue` rule the Timeline reader
-    // uses). ponytail: an all-wordless cited segment therefore shows no turns —
-    // acceptable, it has no spoken evidence to read; the frame/audio player stays.
+    // uses). A segment whose diarization produced nothing text-bearing reaches
+    // here with synthetic transcription-fallback turns instead (loader), so this
+    // drop never leaves a cited audio-only receipt with a dead player.
     // Also drop a turn whose segment start won't parse (Date.parse → NaN): a NaN
     // wall-clock never breaks activeKeyAt's `t.startMs > ms` scan (so it would
     // steal the karaoke highlight) and never matches turnAtMs' `ms >= startMs`
