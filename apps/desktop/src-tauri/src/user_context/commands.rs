@@ -779,6 +779,23 @@ pub async fn wipe_user_context(
     Ok(())
 }
 
+/// Record the frontend's current local UTC offset (minutes to ADD to UTC) so
+/// the distillation worker can label Activity times in the user's local clock.
+/// The Rust `time` crate can't soundly read the local offset under Tauri, so the
+/// frontend is the sound source (mirrors `askAiClock`). Invoked on app start and
+/// window focus; DST staleness between stamps is accepted.
+#[tauri::command]
+pub async fn user_context_stamp_local_offset(
+    infra: tauri::State<'_, AppInfraState>,
+    offset_minutes: i64,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .set_local_offset_minutes(offset_minutes)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

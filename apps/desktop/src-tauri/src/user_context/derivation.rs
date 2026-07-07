@@ -270,6 +270,32 @@ fn format_utc_ms(ms: i64) -> String {
     )
 }
 
+/// Format signed timezone offset MINUTES as `UTC+05:30` / `UTC-08:00`.
+fn offset_label(offset_min: i64) -> String {
+    let sign = if offset_min < 0 { '-' } else { '+' };
+    let abs = offset_min.abs();
+    format!("UTC{}{:02}:{:02}", sign, abs / 60, abs % 60)
+}
+
+/// Format a unix-millis instant as a local wall-clock string with an explicit
+/// offset suffix (`2026-06-11 22:12 UTC+05:30`). Mirrors [`format_utc_ms`] but
+/// shifts the instant by `offset_ms` (offset in MILLIseconds) before rendering.
+fn format_local_ms(ms: i64, offset_ms: i64) -> String {
+    let dt = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms + offset_ms) * 1_000_000)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let date = dt.date();
+    let clock = dt.time();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} {}",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        clock.hour(),
+        clock.minute(),
+        offset_label(offset_ms / 60_000),
+    )
+}
+
 /// Render the capture window into the per-call prompt. Each item is tagged
 /// `f<id>`/`a<id>` with its time, optional Search Context app/url, and its
 /// (truncated, already-redacted) text.
@@ -541,8 +567,12 @@ pub async fn derive_activities(
 const CONCLUSION_PREAMBLE_BASE: &str = "You read a list of a single user's recent Activity episodes \
 (each with an id, a title, a one or two sentence summary, a capture time, and an optional category) \
 and distill open-ended, plain-language Conclusion statements about the user. A Conclusion is a \
-natural-language belief such as \"Has been increasingly interested in Apple\" or \"Prefers async \
-communication\" — NOT a fixed subject+attribute+value row and NOT a tag. Each Conclusion is ABOUT a \
+natural-language belief such as \"Has been increasingly interested in Apple\", \"Prefers async \
+communication\", or \"Checks Slack first thing in the morning\" (a recurring-habit belief under a \
+naturally-coined subject like \"Morning routine\") — NOT a fixed subject+attribute+value row and NOT \
+a tag. Recurring daily habits and routines are welcome as ordinary Conclusions. For routines about \
+focus or attention, state WHEN focused work tends to happen as a neutral observation of the user's \
+rhythm — never a judgment about productivity, and never praise or criticism. Each Conclusion is ABOUT a \
 Subject: a short grouping handle like \"Apple\" or \"async communication\". Ground every Conclusion \
 in evidence: list the Activity ids that SUPPORT it, and (only when an Activity genuinely cuts \
 against it) the Activity ids that CONTRADICT it. Only reference Activity ids that appear in the \
@@ -638,16 +668,29 @@ pub struct ConclusionDistillationOutcome {
 
 /// Render the distillation prompt: one line per Activity (id, time, category,
 /// title) plus its truncated summary.
-fn build_distillation_prompt(activities: &[capture_types::Activity]) -> String {
+fn build_distillation_prompt(
+    activities: &[capture_types::Activity],
+    local_offset_ms: Option<i64>,
+) -> String {
     let now_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    // Render every time in the user's local wall clock when the offset is known,
+    // else fall back to UTC (unchanged legacy behavior).
+    let fmt = |ms: i64| match local_offset_ms {
+        Some(offset) => format_local_ms(ms, offset),
+        None => format_utc_ms(ms),
+    };
+    let time_note = match local_offset_ms {
+        Some(offset) => format!("Times are local ({}).", offset_label(offset / 60_000)),
+        None => "All times are UTC.".to_string(),
+    };
     let mut prompt = String::new();
-    prompt.push_str(
+    prompt.push_str(&format!(
         "Below is a list of the user's recent Activity episodes, newest first. Each is tagged with \
-its numeric Activity id and its start time. All times are UTC. Distill open-ended Conclusion \
+its numeric Activity id and its start time. {time_note} Distill open-ended Conclusion \
 statements about the user and reference the Activity ids that are each Conclusion's supporting (and \
 any contradicting) evidence. Return DistilledConclusionBatch.\n\n",
-    );
-    prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
+    ));
+    prompt.push_str(&format!("Current time: {}\n", fmt(now_ms)));
     prompt.push_str(&format!("Activities ({}):\n\n", activities.len()));
 
     for activity in activities {
@@ -658,7 +701,7 @@ any contradicting) evidence. Return DistilledConclusionBatch.\n\n",
         prompt.push_str(&format!(
             "[id={}] t={} category={category} title={}\n",
             activity.id,
-            format_utc_ms(activity.started_at_ms),
+            fmt(activity.started_at_ms),
             activity.title.trim()
         ));
         let summary = truncate_chars(activity.summary.trim(), ACTIVITY_SUMMARY_CHAR_CAP);
@@ -747,8 +790,12 @@ pub async fn distill_conclusions(
     // Soft guardrail (#96): the engine sees the Sensitive Category Guardrail
     // instruction prepended to the base preamble — it must not form conclusions
     // about health, sexuality, religion, politics, or similar intimate domains.
+    // Local-clock offset (Slice 2/3): read once, thread into the prompt (local
+    // Activity times) and the Recurrence Digest below. None = never stamped → UTC.
+    let offset_min = store.local_offset_minutes().await.map_err(|e| e.to_string())?;
+    let offset_ms = offset_min.map(|m| m * 60_000);
     let preamble = conclusion_preamble();
-    let mut prompt = build_distillation_prompt(&activities);
+    let mut prompt = build_distillation_prompt(&activities, offset_ms);
     // Prepend the USER-AUTHORED CONTEXT block (#107): standing statements the user
     // wrote about themselves, fed as authoritative steering context (distinct from
     // derived Activity evidence). Appended context only — it does not touch the
@@ -831,6 +878,28 @@ pub async fn distill_conclusions(
         &known_subjects,
         &conclusions_by_subject,
     ));
+    // RECURRENCE DIGEST (behavioral routines): a compact, self-filtered summary of
+    // recurring time-of-day patterns over the trailing window, appended as steering
+    // context so the engine can form routine-shaped Conclusions. The digest is empty
+    // (no block) when the window shows no recurrence; counted into input_tokens below.
+    let digest_now = now_ms();
+    let window_start = app_infra::user_context::recurrence_digest_window_start_ms(digest_now);
+    let digest_activities = store
+        .list_activities_in_range(window_start, digest_now)
+        .await
+        .map_err(|e| e.to_string())?;
+    let digest = app_infra::user_context::build_recurrence_digest(
+        &digest_activities,
+        offset_ms.unwrap_or(0),
+        digest_now,
+    );
+    if !digest.is_empty() {
+        let tz_line = match offset_ms {
+            Some(o) => format!("Times below are local ({}).", offset_label(o / 60_000)),
+            None => "Times below are UTC.".to_string(),
+        };
+        prompt.push_str(&format!("\n{tz_line}\n{digest}\n"));
+    }
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
@@ -1788,6 +1857,65 @@ mod tests {
         assert!(!prompt.contains(SENTINEL), "a name leaked into the prompt");
         // The anonymous label is present; the identity is not.
         assert!(prompt.contains("Speaker A:"));
+    }
+
+    // === Recurrence Digest / local-clock prompt (Slice 3) ===================
+
+    fn distill_activity(id: i64, started_at_ms: i64, cat: Option<ActivityCategory>) -> capture_types::Activity {
+        capture_types::Activity {
+            id,
+            title: format!("activity {id}"),
+            summary: String::new(),
+            category: cat,
+            focus: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + 60_000,
+            created_at_ms: started_at_ms,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn offset_label_formats_signed_hh_mm() {
+        assert_eq!(offset_label(330), "UTC+05:30");
+        assert_eq!(offset_label(-480), "UTC-08:00");
+        assert_eq!(offset_label(0), "UTC+00:00");
+    }
+
+    #[test]
+    fn distillation_prompt_labels_times_local_with_offset() {
+        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
+        let prompt = build_distillation_prompt(&acts, Some(330 * 60_000));
+        assert!(prompt.contains("Times are local (UTC+05:30)."), "prompt: {prompt}");
+        // The rendered digits must actually shift, not just the label: the epoch
+        // instant at +05:30 reads 1970-01-01 05:30 local.
+        assert!(
+            prompt.contains("[id=1] t=1970-01-01 05:30 UTC+05:30"),
+            "prompt: {prompt}"
+        );
+        assert!(!prompt.contains("All times are UTC."));
+
+        // A negative offset shifts backward across the day boundary.
+        let prompt = build_distillation_prompt(&acts, Some(-480 * 60_000));
+        assert!(
+            prompt.contains("[id=1] t=1969-12-31 16:00 UTC-08:00"),
+            "prompt: {prompt}"
+        );
+    }
+
+    #[test]
+    fn distillation_prompt_falls_back_to_utc_without_offset() {
+        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
+        let prompt = build_distillation_prompt(&acts, None);
+        assert!(prompt.contains("All times are UTC."), "prompt: {prompt}");
+        assert!(prompt.contains(" UTC\n") || prompt.contains(" UTC"));
+    }
+
+    #[test]
+    fn preamble_carries_the_observation_posture_invariant() {
+        // Regression guard: the neutral-observation wording for focus routines must
+        // survive verbatim (never a productivity judgment).
+        assert!(conclusion_preamble().contains("neutral observation of the user's rhythm"));
     }
 
     #[test]

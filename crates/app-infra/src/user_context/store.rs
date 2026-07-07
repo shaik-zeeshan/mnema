@@ -27,6 +27,9 @@ use crate::Result;
 /// id lists stay well under SQLite's bind limit.
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 
+/// `app_settings` key holding the frontend-stamped local UTC offset in minutes.
+const LOCAL_OFFSET_MINUTES_KEY: &str = "user_context.local_offset_minutes";
+
 /// A new Activity (the evidence layer) plus the raw-capture evidence it is
 /// grounded in, ready to persist via
 /// [`UserContextStore::insert_activity_with_evidence`].
@@ -268,6 +271,35 @@ pub struct UserContextStore {
 impl UserContextStore {
     pub fn new(db: CaptureDb) -> Self {
         Self { db }
+    }
+
+    // --- Local UTC offset (frontend-stamped) ------------------------------
+
+    /// Persist the frontend-stamped local UTC offset (minutes to ADD to UTC to
+    /// reach local; IST = +330). Overwrites the previous value. Reuses the
+    /// existing `app_settings` kv table (migration `0001`).
+    pub async fn set_local_offset_minutes(&self, minutes: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(LOCAL_OFFSET_MINUTES_KEY)
+        .bind(minutes.to_string())
+        .execute(self.db.write())
+        .await?;
+        Ok(())
+    }
+
+    /// The last-known frontend-stamped local UTC offset in minutes, or `None` if
+    /// never stamped (worker then falls back to UTC labels). A missing row or an
+    /// unparseable value degrades to `None`, never an error.
+    pub async fn local_offset_minutes(&self) -> Result<Option<i64>> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(LOCAL_OFFSET_MINUTES_KEY)
+                .fetch_optional(self.db.read())
+                .await?;
+        Ok(value.and_then(|v| v.trim().parse::<i64>().ok()))
     }
 
     // --- #93: Activities + evidence ---------------------------------------
@@ -2890,6 +2922,12 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 started_at TEXT NOT NULL
             )",
+            // kv settings table (migration 0001) — backs local_offset_minutes.
+            "CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY NOT NULL,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
         ] {
             sqlx::query(statement)
                 .execute(&pool)
@@ -2897,6 +2935,36 @@ mod tests {
                 .expect("create user_context table");
         }
         UserContextStore::new(CaptureDb::single(pool))
+    }
+
+    #[test]
+    fn local_offset_minutes_round_trips_and_defaults_to_none() {
+        block_on(async {
+            let store = test_store().await;
+            // Fresh store: never stamped.
+            assert_eq!(store.local_offset_minutes().await.expect("get"), None);
+            // Set IST.
+            store.set_local_offset_minutes(330).await.expect("set");
+            assert_eq!(store.local_offset_minutes().await.expect("get"), Some(330));
+            // Overwrite (e.g. PST); last write wins.
+            store.set_local_offset_minutes(-480).await.expect("overwrite");
+            assert_eq!(store.local_offset_minutes().await.expect("get"), Some(-480));
+        });
+    }
+
+    #[test]
+    fn corrupt_local_offset_value_degrades_to_none() {
+        // The doc contract: an unparseable stored value reads back as None (UTC
+        // fallback), never an error.
+        block_on(async {
+            let store = test_store().await;
+            sqlx::query("INSERT INTO app_settings (key, value) VALUES (?1, 'not-a-number')")
+                .bind(LOCAL_OFFSET_MINUTES_KEY)
+                .execute(store.db.write())
+                .await
+                .expect("seed corrupt row");
+            assert_eq!(store.local_offset_minutes().await.expect("must not error"), None);
+        });
     }
 
     async fn seed_activity(store: &UserContextStore, title: &str, started_at_ms: i64) -> i64 {

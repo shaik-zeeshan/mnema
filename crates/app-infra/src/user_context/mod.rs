@@ -14,10 +14,14 @@
 pub mod capture_source;
 pub mod confidence;
 pub mod guardrail;
+pub mod recurrence;
 pub mod store;
 pub mod subject_vectors;
 
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
+pub use recurrence::{
+    build_recurrence_digest, recurrence_digest_window_start_ms, RECURRENCE_DIGEST_WINDOW_DAYS,
+};
 pub use subject_vectors::SubjectVectorStore;
 pub use store::{
     cascade_derived_for_deleted_subjects_in, digest_input_fingerprint, evidence_fingerprint,
