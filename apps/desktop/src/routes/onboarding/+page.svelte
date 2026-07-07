@@ -34,12 +34,6 @@
   // what remains. Purely presentational — derived from the existing phase state.
   const phaseStep = $derived(c.phase === "welcome" ? 1 : c.phase === "configure" ? 2 : 3);
 
-  // Intra-step progress for the otherwise-undifferentiated Configure dot: the
-  // accordion is many rows, so surface "X of Y ready" — every row minus those
-  // still flagged for attention. Derived from existing controller state.
-  const configureTotal = FEATURES.length;
-  const configureReady = $derived(Math.max(0, configureTotal - c.attentionCount));
-
   // Spoken step announcement for the polite live region below: a phase change is a
   // full content swap (welcome hero ↔ accordion ↔ finale crest), so without an
   // announcement a screen-reader user only hears silence after activating the CTA.
@@ -115,44 +109,46 @@
        swap the whole screen silently. Visually hidden; mirrors the access-request
        page's `.sr-only` live-status pattern. -->
   <span class="ob-sr-only" role="status" aria-live="polite">{phaseAnnouncement}</span>
-  <nav class="ob-progress" aria-label="Setup progress">
-    <ol class="ob-progress__list">
-      <li
-        class="ob-progress__step"
-        class:is-active={phaseStep === 1}
-        class:is-done={phaseStep > 1}
-        aria-current={phaseStep === 1 ? "step" : undefined}
-      >
-        <span class="ob-progress__dot" aria-hidden="true"></span>
-        <span class="ob-progress__label">Welcome</span>
-      </li>
-      <li
-        class="ob-progress__step"
-        class:is-active={phaseStep === 2}
-        class:is-done={phaseStep > 2}
-        aria-current={phaseStep === 2 ? "step" : undefined}
-      >
-        <span class="ob-progress__dot" aria-hidden="true"></span>
-        <span class="ob-progress__label">Configure</span>
-        {#if phaseStep === 2}
-          <span class="ob-progress__count">{configureReady} of {configureTotal} ready</span>
-        {/if}
-      </li>
-      <li
-        class="ob-progress__step"
-        class:is-active={phaseStep === 3}
-        aria-current={phaseStep === 3 ? "step" : undefined}
-      >
-        <span class="ob-progress__dot" aria-hidden="true"></span>
-        <span class="ob-progress__label">Finish</span>
-      </li>
-    </ol>
-  </nav>
   {#if c.phase === "welcome"}
     <WelcomeScreen controller={c} />
   {:else if c.phase === "done"}
     <FinaleScreen controller={c} />
   {:else}
+    <!-- Configure-only top bar: the wayfinding stepper + a close (×) escape hatch.
+         Welcome/finale are full-bleed bookends with no bar (as they were before the
+         stepper existed) — the floating pill collided with their centered heroes. -->
+    <div class="ob-topbar">
+      <nav class="ob-progress" aria-label="Setup progress">
+        <ol class="ob-progress__list">
+          <li
+            class="ob-progress__step"
+            class:is-active={phaseStep === 1}
+            class:is-done={phaseStep > 1}
+            aria-current={phaseStep === 1 ? "step" : undefined}
+          >
+            <span class="ob-progress__dot" aria-hidden="true"></span>
+            <span class="ob-progress__label">Welcome</span>
+          </li>
+          <li
+            class="ob-progress__step"
+            class:is-active={phaseStep === 2}
+            class:is-done={phaseStep > 2}
+            aria-current={phaseStep === 2 ? "step" : undefined}
+          >
+            <span class="ob-progress__dot" aria-hidden="true"></span>
+            <span class="ob-progress__label">Configure</span>
+          </li>
+          <li
+            class="ob-progress__step"
+            class:is-active={phaseStep === 3}
+            aria-current={phaseStep === 3 ? "step" : undefined}
+          >
+            <span class="ob-progress__dot" aria-hidden="true"></span>
+            <span class="ob-progress__label">Finish</span>
+          </li>
+        </ol>
+      </nav>
+    </div>
     <FeatureStack
       onCount={c.onCount}
       attentionCount={c.attentionCount}
@@ -255,19 +251,28 @@
     outline: none;
   }
 
-  /* Quiet cross-phase wayfinding stepper, pinned top-center across all three
-     phases (welcome hero / configure accordion / finale crest) so the user can
-     always see where they are and what remains. Non-interactive — purely a
-     signifier — so it ignores pointer events. */
+  /* Configure-phase top bar: an in-flow row (NOT a floating overlay) that holds
+     the wayfinding stepper (centered) and a close button (pinned right). Renders
+     only on Configure, so the shell below must flex to fill the remaining height
+     — its own `height:100%` would otherwise overflow past this bar. */
+  .ob-topbar {
+    flex: 0 0 auto;
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 14px 16px 0;
+  }
+  :global(.onboarding-root .onboarding-shell) {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+  }
+
+  /* Wayfinding stepper: quiet "where am I" signifier centered in the top bar. */
   .ob-progress {
-    position: absolute;
-    top: 16px;
-    left: 0;
-    right: 0;
-    z-index: 5;
     display: flex;
     justify-content: center;
-    pointer-events: none;
     font-family: var(--app-font-mono);
   }
   .ob-progress__list {
@@ -322,15 +327,5 @@
     background: var(--app-accent);
     border-color: var(--app-accent);
     box-shadow: 0 0 0 3px var(--app-accent-bg);
-  }
-  /* Intra-step "X of Y ready" tally on the active Configure step — the accordion
-     is many rows, so the single dot otherwise hid all progress. Kept quiet
-     (muted, tabular) so it reads as a sub-signifier, not a second label. */
-  .ob-progress__count {
-    font-size: var(--text-xs);
-    font-weight: 400;
-    letter-spacing: 0.02em;
-    color: var(--app-text-muted);
-    font-variant-numeric: tabular-nums;
   }
 </style>
