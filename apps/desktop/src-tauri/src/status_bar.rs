@@ -255,12 +255,26 @@ fn set_operation(app: &tauri::AppHandle, operation: StatusBarOperation) {
         .operation = operation;
 }
 
+/// Read-Only Mode (licensing) is a distinct condition from the low-disk liveness
+/// suspension: it does NOT self-heal (cleared only by buying a license) and it
+/// blocks *starting* new capture rather than holding a live session. When active
+/// and idle, surface its own status header and grey out Start Recording so the
+/// tray never offers a start the capture gate will refuse. Gating on the
+/// "Start Recording" label scopes this to the idle-and-not-recording state only.
+fn apply_read_only_status(model: &mut StatusBarMenuModel, read_only: bool) {
+    if read_only && model.recording_label == Some("Start Recording") {
+        model.status_label = Some("Read-Only — trial ended");
+        model.recording_enabled = false;
+        model.tooltip = "Mnema — Read-Only (trial ended)";
+    }
+}
+
 fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
     let support = crate::native_capture::get_capture_support().supported_sources;
     let session = crate::native_capture::current_native_capture_session(app);
     let recording = session.is_running;
-    build_menu_model(
+    let mut model = build_menu_model(
         crate::windows::is_onboarding_complete(app),
         recording,
         session.is_user_paused,
@@ -268,7 +282,13 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         &settings,
         &support,
         operation(app),
-    )
+    );
+    // `cached_status` is `None` until the deferred license gate runs once; unknown
+    // reads as allow (never lock the tray on unknown).
+    let read_only = crate::licensing::cached_status(app)
+        .is_some_and(|status| !status.capture_allowed());
+    apply_read_only_status(&mut model, read_only);
+    model
 }
 
 fn build_menu(
@@ -754,6 +774,44 @@ mod tests {
         assert_eq!(model.status_label, Some("Paused — low disk"));
         assert_eq!(model.tooltip, "Mnema — Paused (low disk)");
         assert_ne!(model.tooltip, "Mnema - Recording");
+    }
+
+    #[test]
+    fn read_only_model_surfaces_trial_ended_and_disables_start() {
+        // Read-Only Mode (licensing) is distinct from the low-disk suspension:
+        // its own header + a greyed Start Recording, never a "paused" message.
+        let mut model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        apply_read_only_status(&mut model, true);
+        assert_eq!(model.status_label, Some("Read-Only — trial ended"));
+        assert_eq!(model.tooltip, "Mnema — Read-Only (trial ended)");
+        assert!(!model.recording_enabled);
+    }
+
+    #[test]
+    fn read_only_override_leaves_a_live_session_alone() {
+        // While recording (Stop Recording shown), a read-only read must not grey
+        // the Stop button or relabel the tray — the guard only blocks new starts.
+        let mut model = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        apply_read_only_status(&mut model, true);
+        assert_eq!(model.recording_label, Some("Stop Recording"));
+        assert!(model.recording_enabled);
+        assert_eq!(model.status_label, None);
     }
 
     #[test]

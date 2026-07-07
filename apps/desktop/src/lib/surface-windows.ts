@@ -27,6 +27,7 @@ export type SettingsWindowTab =
   | "audio"
   | "processing"
   | "storage"
+  | "license"
   | "appearance"
   | "developer"
   | "behavior"
@@ -99,6 +100,8 @@ export function normalizeSettingsTab(tab?: SettingsWindowTab | string | null): s
       return "processing";
     case "storage":
       return "storage";
+    case "license":
+      return "license";
     case "appearance":
       return "appearance";
     case "developer":

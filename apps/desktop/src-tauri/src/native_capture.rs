@@ -2305,6 +2305,29 @@ fn start_native_capture_inner(
         settings.save_directory
     ));
 
+    // Slice 6a: the Trial clock starts at first *successful* Capture, not launch.
+    // `ensure_trial_started` writes once (idempotent), so firing it on every
+    // successful start is safe; skip the async hop when already Licensed —
+    // there is nothing to stamp. Fire-and-forget off the DB pool, matching the
+    // spawn pattern used elsewhere in this file.
+    if !matches!(
+        crate::licensing::cached_status(&app_handle),
+        Some(capture_types::LicenseStatus::Licensed { .. })
+    ) {
+        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+            let infra = std::sync::Arc::clone(&*infra);
+            let trial_app_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                crate::licensing::ensure_trial_started(
+                    infra.pool(),
+                    &trial_app_handle,
+                    runtime::now_unix_ms() as i64,
+                )
+                .await;
+            });
+        }
+    }
+
     maybe_push_audio_transcription_unavailable_start_warning(
         &app_handle,
         app_notifications_state.inner(),

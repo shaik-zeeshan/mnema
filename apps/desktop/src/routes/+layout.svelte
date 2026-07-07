@@ -34,6 +34,8 @@
     reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
+  import { initLicenseStatus } from "$lib/licensing-store.svelte";
+  import LicenseBanner from "$lib/LicenseBanner.svelte";
   import {
     GLOBAL_SHORTCUTS,
     getEffectiveGlobalShortcut,
@@ -120,6 +122,7 @@
   initTheme();
   initAppNotifications();
   initKeyboardBindings();
+  initLicenseStatus();
 
   $effect(() => {
     chromeAppearance = theme.appearance;
@@ -1489,6 +1492,13 @@
       </button>
     </div>
   </header>
+  {/if}
+
+  {#if isMainWindow}
+    <!-- App-wide licensing banner (final-week trial teach-in + Read-Only Mode).
+         Renders nothing outside a trial's final week / Read-Only Mode. Main
+         window only — Quick Recall / onboarding / dedicated surfaces stay clean. -->
+    <LicenseBanner />
   {/if}
 
   <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>

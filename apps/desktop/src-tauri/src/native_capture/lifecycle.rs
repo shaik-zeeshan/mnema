@@ -160,6 +160,25 @@ impl RecordingLifecycle {
         sources: CaptureSources,
         microphone_device_id_for_capture: Option<String>,
     ) -> Result<StartRecordingLifecycleOutcome, CaptureErrorResponse> {
+        // Read-Only Mode gate (licensing). This is the single seam every start
+        // path funnels through (command, auto-start, tray). It is deliberately
+        // NOT a `CaptureSuspension`: Read-Only Mode does not self-heal and is
+        // never a transient-liveness condition (ADR 0021/0040) — it clears only
+        // when the user buys a license, so it never touches `capture_suspension`
+        // nor shares its codes/copy. `cached_status` is `None` until the deferred
+        // gate runs once; treat unknown as allow, never lock on unknown.
+        if crate::licensing::cached_status(&app_handle)
+            .is_some_and(|status| !status.capture_allowed())
+        {
+            super::debug_log::log(
+                "capture refused: trial ended, Read-Only Mode — buy a license to resume recording",
+            );
+            return Err(CaptureErrorResponse {
+                code: "capture_refused_read_only".to_string(),
+                message: "Your trial has ended. Buy a license to resume recording — everything you already recorded stays browsable and searchable.".to_string(),
+            });
+        }
+
         if self.runtime.is_running {
             if self.runtime.requested_sources.as_ref() != Some(&sources) {
                 return Err(CaptureErrorResponse {
