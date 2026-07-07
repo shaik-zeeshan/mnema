@@ -32,7 +32,9 @@ fi
 
 # 2. Rust dependency licenses.
 echo "==> Generating Rust licenses with cargo-about…"
-( cd "${src_tauri}" && cargo about generate about.hbs --frozen ) > "${tmp_dir}/rust-licenses.txt"
+# --locked (not --frozen): enforce Cargo.lock but allow the crates.io index
+# fetch — fresh CI runners have no registry cache, so --frozen fails there.
+( cd "${src_tauri}" && cargo about generate about.hbs --locked ) > "${tmp_dir}/rust-licenses.txt"
 
 # 3. JavaScript / frontend production dependency licenses.
 echo "==> Generating JS licenses with license-checker-rseidelsohn…"
