@@ -249,3 +249,23 @@ pub async fn activate_license(
     let status = compute_license_status(infra.pool(), &app_handle, now_ms()).await;
     Ok(ActivateLicenseResult { status })
 }
+
+/// Activate from a `mnema://license/activate?key=…` deep link. Same verify → store
+/// → recompute path as [`activate_license`], but callable from the deep-link
+/// handler in `lib.rs` where we only hold an `AppHandle`. Success surfaces to the
+/// UI through the emitted `license_status` event (the store re-renders); failures
+/// are logged, not shown — a bad link just leaves the current status untouched.
+pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) {
+    if app_infra::parse_and_verify_license(&key).is_err() {
+        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key failed verification");
+        return;
+    }
+    if let Err(error) = app_infra::store_license_key(&key) {
+        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license store failed: {error}");
+        return;
+    }
+    if let Some(state) = app_handle.try_state::<AppInfraState>() {
+        let infra = std::sync::Arc::clone(&*state);
+        compute_license_status(infra.pool(), &app_handle, now_ms()).await;
+    }
+}

@@ -224,6 +224,42 @@ fn is_oauth_callback_url(url: &url::Url) -> bool {
         && url.path() == "/callback"
 }
 
+/// The license-activation deep link (`mnema://license/activate?key=…` in prod,
+/// `mnema-dev://…` in dev). Host `license` + path `/activate` is distinct from the
+/// oauth (`oauth`) and broker (`open`/`broker`) hosts, so the three never collide.
+/// Returns the URL-decoded key (standard base64 `.`-joined, as minted).
+fn license_key_from_url(url: &url::Url) -> Option<String> {
+    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
+        return None;
+    }
+    if url.host_str() != Some("license") || url.path() != "/activate" {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(k, _)| k == "key")
+        .map(|(_, v)| v.into_owned())
+        .filter(|k| !k.is_empty())
+}
+
+/// Route one deep-link URL to its handler. The `mnema`/`mnema-dev` scheme carries
+/// three unrelated payloads (license activation, MCP OAuth callback, capture-broker
+/// handoff), discriminated by host so none swallows another.
+fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
+    if let Some(key) = license_key_from_url(url) {
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            licensing::activate_from_deep_link(app_handle.clone(), key).await;
+            let _ = windows::open_main_window(&app_handle);
+        });
+    } else if is_oauth_callback_url(url) {
+        app_handle
+            .state::<ask_ai::mcp::McpManager>()
+            .complete_oauth_callback(app_handle, url);
+    } else {
+        enqueue_broker_open_result(app_handle, url);
+    }
+}
+
 async fn broker_payload_from_url(
     config_dir: &Path,
     url: &url::Url,
@@ -684,28 +720,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    // The deep-link scheme carries two unrelated payloads: the MCP
-                    // OAuth callback (host `oauth`) and the capture broker handoff
-                    // (host `open`/`broker`). Dispatch by host so neither swallows
-                    // the other.
-                    if is_oauth_callback_url(&url) {
-                        app_handle
-                            .state::<ask_ai::mcp::McpManager>()
-                            .complete_oauth_callback(&app_handle, &url);
-                    } else {
-                        enqueue_broker_open_result(&app_handle, &url);
-                    }
+                    dispatch_deep_link(&app_handle, &url);
                 }
             });
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    if is_oauth_callback_url(&url) {
-                        app.handle()
-                            .state::<ask_ai::mcp::McpManager>()
-                            .complete_oauth_callback(app.handle(), &url);
-                    } else {
-                        enqueue_broker_open_result(app.handle(), &url);
-                    }
+                    dispatch_deep_link(app.handle(), &url);
                 }
             }
             let _ = app.deep_link().register_all();
@@ -836,7 +856,7 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 mod tests {
     use super::{
         broker_opaque_id_from_url, broker_payload_from_url, exit_request_action_for_exit_request,
-        is_app_log_target, is_oauth_callback_url, should_forward_window_event,
+        is_app_log_target, is_oauth_callback_url, license_key_from_url, should_forward_window_event,
         should_notify_pending_broker_authorization_request,
         should_open_pending_broker_authorization_request, ExitRequestAction,
     };
@@ -862,6 +882,31 @@ mod tests {
         assert!(broker_opaque_id_from_url(&prod).is_none());
         assert_eq!(broker_opaque_id_from_url(&broker_open).as_deref(), Some("f1"));
         assert_eq!(broker_opaque_id_from_url(&broker_nested).as_deref(), Some("f1"));
+    }
+
+    #[test]
+    fn license_deep_link_extracts_url_decoded_key_and_stays_apart() {
+        // Standard base64 (`+ / =`) joined by `.`, percent-encoded in the URL.
+        let key = "eyJlbWFpbCI6ImFAYi5jbyJ9.sig+with/slash=";
+        let url = url::Url::parse(&format!(
+            "mnema://license/activate?key={}",
+            "eyJlbWFpbCI6ImFAYi5jbyJ9.sig%2Bwith%2Fslash%3D"
+        ))
+        .expect("url");
+        assert_eq!(license_key_from_url(&url).as_deref(), Some(key));
+
+        // Never confused for oauth or broker; never claims their URLs.
+        assert!(!is_oauth_callback_url(&url));
+        assert!(broker_opaque_id_from_url(&url).is_none());
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(license_key_from_url(&oauth).is_none());
+        assert!(license_key_from_url(&broker).is_none());
+        // Missing/empty key -> not an activation link.
+        assert!(license_key_from_url(
+            &url::Url::parse("mnema://license/activate").expect("url")
+        )
+        .is_none());
     }
 
     #[test]

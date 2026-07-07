@@ -1,6 +1,7 @@
 import { verifyWebhook } from "./verify";
 import { mintKey } from "./mint";
 import { base64ToBytes } from "./util";
+import { licenseEmail } from "./email";
 
 export interface Env {
   ED25519_PRIVATE_KEY: string; // base64 of the raw 32-byte Ed25519 seed
@@ -25,6 +26,7 @@ interface PolarOrder {
 }
 
 async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void> {
+  const { subject, text, html } = licenseEmail(key);
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -34,12 +36,9 @@ async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void
     body: JSON.stringify({
       from: env.RESEND_FROM ?? "Mnema Licenses <licenses@mnema.app>",
       to: [to],
-      subject: "Your Mnema license key",
-      text:
-        `Thanks for buying Mnema.\n\n` +
-        `Your license key:\n\n${key}\n\n` +
-        `Paste it into Settings → License to activate. ` +
-        `Keep this email — it's your proof of purchase.\n`,
+      subject,
+      text,
+      html,
     }),
   });
   if (!res.ok) {
