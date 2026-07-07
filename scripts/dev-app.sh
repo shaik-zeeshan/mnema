@@ -20,6 +20,7 @@ mkdir -p "${MNEMA_SAVE_DIRECTORY}" "${MNEMA_APP_CONFIG_DIR}"
 echo "mnema dev sandbox"
 echo "  save dir:   ${MNEMA_SAVE_DIRECTORY}"
 echo "  config dir: ${MNEMA_APP_CONFIG_DIR}"
+echo "  license:    ${MNEMA_LICENSE_ENFORCE:+enforced (real trial/read-only gate)}${MNEMA_LICENSE_ENFORCE:-bypassed (dev build) — set MNEMA_LICENSE_ENFORCE=1 to test gating}"
 
 # speakrs builds OpenBLAS from source; this puts the gcc lib dir on the linker
 # search path so the from-source build links (see scripts/openblas-build-env.sh).

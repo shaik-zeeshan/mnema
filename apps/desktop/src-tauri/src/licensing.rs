@@ -65,6 +65,19 @@ pub async fn compute_license_status(
     app_handle: &tauri::AppHandle,
     now_ms: i64,
 ) -> LicenseStatus {
+    // Dev builds are never gated. Overridable with MNEMA_LICENSE_ENFORCE=1 to
+    // exercise the real trial/read-only flow locally.
+    // ponytail: compile-time bypass; release builds fall through to the real gate.
+    if cfg!(debug_assertions) && std::env::var_os("MNEMA_LICENSE_ENFORCE").is_none() {
+        let status = LicenseStatus::Licensed {
+            update_through_ms: i64::MAX,
+            in_window: true,
+            email: "dev@localhost".into(),
+        };
+        publish(app_handle, &status);
+        return status;
+    }
+
     // Anti-rollback: record the high-water mark before reading it back below.
     let _ = app_infra::bump_max_timestamp_seen(pool, now_ms).await;
 
