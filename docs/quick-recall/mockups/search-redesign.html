@@ -1,0 +1,1636 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quick Recall — Search Redesign: List + Detail Pane</title>
+<style>
+/* ============================================================
+   SEARCH REDESIGN — RESEARCH-BACKED: LIST + DETAIL PANE
+   The deliberately simple synthesis of shipped media-search UIs:
+   · Microsoft Recall — exactly two modality section headers
+     (SCREEN / AUDIO ≈ Recall's text vs visual matches), ONE
+     per-app filter, and a thin scrubbable timeline with hover
+     previews instead of any date grouping or facet chips.
+     Recall's postage-stamp thumbnails were its documented
+     scanning failure → 150×94 thumbnails here (legible app
+     identity at a glance).
+   · Raycast — row anatomy (icon/thumb left, title strong +
+     subtitle muted, right-aligned accessories) and the
+     isShowingDetail pane; per Raycast guidance, accessories
+     that move into the pane (match count, badges) are removed
+     from the selected row to avoid duplication.
+   · Screenpipe / Granola — audio is attributed transcript text:
+     no fake visual, a waveform glyph tile in the source color,
+     the quoted words ARE the title.
+   · NN/g layer-cake scanning — headings + one-line rows reward
+     horizontal sweeps; exactly two headers, no third axis.
+   Mechanics: relevance-ordered list (max 8/section), top hit
+   selected by default, arrows move selection, pane updates.
+   ============================================================ */
+
+:root {
+  --app-bg:#0c0c0e;
+  --app-surface:#0e0e16;
+  --app-surface-subtle:#101018;
+  --app-surface-raised:#13131a;
+  --app-surface-hover:#1a1a2a;
+  --app-surface-active:#131320;
+  --app-border:#1e1e2e;
+  --app-border-strong:#2a2a3a;
+  --app-border-hover:#3a3a5a;
+  --app-text-strong:#e2e2e8;
+  --app-text:#c0c0d0;
+  --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98;
+  --app-text-faint:#33334a;
+  --app-accent:#3dffa0;
+  --app-accent-strong:#2a8a60;
+  --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30;
+  --app-accent-glow:rgba(61,255,160,0.18);
+  --app-accent-contrast:#07120c;
+  --app-warn:#d6a14a;
+  --app-warn-bg:#1a1208;
+  --app-warn-border:#7a4a18;
+  --app-danger:#ff6b7a;
+  --app-danger-text:#ff8090;
+  --app-shadow-popover:0 8px 24px rgba(0,0,0,0.22);
+  --app-source-mic:#80d0a8;
+  --app-source-mic-bg:#0f2e1f;
+  --app-source-mic-border:#1a4a30;
+  --app-source-sysaudio:#b0c080;
+  --app-source-sysaudio-bg:#2a2010;
+  --app-source-sysaudio-border:#4a3a18;
+  --backdrop:radial-gradient(ellipse at 50% 30%, #14141e 0%, #0a0a0c 70%);
+}
+[data-theme="light"] {
+  --app-bg:#f6f6f4;
+  --app-surface:#ffffff;
+  --app-surface-subtle:#f6f6f4;
+  --app-surface-raised:#fbfbfa;
+  --app-surface-hover:#eeeeec;
+  --app-surface-active:#e8f1ea;
+  --app-border:#d8d8d4;
+  --app-border-strong:#c4c4c0;
+  --app-border-hover:#a4a4a0;
+  --app-text-strong:#14141a;
+  --app-text:#2a2a32;
+  --app-text-muted:#5a5a6a;
+  --app-text-subtle:#5e5e6a;
+  --app-text-faint:#9a9aa4;
+  --app-accent:#1f7a4a;
+  --app-accent-strong:#155a36;
+  --app-accent-bg:#e6f4ec;
+  --app-accent-border:#9bd3b4;
+  --app-accent-glow:rgba(31,122,74,0.16);
+  --app-accent-contrast:#07120c;
+  --app-warn:#9a5a12;
+  --app-warn-bg:#fff1df;
+  --app-warn-border:#dfbc8a;
+  --app-danger:#c43a48;
+  --app-danger-text:#d24a59;
+  --app-source-mic:#2f8e59;
+  --app-source-mic-bg:#e8f5ec;
+  --app-source-mic-border:#afd8bf;
+  --app-source-sysaudio:#8b7a2c;
+  --app-source-sysaudio-bg:#faf4df;
+  --app-source-sysaudio-border:#dbc98a;
+  --backdrop:radial-gradient(ellipse at 50% 30%, #e8e8e4 0%, #d4d4ce 70%);
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+:focus-visible { outline:2px solid var(--app-accent); outline-offset:2px; }
+html, body { background:var(--app-bg); }
+body {
+  font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,monospace;
+  color:var(--app-text);
+  font-size:13px; line-height:1.5;
+  min-height:100vh;
+  padding:32px 24px 64px;
+}
+::selection { background:var(--app-accent-glow); }
+mark {
+  background:color-mix(in srgb, var(--app-accent) 26%, transparent);
+  color:var(--app-text-strong);
+  border-radius:2px; padding:0 1px;
+}
+kbd {
+  font:inherit; font-size:10px;
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-bottom-width:2px;
+  border-radius:3px; padding:1px 5px;
+  color:var(--app-text-muted);
+}
+::-webkit-scrollbar { width:8px; }
+::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:4px; }
+::-webkit-scrollbar-track { background:transparent; }
+
+/* ---- page header (outside the mocked window) ---- */
+.page-head { max-width:1120px; margin:0 auto 28px; position:relative; padding-right:120px; }
+.page-head h1 { font-size:20px; color:var(--app-text-strong); letter-spacing:-0.01em; }
+.page-head .kicker {
+  font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-accent); margin-bottom:6px;
+}
+.page-head p { font-size:12px; color:var(--app-text-subtle); margin-top:8px; max-width:76ch; }
+.theme-toggle {
+  position:absolute; top:0; right:0;
+  font:inherit; font-size:11px;
+  color:var(--app-text-muted);
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-radius:4px; padding:6px 12px; cursor:pointer;
+  transition:border-color 0.12s, color 0.12s;
+}
+.theme-toggle:hover { border-color:var(--app-border-hover); color:var(--app-text-strong); }
+.theme-toggle:active, .appfilter > button:active, .synhelp > button:active,
+.app-menu button:active, .more-row:active, .sp-btn:active { background:var(--app-surface-active); }
+.askai-btn:active { background:color-mix(in srgb, var(--app-accent) 14%, var(--app-accent-bg)); }
+.fchip .x:active { opacity:1; background:color-mix(in srgb, var(--app-accent) 26%, transparent); }
+
+/* ---- spotlight backdrop + mocked window ---- */
+.stage {
+  background:var(--backdrop);
+  border-radius:16px;
+  padding:56px 24px;
+  display:flex; justify-content:center;
+  max-width:1180px; margin:0 auto;
+}
+.qr-window {
+  width:1120px; height:720px; flex:none;
+  background:var(--app-surface);
+  border:1px solid var(--app-border-strong);
+  border-radius:12px;
+  box-shadow:0 32px 80px rgba(0,0,0,0.55), 0 4px 16px rgba(0,0,0,0.35);
+  display:flex; flex-direction:column;
+  overflow:hidden;
+  position:relative; /* anchors the timeline hover preview */
+}
+[data-theme="light"] .qr-window { box-shadow:0 32px 80px rgba(0,0,0,0.25), 0 4px 16px rgba(0,0,0,0.12); }
+
+/* ---- search input row: query + ONE per-app filter ---- */
+.searchbar {
+  flex:none; display:flex; align-items:center; gap:8px;
+  padding:0 16px; height:56px;
+  border-bottom:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.searchbar svg.magnifier { flex:none; color:var(--app-text-subtle); }
+.searchbar:focus-within svg.magnifier { color:var(--app-accent); }
+.searchbar input {
+  flex:1; min-width:0; background:none; border:none; outline:none;
+  font:inherit; font-size:16px; color:var(--app-text-strong);
+  caret-color:var(--app-accent);
+}
+.appfilter { position:relative; flex:none; }
+.appfilter > button {
+  font:inherit; font-size:11px;
+  color:var(--app-text-muted);
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-radius:6px; padding:5px 10px; cursor:pointer;
+  display:flex; align-items:center; gap:6px;
+  transition:border-color 0.12s, color 0.12s;
+  white-space:nowrap;
+}
+.appfilter > button:hover { color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.appfilter > button .caret-dn { font-size:9px; color:var(--app-text-subtle); }
+.appfilter.filtered > button {
+  color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border);
+}
+.app-menu {
+  display:none;
+  position:absolute; top:calc(100% + 6px); right:0; z-index:30;
+  min-width:170px;
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-radius:8px;
+  box-shadow:var(--app-shadow-popover);
+  padding:4px;
+}
+.appfilter.open .app-menu { display:block; }
+.app-menu button {
+  display:flex; align-items:center; gap:8px; width:100%;
+  font:inherit; font-size:11px; text-align:left;
+  color:var(--app-text-muted);
+  background:none; border:none; border-radius:5px;
+  padding:6px 9px; cursor:pointer;
+}
+.app-menu button:hover { background:var(--app-surface-hover); color:var(--app-text-strong); }
+.app-menu button.active { color:var(--app-accent); background:var(--app-accent-bg); }
+.app-menu button .n { margin-left:auto; color:var(--app-text-faint); }
+[data-theme="light"] .app-menu button .n { color:var(--app-text-subtle); }
+.appfilter > button kbd { font-size:10px; padding:0 4px; }
+.appfilter.filtered > button kbd { color:var(--app-accent); background:transparent; border-color:var(--app-accent-border); }
+.app-menu { max-height:440px; overflow-y:auto; }
+.app-menu .cat {
+  font-size:10px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle); padding:8px 9px 3px;
+}
+
+/* ---- section "show more" affordance ---- */
+.more-row {
+  display:block; width:100%; text-align:center;
+  font:inherit; font-size:11px; color:var(--app-text-subtle);
+  background:none; border:none; border-radius:7px;
+  padding:8px 0; margin-bottom:8px; cursor:pointer;
+  transition:color 0.12s, background 0.12s;
+}
+.more-row:hover { color:var(--app-accent); background:var(--app-surface-hover); }
+
+/* ---- syntax help "?" + popover ---- */
+.synhelp { position:relative; flex:none; }
+.synhelp > button {
+  width:22px; height:22px; border-radius:50%;
+  font:inherit; font-size:11px; line-height:1;
+  color:var(--app-text-subtle);
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  cursor:pointer;
+  transition:border-color 0.12s, color 0.12s;
+}
+.synhelp > button:hover, .synhelp.open > button { color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.syn-pop {
+  display:none;
+  position:absolute; top:calc(100% + 10px); right:-8px; z-index:40;
+  width:252px;
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-radius:8px;
+  box-shadow:var(--app-shadow-popover);
+  padding:10px 12px;
+}
+.synhelp.open .syn-pop { display:block; }
+.syn-pop .syn-title {
+  font-size:10px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle); margin-bottom:7px;
+}
+.syn-pop .syn-row {
+  display:grid; grid-template-columns:96px 1fr; gap:8px;
+  font-size:11px; padding:2px 0;
+}
+.syn-pop .syn-row .op { color:var(--app-accent); white-space:nowrap; }
+.syn-pop .syn-row .desc { color:var(--app-text-muted); }
+
+/* ---- Ask AI door (second mode, not mocked here) ---- */
+.askai-btn {
+  flex:none; display:flex; align-items:center; gap:6px;
+  font:inherit; font-size:11px; white-space:nowrap;
+  color:var(--app-accent);
+  background:var(--app-accent-bg);
+  border:1px solid var(--app-accent-border);
+  border-radius:6px; padding:5px 10px; cursor:pointer;
+  transition:border-color 0.12s, box-shadow 0.12s;
+}
+.askai-btn:hover { border-color:var(--app-accent-strong); box-shadow:0 0 0 3px var(--app-accent-glow); }
+.askai-btn kbd { color:var(--app-accent); background:transparent; border-color:var(--app-accent-border); }
+
+/* ---- typed-filter chip band ---- */
+.chipband {
+  flex:none; display:flex; align-items:center; gap:8px;
+  padding:8px 16px;
+  border-bottom:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.fchip {
+  display:inline-flex; align-items:center; gap:6px;
+  font-size:11px; line-height:1;
+  color:var(--app-accent); background:var(--app-accent-bg);
+  border:1px solid var(--app-accent-border);
+  border-radius:999px; padding:4px 5px 4px 10px;
+  white-space:nowrap;
+}
+.fchip .x {
+  font:inherit; font-size:12px; line-height:1;
+  width:16px; height:16px; border-radius:50%;
+  display:inline-flex; align-items:center; justify-content:center;
+  color:inherit; background:none; border:none; cursor:pointer; opacity:0.7;
+}
+.fchip .x:hover { opacity:1; background:color-mix(in srgb, var(--app-accent) 18%, transparent); }
+.chipband .chip-hint { font-size:10px; color:var(--app-text-subtle); }
+
+/* ---- body: list (left ~700) + detail pane (right ~420) ---- */
+.qr-body { flex:1 1 auto; display:flex; min-height:0; }
+.result-list {
+  flex:0 0 700px; min-width:0; display:flex; flex-direction:column;
+  border-right:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.rows { flex:1 1 auto; overflow-y:auto; padding:4px 12px 12px; }
+.section-label {
+  padding:16px 8px 8px;
+  font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle);
+  display:flex; justify-content:space-between; align-items:baseline;
+}
+.section-label .n { color:var(--app-text-subtle); letter-spacing:0; text-transform:none; }
+
+/* ---- Raycast-style row: thumb | title+subtitle | right accessories ---- */
+.row {
+  display:flex; gap:12px; align-items:center;
+  padding:8px 12px; margin-bottom:8px;
+  border:1px solid transparent; border-radius:9px;
+  cursor:pointer; transition:background 0.12s, border-color 0.12s, box-shadow 0.12s;
+}
+.row:hover { background:var(--app-surface-hover); }
+.row.selected {
+  background:var(--app-surface-active);
+  border-color:var(--app-accent-border);
+  box-shadow:0 0 0 1px var(--app-accent-border), 0 0 0 4px color-mix(in srgb, var(--app-accent) 12%, transparent);
+}
+.row .thumb {
+  flex:none; width:150px; height:94px; border-radius:6px;
+  border:1px solid var(--app-border-strong); overflow:hidden;
+  background:#101014;
+}
+.row .thumb svg.shot { display:block; width:100%; height:100%; }
+.row .meta { flex:1; min-width:0; align-self:flex-start; padding-top:4px; }
+.row .meta .line1 {
+  display:flex; align-items:baseline; gap:7px; min-width:0;
+  font-size:12px;
+}
+.row .meta .line1 .app { flex:none; color:var(--app-text-strong); font-weight:600; }
+.row .meta .line1 .win {
+  color:var(--app-text-muted);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;
+}
+.row .meta .line2 {
+  display:block; /* span needs block for overflow/ellipsis to apply */
+  font-size:11px; color:var(--app-text-muted); margin-top:4px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.row .acc {
+  flex:none; align-self:flex-start; padding-top:4px;
+  display:flex; flex-direction:column; align-items:flex-end; gap:4px;
+  max-width:120px;
+}
+.row .acc .time { font-size:10px; color:var(--app-text-subtle); white-space:nowrap; }
+.row .acc .mcount { font-size:10px; color:var(--app-text-subtle); white-space:nowrap; }
+.pill {
+  display:inline-flex; align-items:center;
+  font-size:10px; line-height:1; padding:3px 6px; border-radius:4px;
+  border:1px solid; text-transform:uppercase; letter-spacing:0.05em;
+  white-space:nowrap;
+}
+.pill-meaning { color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+.pill-redacted { color:var(--app-warn); background:var(--app-warn-bg); border-color:var(--app-warn-border); }
+.pill-mic { color:var(--app-source-mic); background:var(--app-source-mic-bg); border-color:var(--app-source-mic-border); }
+.pill-sys { color:var(--app-source-sysaudio); background:var(--app-source-sysaudio-bg); border-color:var(--app-source-sysaudio-border); }
+
+/* ---- audio row: waveform glyph tile, no fake screenshot ---- */
+.row .wavetile {
+  flex:none; width:150px; height:48px; border-radius:6px;
+  border:1px solid; overflow:hidden; position:relative;
+}
+.row .wavetile.mic { background:var(--app-source-mic-bg); border-color:var(--app-source-mic-border); }
+.row .wavetile.sys { background:var(--app-source-sysaudio-bg); border-color:var(--app-source-sysaudio-border); }
+.row .wavetile .wave { position:absolute; left:8px; right:8px; top:10px; bottom:10px; width:auto; height:auto; }
+.row .wavetile.mic .wave .wb { fill:color-mix(in srgb, var(--app-source-mic) 45%, transparent); }
+.row .wavetile.mic .wave .wb-on { fill:var(--app-source-mic); }
+.row .wavetile.sys .wave .wb { fill:color-mix(in srgb, var(--app-source-sysaudio) 45%, transparent); }
+.row .wavetile.sys .wave .wb-on { fill:var(--app-source-sysaudio); }
+.row.audio .meta .line1 { display:block; }
+.row.audio .meta .quote {
+  color:var(--app-text-strong); font-size:12px; line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden;
+}
+.row.audio { align-items:center; }
+.row.audio .meta, .row.audio .acc { align-self:center; padding-top:0; }
+
+/* ---- right: detail pane (Raycast isShowingDetail) ---- */
+.detail {
+  flex:1 1 auto; min-width:0; display:flex; flex-direction:column;
+  padding:16px 20px 16px; overflow:hidden;
+  background:var(--app-surface);
+}
+.detail .hero {
+  flex:none; border-radius:7px; overflow:hidden;
+  border:1px solid var(--app-border-strong);
+  background:#101014;
+}
+.detail .hero svg { display:block; width:100%; height:auto; }
+.detail .id-row {
+  flex:none; display:flex; align-items:center; gap:8px;
+  margin-top:12px; min-width:0;
+}
+.appicon {
+  flex:none; width:20px; height:20px; border-radius:5px;
+  display:inline-flex; align-items:center; justify-content:center;
+  font-size:9px; font-weight:700; color:#fff;
+}
+.detail .id-row .app-name { flex:none; font-size:13px; color:var(--app-text-strong); font-weight:600; white-space:nowrap; }
+.detail .id-row .win-title {
+  font-size:12px; color:var(--app-text-muted);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0;
+}
+.detail .badge-row { flex:none; display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; align-items:center; }
+.detail .badge-row .mchip {
+  font-size:10px; color:var(--app-accent); border:1px solid var(--app-accent-border);
+  background:var(--app-accent-bg); border-radius:4px; padding:3px 6px; line-height:1;
+}
+.detail .url-row {
+  flex:none; margin-top:8px; font-size:12px;
+  color:var(--app-accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.detail .url-row .proto { color:var(--app-text-subtle); }
+.detail .time-row {
+  flex:none; margin-top:6px; font-size:11px; color:var(--app-text-subtle);
+  display:flex; gap:12px; flex-wrap:wrap;
+}
+.detail .time-row .rel { color:var(--app-text-muted); }
+.detail .ctx-label {
+  flex:none; margin:12px 0 6px;
+  font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle);
+  display:flex; justify-content:space-between; align-items:baseline;
+}
+.detail .ctx-label .scroll-hint { font-size:10px; color:var(--app-text-subtle); text-transform:none; letter-spacing:0; }
+.detail .ctx {
+  flex:1 1 auto; min-height:0; overflow-y:auto;
+  border:1px solid var(--app-border); border-radius:7px;
+  background:var(--app-surface-raised);
+  padding:10px 12px; font-size:11px; line-height:1.65;
+  color:var(--app-text); white-space:pre-wrap; word-break:break-word;
+}
+
+/* audio detail: waveform + match-position marker */
+.wavebox {
+  flex:none; margin-top:12px; border:1px solid var(--app-border);
+  border-radius:7px; background:var(--app-surface-raised);
+  padding:8px 12px 5px;
+}
+.wavebox .wave { width:100%; height:26px; display:block; }
+.wavebox .wave .wb { fill:var(--app-text-faint); }
+.wavebox .wave .wb-on { fill:var(--app-accent); }
+.wavebox .wave .wmark { stroke:var(--app-accent); stroke-width:1.5; }
+.wavebox .wavemeta { display:flex; justify-content:space-between; font-size:10px; color:var(--app-text-subtle); margin-top:4px; }
+.wavebox .wavemeta .at { color:var(--app-accent); }
+
+/* ---- thin timeline strip (Recall pattern): 7-day axis + match dots ---- */
+.timeline {
+  flex:none; height:36px; position:relative;
+  border-top:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.timeline .axis {
+  position:absolute; left:16px; right:16px; top:16px; height:1px;
+  background:var(--app-border-strong);
+}
+.timeline .tick {
+  position:absolute; top:13px; width:1px; height:7px;
+  background:var(--app-border-strong);
+}
+.timeline .tick-label {
+  position:absolute; top:22px; transform:translateX(-50%);
+  font-size:10px; letter-spacing:0.05em; color:var(--app-text-subtle);
+  text-transform:uppercase; white-space:nowrap;
+}
+.timeline .tick-label.empty { color:var(--app-text-faint); }
+[data-theme="light"] .timeline .tick-label.empty { color:var(--app-border-strong); }
+.timeline .tl-legend {
+  position:absolute; top:1px; right:16px;
+  font-size:10px; color:var(--app-text-subtle); white-space:nowrap;
+}
+.timeline .dot {
+  position:absolute; top:13px; width:7px; height:7px; margin-left:-3.5px;
+  border-radius:50%;
+  background:var(--app-accent);
+  border:1px solid var(--app-accent-strong);
+  cursor:pointer;
+  transition:transform 0.1s, opacity 0.12s;
+}
+.timeline .dot:hover { transform:scale(1.5); }
+.timeline .dot::after { content:""; position:absolute; inset:-5px; border-radius:50%; }
+.timeline .dot.dim { opacity:0.22; pointer-events:none; }
+.timeline .dot.sel { box-shadow:0 0 0 3px color-mix(in srgb, var(--app-accent) 25%, transparent); }
+
+/* floating hover preview (anchored to the window, above the strip) */
+.tl-preview {
+  display:none;
+  position:absolute; bottom:78px; z-index:20;
+  width:152px;
+  background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong);
+  border-radius:8px;
+  box-shadow:var(--app-shadow-popover);
+  padding:5px;
+  pointer-events:none;
+}
+.tl-preview.show { display:block; }
+.tl-preview .pthumb {
+  width:140px; height:88px; border-radius:5px; overflow:hidden;
+  border:1px solid var(--app-border); background:#101014; position:relative;
+}
+.tl-preview .pthumb svg.shot { display:block; width:100%; height:100%; }
+.tl-preview .pthumb.mic { background:var(--app-source-mic-bg); }
+.tl-preview .pthumb.sys { background:var(--app-source-sysaudio-bg); }
+.tl-preview .pthumb .wave { position:absolute; left:10px; right:10px; top:30px; bottom:30px; width:auto; height:auto; }
+.tl-preview .pthumb.mic .wave .wb { fill:color-mix(in srgb, var(--app-source-mic) 45%, transparent); }
+.tl-preview .pthumb.mic .wave .wb-on { fill:var(--app-source-mic); }
+.tl-preview .pthumb.sys .wave .wb { fill:color-mix(in srgb, var(--app-source-sysaudio) 45%, transparent); }
+.tl-preview .pthumb.sys .wave .wb-on { fill:var(--app-source-sysaudio); }
+.tl-preview .ptime {
+  font-size:11px; color:var(--app-text-strong); padding:5px 3px 0;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.tl-preview .plabel {
+  font-size:10px; color:var(--app-text-muted); padding:2px 3px 2px;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+
+/* ---- footer ---- */
+.qr-footer {
+  flex:none; height:36px; display:flex; align-items:center; gap:14px;
+  padding:0 16px; border-top:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+  font-size:11px; color:var(--app-text-subtle);
+}
+.qr-footer .hint { display:flex; align-items:center; gap:5px; white-space:nowrap; }
+.qr-footer .spacer { flex:1; }
+.qr-footer .brand { color:var(--app-text-faint); font-size:10px; letter-spacing:0.08em; text-transform:uppercase; }
+[data-theme="light"] .qr-footer .brand { color:var(--app-text-subtle); }
+
+/* ---- STATES gallery: 4 static reduced-scale panels ---- */
+.states-head { max-width:1120px; margin:44px auto 14px; }
+.states-head h2 {
+  font-size:11px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle);
+}
+.states-head p { font-size:11px; color:var(--app-text-subtle); margin-top:4px; }
+.states-grid {
+  max-width:1120px; margin:0 auto;
+  display:grid; grid-template-columns:1fr 1fr; gap:22px;
+}
+.state-cell .cap {
+  font-size:10px; text-transform:uppercase; letter-spacing:0.08em;
+  color:var(--app-text-subtle); margin-bottom:8px;
+}
+.state-panel {
+  height:290px; display:flex; flex-direction:column; overflow:hidden;
+  background:var(--app-surface);
+  border:1px solid var(--app-border-strong); border-radius:10px;
+  box-shadow:0 12px 32px rgba(0,0,0,0.35);
+}
+[data-theme="light"] .state-panel { box-shadow:0 12px 32px rgba(0,0,0,0.12); }
+.state-panel .sp-search {
+  flex:none; height:38px; display:flex; align-items:center; gap:8px;
+  padding:0 12px; font-size:12px; color:var(--app-text-strong);
+  border-bottom:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.state-panel .sp-search svg { flex:none; color:var(--app-text-subtle); }
+.state-panel .sp-search .q { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.state-panel .sp-search .q .caret-i {
+  display:inline-block; width:2px; height:13px; margin-left:1px;
+  background:var(--app-accent); vertical-align:text-bottom;
+}
+.state-panel .sp-search .sp-chip {
+  flex:none; font-size:10px; color:var(--app-accent);
+  background:var(--app-accent-bg); border:1px solid var(--app-accent-border);
+  border-radius:999px; padding:3px 8px; white-space:nowrap;
+}
+.state-panel .sp-body { flex:1 1 auto; display:flex; min-height:0; }
+.state-panel .sp-list {
+  flex:0 0 62%; min-width:0; padding:10px;
+  border-right:1px solid var(--app-border);
+  background:var(--app-surface-subtle);
+}
+.state-panel .sp-detail { flex:1 1 auto; min-width:0; padding:12px; background:var(--app-surface); }
+.state-panel .sp-detail.dim { opacity:0.35; }
+.state-panel .sp-center {
+  flex:1 1 auto; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:8px;
+  text-align:center; padding:0 40px;
+}
+.state-panel .sp-center .glyph { font-size:22px; color:var(--app-text-subtle); }
+.state-panel .sp-center .lead { font-size:12px; color:var(--app-text-strong); }
+.state-panel .sp-center .sub { font-size:11px; color:var(--app-text-muted); }
+.state-panel .sp-center .faint { font-size:10px; color:var(--app-text-subtle); }
+.state-panel .sp-actions { display:flex; gap:8px; margin-top:4px; }
+.state-panel .sp-btn {
+  font:inherit; font-size:11px; cursor:pointer;
+  color:var(--app-text-muted); background:var(--app-surface-raised);
+  border:1px solid var(--app-border-strong); border-radius:6px; padding:5px 11px;
+}
+.state-panel .sp-btn.accent {
+  color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border);
+}
+/* skeleton shimmer */
+@keyframes shimmer { from { background-position:-200px 0; } to { background-position:200px 0; } }
+.sk {
+  border-radius:5px;
+  background:linear-gradient(90deg, var(--app-surface-hover) 25%, var(--app-surface-raised) 50%, var(--app-surface-hover) 75%);
+  background-size:400px 100%;
+  animation:shimmer 1.4s linear infinite;
+}
+.sk-row { display:flex; gap:10px; align-items:center; padding:8px; }
+.sk-row .sk-thumb { flex:none; width:104px; height:64px; }
+.sk-row .sk-lines { flex:1; min-width:0; display:flex; flex-direction:column; gap:8px; }
+.sk-line { height:9px; }
+.sk-label { height:9px; width:56px; margin:10px 8px 6px; }
+@media (prefers-reduced-motion: reduce) {
+  .sk { animation:none; }
+  *, ::before, ::after { transition-duration:0.01ms !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="page-head">
+  <div class="kicker">Quick Recall / search redesign</div>
+  <h1>Research-backed: List + Detail Pane</h1>
+  <p>The evidence-driven synthesis, deliberately simple. Microsoft Recall's shipped answer to mixed-media
+     search is exactly two modality headers and a single per-app filter — mirrored here as SCREEN / AUDIO
+     sections plus one "All apps" dropdown, with Recall's thin scrubbable timeline (hover a dot for a
+     thumbnail preview) replacing all date grouping and facet chips. Rows follow Raycast's anatomy — thumb
+     left, app strong + window title muted, one snippet line, accessories right — backed by a Raycast-style
+     detail pane whose duplicated accessories are stripped from the selected row. Recall's postage-stamp
+     thumbnails were its documented scanning failure, so thumbnails are 150px and legible; audio follows
+     Screenpipe/Granola as attributed transcript text with a waveform glyph, never a fake visual. Two
+     headers and one-line rows are the NN/g layer-cake scanning pattern: eyes sweep headings first, then rows.
+     Note: selection = preview-in-detail-pane is a DELIBERATE semantic change from today's window, where
+     selecting a result opens it in the main window and closes Quick Recall.</p>
+  <button class="theme-toggle" id="themeToggle">light theme</button>
+</div>
+
+<!-- ============ fake screenshot sprite (07's symbols, verbatim) ============ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+
+  <symbol id="sh-vscode" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#181825"/>
+    <rect width="320" height="16" fill="#11111b"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="120" y="4" width="90" height="8" rx="2" fill="#2a2a3c"/>
+    <rect x="0" y="16" width="46" height="184" fill="#11111b"/>
+    <rect x="8" y="28" width="30" height="5" rx="2" fill="#45455e"/>
+    <rect x="12" y="40" width="26" height="4" rx="2" fill="#33334a"/>
+    <rect x="12" y="50" width="28" height="4" rx="2" fill="#89b4fa" opacity="0.7"/>
+    <rect x="12" y="60" width="22" height="4" rx="2" fill="#33334a"/>
+    <rect x="12" y="70" width="26" height="4" rx="2" fill="#33334a"/>
+    <rect x="46" y="16" width="274" height="14" fill="#14141f"/>
+    <rect x="52" y="19" width="88" height="8" rx="2" fill="#232338"/>
+    <rect x="146" y="19" width="60" height="8" rx="2" fill="#181825"/>
+    <rect x="56" y="40" width="24" height="6" rx="2" fill="#cba6f7"/>
+    <rect x="84" y="40" width="76" height="6" rx="2" fill="#89b4fa"/>
+    <rect x="164" y="40" width="52" height="6" rx="2" fill="#585873"/>
+    <rect x="66" y="54" width="30" height="6" rx="2" fill="#cba6f7"/>
+    <rect x="100" y="54" width="70" height="6" rx="2" fill="#cdd6f4" opacity="0.75"/>
+    <rect x="174" y="54" width="44" height="6" rx="2" fill="#a6e3a1"/>
+    <rect x="66" y="68" width="52" height="6" rx="2" fill="#cdd6f4" opacity="0.6"/>
+    <rect x="122" y="68" width="88" height="6" rx="2" fill="#f9e2af"/>
+    <rect x="76" y="82" width="26" height="6" rx="2" fill="#cba6f7"/>
+    <rect x="106" y="82" width="96" height="6" rx="2" fill="#89b4fa"/>
+    <rect x="206" y="82" width="34" height="6" rx="2" fill="#a6e3a1"/>
+    <rect x="52" y="94" width="262" height="12" fill="#2a3d2f" opacity="0.85"/>
+    <rect x="76" y="97" width="120" height="6" rx="2" fill="#a6e3a1"/>
+    <rect x="200" y="97" width="60" height="6" rx="2" fill="#cdd6f4" opacity="0.8"/>
+    <rect x="76" y="112" width="40" height="6" rx="2" fill="#f38ba8"/>
+    <rect x="120" y="112" width="80" height="6" rx="2" fill="#cdd6f4" opacity="0.6"/>
+    <rect x="66" y="126" width="34" height="6" rx="2" fill="#cba6f7"/>
+    <rect x="104" y="126" width="118" height="6" rx="2" fill="#cdd6f4" opacity="0.55"/>
+    <rect x="66" y="140" width="90" height="6" rx="2" fill="#585873"/>
+    <rect x="56" y="154" width="20" height="6" rx="2" fill="#cba6f7"/>
+    <rect x="80" y="154" width="64" height="6" rx="2" fill="#89b4fa"/>
+    <rect x="0" y="192" width="320" height="8" fill="#1e2a4a"/>
+  </symbol>
+
+  <symbol id="sh-stripedocs" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#ffffff"/>
+    <rect width="320" height="16" fill="#e9e9ee"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="44" y="4" width="180" height="9" rx="4" fill="#ffffff" stroke="#d4d4dc"/>
+    <rect x="0" y="16" width="320" height="20" fill="#ffffff"/>
+    <rect x="12" y="22" width="42" height="8" rx="2" fill="#635bff"/>
+    <rect x="200" y="23" width="30" height="6" rx="2" fill="#c9c9d4"/>
+    <rect x="236" y="23" width="30" height="6" rx="2" fill="#c9c9d4"/>
+    <rect x="272" y="22" width="36" height="9" rx="4" fill="#635bff"/>
+    <rect x="0" y="36" width="320" height="1" fill="#e5e5ec"/>
+    <rect x="0" y="37" width="70" height="163" fill="#f7f7fa"/>
+    <rect x="10" y="48" width="44" height="5" rx="2" fill="#8a8aa0"/>
+    <rect x="14" y="60" width="40" height="4" rx="2" fill="#b8b8c8"/>
+    <rect x="14" y="70" width="34" height="4" rx="2" fill="#635bff"/>
+    <rect x="14" y="80" width="42" height="4" rx="2" fill="#b8b8c8"/>
+    <rect x="14" y="90" width="30" height="4" rx="2" fill="#b8b8c8"/>
+    <rect x="86" y="50" width="150" height="10" rx="2" fill="#1a1a2e"/>
+    <rect x="86" y="70" width="210" height="5" rx="2" fill="#9c9cae"/>
+    <rect x="86" y="80" width="196" height="5" rx="2" fill="#9c9cae"/>
+    <rect x="86" y="90" width="120" height="5" rx="2" fill="#9c9cae"/>
+    <rect x="86" y="104" width="212" height="62" rx="4" fill="#1a1a2e"/>
+    <rect x="96" y="114" width="30" height="5" rx="2" fill="#cba6f7"/>
+    <rect x="130" y="114" width="90" height="5" rx="2" fill="#a6e3a1"/>
+    <rect x="96" y="126" width="120" height="5" rx="2" fill="#89b4fa"/>
+    <rect x="96" y="138" width="70" height="5" rx="2" fill="#f9e2af"/>
+    <rect x="170" y="138" width="86" height="5" rx="2" fill="#cdd6f4" opacity="0.7"/>
+    <rect x="96" y="150" width="100" height="5" rx="2" fill="#a6e3a1"/>
+    <rect x="86" y="176" width="180" height="5" rx="2" fill="#9c9cae"/>
+  </symbol>
+
+  <symbol id="sh-ghpr" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#0d1117"/>
+    <rect width="320" height="16" fill="#010409"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="44" y="4" width="180" height="9" rx="4" fill="#161b22" stroke="#30363d"/>
+    <rect x="14" y="28" width="200" height="9" rx="2" fill="#e6edf3"/>
+    <rect x="220" y="28" width="52" height="9" rx="2" fill="#8b949e" opacity="0.5"/>
+    <rect x="14" y="44" width="40" height="12" rx="6" fill="#238636"/>
+    <rect x="20" y="48" width="28" height="4" rx="2" fill="#ffffff" opacity="0.9"/>
+    <rect x="62" y="47" width="130" height="6" rx="2" fill="#8b949e"/>
+    <rect x="0" y="64" width="320" height="1" fill="#21262d"/>
+    <rect x="14" y="74" width="292" height="14" rx="3" fill="#161b22" stroke="#30363d"/>
+    <rect x="22" y="78" width="140" height="6" rx="2" fill="#79c0ff"/>
+    <rect x="14" y="92" width="292" height="10" fill="#161b22"/>
+    <rect x="24" y="95" width="170" height="4" rx="2" fill="#8b949e" opacity="0.6"/>
+    <rect x="14" y="102" width="292" height="10" fill="#3c1618"/>
+    <rect x="24" y="105" width="140" height="4" rx="2" fill="#ffa198" opacity="0.8"/>
+    <rect x="14" y="112" width="292" height="10" fill="#12261e"/>
+    <rect x="24" y="115" width="190" height="4" rx="2" fill="#7ee787" opacity="0.85"/>
+    <rect x="14" y="122" width="292" height="10" fill="#12261e"/>
+    <rect x="24" y="125" width="160" height="4" rx="2" fill="#7ee787" opacity="0.85"/>
+    <rect x="14" y="132" width="292" height="10" fill="#12261e"/>
+    <rect x="24" y="135" width="120" height="4" rx="2" fill="#7ee787" opacity="0.85"/>
+    <rect x="14" y="142" width="292" height="10" fill="#161b22"/>
+    <rect x="24" y="145" width="180" height="4" rx="2" fill="#8b949e" opacity="0.6"/>
+    <rect x="14" y="160" width="292" height="30" rx="4" fill="#161b22" stroke="#30363d"/>
+    <circle cx="28" cy="172" r="6" fill="#f9e2af"/>
+    <rect x="40" y="167" width="60" height="5" rx="2" fill="#e6edf3" opacity="0.8"/>
+    <rect x="40" y="176" width="200" height="4" rx="2" fill="#8b949e" opacity="0.6"/>
+  </symbol>
+
+  <symbol id="sh-term" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#0a0a0c"/>
+    <rect width="320" height="16" fill="#151517"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="120" y="4" width="100" height="8" rx="2" fill="#26262a"/>
+    <rect x="12" y="28" width="10" height="6" rx="1" fill="#3dffa0"/>
+    <rect x="26" y="28" width="150" height="6" rx="1" fill="#c0c0d0" opacity="0.85"/>
+    <rect x="12" y="42" width="230" height="5" rx="1" fill="#6a6a7a"/>
+    <rect x="12" y="52" width="190" height="5" rx="1" fill="#6a6a7a"/>
+    <rect x="12" y="66" width="60" height="6" rx="1" fill="#3dffa0" opacity="0.9"/>
+    <rect x="76" y="66" width="160" height="6" rx="1" fill="#9a9aae" opacity="0.7"/>
+    <rect x="12" y="80" width="60" height="6" rx="1" fill="#3dffa0" opacity="0.9"/>
+    <rect x="76" y="80" width="130" height="6" rx="1" fill="#9a9aae" opacity="0.7"/>
+    <rect x="12" y="94" width="60" height="6" rx="1" fill="#f38ba8"/>
+    <rect x="76" y="94" width="200" height="6" rx="1" fill="#f38ba8" opacity="0.55"/>
+    <rect x="12" y="108" width="60" height="6" rx="1" fill="#3dffa0" opacity="0.9"/>
+    <rect x="76" y="108" width="110" height="6" rx="1" fill="#9a9aae" opacity="0.7"/>
+    <rect x="12" y="126" width="240" height="5" rx="1" fill="#6a6a7a"/>
+    <rect x="12" y="136" width="180" height="5" rx="1" fill="#6a6a7a"/>
+    <rect x="12" y="150" width="130" height="6" rx="1" fill="#f9e2af" opacity="0.85"/>
+    <rect x="12" y="168" width="10" height="6" rx="1" fill="#3dffa0"/>
+    <rect x="26" y="168" width="70" height="6" rx="1" fill="#c0c0d0" opacity="0.85"/>
+    <rect x="100" y="166" width="8" height="10" fill="#3dffa0"/>
+  </symbol>
+
+  <symbol id="sh-slack" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#1a1d21"/>
+    <rect width="320" height="16" fill="#121016"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="0" y="16" width="76" height="184" fill="#3f0e40"/>
+    <rect x="10" y="26" width="50" height="7" rx="2" fill="#e8d8e8" opacity="0.9"/>
+    <rect x="10" y="44" width="40" height="5" rx="2" fill="#b088b0"/>
+    <rect x="14" y="56" width="44" height="4" rx="2" fill="#9a6a9a"/>
+    <rect x="14" y="66" width="36" height="4" rx="2" fill="#9a6a9a"/>
+    <rect x="10" y="76" width="56" height="12" rx="3" fill="#5a2a5a"/>
+    <rect x="14" y="80" width="44" height="4" rx="2" fill="#f0e0f0"/>
+    <rect x="14" y="96" width="40" height="4" rx="2" fill="#9a6a9a"/>
+    <rect x="14" y="106" width="46" height="4" rx="2" fill="#9a6a9a"/>
+    <rect x="76" y="16" width="244" height="20" fill="#1a1d21"/>
+    <rect x="88" y="22" width="80" height="8" rx="2" fill="#d1d2d3"/>
+    <rect x="76" y="36" width="244" height="1" fill="#2c2d30"/>
+    <rect x="88" y="48" width="18" height="18" rx="4" fill="#e0a04a"/>
+    <rect x="114" y="48" width="52" height="6" rx="2" fill="#d1d2d3"/>
+    <rect x="170" y="49" width="24" height="4" rx="2" fill="#616264"/>
+    <rect x="114" y="60" width="180" height="5" rx="2" fill="#ababad"/>
+    <rect x="114" y="70" width="140" height="5" rx="2" fill="#ababad"/>
+    <rect x="88" y="86" width="18" height="18" rx="4" fill="#5aa0d0"/>
+    <rect x="114" y="86" width="44" height="6" rx="2" fill="#d1d2d3"/>
+    <rect x="162" y="87" width="24" height="4" rx="2" fill="#616264"/>
+    <rect x="114" y="98" width="192" height="5" rx="2" fill="#ababad"/>
+    <rect x="82" y="112" width="230" height="30" rx="4" fill="#2a3a2e" opacity="0.8"/>
+    <rect x="88" y="118" width="18" height="18" rx="4" fill="#5ac08a"/>
+    <rect x="114" y="118" width="48" height="6" rx="2" fill="#d1d2d3"/>
+    <rect x="114" y="130" width="186" height="5" rx="2" fill="#cfe8d8"/>
+    <rect x="88" y="152" width="18" height="18" rx="4" fill="#c05a8a"/>
+    <rect x="114" y="152" width="56" height="6" rx="2" fill="#d1d2d3"/>
+    <rect x="114" y="164" width="160" height="5" rx="2" fill="#ababad"/>
+    <rect x="86" y="180" width="222" height="14" rx="4" fill="#222529" stroke="#3a3d42"/>
+  </symbol>
+
+  <symbol id="sh-sentry" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#1c1424"/>
+    <rect width="320" height="16" fill="#120c18"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="44" y="4" width="180" height="9" rx="4" fill="#241a30" stroke="#3a2a4a"/>
+    <rect x="0" y="16" width="52" height="184" fill="#160f1e"/>
+    <circle cx="16" cy="30" r="6" fill="#7a5aa8"/>
+    <rect x="10" y="46" width="34" height="4" rx="2" fill="#4a3a5e"/>
+    <rect x="10" y="56" width="28" height="4" rx="2" fill="#4a3a5e"/>
+    <rect x="10" y="66" width="36" height="4" rx="2" fill="#8a7aa8"/>
+    <rect x="64" y="28" width="180" height="10" rx="2" fill="#e8e2f0"/>
+    <rect x="64" y="46" width="44" height="12" rx="6" fill="#c0392b"/>
+    <rect x="72" y="50" width="28" height="4" rx="2" fill="#fff" opacity="0.9"/>
+    <rect x="116" y="48" width="60" height="6" rx="2" fill="#8a7aa0"/>
+    <rect x="182" y="48" width="40" height="6" rx="2" fill="#5a4a70"/>
+    <rect x="64" y="70" width="150" height="5" rx="2" fill="#8a7aa0"/>
+    <rect x="230" y="46" width="76" height="34" rx="4" fill="#241a30"/>
+    <polyline points="236,72 246,68 256,70 266,60 276,64 286,54 298,58" fill="none" stroke="#c0392b" stroke-width="2"/>
+    <rect x="64" y="86" width="242" height="94" rx="4" fill="#231830"/>
+    <rect x="72" y="94" width="226" height="12" rx="2" fill="#3c1a24"/>
+    <rect x="78" y="97" width="140" height="6" rx="2" fill="#ffa198"/>
+    <rect x="80" y="112" width="180" height="5" rx="2" fill="#9a8ab0"/>
+    <rect x="80" y="124" width="200" height="5" rx="2" fill="#6a5a80"/>
+    <rect x="80" y="136" width="160" height="5" rx="2" fill="#6a5a80"/>
+    <rect x="80" y="148" width="190" height="5" rx="2" fill="#6a5a80"/>
+    <rect x="80" y="160" width="120" height="5" rx="2" fill="#9a8ab0"/>
+    <rect x="72" y="170" width="60" height="6" rx="3" fill="#3a2a4a"/>
+  </symbol>
+
+  <symbol id="sh-mail" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#f7f7f4"/>
+    <rect width="320" height="16" fill="#e6e6e2"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="0" y="16" width="104" height="184" fill="#efefeb"/>
+    <rect x="8" y="26" width="88" height="26" rx="3" fill="#dfeafc"/>
+    <rect x="14" y="31" width="56" height="5" rx="2" fill="#1e73d2"/>
+    <rect x="14" y="41" width="70" height="4" rx="2" fill="#7a8aa0"/>
+    <rect x="8" y="58" width="88" height="26" rx="3" fill="#ffffff"/>
+    <rect x="14" y="63" width="50" height="5" rx="2" fill="#3a3a44"/>
+    <rect x="14" y="73" width="72" height="4" rx="2" fill="#9a9aa4"/>
+    <rect x="8" y="90" width="88" height="26" rx="3" fill="#ffffff"/>
+    <rect x="14" y="95" width="60" height="5" rx="2" fill="#3a3a44"/>
+    <rect x="14" y="105" width="64" height="4" rx="2" fill="#9a9aa4"/>
+    <rect x="8" y="122" width="88" height="26" rx="3" fill="#ffffff"/>
+    <rect x="14" y="127" width="44" height="5" rx="2" fill="#3a3a44"/>
+    <rect x="14" y="137" width="70" height="4" rx="2" fill="#9a9aa4"/>
+    <rect x="118" y="30" width="180" height="11" rx="2" fill="#1c1c24"/>
+    <rect x="118" y="50" width="26" height="26" rx="13" fill="#1e73d2"/>
+    <rect x="152" y="52" width="70" height="6" rx="2" fill="#3a3a44"/>
+    <rect x="152" y="64" width="110" height="5" rx="2" fill="#9a9aa4"/>
+    <rect x="118" y="88" width="188" height="5" rx="2" fill="#5a5a64"/>
+    <rect x="118" y="100" width="176" height="5" rx="2" fill="#5a5a64"/>
+    <rect x="118" y="112" width="190" height="5" rx="2" fill="#5a5a64"/>
+    <rect x="118" y="124" width="140" height="5" rx="2" fill="#5a5a64"/>
+    <rect x="118" y="142" width="184" height="24" rx="4" fill="#fdf3dc"/>
+    <rect x="126" y="148" width="150" height="4" rx="2" fill="#8a7a4a"/>
+    <rect x="126" y="156" width="120" height="4" rx="2" fill="#8a7a4a"/>
+    <rect x="118" y="176" width="90" height="5" rx="2" fill="#9a9aa4"/>
+  </symbol>
+
+  <symbol id="sh-notion" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice">
+    <rect width="320" height="200" fill="#ffffff"/>
+    <rect width="320" height="16" fill="#f0f0ec"/>
+    <circle cx="10" cy="8" r="3" fill="#f38ba8"/><circle cx="20" cy="8" r="3" fill="#f9e2af"/><circle cx="30" cy="8" r="3" fill="#a6e3a1"/>
+    <rect x="0" y="16" width="64" height="184" fill="#f7f6f3"/>
+    <rect x="10" y="28" width="42" height="5" rx="2" fill="#9a9a92"/>
+    <rect x="14" y="42" width="38" height="4" rx="2" fill="#c4c4ba"/>
+    <rect x="14" y="52" width="30" height="4" rx="2" fill="#c4c4ba"/>
+    <rect x="14" y="62" width="40" height="4" rx="2" fill="#37352f"/>
+    <rect x="14" y="72" width="34" height="4" rx="2" fill="#c4c4ba"/>
+    <rect x="88" y="36" width="20" height="20" rx="4" fill="#fde68a"/>
+    <rect x="94" y="42" width="8" height="8" rx="2" fill="#b45309"/>
+    <rect x="88" y="66" width="176" height="13" rx="2" fill="#1f1e1b"/>
+    <rect x="88" y="90" width="212" height="24" rx="4" fill="#fbf0dd"/>
+    <circle cx="100" cy="102" r="5" fill="#e0a04a"/>
+    <rect x="112" y="96" width="170" height="4" rx="2" fill="#8a7a5a"/>
+    <rect x="112" y="104" width="140" height="4" rx="2" fill="#8a7a5a"/>
+    <circle cx="94" cy="128" r="5" fill="none" stroke="#a0a098" stroke-width="1.2"/>
+    <rect x="106" y="125" width="180" height="5" rx="2" fill="#57564f"/>
+    <circle cx="94" cy="144" r="5" fill="none" stroke="#a0a098" stroke-width="1.2"/>
+    <rect x="106" y="141" width="160" height="5" rx="2" fill="#57564f"/>
+    <circle cx="94" cy="160" r="5" fill="none" stroke="#a0a098" stroke-width="1.2"/>
+    <rect x="106" y="157" width="190" height="5" rx="2" fill="#57564f"/>
+    <rect x="88" y="174" width="200" height="16" rx="3" fill="#f1f1ef"/>
+    <rect x="96" y="179" width="110" height="5" rx="2" fill="#c05a6a"/>
+  </symbol>
+
+  </defs>
+</svg>
+
+<div class="stage">
+<div class="qr-window" role="dialog" aria-label="Quick Recall search">
+
+  <div class="searchbar">
+    <svg class="magnifier" width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <input value="stripe webhook retry" spellcheck="false" aria-label="Search captures">
+    <div class="synhelp" id="synHelp">
+      <button type="button" id="synBtn" aria-haspopup="true" aria-label="Search syntax help">?</button>
+      <div class="syn-pop" id="synPop" role="tooltip">
+        <div class="syn-title">Search syntax</div>
+        <div class="syn-row"><span class="op">"phrase"</span><span class="desc">exact phrase</span></div>
+        <div class="syn-row"><span class="op">-term</span><span class="desc">exclude a term</span></div>
+        <div class="syn-row"><span class="op">OR</span><span class="desc">either side matches</span></div>
+        <div class="syn-row"><span class="op">term*</span><span class="desc">prefix match</span></div>
+        <div class="syn-row"><span class="op">app:</span><span class="desc">only this app</span></div>
+        <div class="syn-row"><span class="op">source:</span><span class="desc">screen · mic · system</span></div>
+        <div class="syn-row"><span class="op">date:</span><span class="desc">on a day</span></div>
+        <div class="syn-row"><span class="op">after:</span><span class="desc">since a day</span></div>
+        <div class="syn-row"><span class="op">before:</span><span class="desc">up to a day</span></div>
+      </div>
+    </div>
+    <div class="appfilter" id="appFilter">
+      <button type="button" id="appFilterBtn" aria-haspopup="menu">
+        <svg width="11" height="11" viewBox="0 0 12 12" fill="none"><path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+        Filter <kbd>⌘F</kbd>
+      </button>
+      <div class="app-menu" id="appMenu" role="menu"></div>
+    </div>
+    <button type="button" class="askai-btn" id="askAiBtn">Ask AI <kbd>⌃↵</kbd></button>
+  </div>
+
+  <!-- ONE filter system: chips are the source of truth — typed operators and the
+       ⌘F picker both materialize here; rendered by JS -->
+  <div class="chipband" id="chipBand"></div>
+
+  <div class="qr-body">
+    <nav class="result-list" aria-label="Results">
+      <div class="rows" id="rows" role="listbox" aria-label="Search results"></div>
+    </nav>
+    <section class="detail" id="detail" aria-live="polite"></section>
+  </div>
+
+  <!-- thin scrubbable timeline (Recall pattern) — replaces all date grouping -->
+  <div class="timeline" id="timeline" aria-label="Match timeline, last 7 days">
+    <div class="axis"></div>
+    <!-- explains the dimmed dots whenever a filter is active -->
+    <div class="tl-legend" id="tlLegend"></div>
+  </div>
+  <div class="tl-preview" id="tlPreview"></div>
+
+  <div class="qr-footer">
+    <span class="hint"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
+    <span class="hint"><kbd>↵</kbd> open in timeline</span>
+    <span class="hint"><kbd>⌘O</kbd> open page</span>
+    <span class="hint"><kbd>⌃↵</kbd> ask AI</span>
+    <span class="hint"><kbd>⌘F</kbd> filter</span>
+    <span class="hint"><kbd>⌘1-9</kbd> jump</span>
+    <span class="hint"><kbd>esc</kbd> close</span>
+    <span class="spacer"></span>
+    <span class="brand">mnema · quick recall</span>
+  </div>
+
+</div>
+</div>
+
+<!-- ============ STATES gallery: static reduced-scale panels ============ -->
+<div class="states-head">
+  <h2>States</h2>
+  <p>The non-happy paths the main mock can't show: orientation, loading, error, empty.</p>
+</div>
+<div class="states-grid">
+
+  <div class="state-cell">
+    <div class="cap">A · Below minimum query length</div>
+    <div class="state-panel">
+      <div class="sp-search">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span class="q">s<span class="caret-i"></span></span>
+      </div>
+      <div class="sp-body">
+        <div class="sp-center">
+          <div class="glyph">⌕</div>
+          <div class="lead">Search everything you've captured</div>
+          <div class="sub">Screen · Audio · Ask AI</div>
+          <div class="faint">keep typing to find matches</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="state-cell">
+    <div class="cap">B · Loading</div>
+    <div class="state-panel">
+      <div class="sp-search">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span class="q">stripe webhook retry<span class="caret-i"></span></span>
+      </div>
+      <div class="sp-body">
+        <div class="sp-list">
+          <div class="sk sk-label"></div>
+          <div class="sk-row">
+            <div class="sk sk-thumb"></div>
+            <div class="sk-lines"><div class="sk sk-line" style="width:70%"></div><div class="sk sk-line" style="width:92%"></div></div>
+          </div>
+          <div class="sk-row">
+            <div class="sk sk-thumb"></div>
+            <div class="sk-lines"><div class="sk sk-line" style="width:58%"></div><div class="sk sk-line" style="width:84%"></div></div>
+          </div>
+          <div class="sk-row">
+            <div class="sk sk-thumb"></div>
+            <div class="sk-lines"><div class="sk sk-line" style="width:76%"></div><div class="sk sk-line" style="width:64%"></div></div>
+          </div>
+        </div>
+        <div class="sp-detail dim">
+          <div class="sk" style="height:96px"></div>
+          <div class="sk sk-line" style="width:60%; margin-top:12px"></div>
+          <div class="sk sk-line" style="width:40%; margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="state-cell">
+    <div class="cap">C · Search error</div>
+    <div class="state-panel">
+      <div class="sp-search">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span class="q">stripe webhook retry</span>
+      </div>
+      <div class="sp-body">
+        <div class="sp-center">
+          <div class="glyph" style="color:var(--app-danger-text)">⚠</div>
+          <div class="lead">Search failed</div>
+          <div class="sub" style="color:var(--app-danger-text)">The capture index didn't respond.</div>
+          <div class="sp-actions"><button type="button" class="sp-btn accent">Retry</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="state-cell">
+    <div class="cap">D · No matches</div>
+    <div class="state-panel">
+      <div class="sp-search">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        <span class="q">stripe webhook retry</span>
+        <span class="sp-chip">app: Chrome ×</span>
+      </div>
+      <div class="sp-body">
+        <div class="sp-center">
+          <div class="glyph">⌀</div>
+          <div class="lead">No matches for “stripe webhook retry”</div>
+          <div class="sub">Nothing captured matches all terms and filters.</div>
+          <div class="sp-actions">
+            <button type="button" class="sp-btn">Remove a filter</button>
+            <button type="button" class="sp-btn accent">Ask AI instead</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ---------------- dataset: "stripe webhook retry" (07's copy, list-shaped) ----------------
+// t = [dayIndex 0..7 (0 = Mon Jun 30, 7 = Today), hourOfDay] → timeline position
+const RESULTS = [
+  // ---- SCREEN (relevance order, max 8 shown) ----
+  { kind:"screen", app:"VS Code", icon:{label:"VS",bg:"#2f7fd4"}, shot:"sh-vscode",
+    win:"webhook_handler.rs — mnema-billing", url:null,
+    rel:"12m ago", abs:"Today 15:02", range:"captured 15:00 – 15:05", t:[7,15.0],
+    matches:7, meaning:false, redacted:false,
+    snippet:"fn schedule_<mark>retry</mark>(event: &amp;<mark>Stripe</mark>Event) — exponential backoff for <mark>webhook</mark> delivery failures, max 5 attempts",
+    ctxLabel:"OCR context",
+    ctx:`async fn handle_<mark>stripe</mark>_event(payload: <mark>Webhook</mark>Payload) -&gt; Result&lt;()&gt; {
+    verify_<mark>stripe</mark>_signature(&amp;payload)?;
+    match event.kind {
+        EventKind::InvoicePaymentFailed =&gt;
+            <mark>retry</mark>_queue.push(event.id, backoff(attempt)),
+        EventKind::ChargeSucceeded =&gt; settle(&amp;event),
+    }
+    // TODO: honor <mark>Stripe</mark>-Signature timestamp tolerance when replaying
+    fn schedule_<mark>retry</mark>(event: &amp;<mark>Stripe</mark>Event)  // max 5 attempts, then dead-letter
+}` },
+  { kind:"screen", app:"Chrome", icon:{label:"Ch",bg:"#c98f2a"}, shot:"sh-stripedocs",
+    win:"Webhook delivery retries — Stripe Docs",
+    url:"stripe.com/docs/webhooks/retries#exponential-backoff",
+    rel:"42m ago", abs:"Today 14:32", range:"captured 14:29 – 14:34", t:[7,14.5],
+    matches:5, meaning:false, redacted:false,
+    snippet:"<mark>Stripe</mark> <mark>retries</mark> failed <mark>webhook</mark> deliveries with exponential backoff for up to three days",
+    ctxLabel:"OCR context",
+    ctx:`<mark>Stripe</mark> attempts to deliver each <mark>webhook</mark> event to your endpoint with exponential backoff for up to three days. If your endpoint returns a non-2xx status code, the event is scheduled for <mark>retry</mark>: 1 hour, 3 hours, 6 hours, then daily.
+
+After the <mark>retry</mark> window lapses, the event is marked undelivered and no further attempts are made. You can view and manually resend undelivered <mark>webhook</mark> events from the Dashboard's Events &amp; webhooks page.
+
+Endpoints that fail continuously are automatically disabled after notice.` },
+  { kind:"screen", app:"Chrome", icon:{label:"Ch",bg:"#c98f2a"}, shot:"sh-ghpr",
+    win:"PR #412 · Add webhook retry backoff — acme/billing",
+    url:"github.com/acme/billing/pull/412/files",
+    rel:"4h ago", abs:"Today 11:04", range:"captured 11:00 – 11:09", t:[7,11.1],
+    matches:6, meaning:false, redacted:false,
+    snippet:"Add <mark>webhook</mark> <mark>retry</mark> backoff — caps at 5 attempts, jitter ±20%, dead-letters to <mark>stripe</mark>_failed_events",
+    ctxLabel:"OCR context",
+    ctx:`Add <mark>webhook</mark> <mark>retry</mark> backoff #412 · Open · dana wants to merge 3 commits into main
+
+feat: exponential backoff for <mark>stripe</mark> <mark>webhook</mark> redelivery — caps at 5 attempts, jitter ±20%, dead-letters to <mark>stripe</mark>_failed_events
+
++ pub fn backoff(attempt: u32) -&gt; Duration { BASE * 2u32.pow(attempt) }
+− enqueue_immediate(&amp;event)
+
+Review comment @mira: "should we honor Retry-After from the endpoint instead of a fixed schedule?"
+Checks: billing-ci ✓ · <mark>webhook</mark>-replay-suite ✓ · Review required` },
+  { kind:"screen", app:"Chrome", icon:{label:"Ch",bg:"#c98f2a"}, shot:"sh-sentry",
+    win:"StripeSignatureError — billing · Sentry",
+    url:"sentry.io/organizations/acme/issues/billing-2141",
+    rel:"3h ago", abs:"Today 12:18", range:"captured 12:16 – 12:20", t:[7,12.3],
+    matches:4, meaning:false, redacted:false,
+    snippet:"<mark>Stripe</mark>SignatureError: timestamp outside tolerance — 214 events, spikes with each <mark>retry</mark> storm",
+    ctxLabel:"OCR context",
+    ctx:`<mark>Stripe</mark>SignatureError: <mark>webhook</mark> timestamp outside tolerance window (±5 min)
+
+214 events · first seen 2d ago · spikes align with each <mark>retry</mark> storm
+
+handler: billing::webhook::verify_stripe_signature — the replayed deliveries carry the ORIGINAL timestamp, so every <mark>retry</mark> past 5 minutes fails verification and re-enters the queue.
+
+Linked: PAY-204, PR #412.` },
+  { kind:"screen", app:"Terminal", icon:{label:"&gt;_",bg:"#3a3a4a"}, shot:"sh-term",
+    win:"cargo test — billing::webhook", url:null,
+    rel:"5h ago", abs:"Today 10:41", range:"captured 10:38 – 10:43", t:[7,10.7],
+    matches:4, meaning:false, redacted:true,
+    snippet:"test <mark>webhook</mark>::<mark>retry</mark>_backoff_caps_at_five ... FAILED — assertion left: 6 attempts, right: 5",
+    ctxLabel:"OCR context",
+    ctx:`$ STRIPE_SECRET_KEY=[redacted] cargo test -p billing -- --nocapture
+
+running 9 tests
+test <mark>webhook</mark>::<mark>retry</mark>_backoff_caps_at_five ...... FAILED
+test <mark>webhook</mark>::<mark>retry</mark>_dead_letters_after_five ... ok
+test <mark>webhook</mark>::<mark>stripe</mark>_signature_replay ......... ok
+
+failures: assertion failed — left: 6 attempts, right: 5
+test result: FAILED. 8 passed; 1 failed` },
+  { kind:"screen", app:"Mail", icon:{label:"Ma",bg:"#1e73d2"}, shot:"sh-mail",
+    win:"Re: Stripe webhook retry storm — postmortem", url:null,
+    rel:"7h ago", abs:"Today 08:55", range:"captured 08:52 – 08:57", t:[7,8.9],
+    matches:3, meaning:false, redacted:false,
+    snippet:"Sarah: attaching the timeline — the <mark>retry</mark> storm started 40 min after the secret rotation, not at deploy",
+    ctxLabel:"OCR context",
+    ctx:`Sarah 08:52  attaching the incident timeline — the <mark>stripe</mark> <mark>webhook</mark> <mark>retry</mark> storm started 40 minutes AFTER the signing-secret rotation, not at deploy. Their first redelivery wave is the 1-hour bucket.
+
+raj 08:54  matches Sentry — every failure is timestamp-tolerance on replayed events
+
+Sarah 08:55  action items: widen tolerance for replays, land #412, add the delivery-lag monitor before Thursday's billing run.` },
+  { kind:"screen", app:"Slack", icon:{label:"Sl",bg:"#7a3a8a"}, shot:"sh-slack",
+    win:"#payments · thread — Acme", url:null,
+    rel:"yesterday", abs:"Yesterday 16:20", range:"captured 16:18 – 16:22", t:[6,16.3],
+    matches:5, meaning:false, redacted:false,
+    snippet:"priya: the <mark>stripe</mark> <mark>webhook</mark> 500s came from our side — nginx timeout, their <mark>retry</mark> masked it for 2 days",
+    ctxLabel:"OCR context",
+    ctx:`priya 16:18  the <mark>stripe</mark> <mark>webhook</mark> 500s came from our side — nginx timeout, their <mark>retry</mark> masked it for 2 days
+
+dan 16:19  so the fix is idempotency keys + raising the proxy timeout, PR incoming
+
+priya 16:19  also add a Datadog monitor on delivery lag please
+
+dan 16:20  on it — and once #412 lands our own backoff takes over instead of hammering the endpoint` },
+  { kind:"screen", app:"Notion", icon:{label:"No",bg:"#6b6b60"}, shot:"sh-notion",
+    win:"Runbook · Payment event replay",
+    url:"notion.so/acme/Runbook-Payment-event-replay",
+    rel:"last week", abs:"Mon Jun 30 · 13:26", range:"captured 13:24 – 13:28", t:[0,13.4],
+    matches:2, meaning:true, redacted:false,
+    snippet:"If deliveries exhaust, replay from the <mark>Stripe</mark> Events API: list events since last checkpoint, re-enqueue",
+    ctxLabel:"OCR context",
+    ctx:`⚠ Only run this after confirming deliveries actually exhausted — check the Datadog panel first.
+
+1. If deliveries exhaust, replay from the <mark>Stripe</mark> Events API: list events since last checkpoint
+2. Re-enqueue in order; signature checks are skipped for replays (our own fetch, not a delivery)
+3. Escalate to #payments if the backlog exceeds 1k events
+
+Inline: "mnema-billing replay --since=checkpoint"
+
+(Matched by meaning: describes retry exhaustion without using the word.)` },
+
+  // ---- AUDIO (attributed transcript text — Screenpipe/Granola pattern) ----
+  { kind:"audio", app:"Zoom", source:"mic", icon:{label:"Zm",bg:"#3a6ad4"},
+    srcLine:"microphone · standup · 0:42", dur:"0:42", matchAt:"0:17", wave:{match:26,seed:7},
+    rel:"6h ago", abs:"Today 09:32", t:[7,9.5],
+    matches:3, meaning:false, redacted:false,
+    snippet:"“…the <mark>stripe</mark> <mark>webhook</mark> is double-firing, so I'm adding a <mark>retry</mark> guard keyed on the event id before we ship”",
+    ctxLabel:"Transcript",
+    ctx:`[09:32:04] you: Yesterday I got the signature verification sorted, today it's the delivery path.
+
+[09:32:18] you: …the <mark>stripe</mark> <mark>webhook</mark> is double-firing, so I'm adding a <mark>retry</mark> guard keyed on the event id before we ship — worst case we replay from the events log, <mark>Stripe</mark> keeps thirty days so we're covered there.
+
+[09:32:39] priya: Watch the test clock when you assert on the second attempt, it bit me on the invoicing worker.
+
+[09:32:46] you: Noted — paused clock, manual tick.` },
+  { kind:"audio", app:"Google Meet", source:"sys", icon:{label:"Mt",bg:"#2a8a60"},
+    srcLine:"system audio · meeting · 2:18", dur:"2:18", matchAt:"1:12", wave:{match:34,seed:31},
+    rel:"yesterday", abs:"Yesterday 15:03", t:[6,15.1],
+    matches:4, meaning:false, redacted:false,
+    snippet:"“<mark>Stripe</mark> only <mark>retries</mark> for 72 hours, so if the endpoint is down over a weekend we permanently lose <mark>webhook</mark> events”",
+    ctxLabel:"Transcript",
+    ctx:`[15:03:12] sarah (presenting): The part nobody internalized — <mark>Stripe</mark> only <mark>retries</mark> for 72 hours, so if the endpoint is down over a weekend we permanently lose <mark>webhook</mark> events.
+
+[15:03:41] sarah: That's why the reconciliation job has to diff against the Events API nightly, not trust delivery. Dana's backoff PR gets us most of the way there.
+
+[15:04:02] dev: And replay? If we were down for an hour?
+
+[15:04:09] sarah: Dashboard → Events → resend, or the runbook script. It's linked from the alert.` },
+  { kind:"audio", app:"Slack", source:"mic", icon:{label:"Sl",bg:"#7a3a8a"},
+    srcLine:"microphone · huddle · 1:07", dur:"1:07", matchAt:"0:31", wave:{match:30,seed:19},
+    rel:"6d ago", abs:"Tue Jul 1 · 10:14", t:[1,10.2],
+    matches:4, meaning:false, redacted:false,
+    snippet:"“…don't <mark>retry</mark> inside the handler, ack the <mark>webhook</mark> fast and let the queue own <mark>retries</mark>, or <mark>Stripe</mark> times us out at 10s”",
+    ctxLabel:"Transcript",
+    ctx:`[10:14:10] priya: …don't <mark>retry</mark> inside the handler, ack the <mark>webhook</mark> fast and let the queue own <mark>retries</mark>, or <mark>Stripe</mark> times us out at 10 seconds.
+
+[10:14:28] you: So 2xx immediately, process async.
+
+[10:14:31] priya: Exactly — that's also what their docs recommend. Ship the deterministic test first, then the backoff jitter.` },
+
+  // ---- overflow rows (appended so existing #sel=N deep links keep their indexes;
+  //      section order comes from the kind filter, so these render after the originals) ----
+  { kind:"screen", app:"VS Code", icon:{label:"VS",bg:"#2f7fd4"}, shot:"sh-vscode",
+    win:"retry_policy_test.rs — mnema-billing", url:null,
+    rel:"2d ago", abs:"Sat Jul 5 · 11:20", range:"captured 11:18 – 11:23", t:[5,11.3],
+    matches:3, meaning:false, redacted:false,
+    snippet:"#[test] fn <mark>webhook</mark>_<mark>retry</mark>_respects_stripe_timeout() — paused test clock, manual tick",
+    ctxLabel:"OCR context",
+    ctx:`#[test]
+fn <mark>webhook</mark>_<mark>retry</mark>_respects_<mark>stripe</mark>_timeout() {
+    let clock = TestClock::paused();
+    // ack within 10s, then the queue owns <mark>retries</mark>
+    assert_eq!(policy.attempts(), 5);
+}` },
+  { kind:"screen", app:"Terminal", icon:{label:"&gt;_",bg:"#3a3a4a"}, shot:"sh-term",
+    win:"stripe listen — forwarding webhooks", url:null,
+    rel:"3d ago", abs:"Fri Jul 4 · 15:40", range:"captured 15:37 – 15:42", t:[4,15.7],
+    matches:2, meaning:false, redacted:false,
+    snippet:"$ <mark>stripe</mark> listen --forward-to localhost:8787/<mark>webhook</mark>s — 200 after <mark>retry</mark> 1",
+    ctxLabel:"OCR context",
+    ctx:`$ <mark>stripe</mark> listen --forward-to localhost:8787/<mark>webhook</mark>s
+
+2026-07-04 15:38:12  --&gt; invoice.payment_failed [evt_1Rk…]
+2026-07-04 15:38:13  &lt;-- 500 (handler timeout)
+2026-07-04 15:39:02  &lt;-- 200 after <mark>retry</mark> 1` },
+  { kind:"screen", app:"Chrome", icon:{label:"Ch",bg:"#c98f2a"}, shot:"sh-stripedocs",
+    win:"Events & webhooks — Stripe Dashboard",
+    url:"dashboard.stripe.com/events?delivery=failed",
+    rel:"4d ago", abs:"Thu Jul 3 · 10:05", range:"captured 10:02 – 10:07", t:[3,10.1],
+    matches:3, meaning:false, redacted:false,
+    snippet:"14 <mark>webhook</mark> deliveries pending <mark>retry</mark> — next attempt in the 6-hour bucket",
+    ctxLabel:"OCR context",
+    ctx:`Events &amp; <mark>webhook</mark>s · endpoint api.acme.dev/<mark>stripe</mark>
+
+14 deliveries pending <mark>retry</mark> — next attempt: 6-hour bucket
+Filter: delivery=failed · last 7 days · [Resend selected]` },
+  { kind:"screen", app:"Slack", icon:{label:"Sl",bg:"#7a3a8a"}, shot:"sh-slack",
+    win:"#incidents · INC-88 — Acme", url:null,
+    rel:"5d ago", abs:"Wed Jul 2 · 14:12", range:"captured 14:10 – 14:14", t:[2,14.2],
+    matches:2, meaning:false, redacted:false,
+    snippet:"raj: closing INC-88 — root cause was our 500s, <mark>stripe</mark>'s <mark>retry</mark> backoff masked it",
+    ctxLabel:"OCR context",
+    ctx:`raj 14:10  closing INC-88 — root cause was our 500s, <mark>stripe</mark>'s <mark>retry</mark> backoff masked it for two days
+
+mira 14:12  follow-ups: delivery-lag monitor + the <mark>webhook</mark> replay runbook link in the alert` },
+  { kind:"audio", app:"Zoom", source:"sys", icon:{label:"Zm",bg:"#3a6ad4"},
+    srcLine:"system audio · incident review · 3:05", dur:"3:05", matchAt:"0:48", wave:{match:16,seed:11},
+    rel:"4d ago", abs:"Thu Jul 3 · 16:30", t:[3,16.5],
+    matches:2, meaning:false, redacted:false,
+    snippet:"“the dashboard's resend button <mark>retries</mark> one <mark>webhook</mark> at a time — for a storm you script it against the events API”",
+    ctxLabel:"Transcript",
+    ctx:`[16:30:48] raj (presenting): the dashboard's resend button <mark>retries</mark> one <mark>webhook</mark> at a time — for a storm you script it against the events API.
+
+[16:31:10] sarah: that's the runbook script — link it from the alert so nobody clicks resend 200 times again.` },
+  { kind:"audio", app:"Google Meet", source:"mic", icon:{label:"Mt",bg:"#2a8a60"},
+    srcLine:"microphone · pairing · 1:52", dur:"1:52", matchAt:"1:04", wave:{match:38,seed:23},
+    rel:"2d ago", abs:"Sat Jul 5 · 14:26", t:[5,14.4],
+    matches:3, meaning:false, redacted:false,
+    snippet:"“let's assert the <mark>retry</mark> queue drains before the <mark>stripe</mark> test clock advances, that's where it flaked”",
+    ctxLabel:"Transcript",
+    ctx:`[14:26:04] you: let's assert the <mark>retry</mark> queue drains before the <mark>stripe</mark> test clock advances, that's where it flaked.
+
+[14:26:31] priya: and pin the <mark>webhook</mark> fixture ids — random ids made the dead-letter assert order-dependent.` }
+];
+
+// ---------------- rendering ----------------
+const rowsEl = document.getElementById("rows");
+const detailEl = document.getElementById("detail");
+let selected = 0;      // index into RESULTS
+// ONE filter system: chips are the single source of truth (typed operators and
+// the ⌘F picker both land here). Default = unfiltered; #chip=chrome opens filtered.
+let chips = [];
+let expanded = { screen: false, audio: false };
+const CAPS = { screen: 8, audio: 3 };
+
+function matchesSource(r, v) {
+  return v === "screen" ? r.kind === "screen"
+    : r.kind === "audio" && r.source === (v === "microphone" ? "mic" : "sys");
+}
+function visible() {
+  const apps = chips.filter(c => c.cat === "app").map(c => c.val);
+  const srcs = chips.filter(c => c.cat === "source").map(c => c.val);
+  // OR within a category, AND across categories; date chips are cosmetic in the mock
+  return RESULTS.map((r, i) => i).filter(i => {
+    const r = RESULTS[i];
+    return (!apps.length || apps.includes(r.app)) &&
+           (!srcs.length || srcs.some(v => matchesSource(r, v)));
+  });
+}
+// the rows actually rendered (visible, minus collapsed overflow) — drives keyboard nav
+function shown() {
+  const vis = visible();
+  const s = vis.filter(i => RESULTS[i].kind === "screen");
+  const a = vis.filter(i => RESULTS[i].kind === "audio");
+  return [
+    ...(expanded.screen ? s : s.slice(0, CAPS.screen)),
+    ...(expanded.audio ? a : a.slice(0, CAPS.audio)),
+  ];
+}
+
+// deterministic waveform bars (07's renderer)
+function renderWave(w) {
+  var n = 64, at = +w.dataset.match, s = +w.dataset.seed || 7, html = "";
+  for (var i = 0; i < n; i++) {
+    s = (s * 16807) % 2147483647;
+    var h = 4 + (s % 1000) / 1000 * 14;
+    var on = Math.abs(i - at) <= 2;
+    html += '<rect x="' + (i * 7) + '" y="' + ((20 - h) / 2) + '" width="4" height="' + h + '" rx="1" class="' + (on ? "wb-on" : "wb") + '"/>';
+  }
+  if (w.dataset.mark) html += '<line x1="' + (at * 7 + 2) + '" y1="0" x2="' + (at * 7 + 2) + '" y2="20" class="wmark"/>';
+  w.setAttribute("viewBox", "0 0 " + (n * 7) + " 20");
+  w.setAttribute("preserveAspectRatio", "none");
+  w.innerHTML = html;
+}
+
+function pillsHtml(r) {
+  const p = [];
+  if (r.meaning) p.push('<span class="pill pill-meaning">found by meaning</span>');
+  if (r.redacted) p.push('<span class="pill pill-redacted">redacted</span>');
+  return p.join("");
+}
+
+function rowHtml(r, i) {
+  const isSel = i === selected;
+  // Raycast: accessories duplicated in the pane (match count, badges) leave the selected row
+  // audio accessory counts adjacent transcript turns, not matches (real window wording)
+  const count = r.kind === "audio" ? r.matches + " adjacent" : r.matches + " match" + (r.matches === 1 ? "" : "es");
+  const acc = '<span class="acc"><span class="time">' + r.rel + "</span>" +
+    (isSel ? "" : '<span class="mcount">' + count + "</span>" + pillsHtml(r)) +
+    "</span>";
+  if (r.kind === "screen") {
+    return '<div class="row ' + (isSel ? "selected" : "") + '" data-i="' + i + '" role="option" aria-selected="' + isSel + '">' +
+      '<span class="thumb"><svg class="shot" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice"><use href="#' + r.shot + '"/></svg></span>' +
+      '<span class="meta"><span class="line1"><span class="app">' + r.app + '</span><span class="win">' + r.win + "</span></span>" +
+      '<span class="line2">' + r.snippet + "</span></span>" + acc + "</div>";
+  }
+  // audio: waveform glyph tile in the source color — the words are the content
+  return '<div class="row audio ' + (isSel ? "selected" : "") + '" data-i="' + i + '" role="option" aria-selected="' + isSel + '">' +
+    '<span class="wavetile ' + r.source + '"><svg class="wave" data-match="' + r.wave.match + '" data-seed="' + r.wave.seed + '" aria-hidden="true"></svg></span>' +
+    '<span class="meta"><span class="line1"><span class="quote">' + r.snippet + "</span></span>" +
+    '<span class="line2">' + r.srcLine + "</span></span>" + acc + "</div>";
+}
+
+function sectionHtml(label, kind, idxs) {
+  let html = '<div class="section-label"><span>' + label + '</span><span class="n">' + idxs.length + "</span></div>";
+  html += (expanded[kind] ? idxs : idxs.slice(0, CAPS[kind])).map(i => rowHtml(RESULTS[i], i)).join("");
+  if (idxs.length > CAPS[kind]) {
+    html += '<button type="button" class="more-row" data-kind="' + kind + '">' +
+      (expanded[kind] ? "↑ show less" : "↓ show " + (idxs.length - CAPS[kind]) + " more " + kind + " results") + "</button>";
+  }
+  return html;
+}
+
+function renderRows() {
+  const vis = visible();
+  const screen = vis.filter(i => RESULTS[i].kind === "screen");
+  const audio = vis.filter(i => RESULTS[i].kind === "audio");
+  let html = "";
+  if (screen.length) html += sectionHtml("Screen", "screen", screen);
+  if (audio.length) html += sectionHtml("Audio", "audio", audio);
+  rowsEl.innerHTML = html;
+  rowsEl.querySelectorAll(".wave").forEach(renderWave);
+}
+
+function renderDetail() {
+  const r = RESULTS[selected];
+  const badges = '<div class="badge-row"><span class="mchip">' + r.matches + " match" + (r.matches === 1 ? "" : "es") + "</span>" +
+    (r.kind === "audio" ? '<span class="pill pill-' + r.source + '">' + (r.source === "mic" ? "microphone" : "system audio") + "</span>" : "") +
+    pillsHtml(r) + "</div>";
+  if (r.kind === "screen") {
+    detailEl.innerHTML =
+      '<div class="hero"><svg viewBox="0 0 320 200"><use href="#' + r.shot + '"/></svg></div>' +
+      '<div class="id-row"><span class="appicon" style="background:' + r.icon.bg + '">' + r.icon.label + "</span>" +
+      '<span class="app-name">' + r.app + '</span><span class="win-title">' + r.win + "</span></div>" +
+      badges +
+      (r.url ? '<div class="url-row"><span class="proto">https://</span>' + r.url + "</div>" : "") +
+      '<div class="time-row"><span class="rel">' + r.rel + "</span><span>" + r.abs + "</span><span>" + r.range + "</span></div>" +
+      '<div class="ctx-label"><span>' + r.ctxLabel + '</span><span class="scroll-hint">scrolls · matches highlighted</span></div>' +
+      '<div class="ctx">' + r.ctx + "</div>";
+  } else {
+    detailEl.innerHTML =
+      '<div class="id-row"><span class="appicon" style="background:' + r.icon.bg + '">' + r.icon.label + "</span>" +
+      '<span class="app-name">' + r.app + '</span><span class="win-title">' + r.srcLine + "</span></div>" +
+      badges +
+      '<div class="time-row"><span class="rel">' + r.rel + "</span><span>" + r.abs + "</span><span>duration " + r.dur + "</span></div>" +
+      '<div class="wavebox"><svg class="wave" data-match="' + r.wave.match + '" data-seed="' + r.wave.seed + '" data-mark="1" aria-hidden="true"></svg>' +
+      '<div class="wavemeta"><span>0:00</span><span class="at">match at ' + r.matchAt + "</span><span>" + r.dur + "</span></div></div>" +
+      '<div class="ctx-label"><span>' + r.ctxLabel + '</span><span class="scroll-hint">scrolls · matches highlighted</span></div>' +
+      '<div class="ctx">' + r.ctx + "</div>";
+    detailEl.querySelectorAll(".wave").forEach(renderWave);
+  }
+}
+
+function select(i) {
+  selected = i;
+  // selecting a collapsed overflow row (e.g. via a timeline dot) expands its section
+  if (!shown().includes(i) && visible().includes(i)) expanded[RESULTS[i].kind] = true;
+  renderRows();
+  renderDetail();
+  renderTimelineSel();
+  const el = rowsEl.querySelector(".row.selected");
+  if (el) el.scrollIntoView({ block: "nearest" });
+}
+
+rowsEl.addEventListener("click", e => {
+  const more = e.target.closest(".more-row");
+  if (more) {
+    expanded[more.dataset.kind] = !expanded[more.dataset.kind];
+    if (!shown().includes(selected)) selected = shown()[0] ?? 0; // collapse can hide the selection
+    select(selected);
+    return;
+  }
+  const row = e.target.closest(".row");
+  if (row) select(+row.dataset.i);
+});
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const vis = shown();
+    const pos = vis.indexOf(selected);
+    // wraps around list ends (real window behavior)
+    const next = (pos + (e.key === "ArrowDown" ? 1 : -1) + vis.length) % vis.length;
+    select(vis[next]);
+  }
+  if (e.key === "Escape") {
+    document.getElementById("appFilter").classList.remove("open");
+    document.getElementById("synHelp").classList.remove("open");
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+    e.preventDefault();
+    document.getElementById("appFilter").classList.toggle("open");
+  }
+});
+
+// ---------------- syntax-help popover ----------------
+const synHelpEl = document.getElementById("synHelp");
+document.getElementById("synBtn").addEventListener("click", () => synHelpEl.classList.toggle("open"));
+document.addEventListener("click", e => {
+  if (!synHelpEl.contains(e.target)) synHelpEl.classList.remove("open");
+});
+
+// ---------------- ⌘F filter picker → chips (single source of truth) ----------------
+const appFilterEl = document.getElementById("appFilter");
+const appMenu = document.getElementById("appMenu");
+const chipBandEl = document.getElementById("chipBand");
+const CATS = {
+  app: [...new Set(RESULTS.map(r => r.app))],
+  source: ["screen", "microphone", "system audio"],
+  date: ["today", "yesterday", "last 7 days"], // cosmetic in the mock
+};
+
+function renderChips() {
+  chipBandEl.style.display = chips.length ? "" : "none";
+  chipBandEl.innerHTML = chips.map((c, k) =>
+    '<span class="fchip">' + c.cat + ": " + c.val +
+    ' <button type="button" class="x" data-k="' + k + '" aria-label="Remove ' + c.cat + ' filter">×</button></span>').join("") +
+    '<span class="chip-hint">typed filters become chips · ? for syntax</span>';
+}
+function renderPicker() {
+  appMenu.innerHTML = Object.entries(CATS).map(([cat, vals]) =>
+    '<div class="cat">' + cat + "</div>" +
+    vals.map(v => {
+      const on = chips.some(c => c.cat === cat && c.val === v);
+      const n = cat === "app" ? RESULTS.filter(r => r.app === v).length
+        : cat === "source" ? RESULTS.filter(r => matchesSource(r, v)).length : null;
+      return '<button type="button" role="menuitemcheckbox" aria-checked="' + on + '" class="' + (on ? "active" : "") +
+        '" data-cat="' + cat + '" data-val="' + v + '">' + v + (n === null ? "" : '<span class="n">' + n + "</span>") + "</button>";
+    }).join("")
+  ).join("");
+}
+function applyFilters() {
+  renderChips();
+  renderPicker();
+  appFilterEl.classList.toggle("filtered", chips.length > 0);
+  const vis = visible();
+  document.getElementById("tlLegend").textContent = chips.length
+    ? vis.length + " of " + RESULTS.length + " shown · " + chips.map(c => c.cat + ": " + c.val).join(" · ")
+    : "";
+  if (!vis.includes(selected)) selected = vis[0] ?? 0;
+  select(selected);
+  renderTimelineDots();
+}
+document.getElementById("appFilterBtn").addEventListener("click", () => appFilterEl.classList.toggle("open"));
+appMenu.addEventListener("click", e => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  const k = chips.findIndex(c => c.cat === b.dataset.cat && c.val === b.dataset.val);
+  if (k >= 0) chips.splice(k, 1); else chips.push({ cat: b.dataset.cat, val: b.dataset.val });
+  applyFilters(); // picker stays open for multi-pick
+});
+chipBandEl.addEventListener("click", e => {
+  const x = e.target.closest(".x");
+  if (!x) return;
+  chips.splice(+x.dataset.k, 1);
+  applyFilters();
+});
+document.addEventListener("click", e => {
+  if (!appFilterEl.contains(e.target)) appFilterEl.classList.remove("open");
+});
+
+// ---------------- thin timeline strip ----------------
+const timelineEl = document.getElementById("timeline");
+const previewEl = document.getElementById("tlPreview");
+// every day labeled; last two stay human ("Yesterday"/"Today")
+const DAY_LABELS = ["Jun 30", "Jul 1", "Jul 2", "Jul 3", "Jul 4", "Jul 5", "Yesterday", "Today"];
+const SPAN = 8; // day slots
+
+// ticks + labels
+DAY_LABELS.forEach((label, d) => {
+  const pc = (d / SPAN) * 100;
+  const tick = document.createElement("div");
+  tick.className = "tick";
+  tick.style.left = "calc(16px + (100% - 32px) * " + (pc / 100) + ")";
+  timelineEl.appendChild(tick);
+  const lab = document.createElement("div");
+  lab.className = "tick-label";
+  // a day with no matches keeps its label, just dimmer
+  if (!RESULTS.some(r => r.t[0] === d)) lab.classList.add("empty");
+  lab.textContent = label;
+  lab.style.left = "calc(16px + (100% - 32px) * " + ((d + 0.5) / SPAN) + ")";
+  timelineEl.appendChild(lab);
+});
+
+// dot positions: honest time mapping, then a min-gap pass so today's cluster stays hoverable
+const dotPos = RESULTS.map((r, i) => ({ i, pc: ((r.t[0] + r.t[1] / 24) / SPAN) * 100 }))
+  .sort((a, b) => a.pc - b.pc);
+for (let k = 1; k < dotPos.length; k++) {
+  if (dotPos[k].pc < dotPos[k - 1].pc + 1.1) dotPos[k].pc = dotPos[k - 1].pc + 1.1;
+}
+
+let dots = [];
+function renderTimelineDots() {
+  dots.forEach(d => d.remove());
+  dots = dotPos.map(({ i, pc }) => {
+    const r = RESULTS[i];
+    const dot = document.createElement("div");
+    dot.className = "dot";
+    if (!visible().includes(i)) dot.classList.add("dim");
+    dot.style.left = "calc(16px + (100% - 32px) * " + (pc / 100) + ")";
+    dot.dataset.i = i;
+    dot.setAttribute("title", r.app + " · " + r.abs);
+    dot.addEventListener("mouseenter", () => showPreview(i, dot));
+    dot.addEventListener("mouseleave", hidePreview);
+    dot.addEventListener("click", () => { hidePreview(); select(i); });
+    timelineEl.appendChild(dot);
+    return dot;
+  });
+  renderTimelineSel();
+}
+function renderTimelineSel() {
+  dots.forEach(d => d.classList.toggle("sel", +d.dataset.i === selected));
+}
+
+function showPreview(i, dot) {
+  const r = RESULTS[i];
+  const thumb = r.kind === "screen"
+    ? '<div class="pthumb"><svg class="shot" viewBox="0 0 320 200" preserveAspectRatio="xMidYMid slice"><use href="#' + r.shot + '"/></svg></div>'
+    : '<div class="pthumb ' + r.source + '"><svg class="wave" data-match="' + r.wave.match + '" data-seed="' + r.wave.seed + '" aria-hidden="true"></svg></div>';
+  // time first, prominent — the strip answers "when was this?" precisely
+  previewEl.innerHTML = thumb + '<div class="ptime">' + r.abs + '</div><div class="plabel">' + r.app +
+    " · " + (r.kind === "screen" ? r.win : r.srcLine) + "</div>";
+  previewEl.querySelectorAll(".wave").forEach(renderWave);
+  // clamp inside the 980px window
+  const winRect = timelineEl.closest(".qr-window").getBoundingClientRect();
+  const dotRect = dot.getBoundingClientRect();
+  const x = dotRect.left - winRect.left + dotRect.width / 2;
+  previewEl.style.left = Math.max(8, Math.min(x - 76, winRect.width - 160)) + "px";
+  previewEl.classList.add("show");
+}
+function hidePreview() { previewEl.classList.remove("show"); }
+
+// ---------------- theme toggle ----------------
+const root = document.documentElement;
+const themeBtn = document.getElementById("themeToggle");
+themeBtn.addEventListener("click", () => {
+  const light = root.getAttribute("data-theme") === "light";
+  root.setAttribute("data-theme", light ? "dark" : "light");
+  themeBtn.textContent = light ? "light theme" : "dark theme";
+});
+
+// -------- init (+ #sel=N / #chip=Name / #more / #picker / #syn / #hover=N deep links) --------
+if (/light/.test(location.hash)) { root.setAttribute("data-theme", "light"); themeBtn.textContent = "dark theme"; }
+if (/syn/.test(location.hash)) synHelpEl.classList.add("open");
+if (/picker/.test(location.hash)) appFilterEl.classList.add("open");
+if (/more/.test(location.hash)) expanded = { screen: true, audio: true };
+const am = location.hash.match(/(?:chip|app)=([\w%-]+)/);
+if (am) {
+  const name = decodeURIComponent(am[1]).replace(/\+/g, " ").toLowerCase();
+  const app = CATS.app.find(a => a.toLowerCase() === name);
+  if (app && !chips.some(c => c.cat === "app" && c.val === app)) chips.push({ cat: "app", val: app });
+}
+const sm = location.hash.match(/sel=(\d+)/);
+selected = sm ? Math.min(+sm[1], RESULTS.length - 1) : -1;
+applyFilters(); // renders chips + picker, clamps selection into the filtered list, draws dots
+const hm = location.hash.match(/hover=(\d+)/); // pin a dot's preview open for screenshots
+if (hm) { const d = dots.find(x => +x.dataset.i === +hm[1]); if (d) showPreview(+hm[1], d); }
+</script>
+
+</body>
+</html>
