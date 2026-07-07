@@ -48,6 +48,11 @@ pub enum AppUpdateState {
     Checking,
     UpToDate,
     Available,
+    /// A newer build exists (or the running build itself is) past a Licensed
+    /// owner's Update Window. NOT installable — the UI directs the owner to renew
+    /// or fetch the newest covered build (Perpetual Fallback). Never a hard lock;
+    /// capture and recorded history are untouched.
+    AvailableOutOfWindow,
     Downloading,
     Installing,
     RestartRequired,
@@ -329,6 +334,7 @@ fn status_from_runtime(
         recording_active,
         runtime.error.clone(),
     );
+    let state = apply_running_build_window_gate(app_handle, state);
 
     AppUpdateStatus {
         app: app_info(app_handle),
@@ -365,6 +371,56 @@ fn update_info_from_update(update: &Update, channel: AppUpdateChannel) -> AppUpd
         date: update.date.and_then(|date| date.format(&Rfc3339).ok()),
         notes: update.body.clone(),
         channel,
+    }
+}
+
+/// The remote build's release date as unix ms (the manifest `pub_date`, carried
+/// on `update.date`). `None` when the manifest omitted a date.
+fn update_release_date_ms(update: &Update) -> Option<i64> {
+    update
+        .date
+        .map(|date| (date.unix_timestamp_nanos() / 1_000_000) as i64)
+}
+
+/// The running build's own release date as unix ms, stamped by `build.rs`.
+/// `None` if the env var is somehow absent (never block on missing data).
+fn running_build_date_ms() -> Option<i64> {
+    option_env!("MNEMA_BUILD_DATE_MS").and_then(|raw| raw.parse::<i64>().ok())
+}
+
+/// The Update Window gate. A build dated strictly after the owner's
+/// `update_through_ms` is outside the window. Only `Licensed` users are gated —
+/// Trial / ReadOnly / TrialNotStarted / `None` (gate not yet computed) have no
+/// Update Window, so updates flow normally. A missing `build_date_ms` is treated
+/// as in-window: never decline an update on absent data.
+fn build_out_of_window(
+    status: Option<&capture_types::LicenseStatus>,
+    build_date_ms: Option<i64>,
+) -> bool {
+    matches!(
+        status,
+        Some(capture_types::LicenseStatus::Licensed { update_through_ms, .. })
+            if build_date_ms.is_some_and(|date| date > *update_through_ms)
+    )
+}
+
+/// Fresh-install-after-lapse edge: if the running build itself is past the
+/// owner's Update Window, surface `AvailableOutOfWindow` in place of a resting
+/// `Idle`/`UpToDate` state so the UI can direct the owner. Remote-update gating
+/// is decided in `run_update_check`, so those states pass through untouched.
+fn apply_running_build_window_gate(
+    app_handle: &tauri::AppHandle,
+    state: AppUpdateState,
+) -> AppUpdateState {
+    if matches!(state, AppUpdateState::Idle | AppUpdateState::UpToDate)
+        && build_out_of_window(
+            crate::licensing::cached_status(app_handle).as_ref(),
+            running_build_date_ms(),
+        )
+    {
+        AppUpdateState::AvailableOutOfWindow
+    } else {
+        state
     }
 }
 
@@ -543,13 +599,25 @@ async fn run_update_check(
     match updater.check().await {
         Ok(Some(update)) => {
             let info = update_info_from_update(&update, settings.channel);
+            // Update Window gate: a Licensed owner is never offered a build dated
+            // after their `update_through`. We surface it (version shown) but keep
+            // `pending_update = None` so it can't be installed — the UI directs the
+            // owner to renew. Perpetual Fallback: their current build keeps working.
+            let out_of_window = build_out_of_window(
+                crate::licensing::cached_status(app_handle).as_ref(),
+                update_release_date_ms(&update),
+            );
             {
                 let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
                 let mut runtime = runtime_state
                     .lock()
                     .expect("app update runtime state poisoned");
-                runtime.state = AppUpdateState::Available;
-                runtime.pending_update = Some(update);
+                runtime.state = if out_of_window {
+                    AppUpdateState::AvailableOutOfWindow
+                } else {
+                    AppUpdateState::Available
+                };
+                runtime.pending_update = if out_of_window { None } else { Some(update) };
                 runtime.update = Some(info.clone());
                 runtime.progress = None;
                 runtime.error = None;
@@ -578,7 +646,9 @@ async fn run_update_check(
                 spawn_update_check(app_handle);
                 return current_status(app_handle);
             }
-            if notify_available {
+            // Out-of-window builds aren't installable, so don't push the
+            // "ready to install from Settings" nudge — the Settings surface directs.
+            if notify_available && !out_of_window {
                 push_update_available_notification(app_handle, &info);
             }
             emit_current_status(app_handle);
@@ -1148,6 +1218,38 @@ mod tests {
             error.map(|error| error.kind),
             Some(AppUpdateErrorKind::RecordingActive)
         );
+    }
+
+    #[test]
+    fn update_window_gate_only_declines_out_of_window_licensed_builds() {
+        let licensed = |update_through_ms| capture_types::LicenseStatus::Licensed {
+            update_through_ms,
+            in_window: true,
+            email: "a@b.c".into(),
+        };
+
+        // Build released after the window → out of window.
+        assert!(build_out_of_window(Some(&licensed(1_000)), Some(2_000)));
+        // Build within the window → allowed.
+        assert!(!build_out_of_window(Some(&licensed(2_000)), Some(1_000)));
+        // Build exactly at the boundary → allowed (`<=` is in window).
+        assert!(!build_out_of_window(Some(&licensed(1_000)), Some(1_000)));
+        // Missing build date → never decline.
+        assert!(!build_out_of_window(Some(&licensed(1_000)), None));
+        // Non-Licensed states have no Update Window: never gated.
+        assert!(!build_out_of_window(
+            Some(&capture_types::LicenseStatus::ReadOnly),
+            Some(9_999)
+        ));
+        assert!(!build_out_of_window(
+            Some(&capture_types::LicenseStatus::Trial {
+                days_left: 3,
+                trial_end_ms: 0
+            }),
+            Some(9_999)
+        ));
+        // Gate not yet computed → updates flow.
+        assert!(!build_out_of_window(None, Some(9_999)));
     }
 
     #[test]

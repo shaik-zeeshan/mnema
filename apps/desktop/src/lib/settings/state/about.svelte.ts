@@ -29,6 +29,7 @@ export function appUpdateStateLabel(status: AppUpdateStatus | null): string {
     case "checking": return "Checking";
     case "upToDate": return "Up to date";
     case "available": return "Update available";
+    case "availableOutOfWindow": return "Outside update window";
     case "downloading": return "Downloading";
     case "installing": return "Installing";
     case "restartRequired": return "Restart required";
@@ -50,6 +51,12 @@ export function appUpdateStatusMessage(status: AppUpdateStatus | null): string {
     case "checking": return "Checking the selected update channel.";
     case "upToDate": return "Mnema is current on the selected channel.";
     case "available": return `Version ${status.update?.version ?? "newer"} is ready to download and install.`;
+    case "availableOutOfWindow":
+      // Two triggers, one state: a newer remote build past the window (update present),
+      // or the running build itself past the window (fresh install after lapse).
+      return status.update
+        ? `Version ${status.update.version} is past your update window. Renew to receive new builds — your current version keeps working forever.`
+        : "You're on a build newer than your update window. Get the newest build your license covers, or renew to receive new builds. Your recordings are untouched.";
     case "downloading": return "Downloading the update package.";
     case "installing": return "Installing the update. Keep Mnema open until this finishes.";
     case "restartRequired": return "Restart Mnema when you are ready to finish updating.";
