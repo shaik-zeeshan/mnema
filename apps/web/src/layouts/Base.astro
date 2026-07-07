@@ -26,7 +26,10 @@ const {
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
-    <meta name="twitter:card" content="summary_large_image" />
+    <meta property="og:url" content={new URL(Astro.url.pathname, Astro.site)} />
+    <meta property="og:image" content={new URL("/icon.png", Astro.site)} />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <meta name="twitter:card" content="summary" />
     <meta name="mnema-latest-release-api" content={GITHUB_RELEASES_API_URL} />
     <link rel="icon" type="image/png" href="/icon.png" />
     <script is:inline>
