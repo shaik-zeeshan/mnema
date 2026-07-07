@@ -23,12 +23,28 @@ pub const LICENSE_STATUS_EVENT: &str = "license_status";
 /// `.manage(...)`-registered in `lib.rs`.
 pub struct LicenseGate(pub Mutex<Option<LicenseStatus>>);
 
-/// "Now" in unix milliseconds (UTC).
-fn now_ms() -> i64 {
+/// "Now" in unix milliseconds (UTC). Shared with the capture-gate seams
+/// (lifecycle start refusal, rotation boundary, status bar) so they all ask
+/// the same clock question as the gate itself.
+pub(crate) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Fire-and-forget status recompute. Used by the capture seams when they catch
+/// a lapsed trial on the synchronous path: the refusal/stop doesn't wait, but
+/// the cache/tray/Settings flip from the stale `Trial` to `ReadOnly`.
+pub(crate) fn recompute_status_async(app_handle: &tauri::AppHandle, now_ms: i64) {
+    let Some(infra) = app_handle.try_state::<AppInfraState>() else {
+        return;
+    };
+    let infra = infra.inner().clone();
+    let app_handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        compute_license_status(infra.pool(), &app_handle, now_ms).await;
+    });
 }
 
 /// Set the in-memory cache and emit the change event. Called at the end of every
@@ -142,6 +158,26 @@ async fn compute_trial(pool: &SqlitePool, now_ms: i64) -> LicenseStatus {
 
     // `bump_max_timestamp_seen` already ran, so a missing read defaults to now.
     let max_seen = state.map(|s| s.max_timestamp_ever_seen_ms).unwrap_or(now_ms);
+
+    // Dev-only test knob: MNEMA_TRIAL_LEN_MS shrinks the whole trial window
+    // (e.g. 300000 = 5 min) so the trial→read-only flip is testable in one
+    // sitting. Days display pins to 1 while active. Compiled out of release.
+    #[cfg(debug_assertions)]
+    if let Some(len_ms) = std::env::var("MNEMA_TRIAL_LEN_MS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+    {
+        let trial_end_ms = start + len_ms;
+        return if now_ms.max(max_seen) >= trial_end_ms {
+            LicenseStatus::ReadOnly
+        } else {
+            LicenseStatus::Trial {
+                days_left: 1,
+                trial_end_ms,
+            }
+        };
+    }
+
     let days = app_infra::trial_days_left(start, now_ms, max_seen, app_infra::TRIAL_LEN_DAYS);
     if days == 0 {
         LicenseStatus::ReadOnly
@@ -164,6 +200,19 @@ pub fn run_license_gate(app_handle: &tauri::AppHandle) {
         return;
     };
     let infra = infra.inner().clone();
+
+    // Dev-only test knob: MNEMA_TRIAL_RESET=1 wipes the stored trial start
+    // (DB row + keychain record) once at launch, so the fresh-trial flow can
+    // be re-run. Compiled out of release; nothing production un-starts a trial.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("MNEMA_TRIAL_RESET").is_some() {
+        let _ = app_infra::delete_trial_record();
+        let _ = tauri::async_runtime::block_on(app_infra::clear_trial_started(infra.pool()));
+        crate::native_capture::debug_log::log_info(
+            "MNEMA_TRIAL_RESET: cleared stored trial start (DB + keychain)",
+        );
+    }
+
     let status = tauri::async_runtime::block_on(compute_license_status(
         infra.pool(),
         app_handle,

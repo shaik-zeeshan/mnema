@@ -72,6 +72,16 @@ const DISK_FULL_STOPPED_MESSAGE: &str = "Recording stopped — disk full.";
 // The graceful-stop notification title.
 #[cfg(target_os = "macos")]
 const DISK_FULL_STOPPED_TITLE: &str = "Recording stopped — disk full";
+// Trial-lapse graceful-stop ERROR notification: the trial ended while a session
+// was recording, so the segment-rotation boundary committed the current segment
+// and stopped instead of opening the next one (mirrors the read-only start
+// refusal copy in `lifecycle.rs`).
+#[cfg(target_os = "macos")]
+const TRIAL_ENDED_STOPPED_NOTIFICATION_ID: &str = "capture_trial_ended_stopped";
+#[cfg(target_os = "macos")]
+const TRIAL_ENDED_STOPPED_TITLE: &str = "Recording stopped — trial ended";
+#[cfg(target_os = "macos")]
+const TRIAL_ENDED_STOPPED_MESSAGE: &str = "Your trial has ended. Buy a license to resume recording — everything you already recorded stays browsable and searchable.";
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -1237,35 +1247,28 @@ fn commit_suspended_microphone_outputs(
     }
 }
 
-/// Graceful stop when free space has fallen below the critical reserve floor
-/// (ADR 0040 "Graceful stop is spatial"). At or below `CRITICAL_FLOOR_BYTES` the
-/// app's own SQLite DB / OCR / OS storage is at risk, so the session ends rather
-/// than waiting for recovery.
-///
-/// Spatial, not timed: the caller passes the measured `free_bytes` that crossed
-/// the critical floor purely for the single-line stop log.
+/// Shared boundary graceful-stop mechanics: commit the (healthy) current
+/// segment when asked, stop every live source, and end the session via
+/// [`mark_runtime_session_failed`] (which already clears the suspension and,
+/// through the segment loop's fall-out broadcast, refreshes the frontend and
+/// the native status bar). Callers surface their own notification + log
+/// (low-disk vs trial-lapse).
 ///
 /// `commit_current_segment` controls whether the in-flight segment is clean-
 /// finalized before ending: a boundary/recovery stop has a healthy current
 /// segment to commit (only the *next* file can't be opened), whereas a mid-
 /// segment write-failure stop has already discarded its partial and passes
 /// `false` so no half-written file is committed.
-///
-/// Ends via [`mark_runtime_session_failed`], which already clears the suspension
-/// and (through the segment loop's fall-out broadcast) refreshes the frontend and
-/// the native status bar. Clears the low-disk warning (if present) and pushes the
-/// `error`-severity "Recording stopped — disk full." notification.
 #[cfg(target_os = "macos")]
-pub(super) fn graceful_stop_for_low_disk(
+pub(super) fn graceful_stop_at_boundary(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
-    free_bytes: u64,
     commit_current_segment: bool,
 ) {
     // Clean-finalize what is safely closable: a still-writing current segment.
     // The mid-segment-fill caller already discarded its partial and passes
-    // `false`, so only a boundary/recovery stop (healthy current segment, the
-    // disk is merely too low to open the *next* file) commits here.
+    // `false`, so only a boundary/recovery stop (healthy current segment, only
+    // opening the *next* file is refused) commits here.
     if commit_current_segment {
         // Stop the screen session *before* committing: a ScreenCaptureKit `.mov`
         // is only finalized (moov atom written, file readable/convertible) by
@@ -1284,7 +1287,7 @@ pub(super) fn graceful_stop_for_low_disk(
             })
         {
             super::debug_log::log(format!(
-                "failed stopping screen session before low-disk graceful-stop commit; continuing: [{}] {}",
+                "failed stopping screen session before boundary graceful-stop commit; continuing: [{}] {}",
                 stop_error.code, stop_error.message
             ));
         }
@@ -1292,14 +1295,34 @@ pub(super) fn graceful_stop_for_low_disk(
         finalize_live_microphone_continuation_on_stop(app_handle, runtime);
     }
 
-    // Stop every live source so no writer keeps a file open as we end. (The mic is
-    // included; LowDisk is the only kind that stops it.)
+    // Stop every live source so no writer keeps a file open as we end. (The mic
+    // is included; boundary graceful stops are the only paths that stop it.)
     stop_active_sessions_after_failure(runtime);
 
     // End the session: this broadcasts native_capture_session_changed + refreshes
     // the status bar via the segment loop's internal-end fall-out, and clears the
     // suspension slot.
     super::runtime::mark_runtime_session_failed(runtime);
+}
+
+/// Graceful stop when free space has fallen below the critical reserve floor
+/// (ADR 0040 "Graceful stop is spatial"). At or below `CRITICAL_FLOOR_BYTES` the
+/// app's own SQLite DB / OCR / OS storage is at risk, so the session ends rather
+/// than waiting for recovery.
+///
+/// Spatial, not timed: the caller passes the measured `free_bytes` that crossed
+/// the critical floor purely for the single-line stop log.
+///
+/// Clears the low-disk warning (if present) and pushes the `error`-severity
+/// "Recording stopped — disk full." notification.
+#[cfg(target_os = "macos")]
+pub(super) fn graceful_stop_for_low_disk(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+    free_bytes: u64,
+    commit_current_segment: bool,
+) {
+    graceful_stop_at_boundary(app_handle, runtime, commit_current_segment);
 
     if let Some(app_handle) = app_handle {
         // Replace the (transient, cleared-on-resume) low-disk warning with the
@@ -1320,6 +1343,44 @@ pub(super) fn graceful_stop_for_low_disk(
         disk_space::human_bytes(free_bytes),
         disk_space::human_bytes(disk_space::critical_threshold_bytes()),
     ));
+}
+
+/// Graceful stop when the trial lapsed mid-session, caught at the rotation
+/// boundary. The current segment is healthy — commit it, then end the session
+/// and surface the persistent trial-ended notification.
+#[cfg(target_os = "macos")]
+pub(super) fn graceful_stop_for_trial_lapse(
+    app_handle: Option<&tauri::AppHandle>,
+    runtime: &mut NativeCaptureRuntime,
+) {
+    graceful_stop_at_boundary(app_handle, runtime, true);
+
+    if let Some(app_handle) = app_handle {
+        // Immediate + persistent surfacing: the native dialog interrupts (the
+        // user may not be looking at the app when their recording dies), and
+        // the bell notification keeps the reason around after it's dismissed.
+        {
+            use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+            app_handle
+                .dialog()
+                .message(TRIAL_ENDED_STOPPED_MESSAGE)
+                .kind(MessageDialogKind::Error)
+                .title(TRIAL_ENDED_STOPPED_TITLE)
+                .show(|_| {});
+        }
+        super::push_error_app_notification(
+            app_handle,
+            TRIAL_ENDED_STOPPED_NOTIFICATION_ID,
+            TRIAL_ENDED_STOPPED_TITLE,
+            TRIAL_ENDED_STOPPED_MESSAGE,
+            None,
+            now_unix_ms(),
+        );
+    }
+
+    super::debug_log::log(
+        "capture stopped: trial ended during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary",
+    );
 }
 
 /// Finalize a still-live microphone continuation when stopping, mirroring the

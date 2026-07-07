@@ -24,6 +24,18 @@ impl LicenseStatus {
     pub fn capture_allowed(&self) -> bool {
         !matches!(self, LicenseStatus::ReadOnly)
     }
+
+    /// Like [`Self::capture_allowed`], but a `Trial` whose window has lapsed
+    /// also blocks. The cached status only recomputes on gate events (launch,
+    /// capture start), so a trial can expire while the cache still says
+    /// `Trial` — without this, the first start after expiry slips through.
+    pub fn capture_allowed_at(&self, now_ms: i64) -> bool {
+        match self {
+            LicenseStatus::ReadOnly => false,
+            LicenseStatus::Trial { trial_end_ms, .. } => now_ms < *trial_end_ms,
+            _ => true,
+        }
+    }
 }
 
 /// Result of pasting a license key into Settings.
@@ -133,5 +145,25 @@ mod tests {
         }
         .capture_allowed());
         assert!(!LicenseStatus::ReadOnly.capture_allowed());
+    }
+
+    #[test]
+    fn capture_allowed_at_blocks_lapsed_trial() {
+        let trial = LicenseStatus::Trial {
+            days_left: 1,
+            trial_end_ms: 1_000,
+        };
+        assert!(trial.capture_allowed_at(999));
+        assert!(!trial.capture_allowed_at(1_000));
+        assert!(!trial.capture_allowed_at(2_000));
+        // Non-trial states are unaffected by the clock.
+        assert!(LicenseStatus::TrialNotStarted { trial_days: 30 }.capture_allowed_at(i64::MAX));
+        assert!(!LicenseStatus::ReadOnly.capture_allowed_at(0));
+        assert!(LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: false,
+            email: String::new(),
+        }
+        .capture_allowed_at(i64::MAX));
     }
 }

@@ -180,6 +180,18 @@ pub fn store_trial_record(record: &str) -> Result<()> {
         .store(TRIAL_RECORD_ACCOUNT, record)
 }
 
+/// Delete the stored trial record. A missing record is treated as success.
+/// Dev-only test knob (`MNEMA_TRIAL_RESET`); production never un-starts a trial.
+pub fn delete_trial_record() -> Result<()> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .delete(TRIAL_RECORD_ACCOUNT);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter).delete(TRIAL_RECORD_ACCOUNT)
+}
+
 /// Load the stored trial record, or `None` when the trial has never started.
 pub fn load_trial_record() -> Result<Option<String>> {
     #[cfg(test)]

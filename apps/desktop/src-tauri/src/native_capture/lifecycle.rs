@@ -167,9 +167,16 @@ impl RecordingLifecycle {
         // when the user buys a license, so it never touches `capture_suspension`
         // nor shares its codes/copy. `cached_status` is `None` until the deferred
         // gate runs once; treat unknown as allow, never lock on unknown.
+        // `capture_allowed_at` also refuses a cached `Trial` whose window has
+        // since lapsed (the cache only recomputes on gate events, so without
+        // the time check the first start after expiry slips through).
+        let gate_now_ms = crate::licensing::now_ms();
         if crate::licensing::cached_status(&app_handle)
-            .is_some_and(|status| !status.capture_allowed())
+            .is_some_and(|status| !status.capture_allowed_at(gate_now_ms))
         {
+            // Recompute async so the cache/tray/Settings flip from the stale
+            // `Trial` to `ReadOnly`; the refusal itself doesn't wait for it.
+            crate::licensing::recompute_status_async(&app_handle, gate_now_ms);
             super::debug_log::log(
                 "capture refused: trial ended, Read-Only Mode — buy a license to resume recording",
             );
@@ -797,6 +804,20 @@ impl RecordingLifecycle {
             super::segments::LowDiskBoundaryOutcome::Stopped => {
                 return TickOutcome::StopLoop;
             }
+        }
+
+        // Trial-lapse boundary check: same shape as low-disk — the current
+        // segment is healthy, only opening the *next* one is refused. Without
+        // this, a session already recording when the trial expires would keep
+        // recording until the user stops it. Commit the segment, end the
+        // session, and recompute async so tray/Settings flip to Read-Only.
+        let rotation_now_ms = crate::licensing::now_ms();
+        if crate::licensing::cached_status(app_handle)
+            .is_some_and(|status| !status.capture_allowed_at(rotation_now_ms))
+        {
+            super::segments::graceful_stop_for_trial_lapse(Some(app_handle), &mut self.runtime);
+            crate::licensing::recompute_status_async(app_handle, rotation_now_ms);
+            return TickOutcome::StopLoop;
         }
 
         if let Some(outcome) =

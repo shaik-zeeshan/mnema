@@ -39,16 +39,16 @@ pub use mcp_server_secret_store::{
     delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret, store_mcp_server_secret,
 };
 pub use license_token_store::{
-    delete_license_key, has_license_key, load_license_key, load_trial_record, store_license_key,
-    store_trial_record,
+    delete_license_key, delete_trial_record, has_license_key, load_license_key, load_trial_record,
+    store_license_key, store_trial_record,
 };
 pub use license_verify::{
     parse_and_verify_license, trial_days_left, LicensePayload, LicenseVerifyError,
     LICENSE_PUBLIC_KEY, TRIAL_LEN_DAYS,
 };
 pub use licensing_state::{
-    bump_max_timestamp_seen, cache_license_fields, clear_license_fields, read_licensing_state,
-    set_trial_started_once, LicensingStateRow,
+    bump_max_timestamp_seen, cache_license_fields, clear_license_fields, clear_trial_started,
+    read_licensing_state, set_trial_started_once, LicensingStateRow,
 };
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,

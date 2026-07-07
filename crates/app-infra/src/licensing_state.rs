@@ -56,6 +56,15 @@ pub async fn set_trial_started_once(pool: &SqlitePool, now_ms: i64) -> Result<()
     Ok(())
 }
 
+/// Clear the stored trial start. Dev-only test knob (`MNEMA_TRIAL_RESET`);
+/// nothing in the production flow ever un-starts a trial.
+pub async fn clear_trial_started(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("UPDATE licensing_state SET trial_started_at_ms = NULL WHERE id = 1")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 /// Raise the anti-rollback high-water mark to `max(current, now_ms)`.
 pub async fn bump_max_timestamp_seen(pool: &SqlitePool, now_ms: i64) -> Result<()> {
     sqlx::query(
