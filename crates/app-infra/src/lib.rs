@@ -14,6 +14,9 @@ mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
 mod lexical;
+mod license_token_store;
+mod license_verify;
+mod licensing_state;
 mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
@@ -34,6 +37,18 @@ pub use ai_provider_key_store::{
 };
 pub use mcp_server_secret_store::{
     delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret, store_mcp_server_secret,
+};
+pub use license_token_store::{
+    delete_license_key, has_license_key, load_license_key, load_trial_record, store_license_key,
+    store_trial_record,
+};
+pub use license_verify::{
+    parse_and_verify_license, trial_days_left, LicensePayload, LicenseVerifyError,
+    LICENSE_PUBLIC_KEY, TRIAL_LEN_DAYS,
+};
+pub use licensing_state::{
+    bump_max_timestamp_seen, cache_license_fields, clear_license_fields, read_licensing_state,
+    set_trial_started_once, LicensingStateRow,
 };
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
