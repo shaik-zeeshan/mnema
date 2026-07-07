@@ -26,7 +26,8 @@ trap cleanup EXIT
 # 1. Ensure cargo-about is available (guarded so re-runs are fast).
 if ! cargo about --version >/dev/null 2>&1; then
   echo "==> cargo-about not found; installing (cargo install cargo-about --locked)…"
-  cargo install cargo-about --locked
+  # cargo-about 0.9+ gates its binary behind the non-default `cli` feature.
+  cargo install cargo-about --locked --features cli
 fi
 
 # 2. Rust dependency licenses.
