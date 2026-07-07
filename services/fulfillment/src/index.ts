@@ -44,8 +44,10 @@ async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void
   });
   if (!res.ok) {
     // Throw so the caller returns 500 and Polar retries. Idempotency is recorded
-    // only after this succeeds, so a retry re-attempts the mint+email.
-    throw new Error(`resend failed: ${res.status}`);
+    // only after this succeeds, so a retry re-attempts the mint+email. Include
+    // Resend's body — it names the cause (unverified domain, test-mode, etc.).
+    const detail = await res.text().catch(() => "");
+    throw new Error(`resend failed: ${res.status} ${detail}`);
   }
 }
 

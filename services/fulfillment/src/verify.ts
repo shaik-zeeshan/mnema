@@ -1,8 +1,13 @@
 import { base64ToBytes, bytesToBase64 } from "./util";
 
 // Standard Webhooks (https://www.standardwebhooks.com) signature verification,
-// as used by Polar. GOTCHA: the signing secret must be base64-decoded before
-// use as the HMAC key (Polar/Standard-Webhooks secrets are `whsec_<base64>`).
+// as used by Polar. Signed content is `${webhook-id}.${webhook-timestamp}.${body}`.
+//
+// GOTCHA: Polar deviates from the spec. The canonical scheme base64-decodes the
+// secret (stripping the `whsec_` prefix) for use as the HMAC key, but Polar signs
+// with the RAW secret STRING — prefix included — as the key (verified against a
+// live delivery, 2026-07-07). We accept EITHER so we're correct regardless of how
+// a given Polar endpoint signs.
 
 const TOLERANCE_SECONDS = 5 * 60;
 
@@ -45,7 +50,13 @@ export async function verifyWebhook(
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isFinite(ts) || Math.abs(now - ts) > TOLERANCE_SECONDS) return false;
 
-  const expected = await hmacBase64(decodeSecret(secret), `${id}.${timestamp}.${rawBody}`);
+  const content = `${id}.${timestamp}.${rawBody}`;
+  // Polar's raw-string key (what we observed live) and the Standard-Webhooks
+  // base64-decoded key — accept a match against either.
+  const expected = await Promise.all([
+    hmacBase64(new TextEncoder().encode(secret), content),
+    hmacBase64(decodeSecret(secret), content),
+  ]);
 
   // Header is space-delimited `v1,<base64sig>` entries (versioned, may be several).
   for (const part of signatureHeader.split(" ")) {
@@ -53,7 +64,7 @@ export async function verifyWebhook(
     if (comma < 0) continue;
     const version = part.slice(0, comma);
     const sig = part.slice(comma + 1);
-    if (version === "v1" && sig && timingSafeEqual(sig, expected)) return true;
+    if (version === "v1" && sig && expected.some((e) => timingSafeEqual(sig, e))) return true;
   }
   return false;
 }

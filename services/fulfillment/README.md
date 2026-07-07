@@ -11,8 +11,10 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
 
 1. Verify the Standard-Webhooks HMAC-SHA256 signature over
    `${webhook-id}.${webhook-timestamp}.${rawBody}`.
-   **Gotcha:** the signing secret is base64-decoded (after stripping the
-   `whsec_` prefix) before use as the HMAC key.
+   **Gotcha:** Polar deviates from the spec — it signs with the **raw secret
+   string** (`whsec_` prefix included) as the HMAC key, *not* the base64-decoded
+   key the spec prescribes (verified against a live delivery 2026-07-07).
+   `verifyWebhook` accepts **either** scheme, so it's correct regardless.
 2. Act only on `type == "order.paid"` with `billing_reason == "purchase"`.
    Refunds and everything else are ACKed with 200 and ignored — keys are
    non-revocable by design.

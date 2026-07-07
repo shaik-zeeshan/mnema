@@ -19,6 +19,7 @@ export interface ActivateLicenseResult {
   status: LicenseStatus;
 }
 
-/** Public Polar checkout link for the one-time Mnema License ($69). */
-// TODO: real Polar checkout link (external setup — see PLAN.md "Details Needed").
-export const LICENSE_CHECKOUT_URL = "https://buy.polar.sh/mnema-license";
+/** Public Polar checkout link for the one-time Mnema License ($69). Override via VITE_LICENSE_CHECKOUT_URL. */
+export const LICENSE_CHECKOUT_URL =
+	import.meta.env.VITE_LICENSE_CHECKOUT_URL ??
+	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";

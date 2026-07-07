@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "mnema-fulfillment",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-07",
+  "observability": { "enabled": true },
+
+  // Idempotency store, deduped on the Polar order id.
+  // Create with: wrangler kv namespace create IDEMPOTENCY  (paste the returned id below)
+  "kv_namespaces": [
+    { "binding": "IDEMPOTENCY", "id": "35f4a7b1e07d4efab115f6bda04d3174" }
+  ],
+
+  // Non-secret config — fill in your Polar product ids:
+  "vars": {
+    "UPDATE_WINDOW_DAYS": "365",
+    "POLAR_LICENSE_PRODUCT_ID": "51482d45-7d85-4deb-aaf5-d45daae09780",
+    "POLAR_RENEWAL_PRODUCT_ID": "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6",
+    "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+  }
+
+  // Secrets — set via `wrangler secret put <NAME>` (NEVER commit values):
+  //   ED25519_PRIVATE_KEY    base64 of the raw 32-byte Ed25519 seed
+  //   POLAR_WEBHOOK_SECRET   Polar webhook signing secret (whsec_<base64>)
+  //   RESEND_API_KEY         Resend API key
+}

@@ -78,6 +78,32 @@ test("webhook verify: accepts correctly-signed, rejects tampered (base64-decodes
   expect(await verifyWebhook(body, headers, otherB64)).toBe(false);
 });
 
+test("webhook verify: accepts Polar's raw-string key scheme (whsec_ prefix as-is)", async () => {
+  // Polar signs with the RAW secret string (prefix included) as the HMAC key,
+  // NOT the base64-decoded Standard-Webhooks key. Verify we accept that.
+  const secret = "whsec_dw8CerghgXDpNBk1FALxQycFinZvLvnaPcI7j0HwXlt";
+  const id = "msg_polar";
+  const ts = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({ type: "order.paid", data: { id: "ord_x" } });
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret), // raw string, prefix included
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${id}.${ts}.${body}`)),
+  );
+  const headers = new Headers({
+    "webhook-id": id,
+    "webhook-timestamp": ts,
+    "webhook-signature": `v1,${bytesToBase64(sig)}`,
+  });
+  expect(await verifyWebhook(body, headers, secret)).toBe(true);
+});
+
 // --- (b) idempotency -------------------------------------------------------
 
 test("idempotency: duplicate order id does not re-mint", async () => {
