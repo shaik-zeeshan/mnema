@@ -24,6 +24,7 @@
   import PrivacyBody from "./PrivacyBody.svelte";
   import AskAiBody from "./AskAiBody.svelte";
   import SemanticSearchBody from "./SemanticSearchBody.svelte";
+  import LicenseBody from "./LicenseBody.svelte";
 
   const c = new OnboardingController();
 
@@ -204,6 +205,8 @@
             <AskAiBody controller={c} />
           {:else if f.id === "semanticSearch"}
             <SemanticSearchBody controller={c} />
+          {:else if f.id === "licensing"}
+            <LicenseBody />
           {/if}
         {/snippet}
       </FeatureRow>

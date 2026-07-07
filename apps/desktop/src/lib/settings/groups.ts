@@ -27,6 +27,7 @@ export type SettingsSectionId =
   | "appearance"
   | "startup"
   | "shortcuts"
+  | "license"
   | "capture"
   | "video"
   | "audio"
@@ -110,6 +111,21 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         anchor: "settings-section-shortcuts",
         label: "Shortcuts",
         keywords: ["keyboard", "hotkey", "global shortcuts", "key binding"],
+      },
+      {
+        id: "license",
+        anchor: "settings-section-license",
+        label: "License & Trial",
+        keywords: [
+          "license",
+          "trial",
+          "buy",
+          "purchase",
+          "activate",
+          "renew",
+          "read-only",
+          "subscription",
+        ],
       },
     ],
   },
@@ -330,6 +346,8 @@ export function resolveTabDeeplink(
       return "semanticSearch";
     case "storage":
       return "storage";
+    case "license":
+      return "license";
     case "appearance":
       return "appearance";
     case "developer":

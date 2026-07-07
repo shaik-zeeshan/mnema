@@ -15,6 +15,7 @@ import type { IconName } from "./groups";
 import IconAppearance from "~icons/lucide/palette";
 import IconStartup from "~icons/lucide/power";
 import IconShortcuts from "~icons/lucide/keyboard";
+import IconLicense from "~icons/lucide/badge-check";
 import IconCapture from "~icons/lucide/monitor";
 import IconVideo from "~icons/lucide/video";
 import IconAudio from "~icons/lucide/audio-lines";
@@ -39,6 +40,7 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   appearance: IconAppearance,
   startup: IconStartup,
   shortcuts: IconShortcuts,
+  license: IconLicense,
   capture: IconCapture,
   video: IconVideo,
   audio: IconAudio,
