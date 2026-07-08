@@ -80,17 +80,36 @@ the license stands (ADR 0052).
 `update_through` from the **original order date**, never `now` — re-mints must
 not extend the buyer's Update Window.
 
+## Signing keys
+
+Each env has its **own** Ed25519 keypair, so a dev-minted key verifies only
+against a dev desktop build and a prod-minted key only against a shipped build.
+Generate one with `bun scripts/gen-keypair.ts` (prints seed + public key + a Rust
+literal); store each seed in the password manager, one per env, never in the repo.
+
+- **prod**: the desktop default. `ED25519_PRIVATE_KEY --env production` is the
+  prod seed, matching the hardcoded `PRODUCTION_LICENSE_PUBLIC_KEY` in
+  `crates/app-infra/src/license_verify.rs`. Rotate by pasting a new literal +
+  shipping a build.
+- **dev**: `ED25519_PRIVATE_KEY --env dev` is the dev seed; build the dev desktop
+  app with its public key via `MNEMA_LICENSE_PUBLIC_KEY` (base64) — `dev-app.sh`
+  auto-loads it from `~/.mnema-licensing-keys/dev_public_key.b64`.
+
+`bake-crl.ts` always verifies against the prod key (it bakes the prod CRL floor).
+Full detail: `docs/licensing/ENV.md` → "Signing keys — one keypair per env".
+Never hand a dev-minted key to a real buyer.
+
 ## Env / secrets
 
-Set with `wrangler secret put <NAME>` (never commit values):
+Set with `wrangler secret put <NAME> --env <dev|production>` (never commit values):
 
 | Name | What |
 | --- | --- |
-| `ED25519_PRIVATE_KEY` | **base64 of the raw 32-byte Ed25519 seed** (dev keypair: `~/.mnema-licensing-keys/ed25519_private_key.raw.b64`) |
+| `ED25519_PRIVATE_KEY` | **base64 of the raw 32-byte Ed25519 seed** — the one keypair both envs share (`~/.mnema-licensing-keys/ed25519_private_key.raw.b64`); see "Signing keys" above |
 | `POLAR_WEBHOOK_SECRET` | Polar webhook signing secret (`whsec_<base64>`) |
 | `RESEND_API_KEY` | Resend API key |
 
-Vars (`[vars]` in `wrangler.toml`, non-secret):
+Vars (per-environment `vars` in `wrangler.jsonc`, non-secret):
 
 | Name | What |
 | --- | --- |
@@ -100,6 +119,22 @@ Vars (`[vars]` in `wrangler.toml`, non-secret):
 | `RESEND_FROM` | optional sender, default `Mnema Licenses <licenses@mnema.app>` |
 | `IDEMPOTENCY` | KV namespace binding |
 
+## Environments
+
+`wrangler.jsonc` declares two named environments — `dev` and `production` — with
+**no** top-level bindings, so every command must pass `--env dev` or `--env
+production` (a bare `wrangler deploy` has no KV/vars). Each env has its **own** KV
+namespace, product ids, worker name, and secrets — so dev traffic never touches
+prod's idempotency/revoked store. Wrangler does not inherit `vars`/`kv_namespaces`
+into a named env, so both are declared in full.
+
+| | Dev (`--env dev`) | Prod (`--env production`) |
+| --- | --- | --- |
+| worker | `mnema-fulfillment` | `mnema-fulfillment-prod` |
+| Polar | **sandbox** product ids | live product ids |
+| KV | dev `IDEMPOTENCY` | separate prod `IDEMPOTENCY` |
+| signing key | see "Signing keys" below | see "Signing keys" below |
+
 ## Develop / test
 
     bun install
@@ -108,11 +143,14 @@ Vars (`[vars]` in `wrangler.toml`, non-secret):
 
 ## Deploy
 
-1. `wrangler kv namespace create IDEMPOTENCY` → paste the returned id into
-   `wrangler.toml` under `[[kv_namespaces]]`.
-2. Set the three secrets (`wrangler secret put ED25519_PRIVATE_KEY`, etc.) and
-   fill the product-id vars in `wrangler.toml`.
-3. `bun run deploy` (`wrangler deploy`).
+Every command carries `--env dev` or `--env production` — same steps per env.
+
+1. `wrangler kv namespace create IDEMPOTENCY --env <dev|production>` → paste the
+   returned id into the matching block in `wrangler.jsonc`.
+2. Set the three secrets and fill the product-id vars for that env:
+   `wrangler secret put ED25519_PRIVATE_KEY --env <dev|production>` (same for
+   `POLAR_WEBHOOK_SECRET`, `RESEND_API_KEY`).
+3. `bun run deploy:dev` or `bun run deploy:prod`.
 4. In Polar, add a webhook endpoint pointed at the deployed Worker URL,
    subscribed to `order.paid`, and copy its signing secret into
-   `POLAR_WEBHOOK_SECRET`. Test against the Polar **sandbox** first.
+   `POLAR_WEBHOOK_SECRET`. Use the Polar **sandbox** for dev, live for prod.

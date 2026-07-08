@@ -19,7 +19,29 @@ Deployed with `wrangler deploy` from `services/fulfillment/`. Handles Polar
 `order.paid` (mint + email a key), `order.refunded` (revoke on full refund), and
 `GET /revocations.json` (serve the signed CRL).
 
-### Secrets — set with `wrangler secret put <NAME>` (never committed)
+### Environments (dev vs prod)
+
+`wrangler.jsonc` has two **named** environments — `dev` and `production` — with
+no top-level bindings, so dev and prod never share state and every command must
+name an env:
+
+- **dev** = `--env dev`. `wrangler dev --env dev` / `wrangler deploy --env dev` /
+  `wrangler secret put <NAME> --env dev` / `bun run deploy:dev`. Deploys
+  `mnema-fulfillment` to `workers.dev`; Polar **sandbox** product ids.
+- **prod** = `--env production`. `wrangler deploy --env production` /
+  `wrangler secret put <NAME> --env production` / `bun run deploy:prod`. Its own
+  worker name (`mnema-fulfillment-prod`), KV namespace, product ids, and secrets.
+
+A bare `wrangler deploy` (no `--env`) has no KV/vars and must not be used.
+Wrangler does **not** inherit `vars` / `kv_namespaces` into a named env, so both
+blocks declare them in full. Everything below applies per-env — set each secret
+under both envs and give each its own KV id + product ids.
+
+> **Signing key (`ED25519_PRIVATE_KEY`) is the one exception.** See "Signing
+> keys: one keypair, both envs" at the end of this section before deciding
+> whether dev and prod share it.
+
+### Secrets — set with `wrangler secret put <NAME> --env <dev|production>` (never committed)
 
 | Secret | What it is | Notes |
 |---|---|---|
@@ -34,22 +56,57 @@ wrangler secret put POLAR_WEBHOOK_SECRET
 wrangler secret put RESEND_API_KEY
 ```
 
-### Non-secret vars — in `wrangler.jsonc` under `vars`
+### Non-secret vars — in `wrangler.jsonc` under `vars` (dev) and `env.production.vars` (prod)
 
-| Var | Current value | What it is |
+| Var | Dev value | What it is |
 |---|---|---|
 | `UPDATE_WINDOW_DAYS` | `"365"` | Days of update window a purchase/renewal grants. |
-| `POLAR_LICENSE_PRODUCT_ID` | `51482d45-…` | Polar product id for the one-time license. Refunds/paid are filtered to known product ids. |
-| `POLAR_RENEWAL_PRODUCT_ID` | `adb6fc3d-…` | Polar product id for the renewal. |
+| `POLAR_LICENSE_PRODUCT_ID` | `51482d45-…` (sandbox) | Polar product id for the one-time license. Refunds/paid are filtered to known product ids. Prod uses the live SKU id. |
+| `POLAR_RENEWAL_PRODUCT_ID` | `adb6fc3d-…` (sandbox) | Polar product id for the renewal. Prod uses the live SKU id. |
 | `RESEND_FROM` | `Mnema Licenses <mail@mnema.day>` | From-address for the delivery email. |
+
+Prod values live in the `env.production.vars` block (placeholders `REPLACE_WITH_PROD_*`
+until you fill them with the live Polar ids).
 
 ### KV — `IDEMPOTENCY` namespace (binding in `wrangler.jsonc`)
 
-Create once, then paste the id into `wrangler.jsonc`:
+One namespace per env — dev and prod must not share the `revoked`/`crl` state.
+Create each, then paste its id into the matching block:
 
 ```sh
-wrangler kv namespace create IDEMPOTENCY
+wrangler kv namespace create IDEMPOTENCY --env dev           # → env.dev.kv_namespaces
+wrangler kv namespace create IDEMPOTENCY --env production    # → env.production.kv_namespaces
 ```
+
+### Signing keys — one keypair per env (build-time selectable)
+
+Each env has its **own** Ed25519 keypair, so a key minted by the dev worker (dev
+seed) verifies only against a dev desktop build, and a prod-minted key only
+against a shipped build. The public key the desktop verifies against is chosen
+at **build time**:
+
+- **Production build** (default): verifies against the hardcoded
+  `PRODUCTION_LICENSE_PUBLIC_KEY` in `crates/app-infra/src/license_verify.rs`.
+  Release CI sets **nothing** — the default is production. Rotate it by pasting a
+  new literal (from `gen-keypair.ts`) and shipping a build.
+- **Dev/staging build**: export `MNEMA_LICENSE_PUBLIC_KEY` (standard base64 of
+  the 32 raw public key bytes) before building. `license_public_key()` reads it
+  via `option_env!`; `app-infra/build.rs` rebuilds when it changes. This drives
+  **both** license and CRL verification (they share the key). `scripts/dev-app.sh`
+  auto-exports it from `~/.mnema-licensing-keys/dev_public_key.b64` if present.
+
+Generate a keypair with `bun scripts/gen-keypair.ts` (from `services/fulfillment/`):
+it prints the base64 seed (→ `ED25519_PRIVATE_KEY` worker secret / mint seed),
+the base64 public key (→ `MNEMA_LICENSE_PUBLIC_KEY` / the dev pubkey file), and
+the Rust literal for a prod rotation. Store each seed in the seller's password
+manager, one per env; never commit a seed.
+
+To match keys per env: worker `ED25519_PRIVATE_KEY --env dev` uses the **dev**
+seed; `--env production` uses the **prod** seed. The dev seed's public key is
+what dev builds bake. `bake-crl.ts` still verifies against the production key
+(it bakes the prod floor into release builds) — dev doesn't bake a floor; a dev
+build's placeholder floor simply verifies to `None` and it live-fetches the dev
+CRL. **Even with the split: never hand a dev/sandbox-minted key to a real buyer.**
 
 Holds three kinds of keys:
 - per-order idempotency markers (keyed by Polar order id),
@@ -60,7 +117,7 @@ Holds three kinds of keys:
 worker re-signs `crl` lazily on the next `GET`:
 
 ```sh
-# read current set, add your id, write it back
+# read current set, add your id, write it back (append --env production for prod)
 wrangler kv key get   --binding IDEMPOTENCY revoked
 wrangler kv key put   --binding IDEMPOTENCY revoked '["comp:press-jane","order:<uuid>"]'
 ```
@@ -68,6 +125,19 @@ wrangler kv key put   --binding IDEMPOTENCY revoked '["comp:press-jane","order:<
 ---
 
 ## 2. Local scripts (`services/fulfillment/scripts`, run with `bun`)
+
+### `gen-keypair.ts` — generate a per-env Ed25519 licensing keypair
+
+No env needed. Prints a fresh seed (base64 → `ED25519_PRIVATE_KEY`), its public
+key (base64 → `MNEMA_LICENSE_PUBLIC_KEY` / the dev pubkey file), and the Rust
+literal for `PRODUCTION_LICENSE_PUBLIC_KEY` (prod rotation). Run once per env;
+store each seed in the password manager, never in the repo.
+
+```sh
+bun scripts/gen-keypair.ts
+# dev: save the printed public key to ~/.mnema-licensing-keys/dev_public_key.b64
+#      (scripts/dev-app.sh bakes it), and set the seed as the dev worker secret.
+```
 
 ### `mint-local.ts` — issue re-mints and comp keys
 
@@ -89,6 +159,12 @@ ED25519_PRIVATE_KEY=<b64-seed> bun scripts/mint-local.ts \
 Mode is chosen by `--order-id` (re-mint) xor `--comp` (comp). License ids become
 `order:<id>` / `comp:<slug>` — the same ids the CRL revokes.
 
+There's no dev/prod switch in the script — you pass the seed, and the seed *is*
+the env. Pass the **prod** seed to mint real keys (verify against shipped
+builds); pass the **dev** seed for keys that only verify against a dev build.
+Keep the two seeds in separate password-manager entries. See "Signing keys"
+above. Never hand a dev-seed mint to a real buyer.
+
 ### `bake-crl.ts` — verify + bake the live CRL into the binary floor
 
 Fetches `/revocations.json`, verifies its signature against the **production
@@ -98,6 +174,9 @@ public key** (no secret needed — verification only), and overwrites
 | Env | Required | Default | What it is |
 |---|---|---|---|
 | `CRL_ENDPOINT` | no | dev `workers.dev` deploy | URL to fetch and verify. |
+
+Dev/prod for this script is just the endpoint: point `CRL_ENDPOINT` at the dev
+worker or the prod worker/custom domain. The default fallback is the dev deploy.
 
 ```sh
 # Dry-run against the live worker (does not need the seed):
@@ -115,6 +194,7 @@ the committed placeholder floor keeps offline builds working.
 | Env | Who sets it | Effect |
 |---|---|---|
 | `MNEMA_CRL_URL` | release CI (or you, for a custom build) | The CRL URL compiled into the binary via `option_env!`. When unset, falls back to `DEFAULT_CRL_URL` (the dev `workers.dev` deploy) in `crl_refresh.rs`. `build.rs` re-bakes on change. |
+| `MNEMA_LICENSE_PUBLIC_KEY` | you, for a dev/staging build (unset = production) | Base64 of the 32-byte Ed25519 public key licenses **and** the CRL verify against. Read via `option_env!` in `license_public_key()` (`app-infra`); unset → the hardcoded `PRODUCTION_LICENSE_PUBLIC_KEY`. `app-infra/build.rs` re-bakes on change. `scripts/dev-app.sh` auto-sets it from `~/.mnema-licensing-keys/dev_public_key.b64`. Must be a real exported env var (not `cargo:rustc-env`) so `app-infra`'s rustc sees it — and it's in `turbo.json` `passThroughEnv` so turbo doesn't strip it. |
 | `MNEMA_BUILD_DATE_MS` | automatic (`build.rs`) | Build timestamp for the update-window gate. No action needed. |
 
 > A `workers.dev` host baked into a shipped binary can't be repointed later.
@@ -178,11 +258,12 @@ MNEMA_LICENSE_ENFORCE=1 MNEMA_DEV_CRL_URL=http://localhost:8787/revocations.json
 
 | Surface | You must set |
 |---|---|
-| Worker (Cloudflare) | secrets `ED25519_PRIVATE_KEY`, `POLAR_WEBHOOK_SECRET`, `RESEND_API_KEY`; the `IDEMPOTENCY` KV id; product ids in `wrangler.jsonc` |
-| `mint-local.ts` | `ED25519_PRIVATE_KEY` in the shell |
-| `bake-crl.ts` | nothing (optionally `CRL_ENDPOINT`) |
-| Desktop dev | nothing to build; `MNEMA_LICENSE_ENFORCE` / `MNEMA_DEV_CRL_URL` / `MNEMA_TRIAL_*` as needed |
-| Release CI | repo variable `CRL_URL`; secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)` |
+| Worker (Cloudflare) — **per env** (`--env dev` / `--env production`) | secrets `ED25519_PRIVATE_KEY`, `POLAR_WEBHOOK_SECRET`, `RESEND_API_KEY`; the `IDEMPOTENCY` KV id; product ids in `wrangler.jsonc` (`env.dev` / `env.production`) |
+| `gen-keypair.ts` | nothing — run once per env to create the keypair |
+| `mint-local.ts` | `ED25519_PRIVATE_KEY` in the shell (the env's seed) |
+| `bake-crl.ts` | nothing (optionally `CRL_ENDPOINT`) — always verifies against the prod key |
+| Desktop **dev** build | drop the dev public key at `~/.mnema-licensing-keys/dev_public_key.b64` (or export `MNEMA_LICENSE_PUBLIC_KEY`) so dev-minted keys verify; `MNEMA_LICENSE_ENFORCE` / `MNEMA_DEV_CRL_URL` / `MNEMA_TRIAL_*` as needed |
+| Release CI | repo variable `CRL_URL`; secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`. Leave `MNEMA_LICENSE_PUBLIC_KEY` **unset** → production key |
 
 _Other `MNEMA_*` vars exist for unrelated subsystems (capture dirs, keychain test
 dirs, etc.) and are out of scope here — see `turbo.json` and each crate._

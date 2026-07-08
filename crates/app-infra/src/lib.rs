@@ -49,8 +49,8 @@ pub use crl_verify::{
     baked_crl, effective_crl, is_revoked, parse_and_verify_crl, Crl, CrlVerifyError, CRL_DOMAIN,
 };
 pub use license_verify::{
-    parse_and_verify_license, trial_days_left, LicensePayload, LicenseVerifyError,
-    LICENSE_PUBLIC_KEY, TRIAL_LEN_DAYS,
+    license_public_key, parse_and_verify_license, trial_days_left, LicensePayload,
+    LicenseVerifyError, TRIAL_LEN_DAYS,
 };
 pub use licensing_state::{
     bump_max_timestamp_seen, cache_license_fields, clear_license_fields, clear_trial_started,

@@ -5,22 +5,50 @@
   "compatibility_date": "2026-07-07",
   "observability": { "enabled": true },
 
-  // Idempotency store, deduped on the Polar order id.
-  // Create with: wrangler kv namespace create IDEMPOTENCY  (paste the returned id below)
-  "kv_namespaces": [
-    { "binding": "IDEMPOTENCY", "id": "35f4a7b1e07d4efab115f6bda04d3174" }
-  ],
+  // No top-level bindings on purpose — always deploy with `--env dev` or
+  // `--env production`. A bare `wrangler deploy` has no KV/vars and must not
+  // be used. Wrangler does NOT inherit `vars` / `kv_namespaces` into a named
+  // env, so each block below declares them in full.
+  "env": {
+    // ── DEV (`--env dev`) ───────────────────────────────────────────────
+    // mnema-fulfillment.<subdomain>.workers.dev — Polar SANDBOX product ids,
+    // dev keypair, dev KV. Never hand dev-minted keys to real buyers.
+    "dev": {
+      "name": "mnema-fulfillment",
+      "kv_namespaces": [
+        // Create with: wrangler kv namespace create IDEMPOTENCY --env dev
+        { "binding": "IDEMPOTENCY", "id": "35f4a7b1e07d4efab115f6bda04d3174" }
+      ],
+      "vars": {
+        "UPDATE_WINDOW_DAYS": "365",
+        "POLAR_LICENSE_PRODUCT_ID": "51482d45-7d85-4deb-aaf5-d45daae09780",
+        "POLAR_RENEWAL_PRODUCT_ID": "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6",
+        "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+      }
+    },
 
-  // Non-secret config — fill in your Polar product ids:
-  "vars": {
-    "UPDATE_WINDOW_DAYS": "365",
-    "POLAR_LICENSE_PRODUCT_ID": "51482d45-7d85-4deb-aaf5-d45daae09780",
-    "POLAR_RENEWAL_PRODUCT_ID": "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6",
-    "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+    // ── PRODUCTION (`--env production`) ─────────────────────────────────
+    "production": {
+      "name": "mnema-fulfillment-prod",
+      "kv_namespaces": [
+        // Separate store so dev traffic never pollutes prod idempotency/revoked.
+        // Create with: wrangler kv namespace create IDEMPOTENCY --env production
+        { "binding": "IDEMPOTENCY", "id": "REPLACE_WITH_PROD_KV_ID" }
+      ],
+      "vars": {
+        "UPDATE_WINDOW_DAYS": "365",
+        "POLAR_LICENSE_PRODUCT_ID": "REPLACE_WITH_PROD_LICENSE_PRODUCT_ID",
+        "POLAR_RENEWAL_PRODUCT_ID": "REPLACE_WITH_PROD_RENEWAL_PRODUCT_ID",
+        "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+      }
+      // Recommended before shipping: front the worker with a custom domain so the
+      // CRL URL baked into desktop binaries is repointable. Add once DNS exists:
+      // "routes": [{ "pattern": "crl.mnema.app/*", "custom_domain": true }]
+    }
   }
 
-  // Secrets — set via `wrangler secret put <NAME>` (NEVER commit values):
-  //   ED25519_PRIVATE_KEY    base64 of the raw 32-byte Ed25519 seed
-  //   POLAR_WEBHOOK_SECRET   Polar webhook signing secret (whsec_<base64>)
-  //   RESEND_API_KEY         Resend API key
+  // Secrets are per-environment — set each under both envs:
+  //   wrangler secret put ED25519_PRIVATE_KEY --env dev
+  //   wrangler secret put ED25519_PRIVATE_KEY --env production
+  //   (same for POLAR_WEBHOOK_SECRET and RESEND_API_KEY)
 }

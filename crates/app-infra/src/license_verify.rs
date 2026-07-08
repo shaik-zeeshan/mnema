@@ -26,12 +26,38 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Ed25519 public key for offline license verification (ADR 0045).
-/// Private key is held ONLY as a Fulfillment-service secret; rotating it ships a new build.
-pub const LICENSE_PUBLIC_KEY: [u8; 32] = [
-    0x60, 0x7b, 0x11, 0x3a, 0x84, 0x46, 0x64, 0xe5, 0xfc, 0xae, 0x01, 0x84, 0xf0, 0xc9, 0x7e, 0xe4,
-    0x6c, 0xde, 0x69, 0xb9, 0x40, 0xdd, 0xc6, 0xde, 0xa8, 0x46, 0xb8, 0x2f, 0x88, 0x4c, 0xe2, 0x12,
+/// Production Ed25519 public key for offline license verification (ADR 0045).
+/// Private key (seed) is held ONLY as the *production* Fulfillment-service
+/// secret; rotating it ships a new build. This is the default whenever no
+/// build-time override is set — i.e. every release build.
+const PRODUCTION_LICENSE_PUBLIC_KEY: [u8; 32] = [
+    0xad, 0x46, 0xc9, 0x9c, 0x89, 0xb7, 0x4f, 0xa6, 0x4c, 0x34, 0x2a, 0x04, 0xfb, 0x4c, 0x1d, 0xfd,
+    0xe7, 0xf9, 0xa2, 0x59, 0xa8, 0x53, 0xfb, 0x13, 0x93, 0x7f, 0x31, 0x91, 0x73, 0xf6, 0x22, 0x88,
 ];
+
+/// The public key that licenses **and** the CRL verify against for this build.
+///
+/// Production by default. A dev/staging build bakes a *different* key by
+/// exporting `MNEMA_LICENSE_PUBLIC_KEY` (standard base64 of the 32 raw public
+/// key bytes) in the environment at build time — so a key minted by the dev
+/// Fulfillment worker (dev seed) verifies only against a dev build, never a
+/// shipped one, and vice versa. `app-infra`'s `build.rs` marks the var so a
+/// change forces a rebuild. Read via `option_env!`, so the value is fixed into
+/// the binary at compile time; an override that isn't valid base64 for exactly
+/// 32 bytes is a build-configuration error and panics on first use.
+pub fn license_public_key() -> [u8; 32] {
+    match option_env!("MNEMA_LICENSE_PUBLIC_KEY") {
+        Some(b64) if !b64.trim().is_empty() => {
+            let bytes = BASE64
+                .decode(b64.trim())
+                .expect("MNEMA_LICENSE_PUBLIC_KEY must be valid standard base64");
+            bytes
+                .try_into()
+                .expect("MNEMA_LICENSE_PUBLIC_KEY must decode to exactly 32 bytes")
+        }
+        _ => PRODUCTION_LICENSE_PUBLIC_KEY,
+    }
+}
 
 /// Trial length in days (ADR 0044: 30-day Trial).
 pub const TRIAL_LEN_DAYS: u32 = 30;
@@ -64,13 +90,13 @@ pub enum LicenseVerifyError {
     Json,
 }
 
-/// Parse and cryptographically verify a license key against the hardcoded
-/// production public key. Returns the verified payload, or a rejection reason.
+/// Parse and cryptographically verify a license key against this build's public
+/// key ([`license_public_key`]). Returns the verified payload, or a rejection reason.
 pub fn parse_and_verify_license(key: &str) -> std::result::Result<LicensePayload, LicenseVerifyError> {
-    // The const is a fixed valid Ed25519 point; treat a decode failure as a
-    // signature rejection (only reachable if the const were ever corrupted).
-    let verifying_key =
-        VerifyingKey::from_bytes(&LICENSE_PUBLIC_KEY).map_err(|_| LicenseVerifyError::Signature)?;
+    // The key bytes are a fixed valid Ed25519 point; treat a decode failure as a
+    // signature rejection (only reachable if the baked key were ever corrupted).
+    let verifying_key = VerifyingKey::from_bytes(&license_public_key())
+        .map_err(|_| LicenseVerifyError::Signature)?;
     parse_and_verify_with_key(key, &verifying_key)
 }
 
@@ -244,6 +270,14 @@ mod tests {
             parse_and_verify_license(&key),
             Err(LicenseVerifyError::Signature)
         );
+    }
+
+    #[test]
+    fn public_key_defaults_to_production_and_is_a_valid_point() {
+        // Built without the MNEMA_LICENSE_PUBLIC_KEY override (the normal test /
+        // release build), the selector returns the production key and it decodes.
+        assert_eq!(license_public_key(), PRODUCTION_LICENSE_PUBLIC_KEY);
+        assert!(VerifyingKey::from_bytes(&license_public_key()).is_ok());
     }
 
     #[test]

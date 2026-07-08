@@ -29,7 +29,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::license_verify::LICENSE_PUBLIC_KEY;
+use crate::license_verify::license_public_key;
 
 /// Domain-separation prefix for CRL signatures (ADR 0052). Signing/verifying a
 /// CRL runs over `CRL_DOMAIN.as_bytes() ++ payload_bytes`, so a license key
@@ -67,10 +67,10 @@ pub enum CrlVerifyError {
 /// production public key (domain-separated). Returns the verified document, or
 /// a rejection reason.
 pub fn parse_and_verify_crl(wire: &str) -> Result<Crl, CrlVerifyError> {
-    // The const is a fixed valid Ed25519 point; treat a decode failure as a
-    // signature rejection (only reachable if the const were ever corrupted).
-    let verifying_key =
-        VerifyingKey::from_bytes(&LICENSE_PUBLIC_KEY).map_err(|_| CrlVerifyError::Signature)?;
+    // The key bytes are a fixed valid Ed25519 point; treat a decode failure as a
+    // signature rejection (only reachable if the baked key were ever corrupted).
+    let verifying_key = VerifyingKey::from_bytes(&license_public_key())
+        .map_err(|_| CrlVerifyError::Signature)?;
     parse_and_verify_crl_with_key(wire, &verifying_key)
 }
 

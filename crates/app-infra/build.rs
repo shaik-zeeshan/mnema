@@ -1,6 +1,10 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    // Licensing per-env keypair split: `license_verify::license_public_key()`
+    // reads this via `option_env!` to bake a dev/staging public key instead of
+    // the production default. Rebuild when it changes (unset on release builds).
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PUBLIC_KEY");
     println!("cargo:rerun-if-changed=../../apps/desktop/src-tauri/tauri.conf.json");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("manifest dir"));
     let config_path = manifest_dir
