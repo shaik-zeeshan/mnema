@@ -273,13 +273,11 @@ fn app_info(app_handle: &tauri::AppHandle) -> AppUpdateAppInfo {
 }
 
 fn active_capture_session_blocks_install(session: &capture_types::NativeCaptureSession) -> bool {
-    session.is_running
-        || session.is_user_paused
-        || session.source_sessions.as_ref().is_some_and(|sources| {
-            sources.screen.is_some()
-                || sources.microphone.is_some()
-                || sources.system_audio.is_some()
-        })
+    // Only the live-capture flags gate the install. `source_sessions` is NOT a
+    // liveness signal: a stopped session deliberately preserves it as finalized
+    // metadata (see `stopped_session_from_runtime`), so checking it left install
+    // blocked with "RECORDING ACTIVE" long after recording stopped.
+    session.is_running || session.is_user_paused
 }
 
 fn current_recording_active(app_handle: &tauri::AppHandle) -> bool {
@@ -1095,7 +1093,10 @@ mod tests {
     }
 
     #[test]
-    fn install_is_blocked_when_source_session_is_still_live() {
+    fn install_is_not_blocked_when_stopped_session_retains_finalized_source_metadata() {
+        // A stopped session preserves `source_sessions` as finalized metadata
+        // (see `stopped_session_from_runtime`). That is not a liveness signal, so
+        // it must not keep the install stuck on "Stop recording to install".
         let mut session = stopped_session();
         session.source_sessions = Some(SourceSessions {
             screen: Some(SourceSessionMeta {
@@ -1106,7 +1107,7 @@ mod tests {
             system_audio: None,
         });
 
-        assert!(active_capture_session_blocks_install(&session));
+        assert!(!active_capture_session_blocks_install(&session));
     }
 
     #[test]
