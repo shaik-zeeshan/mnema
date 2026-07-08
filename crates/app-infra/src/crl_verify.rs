@@ -231,6 +231,63 @@ mod tests {
     }
 
     #[test]
+    fn valid_signature_over_non_json_payload_is_rejected_as_json() {
+        // Correct domain-prefixed signature over non-JSON bytes → `Json`.
+        let signing_key = test_signing_key();
+        let verifying_key = signing_key.verifying_key();
+        let payload = b"not json";
+        let signed = [CRL_DOMAIN.as_bytes(), payload].concat();
+        let signature = signing_key.sign(&signed);
+        let wire = format!(
+            "{}.{}",
+            BASE64.encode(payload),
+            BASE64.encode(signature.to_bytes())
+        );
+        assert_eq!(
+            parse_and_verify_crl_with_key(&wire, &verifying_key),
+            Err(CrlVerifyError::Json)
+        );
+    }
+
+    #[test]
+    fn wrong_length_signature_is_rejected_before_verify() {
+        let verifying_key = test_signing_key().verifying_key();
+        let payload_json = serde_json::to_vec(&sample_crl()).unwrap();
+        for bad_len in [32usize, 63, 65] {
+            let wire = format!(
+                "{}.{}",
+                BASE64.encode(&payload_json),
+                BASE64.encode(vec![0u8; bad_len])
+            );
+            assert_eq!(
+                parse_and_verify_crl_with_key(&wire, &verifying_key),
+                Err(CrlVerifyError::Signature),
+                "sig length {bad_len} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn effective_crl_keeps_baked_on_equal_issued_at() {
+        // Strict `>` means a tie keeps the baked floor. Pin it so a `>=` refactor
+        // (which would flip tie behavior) fails.
+        let baked = Crl {
+            schema: 1,
+            issued_at: 100,
+            revoked_license_ids: vec!["order:baked".to_string()],
+        };
+        let cached = Crl {
+            schema: 1,
+            issued_at: 100,
+            revoked_license_ids: vec!["order:cached".to_string()],
+        };
+        assert_eq!(
+            effective_crl(Some(baked.clone()), Some(cached)),
+            Some(baked)
+        );
+    }
+
+    #[test]
     fn garbage_and_bad_base64_are_rejected() {
         // Against the real production const — no private key needed for rejections.
         assert_eq!(parse_and_verify_crl(""), Err(CrlVerifyError::Malformed));

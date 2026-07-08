@@ -34,20 +34,28 @@ interface PolarOrder {
 }
 
 // KV keys (in the IDEMPOTENCY namespace, alongside order-id idempotency keys):
-//   revoked = JSON array of revoked license ids (source of truth)
-//   crl     = the current signed CRL wire string, rebuilt from `revoked`
-const REVOKED_KEY = "revoked";
+//   revoked:<license_id> = "1"  — ONE key per revoked license id (source of truth)
+//   crl                  = the current signed CRL wire string, rebuilt from the set
+//
+// The revoked set is stored as one key per id, NOT a single JSON array, on purpose:
+// KV has no compare-and-swap, so a read-modify-write of a shared array key silently
+// loses updates when two different orders are refunded concurrently (both read the
+// same array, each pushes its own id, the last put clobbers the other — and since
+// both handlers 200, Polar never retries, so the lost revocation is gone forever).
+// A per-id key is a blind single-key write: two different ids touch two different
+// keys and cannot clobber each other. Re-revoking the same id just rewrites "1".
+const REVOKED_PREFIX = "revoked:";
 const CRL_KEY = "crl";
 
 async function readRevokedSet(env: Env): Promise<string[]> {
-  const raw = await env.IDEMPOTENCY.get(REVOKED_KEY);
-  if (!raw) return [];
-  try {
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch {
-    return [];
-  }
+  const ids: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.IDEMPOTENCY.list({ prefix: REVOKED_PREFIX, cursor });
+    for (const k of page.keys) ids.push(k.name.slice(REVOKED_PREFIX.length));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return ids;
 }
 
 // Rebuild + re-sign the CRL from `revokedIds`, monotonic against any prev crl.
@@ -243,12 +251,15 @@ export async function handleOrderRefunded(
   if (!isLicense && !isRenewal) return { status: "unknown-product" };
 
   const licenseId = "order:" + orderId;
-  const revoked = await readRevokedSet(env);
-  if (revoked.includes(licenseId)) return { status: "already-revoked", license_id: licenseId };
+  const revokedKey = REVOKED_PREFIX + licenseId;
+  if (await env.IDEMPOTENCY.get(revokedKey)) return { status: "already-revoked", license_id: licenseId };
 
-  revoked.push(licenseId);
-  await env.IDEMPOTENCY.put(REVOKED_KEY, JSON.stringify(revoked));
-  await rebuildCrl(env, revoked, now);
+  // Blind single-key write — cannot lose a concurrent revocation of a different id.
+  await env.IDEMPOTENCY.put(revokedKey, "1");
+  // Re-read the full set (now including our id) so the CRL covers every revocation.
+  // A concurrent rebuild that raced ahead of our put is self-healed by the GET
+  // endpoint's drift-detection, which rebuilds from this durable source of truth.
+  await rebuildCrl(env, await readRevokedSet(env), now);
 
   return { status: "revoked", license_id: licenseId };
 }

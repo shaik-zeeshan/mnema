@@ -82,6 +82,15 @@ const TRIAL_ENDED_STOPPED_NOTIFICATION_ID: &str = "capture_trial_ended_stopped";
 const TRIAL_ENDED_STOPPED_TITLE: &str = "Recording stopped — trial ended";
 #[cfg(target_os = "macos")]
 const TRIAL_ENDED_STOPPED_MESSAGE: &str = "Your trial has ended. Buy a license to resume recording — everything you already recorded stays browsable and searchable.";
+// License-revoked graceful-stop ERROR notification: a stored key that landed on
+// the signed revocation list (refund/leak) blocks capture just like a lapsed
+// trial, but must read as "revoked" — never conflated with the trial copy.
+#[cfg(target_os = "macos")]
+const REVOKED_STOPPED_NOTIFICATION_ID: &str = "capture_license_revoked_stopped";
+#[cfg(target_os = "macos")]
+const REVOKED_STOPPED_TITLE: &str = "Recording stopped — license revoked";
+#[cfg(target_os = "macos")]
+const REVOKED_STOPPED_MESSAGE: &str = "This license has been revoked. Contact support if you think this is a mistake — everything you already recorded stays browsable and searchable.";
 
 #[cfg(target_os = "macos")]
 fn persist_capture_session_started(
@@ -1345,15 +1354,32 @@ pub(super) fn graceful_stop_for_low_disk(
     ));
 }
 
-/// Graceful stop when the trial lapsed mid-session, caught at the rotation
-/// boundary. The current segment is healthy — commit it, then end the session
-/// and surface the persistent trial-ended notification.
+/// Graceful stop when licensing blocks capture mid-session (trial lapsed, or the
+/// stored key was revoked), caught at the rotation boundary. The current segment
+/// is healthy — commit it, then end the session and surface the persistent
+/// notification. `revoked` picks honest copy: a revoked key reads as "revoked",
+/// never as a lapsed trial.
 #[cfg(target_os = "macos")]
-pub(super) fn graceful_stop_for_trial_lapse(
+pub(super) fn graceful_stop_for_license_block(
     app_handle: Option<&tauri::AppHandle>,
     runtime: &mut NativeCaptureRuntime,
+    revoked: bool,
 ) {
     graceful_stop_at_boundary(app_handle, runtime, true);
+
+    let (notification_id, title, message) = if revoked {
+        (
+            REVOKED_STOPPED_NOTIFICATION_ID,
+            REVOKED_STOPPED_TITLE,
+            REVOKED_STOPPED_MESSAGE,
+        )
+    } else {
+        (
+            TRIAL_ENDED_STOPPED_NOTIFICATION_ID,
+            TRIAL_ENDED_STOPPED_TITLE,
+            TRIAL_ENDED_STOPPED_MESSAGE,
+        )
+    };
 
     if let Some(app_handle) = app_handle {
         // Immediate + persistent surfacing: the native dialog interrupts (the
@@ -1363,24 +1389,26 @@ pub(super) fn graceful_stop_for_trial_lapse(
             use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
             app_handle
                 .dialog()
-                .message(TRIAL_ENDED_STOPPED_MESSAGE)
+                .message(message)
                 .kind(MessageDialogKind::Error)
-                .title(TRIAL_ENDED_STOPPED_TITLE)
+                .title(title)
                 .show(|_| {});
         }
         super::push_error_app_notification(
             app_handle,
-            TRIAL_ENDED_STOPPED_NOTIFICATION_ID,
-            TRIAL_ENDED_STOPPED_TITLE,
-            TRIAL_ENDED_STOPPED_MESSAGE,
+            notification_id,
+            title,
+            message,
             None,
             now_unix_ms(),
         );
     }
 
-    super::debug_log::log(
-        "capture stopped: trial ended during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary",
-    );
+    super::debug_log::log(if revoked {
+        "capture stopped: license revoked during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary"
+    } else {
+        "capture stopped: trial ended during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary"
+    });
 }
 
 /// Finalize a still-live microphone continuation when stopping, mirroring the
@@ -4950,6 +4978,91 @@ mod tests {
         assert!(
             output_files.screen_files.contains(&screen_path),
             "the finalized in-flight tail segment must be committed"
+        );
+    }
+
+    /// Build a running screen-only runtime whose in-flight segment points at a
+    /// fake but openable `.mov`, mirroring the display-unavailable fixture.
+    fn running_screen_runtime_with_tail(screen_path: &str) -> NativeCaptureRuntime {
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            current_segment_sources: Some(CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            }),
+            output_files: Some(empty_output_files()),
+            current_segment_output_files: Some(CaptureOutputFiles {
+                screen_file: Some(screen_path.to_string()),
+                screen_files: vec![screen_path.to_string()],
+                microphone_file: None,
+                microphone_files: Vec::new(),
+                system_audio_file: None,
+                system_audio_files: Vec::new(),
+            }),
+            recording_file: Some(screen_path.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn license_block_boundary_stop_commits_current_segment_and_ends_session() {
+        // The rotation-boundary trial/revoked stop has a HEALTHY current segment
+        // (only opening the *next* file is refused), so it must commit the tail —
+        // not orphan a user's final recording — and end the session. Both the
+        // trial-lapse and revoked variants pass `commit = true`; assert the
+        // mechanics are identical. `None` app_handle skips the dialog/notification.
+        for revoked in [false, true] {
+            let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+            let screen_path = temp_dir.path().join("screen-segment.mov");
+            std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+                .expect("fake openable mov should be written");
+            let screen_path = screen_path.to_string_lossy().into_owned();
+
+            let mut runtime = running_screen_runtime_with_tail(&screen_path);
+            graceful_stop_for_license_block(None, &mut runtime, revoked);
+
+            assert!(!runtime.is_running, "session must end (revoked={revoked})");
+            assert!(
+                runtime.current_segment_output_files.is_none(),
+                "in-flight tail must be committed and detached (revoked={revoked})"
+            );
+            let output_files = runtime
+                .output_files
+                .expect("committed output files should be preserved");
+            assert!(
+                output_files.screen_files.contains(&screen_path),
+                "the healthy current segment must be committed, not orphaned (revoked={revoked})"
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_stop_without_commit_discards_the_partial_segment() {
+        // The mid-fill low-disk caller passes `commit = false`: a half-written
+        // partial must NOT be committed. Locks the shared-fn contract the trial/
+        // revoked stop now depends on.
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_path = temp_dir.path().join("partial-segment.mov");
+        std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+            .expect("fake mov should be written");
+        let screen_path = screen_path.to_string_lossy().into_owned();
+
+        let mut runtime = running_screen_runtime_with_tail(&screen_path);
+        graceful_stop_at_boundary(None, &mut runtime, false);
+
+        assert!(!runtime.is_running);
+        let output_files = runtime
+            .output_files
+            .expect("output files collection should be preserved");
+        assert!(
+            !output_files.screen_files.contains(&screen_path),
+            "a non-committed partial must never be added to the committed set"
         );
     }
 

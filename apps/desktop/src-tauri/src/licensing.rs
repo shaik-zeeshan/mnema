@@ -283,6 +283,24 @@ pub async fn ensure_trial_started(
     compute_license_status(pool, app_handle, now_ms).await
 }
 
+/// Honest copy for refusing capture, per blocking state. A `Revoked` (refunded/
+/// leaked) key reads as "revoked" — never conflated with a lapsed trial, which
+/// the offline model deliberately keeps distinct (see `LicenseStatus::Revoked`).
+/// Returns `(error_code, message)`; the capture-start seam surfaces both, while
+/// the rotation-stop and tray derive their own copy from the same distinction.
+pub(crate) fn capture_refusal_copy(status: &LicenseStatus) -> (&'static str, &'static str) {
+    match status {
+        LicenseStatus::Revoked => (
+            "capture_refused_revoked",
+            "This license has been revoked. Contact support if you think this is a mistake — everything you already recorded stays browsable and searchable.",
+        ),
+        _ => (
+            "capture_refused_read_only",
+            "Your trial has ended. Buy a license to resume recording — everything you already recorded stays browsable and searchable.",
+        ),
+    }
+}
+
 /// Short label for logs — avoids leaking the licensee email at INFO level.
 fn status_label(status: &LicenseStatus) -> &'static str {
     match status {
@@ -425,5 +443,27 @@ mod tests {
         assert!(is_key_revoked("comp:press", Some(&crl)));
         assert!(!is_key_revoked("comp:friend", Some(&crl)));
         assert!(!is_key_revoked("comp:press", None));
+    }
+
+    #[test]
+    fn capture_refusal_copy_is_honest_per_state() {
+        // Revoked reads as "revoked" with its own code — never trial-ended copy.
+        let (code, message) = capture_refusal_copy(&LicenseStatus::Revoked);
+        assert_eq!(code, "capture_refused_revoked");
+        assert!(message.contains("revoked"));
+        assert!(!message.contains("trial"));
+
+        // A lapsed trial / read-only reads as the trial-ended copy.
+        for status in [
+            LicenseStatus::ReadOnly,
+            LicenseStatus::Trial {
+                days_left: 0,
+                trial_end_ms: 0,
+            },
+        ] {
+            let (code, message) = capture_refusal_copy(&status);
+            assert_eq!(code, "capture_refused_read_only");
+            assert!(message.contains("trial"));
+        }
     }
 }

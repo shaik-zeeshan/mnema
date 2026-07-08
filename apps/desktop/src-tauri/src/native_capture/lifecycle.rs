@@ -171,18 +171,19 @@ impl RecordingLifecycle {
         // since lapsed (the cache only recomputes on gate events, so without
         // the time check the first start after expiry slips through).
         let gate_now_ms = crate::licensing::now_ms();
-        if crate::licensing::cached_status(&app_handle)
-            .is_some_and(|status| !status.capture_allowed_at(gate_now_ms))
+        if let Some(status) =
+            crate::licensing::cached_status(&app_handle).filter(|s| !s.capture_allowed_at(gate_now_ms))
         {
             // Recompute async so the cache/tray/Settings flip from the stale
             // `Trial` to `ReadOnly`; the refusal itself doesn't wait for it.
             crate::licensing::recompute_status_async(&app_handle, gate_now_ms);
-            super::debug_log::log(
-                "capture refused: trial ended, Read-Only Mode — buy a license to resume recording",
-            );
+            // Honest copy per state: a revoked (refunded/leaked) key must not read
+            // as a lapsed trial.
+            let (code, message) = crate::licensing::capture_refusal_copy(&status);
+            super::debug_log::log(format!("capture refused: {code}"));
             return Err(CaptureErrorResponse {
-                code: "capture_refused_read_only".to_string(),
-                message: "Your trial has ended. Buy a license to resume recording — everything you already recorded stays browsable and searchable.".to_string(),
+                code: code.to_string(),
+                message: message.to_string(),
             });
         }
 
@@ -812,10 +813,15 @@ impl RecordingLifecycle {
         // recording until the user stops it. Commit the segment, end the
         // session, and recompute async so tray/Settings flip to Read-Only.
         let rotation_now_ms = crate::licensing::now_ms();
-        if crate::licensing::cached_status(app_handle)
-            .is_some_and(|status| !status.capture_allowed_at(rotation_now_ms))
+        if let Some(status) = crate::licensing::cached_status(app_handle)
+            .filter(|s| !s.capture_allowed_at(rotation_now_ms))
         {
-            super::segments::graceful_stop_for_trial_lapse(Some(app_handle), &mut self.runtime);
+            let revoked = matches!(status, capture_types::LicenseStatus::Revoked);
+            super::segments::graceful_stop_for_license_block(
+                Some(app_handle),
+                &mut self.runtime,
+                revoked,
+            );
             crate::licensing::recompute_status_async(app_handle, rotation_now_ms);
             return TickOutcome::StopLoop;
         }

@@ -25,7 +25,7 @@ describe("settings rail: 5-group structure", () => {
 
   test("each group stacks its sections in the prescribed order", () => {
     const byId = Object.fromEntries(SETTINGS_GROUPS.map((g) => [g.id, g.sections.map((s) => s.id)]));
-    expect(byId.general).toEqual(["appearance", "startup", "shortcuts", "license"]);
+    expect(byId.general).toEqual(["appearance", "startup", "shortcuts"]);
     expect(byId.capture).toEqual(["capture", "video", "audio", "privacy"]);
     expect(byId.intelligence).toEqual([
       "intelligence",
@@ -37,7 +37,7 @@ describe("settings rail: 5-group structure", () => {
       "semanticSearch",
     ]);
     expect(byId.data).toEqual(["storage", "access"]);
-    expect(byId.about).toEqual(["about", "developer"]);
+    expect(byId.about).toEqual(["license", "about", "developer"]);
   });
 
   test("every section maps back to its owning group", () => {
@@ -58,6 +58,7 @@ describe("settings rail: 5-group structure", () => {
       semanticSearch: "intelligence",
       storage: "data",
       access: "data",
+      license: "about",
       about: "about",
       developer: "about",
     };

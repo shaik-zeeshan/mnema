@@ -44,6 +44,12 @@ function fakeEnv(seedB64: string): { env: Env; store: Map<string, string> } {
       put: async (k: string, v: string) => {
         store.set(k, v);
       },
+      list: async ({ prefix }: { prefix: string }) => {
+        const keys = [...store.keys()]
+          .filter((k) => k.startsWith(prefix))
+          .map((name) => ({ name }));
+        return { keys, list_complete: true, cursor: undefined };
+      },
     },
   } as unknown as Env;
   return { env, store };
@@ -52,6 +58,8 @@ function fakeEnv(seedB64: string): { env: Env; store: Map<string, string> } {
 let emailCount = 0;
 let refundCount = 0;
 let refundStatus = 200; // let a test simulate Polar's 422 "exceeds refundable"
+let polarOrdersStatus = 200; // let a test simulate a Polar ownership-lookup outage
+let resendStatus = 200; // let a test simulate a Resend send failure (mint must 500 + retry)
 let lastRefundBody: { order_id?: string; amount?: number; reason?: string } | null = null;
 // License orders Polar's /v1/orders/ lookup returns for the renewal ownership gate.
 let polarLicenseOrders: Array<{ status?: string }> = [];
@@ -60,12 +68,15 @@ function mockResend() {
   emailCount = 0;
   refundCount = 0;
   refundStatus = 200;
+  polarOrdersStatus = 200;
+  resendStatus = 200;
   lastRefundBody = null;
   polarLicenseOrders = [];
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("/v1/orders/")) {
-      return new Response(JSON.stringify({ items: polarLicenseOrders }), { status: 200 });
+      const body = polarOrdersStatus === 200 ? JSON.stringify({ items: polarLicenseOrders }) : "upstream error";
+      return new Response(body, { status: polarOrdersStatus });
     }
     if (url.includes("/v1/refunds/")) {
       refundCount++;
@@ -78,7 +89,9 @@ function mockResend() {
     }
     // Resend (or anything else) — counts as an email send.
     emailCount++;
-    return new Response("{}", { status: 200 });
+    return new Response(resendStatus === 200 ? "{}" : "test-mode: domain not verified", {
+      status: resendStatus,
+    });
   }) as typeof fetch;
 }
 afterEach(() => {
@@ -335,7 +348,7 @@ test("Slice 2: full refund adds order:<id> to revoked + (re)builds a verifying c
   );
   expect(res.status).toBe("revoked");
 
-  expect(JSON.parse(store.get("revoked")!)).toEqual(["order:" + orderId]);
+  expect(store.get("revoked:order:" + orderId)).toBe("1");
   const wire = store.get("crl")!;
   expect(await verifyCrlUnder(wire, "mnema-crl-v1:", pub)).toBe(true);
   expect(crlRevokedIds(wire)).toContain("order:" + orderId);
@@ -374,8 +387,8 @@ test("Slice 2: CRL rebuild is monotonic even with a clock stuck in the past", as
 test("Slice 2: GET /revocations.json serves the signed doc, lazy-rebuilds when crl missing", async () => {
   const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
   const pub = await ed.getPublicKeyAsync(TEST_SEED);
-  // Seed `revoked` directly (simulating a manual comp-key revocation) with no crl.
-  store.set("revoked", JSON.stringify(["order:44444444-4444-4444-4444-444444444444"]));
+  // Seed the revoked set directly (simulating a manual comp-key revocation) with no crl.
+  store.set("revoked:order:44444444-4444-4444-4444-444444444444", "1");
 
   const req = new Request("https://f.example/revocations.json", { method: "GET" });
   const res = await defaultExport.fetch(req, env);
@@ -387,4 +400,148 @@ test("Slice 2: GET /revocations.json serves the signed doc, lazy-rebuilds when c
   expect(crlRevokedIds(wire)).toContain("order:44444444-4444-4444-4444-444444444444");
   // Lazily stored.
   expect(store.get("crl")).toBe(wire);
+});
+
+// --- webhook replay protection ---------------------------------------------
+
+test("webhook verify: rejects a timestamp outside the 5-min tolerance (replay guard)", async () => {
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const body = JSON.stringify({ type: "order.paid", data: { id: "ord_replay" } });
+  const now = Math.floor(Date.now() / 1000);
+
+  // Sign over the SKEWED timestamp so only the tolerance branch (not the sig) can fail.
+  const stale = String(now - 301);
+  const future = String(now + 301);
+  const staleHeaders = await signWebhook(secretB64, "msg_stale", stale, body);
+  const futureHeaders = await signWebhook(secretB64, "msg_future", future, body);
+  expect(await verifyWebhook(body, staleHeaders, secretB64)).toBe(false);
+  expect(await verifyWebhook(body, futureHeaders, secretB64)).toBe(false);
+
+  // Just inside the window still verifies.
+  const fresh = String(now - 299);
+  const freshHeaders = await signWebhook(secretB64, "msg_fresh", fresh, body);
+  expect(await verifyWebhook(body, freshHeaders, secretB64)).toBe(true);
+});
+
+test("webhook verify: rejects when any required header is missing", async () => {
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const ts = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({ type: "order.paid", data: { id: "ord_h" } });
+  const full = await signWebhook(secretB64, "msg_h", ts, body);
+  expect(await verifyWebhook(body, full, secretB64)).toBe(true);
+
+  for (const drop of ["webhook-id", "webhook-timestamp", "webhook-signature"]) {
+    const h = new Headers(full);
+    h.delete(drop);
+    expect(await verifyWebhook(body, h, secretB64)).toBe(false);
+  }
+});
+
+// --- renewal ownership gate: lookup failure must NOT wrongly refund ---------
+
+test("renewal: Polar ownership-lookup outage throws (no refund, idempotency unrecorded → Polar retries)", async () => {
+  mockResend();
+  polarOrdersStatus = 503; // Polar /v1/orders/ is down
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  const order = {
+    id: "ord_renew_outage",
+    billing_reason: "purchase",
+    product_id: "prod_renewal",
+    customer_id: "cust_1",
+    customer: { email: "owner@example.com" },
+    refundable_amount: 2900,
+  };
+  // Must throw so the webhook 500s and Polar retries — NEVER silently treat the
+  // customer as a non-owner and refund a legitimate renewal.
+  await expect(handleOrderPaid(order, env, Date.now())).rejects.toThrow();
+  expect(refundCount).toBe(0);
+  expect(store.get("ord_renew_outage")).toBeUndefined(); // idempotency not recorded
+});
+
+// --- webhook POST seam (default.fetch dispatch) ----------------------------
+
+async function postWebhook(env: Env, secretB64: string, event: unknown) {
+  const body = JSON.stringify(event);
+  const ts = String(Math.floor(Date.now() / 1000));
+  const headers = await signWebhook(secretB64, "msg_" + Math.random().toString(36).slice(2), ts, body);
+  return defaultExport.fetch(
+    new Request("https://f.example/", { method: "POST", headers, body }),
+    env,
+  );
+}
+
+test("POST order.paid with billing_reason != purchase → 200 ignored, no mint", async () => {
+  mockResend();
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const { env } = fakeEnv(bytesToBase64(TEST_SEED));
+  env.POLAR_WEBHOOK_SECRET = secretB64;
+  const res = await postWebhook(env, secretB64, {
+    type: "order.paid",
+    data: { id: "ord_sub", billing_reason: "subscription_cycle", product_id: "prod_license", customer: { email: "a@b.co" } },
+  });
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("ignored");
+  expect(emailCount).toBe(0);
+});
+
+test("POST order.paid purchase (valid sig) → 200 minted + email sent", async () => {
+  mockResend();
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  env.POLAR_WEBHOOK_SECRET = secretB64;
+  const res = await postWebhook(env, secretB64, {
+    type: "order.paid",
+    data: { id: "ord_ok", billing_reason: "purchase", product_id: "prod_license", customer: { email: "buyer@example.com" } },
+  });
+  expect(res.status).toBe(200);
+  expect(await res.text()).toBe("minted");
+  expect(emailCount).toBe(1);
+  expect(store.get("ord_ok")).toBeDefined(); // idempotency recorded after success
+});
+
+test("POST with an invalid signature → 401 and no side effect", async () => {
+  mockResend();
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const { env } = fakeEnv(bytesToBase64(TEST_SEED));
+  env.POLAR_WEBHOOK_SECRET = secretB64;
+  const body = JSON.stringify({ type: "order.paid", data: { id: "ord_bad", billing_reason: "purchase", product_id: "prod_license", customer: { email: "a@b.co" } } });
+  const ts = String(Math.floor(Date.now() / 1000));
+  // Sign with the WRONG secret.
+  const wrong = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const headers = await signWebhook(wrong, "msg_bad", ts, body);
+  const res = await defaultExport.fetch(new Request("https://f.example/", { method: "POST", headers, body }), env);
+  expect(res.status).toBe(401);
+  expect(emailCount).toBe(0);
+});
+
+test("POST with a valid signature but malformed JSON → 400", async () => {
+  mockResend();
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const { env } = fakeEnv(bytesToBase64(TEST_SEED));
+  env.POLAR_WEBHOOK_SECRET = secretB64;
+  const body = "{not json";
+  const ts = String(Math.floor(Date.now() / 1000));
+  const headers = await signWebhook(secretB64, "msg_json", ts, body);
+  const res = await defaultExport.fetch(new Request("https://f.example/", { method: "POST", headers, body }), env);
+  expect(res.status).toBe(400);
+});
+
+test("non-POST request to a non-CRL path → 405", async () => {
+  const { env } = fakeEnv(bytesToBase64(TEST_SEED));
+  const res = await defaultExport.fetch(new Request("https://f.example/", { method: "GET" }), env);
+  expect(res.status).toBe(405);
+});
+
+test("POST order.paid whose mint/email fails → 500 so Polar retries, idempotency unrecorded", async () => {
+  mockResend();
+  resendStatus = 500; // Resend send fails → sendEmail throws → handler 500s
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  env.POLAR_WEBHOOK_SECRET = secretB64;
+  const res = await postWebhook(env, secretB64, {
+    type: "order.paid",
+    data: { id: "ord_fail", billing_reason: "purchase", product_id: "prod_license", customer: { email: "buyer@example.com" } },
+  });
+  expect(res.status).toBe(500);
+  expect(store.get("ord_fail")).toBeUndefined(); // NOT recorded → retry re-mints
 });

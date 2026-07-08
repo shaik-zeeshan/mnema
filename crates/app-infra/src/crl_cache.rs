@@ -34,3 +34,79 @@ pub async fn store_cached_crl(pool: &SqlitePool, wire: &str) -> Result<()> {
     .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::sqlite::SqlitePoolOptions;
+
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+            .block_on(future)
+    }
+
+    // Mirrors the `app_settings` shape (migration 0001) the store upserts into.
+    async fn app_settings_pool() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory db");
+        sqlx::query(
+            "CREATE TABLE app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create table");
+        pool
+    }
+
+    #[test]
+    fn load_returns_none_when_never_stored() {
+        block_on(async {
+            let pool = app_settings_pool().await;
+            assert_eq!(load_cached_crl(&pool).await.unwrap(), None);
+        });
+    }
+
+    #[test]
+    fn store_then_load_returns_the_exact_wire_verbatim() {
+        block_on(async {
+            let pool = app_settings_pool().await;
+            // A signature-bearing wire string with `.`, `+`, `/`, `=` — must survive
+            // byte-for-byte (no trimming/normalization) so the re-verify on read works.
+            let wire = "eyJzY2hlbWEiOjF9.AbC+/dEf==";
+            store_cached_crl(&pool, wire).await.unwrap();
+            assert_eq!(load_cached_crl(&pool).await.unwrap().as_deref(), Some(wire));
+        });
+    }
+
+    #[test]
+    fn store_overwrites_previous_value_not_appends() {
+        block_on(async {
+            let pool = app_settings_pool().await;
+            store_cached_crl(&pool, "first.sig").await.unwrap();
+            store_cached_crl(&pool, "second.sig").await.unwrap();
+            // The ON CONFLICT branch: the newer (fresher) CRL replaces the old one.
+            assert_eq!(
+                load_cached_crl(&pool).await.unwrap().as_deref(),
+                Some("second.sig")
+            );
+            // Exactly one row for the key (no duplicate/append).
+            let count: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM app_settings WHERE key = ?1")
+                    .bind(CRL_CACHE_KEY)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(count, 1);
+        });
+    }
+}

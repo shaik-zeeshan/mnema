@@ -263,6 +263,46 @@ mod tests {
     }
 
     #[test]
+    fn valid_signature_over_non_json_payload_is_rejected_as_json() {
+        // A cryptographically valid signature over payload bytes that aren't JSON
+        // (a minter signing the wrong bytes) is the ONLY path to the `Json` variant.
+        let signing_key = test_signing_key();
+        let verifying_key = signing_key.verifying_key();
+        let payload = b"not json at all";
+        let signature = signing_key.sign(payload);
+        let key = format!(
+            "{}.{}",
+            BASE64.encode(payload),
+            BASE64.encode(signature.to_bytes())
+        );
+        assert_eq!(
+            parse_and_verify_with_key(&key, &verifying_key),
+            Err(LicenseVerifyError::Json)
+        );
+    }
+
+    #[test]
+    fn wrong_length_signature_is_rejected_before_verify() {
+        // A signature half that decodes to a valid base64 blob of the wrong length
+        // is rejected at `try_into::<[u8; 64]>` — a distinct branch from a verify
+        // failure. Use a real payload so only the signature length is wrong.
+        let verifying_key = test_signing_key().verifying_key();
+        let payload_json = serde_json::to_vec(&sample_payload()).unwrap();
+        for bad_len in [32usize, 63, 65] {
+            let key = format!(
+                "{}.{}",
+                BASE64.encode(&payload_json),
+                BASE64.encode(vec![0u8; bad_len])
+            );
+            assert_eq!(
+                parse_and_verify_with_key(&key, &verifying_key),
+                Err(LicenseVerifyError::Signature),
+                "sig length {bad_len} should be rejected"
+            );
+        }
+    }
+
+    #[test]
     fn real_const_rejects_a_test_signed_key() {
         // A key signed by the test keypair must NOT verify against production.
         let key = mint_key(&test_signing_key(), &sample_payload());
