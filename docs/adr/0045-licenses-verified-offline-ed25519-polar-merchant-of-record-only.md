@@ -50,9 +50,14 @@ key minting and delivery.**
   minted key, so we send the delivery email. The handler is idempotent on the Polar order id
   (webhooks are at-least-once, retried up to 10×).
 - **Renewal = a separate one-time Polar SKU.** Its `order.paid` mints a fresh key with
-  `update_through = renewal_date + 1 year` (stateless — Fulfillment stores no prior-license
-  record); the owner pastes it into the app, which keeps whichever key has the latest
-  `update_through`.
+  `update_through = renewal_date + 1 year`; the owner pastes it into the app, which keeps
+  whichever key has the latest `update_through`. Fulfillment keeps no prior-license record of
+  its own, but a renewal mints the same full `tier="license"` grant as the license SKU (just
+  cheaper), so honoring one for a non-owner is a full-price bypass. Before minting a renewal,
+  Fulfillment queries the **Polar API** for the buyer's license orders (ownership truth lives
+  in Polar, the MoR — not a Fulfillment DB); a renewal from a non-owner is **auto-refunded**
+  with an explanatory email rather than minted. A lookup/refund API failure 500s so Polar
+  retries — it never refunds a legitimate renewal on a transient blip.
 - **Keys are non-revocable.** With no runtime phone-home there is no revocation channel; a refunded
   or charged-back buyer keeps a working key. Accepted — refunds are rare, Polar handles the money
   side, and this matches the "keep honest people honest" posture.

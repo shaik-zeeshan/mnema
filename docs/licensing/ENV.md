@@ -48,12 +48,14 @@ under both envs and give each its own KV id + product ids.
 | `ED25519_PRIVATE_KEY` | base64 of the raw 32-byte Ed25519 seed | Signs license keys **and** the CRL. Must match `LICENSE_PUBLIC_KEY` in `license_verify.rs`. |
 | `POLAR_WEBHOOK_SECRET` | Polar webhook signing secret (`whsec_<base64>`) | Verifies incoming webhooks. Accepts both the raw `whsec_…` string and the base64-decoded key. |
 | `RESEND_API_KEY` | Resend API key | Sends the license-delivery email. |
+| `POLAR_ACCESS_TOKEN` | Polar API token, scopes `orders:read` + `refunds:write` | Powers the renewal ownership gate: reads the buyer's license orders, auto-refunds a renewal from a non-owner. Dev = sandbox token, prod = live token. |
 
 ```sh
 cd services/fulfillment
 wrangler secret put ED25519_PRIVATE_KEY   # paste base64 seed
 wrangler secret put POLAR_WEBHOOK_SECRET
 wrangler secret put RESEND_API_KEY
+wrangler secret put POLAR_ACCESS_TOKEN
 ```
 
 ### Non-secret vars — in `wrangler.jsonc` under `vars` (dev) and `env.production.vars` (prod)
@@ -63,6 +65,7 @@ wrangler secret put RESEND_API_KEY
 | `UPDATE_WINDOW_DAYS` | `"365"` | Days of update window a purchase/renewal grants. |
 | `POLAR_LICENSE_PRODUCT_ID` | `51482d45-…` (sandbox) | Polar product id for the one-time license. Refunds/paid are filtered to known product ids. Prod uses the live SKU id. |
 | `POLAR_RENEWAL_PRODUCT_ID` | `adb6fc3d-…` (sandbox) | Polar product id for the renewal. Prod uses the live SKU id. |
+| `POLAR_API_BASE` | `https://sandbox-api.polar.sh` | Polar REST base for the renewal ownership gate. Prod: `https://api.polar.sh`. |
 | `RESEND_FROM` | `Mnema Licenses <mail@mnema.day>` | From-address for the delivery email. |
 
 Prod values live in the `env.production.vars` block (placeholders `REPLACE_WITH_PROD_*`

@@ -36,6 +36,8 @@ function fakeEnv(seedB64: string): { env: Env; store: Map<string, string> } {
     RESEND_API_KEY: "re_test",
     POLAR_LICENSE_PRODUCT_ID: "prod_license",
     POLAR_RENEWAL_PRODUCT_ID: "prod_renewal",
+    POLAR_API_BASE: "https://sandbox-api.polar.sh",
+    POLAR_ACCESS_TOKEN: "polar_test",
     UPDATE_WINDOW_DAYS: "365",
     IDEMPOTENCY: {
       get: async (k: string) => store.get(k) ?? null,
@@ -48,10 +50,33 @@ function fakeEnv(seedB64: string): { env: Env; store: Map<string, string> } {
 }
 
 let emailCount = 0;
+let refundCount = 0;
+let refundStatus = 200; // let a test simulate Polar's 422 "exceeds refundable"
+let lastRefundBody: { order_id?: string; amount?: number; reason?: string } | null = null;
+// License orders Polar's /v1/orders/ lookup returns for the renewal ownership gate.
+let polarLicenseOrders: Array<{ status?: string }> = [];
 const realFetch = globalThis.fetch;
 function mockResend() {
   emailCount = 0;
-  globalThis.fetch = (async () => {
+  refundCount = 0;
+  refundStatus = 200;
+  lastRefundBody = null;
+  polarLicenseOrders = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/v1/orders/")) {
+      return new Response(JSON.stringify({ items: polarLicenseOrders }), { status: 200 });
+    }
+    if (url.includes("/v1/refunds/")) {
+      refundCount++;
+      lastRefundBody = JSON.parse((init?.body as string) ?? "{}");
+      const body =
+        refundStatus === 422
+          ? JSON.stringify({ detail: [{ msg: "Refund amount exceeds refundable amount" }] })
+          : "{}";
+      return new Response(body, { status: refundStatus });
+    }
+    // Resend (or anything else) — counts as an email send.
     emailCount++;
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
@@ -161,14 +186,15 @@ test("minted key: split on '.', base64-decode -> compact JSON with ms timestamps
 
 // --- (d) purchase and renewal both give update_through = issued_at + 365d ---
 
-test("purchase and renewal both mint update_through = issued_at + 365d", async () => {
+test("purchase and renewal (from an owner) both mint update_through = issued_at + 365d", async () => {
   mockResend();
+  polarLicenseOrders = [{ status: "paid" }]; // renewal buyer owns a license
   const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
   const now = 1_700_000_000_000;
 
   for (const productId of ["prod_license", "prod_renewal"]) {
     const { env } = fakeEnv(seedB64);
-    const order = { id: `ord_${productId}`, billing_reason: "purchase", product_id: productId, customer: { email: "c@d.io" } };
+    const order = { id: `ord_${productId}`, billing_reason: "purchase", product_id: productId, customer_id: "cus_1", customer: { email: "c@d.io" } };
     const res = await handleOrderPaid(order, env, now);
     expect(res.status).toBe("minted");
 
@@ -177,6 +203,57 @@ test("purchase and renewal both mint update_through = issued_at + 365d", async (
     expect(payload.issued_at).toBe(now);
     expect(payload.update_through - payload.issued_at).toBe(365 * DAY_MS);
   }
+});
+
+// --- renewal ownership gate: no license => auto-refund, no key --------------
+
+test("renewal without a license: refunds the NET (pre-tax) amount + notes, no key minted", async () => {
+  mockResend();
+  polarLicenseOrders = []; // Polar shows no license order for this customer
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+  const { env, store } = fakeEnv(seedB64);
+  // net 2900 + tax 522 = total 3422 — we must refund 2900 (Polar adds tax on top).
+  const order = { id: "ord_bypass", billing_reason: "purchase", product_id: "prod_renewal", customer_id: "cus_x", refundable_amount: 2900, customer: { email: "sneaky@x.io" } };
+
+  const res = await handleOrderPaid(order, env);
+
+  expect(res.status).toBe("refunded-no-license");
+  expect(res.key).toBeUndefined();
+  expect(refundCount).toBe(1); // refunded once
+  expect(lastRefundBody?.amount).toBe(2900); // NET, not the tax-inclusive total
+  expect(emailCount).toBe(1); // the "why you were refunded" note
+  expect(store.get("ord_bypass")).toBeTruthy(); // terminal — idempotency recorded
+
+  // A retry does not double-refund.
+  const retry = await handleOrderPaid(order, env);
+  expect(retry.status).toBe("duplicate");
+  expect(refundCount).toBe(1);
+});
+
+test("renewal when the only license order was fully refunded: treated as non-owner", async () => {
+  mockResend();
+  polarLicenseOrders = [{ status: "refunded" }]; // revoked license doesn't count
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+  const { env } = fakeEnv(seedB64);
+  const order = { id: "ord_revoked_owner", billing_reason: "purchase", product_id: "prod_renewal", customer_id: "cus_r", refundable_amount: 2900, customer: { email: "r@x.io" } };
+
+  const res = await handleOrderPaid(order, env);
+  expect(res.status).toBe("refunded-no-license");
+  expect(refundCount).toBe(1);
+});
+
+test("renewal refund that already happened (422 exceeds refundable): treated as done, not an error", async () => {
+  mockResend();
+  polarLicenseOrders = [];
+  refundStatus = 422; // Polar: prior refund exhausted the refundable amount
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+  const { env, store } = fakeEnv(seedB64);
+  const order = { id: "ord_already", billing_reason: "purchase", product_id: "prod_renewal", customer_id: "cus_a", refundable_amount: 2900, customer: { email: "a@x.io" } };
+
+  const res = await handleOrderPaid(order, env); // must NOT throw
+  expect(res.status).toBe("refunded-no-license");
+  expect(emailCount).toBe(1); // still sends the note
+  expect(store.get("ord_already")).toBeTruthy(); // recorded → no endless retry
 });
 
 // --- unknown product is ACKed, not minted ----------------------------------

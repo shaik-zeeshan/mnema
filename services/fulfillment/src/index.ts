@@ -1,7 +1,7 @@
 import { verifyWebhook } from "./verify";
 import { mintKey } from "./mint";
 import { base64ToBytes } from "./util";
-import { licenseEmail } from "./email";
+import { licenseEmail, renewalWithoutLicenseEmail } from "./email";
 import { buildAndSignCrl, crlIssuedAt, crlRevokedIds } from "./crl";
 
 export interface Env {
@@ -11,6 +11,8 @@ export interface Env {
   RESEND_FROM?: string; // e.g. "Mnema Licenses <licenses@mnema.app>"
   POLAR_LICENSE_PRODUCT_ID: string;
   POLAR_RENEWAL_PRODUCT_ID: string;
+  POLAR_API_BASE: string; // https://api.polar.sh (prod) | https://sandbox-api.polar.sh (dev)
+  POLAR_ACCESS_TOKEN: string; // secret — orders:read + refunds:write, used for the renewal ownership gate
   UPDATE_WINDOW_DAYS?: string; // default 365
   IDEMPOTENCY: KVNamespace;
 }
@@ -24,7 +26,11 @@ interface PolarOrder {
   billing_reason?: string;
   product_id?: string;
   status?: string;
-  customer?: { email?: string };
+  customer_id?: string;
+  // Net cents still refundable (before tax). Polar refunds the tax proportionally
+  // on top of the `amount` we pass, so this — NOT total_amount — is the refund amount.
+  refundable_amount?: number;
+  customer?: { id?: string; email?: string };
 }
 
 // KV keys (in the IDEMPOTENCY namespace, alongside order-id idempotency keys):
@@ -54,8 +60,11 @@ async function rebuildCrl(env: Env, revokedIds: string[], now: number): Promise<
   return wire;
 }
 
-async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void> {
-  const { subject, text, html } = licenseEmail(key);
+async function sendEmail(
+  env: Env,
+  to: string,
+  msg: { subject: string; text: string; html: string },
+): Promise<void> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -65,9 +74,9 @@ async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void
     body: JSON.stringify({
       from: env.RESEND_FROM ?? "Mnema Licenses <licenses@mnema.app>",
       to: [to],
-      subject,
-      text,
-      html,
+      subject: msg.subject,
+      text: msg.text,
+      html: msg.html,
     }),
   });
   if (!res.ok) {
@@ -79,8 +88,78 @@ async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void
   }
 }
 
+// Does this customer already own a (non-refunded) license? Source of truth is
+// Polar — Fulfillment keeps no ownership record of its own. A renewal only
+// extends an existing owner's window; minting one for a non-owner would hand out
+// a full tier="license" grant for the cheaper renewal price.
+async function customerOwnsLicense(order: PolarOrder, env: Env): Promise<boolean> {
+  const customerId = order.customer_id ?? order.customer?.id;
+  if (!customerId) throw new Error("missing customer id on renewal order");
+  const url =
+    `${env.POLAR_API_BASE}/v1/orders/?customer_id=${encodeURIComponent(customerId)}` +
+    `&product_id=${encodeURIComponent(env.POLAR_LICENSE_PRODUCT_ID)}&limit=10`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}` },
+  });
+  if (!res.ok) {
+    // Transient/auth failure — throw so the webhook 500s and Polar retries,
+    // rather than wrongly refunding a legitimate renewal on a lookup blip.
+    const detail = await res.text().catch(() => "");
+    throw new Error(`polar orders lookup failed: ${res.status} ${detail}`);
+  }
+  const body = (await res.json()) as { items?: Array<{ status?: string }> };
+  // Ownership = a genuinely-paid license order. `partially_refunded` still owns;
+  // `refunded` (revoked), `draft`, `void`, and `pending` do not.
+  return (body.items ?? []).some(
+    (o) => o.status === "paid" || o.status === "partially_refunded",
+  );
+}
+
+// Full-refund a renewal bought by a non-owner, and email them why. The Polar
+// refund also fires an `order.refunded` webhook — that lands on the revocation
+// path with a `license_id` we never minted, so it's an inert phantom CRL entry.
+async function refundRenewalWithoutLicense(order: PolarOrder, env: Env): Promise<void> {
+  const amount = order.refundable_amount;
+  if (amount === undefined) throw new Error("missing refundable_amount on renewal order");
+  // amount === 0 means it's already fully refunded (a retry after a prior success);
+  // skip the API call and fall through to the note. Polar refunds tax on top of `amount`.
+  if (amount > 0) {
+    const res = await fetch(`${env.POLAR_API_BASE}/v1/refunds/`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.POLAR_ACCESS_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        order_id: order.id,
+        reason: "other",
+        amount, // net, pre-tax — Polar refunds the sales tax proportionally
+        comment:
+          "Renewal purchased without an existing Mnema license — auto-refunded; buyer directed to buy the license first.",
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => "");
+      // A retry after a prior successful refund exhausts the refundable amount → 422.
+      // Treat that as already-done rather than throwing into an endless retry loop.
+      const alreadyRefunded = res.status === 422 && detail.includes("refundable");
+      if (!alreadyRefunded) throw new Error(`polar refund failed: ${res.status} ${detail}`);
+    }
+  }
+  // Courtesy note — best-effort. A Resend blip must not un-record the refund and
+  // trigger a re-refund on the webhook retry.
+  const email = order.customer?.email;
+  if (email) {
+    try {
+      await sendEmail(env, email, renewalWithoutLicenseEmail());
+    } catch (e) {
+      console.error(`renewal-refund note email failed: ${(e as Error).message}`);
+    }
+  }
+}
+
 export interface FulfillResult {
-  status: "minted" | "duplicate" | "unknown-product";
+  status: "minted" | "duplicate" | "unknown-product" | "refunded-no-license";
   key?: string;
 }
 
@@ -101,11 +180,22 @@ export async function handleOrderPaid(
   const isRenewal = productId === env.POLAR_RENEWAL_PRODUCT_ID;
   if (!isLicense && !isRenewal) return { status: "unknown-product" }; // ACK, no mint
 
+  // A renewal only extends an existing owner's window. Bought by a non-owner it's
+  // a full-price bypass (renewal < license, both mint tier="license") — refund it
+  // and explain. Terminal, so record idempotency to prevent a retry double-refund.
+  if (isRenewal && !(await customerOwnsLicense(order, env))) {
+    await refundRenewalWithoutLicense(order, env);
+    await env.IDEMPOTENCY.put(orderId, new Date(now).toISOString(), {
+      expirationTtl: IDEMPOTENCY_TTL_SECONDS,
+    });
+    return { status: "refunded-no-license" };
+  }
+
   const email = order.customer?.email;
   if (!email) throw new Error("missing customer email");
 
-  // Both license and renewal mint a fresh tier="license" key. Renewal is stateless:
-  // just a new key with a future window (no prior-license lookup).
+  // License, or a renewal from a verified owner: mint a fresh tier="license" key
+  // with a window starting now. Renewal is otherwise stateless — no prior-key lookup.
   const days = Number(env.UPDATE_WINDOW_DAYS ?? "365") || 365;
   const issuedAt = now;
   const updateThrough = now + days * DAY_MS;
@@ -122,7 +212,7 @@ export async function handleOrderPaid(
     seed,
   );
 
-  await sendLicenseEmail(env, email, key);
+  await sendEmail(env, email, licenseEmail(key));
   await env.IDEMPOTENCY.put(orderId, new Date(now).toISOString(), {
     expirationTtl: IDEMPOTENCY_TTL_SECONDS,
   });

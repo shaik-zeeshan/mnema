@@ -32,7 +32,7 @@ The minimal seller-side, automated-serverless step that turns a paid Polar `orde
 _Avoid_: license server, activation server (Fulfillment mints and emails; it never validates at runtime).
 
 **Renewal**:
-A separate one-time Polar SKU that, on purchase, has **Fulfillment** mint a *fresh* key with `update_through = renewal_date + 1 year`, emailed to the same buyer; the owner pastes it into the app, which keeps whichever key has the latest `update_through`. Stateless — Fulfillment stores no prior-license record.
+A separate one-time Polar SKU that, on purchase, has **Fulfillment** mint a *fresh* key with `update_through = renewal_date + 1 year`, emailed to the same buyer; the owner pastes it into the app, which keeps whichever key has the latest `update_through`. Fulfillment holds no ownership record of its own, but a renewal is **only honored for an existing owner**: before minting, it queries the Polar API for the buyer's license orders. A renewal mints the same full `tier="license"` grant as the license SKU (just cheaper), so a renewal from a non-owner would be a full-price bypass — it is **auto-refunded** with an explanatory email instead of minting. Ownership truth stays in Polar (the Merchant of Record), not in a Fulfillment-side database.
 
 **Revocation List (CRL)**:
 A small signed document listing the license ids of fully-refunded orders, published by **Fulfillment** and fetched anonymously by the app (no license id or identifier is ever sent). A key on the list is **Revoked**: authentic but no longer valid. The list is the *only* revocation channel — there is still no per-user license server and no runtime validation call.

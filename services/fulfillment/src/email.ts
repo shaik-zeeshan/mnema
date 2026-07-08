@@ -24,6 +24,67 @@ export function activationUrl(key: string): string {
   return `${SITE}/activate#key=${encodeURIComponent(key)}`;
 }
 
+// Sent when someone buys the Renewal SKU without owning a license. The purchase
+// is auto-refunded (a renewal only extends an existing owner's window); this
+// explains why and points them at the license. No key, no activation link.
+export function renewalWithoutLicenseEmail(): { subject: string; text: string; html: string } {
+  const buy = `${SITE}/#pricing`;
+  const subject = "Your Mnema renewal was refunded";
+
+  const text =
+    `We refunded your Mnema renewal.\n\n` +
+    `A renewal only extends the update window of an existing license — and we ` +
+    `couldn't find a Mnema license under your account, so there was nothing to ` +
+    `extend. You have not been charged.\n\n` +
+    `If you meant to buy Mnema for the first time, grab a license here:\n${buy}\n\n` +
+    `Already own a license under a different email? Reply to this email and we'll sort it out.\n`;
+
+  const safeBuy = escapeHtml(buy);
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:0;background:#0c0c0e;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#0c0c0e;">
+      <tr>
+        <td align="center" style="padding:40px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background:#14141a;border:1px solid #1e1e2e;border-radius:14px;overflow:hidden;">
+            <tr>
+              <td style="padding:32px 32px 0;">
+                <img src="${LOGO_URL}" width="44" height="44" alt="Mnema" style="display:block;border-radius:10px;" />
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px 8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#e2e2e8;font-size:22px;font-weight:600;">
+                Your renewal was refunded.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8aaa;font-size:14px;line-height:1.6;">
+                A renewal only extends the update window of an existing license, and we couldn't find a Mnema license under your account — so there was nothing to extend. You have not been charged.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 28px;">
+                <a href="${safeBuy}" style="display:inline-block;background:#3dffa0;color:#0c0c0e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:15px;font-weight:600;text-decoration:none;padding:13px 28px;border-radius:10px;">
+                  Buy a Mnema license
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px;border-top:1px solid #1e1e2e;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#8a8aaa;font-size:12px;line-height:1.6;">
+                Already own a license under a different email? Just reply — we'll sort it out.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return { subject, text, html };
+}
+
 export function licenseEmail(key: string): { subject: string; text: string; html: string } {
   const subject = "Your Mnema license key";
   const activate = activationUrl(key);

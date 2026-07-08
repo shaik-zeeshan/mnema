@@ -23,6 +23,7 @@
         "UPDATE_WINDOW_DAYS": "365",
         "POLAR_LICENSE_PRODUCT_ID": "51482d45-7d85-4deb-aaf5-d45daae09780",
         "POLAR_RENEWAL_PRODUCT_ID": "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6",
+        "POLAR_API_BASE": "https://sandbox-api.polar.sh",
         "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
       }
     },
@@ -39,6 +40,7 @@
         "UPDATE_WINDOW_DAYS": "365",
         "POLAR_LICENSE_PRODUCT_ID": "REPLACE_WITH_PROD_LICENSE_PRODUCT_ID",
         "POLAR_RENEWAL_PRODUCT_ID": "REPLACE_WITH_PROD_RENEWAL_PRODUCT_ID",
+        "POLAR_API_BASE": "https://api.polar.sh",
         "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
       }
       // Recommended before shipping: front the worker with a custom domain so the
@@ -50,5 +52,9 @@
   // Secrets are per-environment — set each under both envs:
   //   wrangler secret put ED25519_PRIVATE_KEY --env dev
   //   wrangler secret put ED25519_PRIVATE_KEY --env production
-  //   (same for POLAR_WEBHOOK_SECRET and RESEND_API_KEY)
+  //   (same for POLAR_WEBHOOK_SECRET, RESEND_API_KEY, and POLAR_ACCESS_TOKEN)
+  //
+  // POLAR_ACCESS_TOKEN needs scopes orders:read + refunds:write — it powers the
+  // renewal ownership gate (a renewal from a non-owner is auto-refunded). The dev
+  // token must be a Polar SANDBOX token; production a live token.
 }

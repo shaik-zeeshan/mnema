@@ -24,9 +24,17 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
    retry re-attempts.
 4. Map `product_id`: `POLAR_LICENSE_PRODUCT_ID` and `POLAR_RENEWAL_PRODUCT_ID`
    both mint a fresh `tier="license"` key with
-   `update_through = now + UPDATE_WINDOW_DAYS` (default 365, stateless — renewal
-   does no prior-license lookup). Unknown product → 200 ACK, no mint.
-5. Email the key via Resend from a `licenses@` sender.
+   `update_through = now + UPDATE_WINDOW_DAYS` (default 365). Unknown product →
+   200 ACK, no mint.
+5. **Renewal ownership gate.** Since a renewal mints the same full `tier="license"`
+   grant as the license SKU (just cheaper), a renewal from a non-owner would be a
+   full-price bypass. Before minting a renewal, look up the buyer's license orders
+   via the Polar API (`POLAR_API_BASE` + `POLAR_ACCESS_TOKEN`); if they own no
+   non-refunded license, the renewal is **auto-refunded** and a note email is sent
+   instead of a key. Ownership state lives in Polar, not here — Fulfillment keeps
+   no ownership record. A lookup/refund API failure 500s so Polar retries (never
+   refunds a legit renewal on a blip).
+6. Email the key via Resend from a `licenses@` sender.
 
 ## License key wire format (must match `license_verify.rs`)
 
