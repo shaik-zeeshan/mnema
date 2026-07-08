@@ -24,7 +24,7 @@
         "POLAR_LICENSE_PRODUCT_ID": "51482d45-7d85-4deb-aaf5-d45daae09780",
         "POLAR_RENEWAL_PRODUCT_ID": "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6",
         "POLAR_API_BASE": "https://sandbox-api.polar.sh",
-        "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+        "RESEND_FROM": "Mnema Licenses <mail-dev@mail.mnema.day>"
       }
     },
 
@@ -41,7 +41,7 @@
         "POLAR_LICENSE_PRODUCT_ID": "REPLACE_WITH_PROD_LICENSE_PRODUCT_ID",
         "POLAR_RENEWAL_PRODUCT_ID": "REPLACE_WITH_PROD_RENEWAL_PRODUCT_ID",
         "POLAR_API_BASE": "https://api.polar.sh",
-        "RESEND_FROM": "Mnema Licenses <mail@mnema.day>"
+        "RESEND_FROM": "Mnema Licenses <mail@mail.mnema.day>"
       }
       // Recommended before shipping: front the worker with a custom domain so the
       // CRL URL baked into desktop binaries is repointable. Add once DNS exists:
