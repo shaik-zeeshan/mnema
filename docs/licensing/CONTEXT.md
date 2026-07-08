@@ -34,6 +34,17 @@ _Avoid_: license server, activation server (Fulfillment mints and emails; it nev
 **Renewal**:
 A separate one-time Polar SKU that, on purchase, has **Fulfillment** mint a *fresh* key with `update_through = renewal_date + 1 year`, emailed to the same buyer; the owner pastes it into the app, which keeps whichever key has the latest `update_through`. Stateless — Fulfillment stores no prior-license record.
 
+**Revocation List (CRL)**:
+A small signed document listing the license ids of fully-refunded orders, published by **Fulfillment** and fetched anonymously by the app (no license id or identifier is ever sent). A key on the list is **Revoked**: authentic but no longer valid. The list is the *only* revocation channel — there is still no per-user license server and no runtime validation call.
+_Avoid_: license server, blacklist, deactivation (a Revoked key was invalidated by a refund, not by seller discretion).
+
+**Revoked**:
+The state of a **License** whose order was fully refunded (or a **Comp Key** the seller withdrew). A Revoked key is rejected exactly like **Trial** expiry — the app enters **Read-Only Mode**, live if the key is in active use. User-facing copy says "revoked", never "refunded". Partial refunds never revoke.
+
+**Comp Key**:
+A **License** the seller gifts outside Polar (press, friends, self) — minted locally with the private key, no order behind it. It is a *real* License: **Capture** is permanent, only its **Update Window** is set short (e.g. 90 days). Its license id is seller-chosen (`comp:<slug>`), making it identifiable and hand-revocable via the **Revocation List** if it leaks. Strangers evaluating Mnema use the **Trial**, not a Comp Key.
+_Avoid_: trial key, demo key (a Comp Key never expires back to Read-Only Mode — it is a gift, not an evaluation window).
+
 ## Relationships
 
 - A **Trial** grants **Capture** for a fixed window, then transitions the app to **Read-Only Mode**.
@@ -41,7 +52,9 @@ A separate one-time Polar SKU that, on purchase, has **Fulfillment** mint a *fre
 - **Read-Only Mode** disables **Capture** but never restricts reading already-recorded history.
 - An **Update Window** lapse enforces **Perpetual Fallback** via the **auto-updater** (it declines builds dated after `update_through`), *not* via any runtime lock — a lapsed owner keeps full **Capture** on their covered build.
 - A Polar `order.paid` webhook triggers **Fulfillment**, which mints and emails the key; a **Renewal** SKU triggers the same path with an extended `update_through`.
-- Keys are **non-revocable** by design (offline, no phone-home): a refunded/charged-back buyer keeps a working key — accepted as "keep honest people honest." Polar handles the money side; the app does nothing on `order.refunded`.
+- A **full** refund (Polar order status `refunded`) puts the order's license id on the **Revocation List**; a **Revoked** key drops the app into **Read-Only Mode** through the same seam as **Trial** expiry. Partial refunds (`partially_refunded`) never revoke — they are goodwill, not an unwound sale. *(Amends the original "keys are non-revocable" decision in ADR 0045.)*
+- License ids are **derived from the Polar order id**, so Fulfillment stays stateless: revocation needs no mint-time record, and a lost-key re-mint of the same order yields the same license id (a revocation always covers re-mints).
+- **Staleness never locks**: a missing, unreachable, or stale CRL means the license stands. An offline machine keeps working forever — never-lock-existing-data outranks refund enforcement. The accepted residual: a refunder who keeps the app offline keeps a frozen build.
 
 ## Documented edge case — fresh install after Update Window lapse
 
@@ -59,3 +72,4 @@ Resolution (for the plan): the app compares its own build date against the key's
 
 - [ADR 0044](../adr/0044-monetize-as-one-time-purchase-with-paid-update-window.md) — the business model (one-time purchase + paid Update Window + Trial → Read-Only Mode).
 - [ADR 0045](../adr/0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md) — offline Ed25519 verification, updater-gated enforcement, and Polar-as-Merchant-of-Record-only Fulfillment.
+- [ADR 0052](../adr/0052-refunded-licenses-die-via-a-signed-revocation-list.md) — refunded licenses die via a signed **Revocation List**; staleness never locks (amends 0045's "keys are non-revocable").

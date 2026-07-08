@@ -14,6 +14,8 @@ mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
 mod lexical;
+mod crl_cache;
+mod crl_verify;
 mod license_token_store;
 mod license_verify;
 mod licensing_state;
@@ -41,6 +43,10 @@ pub use mcp_server_secret_store::{
 pub use license_token_store::{
     delete_license_key, delete_trial_record, has_license_key, load_license_key, load_trial_record,
     store_license_key, store_trial_record,
+};
+pub use crl_cache::{load_cached_crl, store_cached_crl};
+pub use crl_verify::{
+    baked_crl, effective_crl, is_revoked, parse_and_verify_crl, Crl, CrlVerifyError, CRL_DOMAIN,
 };
 pub use license_verify::{
     parse_and_verify_license, trial_days_left, LicensePayload, LicenseVerifyError,

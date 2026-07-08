@@ -2,6 +2,7 @@ import { verifyWebhook } from "./verify";
 import { mintKey } from "./mint";
 import { base64ToBytes } from "./util";
 import { licenseEmail } from "./email";
+import { buildAndSignCrl, crlIssuedAt, crlRevokedIds } from "./crl";
 
 export interface Env {
   ED25519_PRIVATE_KEY: string; // base64 of the raw 32-byte Ed25519 seed
@@ -17,12 +18,40 @@ export interface Env {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const IDEMPOTENCY_TTL_SECONDS = 30 * DAY_MS / 1000; // 30 days — well past Polar's retry window
 
-// Minimal shape of the Polar order.paid payload we depend on.
+// Minimal shape of the Polar order.paid / order.refunded payload we depend on.
 interface PolarOrder {
   id?: string;
   billing_reason?: string;
   product_id?: string;
+  status?: string;
   customer?: { email?: string };
+}
+
+// KV keys (in the IDEMPOTENCY namespace, alongside order-id idempotency keys):
+//   revoked = JSON array of revoked license ids (source of truth)
+//   crl     = the current signed CRL wire string, rebuilt from `revoked`
+const REVOKED_KEY = "revoked";
+const CRL_KEY = "crl";
+
+async function readRevokedSet(env: Env): Promise<string[]> {
+  const raw = await env.IDEMPOTENCY.get(REVOKED_KEY);
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+// Rebuild + re-sign the CRL from `revokedIds`, monotonic against any prev crl.
+async function rebuildCrl(env: Env, revokedIds: string[], now: number): Promise<string> {
+  const prevWire = await env.IDEMPOTENCY.get(CRL_KEY);
+  const prevIssuedAt = prevWire ? crlIssuedAt(prevWire) : 0;
+  const seed = base64ToBytes(env.ED25519_PRIVATE_KEY);
+  const wire = await buildAndSignCrl(revokedIds, prevIssuedAt, now, seed);
+  await env.IDEMPOTENCY.put(CRL_KEY, wire);
+  return wire;
 }
 
 async function sendLicenseEmail(env: Env, to: string, key: string): Promise<void> {
@@ -85,7 +114,7 @@ export async function handleOrderPaid(
   const key = await mintKey(
     {
       email,
-      license_id: crypto.randomUUID(),
+      license_id: "order:" + orderId,
       tier: "license",
       issued_at: issuedAt,
       update_through: updateThrough,
@@ -101,8 +130,56 @@ export async function handleOrderPaid(
   return { status: "minted", key };
 }
 
+export interface RefundResult {
+  status: "revoked" | "already-revoked" | "not-full-refund" | "unknown-product";
+  license_id?: string;
+}
+
+// Revoke a license on a FULL refund. partially_refunded (or any other status) is
+// a no-op — goodwill, not an unwound sale. Idempotent by nature (KV set add).
+export async function handleOrderRefunded(
+  order: PolarOrder,
+  env: Env,
+  now: number = Date.now(),
+): Promise<RefundResult> {
+  if (order.status !== "refunded") return { status: "not-full-refund" };
+
+  const orderId = order.id;
+  if (!orderId) throw new Error("missing order id");
+
+  const productId = order.product_id;
+  const isLicense = productId === env.POLAR_LICENSE_PRODUCT_ID;
+  const isRenewal = productId === env.POLAR_RENEWAL_PRODUCT_ID;
+  if (!isLicense && !isRenewal) return { status: "unknown-product" };
+
+  const licenseId = "order:" + orderId;
+  const revoked = await readRevokedSet(env);
+  if (revoked.includes(licenseId)) return { status: "already-revoked", license_id: licenseId };
+
+  revoked.push(licenseId);
+  await env.IDEMPOTENCY.put(REVOKED_KEY, JSON.stringify(revoked));
+  await rebuildCrl(env, revoked, now);
+
+  return { status: "revoked", license_id: licenseId };
+}
+
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    // Public, anonymous CRL endpoint. Serve the signed doc; lazily rebuild if
+    // `crl` is missing or its id set has drifted from the `revoked` source.
+    if (req.method === "GET" && new URL(req.url).pathname === "/revocations.json") {
+      const revoked = await readRevokedSet(env);
+      let wire = await env.IDEMPOTENCY.get(CRL_KEY);
+      const stale =
+        !wire ||
+        JSON.stringify([...crlRevokedIds(wire)].sort()) !== JSON.stringify([...revoked].sort());
+      if (stale) wire = await rebuildCrl(env, revoked, Date.now());
+      return new Response(wire!, {
+        status: 200,
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    }
+
     if (req.method !== "POST") return new Response("method not allowed", { status: 405 });
 
     const rawBody = await req.text();
@@ -117,16 +194,23 @@ export default {
       return new Response("bad json", { status: 400 });
     }
 
-    // Only mint on a genuine purchase. Ignore refunds and everything else (200 ACK).
-    if (event.type !== "order.paid") return new Response("ignored", { status: 200 });
     const order = event.data ?? {};
-    if (order.billing_reason !== "purchase") return new Response("ignored", { status: 200 });
-
     try {
-      const result = await handleOrderPaid(order, env);
-      return new Response(result.status, { status: 200 });
+      if (event.type === "order.paid") {
+        // Only mint on a genuine purchase.
+        if (order.billing_reason !== "purchase") return new Response("ignored", { status: 200 });
+        const result = await handleOrderPaid(order, env);
+        return new Response(result.status, { status: 200 });
+      }
+      if (event.type === "order.refunded") {
+        // Revoke only on a full refund (handler no-ops otherwise).
+        const result = await handleOrderRefunded(order, env);
+        return new Response(result.status, { status: 200 });
+      }
+      // Everything else — 200 ACK, ignored.
+      return new Response("ignored", { status: 200 });
     } catch (e) {
-      // Mint/email failed — 500 so Polar retries. Idempotency was NOT recorded.
+      // Mint/email/revoke failed — 500 so Polar retries. Idempotency was NOT recorded.
       return new Response(`error: ${(e as Error).message}`, { status: 500 });
     }
   },

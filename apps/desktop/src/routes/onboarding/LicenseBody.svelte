@@ -19,6 +19,8 @@
         return "Your free trial starts the moment you first record.";
       case "readOnly":
         return "Your trial has ended — you're in Read-Only Mode. Everything you recorded stays browsable; buy once to record again.";
+      case "revoked":
+        return "This license has been revoked — you're in Read-Only Mode. Everything you recorded stays browsable; buy once to record again.";
       case "licensed":
         return "You own Mnema — thank you. Recording never pauses.";
     }

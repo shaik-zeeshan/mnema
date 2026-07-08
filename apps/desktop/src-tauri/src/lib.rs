@@ -6,6 +6,7 @@ mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
 mod conversation;
+mod crl_refresh;
 mod general_app_log;
 mod keyboard_bindings;
 mod licensing;
@@ -410,6 +411,10 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
         );
         return;
     }
+    // CRL refresh is anonymous and harmless without onboarding — kick off an
+    // initial fetch plus the daily timer regardless of onboarding state.
+    crl_refresh::spawn_crl_refresh(app_handle.clone());
+    crl_refresh::start_daily_crl_timer(app_handle.clone());
     if onboarding_complete {
         native_capture::maybe_auto_start_native_capture(app_handle);
         app_updates::start_startup_update_check(app_handle);

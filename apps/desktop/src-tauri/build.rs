@@ -13,6 +13,12 @@ fn main() {
         .unwrap_or(0);
     println!("cargo:rustc-env=MNEMA_BUILD_DATE_MS={build_ms}");
 
+    // Licensing / ADR 0052: the baked CRL fetch URL comes from `MNEMA_CRL_URL`
+    // (read via `option_env!` in `crl_refresh.rs`; release CI sets it to the
+    // seller-owned domain). Rebuild the crate when it changes so a re-release
+    // with a new URL actually re-bakes it into the binary.
+    println!("cargo:rerun-if-env-changed=MNEMA_CRL_URL");
+
     // The speakrs on-device diarization engine pulls in OpenBLAS, built from
     // source and linked statically via speakrs' `openblas-static` feature.
     // OpenBLAS's LAPACK is Fortran, so `openblas-src` re-emits the gfortran /

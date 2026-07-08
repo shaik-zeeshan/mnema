@@ -26,6 +26,8 @@
         return { label: "Trial ready", variant: "neutral" };
       case "readOnly":
         return { label: "Read-only", variant: "warn" };
+      case "revoked":
+        return { label: "Revoked", variant: "warn" };
       default:
         return null;
     }
@@ -114,6 +116,11 @@
           <p class="group-hint group-hint--warn">
             Trial ended — Read-Only Mode. Recorded history stays searchable; buy to resume
             recording.
+          </p>
+        {:else if status.kind === "revoked"}
+          <p class="group-hint group-hint--warn">
+            This license has been revoked — Read-Only Mode. Your recorded history stays fully
+            searchable; new recording is paused.
           </p>
         {:else if status.kind === "licensed"}
           <p class="license-status__lead">Licensed to {status.email}</p>

@@ -107,7 +107,9 @@ pub async fn compute_license_status(
 }
 
 /// Licensed branch: `Some(Licensed{..})` when a valid signed key is stored,
-/// `None` when there is no key or it fails verification.
+/// `Some(Revoked)` when that key appears on the effective CRL, `None` when there
+/// is no key or it fails verification. A revoked key does NOT fall through to
+/// trial — it stays `Revoked` (blocking) so a refunded key can't reclaim a trial.
 async fn compute_licensed(pool: &SqlitePool, now_ms: i64) -> Option<LicenseStatus> {
     let key = app_infra::load_license_key().ok().flatten()?;
     let payload = app_infra::parse_and_verify_license(&key).ok()?;
@@ -121,11 +123,51 @@ async fn compute_licensed(pool: &SqlitePool, now_ms: i64) -> Option<LicenseStatu
         &payload.email,
     )
     .await;
-    Some(LicenseStatus::Licensed {
-        update_through_ms: payload.update_through,
-        in_window: now_ms <= payload.update_through,
-        email: payload.email,
-    })
+    let crl = load_effective_crl(pool).await;
+    Some(licensed_or_revoked(
+        payload.update_through,
+        &payload.license_id,
+        now_ms,
+        payload.email,
+        crl.as_ref(),
+    ))
+}
+
+/// The effective CRL for enforcement: the freshest verified document of
+/// {baked-in floor, verbatim cache}. The cache is re-verified on every read —
+/// a tampered/garbage cache row contributes nothing. `None` when neither exists.
+async fn load_effective_crl(pool: &SqlitePool) -> Option<app_infra::Crl> {
+    let cached = app_infra::load_cached_crl(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|wire| app_infra::parse_and_verify_crl(&wire).ok());
+    app_infra::effective_crl(app_infra::baked_crl(), cached)
+}
+
+/// Pure gate decision: a stored, authentic license is `Revoked` when the CRL
+/// names its id, else `Licensed`. A `None` CRL never revokes.
+fn licensed_or_revoked(
+    payload_update_through_ms: i64,
+    license_id: &str,
+    now_ms: i64,
+    email: String,
+    crl: Option<&app_infra::Crl>,
+) -> LicenseStatus {
+    if is_key_revoked(license_id, crl) {
+        LicenseStatus::Revoked
+    } else {
+        LicenseStatus::Licensed {
+            update_through_ms: payload_update_through_ms,
+            in_window: now_ms <= payload_update_through_ms,
+            email,
+        }
+    }
+}
+
+/// Pure membership check used by both the gate and the activation paths.
+fn is_key_revoked(license_id: &str, crl: Option<&app_infra::Crl>) -> bool {
+    crl.is_some_and(|crl| app_infra::is_revoked(license_id, crl))
 }
 
 /// Trial branch: resolve the effective trial start (DB, else keychain fallback
@@ -247,6 +289,7 @@ fn status_label(status: &LicenseStatus) -> &'static str {
         LicenseStatus::TrialNotStarted { .. } => "trialNotStarted",
         LicenseStatus::Trial { .. } => "trial",
         LicenseStatus::ReadOnly => "readOnly",
+        LicenseStatus::Revoked => "revoked",
         LicenseStatus::Licensed { .. } => "licensed",
     }
 }
@@ -289,12 +332,20 @@ pub async fn activate_license(
     app_handle: tauri::AppHandle,
 ) -> Result<ActivateLicenseResult, String> {
     // Verify BEFORE storing so a garbage paste never sticks.
-    app_infra::parse_and_verify_license(&key)
+    let payload = app_infra::parse_and_verify_license(&key)
         .map_err(|_| "This license key is invalid or corrupted.".to_string())?;
+
+    // Authentic-but-revoked: reject with an honest, distinct message and never
+    // store — a revoked key must not activate.
+    let infra = std::sync::Arc::clone(&*state);
+    let crl = load_effective_crl(infra.pool()).await;
+    if is_key_revoked(&payload.license_id, crl.as_ref()) {
+        return Err("This license has been revoked.".to_string());
+    }
+
     app_infra::store_license_key(&key)
         .map_err(|error| format!("Could not save the license key: {error}"))?;
 
-    let infra = std::sync::Arc::clone(&*state);
     let status = compute_license_status(infra.pool(), &app_handle, now_ms()).await;
     Ok(ActivateLicenseResult { status })
 }
@@ -305,16 +356,74 @@ pub async fn activate_license(
 /// UI through the emitted `license_status` event (the store re-renders); failures
 /// are logged, not shown — a bad link just leaves the current status untouched.
 pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) {
-    if app_infra::parse_and_verify_license(&key).is_err() {
-        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key failed verification");
+    let payload = match app_infra::parse_and_verify_license(&key) {
+        Ok(payload) => payload,
+        Err(_) => {
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key failed verification");
+            return;
+        }
+    };
+    let Some(state) = app_handle.try_state::<AppInfraState>() else {
+        return;
+    };
+    let infra = std::sync::Arc::clone(&*state);
+    // Revoked keys are never stored — leave the current status untouched.
+    let crl = load_effective_crl(infra.pool()).await;
+    if is_key_revoked(&payload.license_id, crl.as_ref()) {
+        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key has been revoked");
         return;
     }
     if let Err(error) = app_infra::store_license_key(&key) {
         tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license store failed: {error}");
         return;
     }
-    if let Some(state) = app_handle.try_state::<AppInfraState>() {
-        let infra = std::sync::Arc::clone(&*state);
-        compute_license_status(infra.pool(), &app_handle, now_ms()).await;
+    compute_license_status(infra.pool(), &app_handle, now_ms()).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn crl_naming(id: &str) -> app_infra::Crl {
+        app_infra::Crl {
+            schema: 1,
+            issued_at: 1_700_000_000_000,
+            revoked_license_ids: vec![id.to_string()],
+        }
+    }
+
+    #[test]
+    fn revoked_key_gates_to_revoked() {
+        let crl = crl_naming("order:abc");
+        let status = licensed_or_revoked(999, "order:abc", 0, "a@b.c".into(), Some(&crl));
+        assert_eq!(status, LicenseStatus::Revoked);
+    }
+
+    #[test]
+    fn unlisted_key_stays_licensed() {
+        let crl = crl_naming("order:someone-else");
+        let status = licensed_or_revoked(999, "order:abc", 0, "a@b.c".into(), Some(&crl));
+        assert!(matches!(status, LicenseStatus::Licensed { .. }));
+    }
+
+    #[test]
+    fn no_crl_stays_licensed() {
+        let status = licensed_or_revoked(999, "order:abc", 0, "a@b.c".into(), None);
+        assert_eq!(
+            status,
+            LicenseStatus::Licensed {
+                update_through_ms: 999,
+                in_window: true,
+                email: "a@b.c".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn is_key_revoked_hit_miss_and_no_crl() {
+        let crl = crl_naming("comp:press");
+        assert!(is_key_revoked("comp:press", Some(&crl)));
+        assert!(!is_key_revoked("comp:friend", Some(&crl)));
+        assert!(!is_key_revoked("comp:press", None));
     }
 }

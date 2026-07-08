@@ -35,6 +35,11 @@ jobs:
       # the build machine's exact core and can hit illegal-instruction crashes on
       # older CPUs.
       OPENBLAS_DYNAMIC_ARCH: "1"
+      # CRL endpoint (ADR 0052), single source for both the baked const
+      # (option_env! MNEMA_CRL_URL in crl_refresh.rs) and the baked floor
+      # (bake-crl.ts's CRL_ENDPOINT below). Set repo variable CRL_URL to the
+      # seller-owned custom domain; falls back to the dev workers.dev deploy.
+      MNEMA_CRL_URL: ${{ vars.CRL_URL || 'https://mnema-fulfillment.shaikzeeshan999.workers.dev/revocations.json' }}
 
     steps:
       - name: Checkout
@@ -111,6 +116,22 @@ jobs:
 
       - name: Generate third-party license attribution
         run: ./scripts/generate-third-party-licenses.sh
+
+      # PLAN slice 6 — bake the live signed CRL over the committed placeholder so
+      # shipped builds carry a real revocation floor (crates/app-infra/revocations.json
+      # is include_str!'d at compile time). The script fetches /revocations.json and
+      # verifies its Ed25519 signature against the production public key; a non-2xx,
+      # unparseable, or bad-signature response exits non-zero and fails the release
+      # loudly (no continue-on-error). Runs before the cargo check + Tauri build below
+      # so both embed the freshly-baked floor. fulfillment is standalone (not in the
+      # root workspace), so install its deps here. CRL_ENDPOINT overridable for dry-runs.
+      - name: Bake live CRL into revocations.json
+        working-directory: services/fulfillment
+        env:
+          CRL_ENDPOINT: ${{ env.MNEMA_CRL_URL }}
+        run: |
+          bun install --frozen-lockfile
+          bun scripts/bake-crl.ts
 
       - name: Prepare Mnema CLI sidecar for Tauri check
         run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked

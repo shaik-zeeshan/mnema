@@ -15,9 +15,9 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
    string** (`whsec_` prefix included) as the HMAC key, *not* the base64-decoded
    key the spec prescribes (verified against a live delivery 2026-07-07).
    `verifyWebhook` accepts **either** scheme, so it's correct regardless.
-2. Act only on `type == "order.paid"` with `billing_reason == "purchase"`.
-   Refunds and everything else are ACKed with 200 and ignored — keys are
-   non-revocable by design.
+2. Act on `type == "order.paid"` with `billing_reason == "purchase"` (mint) and
+   on `type == "order.refunded"` with `status == "refunded"` (revoke — see
+   Revocation List below). Everything else is ACKed with 200 and ignored.
 3. Idempotency on the Polar order `id` via the `IDEMPOTENCY` KV namespace
    (webhooks are at-least-once, retried up to 10×). The order id is recorded
    **after** mint+email succeed, so a failed email leaves it un-recorded and the
@@ -37,12 +37,48 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
 - `issued_at` / `update_through` are **unix epoch milliseconds** (integers).
 - `signature` = Ed25519 over the raw `payload_json` UTF-8 bytes.
 - base64 is **standard, with padding** (NOT url-safe) for both halves.
-- `license_id` is a UUID (`crypto.randomUUID()`).
+- `license_id` derives from the Polar order id: `order:<order_id>` (deterministic,
+  so re-mints reproduce it and a revocation covers every copy). Comp keys use
+  `comp:<slug>`.
 
 > The Rust verifier (Slice 3, `crates/app-infra/src/license_verify.rs`) did not
 > exist when this was written. `src/mint.ts` carries a `TODO: reconcile` — once
 > Slice 3 lands, diff its parser against `mintKey` (base64 variant, field
 > order/names, ms-vs-seconds, signed bytes).
+
+## Revocation List (CRL) wire format (must match the app verifier)
+
+A full refund (`order.refunded` with `status == "refunded"`) revokes that
+order's license. The worker keeps two KV keys in `IDEMPOTENCY`: `revoked` (a
+JSON array of revoked license ids, the source of truth — a leaked comp key is
+killed with one `wrangler kv key put revoked ...`) and `crl` (the current signed
+document, rebuilt from `revoked` whenever the set changes, and lazily on GET if
+it has drifted). Partial refunds (`partially_refunded`) and unknown products are
+no-ops.
+
+    wire = base64(payload_json) + "." + base64(signature)
+
+- `payload_json` = **compact** JSON, exact field order:
+  `{"schema":1,"issued_at":<unix ms int>,"revoked_license_ids":[<string>...]}`
+- `revoked_license_ids` is sorted for stable output; ids are `order:<order_id>`
+  (or `comp:<slug>` for comp keys).
+- `issued_at` is **monotonic**: `max(now, prev.issued_at + 1)`, so it strictly
+  increases across redeploys even with a clock stuck in the past (the app
+  accepts only strictly-fresher documents, blocking rollback).
+- `signature` = Ed25519 over the UTF-8 bytes of `"mnema-crl-v1:" + payload_json`
+  — the **domain-separation** prefix means a CRL can never replay as a license
+  key (raw payload, no prefix) or vice versa. Same seed as license keys.
+- base64 is **standard, with padding** (NOT url-safe) for both halves.
+
+Served at `GET /revocations.json`, body = the wire string,
+`content-type: text/plain; charset=utf-8` (it is not JSON), status 200. The GET
+is anonymous — no identifier sent — and a stale/missing document always means
+the license stands (ADR 0052).
+
+**Re-mint rule:** a lost-key re-mint of an existing order reproduces the same
+`order:<id>` license id (so a revocation still covers it) and dates
+`update_through` from the **original order date**, never `now` — re-mints must
+not extend the buyer's Update Window.
 
 ## Env / secrets
 

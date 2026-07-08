@@ -11,6 +11,8 @@ export type LicenseStatus =
   | { kind: "trial"; daysLeft: number; trialEndMs: number }
   /** Trial expired, unlicensed. Capture disabled; reads untouched. */
   | { kind: "readOnly" }
+  /** Authentic key on the signed revocation list — capture blocked, history readable. */
+  | { kind: "revoked" }
   /** Owns a license. Capture always allowed; `inWindow` gates only new builds. */
   | { kind: "licensed"; updateThroughMs: number; inWindow: boolean; email: string };
 

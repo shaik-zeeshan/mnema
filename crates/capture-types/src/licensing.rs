@@ -11,6 +11,10 @@ pub enum LicenseStatus {
     Trial { days_left: u32, trial_end_ms: i64 },
     /// Trial expired, unlicensed. Capture disabled; reads untouched.
     ReadOnly,
+    /// Authentic key that appears on the signed revocation list (refund/leak).
+    /// Capture disabled; recorded history stays readable. Distinct from
+    /// `ReadOnly` so the UI can say "revoked" honestly (never "refunded").
+    Revoked,
     /// Owns a license. Capture always allowed; `in_window` gates only new builds.
     Licensed {
         update_through_ms: i64,
@@ -22,7 +26,7 @@ pub enum LicenseStatus {
 impl LicenseStatus {
     /// The single gate question: may forward Capture run?
     pub fn capture_allowed(&self) -> bool {
-        !matches!(self, LicenseStatus::ReadOnly)
+        !matches!(self, LicenseStatus::ReadOnly | LicenseStatus::Revoked)
     }
 
     /// Like [`Self::capture_allowed`], but a `Trial` whose window has lapsed
@@ -31,7 +35,7 @@ impl LicenseStatus {
     /// `Trial` — without this, the first start after expiry slips through.
     pub fn capture_allowed_at(&self, now_ms: i64) -> bool {
         match self {
-            LicenseStatus::ReadOnly => false,
+            LicenseStatus::ReadOnly | LicenseStatus::Revoked => false,
             LicenseStatus::Trial { trial_end_ms, .. } => now_ms < *trial_end_ms,
             _ => true,
         }
@@ -61,6 +65,7 @@ mod tests {
                 "trial",
             ),
             (LicenseStatus::ReadOnly, "readOnly"),
+            (LicenseStatus::Revoked, "revoked"),
             (
                 LicenseStatus::Licensed {
                     update_through_ms: 1,
@@ -109,6 +114,7 @@ mod tests {
                 trial_end_ms: 123,
             },
             LicenseStatus::ReadOnly,
+            LicenseStatus::Revoked,
             LicenseStatus::Licensed {
                 update_through_ms: 456,
                 in_window: true,
@@ -145,6 +151,7 @@ mod tests {
         }
         .capture_allowed());
         assert!(!LicenseStatus::ReadOnly.capture_allowed());
+        assert!(!LicenseStatus::Revoked.capture_allowed());
     }
 
     #[test]
@@ -159,6 +166,7 @@ mod tests {
         // Non-trial states are unaffected by the clock.
         assert!(LicenseStatus::TrialNotStarted { trial_days: 30 }.capture_allowed_at(i64::MAX));
         assert!(!LicenseStatus::ReadOnly.capture_allowed_at(0));
+        assert!(!LicenseStatus::Revoked.capture_allowed_at(i64::MAX));
         assert!(LicenseStatus::Licensed {
             update_through_ms: 0,
             in_window: false,

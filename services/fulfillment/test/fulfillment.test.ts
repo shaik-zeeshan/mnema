@@ -2,7 +2,8 @@ import { test, expect, afterEach } from "bun:test";
 import * as ed from "@noble/ed25519";
 import { verifyWebhook } from "../src/verify";
 import { mintKey } from "../src/mint";
-import { handleOrderPaid, type Env } from "../src/index";
+import defaultExport, { handleOrderPaid, handleOrderRefunded, type Env } from "../src/index";
+import { buildAndSignCrl, serializeCrlPayload, crlIssuedAt, crlRevokedIds } from "../src/crl";
 import { bytesToBase64, base64ToBytes } from "../src/util";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -190,4 +191,123 @@ test("unknown product: ACK without minting", async () => {
   );
   expect(res.status).toBe("unknown-product");
   expect(emailCount).toBe(0);
+});
+
+// --- Slice 1: derived license id -------------------------------------------
+
+test("Slice 1: paid order mints license_id === order:<orderId>", async () => {
+  mockResend();
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+  const { env } = fakeEnv(seedB64);
+  const orderId = "22222222-2222-2222-2222-222222222222";
+  const res = await handleOrderPaid(
+    { id: orderId, billing_reason: "purchase", product_id: "prod_license", customer: { email: "g@h.io" } },
+    env,
+  );
+  const payload = JSON.parse(new TextDecoder().decode(base64ToBytes(res.key!.split(".")[0])));
+  expect(payload.license_id).toBe("order:" + orderId);
+});
+
+// --- Slice 2: CRL wire format + refund revocation --------------------------
+
+// Verify a CRL wire string's signature under a given domain-separation context.
+async function verifyCrlUnder(wire: string, context: string, pub: Uint8Array): Promise<boolean> {
+  const [payloadB64, sigB64] = wire.split(".");
+  const payloadJson = new TextDecoder().decode(base64ToBytes(payloadB64));
+  const signed = new TextEncoder().encode(context + payloadJson);
+  return ed.verifyAsync(base64ToBytes(sigB64), signed, pub);
+}
+
+const TEST_SEED = new Uint8Array(32).fill(7);
+const PINNED_WIRE =
+  "eyJzY2hlbWEiOjEsImlzc3VlZF9hdCI6MTcwMDAwMDAwMDAwMCwicmV2b2tlZF9saWNlbnNlX2lkcyI6WyJvcmRlcjoxMTExMTExMS0xMTExLTExMTEtMTExMS0xMTExMTExMTExMTEiXX0=.XjfSyUtXSRRjn6NPWmpGwGMKBwDaXXm1qEj682a4Cdgv4755Df2ZsvRLqJdZVmLVRdAuTBaYUdyEF2xzvXwMBQ==";
+
+test("Slice 2: serializeCrlPayload is exact compact JSON, fixed field order", () => {
+  expect(serializeCrlPayload(["order:11111111-1111-1111-1111-111111111111"], 1_700_000_000_000)).toBe(
+    `{"schema":1,"issued_at":1700000000000,"revoked_license_ids":["order:11111111-1111-1111-1111-111111111111"]}`,
+  );
+});
+
+test("Slice 2: pinned fixture reproduces + verifies under domain context, FAILS under license context", async () => {
+  const pub = await ed.getPublicKeyAsync(TEST_SEED);
+
+  // buildAndSignCrl reproduces the pinned wire byte-for-byte with the test seed.
+  const wire = await buildAndSignCrl(
+    ["order:11111111-1111-1111-1111-111111111111"],
+    0,
+    1_700_000_000_000,
+    TEST_SEED,
+  );
+  expect(wire).toBe(PINNED_WIRE);
+
+  // Cross-replay both directions: valid under "mnema-crl-v1:", invalid under the
+  // plain (license) context of "".
+  expect(await verifyCrlUnder(PINNED_WIRE, "mnema-crl-v1:", pub)).toBe(true);
+  expect(await verifyCrlUnder(PINNED_WIRE, "", pub)).toBe(false);
+});
+
+test("Slice 2: full refund adds order:<id> to revoked + (re)builds a verifying crl", async () => {
+  const seedB64 = bytesToBase64(TEST_SEED);
+  const { env, store } = fakeEnv(seedB64);
+  const pub = await ed.getPublicKeyAsync(TEST_SEED);
+  const orderId = "33333333-3333-3333-3333-333333333333";
+
+  const res = await handleOrderRefunded(
+    { id: orderId, status: "refunded", product_id: "prod_license" },
+    env,
+  );
+  expect(res.status).toBe("revoked");
+
+  expect(JSON.parse(store.get("revoked")!)).toEqual(["order:" + orderId]);
+  const wire = store.get("crl")!;
+  expect(await verifyCrlUnder(wire, "mnema-crl-v1:", pub)).toBe(true);
+  expect(crlRevokedIds(wire)).toContain("order:" + orderId);
+});
+
+test("Slice 2: partial refund is a no-op (revoked set unchanged)", async () => {
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  const res = await handleOrderRefunded(
+    { id: "ord_partial", status: "partially_refunded", product_id: "prod_license" },
+    env,
+  );
+  expect(res.status).toBe("not-full-refund");
+  expect(store.has("revoked")).toBe(false);
+  expect(store.has("crl")).toBe(false);
+});
+
+test("Slice 2: unknown-product refund is a no-op", async () => {
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  const res = await handleOrderRefunded(
+    { id: "ord_unk", status: "refunded", product_id: "prod_other" },
+    env,
+  );
+  expect(res.status).toBe("unknown-product");
+  expect(store.has("revoked")).toBe(false);
+});
+
+test("Slice 2: CRL rebuild is monotonic even with a clock stuck in the past", async () => {
+  const past = 1_000; // absurdly stale clock
+  const a = await buildAndSignCrl(["order:a"], 0, past, TEST_SEED);
+  const b = await buildAndSignCrl(["order:a"], crlIssuedAt(a), past, TEST_SEED);
+  const c = await buildAndSignCrl(["order:a"], crlIssuedAt(b), past, TEST_SEED);
+  expect(crlIssuedAt(b)).toBeGreaterThan(crlIssuedAt(a));
+  expect(crlIssuedAt(c)).toBeGreaterThan(crlIssuedAt(b));
+});
+
+test("Slice 2: GET /revocations.json serves the signed doc, lazy-rebuilds when crl missing", async () => {
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  const pub = await ed.getPublicKeyAsync(TEST_SEED);
+  // Seed `revoked` directly (simulating a manual comp-key revocation) with no crl.
+  store.set("revoked", JSON.stringify(["order:44444444-4444-4444-4444-444444444444"]));
+
+  const req = new Request("https://f.example/revocations.json", { method: "GET" });
+  const res = await defaultExport.fetch(req, env);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+
+  const wire = await res.text();
+  expect(await verifyCrlUnder(wire, "mnema-crl-v1:", pub)).toBe(true);
+  expect(crlRevokedIds(wire)).toContain("order:44444444-4444-4444-4444-444444444444");
+  // Lazily stored.
+  expect(store.get("crl")).toBe(wire);
 });

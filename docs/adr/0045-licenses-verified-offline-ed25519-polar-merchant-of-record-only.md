@@ -2,7 +2,9 @@
 
 ## Status
 
-Proposed.
+Proposed. Amended by [ADR 0052](0052-refunded-licenses-die-via-a-signed-revocation-list.md):
+"keys are non-revocable" no longer holds — fully-refunded orders are revoked via a signed
+revocation list (staleness never locks).
 
 ## Context
 

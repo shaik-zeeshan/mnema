@@ -18,6 +18,7 @@
     status?.kind === "trial" && status.daysLeft <= 7 ? status.daysLeft : null,
   );
   const isReadOnly = $derived(status?.kind === "readOnly");
+  const isRevoked = $derived(status?.kind === "revoked");
 
   // Tone escalates subtly as expiry nears; ReadOnly is the firm (non-dismissible) end.
   const tone = $derived(
@@ -71,6 +72,22 @@
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">
       Your trial has ended. Everything you recorded stays browsable and searchable. Buy a
+      license to resume recording.
+    </p>
+    <div class="license-banner__actions">
+      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+        Buy a license
+      </button>
+      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+        Enter license
+      </button>
+    </div>
+  </div>
+{:else if isRevoked}
+  <div class="license-banner license-banner--readonly" role="alert">
+    <span class="license-banner__dot" aria-hidden="true"></span>
+    <p class="license-banner__text">
+      This license has been revoked. Everything you recorded stays browsable and searchable. Buy a
       license to resume recording.
     </p>
     <div class="license-banner__actions">
