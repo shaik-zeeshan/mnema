@@ -11,6 +11,10 @@ const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.licensing";
 // defeating a casual reinstall-reset of the trial (ADR 0045).
 const LICENSE_KEY_ACCOUNT: &str = "license_key";
 const TRIAL_RECORD_ACCOUNT: &str = "trial_record";
+// Once-per-machine activation (ADR 0053): the signed receipt (wire string) and
+// the provisional-window record (JSON). Both survive uninstall like the others.
+const ACTIVATION_RECEIPT_ACCOUNT: &str = "activation_receipt";
+const ACTIVATION_STATE_ACCOUNT: &str = "activation_state";
 
 trait LicenseTokenStoreAdapter {
     fn load_token(&self, account: &str) -> Result<Option<String>>;
@@ -203,6 +207,77 @@ pub fn load_trial_record() -> Result<Option<String>> {
     LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter).load(TRIAL_RECORD_ACCOUNT)
 }
 
+/// Store the signed activation receipt (wire string) in the OS keychain.
+pub fn store_activation_receipt(receipt: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .store(ACTIVATION_RECEIPT_ACCOUNT, receipt);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter)
+        .store(ACTIVATION_RECEIPT_ACCOUNT, receipt)
+}
+
+/// Load the stored activation receipt, or `None` when never activated.
+pub fn load_activation_receipt() -> Result<Option<String>> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .load(ACTIVATION_RECEIPT_ACCOUNT);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter)
+        .load(ACTIVATION_RECEIPT_ACCOUNT)
+}
+
+/// Delete the stored activation receipt. A missing receipt is treated as success.
+pub fn delete_activation_receipt() -> Result<()> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .delete(ACTIVATION_RECEIPT_ACCOUNT);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter)
+        .delete(ACTIVATION_RECEIPT_ACCOUNT)
+}
+
+/// Store the provisional activation-state record (JSON) in the OS keychain.
+pub fn store_activation_state(state_json: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .store(ACTIVATION_STATE_ACCOUNT, state_json);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter)
+        .store(ACTIVATION_STATE_ACCOUNT, state_json)
+}
+
+/// Load the stored activation-state record, or `None` when none is set.
+pub fn load_activation_state() -> Result<Option<String>> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .load(ACTIVATION_STATE_ACCOUNT);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter).load(ACTIVATION_STATE_ACCOUNT)
+}
+
+/// Delete the stored activation-state record. A missing record is treated as success.
+pub fn delete_activation_state() -> Result<()> {
+    #[cfg(test)]
+    if let Ok(token_dir) = std::env::var("MNEMA_LICENSE_TOKEN_DIR") {
+        return LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
+            .delete(ACTIVATION_STATE_ACCOUNT);
+    }
+
+    LicenseTokenStore::new(PlatformKeychainLicenseTokenStoreAdapter)
+        .delete(ACTIVATION_STATE_ACCOUNT)
+}
+
 // errSecItemNotFound: the keychain has no entry for this service/account.
 // Treated as "absent", not an error, on every read/delete path.
 #[cfg(target_os = "macos")]
@@ -225,12 +300,8 @@ fn load_platform_token(account: &str) -> Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 fn store_platform_token(account: &str, token: &str) -> Result<()> {
-    security_framework::passwords::set_generic_password(
-        KEYCHAIN_SERVICE,
-        account,
-        token.as_bytes(),
-    )
-    .map_err(|error| AppInfraError::LicenseTokenStore(error.to_string()))
+    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, token.as_bytes())
+        .map_err(|error| AppInfraError::LicenseTokenStore(error.to_string()))
 }
 
 #[cfg(target_os = "macos")]
@@ -299,7 +370,9 @@ mod tests {
         }
     }
 
-    fn file_store(token_dir: impl Into<PathBuf>) -> LicenseTokenStore<FileLicenseTokenStoreAdapter> {
+    fn file_store(
+        token_dir: impl Into<PathBuf>,
+    ) -> LicenseTokenStore<FileLicenseTokenStoreAdapter> {
         LicenseTokenStore::new(FileLicenseTokenStoreAdapter::new(token_dir))
     }
 
@@ -318,7 +391,9 @@ mod tests {
             .expect("store should succeed");
 
         assert_eq!(
-            store.load(LICENSE_KEY_ACCOUNT).expect("load should succeed"),
+            store
+                .load(LICENSE_KEY_ACCOUNT)
+                .expect("load should succeed"),
             Some("payload.signature".to_string())
         );
 
@@ -432,6 +507,30 @@ mod tests {
             load_trial_record().expect("load should succeed"),
             Some("signed-trial-record".to_string())
         );
+
+        // Activation receipt + state are distinct accounts with their own round-trip.
+        assert!(load_activation_receipt()
+            .expect("load should succeed")
+            .is_none());
+        store_activation_receipt("receipt.payload.sig").expect("store should succeed");
+        assert_eq!(
+            load_activation_receipt().expect("load should succeed"),
+            Some("receipt.payload.sig".to_string())
+        );
+        store_activation_state(r#"{"license_id":"order:x","provisional_started_at_ms":1}"#)
+            .expect("store should succeed");
+        assert_eq!(
+            load_activation_state().expect("load should succeed"),
+            Some(r#"{"license_id":"order:x","provisional_started_at_ms":1}"#.to_string())
+        );
+        delete_activation_receipt().expect("delete should succeed");
+        assert!(load_activation_receipt()
+            .expect("load should succeed")
+            .is_none());
+        delete_activation_state().expect("delete should succeed");
+        assert!(load_activation_state()
+            .expect("load should succeed")
+            .is_none());
 
         delete_license_key().expect("delete should succeed");
         assert!(!has_license_key().expect("has should succeed"));

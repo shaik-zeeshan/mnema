@@ -47,6 +47,7 @@ url = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }
 security-framework = "3.7"
+libc = "0.2"
 
 [dev-dependencies]
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

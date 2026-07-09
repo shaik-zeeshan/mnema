@@ -20,6 +20,20 @@
   const isReadOnly = $derived(status?.kind === "readOnly");
   const isRevoked = $derived(status?.kind === "revoked");
 
+  // Activation banners on a licensed key (ADR 0053). Lapsed is the firm, capture-
+  // blocked end; a final-days provisional (≤3) is the soft "connect soon" nudge.
+  // refusedOverCap is deliberately Settings-only — capture still works, no nag.
+  const isLapsedActivation = $derived(
+    status?.kind === "licensed" && status.activation.state === "lapsed",
+  );
+  const provisionalDaysLeft = $derived(
+    status?.kind === "licensed" &&
+      status.activation.state === "pending" &&
+      status.activation.provisionalDaysLeft <= 3
+      ? status.activation.provisionalDaysLeft
+      : null,
+  );
+
   // Tone escalates subtly as expiry nears; ReadOnly is the firm (non-dismissible) end.
   const tone = $derived(
     isReadOnly
@@ -54,6 +68,17 @@
 
   function dismiss() {
     dismissedAtDays = trialDaysLeft;
+  }
+
+  // Provisional nudge dismissal — keyed to its own day-count so a fresh
+  // escalation (3 → 2 → 1) re-surfaces the banner, same pattern as the trial.
+  let dismissedProvisionalAtDays = $state<number | null>(null);
+  const provisionalVisible = $derived(
+    provisionalDaysLeft !== null && dismissedProvisionalAtDays !== provisionalDaysLeft,
+  );
+
+  function dismissProvisional() {
+    dismissedProvisionalAtDays = provisionalDaysLeft;
   }
 
   function openCheckout() {
@@ -96,6 +121,37 @@
       </button>
       <button type="button" class="license-banner__btn" onclick={enterLicense}>
         Enter license
+      </button>
+    </div>
+  </div>
+{:else if isLapsedActivation}
+  <div class="license-banner license-banner--readonly" role="alert">
+    <span class="license-banner__dot" aria-hidden="true"></span>
+    <p class="license-banner__text">
+      We couldn't confirm your license. Connect to the internet once to finish activation — your
+      recorded history stays fully searchable; new recording is paused until then.
+    </p>
+    <div class="license-banner__actions">
+      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={enterLicense}>
+        Enter license
+      </button>
+    </div>
+  </div>
+{:else if provisionalVisible}
+  <div class="license-banner license-banner--warn" role="status">
+    <span class="license-banner__dot" aria-hidden="true"></span>
+    <p class="license-banner__text">
+      Activation still pending — connect to the internet within {days(provisionalDaysLeft ?? 0)} to
+      keep recording.
+    </p>
+    <div class="license-banner__actions">
+      <button
+        type="button"
+        class="license-banner__btn license-banner__btn--dismiss"
+        aria-label="Dismiss"
+        onclick={dismissProvisional}
+      >
+        Dismiss
       </button>
     </div>
   </div>

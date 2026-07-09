@@ -5,6 +5,12 @@
 Proposed. Amends [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
 "keys are non-revocable" decision.
 
+Amended by [ADR 0053](0053-licenses-activate-once-per-machine-via-a-signed-activation-receipt.md):
+the CRL's charter widens from full refunds only to also cover demonstrably-leaked keys
+(activation telemetry — lifetime distinct-machine count — is the leak signal), and the
+activation endpoint refuses revoked license ids so a dead key can never plant itself on a new
+machine. "Staleness never locks" is scoped to machines holding an Activation Receipt.
+
 ## Context
 
 ADR 0045 accepted that a refunded buyer keeps a working key, because zero runtime phone-home

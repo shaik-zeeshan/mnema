@@ -1229,6 +1229,8 @@ mod tests {
             update_through_ms,
             in_window: true,
             email: "a@b.c".into(),
+            name: String::new(),
+            activation: capture_types::Activation::Activated,
         };
 
         // Build released after the window → out of window.

@@ -6,6 +6,12 @@ Proposed. Amended by [ADR 0052](0052-refunded-licenses-die-via-a-signed-revocati
 "keys are non-revocable" no longer holds — fully-refunded orders are revoked via a signed
 revocation list (staleness never locks).
 
+Superseded in part by [ADR 0053](0053-licenses-activate-once-per-machine-via-a-signed-activation-receipt.md):
+the "no activation server / never phone home" constraint is relaxed to **one mandatory
+activation per machine** returning an offline-forever signed Activation Receipt ("activates
+once, then never phones home"). Offline verification, updater-gated enforcement, and
+Polar-as-MoR-only remain in force.
+
 ## Context
 
 [ADR 0044](0044-monetize-as-one-time-purchase-with-paid-update-window.md) commits Mnema to a

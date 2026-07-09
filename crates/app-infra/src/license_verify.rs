@@ -62,6 +62,11 @@ pub fn license_public_key() -> [u8; 32] {
 /// Trial length in days (ADR 0044: 30-day Trial).
 pub const TRIAL_LEN_DAYS: u32 = 30;
 
+/// Provisional Window length in days (ADR 0053): after a license's first
+/// activation attempt that couldn't reach Fulfillment, the app runs
+/// provisionally this long before falling to read-only.
+pub const PROVISIONAL_WINDOW_DAYS: u32 = 7;
+
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// The signed license contents. Ships in every key; verified locally.
@@ -74,6 +79,11 @@ pub struct LicensePayload {
     pub issued_at: i64,
     /// Unix milliseconds the paid Update Window runs through.
     pub update_through: i64,
+    /// Buyer display name, added after the initial wire shape. `#[serde(default)]`
+    /// keeps pre-`name` keys verifying (absent → `None`); `skip_serializing_if`
+    /// keeps a `None` name byte-identical to a pre-`name` payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Why a license key failed to parse/verify. Every variant is a rejection —
@@ -92,7 +102,9 @@ pub enum LicenseVerifyError {
 
 /// Parse and cryptographically verify a license key against this build's public
 /// key ([`license_public_key`]). Returns the verified payload, or a rejection reason.
-pub fn parse_and_verify_license(key: &str) -> std::result::Result<LicensePayload, LicenseVerifyError> {
+pub fn parse_and_verify_license(
+    key: &str,
+) -> std::result::Result<LicensePayload, LicenseVerifyError> {
     // The key bytes are a fixed valid Ed25519 point; treat a decode failure as a
     // signature rejection (only reachable if the baked key were ever corrupted).
     let verifying_key = VerifyingKey::from_bytes(&license_public_key())
@@ -106,8 +118,10 @@ fn parse_and_verify_with_key(
     key: &str,
     verifying_key: &VerifyingKey,
 ) -> std::result::Result<LicensePayload, LicenseVerifyError> {
-    let (payload_b64, signature_b64) =
-        key.trim().split_once('.').ok_or(LicenseVerifyError::Malformed)?;
+    let (payload_b64, signature_b64) = key
+        .trim()
+        .split_once('.')
+        .ok_or(LicenseVerifyError::Malformed)?;
 
     let payload_bytes = BASE64
         .decode(payload_b64)
@@ -147,6 +161,28 @@ pub fn trial_days_left(
     ((remaining_ms + DAY_MS - 1) / DAY_MS) as u32
 }
 
+/// Days left in the Provisional Window — identical shape to [`trial_days_left`]
+/// with the same anti-rollback (`max(now, max_seen)`); returns 0 once elapsed.
+///
+// ponytail: "actual unreachability" is approximated as "time since the first
+// activation attempt that never succeeded" — the window is simply 7 days from
+// that first attempt for the license id. If we ever need to distinguish "server
+// was down" from "user is offline", track attempt outcomes; not worth it now.
+pub fn provisional_days_left(
+    provisional_started_at_ms: i64,
+    now_ms: i64,
+    max_seen_ms: i64,
+    window_days: u32,
+) -> u32 {
+    let effective_now = now_ms.max(max_seen_ms);
+    let end_ms = provisional_started_at_ms + (window_days as i64) * DAY_MS;
+    let remaining_ms = end_ms - effective_now;
+    if remaining_ms <= 0 {
+        return 0;
+    }
+    ((remaining_ms + DAY_MS - 1) / DAY_MS) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +201,7 @@ mod tests {
             tier: "standard".to_string(),
             issued_at: 1_700_000_000_000,
             update_through: 1_731_536_000_000,
+            name: None,
         }
     }
 
@@ -200,7 +237,8 @@ mod tests {
         payload.update_through = 1; // long expired
         let key = mint_key(&signing_key, &payload);
 
-        let verified = parse_and_verify_with_key(&key, &verifying_key).expect("should still verify");
+        let verified =
+            parse_and_verify_with_key(&key, &verifying_key).expect("should still verify");
         assert_eq!(verified.update_through, 1);
     }
 
@@ -330,7 +368,10 @@ mod tests {
     fn trial_days_left_zero_past_end() {
         let start = 1_000_000;
         let past_end = start + 31 * DAY_MS;
-        assert_eq!(trial_days_left(start, past_end, past_end, TRIAL_LEN_DAYS), 0);
+        assert_eq!(
+            trial_days_left(start, past_end, past_end, TRIAL_LEN_DAYS),
+            0
+        );
     }
 
     #[test]
@@ -343,6 +384,59 @@ mod tests {
         assert_eq!(
             trial_days_left(start, rolled_back_now, max_seen, TRIAL_LEN_DAYS),
             5
+        );
+    }
+
+    #[test]
+    fn provisional_days_left_full_at_start_and_zero_past_end() {
+        let start = 1_000_000;
+        assert_eq!(
+            provisional_days_left(start, start, start, PROVISIONAL_WINDOW_DAYS),
+            7
+        );
+        let past_end = start + 8 * DAY_MS;
+        assert_eq!(
+            provisional_days_left(start, past_end, past_end, PROVISIONAL_WINDOW_DAYS),
+            0
+        );
+    }
+
+    #[test]
+    fn provisional_days_left_uses_max_seen_on_rollback() {
+        let start = 1_000_000;
+        // Real elapsed = 5 days, but the clock is rolled back to day 1.
+        let max_seen = start + 5 * DAY_MS;
+        let rolled_back_now = start + 1 * DAY_MS;
+        // Honest math would say ~6 left; anti-rollback pins it to ~2.
+        assert_eq!(
+            provisional_days_left(start, rolled_back_now, max_seen, PROVISIONAL_WINDOW_DAYS),
+            2
+        );
+    }
+
+    #[test]
+    fn payload_round_trips_without_name() {
+        // A pre-`name` key: JSON with no `name` field deserializes to `None`, and
+        // a `None` name serializes back to bytes without a `name` key.
+        let json = r#"{"email":"a@b.com","license_id":"lic-1","tier":"standard","issued_at":1,"update_through":2}"#;
+        let payload: LicensePayload = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(payload.name, None);
+        let reserialized = serde_json::to_string(&payload).unwrap();
+        assert!(
+            !reserialized.contains("name"),
+            "None name must not serialize"
+        );
+    }
+
+    #[test]
+    fn payload_round_trips_with_name() {
+        let mut payload = sample_payload();
+        payload.name = Some("Ada Lovelace".to_string());
+        let json = serde_json::to_string(&payload).unwrap();
+        assert!(json.contains(r#""name":"Ada Lovelace""#));
+        assert_eq!(
+            serde_json::from_str::<LicensePayload>(&json).unwrap(),
+            payload
         );
     }
 }

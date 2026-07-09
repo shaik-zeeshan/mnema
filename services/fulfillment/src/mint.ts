@@ -21,6 +21,10 @@ export interface LicensePayload {
   tier: string;
   issued_at: number; // unix epoch ms
   update_through: number; // unix epoch ms
+  // Buyer's display name. Optional + last in field order so pre-`name` keys stay
+  // byte-identical: JSON.stringify drops an `undefined` value, and the app's
+  // `LicensePayload` gains `name: Option<String>` with `#[serde(default)]`.
+  name?: string;
 }
 
 // `seed` is the raw 32-byte Ed25519 private seed.
@@ -32,6 +36,7 @@ export async function mintKey(payload: LicensePayload, seed: Uint8Array): Promis
     tier: payload.tier,
     issued_at: payload.issued_at,
     update_through: payload.update_through,
+    name: payload.name, // undefined → key omitted, preserving pre-`name` keys
   });
   const bytes = new TextEncoder().encode(json);
   const signature = await ed.signAsync(bytes, seed);

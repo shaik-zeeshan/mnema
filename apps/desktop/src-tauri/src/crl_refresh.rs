@@ -69,6 +69,9 @@ pub fn start_daily_crl_timer(app_handle: tauri::AppHandle) {
         loop {
             interval.tick().await;
             refresh_once(app_handle.clone()).await;
+            // Piggyback the daily tick to retry once-per-machine activation
+            // (no-op once a receipt is stored, or when there's nothing to activate).
+            crate::licensing::maybe_spawn_activation(&app_handle);
         }
     });
 }

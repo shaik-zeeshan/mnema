@@ -13,8 +13,28 @@ export type LicenseStatus =
   | { kind: "readOnly" }
   /** Authentic key on the signed revocation list — capture blocked, history readable. */
   | { kind: "revoked" }
-  /** Owns a license. Capture always allowed; `inWindow` gates only new builds. */
-  | { kind: "licensed"; updateThroughMs: number; inWindow: boolean; email: string };
+  /** Owns a license. Capture allowed unless `activation` is `lapsed`;
+   * `inWindow` gates only new builds. `name` is "" when the key has none. */
+  | {
+      kind: "licensed";
+      updateThroughMs: number;
+      inWindow: boolean;
+      email: string;
+      name: string;
+      activation: Activation;
+    };
+
+/** Once-per-machine activation state layered onto a `licensed` key (ADR 0053).
+ * Only `lapsed` blocks capture; the rest allow it (still inside the window). */
+export type Activation =
+  /** Receipt verified on this machine — offline forever. */
+  | { state: "activated" }
+  /** In the Provisional Window, still trying to activate. Capture allowed. */
+  | { state: "pending"; provisionalDaysLeft: number }
+  /** At the device cap; still in the window (capture allowed), UI shows reset + buy links. */
+  | { state: "refusedOverCap"; resetUrl: string; buyUrl: string }
+  /** Provisional Window exhausted, never activated. Capture blocked. */
+  | { state: "lapsed" };
 
 /** Result of pasting a license key into Settings. */
 export interface ActivateLicenseResult {

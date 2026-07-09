@@ -223,6 +223,7 @@ dependencies = [
  "ed25519-dalek",
  "fs2",
  "image",
+ "libc",
  "libsqlite3-sys",
  "log",
  "ocr",

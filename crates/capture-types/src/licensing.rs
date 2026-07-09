@@ -15,18 +15,44 @@ pub enum LicenseStatus {
     /// Capture disabled; recorded history stays readable. Distinct from
     /// `ReadOnly` so the UI can say "revoked" honestly (never "refunded").
     Revoked,
-    /// Owns a license. Capture always allowed; `in_window` gates only new builds.
+    /// Owns a license. Capture allowed unless activation has `Lapsed`;
+    /// `in_window` gates only new builds. `name` is "" when the key has none.
     Licensed {
         update_through_ms: i64,
         in_window: bool,
         email: String,
+        name: String,
+        activation: Activation,
     },
+}
+
+/// Once-per-machine activation state layered onto a `Licensed` key (ADR 0053).
+/// Only `Lapsed` blocks capture; the rest allow it (still inside the window).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum Activation {
+    /// Receipt verified on this machine — offline forever.
+    Activated,
+    /// In the Provisional Window, still trying to activate. Capture allowed.
+    Pending { provisional_days_left: u32 },
+    /// Server says this license is at its device cap; still in the window so
+    /// Capture is allowed, but the UI surfaces reset + buy links.
+    RefusedOverCap { reset_url: String, buy_url: String },
+    /// Provisional Window exhausted, never activated. Capture blocked.
+    Lapsed,
 }
 
 impl LicenseStatus {
     /// The single gate question: may forward Capture run?
     pub fn capture_allowed(&self) -> bool {
-        !matches!(self, LicenseStatus::ReadOnly | LicenseStatus::Revoked)
+        match self {
+            LicenseStatus::ReadOnly | LicenseStatus::Revoked => false,
+            LicenseStatus::Licensed {
+                activation: Activation::Lapsed,
+                ..
+            } => false,
+            _ => true,
+        }
     }
 
     /// Like [`Self::capture_allowed`], but a `Trial` whose window has lapsed
@@ -36,6 +62,10 @@ impl LicenseStatus {
     pub fn capture_allowed_at(&self, now_ms: i64) -> bool {
         match self {
             LicenseStatus::ReadOnly | LicenseStatus::Revoked => false,
+            LicenseStatus::Licensed {
+                activation: Activation::Lapsed,
+                ..
+            } => false,
             LicenseStatus::Trial { trial_end_ms, .. } => now_ms < *trial_end_ms,
             _ => true,
         }
@@ -71,6 +101,8 @@ mod tests {
                     update_through_ms: 1,
                     in_window: true,
                     email: "a@b.c".to_string(),
+                    name: "Ada".to_string(),
+                    activation: Activation::Activated,
                 },
                 "licensed",
             ),
@@ -79,6 +111,31 @@ mod tests {
             let json = serde_json::to_value(&status).expect("serialize");
             assert_eq!(json["kind"], tag);
         }
+    }
+
+    #[test]
+    fn activation_variants_serialize_camel_case() {
+        let json = serde_json::to_value(Activation::Activated).expect("serialize");
+        assert_eq!(json["state"], "activated");
+
+        let json = serde_json::to_value(Activation::Pending {
+            provisional_days_left: 5,
+        })
+        .expect("serialize");
+        assert_eq!(json["state"], "pending");
+        assert_eq!(json["provisionalDaysLeft"], 5);
+
+        let json = serde_json::to_value(Activation::RefusedOverCap {
+            reset_url: "https://reset".to_string(),
+            buy_url: "https://buy".to_string(),
+        })
+        .expect("serialize");
+        assert_eq!(json["state"], "refusedOverCap");
+        assert_eq!(json["resetUrl"], "https://reset");
+        assert_eq!(json["buyUrl"], "https://buy");
+
+        let json = serde_json::to_value(Activation::Lapsed).expect("serialize");
+        assert_eq!(json["state"], "lapsed");
     }
 
     #[test]
@@ -98,16 +155,36 @@ mod tests {
             update_through_ms: 99,
             in_window: false,
             email: "x@y.z".to_string(),
+            name: String::new(),
+            activation: Activation::Pending {
+                provisional_days_left: 3,
+            },
         })
         .expect("serialize");
         assert_eq!(json["updateThroughMs"], 99);
         assert_eq!(json["inWindow"], false);
         assert_eq!(json["email"], "x@y.z");
+        assert_eq!(json["name"], "");
+        assert_eq!(json["activation"]["state"], "pending");
+        assert_eq!(json["activation"]["provisionalDaysLeft"], 3);
     }
 
     #[test]
     fn every_variant_round_trips() {
-        let variants = [
+        // One `Licensed` per activation variant, so each `Activation` shape
+        // round-trips through the wire.
+        let activations = [
+            Activation::Activated,
+            Activation::Pending {
+                provisional_days_left: 7,
+            },
+            Activation::RefusedOverCap {
+                reset_url: "https://reset".to_string(),
+                buy_url: "https://buy".to_string(),
+            },
+            Activation::Lapsed,
+        ];
+        let mut variants = vec![
             LicenseStatus::TrialNotStarted { trial_days: 14 },
             LicenseStatus::Trial {
                 days_left: 3,
@@ -115,12 +192,16 @@ mod tests {
             },
             LicenseStatus::ReadOnly,
             LicenseStatus::Revoked,
-            LicenseStatus::Licensed {
+        ];
+        for activation in activations {
+            variants.push(LicenseStatus::Licensed {
                 update_through_ms: 456,
                 in_window: true,
                 email: "user@example.com".to_string(),
-            },
-        ];
+                name: "User".to_string(),
+                activation,
+            });
+        }
         for status in variants {
             let json = serde_json::to_value(&status).expect("serialize");
             let back: LicenseStatus = serde_json::from_value(json).expect("deserialize");
@@ -148,6 +229,17 @@ mod tests {
             update_through_ms: 0,
             in_window: false,
             email: String::new(),
+            name: String::new(),
+            activation: Activation::Activated,
+        }
+        .capture_allowed());
+        // A lapsed activation blocks capture even on a Licensed key.
+        assert!(!LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: true,
+            email: String::new(),
+            name: String::new(),
+            activation: Activation::Lapsed,
         }
         .capture_allowed());
         assert!(!LicenseStatus::ReadOnly.capture_allowed());
@@ -171,7 +263,18 @@ mod tests {
             update_through_ms: 0,
             in_window: false,
             email: String::new(),
+            name: String::new(),
+            activation: Activation::Activated,
         }
         .capture_allowed_at(i64::MAX));
+        // Lapsed activation blocks at any time.
+        assert!(!LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: true,
+            email: String::new(),
+            name: String::new(),
+            activation: Activation::Lapsed,
+        }
+        .capture_allowed_at(0));
     }
 }

@@ -19,7 +19,16 @@
   const badge = $derived.by((): { label: string; variant: "ok" | "neutral" | "warn" } | null => {
     switch (status?.kind) {
       case "licensed":
-        return { label: "Licensed", variant: "ok" };
+        switch (status.activation.state) {
+          case "pending":
+            return { label: "Activating…", variant: "neutral" };
+          case "refusedOverCap":
+            return { label: "Device limit", variant: "warn" };
+          case "lapsed":
+            return { label: "Not activated", variant: "warn" };
+          default:
+            return { label: "Licensed", variant: "ok" };
+        }
       case "trial":
         return { label: "Trial", variant: "neutral" };
       case "trialNotStarted":
@@ -85,6 +94,10 @@
     const url = licensedOutOfWindow ? RENEWAL_CHECKOUT_URL : LICENSE_CHECKOUT_URL;
     void openUrl(url).catch((e) => console.error("[License] open checkout failed", e));
   }
+
+  function openExternal(url: string) {
+    void openUrl(url).catch((e) => console.error("[License] open external failed", e));
+  }
 </script>
 
 <SettingGroup
@@ -123,7 +136,42 @@
             searchable; new recording is paused.
           </p>
         {:else if status.kind === "licensed"}
-          <p class="license-status__lead">Licensed to {status.email}</p>
+          <p class="license-status__lead">Licensed to {status.name || status.email}</p>
+          {#if status.activation.state === "pending"}
+            <p class="group-hint">
+              Finishing activation… ({days(status.activation.provisionalDaysLeft)} to connect).
+            </p>
+          {:else if status.activation.state === "refusedOverCap"}
+            {@const act = status.activation}
+            <p class="group-hint group-hint--warn">
+              This license is already active on its 3 devices. Reset your devices to move it here,
+              or buy another license.
+            </p>
+            <div class="row-actions">
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm"
+                onclick={() => openExternal(act.resetUrl)}
+              >
+                Reset devices
+                <span aria-hidden="true"><IconArrowUpRight /></span>
+              </button>
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm"
+                onclick={() => openExternal(act.buyUrl)}
+              >
+                Buy another license
+                <span aria-hidden="true"><IconArrowUpRight /></span>
+              </button>
+            </div>
+          {:else if status.activation.state === "lapsed"}
+            <p class="group-hint group-hint--warn">
+              We couldn't confirm your license — connect to the internet once to finish activation.
+              Your recorded history stays fully searchable; new recording is paused until activation
+              completes.
+            </p>
+          {/if}
           {#if status.inWindow}
             <p class="group-hint">Updates included through {fmtDate(status.updateThroughMs)}.</p>
           {:else}

@@ -437,6 +437,7 @@ pub fn run() {
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(licensing::LicenseGate(Mutex::new(None)))
+        .manage(licensing::ActivationHint(Mutex::new(None)))
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())

@@ -1,8 +1,10 @@
+import * as ed from "@noble/ed25519";
 import { verifyWebhook } from "./verify";
 import { mintKey } from "./mint";
 import { base64ToBytes } from "./util";
 import { licenseEmail, renewalWithoutLicenseEmail } from "./email";
 import { buildAndSignCrl, crlIssuedAt, crlRevokedIds } from "./crl";
+import { signReceipt } from "./receipt";
 
 export interface Env {
   ED25519_PRIVATE_KEY: string; // base64 of the raw 32-byte Ed25519 seed
@@ -14,8 +16,11 @@ export interface Env {
   POLAR_API_BASE: string; // https://api.polar.sh (prod) | https://sandbox-api.polar.sh (dev)
   POLAR_ACCESS_TOKEN: string; // secret — orders:read + refunds:write, used for the renewal ownership gate
   UPDATE_WINDOW_DAYS?: string; // default 365
+  BUY_URL?: string; // public checkout/pricing link surfaced on an over-cap 409
   IDEMPOTENCY: KVNamespace;
 }
+
+const BUY_URL_DEFAULT = "https://mnema.day/#pricing";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const IDEMPOTENCY_TTL_SECONDS = 30 * DAY_MS / 1000; // 30 days — well past Polar's retry window
@@ -30,7 +35,7 @@ interface PolarOrder {
   // Net cents still refundable (before tax). Polar refunds the tax proportionally
   // on top of the `amount` we pass, so this — NOT total_amount — is the refund amount.
   refundable_amount?: number;
-  customer?: { id?: string; email?: string };
+  customer?: { id?: string; email?: string; name?: string };
 }
 
 // KV keys (in the IDEMPOTENCY namespace, alongside order-id idempotency keys):
@@ -67,6 +72,189 @@ async function rebuildCrl(env: Env, revokedIds: string[], now: number): Promise<
   await env.IDEMPOTENCY.put(CRL_KEY, wire);
   return wire;
 }
+
+// Activation KV keys (in the IDEMPOTENCY namespace; ADR 0053):
+//   activation:<license_id>:<machine_hash> = "1"  — one blind key per machine
+//   activation-meta:<license_id>           = JSON { last_reset_at, lifetime_count }
+//
+// Same lost-update reasoning as revoked:* — one blind key per activated machine so
+// two machines activating concurrently touch two different keys and cannot clobber
+// each other (KV has no compare-and-swap). The meta key IS a read-modify-write, but
+// it only carries telemetry/rate-limit fields, not entitlement, so a racy count is
+// acceptable. The trailing ":" on the slot prefix keeps "order:11" from matching
+// "order:111" when listing a license's slots.
+const ACTIVATION_PREFIX = "activation:";
+const ACTIVATION_META_PREFIX = "activation-meta:";
+const ACTIVATION_CAP = 3;
+const RESET_COOLDOWN_MS = 30 * DAY_MS;
+const RECEIPT_SCHEMA = 1;
+
+interface ActivationMeta {
+  last_reset_at: number; // ms; 0 = never reset
+  lifetime_count: number; // total slots ever granted — NEVER decremented (leak telemetry)
+}
+
+async function readActivationMeta(env: Env, licenseId: string): Promise<ActivationMeta> {
+  const raw = await env.IDEMPOTENCY.get(ACTIVATION_META_PREFIX + licenseId);
+  if (!raw) return { last_reset_at: 0, lifetime_count: 0 };
+  return JSON.parse(raw) as ActivationMeta;
+}
+
+// Every slot key for a license: `activation:<license_id>:*`.
+async function listActivationKeys(env: Env, licenseId: string): Promise<string[]> {
+  const prefix = ACTIVATION_PREFIX + licenseId + ":";
+  const out: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.IDEMPOTENCY.list({ prefix, cursor });
+    for (const k of page.keys) out.push(k.name);
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return out;
+}
+
+function jsonResponse(obj: unknown, status: number): Response {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+// POST /activate — bind a machine to a license, mint a signed Activation Receipt.
+async function handleActivate(req: Request, env: Env, now: number = Date.now()): Promise<Response> {
+  let body: { schema?: unknown; license_id?: unknown; machine_hash?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("bad json", { status: 400 });
+  }
+  const licenseId = body.license_id;
+  const machineHash = body.machine_hash;
+  if (
+    body.schema !== RECEIPT_SCHEMA ||
+    typeof licenseId !== "string" ||
+    !licenseId.trim() ||
+    typeof machineHash !== "string" ||
+    !machineHash.trim()
+  ) {
+    return new Response("bad request", { status: 400 });
+  }
+
+  // Revoked id → 403, checked FIRST (a revoked license activates nowhere).
+  if (await env.IDEMPOTENCY.get(REVOKED_PREFIX + licenseId)) {
+    return jsonResponse({ code: "revoked" }, 403);
+  }
+
+  const seed = base64ToBytes(env.ED25519_PRIVATE_KEY);
+  const slotKey = ACTIVATION_PREFIX + licenseId + ":" + machineHash;
+
+  // Known machine → idempotent: re-sign a fresh receipt, touch nothing.
+  if (await env.IDEMPOTENCY.get(slotKey)) {
+    return jsonResponse({ receipt: await signReceipt(licenseId, machineHash, now, seed) }, 200);
+  }
+
+  // New machine — enforce the 3-device cap.
+  if ((await listActivationKeys(env, licenseId)).length >= ACTIVATION_CAP) {
+    return jsonResponse(
+      {
+        code: "over_cap",
+        reset_url: new URL("/reset", req.url).toString(),
+        buy_url: env.BUY_URL ?? BUY_URL_DEFAULT,
+      },
+      409,
+    );
+  }
+
+  // Grant the slot (blind write), then bump lifetime_count (racy RMW is fine — telemetry).
+  await env.IDEMPOTENCY.put(slotKey, "1");
+  const meta = await readActivationMeta(env, licenseId);
+  meta.lifetime_count += 1;
+  await env.IDEMPOTENCY.put(ACTIVATION_META_PREFIX + licenseId, JSON.stringify(meta));
+
+  return jsonResponse({ receipt: await signReceipt(licenseId, machineHash, now, seed) }, 200);
+}
+
+// POST /reset — free a license's activation slots, gated once per 30 days.
+async function handleReset(req: Request, env: Env, now: number = Date.now()): Promise<Response> {
+  let body: { key?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return new Response("bad json", { status: 400 });
+  }
+  const key = body.key;
+  if (typeof key !== "string" || !key.trim()) return new Response("bad request", { status: 400 });
+
+  // Verify the pasted license key: Ed25519 over the RAW payload bytes (no domain
+  // prefix — see mint.ts). A bad signature → 403. Public key derived from the seed.
+  const seed = base64ToBytes(env.ED25519_PRIVATE_KEY);
+  const pub = await ed.getPublicKeyAsync(seed);
+  let licenseId: string;
+  try {
+    const [payloadB64, sigB64] = key.trim().split(".");
+    const payloadBytes = base64ToBytes(payloadB64);
+    if (!(await ed.verifyAsync(base64ToBytes(sigB64), payloadBytes, pub))) {
+      return new Response("bad signature", { status: 403 });
+    }
+    licenseId = (JSON.parse(new TextDecoder().decode(payloadBytes)) as { license_id?: string })
+      .license_id as string;
+    if (typeof licenseId !== "string" || !licenseId) {
+      return new Response("bad signature", { status: 403 });
+    }
+  } catch {
+    return new Response("bad signature", { status: 403 });
+  }
+
+  const meta = await readActivationMeta(env, licenseId);
+  const sinceReset = now - meta.last_reset_at;
+  if (meta.last_reset_at > 0 && sinceReset < RESET_COOLDOWN_MS) {
+    return jsonResponse({ retry_after_ms: RESET_COOLDOWN_MS - sinceReset }, 429);
+  }
+
+  // Free every slot; KEEP lifetime_count (leak telemetry survives resets).
+  for (const k of await listActivationKeys(env, licenseId)) await env.IDEMPOTENCY.delete(k);
+  meta.last_reset_at = now;
+  await env.IDEMPOTENCY.put(ACTIVATION_META_PREFIX + licenseId, JSON.stringify(meta));
+  return jsonResponse({ ok: true }, 200);
+}
+
+// Minimal same-origin form for a buyer to paste their key and reset activations.
+const RESET_FORM_HTML = `<!doctype html>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Reset Mnema activations</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; }
+  textarea { width: 100%; min-height: 6rem; font-family: ui-monospace, monospace; }
+  button { margin-top: 0.75rem; padding: 0.5rem 1rem; }
+  pre { background: #f4f4f4; padding: 0.75rem; overflow-x: auto; white-space: pre-wrap; }
+</style>
+<h1>Reset Mnema activations</h1>
+<p>Paste your full license key to free every activated machine (allowed once every 30 days).</p>
+<form id="f">
+  <textarea id="key" placeholder="base64payload.base64signature" required></textarea>
+  <button type="submit">Reset activations</button>
+</form>
+<pre id="out" hidden></pre>
+<script>
+  const out = document.getElementById("out");
+  document.getElementById("f").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    out.hidden = false;
+    out.textContent = "Working…";
+    try {
+      const res = await fetch("/reset", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: document.getElementById("key").value.trim() }),
+      });
+      const text = await res.text();
+      out.textContent = res.status + " " + text;
+    } catch (err) {
+      out.textContent = "request failed: " + err;
+    }
+  });
+</script>`;
 
 async function sendEmail(
   env: Env,
@@ -216,6 +404,7 @@ export async function handleOrderPaid(
       tier: "license",
       issued_at: issuedAt,
       update_through: updateThrough,
+      name: order.customer?.name ?? "",
     },
     seed,
   );
@@ -266,9 +455,24 @@ export async function handleOrderRefunded(
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
+    const pathname = new URL(req.url).pathname;
+
+    // Activation endpoints — routed BEFORE the Polar webhook-signature gate below
+    // (they are not webhooks, so they must not be rejected as invalid ones).
+    if (pathname === "/activate" && req.method === "POST") return handleActivate(req, env);
+    if (pathname === "/reset") {
+      if (req.method === "GET") {
+        return new Response(RESET_FORM_HTML, {
+          status: 200,
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      }
+      if (req.method === "POST") return handleReset(req, env);
+    }
+
     // Public, anonymous CRL endpoint. Serve the signed doc; lazily rebuild if
     // `crl` is missing or its id set has drifted from the `revoked` source.
-    if (req.method === "GET" && new URL(req.url).pathname === "/revocations.json") {
+    if (req.method === "GET" && pathname === "/revocations.json") {
       const revoked = await readRevokedSet(env);
       let wire = await env.IDEMPOTENCY.get(CRL_KEY);
       const stale =
