@@ -3,8 +3,6 @@
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
-    ABOUT_REPO_URL,
-    ABOUT_RELEASES_URL,
     appUpdateStateLabel,
     appUpdateStatusMessage,
     updateChannelLabel,
@@ -97,25 +95,8 @@
         <dt>Identifier</dt>
         <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
       </div>
-      <div class="about-meta__row">
-        <dt>License</dt>
-        <dd>MIT</dd>
-      </div>
     </dl>
   </div>
-
-  <SettingRow label="Links" description="Browse the source or read what changed in each release.">
-    {#snippet control()}
-      <div class="about-links">
-        <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_REPO_URL)}>
-          Source<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
-        </button>
-        <button type="button" class="about-link" onclick={() => openExternalUrl(ABOUT_RELEASES_URL)}>
-          Release notes<span class="about-link__arrow" aria-hidden="true"><IconArrowUpRight /></span>
-        </button>
-      </div>
-    {/snippet}
-  </SettingRow>
 
   <SettingRow label="Copy details" description="Copy version and build details to the clipboard." divider={false}>
     {#snippet control()}
