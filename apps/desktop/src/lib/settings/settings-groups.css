@@ -331,46 +331,6 @@
     line-height: 1.4;
   }
 
-  .settings-shell .about-links {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px 16px;
-  }
-
-  .settings-shell .about-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 0;
-    border: 0;
-    background: none;
-    /* Persistent interactive signifier: a resting underline (offset off the
-       baseline) so the link reads as a link before hover, not muted body text.
-       Lifts to the accent on hover/focus. */
-    color: var(--app-text);
-    text-decoration: underline;
-    text-decoration-color: var(--app-text-faint);
-    text-underline-offset: 2px;
-    font: inherit;
-    font-size: var(--text-sm);
-    font-weight: 600;
-    letter-spacing: 0.01em;
-    cursor: pointer;
-    transition: color 0.12s, text-decoration-color 0.12s, transform 0.06s;
-  }
-
-  .settings-shell .about-link:hover:not(:disabled), .settings-shell .about-link:focus-visible {
-    outline: none;
-    color: var(--app-accent);
-    text-decoration-color: var(--app-accent);
-  }
-
-  .settings-shell .about-link:active:not(:disabled) {
-    transform: translateY(0.5px);
-    color: var(--app-accent-strong);
-  }
-
   .settings-shell .about-link__arrow {
     font-size: var(--text-xs);
     opacity: 0.7;
