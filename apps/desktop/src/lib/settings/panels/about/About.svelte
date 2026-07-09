@@ -95,10 +95,6 @@
         <dt>Identifier</dt>
         <dd>{appUpdateStatus?.app.identifier ?? "Unknown"}</dd>
       </div>
-      <div class="about-meta__row">
-        <dt>License</dt>
-        <dd>Business Source License 1.1</dd>
-      </div>
     </dl>
   </div>
 
