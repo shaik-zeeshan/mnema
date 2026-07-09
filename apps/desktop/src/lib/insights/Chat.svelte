@@ -128,6 +128,10 @@
     sources: AskAiSource[];
     errorMessage: string | null;
     seededResultCount: number | null;
+    // Tokens occupying the model's context window after this turn's latest
+    // completion request; null when the provider reported no usage (and on
+    // hydrated past turns — usage isn't persisted).
+    contextTokens: number | null;
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
@@ -237,6 +241,21 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
+  // Context-window occupancy shown in the composer bar: the latest turn that
+  // carries a provider-reported count. Null hides the readout (no live turn
+  // yet, or a cold-loaded thread — usage isn't persisted, so it reappears on
+  // the next answer).
+  const contextTokens = $derived(
+    turns.findLast((t) => t.contextTokens !== null)?.contextTokens ?? null,
+  );
+
+  // "812" / "12.4k" / "1.2M" — compact enough for the composer bar.
+  function formatTokenCount(tokens: number): string {
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+    return `${tokens}`;
+  }
+
   function makeTurn(
     turnIndex: number,
     question: string,
@@ -253,6 +272,7 @@
       sources: [],
       errorMessage: null,
       seededResultCount: null,
+      contextTokens: null,
       version: 0,
       reasoningExpanded: false,
       summaryExpanded: false,
@@ -404,6 +424,7 @@
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
     turn.seededResultCount = view.seededResultCount;
+    turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
   }
@@ -909,6 +930,9 @@
       case "sources":
         turn.sources = coerceSources(update.sources);
         void loadSourceThumbnails(turn.sources);
+        break;
+      case "contextTokens":
+        turn.contextTokens = update.tokens;
         break;
       case "error":
         turn.errorMessage = update.message;
@@ -1543,6 +1567,16 @@
             bind:open={enginePickerOpen}
             onselect={handleModelSelect}
           />
+          <!-- Context-window occupancy for this thread (provider-reported
+               tokens from the latest answer). Hidden until a turn reports. -->
+          {#if contextTokens !== null}
+            <span
+              class="composer-context"
+              use:tip={"Tokens in the model's context window"}
+            >
+              {formatTokenCount(contextTokens)} tokens
+            </span>
+          {/if}
           <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
                stop control that asks the backend to cancel; the resulting
                done/error event settles the UI. -->
@@ -2203,6 +2237,15 @@
     justify-content: space-between;
     gap: 8px;
     padding: 6px 8px 8px 10px;
+  }
+  /* Quiet context-window readout, tucked against the send button. */
+  .composer-context {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    cursor: default;
   }
   .composer-send {
     flex: 0 0 auto;

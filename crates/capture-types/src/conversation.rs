@@ -187,6 +187,10 @@ pub struct TurnView {
     pub sources: serde_json::Value,
     pub error_message: Option<String>,
     pub seeded_result_count: Option<i64>,
+    /// Tokens occupying the model's context window after the latest completion
+    /// request of this turn (provider-reported input + output). Null until the
+    /// provider reports usage, and on turns predating the field.
+    pub context_tokens: Option<u64>,
 }
 
 /// A versioned snapshot of a turn's [`TurnView`] for a given conversation. The
@@ -221,6 +225,8 @@ pub enum TurnUpdate {
     LiveActivity { entry: Option<ToolActivityEntry> },
     /// Replace the turn's Answer Sources with new opaque JSON.
     Sources { sources: serde_json::Value },
+    /// Update the turn's context-window occupancy (provider-reported tokens).
+    ContextTokens { tokens: u64 },
     /// Fail the turn with a message.
     Error { message: String },
     /// Mark the turn complete.
@@ -351,6 +357,11 @@ mod tests {
             .unwrap(),
             json!({ "op": "phase", "phase": "streaming" })
         );
+
+        assert_eq!(
+            serde_json::to_value(TurnUpdate::ContextTokens { tokens: 42 }).unwrap(),
+            json!({ "op": "contextTokens", "tokens": 42 })
+        );
     }
 
     #[test]
@@ -373,6 +384,7 @@ mod tests {
             sources: json!([]),
             error_message: None,
             seeded_result_count: None,
+            context_tokens: None,
         };
         let value = serde_json::to_value(&view).unwrap();
         let obj = value.as_object().unwrap();
@@ -385,6 +397,7 @@ mod tests {
         assert_eq!(obj["liveActivity"], json!(null));
         assert_eq!(obj["errorMessage"], json!(null));
         assert_eq!(obj["seededResultCount"], json!(null));
+        assert_eq!(obj["contextTokens"], json!(null));
         // The tool-activity entry omits its absent app/appIconPath options.
         assert_eq!(
             obj["toolActivities"],
@@ -413,6 +426,7 @@ mod tests {
                 sources: json!([{ "kind": "frame" }]),
                 error_message: Some("boom".to_string()),
                 seeded_result_count: Some(5),
+                context_tokens: Some(12345),
             },
         };
 

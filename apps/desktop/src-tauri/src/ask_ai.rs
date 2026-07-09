@@ -192,6 +192,7 @@ fn apply_update_to_view(view: &mut TurnView, update: &TurnUpdate) {
         TurnUpdate::ToolActivity { entry } => view.tool_activities.push(entry.clone()),
         TurnUpdate::LiveActivity { entry } => view.live_activity = entry.clone(),
         TurnUpdate::Sources { sources } => view.sources = sources.clone(),
+        TurnUpdate::ContextTokens { tokens } => view.context_tokens = Some(*tokens),
         TurnUpdate::Error { message } => {
             view.error_message = Some(message.clone());
             view.phase = "error".to_string();
@@ -1770,6 +1771,7 @@ async fn run_ask_ai_turn(
             sources: serde_json::json!([]),
             error_message: None,
             seeded_result_count,
+            context_tokens: None,
         },
     );
 
@@ -2140,6 +2142,22 @@ async fn run_ask_ai_turn(
                         }
                     });
                 }
+            }
+            ai_engine::AgentLoopEvent::Usage {
+                input_tokens,
+                output_tokens,
+            } => {
+                // The latest completion request's input+output is the turn's
+                // current context-window occupancy (input already includes the
+                // system prompt, history, and tool results).
+                emit_live_update(
+                    &app_handle,
+                    &conversation_id,
+                    turn_token,
+                    TurnUpdate::ContextTokens {
+                        tokens: input_tokens + output_tokens,
+                    },
+                );
             }
             // `Done` is handled after the loop returns; the loop emits it last.
             ai_engine::AgentLoopEvent::Done => {}
@@ -3344,6 +3362,7 @@ mod tests {
             sources: serde_json::json!([]),
             error_message: None,
             seeded_result_count: None,
+            context_tokens: None,
         }
     }
 

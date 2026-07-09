@@ -133,6 +133,9 @@ export interface TurnView {
   sources: unknown;
   errorMessage: string | null;
   seededResultCount: number | null;
+  /** Tokens occupying the model's context window after the turn's latest
+   *  completion request, or null when the provider reported no usage. */
+  contextTokens: number | null;
 }
 
 /** A versioned snapshot of a turn's `TurnView`. `version` lets the frontend
@@ -154,6 +157,7 @@ export type TurnUpdate =
   | { op: "toolActivity"; entry: ToolActivityEntry }
   | { op: "liveActivity"; entry: ToolActivityEntry | null }
   | { op: "sources"; sources: unknown }
+  | { op: "contextTokens"; tokens: number }
   | { op: "error"; message: string }
   | { op: "done" };
 
