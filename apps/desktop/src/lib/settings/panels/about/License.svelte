@@ -1,7 +1,7 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { licenseStatus, activateLicense } from "$lib/licensing-store.svelte";
-  import { LICENSE_CHECKOUT_URL } from "$lib/licensing";
+  import { LICENSE_CHECKOUT_URL, RENEWAL_CHECKOUT_URL } from "$lib/licensing";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
@@ -81,9 +81,9 @@
   }
 
   function openCheckout() {
-    void openUrl(LICENSE_CHECKOUT_URL).catch((e) =>
-      console.error("[License] open checkout failed", e),
-    );
+    // Lapsed owners renew ($29); everyone else buys the license ($69).
+    const url = licensedOutOfWindow ? RENEWAL_CHECKOUT_URL : LICENSE_CHECKOUT_URL;
+    void openUrl(url).catch((e) => console.error("[License] open checkout failed", e));
   }
 </script>
 
