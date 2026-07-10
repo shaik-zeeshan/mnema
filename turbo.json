@@ -32,6 +32,8 @@
         "MNEMA_TRIAL_LEN_MS",
         "MNEMA_DEV_CRL_URL",
         "MNEMA_CRL_URL",
+        "MNEMA_DEV_ACTIVATION_URL",
+        "MNEMA_ACTIVATION_URL",
         "MNEMA_LICENSE_PUBLIC_KEY"
       ]
     }

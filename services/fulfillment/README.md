@@ -57,12 +57,13 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
 ## Revocation List (CRL) wire format (must match the app verifier)
 
 A full refund (`order.refunded` with `status == "refunded"`) revokes that
-order's license. The worker keeps two KV keys in `IDEMPOTENCY`: `revoked` (a
-JSON array of revoked license ids, the source of truth — a leaked comp key is
-killed with one `wrangler kv key put revoked ...`) and `crl` (the current signed
-document, rebuilt from `revoked` whenever the set changes, and lazily on GET if
-it has drifted). Partial refunds (`partially_refunded`) and unknown products are
-no-ops.
+order's license. The worker keeps its revocation state in `IDEMPOTENCY` as one
+blind key per revoked id — `revoked:<license_id>` = `"1"` (the source of truth,
+listed by the `revoked:` prefix; there is NO single `revoked` array key — a
+leaked comp key is killed with one `wrangler kv key put 'revoked:comp:<slug>' 1`)
+— plus `crl` (the current signed document, rebuilt from the `revoked:` set
+whenever it changes, and lazily on GET if it has drifted). Partial refunds
+(`partially_refunded`) and unknown products are no-ops.
 
     wire = base64(payload_json) + "." + base64(signature)
 

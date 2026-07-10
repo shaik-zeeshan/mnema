@@ -64,11 +64,16 @@ async function readRevokedSet(env: Env): Promise<string[]> {
 }
 
 // Rebuild + re-sign the CRL from `revokedIds`, monotonic against any prev crl.
+// Revocations are append-only (nothing ever un-revokes), so the id set is UNIONED
+// with the previous CRL's ids: a stale, eventually-consistent `list` that returns
+// a SUBSET of what the durable CRL already covers must never drop a revocation and
+// re-sign it away as "newer" — that would silently un-revoke a refunded license.
 async function rebuildCrl(env: Env, revokedIds: string[], now: number): Promise<string> {
   const prevWire = await env.IDEMPOTENCY.get(CRL_KEY);
   const prevIssuedAt = prevWire ? crlIssuedAt(prevWire) : 0;
+  const merged = [...new Set([...(prevWire ? crlRevokedIds(prevWire) : []), ...revokedIds])];
   const seed = base64ToBytes(env.ED25519_PRIVATE_KEY);
-  const wire = await buildAndSignCrl(revokedIds, prevIssuedAt, now, seed);
+  const wire = await buildAndSignCrl(merged, prevIssuedAt, now, seed);
   await env.IDEMPOTENCY.put(CRL_KEY, wire);
   return wire;
 }
@@ -165,8 +170,26 @@ async function handleActivate(req: Request, env: Env, now: number = Date.now()):
     );
   }
 
-  // Grant the slot (blind write), then bump lifetime_count (racy RMW is fine — telemetry).
+  // Grant the slot (blind write), then RE-VERIFY the cap. The pre-check above is a
+  // check-then-act: two new machines can both read count < CAP and both write,
+  // overshooting the cap (KV has no compare-and-swap). Claiming first, then
+  // re-listing, lets each racer observe the other's just-written slot and withdraw
+  // its own — only the newcomer ever deletes its own slot, so an established
+  // activation is never evicted. This bounds the cap within one datacenter/isolate
+  // (the common retry case). ponytail: residual cross-POP overshoot within KV's
+  // ~60s list-staleness window remains — true serialization needs a Durable Object.
   await env.IDEMPOTENCY.put(slotKey, "1");
+  if ((await listActivationKeys(env, licenseId)).length > ACTIVATION_CAP) {
+    await env.IDEMPOTENCY.delete(slotKey);
+    return jsonResponse(
+      {
+        code: "over_cap",
+        reset_url: new URL("/reset", req.url).toString(),
+        buy_url: env.BUY_URL ?? BUY_URL_DEFAULT,
+      },
+      409,
+    );
+  }
   const meta = await readActivationMeta(env, licenseId);
   meta.lifetime_count += 1;
   await env.IDEMPOTENCY.put(ACTIVATION_META_PREFIX + licenseId, JSON.stringify(meta));

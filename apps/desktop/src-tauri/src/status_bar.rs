@@ -261,16 +261,32 @@ fn set_operation(app: &tauri::AppHandle, operation: StatusBarOperation) {
 /// and idle, surface its own status header and grey out Start Recording so the
 /// tray never offers a start the capture gate will refuse. Gating on the
 /// "Start Recording" label scopes this to the idle-and-not-recording state only.
-fn apply_read_only_status(model: &mut StatusBarMenuModel, blocked: bool, revoked: bool) {
+fn apply_read_only_status(
+    model: &mut StatusBarMenuModel,
+    blocked: bool,
+    status: Option<&capture_types::LicenseStatus>,
+) {
     if blocked && model.recording_label == Some("Start Recording") {
         model.recording_enabled = false;
-        if revoked {
-            model.status_label = Some("Read-Only — license revoked");
-            model.tooltip = "Mnema — Read-Only (license revoked)";
-        } else {
-            model.status_label = Some("Read-Only — trial ended");
-            model.tooltip = "Mnema — Read-Only (trial ended)";
-        }
+        let (label, tooltip) = match status {
+            Some(capture_types::LicenseStatus::Revoked) => (
+                "Read-Only — license revoked",
+                "Mnema — Read-Only (license revoked)",
+            ),
+            // A paid key whose once-per-machine activation Lapsed is NOT a trial —
+            // mirror `capture_refusal_copy`'s distinct "finish activation" copy so
+            // the tray never tells a paying customer their trial ended.
+            Some(capture_types::LicenseStatus::Licensed {
+                activation: capture_types::Activation::Lapsed,
+                ..
+            }) => (
+                "Read-Only — activation needed",
+                "Mnema — Read-Only (activation needed)",
+            ),
+            _ => ("Read-Only — trial ended", "Mnema — Read-Only (trial ended)"),
+        };
+        model.status_label = Some(label);
+        model.tooltip = tooltip;
     }
 }
 
@@ -294,8 +310,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let blocked = status
         .as_ref()
         .is_some_and(|status| !status.capture_allowed_at(crate::licensing::now_ms()));
-    let revoked = matches!(status, Some(capture_types::LicenseStatus::Revoked));
-    apply_read_only_status(&mut model, blocked, revoked);
+    apply_read_only_status(&mut model, blocked, status.as_ref());
     model
 }
 
@@ -797,7 +812,7 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, false);
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
         assert_eq!(model.status_label, Some("Read-Only — trial ended"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (trial ended)");
         assert!(!model.recording_enabled);
@@ -816,9 +831,40 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, true);
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::Revoked));
         assert_eq!(model.status_label, Some("Read-Only — license revoked"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (license revoked)");
+        assert!(!model.recording_enabled);
+    }
+
+    #[test]
+    fn unactivated_license_surfaces_activation_needed_not_trial_ended() {
+        // A paid `Licensed` key whose once-per-machine activation Lapsed blocks
+        // capture but is NOT a trial. `capture_refusal_copy` distinguishes it
+        // ("finish activation" vs "trial ended"); the tray must too — a paying
+        // customer must never be told their trial ended.
+        let mut model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        let status = capture_types::LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: true,
+            email: String::new(),
+            name: String::new(),
+            activation: capture_types::Activation::Lapsed,
+        };
+        apply_read_only_status(&mut model, true, Some(&status));
+        assert_ne!(
+            model.status_label,
+            Some("Read-Only — trial ended"),
+            "a paid but unactivated license must not read as a lapsed trial"
+        );
         assert!(!model.recording_enabled);
     }
 
@@ -835,7 +881,7 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        apply_read_only_status(&mut model, true, false);
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
         assert_eq!(model.recording_label, Some("Stop Recording"));
         assert!(model.recording_enabled);
         assert_eq!(model.status_label, None);

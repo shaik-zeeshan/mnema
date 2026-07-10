@@ -113,16 +113,20 @@ CRL. **Even with the split: never hand a dev/sandbox-minted key to a real buyer.
 
 Holds three kinds of keys:
 - per-order idempotency markers (keyed by Polar order id),
-- `revoked` — JSON array of revoked license ids (source of truth),
-- `crl` — the current signed CRL wire string (rebuilt when `revoked` changes).
+- `revoked:<license_id>` — one blind key per revoked license id, value `"1"`
+  (the source of truth; the worker lists the `revoked:` prefix — there is NO
+  single `revoked` array key),
+- `crl` — the current signed CRL wire string (rebuilt when the `revoked:` set
+  changes).
 
-**Manually revoke a comp key (or any leaked key)** — edit the `revoked` set; the
-worker re-signs `crl` lazily on the next `GET`:
+**Manually revoke a comp key (or any leaked key)** — write ONE per-id key (the
+worker lists the `revoked:` prefix; a bare `revoked` array key is never read).
+The `crl` is re-signed lazily on the next `GET /revocations.json`:
 
 ```sh
-# read current set, add your id, write it back (append --env production for prod)
-wrangler kv key get   --binding IDEMPOTENCY revoked
-wrangler kv key put   --binding IDEMPOTENCY revoked '["comp:press-jane","order:<uuid>"]'
+# one key per id, value "1" (append --env production for prod)
+wrangler kv key put   --binding IDEMPOTENCY 'revoked:comp:press-jane' 1
+wrangler kv key put   --binding IDEMPOTENCY 'revoked:order:<uuid>'    1
 ```
 
 ---

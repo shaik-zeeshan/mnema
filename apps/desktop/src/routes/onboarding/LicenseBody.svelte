@@ -22,7 +22,11 @@
       case "revoked":
         return "This license has been revoked — you're in Read-Only Mode. Everything you recorded stays browsable; buy once to record again.";
       case "licensed":
-        return "You own Mnema — thank you. Recording never pauses.";
+        // A lapsed activation blocks recording (same state License.svelte and
+        // LicenseBanner distinguish) — don't promise "never pauses" there.
+        return s.activation.state === "lapsed"
+          ? "You own Mnema, but activation hasn't finished — connect to the internet once to resume recording."
+          : "You own Mnema — thank you. Recording never pauses.";
     }
   });
 </script>
