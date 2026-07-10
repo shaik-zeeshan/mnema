@@ -48,8 +48,13 @@ no expiry, no runtime calls after.**
   so receipts, licenses, and CRLs can never be replayed as one another. Verified against the
   same hardcoded public key. A receipt never outranks the CRL.
 - **Mandatory, with a Provisional Window**: a signature-valid key grants Capture immediately
-  while activation retries in the background; after **7 days of actual server unreachability**
-  (not calendar time) the app drops to Read-Only Mode until an activation succeeds. The window
+  while activation retries in the background; after **7 days from the first activation attempt
+  that could not reach the server** (pasting while online consumes nothing; a paste that
+  activates immediately never opens the window) the app drops to Read-Only Mode until an
+  activation succeeds. *(Amended 2026-07-10: originally "7 days of actual server
+  unreachability" — the implementation deliberately does not distinguish server-down from
+  user-offline once the window opens; metering true unreachability would need attempt-outcome
+  tracking for a residual that self-heals on the next reconnect.)* The window
   is consumed **per license id**, recorded in the OS keychain with the trial's
   max-timestamp-ever-seen rollback guard — re-pasting the same key grants no new window; a
   different purchased key gets its own. "Staleness never locks" is hereby scoped: it protects
