@@ -128,34 +128,34 @@ mod tests {
             .block_on(future)
     }
 
-    // Mirrors migration 0047 so the test exercises the same schema without
-    // running the full migration chain.
+    // The REAL migration chain (like db.rs), so migration 0047's seeded row and
+    // `CHECK (id = 1)` are what these tests exercise — a hand-rolled schema
+    // mirror would go green while the shipped migration drifted.
+    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
     async fn seeded_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .expect("in-memory db");
-        sqlx::query(
-            "CREATE TABLE licensing_state (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                trial_started_at_ms INTEGER,
-                max_timestamp_ever_seen_ms INTEGER NOT NULL DEFAULT 0,
-                license_id TEXT,
-                tier TEXT,
-                issued_at_ms INTEGER,
-                update_through_ms INTEGER,
-                email TEXT
-            )",
-        )
-        .execute(&pool)
-        .await
-        .expect("create table");
-        sqlx::query("INSERT OR IGNORE INTO licensing_state (id) VALUES (1)")
-            .execute(&pool)
-            .await
-            .expect("seed row");
+        MIGRATOR.run(&pool).await.expect("migrations should apply");
         pool
+    }
+
+    #[test]
+    fn migration_seeds_the_single_row_and_enforces_id_one() {
+        block_on(async {
+            let pool = seeded_pool().await;
+            // The row exists without any test-side insert (0047 seeds it)…
+            let state = read_licensing_state(&pool).await.unwrap();
+            assert_eq!(state.max_timestamp_ever_seen_ms, 0);
+            // …and the CHECK(id = 1) rejects any second row.
+            let err = sqlx::query("INSERT INTO licensing_state (id) VALUES (2)")
+                .execute(&pool)
+                .await;
+            assert!(err.is_err(), "CHECK(id = 1) must reject a second row");
+        });
     }
 
     #[test]

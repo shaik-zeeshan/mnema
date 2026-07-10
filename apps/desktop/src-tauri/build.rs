@@ -18,6 +18,8 @@ fn main() {
     // seller-owned domain). Rebuild the crate when it changes so a re-release
     // with a new URL actually re-bakes it into the binary.
     println!("cargo:rerun-if-env-changed=MNEMA_CRL_URL");
+    // Same for the activation endpoint (ADR 0053, `option_env!` in `licensing.rs`).
+    println!("cargo:rerun-if-env-changed=MNEMA_ACTIVATION_URL");
 
     // The speakrs on-device diarization engine pulls in OpenBLAS, built from
     // source and linked statically via speakrs' `openblas-static` feature.

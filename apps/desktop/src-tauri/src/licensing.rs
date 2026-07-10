@@ -4,6 +4,7 @@
 //! point. The verification core, keychain store, and SQLite projection all live
 //! in `app_infra` (slices 1–3); this module is only the desktop-side wiring.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -56,9 +57,36 @@ pub(crate) fn recompute_status_async(app_handle: &tauri::AppHandle, now_ms: i64)
     });
 }
 
+/// Concurrent recomputes are last-writer-wins on [`publish`], but "last to
+/// finish" is not "freshest": a recompute holding a pre-CRL-refresh snapshot can
+/// finish after the refresh's recompute and republish `Licensed` over `Revoked`.
+/// Each compute claims a generation at START (before it reads any state); a
+/// publish is dropped when a later-started compute has already published —
+/// later-started means it read state at least as fresh.
+static COMPUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static LAST_PUBLISHED_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn begin_compute() -> u64 {
+    COMPUTE_GENERATION.fetch_add(1, Ordering::SeqCst)
+}
+
+/// Atomically claim the right to publish for a compute that started at
+/// `generation`. False when a later-started compute already published.
+fn try_claim_publish(last_published: &AtomicU64, generation: u64) -> bool {
+    last_published
+        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            (generation >= last).then_some(generation)
+        })
+        .is_ok()
+}
+
 /// Set the in-memory cache and emit the change event. Called at the end of every
-/// recompute so cache and listeners never drift.
-fn publish(app_handle: &tauri::AppHandle, status: &LicenseStatus) {
+/// recompute so cache and listeners never drift. Stale computes (an older
+/// `generation` racing a newer publish) are dropped.
+fn publish(app_handle: &tauri::AppHandle, status: &LicenseStatus, generation: u64) {
+    if !try_claim_publish(&LAST_PUBLISHED_GENERATION, generation) {
+        return;
+    }
     if let Some(gate) = app_handle.try_state::<LicenseGate>() {
         if let Ok(mut slot) = gate.0.lock() {
             *slot = Some(status.clone());
@@ -90,6 +118,9 @@ pub async fn compute_license_status(
     app_handle: &tauri::AppHandle,
     now_ms: i64,
 ) -> LicenseStatus {
+    // Claimed before any state is read — the publish-ordering anchor.
+    let generation = begin_compute();
+
     // Dev builds are never gated. Overridable with MNEMA_LICENSE_ENFORCE=1 to
     // exercise the real trial/read-only flow locally.
     // ponytail: compile-time bypass; release builds fall through to the real gate.
@@ -101,7 +132,7 @@ pub async fn compute_license_status(
             name: "Dev".into(),
             activation: Activation::Activated,
         };
-        publish(app_handle, &status);
+        publish(app_handle, &status, generation);
         return status;
     }
 
@@ -113,7 +144,7 @@ pub async fn compute_license_status(
     } else {
         compute_trial(pool, now_ms).await
     };
-    publish(app_handle, &status);
+    publish(app_handle, &status, generation);
     status
 }
 
@@ -225,10 +256,19 @@ fn activation_from(
 /// The stored provisional-window start for `license_id`, if any. A state for a
 /// different license id reads as absent (a new license gets a fresh window).
 fn provisional_start_for(license_id: &str) -> Option<i64> {
-    app_infra::load_activation_state()
-        .ok()
-        .flatten()
-        .and_then(|json| serde_json::from_str::<app_infra::ActivationState>(&json).ok())
+    provisional_start_in(
+        app_infra::load_activation_state().ok().flatten().as_deref(),
+        license_id,
+    )
+}
+
+/// Pure resolution of a stored activation-state JSON against a license id:
+/// same id → its start; a different id, garbage, or no state → `None` (which
+/// makes `ensure_provisional_started` replace it — a new license opens a fresh
+/// window; a re-paste of the same license never resets the clock).
+fn provisional_start_in(state_json: Option<&str>, license_id: &str) -> Option<i64> {
+    state_json
+        .and_then(|json| serde_json::from_str::<app_infra::ActivationState>(json).ok())
         .filter(|state| state.license_id == license_id)
         .map(|state| state.provisional_started_at_ms)
 }
@@ -250,32 +290,57 @@ fn is_key_revoked(license_id: &str, crl: Option<&app_infra::Crl>) -> bool {
     crl.is_some_and(|crl| app_infra::is_revoked(license_id, crl))
 }
 
+/// Pure resolution of the effective trial start from its two stores. The DB row
+/// wins; with no row, a keychain record (survives uninstall) is the reinstall
+/// fallback and must be restored into the DB; neither → not started.
+#[derive(Debug, PartialEq, Eq)]
+enum TrialStart {
+    Started { start_ms: i64, restore_to_db: bool },
+    NotStarted,
+}
+
+fn resolve_trial_start(db_start_ms: Option<i64>, keychain_record: Option<&str>) -> TrialStart {
+    match db_start_ms {
+        Some(start_ms) => TrialStart::Started {
+            start_ms,
+            restore_to_db: false,
+        },
+        None => match keychain_record.and_then(|record| record.trim().parse::<i64>().ok()) {
+            Some(start_ms) => TrialStart::Started {
+                start_ms,
+                restore_to_db: true,
+            },
+            None => TrialStart::NotStarted,
+        },
+    }
+}
+
 /// Trial branch: resolve the effective trial start (DB, else keychain fallback
 /// restored into the DB on reinstall), then read days left / read-only.
 async fn compute_trial(pool: &SqlitePool, now_ms: i64) -> LicenseStatus {
     // Lenient default on a read error: never wrongly lock the user out.
     let state = app_infra::read_licensing_state(pool).await.ok();
 
-    let start = match state.as_ref().and_then(|s| s.trial_started_at_ms) {
-        Some(start) => Some(start),
-        None => match app_infra::load_trial_record()
-            .ok()
-            .flatten()
-            .and_then(|r| r.trim().parse::<i64>().ok())
-        {
+    let keychain_record = app_infra::load_trial_record().ok().flatten();
+    let start = match resolve_trial_start(
+        state.as_ref().and_then(|s| s.trial_started_at_ms),
+        keychain_record.as_deref(),
+    ) {
+        TrialStart::Started {
+            start_ms,
+            restore_to_db,
+        } => {
             // Reinstall: keychain kept the start but the fresh DB lost it — restore.
-            Some(kc_start) => {
-                let _ = app_infra::set_trial_started_once(pool, kc_start).await;
-                Some(kc_start)
+            if restore_to_db {
+                let _ = app_infra::set_trial_started_once(pool, start_ms).await;
             }
-            None => None,
-        },
-    };
-
-    let Some(start) = start else {
-        return LicenseStatus::TrialNotStarted {
-            trial_days: app_infra::TRIAL_LEN_DAYS,
-        };
+            start_ms
+        }
+        TrialStart::NotStarted => {
+            return LicenseStatus::TrialNotStarted {
+                trial_days: app_infra::TRIAL_LEN_DAYS,
+            };
+        }
     };
 
     // `bump_max_timestamp_seen` already ran, so a missing read defaults to now.
@@ -366,6 +431,32 @@ pub async fn ensure_trial_started(
     compute_license_status(pool, app_handle, now_ms).await
 }
 
+/// A blocking licensing decision for the capture seams: code + copy for the
+/// start refusal, and the revoked flag the rotation-stop notification keys on.
+/// Deliberately NOT a `CaptureSuspension`: a license block never self-heals and
+/// is never transient liveness (ADR 0021/0040) — it clears only when the user
+/// buys/activates, so it must not touch `capture_suspension`.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct LicenseBlock {
+    pub(crate) code: &'static str,
+    pub(crate) message: &'static str,
+    pub(crate) revoked: bool,
+}
+
+/// The single gate decision both capture seams (start refusal, rotation stop)
+/// share: `Some(block)` when `status` refuses capture at `now_ms`, `None` when
+/// capture may proceed — including `status == None` (the deferred gate hasn't
+/// run yet): treat unknown as allow, NEVER lock on unknown.
+pub(crate) fn license_block(status: Option<&LicenseStatus>, now_ms: i64) -> Option<LicenseBlock> {
+    let status = status.filter(|s| !s.capture_allowed_at(now_ms))?;
+    let (code, message) = capture_refusal_copy(status);
+    Some(LicenseBlock {
+        code,
+        message,
+        revoked: matches!(status, LicenseStatus::Revoked),
+    })
+}
+
 /// Honest copy for refusing capture, per blocking state. A `Revoked` (refunded/
 /// leaked) key reads as "revoked" — never conflated with a lapsed trial, which
 /// the offline model deliberately keeps distinct (see `LicenseStatus::Revoked`).
@@ -431,6 +522,23 @@ pub async fn start_trial(
     Ok(ensure_trial_started(infra.pool(), &app_handle, now_ms()).await)
 }
 
+/// The store-or-reject decision for a pasted/deep-linked key, pure over an
+/// injected verifier (the real one is `app_infra::parse_and_verify_license`,
+/// which is baked to this build's public key and can't mint in tests). A
+/// returned `Err` means the key must NEVER be stored: garbage never sticks and
+/// an authentic-but-revoked key gets an honest, distinct message.
+fn vet_license_key(
+    key: &str,
+    crl: Option<&app_infra::Crl>,
+    verify: impl Fn(&str) -> Result<app_infra::LicensePayload, app_infra::LicenseVerifyError>,
+) -> Result<app_infra::LicensePayload, String> {
+    let payload = verify(key).map_err(|_| "This license key is invalid or corrupted.".to_string())?;
+    if is_key_revoked(&payload.license_id, crl) {
+        return Err("This license has been revoked.".to_string());
+    }
+    Ok(payload)
+}
+
 /// Verify + store a pasted license key, then recompute. An invalid key is never
 /// stored and returns a human-readable error.
 #[tauri::command]
@@ -439,17 +547,10 @@ pub async fn activate_license(
     state: tauri::State<'_, AppInfraState>,
     app_handle: tauri::AppHandle,
 ) -> Result<ActivateLicenseResult, String> {
-    // Verify BEFORE storing so a garbage paste never sticks.
-    let payload = app_infra::parse_and_verify_license(&key)
-        .map_err(|_| "This license key is invalid or corrupted.".to_string())?;
-
-    // Authentic-but-revoked: reject with an honest, distinct message and never
-    // store — a revoked key must not activate.
+    // Verify (and revocation-vet) BEFORE storing so a bad paste never sticks.
     let infra = std::sync::Arc::clone(&*state);
     let crl = load_effective_crl(infra.pool()).await;
-    if is_key_revoked(&payload.license_id, crl.as_ref()) {
-        return Err("This license has been revoked.".to_string());
-    }
+    vet_license_key(&key, crl.as_ref(), app_infra::parse_and_verify_license)?;
 
     app_infra::store_license_key(&key)
         .map_err(|error| format!("Could not save the license key: {error}"))?;
@@ -467,21 +568,15 @@ pub async fn activate_license(
 /// UI through the emitted `license_status` event (the store re-renders); failures
 /// are logged, not shown — a bad link just leaves the current status untouched.
 pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) {
-    let payload = match app_infra::parse_and_verify_license(&key) {
-        Ok(payload) => payload,
-        Err(_) => {
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key failed verification");
-            return;
-        }
-    };
     let Some(state) = app_handle.try_state::<AppInfraState>() else {
         return;
     };
     let infra = std::sync::Arc::clone(&*state);
-    // Revoked keys are never stored — leave the current status untouched.
+    // Same vetting as the Settings paste: invalid or revoked keys are never
+    // stored — leave the current status untouched.
     let crl = load_effective_crl(infra.pool()).await;
-    if is_key_revoked(&payload.license_id, crl.as_ref()) {
-        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key has been revoked");
+    if let Err(error) = vet_license_key(&key, crl.as_ref(), app_infra::parse_and_verify_license) {
+        tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key rejected: {error}");
         return;
     }
     if let Err(error) = app_infra::store_license_key(&key) {
@@ -567,6 +662,73 @@ pub(crate) fn maybe_spawn_activation(app_handle: &tauri::AppHandle) {
     });
 }
 
+/// What to do with the activation server's response — the whole HTTP state
+/// machine, pure and IO-free (`run_activation` is the shell that executes it).
+#[derive(Debug, PartialEq, Eq)]
+enum ActivationOutcome {
+    /// 200 with a receipt that verifies for this license+machine: store it,
+    /// clear any over-cap hint, recompute (badge flips to Activated).
+    StoreReceipt(String),
+    /// 403 revoked. Don't grant/deny here — the CRL is the gate; just recompute
+    /// so status reflects whatever the CRL already knows.
+    Recompute,
+    /// 409 over_cap with well-formed links: surface them, recompute
+    /// (→ `RefusedOverCap` while still inside the Provisional Window).
+    SetOverCap { reset_url: String, buy_url: String },
+    /// Anything else (missing/unverifiable receipt, malformed 409, 5xx):
+    /// change nothing — the Provisional Window keeps running and the daily
+    /// tick retries. `reason` feeds the log line.
+    Retry { reason: String },
+}
+
+/// Classify an activation response. `verify` is the receipt check for this
+/// license+machine (injected so the accept path is testable without crypto/IO).
+fn activation_outcome(
+    status: u16,
+    body: &str,
+    verify: impl Fn(&str) -> bool,
+) -> ActivationOutcome {
+    match status {
+        200 => {
+            #[derive(serde::Deserialize)]
+            struct ActivateBody {
+                receipt: String,
+            }
+            let Ok(parsed) = serde_json::from_str::<ActivateBody>(body) else {
+                return ActivationOutcome::Retry {
+                    reason: "200 body missing/!receipt".to_string(),
+                };
+            };
+            if !verify(&parsed.receipt) {
+                return ActivationOutcome::Retry {
+                    reason: "server receipt did not verify".to_string(),
+                };
+            }
+            ActivationOutcome::StoreReceipt(parsed.receipt)
+        }
+        403 => ActivationOutcome::Recompute,
+        409 => {
+            #[derive(serde::Deserialize)]
+            struct OverCapBody {
+                reset_url: String,
+                buy_url: String,
+            }
+            match serde_json::from_str::<OverCapBody>(body) {
+                Ok(over_cap) => ActivationOutcome::SetOverCap {
+                    reset_url: over_cap.reset_url,
+                    buy_url: over_cap.buy_url,
+                },
+                Err(error) => ActivationOutcome::Retry {
+                    reason: format!("409 over_cap body malformed: {error}"),
+                },
+            }
+        }
+        other => ActivationOutcome::Retry {
+            reason: format!("unexpected HTTP {other}"),
+        },
+    }
+}
+
 async fn run_activation(app_handle: tauri::AppHandle) {
     let Some(state) = app_handle.try_state::<AppInfraState>() else {
         return;
@@ -631,25 +793,19 @@ async fn run_activation(app_handle: tauri::AppHandle) {
         }
     };
 
-    match response.status().as_u16() {
-        200 => {
-            #[derive(serde::Deserialize)]
-            struct ActivateBody {
-                receipt: String,
-            }
-            let receipt_wire = match response.json::<ActivateBody>().await {
-                Ok(parsed) => parsed.receipt,
-                Err(error) => {
-                    tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: 200 body missing/!receipt: {error}");
-                    return;
-                }
-            };
-            if let Err(error) =
-                app_infra::parse_and_verify_receipt(&receipt_wire, &license_id, &machine_hash)
-            {
-                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: server receipt did not verify: {error}");
-                return;
-            }
+    let status = response.status().as_u16();
+    let body = match response.text().await {
+        Ok(body) => body,
+        Err(error) => {
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: could not read response body: {error}");
+            return;
+        }
+    };
+
+    match activation_outcome(status, &body, |wire| {
+        app_infra::parse_and_verify_receipt(wire, &license_id, &machine_hash).is_ok()
+    }) {
+        ActivationOutcome::StoreReceipt(receipt_wire) => {
             if let Err(error) = app_infra::store_activation_receipt(&receipt_wire) {
                 tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: could not store receipt: {error}");
                 return;
@@ -658,32 +814,17 @@ async fn run_activation(app_handle: tauri::AppHandle) {
             // Recompute → badge flips to Activated.
             compute_license_status(pool, &app_handle, now_ms()).await;
         }
-        403 => {
-            // Server says revoked. Don't grant/deny here — the CRL is the gate;
-            // just recompute so status reflects whatever the CRL already knows.
+        ActivationOutcome::Recompute => {
             tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation refused: license {license_id} reported revoked (server 403); CRL enforces revocation");
             compute_license_status(pool, &app_handle, now_ms()).await;
         }
-        409 => {
-            #[derive(serde::Deserialize)]
-            struct OverCapBody {
-                reset_url: String,
-                buy_url: String,
-            }
-            match response.json::<OverCapBody>().await {
-                Ok(over_cap) => {
-                    set_over_cap_hint(&app_handle, over_cap.reset_url, over_cap.buy_url);
-                    // Recompute → RefusedOverCap while still inside the window.
-                    compute_license_status(pool, &app_handle, now_ms()).await;
-                }
-                Err(error) => {
-                    tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: 409 over_cap body malformed: {error}");
-                }
-            }
+        ActivationOutcome::SetOverCap { reset_url, buy_url } => {
+            set_over_cap_hint(&app_handle, reset_url, buy_url);
+            compute_license_status(pool, &app_handle, now_ms()).await;
         }
-        other => {
-            // 5xx / unexpected: leave the window running, retry next tick.
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: unexpected HTTP {other} from {}", activation_url());
+        ActivationOutcome::Retry { reason } => {
+            // Leave the Provisional Window running; the daily tick retries.
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: {reason} (from {})", activation_url());
         }
     }
 }
@@ -698,6 +839,20 @@ mod tests {
             issued_at: 1_700_000_000_000,
             revoked_license_ids: vec![id.to_string()],
         }
+    }
+
+    #[test]
+    fn stale_compute_never_publishes_over_a_newer_one() {
+        let last = AtomicU64::new(0);
+        // In-order publishes all land.
+        assert!(try_claim_publish(&last, 1));
+        assert!(try_claim_publish(&last, 2));
+        // A compute that started BEFORE the last published one is dropped —
+        // this is the CRL-refresh race: stale `Licensed` can't overwrite `Revoked`.
+        assert!(!try_claim_publish(&last, 1));
+        // The newest generation republishing (same compute re-checked) still lands.
+        assert!(try_claim_publish(&last, 2));
+        assert!(try_claim_publish(&last, 3));
     }
 
     #[test]
@@ -743,6 +898,247 @@ mod tests {
             activation_from(false, 0, past_window, past_window, None),
             Activation::Lapsed,
         );
+    }
+
+    // ── activation_outcome: the run_activation HTTP state machine ──────────
+
+    fn verify_ok(_: &str) -> bool {
+        true
+    }
+    fn verify_fail(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn outcome_200_with_verifiable_receipt_stores_it() {
+        assert_eq!(
+            activation_outcome(200, r#"{"receipt":"payload.sig"}"#, verify_ok),
+            ActivationOutcome::StoreReceipt("payload.sig".to_string()),
+        );
+    }
+
+    #[test]
+    fn outcome_200_with_missing_or_unverifiable_receipt_retries_without_storing() {
+        // Missing/malformed body → retry (window untouched, nothing stored).
+        for body in ["", "{}", "not json", r#"{"receipt":7}"#] {
+            assert!(
+                matches!(
+                    activation_outcome(200, body, verify_ok),
+                    ActivationOutcome::Retry { .. }
+                ),
+                "body {body:?} must retry"
+            );
+        }
+        // Well-formed body whose receipt fails verification → retry too.
+        assert!(matches!(
+            activation_outcome(200, r#"{"receipt":"forged.sig"}"#, verify_fail),
+            ActivationOutcome::Retry { .. }
+        ));
+    }
+
+    #[test]
+    fn outcome_403_recomputes_only() {
+        // The CRL is the gate — a server 403 never stores or denies by itself.
+        assert_eq!(
+            activation_outcome(403, r#"{"code":"revoked"}"#, verify_ok),
+            ActivationOutcome::Recompute,
+        );
+    }
+
+    #[test]
+    fn outcome_409_well_formed_surfaces_over_cap_links() {
+        assert_eq!(
+            activation_outcome(
+                409,
+                r#"{"code":"over_cap","reset_url":"https://reset","buy_url":"https://buy"}"#,
+                verify_ok,
+            ),
+            ActivationOutcome::SetOverCap {
+                reset_url: "https://reset".to_string(),
+                buy_url: "https://buy".to_string(),
+            },
+        );
+    }
+
+    #[test]
+    fn outcome_409_malformed_is_a_no_op_retry() {
+        for body in ["", "{}", r#"{"reset_url":"https://reset"}"#] {
+            assert!(
+                matches!(
+                    activation_outcome(409, body, verify_ok),
+                    ActivationOutcome::Retry { .. }
+                ),
+                "409 body {body:?} must retry"
+            );
+        }
+    }
+
+    #[test]
+    fn outcome_5xx_and_unexpected_retry_leaving_the_window_untouched() {
+        for status in [500u16, 502, 503, 404, 418] {
+            assert!(
+                matches!(
+                    activation_outcome(status, "oops", verify_ok),
+                    ActivationOutcome::Retry { .. }
+                ),
+                "HTTP {status} must retry"
+            );
+        }
+    }
+
+    // ── license_block: the shared capture-gate decision ────────────────────
+
+    fn licensed_with(activation: Activation) -> LicenseStatus {
+        LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: true,
+            email: String::new(),
+            name: String::new(),
+            activation,
+        }
+    }
+
+    #[test]
+    fn license_block_blocks_with_the_right_code_and_revoked_flag() {
+        let block = license_block(Some(&LicenseStatus::ReadOnly), 0).expect("blocked");
+        assert_eq!(block.code, "capture_refused_read_only");
+        assert!(!block.revoked);
+
+        let block = license_block(Some(&LicenseStatus::Revoked), 0).expect("blocked");
+        assert_eq!(block.code, "capture_refused_revoked");
+        assert!(block.revoked);
+
+        let block =
+            license_block(Some(&licensed_with(Activation::Lapsed)), 0).expect("blocked");
+        assert_eq!(block.code, "capture_refused_unactivated");
+        assert!(!block.revoked);
+
+        // A cached Trial whose window has since lapsed blocks at `now` — the
+        // first start after expiry must not slip through on the stale cache.
+        let stale_trial = LicenseStatus::Trial {
+            days_left: 1,
+            trial_end_ms: 1_000,
+        };
+        let block = license_block(Some(&stale_trial), 1_000).expect("blocked");
+        assert_eq!(block.code, "capture_refused_read_only");
+    }
+
+    #[test]
+    fn license_block_allows_running_states_and_never_locks_on_unknown() {
+        // Unknown (deferred gate hasn't run) → allow.
+        assert_eq!(license_block(None, i64::MAX), None);
+        for status in [
+            LicenseStatus::TrialNotStarted { trial_days: 30 },
+            LicenseStatus::Trial {
+                days_left: 5,
+                trial_end_ms: i64::MAX,
+            },
+            licensed_with(Activation::Activated),
+            licensed_with(Activation::Pending {
+                provisional_days_left: 3,
+            }),
+            licensed_with(Activation::RefusedOverCap {
+                reset_url: "https://reset".into(),
+                buy_url: "https://buy".into(),
+            }),
+        ] {
+            assert_eq!(license_block(Some(&status), 0), None, "{status:?}");
+        }
+    }
+
+    // ── vet_license_key: the store-or-reject decision ──────────────────────
+
+    fn payload_with_id(license_id: &str) -> app_infra::LicensePayload {
+        app_infra::LicensePayload {
+            email: "owner@example.com".to_string(),
+            license_id: license_id.to_string(),
+            tier: "license".to_string(),
+            issued_at: 1,
+            update_through: 2,
+            name: None,
+        }
+    }
+
+    #[test]
+    fn vet_rejects_garbage_before_any_store() {
+        let err = vet_license_key("garbage", None, |_| {
+            Err(app_infra::LicenseVerifyError::Malformed)
+        })
+        .expect_err("garbage must be rejected");
+        assert!(err.contains("invalid or corrupted"));
+    }
+
+    #[test]
+    fn vet_rejects_authentic_but_revoked_with_a_distinct_message() {
+        let crl = crl_naming("order:refunded");
+        let err = vet_license_key("payload.sig", Some(&crl), |_| {
+            Ok(payload_with_id("order:refunded"))
+        })
+        .expect_err("revoked must be rejected");
+        assert!(err.contains("revoked"));
+        assert!(!err.contains("invalid"));
+    }
+
+    #[test]
+    fn vet_accepts_a_valid_unrevoked_key() {
+        let crl = crl_naming("order:someone-else");
+        let payload = vet_license_key("payload.sig", Some(&crl), |_| {
+            Ok(payload_with_id("order:mine"))
+        })
+        .expect("valid key must pass");
+        assert_eq!(payload.license_id, "order:mine");
+    }
+
+    // ── trial/provisional start resolution ─────────────────────────────────
+
+    #[test]
+    fn trial_start_db_wins_without_restoring() {
+        assert_eq!(
+            resolve_trial_start(Some(42), Some("99")),
+            TrialStart::Started {
+                start_ms: 42,
+                restore_to_db: false,
+            },
+        );
+    }
+
+    #[test]
+    fn trial_start_keychain_restores_on_reinstall() {
+        // Fresh DB after reinstall: the keychain record wins AND must be
+        // written back to the DB.
+        assert_eq!(
+            resolve_trial_start(None, Some(" 1234 ")),
+            TrialStart::Started {
+                start_ms: 1234,
+                restore_to_db: true,
+            },
+        );
+    }
+
+    #[test]
+    fn trial_start_absent_everywhere_is_not_started() {
+        assert_eq!(resolve_trial_start(None, None), TrialStart::NotStarted);
+        // An unparseable keychain record reads as absent, never a lockout.
+        assert_eq!(
+            resolve_trial_start(None, Some("not-a-number")),
+            TrialStart::NotStarted
+        );
+    }
+
+    #[test]
+    fn provisional_start_same_id_reads_different_id_replaces() {
+        let json = serde_json::to_string(&app_infra::ActivationState {
+            license_id: "order:current".to_string(),
+            provisional_started_at_ms: 777,
+        })
+        .unwrap();
+        // Same id → the stored start (a re-paste never resets the clock).
+        assert_eq!(provisional_start_in(Some(&json), "order:current"), Some(777));
+        // Different id → absent, so a new license opens a fresh window.
+        assert_eq!(provisional_start_in(Some(&json), "order:other"), None);
+        // No state / garbage → absent.
+        assert_eq!(provisional_start_in(None, "order:current"), None);
+        assert_eq!(provisional_start_in(Some("{corrupt"), "order:current"), None);
     }
 
     #[test]

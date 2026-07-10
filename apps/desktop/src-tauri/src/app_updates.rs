@@ -405,20 +405,55 @@ fn build_out_of_window(
 /// Fresh-install-after-lapse edge: if the running build itself is past the
 /// owner's Update Window, surface `AvailableOutOfWindow` in place of a resting
 /// `Idle`/`UpToDate` state so the UI can direct the owner. Remote-update gating
-/// is decided in `run_update_check`, so those states pass through untouched.
-fn apply_running_build_window_gate(
-    app_handle: &tauri::AppHandle,
+/// is decided in `run_update_check` (see [`decide_remote_update`]), so those
+/// states pass through untouched. Pure over (status, build date) — the
+/// app-handle wrapper below feeds it the cached gate status.
+fn running_build_window_gate(
     state: AppUpdateState,
+    status: Option<&capture_types::LicenseStatus>,
+    build_date_ms: Option<i64>,
 ) -> AppUpdateState {
     if matches!(state, AppUpdateState::Idle | AppUpdateState::UpToDate)
-        && build_out_of_window(
-            crate::licensing::cached_status(app_handle).as_ref(),
-            running_build_date_ms(),
-        )
+        && build_out_of_window(status, build_date_ms)
     {
         AppUpdateState::AvailableOutOfWindow
     } else {
         state
+    }
+}
+
+fn apply_running_build_window_gate(
+    app_handle: &tauri::AppHandle,
+    state: AppUpdateState,
+) -> AppUpdateState {
+    running_build_window_gate(
+        state,
+        crate::licensing::cached_status(app_handle).as_ref(),
+        running_build_date_ms(),
+    )
+}
+
+/// What `run_update_check` does with a found remote update: the stored state,
+/// whether the update stays installable (`pending_update` kept), and whether
+/// the "ready to install" notification fires. Out-of-window builds are surfaced
+/// (version shown) but never installable and never nudge — the Settings surface
+/// directs the owner to renew instead.
+#[derive(Debug, PartialEq, Eq)]
+struct RemoteUpdateDecision {
+    state: AppUpdateState,
+    installable: bool,
+    notify: bool,
+}
+
+fn decide_remote_update(out_of_window: bool, notify_available: bool) -> RemoteUpdateDecision {
+    RemoteUpdateDecision {
+        state: if out_of_window {
+            AppUpdateState::AvailableOutOfWindow
+        } else {
+            AppUpdateState::Available
+        },
+        installable: !out_of_window,
+        notify: notify_available && !out_of_window,
     }
 }
 
@@ -605,17 +640,14 @@ async fn run_update_check(
                 crate::licensing::cached_status(app_handle).as_ref(),
                 update_release_date_ms(&update),
             );
+            let decision = decide_remote_update(out_of_window, notify_available);
             {
                 let runtime_state = app_handle.state::<AppUpdateRuntimeState>();
                 let mut runtime = runtime_state
                     .lock()
                     .expect("app update runtime state poisoned");
-                runtime.state = if out_of_window {
-                    AppUpdateState::AvailableOutOfWindow
-                } else {
-                    AppUpdateState::Available
-                };
-                runtime.pending_update = if out_of_window { None } else { Some(update) };
+                runtime.state = decision.state;
+                runtime.pending_update = if decision.installable { Some(update) } else { None };
                 runtime.update = Some(info.clone());
                 runtime.progress = None;
                 runtime.error = None;
@@ -646,7 +678,7 @@ async fn run_update_check(
             }
             // Out-of-window builds aren't installable, so don't push the
             // "ready to install from Settings" nudge — the Settings surface directs.
-            if notify_available && !out_of_window {
+            if decision.notify {
                 push_update_available_notification(app_handle, &info);
             }
             emit_current_status(app_handle);
@@ -1255,6 +1287,100 @@ mod tests {
         ));
         // Gate not yet computed → updates flow.
         assert!(!build_out_of_window(None, Some(9_999)));
+    }
+
+    fn out_of_window_licensed() -> capture_types::LicenseStatus {
+        capture_types::LicenseStatus::Licensed {
+            update_through_ms: 1_000,
+            in_window: false,
+            email: "a@b.c".into(),
+            name: String::new(),
+            activation: capture_types::Activation::Activated,
+        }
+    }
+
+    #[test]
+    fn running_build_window_gate_flips_only_resting_states() {
+        let status = out_of_window_licensed();
+        let build_after_window = Some(2_000);
+
+        // Idle / UpToDate → AvailableOutOfWindow when the running build is past
+        // the owner's window (the fresh-install-after-lapse edge).
+        for state in [AppUpdateState::Idle, AppUpdateState::UpToDate] {
+            assert_eq!(
+                running_build_window_gate(state, Some(&status), build_after_window),
+                AppUpdateState::AvailableOutOfWindow,
+            );
+        }
+        // Every other state passes through untouched (remote gating is decided
+        // in run_update_check, in-flight states must not be rewritten).
+        for state in [
+            AppUpdateState::Checking,
+            AppUpdateState::Available,
+            AppUpdateState::AvailableOutOfWindow,
+            AppUpdateState::Downloading,
+            AppUpdateState::Installing,
+            AppUpdateState::RestartRequired,
+            AppUpdateState::RecordingBlocked,
+            AppUpdateState::Incompatible,
+            AppUpdateState::Failed,
+        ] {
+            assert_eq!(
+                running_build_window_gate(state, Some(&status), build_after_window),
+                state,
+            );
+        }
+    }
+
+    #[test]
+    fn running_build_window_gate_never_flips_in_window_or_unknown() {
+        // In-window build, missing build date, or no computed status → resting
+        // states stay resting.
+        for (status, build_date) in [
+            (Some(out_of_window_licensed()), Some(500)), // build within window
+            (Some(out_of_window_licensed()), None),      // no build date
+            (None, Some(2_000)),                         // gate not yet computed
+        ] {
+            assert_eq!(
+                running_build_window_gate(AppUpdateState::Idle, status.as_ref(), build_date),
+                AppUpdateState::Idle,
+            );
+        }
+    }
+
+    #[test]
+    fn out_of_window_remote_update_is_never_installable_and_never_notifies() {
+        // Out of window: surfaced, but pending_update is dropped and the
+        // "ready to install" nudge is suppressed even on a notify check.
+        assert_eq!(
+            decide_remote_update(true, true),
+            RemoteUpdateDecision {
+                state: AppUpdateState::AvailableOutOfWindow,
+                installable: false,
+                notify: false,
+            },
+        );
+        assert_eq!(
+            decide_remote_update(true, false).state,
+            AppUpdateState::AvailableOutOfWindow,
+        );
+        // In window: installable; notification tracks the caller's flag.
+        assert_eq!(
+            decide_remote_update(false, true),
+            RemoteUpdateDecision {
+                state: AppUpdateState::Available,
+                installable: true,
+                notify: true,
+            },
+        );
+        assert_eq!(
+            decide_remote_update(false, false),
+            RemoteUpdateDecision {
+                state: AppUpdateState::Available,
+                installable: true,
+                notify: false,
+            },
+        );
     }
 
     #[test]

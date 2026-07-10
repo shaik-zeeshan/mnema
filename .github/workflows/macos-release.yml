@@ -40,6 +40,10 @@ jobs:
       # (bake-crl.ts's CRL_ENDPOINT below). Set repo variable CRL_URL to the
       # seller-owned custom domain; falls back to the dev workers.dev deploy.
       MNEMA_CRL_URL: ${{ vars.CRL_URL || 'https://mnema-fulfillment.shaikzeeshan999.workers.dev/revocations.json' }}
+      # Activation endpoint (ADR 0053), baked via option_env! MNEMA_ACTIVATION_URL
+      # in licensing.rs. Same pattern as CRL_URL: set repo variable ACTIVATION_URL
+      # to the seller-owned domain; falls back to the dev workers.dev deploy.
+      MNEMA_ACTIVATION_URL: ${{ vars.ACTIVATION_URL || 'https://mnema-fulfillment.shaikzeeshan999.workers.dev/activate' }}
 
     steps:
       - name: Checkout

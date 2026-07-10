@@ -215,6 +215,62 @@ mod tests {
         )
     }
 
+    /// Cross-language pinned license wire — byte-identical twin of
+    /// `PINNED_LICENSE_WIRE` in `services/fulfillment/test/fulfillment.test.ts`
+    /// (same `[7u8;32]` seed). Mint must reproduce it and parse+verify must
+    /// recover the payload, so `mint.ts` ↔ this verifier can't silently drift
+    /// while each side's own round-trip tests stay green. Carries a non-empty
+    /// `name` on purpose (the newest wire field).
+    const PINNED_LICENSE_WIRE: &str = "eyJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibGljZW5zZV9pZCI6Im9yZGVyOjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMSIsInRpZXIiOiJsaWNlbnNlIiwiaXNzdWVkX2F0IjoxNzAwMDAwMDAwMDAwLCJ1cGRhdGVfdGhyb3VnaCI6MTczMTUzNjAwMDAwMCwibmFtZSI6IkFkYSBMb3ZlbGFjZSJ9.gf1pCUjfe1cO100kxcHjkOZrQvIa3D3w4WLpl4VsNlYQf0Px3Xx17IGgP6cXLEgRw23KtFjWSAgepW9VZGIlDg==";
+
+    fn pinned_payload() -> LicensePayload {
+        LicensePayload {
+            email: "buyer@example.com".to_string(),
+            license_id: "order:11111111-1111-1111-1111-111111111111".to_string(),
+            tier: "license".to_string(),
+            issued_at: 1_700_000_000_000,
+            update_through: 1_731_536_000_000,
+            name: Some("Ada Lovelace".to_string()),
+        }
+    }
+
+    #[test]
+    fn pinned_license_wire_mints_and_verifies_byte_for_byte() {
+        let signing_key = test_signing_key();
+        // Mint reproduces the TS fixture exactly (field order, compact JSON,
+        // standard base64, deterministic Ed25519).
+        assert_eq!(mint_key(&signing_key, &pinned_payload()), PINNED_LICENSE_WIRE);
+        // And the pinned wire verifies back to the payload.
+        assert_eq!(
+            parse_and_verify_with_key(PINNED_LICENSE_WIRE, &signing_key.verifying_key()),
+            Ok(pinned_payload())
+        );
+    }
+
+    #[test]
+    fn empty_string_name_parses_as_some_empty() {
+        // Fulfillment always emits `name` (`?? ""`), so `"name":""` is a real
+        // wire shape — it must parse as `Some("")`, distinct from an absent
+        // (pre-`name`) key's `None`.
+        let json = r#"{"email":"a@b.com","license_id":"lic-1","tier":"standard","issued_at":1,"update_through":2,"name":""}"#;
+        let payload: LicensePayload = serde_json::from_str(json).expect("should deserialize");
+        assert_eq!(payload.name, Some(String::new()));
+
+        let named = r#"{"email":"a@b.com","license_id":"lic-1","tier":"standard","issued_at":1,"update_through":2,"name":"Zee Shaik"}"#;
+        let payload: LicensePayload = serde_json::from_str(named).expect("should deserialize");
+        assert_eq!(payload.name.as_deref(), Some("Zee Shaik"));
+    }
+
+    #[test]
+    fn production_public_key_pin_matches_the_ts_side() {
+        // The same base64 literal is asserted against bake-crl.ts's
+        // PRODUCTION_PUBLIC_KEY (kept in sync by hand — this is the drift guard).
+        assert_eq!(
+            BASE64.encode(PRODUCTION_LICENSE_PUBLIC_KEY),
+            "rUbJnIm3T6ZMNCoE+0wd/ef5olmoU/sTk38xkXP2Iog="
+        );
+    }
+
     #[test]
     fn valid_signature_is_accepted() {
         let signing_key = test_signing_key();
@@ -384,6 +440,24 @@ mod tests {
         assert_eq!(
             trial_days_left(start, rolled_back_now, max_seen, TRIAL_LEN_DAYS),
             5
+        );
+    }
+
+    #[test]
+    fn trial_days_left_rounds_a_partial_final_day_up() {
+        // 25.5 days elapsed of 30 → 4.5 remaining → reads as 5 days left.
+        // A floor regression would show 4 and cheat the user of half a day.
+        let elapsed = 25 * DAY_MS + DAY_MS / 2;
+        assert_eq!(trial_days_left(0, elapsed, elapsed, TRIAL_LEN_DAYS), 5);
+    }
+
+    #[test]
+    fn provisional_days_left_rounds_a_partial_final_day_up() {
+        // 5.5 days elapsed of 7 → 1.5 remaining → reads as 2 days left.
+        let elapsed = 5 * DAY_MS + DAY_MS / 2;
+        assert_eq!(
+            provisional_days_left(0, elapsed, elapsed, PROVISIONAL_WINDOW_DAYS),
+            2
         );
     }
 

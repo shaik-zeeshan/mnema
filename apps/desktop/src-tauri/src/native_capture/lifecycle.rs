@@ -119,6 +119,40 @@ impl RecordingLifecycle {
         TickOutcome::SkipRotation
     }
 
+    // The start-seam half of the license gate: a block becomes an outright
+    // refusal (Err) BEFORE any runtime mutation. Deliberately NOT a
+    // `CaptureSuspension`: a license block never self-heals (ADR 0021/0040) —
+    // it clears only when the user buys/activates — so it must never touch
+    // `capture_suspension` nor share its codes/copy. `None` block (allowed or
+    // gate-not-yet-run) → no refusal; never lock on unknown.
+    fn refuse_start_for_license_block(
+        block: Option<crate::licensing::LicenseBlock>,
+    ) -> Option<CaptureErrorResponse> {
+        let block = block?;
+        Some(CaptureErrorResponse {
+            code: block.code.to_string(),
+            message: block.message.to_string(),
+        })
+    }
+
+    // The rotation-seam half of the license gate: the current segment is
+    // healthy, only opening the *next* one is refused — commit the segment,
+    // end the session (StopLoop, never a suspension), and surface the honest
+    // notification (revoked vs trial-ended).
+    fn stop_for_license_block_at_rotation(
+        &mut self,
+        app_handle: Option<&tauri::AppHandle>,
+        block: Option<crate::licensing::LicenseBlock>,
+    ) -> Option<TickOutcome> {
+        let block = block?;
+        super::segments::graceful_stop_for_license_block(
+            app_handle,
+            &mut self.runtime,
+            block.revoked,
+        );
+        Some(TickOutcome::StopLoop)
+    }
+
     // Backstop at the rotation boundary for any path that still reaches it
     // with screen/system-audio active but no live session (e.g. a system wake
     // racing the will-sleep teardown before the did-wake recovery re-arms).
@@ -171,20 +205,16 @@ impl RecordingLifecycle {
         // since lapsed (the cache only recomputes on gate events, so without
         // the time check the first start after expiry slips through).
         let gate_now_ms = crate::licensing::now_ms();
-        if let Some(status) =
-            crate::licensing::cached_status(&app_handle).filter(|s| !s.capture_allowed_at(gate_now_ms))
-        {
+        let block = crate::licensing::license_block(
+            crate::licensing::cached_status(&app_handle).as_ref(),
+            gate_now_ms,
+        );
+        if let Some(refusal) = Self::refuse_start_for_license_block(block) {
             // Recompute async so the cache/tray/Settings flip from the stale
             // `Trial` to `ReadOnly`; the refusal itself doesn't wait for it.
             crate::licensing::recompute_status_async(&app_handle, gate_now_ms);
-            // Honest copy per state: a revoked (refunded/leaked) key must not read
-            // as a lapsed trial.
-            let (code, message) = crate::licensing::capture_refusal_copy(&status);
-            super::debug_log::log(format!("capture refused: {code}"));
-            return Err(CaptureErrorResponse {
-                code: code.to_string(),
-                message: message.to_string(),
-            });
+            super::debug_log::log(format!("capture refused: {}", refusal.code));
+            return Err(refusal);
         }
 
         if self.runtime.is_running {
@@ -813,17 +843,15 @@ impl RecordingLifecycle {
         // recording until the user stops it. Commit the segment, end the
         // session, and recompute async so tray/Settings flip to Read-Only.
         let rotation_now_ms = crate::licensing::now_ms();
-        if let Some(status) = crate::licensing::cached_status(app_handle)
-            .filter(|s| !s.capture_allowed_at(rotation_now_ms))
-        {
-            let revoked = matches!(status, capture_types::LicenseStatus::Revoked);
-            super::segments::graceful_stop_for_license_block(
-                Some(app_handle),
-                &mut self.runtime,
-                revoked,
-            );
+        let block = crate::licensing::license_block(
+            crate::licensing::cached_status(app_handle).as_ref(),
+            rotation_now_ms,
+        );
+        if block.is_some() {
             crate::licensing::recompute_status_async(app_handle, rotation_now_ms);
-            return TickOutcome::StopLoop;
+        }
+        if let Some(outcome) = self.stop_for_license_block_at_rotation(Some(app_handle), block) {
+            return outcome;
         }
 
         if let Some(outcome) =
@@ -1348,6 +1376,80 @@ mod tests {
                 .map(|suspension| suspension.kind),
             Some(CaptureSuspensionKind::DisplayUnavailable),
         );
+    }
+
+    // License gate ≠ suspension (ADR 0021): a deny at either seam must refuse /
+    // stop outright while `capture_suspension` stays None — a license block
+    // never self-heals, so it must never enter the recovery machinery.
+
+    #[test]
+    fn license_block_at_start_refuses_with_the_gate_code_and_no_suspension() {
+        let block = crate::licensing::license_block(
+            Some(&capture_types::LicenseStatus::ReadOnly),
+            0,
+        );
+        let refusal = RecordingLifecycle::refuse_start_for_license_block(block)
+            .expect("read-only must refuse the start");
+        assert_eq!(refusal.code, "capture_refused_read_only");
+
+        let block = crate::licensing::license_block(
+            Some(&capture_types::LicenseStatus::Revoked),
+            0,
+        );
+        let refusal = RecordingLifecycle::refuse_start_for_license_block(block)
+            .expect("revoked must refuse the start");
+        assert_eq!(refusal.code, "capture_refused_revoked");
+    }
+
+    #[test]
+    fn license_block_at_start_never_refuses_on_unknown_status() {
+        // The deferred gate hasn't run yet (cached status None) → allow.
+        assert!(RecordingLifecycle::refuse_start_for_license_block(
+            crate::licensing::license_block(None, i64::MAX)
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn license_block_at_rotation_stops_the_loop_without_a_suspension() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+
+        let block = crate::licensing::license_block(
+            Some(&capture_types::LicenseStatus::ReadOnly),
+            0,
+        );
+        let outcome = lifecycle.stop_for_license_block_at_rotation(None, block);
+
+        assert_eq!(outcome, Some(TickOutcome::StopLoop));
+        let runtime = lifecycle.runtime();
+        assert!(!runtime.is_running, "the session must end at the boundary");
+        assert!(
+            runtime.capture_suspension.is_none(),
+            "a license block is a stop, never a suspension — it cannot self-heal"
+        );
+        // The healthy in-flight tail segment is committed, not orphaned.
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed outputs should exist");
+        assert!(committed.screen_files.contains(&screen_file));
+    }
+
+    #[test]
+    fn no_license_block_at_rotation_is_a_no_op() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+
+        let outcome = lifecycle.stop_for_license_block_at_rotation(
+            None,
+            crate::licensing::license_block(None, 0),
+        );
+
+        assert_eq!(outcome, None);
+        assert!(lifecycle.runtime().is_running, "an allowed status must not stop the session");
     }
 
     #[test]

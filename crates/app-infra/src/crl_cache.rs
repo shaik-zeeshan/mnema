@@ -48,23 +48,17 @@ mod tests {
             .block_on(future)
     }
 
-    // Mirrors the `app_settings` shape (migration 0001) the store upserts into.
+    // The REAL migration chain (like db.rs), so the `app_settings` shape these
+    // upserts hit is the shipped one, not a hand-rolled mirror that could drift.
+    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+
     async fn app_settings_pool() -> SqlitePool {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .expect("in-memory db");
-        sqlx::query(
-            "CREATE TABLE app_settings (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )",
-        )
-        .execute(&pool)
-        .await
-        .expect("create table");
+        MIGRATOR.run(&pool).await.expect("migrations should apply");
         pool
     }
 

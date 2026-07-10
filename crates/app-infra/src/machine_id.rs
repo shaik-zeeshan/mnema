@@ -97,13 +97,16 @@ mod tests {
         );
     }
 
-    // Pin the frozen wire contract: hash of the empty-string-domain vector is
-    // stable across languages (the TS worker must reproduce it).
+    // Pin the frozen wire contract to the exact digest — the TS mirror lives in
+    // services/fulfillment/test/activation.test.ts (same input, same digest).
+    // A length-only assertion would let a domain/order change slip through.
     #[test]
     fn machine_hash_matches_frozen_vector() {
-        // hex(SHA-256("mnema-activation-v1:order:x:uuid-y"))
-        let h = machine_hash("order:x", "uuid-y");
-        assert_eq!(h.len(), 64);
+        assert_eq!(
+            machine_hash("order:x", "uuid-y"),
+            // hex(SHA-256("mnema-activation-v1:order:x:uuid-y"))
+            "930bf42716d983015865298a40d659fac566c83885479185ac95f43707c476b4"
+        );
     }
 
     #[cfg(target_os = "macos")]
