@@ -12,6 +12,7 @@ export const DOWNLOAD_URL = RELEASE_URL;
 // Public Polar checkout link for the one-time Mnema License ($69).
 // Set PUBLIC_CHECKOUT_URL at build time (e.g. the live link in prod deploys);
 // falls back to the sandbox link (must match apps/desktop/src/lib/licensing.ts).
+// `||` not `??`: CI vars that are unset arrive as "" — treat empty as unset.
 export const CHECKOUT_URL =
-  import.meta.env.PUBLIC_CHECKOUT_URL ??
+  import.meta.env.PUBLIC_CHECKOUT_URL ||
   "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";

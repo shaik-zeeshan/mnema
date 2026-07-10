@@ -44,6 +44,13 @@ jobs:
       # in licensing.rs. Same pattern as CRL_URL: set repo variable ACTIVATION_URL
       # to the seller-owned domain; falls back to the dev workers.dev deploy.
       MNEMA_ACTIVATION_URL: ${{ vars.ACTIVATION_URL || 'https://mnema-fulfillment.shaikzeeshan999.workers.dev/activate' }}
+      # Buy-button checkout links, baked into the frontend bundle by Vite
+      # (apps/desktop/src/lib/licensing.ts). Set repo variables
+      # LICENSE_CHECKOUT_URL / RENEWAL_CHECKOUT_URL to the LIVE Polar links
+      # before a real release; unset arrives as "" and the code (`||`) falls
+      # back to the sandbox defaults.
+      VITE_LICENSE_CHECKOUT_URL: ${{ vars.LICENSE_CHECKOUT_URL }}
+      VITE_RENEWAL_CHECKOUT_URL: ${{ vars.RENEWAL_CHECKOUT_URL }}
 
     steps:
       - name: Checkout

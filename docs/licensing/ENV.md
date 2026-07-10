@@ -238,6 +238,9 @@ MNEMA_LICENSE_ENFORCE=1 MNEMA_DEV_CRL_URL=http://localhost:8787/revocations.json
 | Variable | Required | Effect |
 |---|---|---|
 | `CRL_URL` | optional | Production CRL endpoint. Feeds **both** the baked const (`MNEMA_CRL_URL`) and the baked floor (`CRL_ENDPOINT` for `bake-crl.ts`) from one source. Unset → falls back to the dev `workers.dev` deploy. Set this to your custom domain before a real release. |
+| `ACTIVATION_URL` | optional | Production activation endpoint (ADR 0053), baked via `MNEMA_ACTIVATION_URL`. Unset → falls back to the dev `workers.dev` deploy. |
+| `LICENSE_CHECKOUT_URL` | before selling | Live Polar checkout link for the $69 license. Fed to the frontend bundle as `VITE_LICENSE_CHECKOUT_URL` (`apps/desktop/src/lib/licensing.ts`). Unset → the app's Buy button uses the **sandbox** link baked as the code default — fine for prereleases, wrong for real buyers. |
+| `RENEWAL_CHECKOUT_URL` | before selling | Live Polar checkout link for the $29 renewal (`VITE_RENEWAL_CHECKOUT_URL`). Same sandbox fallback caveat. |
 
 ### Repository secrets — Settings → Secrets and variables → Actions → **Secrets**
 
@@ -270,7 +273,8 @@ MNEMA_LICENSE_ENFORCE=1 MNEMA_DEV_CRL_URL=http://localhost:8787/revocations.json
 | `mint-local.ts` | `ED25519_PRIVATE_KEY` in the shell (the env's seed) |
 | `bake-crl.ts` | nothing (optionally `CRL_ENDPOINT`) — always verifies against the prod key |
 | Desktop **dev** build | drop the dev public key at `~/.mnema-licensing-keys/dev_public_key.b64` (or export `MNEMA_LICENSE_PUBLIC_KEY`) so dev-minted keys verify; `MNEMA_LICENSE_ENFORCE` / `MNEMA_DEV_CRL_URL` / `MNEMA_TRIAL_*` as needed |
-| Release CI | repo variable `CRL_URL`; secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`. Leave `MNEMA_LICENSE_PUBLIC_KEY` **unset** → production key |
+| Release CI | repo variables `CRL_URL`, `ACTIVATION_URL`, `LICENSE_CHECKOUT_URL`, `RENEWAL_CHECKOUT_URL`; secrets `TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)`. Leave `MNEMA_LICENSE_PUBLIC_KEY` **unset** → production key |
+| Website deploy (`apps/web`) | `PUBLIC_CHECKOUT_URL` in the site host's build env (live Polar link; unset → sandbox fallback in `src/config.ts`) |
 
 _Other `MNEMA_*` vars exist for unrelated subsystems (capture dirs, keychain test
 dirs, etc.) and are out of scope here — see `turbo.json` and each crate._

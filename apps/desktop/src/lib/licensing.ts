@@ -42,8 +42,9 @@ export interface ActivateLicenseResult {
 }
 
 /** Public Polar checkout link for the one-time Mnema License ($69). Override via VITE_LICENSE_CHECKOUT_URL. */
+// `||` not `??`: an unset GitHub Actions `vars.*` reaches the build as "" — treat empty as unset.
 export const LICENSE_CHECKOUT_URL =
-	import.meta.env.VITE_LICENSE_CHECKOUT_URL ??
+	import.meta.env.VITE_LICENSE_CHECKOUT_URL ||
 	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";
 
 /** Polar preselects a product on a multi-product checkout link via the
@@ -57,5 +58,5 @@ export function renewalCheckoutUrl(baseCheckoutUrl: string, productId: string): 
  * product attached in the Polar dashboard.
  * Override via VITE_RENEWAL_CHECKOUT_URL (e.g. a dedicated renewal link). */
 export const RENEWAL_CHECKOUT_URL =
-	import.meta.env.VITE_RENEWAL_CHECKOUT_URL ??
+	import.meta.env.VITE_RENEWAL_CHECKOUT_URL ||
 	renewalCheckoutUrl(LICENSE_CHECKOUT_URL, "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6");
