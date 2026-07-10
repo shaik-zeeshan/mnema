@@ -47,6 +47,10 @@ pub struct AiRuntimeModel {
     id: String,
     /// Stable provider id ([`AiProviderKind::id`]).
     provider: String,
+    /// Provider-reported context-window size in tokens, when the listing route
+    /// advertises one (many OpenAI-compatible vendors and the Fireworks catalog
+    /// do; Anthropic/OpenAI don't expose it at all).
+    context_window: Option<u64>,
 }
 
 /// One connected provider that failed to list its models, so the picker can
@@ -125,6 +129,38 @@ struct ModelsListResponse {
 #[derive(Debug, Deserialize)]
 struct ModelsListEntry {
     id: String,
+    /// Context-window size, under the names OpenAI-compatible vendors use:
+    /// `context_length` (OpenRouter, DeepSeek, …) or `max_model_len` (vLLM).
+    #[serde(default)]
+    context_length: Option<u64>,
+    #[serde(default)]
+    max_model_len: Option<u64>,
+    /// llama.cpp-style servers (incl. llamafile) nest it as `meta.n_ctx_train`.
+    #[serde(default)]
+    meta: Option<ModelsListEntryMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListEntryMeta {
+    #[serde(default)]
+    n_ctx_train: Option<u64>,
+}
+
+impl ModelsListEntry {
+    fn context_window(&self) -> Option<u64> {
+        self.context_length
+            .or(self.max_model_len)
+            .or(self.meta.as_ref().and_then(|meta| meta.n_ctx_train))
+            .filter(|&tokens| tokens > 0)
+    }
+}
+
+/// One discovered model: its id plus the provider-reported context window,
+/// when the listing route advertised one.
+#[derive(Debug)]
+struct DiscoveredModel {
+    id: String,
+    context_window: Option<u64>,
 }
 
 /// One page of Fireworks' proprietary Gateway catalog
@@ -151,6 +187,9 @@ struct FireworksCatalogModel {
     name: String,
     #[serde(default)]
     supports_serverless: bool,
+    /// The model's context-window size in tokens (`contextLength`).
+    #[serde(default)]
+    context_length: Option<u64>,
 }
 
 /// One page of `GET /v1/accounts` — the accounts the API key belongs to. Used
@@ -700,7 +739,7 @@ fn is_chat_capable_model(id: &str) -> bool {
 async fn list_models_for_provider(
     client: &reqwest::Client,
     provider: &AiProviderConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     let base_url = provider.base_url.trim();
 
     // OpenAI-compatible is the only kind that POSTs the keychain key to a
@@ -784,8 +823,11 @@ async fn list_models_for_provider(
     Ok(parsed
         .data
         .into_iter()
-        .map(|entry| entry.id.trim().to_string())
-        .filter(|id| !id.is_empty())
+        .map(|entry| DiscoveredModel {
+            context_window: entry.context_window(),
+            id: entry.id.trim().to_string(),
+        })
+        .filter(|model| !model.id.is_empty())
         .collect())
 }
 
@@ -803,7 +845,7 @@ async fn list_fireworks_models(
     client: &reqwest::Client,
     host: &str,
     api_key: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     // Public serverless catalog first — this is the failure that should mark
     // the provider unlisted (e.g. an invalid key surfaces here).
     let mut ids = list_fireworks_account_models(client, host, api_key, "fireworks", true).await?;
@@ -902,9 +944,9 @@ async fn list_fireworks_account_models(
     api_key: &str,
     account: &str,
     serverless_only: bool,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     let catalog_url = format!("https://{host}/v1/accounts/{account}/models");
-    let mut ids: Vec<String> = Vec::new();
+    let mut ids: Vec<DiscoveredModel> = Vec::new();
     let mut page_token: Option<String> = None;
 
     for page in 0..MODELS_MAX_PAGES {
@@ -938,8 +980,11 @@ async fn list_fireworks_account_models(
                 .models
                 .into_iter()
                 .filter(|model| !serverless_only || model.supports_serverless)
-                .map(|model| model.name.trim().to_string())
-                .filter(|id| !id.is_empty()),
+                .map(|model| DiscoveredModel {
+                    id: model.name.trim().to_string(),
+                    context_window: model.context_length.filter(|&tokens| tokens > 0),
+                })
+                .filter(|model| !model.id.is_empty()),
         );
 
         match parsed.next_page_token {
@@ -987,12 +1032,13 @@ pub async fn ai_runtime_list_models(
                     // embeddings, TTS/whisper, rerank, moderation are filtered);
                     // free-form custom-model entry still lets a user pick a
                     // hidden model id by hand.
-                    .filter(|id| is_chat_capable_model(id))
-                    .map(|id| AiRuntimeModel {
-                        id,
+                    .filter(|model| is_chat_capable_model(&model.id))
+                    .map(|model| AiRuntimeModel {
+                        id: model.id,
                         // Tag with the provider instance id so same-kind
                         // instances stay attributable in the merged pool.
                         provider: provider.id.clone(),
+                        context_window: model.context_window,
                     }),
             ),
             Err(error) => {

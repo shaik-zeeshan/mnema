@@ -505,6 +505,10 @@ export interface AiRuntimeModel {
 	id: string;
 	/** Stable provider id (`AiProviderKind`). */
 	provider: string;
+	/** Provider-reported context-window size in tokens, when the listing route
+	 *  advertises one (many OpenAI-compatible vendors and the Fireworks catalog
+	 *  do); null when the provider doesn't expose it (Anthropic, OpenAI). */
+	contextWindow: number | null;
 }
 
 /** One connected provider that failed to list its models, surfaced so the
