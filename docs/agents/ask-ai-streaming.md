@@ -43,14 +43,17 @@ are the serde round-trip / exact-shape tests in `conversation.rs` and
   humane `label` AND the resolved icon **filesystem path**; the frontend's only
   transform is `convertFileSrc(appIconPath)` (a pure path→URL helper).
 - **`TurnView`** — `{ turnIndex, question, phase, blocks, reasoning, toolActivities,
-  liveActivity, sources, errorMessage, seededResultCount }`. `phase` is one of
-  `seeding | thinking | streaming | done | error`. `sources` is opaque JSON the
-  frontend round-trips into source cards.
+  liveActivity, sources, errorMessage, seededResultCount, contextTokens }`. `phase`
+  is one of `seeding | thinking | streaming | done | error`. `sources` is opaque
+  JSON the frontend round-trips into source cards. `contextTokens` is the
+  provider-reported context-window occupancy (input+output of the turn's latest
+  completion request); it is NOT persisted, so it is null on cold-loaded turns
+  and the Chat composer readout reappears on the next answer.
 - **`TurnSnapshot`** — `{ conversationId, version, view }`.
 - **`TurnUpdate`** — `#[serde(tag = "op")]`: `Phase`, `AppendProse { text }`,
   `OpenBlock { block }`, `Reasoning { text }`, `ToolActivity { entry }`,
   `LiveActivity { entry }` (None clears the live line), `Sources { sources }`,
-  `Error { message }`, `Done`.
+  `ContextTokens { tokens }`, `Error { message }`, `Done`.
 
 ---
 

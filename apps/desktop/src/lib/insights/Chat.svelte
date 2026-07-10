@@ -56,11 +56,16 @@
     type TurnSnapshot,
     type TurnUpdate,
     type AskAiUpdateEvent,
+    contextWindowForModel,
+    defaultEngineModel,
+    defaultEnginePinProvider,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
+    AiRuntimeModel,
+    AiRuntimeModelsResult,
     AiRuntimeSettings,
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
@@ -128,6 +133,10 @@
     sources: AskAiSource[];
     errorMessage: string | null;
     seededResultCount: number | null;
+    // Tokens occupying the model's context window after this turn's latest
+    // completion request; null when the provider reported no usage (and on
+    // hydrated past turns — usage isn't persisted).
+    contextTokens: number | null;
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
@@ -237,6 +246,79 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
+  // Context-window occupancy shown in the composer bar: the latest turn that
+  // carries a provider-reported count. Null hides the readout (no live turn
+  // yet, or a cold-loaded thread — usage isn't persisted, so it reappears on
+  // the next answer).
+  const contextTokens = $derived(
+    turns.findLast((t) => t.contextTokens !== null)?.contextTokens ?? null,
+  );
+
+  // The engine answering this thread (pin → Ask AI override → global default —
+  // same precedence as the backend resolver).
+  const activeEngineProvider = $derived(
+    activePinProvider ??
+      (aiRuntimeSnapshot !== null
+        ? defaultEnginePinProvider(aiRuntimeSnapshot)
+        : null),
+  );
+  const activeEngineModel = $derived(
+    activePinModel ??
+      askAiModelOverride ??
+      (aiRuntimeSnapshot !== null ? defaultEngineModel(aiRuntimeSnapshot) : null),
+  );
+
+  // Provider-reported context windows: the active provider's model listing
+  // (the same call the picker makes), fetched lazily once per provider id and
+  // only once usage is actually on screen. Best-effort — a failed listing just
+  // leaves the known-family table as the only source.
+  let providerModels = $state<Record<string, AiRuntimeModel[]>>({});
+  const providerModelsRequested = new Set<string>();
+  $effect(() => {
+    const provider = activeEngineProvider;
+    if (provider === null || contextTokens === null) return;
+    if (providerModelsRequested.has(provider)) return;
+    const config = aiRuntimeSnapshot?.providers.find((p) => p.id === provider);
+    if (config === undefined) return;
+    providerModelsRequested.add(provider);
+    void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
+      request: { providers: [$state.snapshot(config)] },
+    })
+      .then((result) => {
+        providerModels[provider] = result.models;
+      })
+      .catch(() => {});
+  });
+
+  // The context-window size of the model answering this thread: the provider-
+  // reported size when its listing advertises one, else the known-family
+  // table. Null (unknown model, or a local server that doesn't say) keeps the
+  // readout text-only — the used count still shows, the ring needs a real
+  // denominator.
+  const contextWindow = $derived.by(() => {
+    const model = activeEngineModel;
+    if (model === null) return null;
+    const reported =
+      activeEngineProvider !== null
+        ? (providerModels[activeEngineProvider]?.find((m) => m.id === model)
+            ?.contextWindow ?? null)
+        : null;
+    return reported ?? contextWindowForModel(model);
+  });
+  // 0..1 occupancy for the ring (clamped — usage can exceed a guessed window).
+  const contextFraction = $derived(
+    contextTokens !== null && contextWindow !== null
+      ? Math.min(1, contextTokens / contextWindow)
+      : null,
+  );
+
+  // "812" / "12.4k" / "1.2M" — compact enough for the composer bar.
+  function formatTokenCount(tokens: number): string {
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+    return `${tokens}`;
+  }
+
   function makeTurn(
     turnIndex: number,
     question: string,
@@ -253,6 +335,7 @@
       sources: [],
       errorMessage: null,
       seededResultCount: null,
+      contextTokens: null,
       version: 0,
       reasoningExpanded: false,
       summaryExpanded: false,
@@ -404,6 +487,7 @@
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
     turn.seededResultCount = view.seededResultCount;
+    turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
   }
@@ -909,6 +993,9 @@
       case "sources":
         turn.sources = coerceSources(update.sources);
         void loadSourceThumbnails(turn.sources);
+        break;
+      case "contextTokens":
+        turn.contextTokens = update.tokens;
         break;
       case "error":
         turn.errorMessage = update.message;
@@ -1543,6 +1630,34 @@
             bind:open={enginePickerOpen}
             onselect={handleModelSelect}
           />
+          <!-- Context-window occupancy for this thread (provider-reported
+               tokens from the latest answer). Hidden until a turn reports. -->
+          {#if contextTokens !== null}
+            <span
+              class="composer-context"
+              use:tip={contextWindow !== null && contextFraction !== null
+                ? `${formatTokenCount(contextTokens)} of ${formatTokenCount(contextWindow)} tokens (${Math.round(contextFraction * 100)}% of context window)`
+                : "Tokens in the model's context window"}
+            >
+              {#if contextFraction !== null}
+                <!-- Occupancy ring, shown only when the model's total window is
+                     known: dasharray fills the circumference (2πr, r=6.5 →
+                     ~40.84) by the used fraction, starting at 12 o'clock. -->
+                <svg class="composer-context-ring" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle class="ring-track" cx="8" cy="8" r="6.5" />
+                  <circle
+                    class="ring-fill"
+                    cx="8"
+                    cy="8"
+                    r="6.5"
+                    stroke-dasharray="{(contextFraction * 40.84).toFixed(2)} 40.84"
+                    transform="rotate(-90 8 8)"
+                  />
+                </svg>
+              {/if}
+              {formatTokenCount(contextTokens)} tokens
+            </span>
+          {/if}
           <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
                stop control that asks the backend to cancel; the resulting
                done/error event settles the UI. -->
@@ -2203,6 +2318,34 @@
     justify-content: space-between;
     gap: 8px;
     padding: 6px 8px 8px 10px;
+  }
+  /* Quiet context-window readout, tucked against the send button. */
+  .composer-context {
+    flex: 0 0 auto;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    cursor: default;
+  }
+  .composer-context-ring {
+    width: 12px;
+    height: 12px;
+  }
+  .composer-context-ring circle {
+    fill: none;
+    stroke-width: 2.5;
+  }
+  .composer-context-ring .ring-track {
+    stroke: currentColor;
+    opacity: 0.25;
+  }
+  .composer-context-ring .ring-fill {
+    stroke: currentColor;
+    stroke-linecap: round;
   }
   .composer-send {
     flex: 0 0 auto;

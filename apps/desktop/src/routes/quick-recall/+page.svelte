@@ -358,6 +358,10 @@
     errorMessage: string | null;
     // Only turn 1 ever has a seeded-result count (follow-ups aren't seeded).
     seededResultCount: number | null;
+    // Tokens occupying the model's context window after this turn's latest
+    // completion request; null when the provider reported no usage. Kept to
+    // mirror the Rust reducer (Chat renders it; QR just carries it).
+    contextTokens: number | null;
     // Per-turn disclosure toggle for the collapsed tool-activity summary chip.
     summaryExpanded: boolean;
     // Per-turn copy-confirmation flash (icon swaps to a check briefly).
@@ -664,6 +668,7 @@
       phase,
       errorMessage: null,
       seededResultCount: null,
+      contextTokens: null,
       summaryExpanded: false,
       copied: false,
       copyFailed: false,
@@ -833,6 +838,7 @@
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
     turn.seededResultCount = view.seededResultCount;
+    turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
   }
@@ -886,6 +892,9 @@
       case "sources":
         turn.sources = coerceSources(update.sources);
         void loadSourceThumbnails(turn.sources);
+        break;
+      case "contextTokens":
+        turn.contextTokens = update.tokens;
         break;
       case "error":
         turn.errorMessage = update.message;
