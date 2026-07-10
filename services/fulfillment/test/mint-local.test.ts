@@ -42,33 +42,23 @@ test("comp: --update-days overrides the default", () => {
 });
 
 // --- minted keys verify against the derived public key ---------------------
+// One consolidated test: mintKey's signature scheme itself is pinned by the
+// cross-language fixture in fulfillment.test.ts; here we only prove that keys
+// minted from BOTH locally-built payload shapes verify and carry the derived id.
 
-test("re-mint key signature verifies and payload carries the derived id", async () => {
+test("re-mint and comp keys verify and carry their derived ids", async () => {
   const seed = crypto.getRandomValues(new Uint8Array(32));
   const pub = await ed.getPublicKeyAsync(seed);
 
-  const p = buildRemintPayload({ orderId: "ord_sig", email: "b@x.io", orderDateMs: 1_700_000_000_000 });
-  const key = await mintKey(p, seed);
-
-  const [payloadB64, sigB64] = key.split(".");
-  const payloadBytes = base64ToBytes(payloadB64);
-  expect(await ed.verifyAsync(base64ToBytes(sigB64), payloadBytes, pub)).toBe(true);
-
-  const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
-  expect(parsed.license_id).toBe("order:ord_sig");
-});
-
-test("comp key signature verifies and payload carries the derived id", async () => {
-  const seed = crypto.getRandomValues(new Uint8Array(32));
-  const pub = await ed.getPublicKeyAsync(seed);
-
-  const p = buildCompPayload({ slug: "gift-01", email: "g@x.io" });
-  const key = await mintKey(p, seed);
-
-  const [payloadB64, sigB64] = key.split(".");
-  const payloadBytes = base64ToBytes(payloadB64);
-  expect(await ed.verifyAsync(base64ToBytes(sigB64), payloadBytes, pub)).toBe(true);
-
-  const parsed = JSON.parse(new TextDecoder().decode(payloadBytes));
-  expect(parsed.license_id).toBe("comp:gift-01");
+  const payloads = [
+    { payload: buildRemintPayload({ orderId: "ord_sig", email: "b@x.io", orderDateMs: 1_700_000_000_000 }), id: "order:ord_sig" },
+    { payload: buildCompPayload({ slug: "gift-01", email: "g@x.io" }), id: "comp:gift-01" },
+  ];
+  for (const { payload, id } of payloads) {
+    const key = await mintKey(payload, seed);
+    const [payloadB64, sigB64] = key.split(".");
+    const payloadBytes = base64ToBytes(payloadB64);
+    expect(await ed.verifyAsync(base64ToBytes(sigB64), payloadBytes, pub)).toBe(true);
+    expect(JSON.parse(new TextDecoder().decode(payloadBytes)).license_id).toBe(id);
+  }
 });

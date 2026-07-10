@@ -5,6 +5,7 @@ import { mintKey } from "../src/mint";
 import defaultExport, { handleOrderPaid, handleOrderRefunded, type Env } from "../src/index";
 import { buildAndSignCrl, serializeCrlPayload, crlIssuedAt, crlRevokedIds } from "../src/crl";
 import { bytesToBase64, base64ToBytes } from "../src/util";
+import { PRODUCTION_PUBLIC_KEY } from "../scripts/bake-crl";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -197,6 +198,65 @@ test("minted key: split on '.', base64-decode -> compact JSON with ms timestamps
   expect(await ed.verifyAsync(base64ToBytes(sigB64), bad, pub)).toBe(false);
 });
 
+// --- cross-language pinned license wire vector -------------------------------
+// Byte-identical fixture asserted in BOTH languages (the Rust twin lives in
+// crates/app-infra/src/license_verify.rs, same [7u8;32] seed): mint reproduces
+// the pinned wire here, parse+verify reproduces the payload there. This is the
+// drift guard the CRL (crl_verify.rs) and receipt (receipt_verify.rs) fixtures
+// already have — without it, mint.ts and license_verify.rs could drift apart
+// while each side's own tests stay green.
+
+const PINNED_LICENSE_PAYLOAD = {
+  email: "buyer@example.com",
+  license_id: "order:11111111-1111-1111-1111-111111111111",
+  tier: "license",
+  issued_at: 1_700_000_000_000,
+  update_through: 1_731_536_000_000,
+  name: "Ada Lovelace", // non-empty on purpose — pins the `name` field too
+};
+const PINNED_LICENSE_WIRE =
+  "eyJlbWFpbCI6ImJ1eWVyQGV4YW1wbGUuY29tIiwibGljZW5zZV9pZCI6Im9yZGVyOjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMSIsInRpZXIiOiJsaWNlbnNlIiwiaXNzdWVkX2F0IjoxNzAwMDAwMDAwMDAwLCJ1cGRhdGVfdGhyb3VnaCI6MTczMTUzNjAwMDAwMCwibmFtZSI6IkFkYSBMb3ZlbGFjZSJ9.gf1pCUjfe1cO100kxcHjkOZrQvIa3D3w4WLpl4VsNlYQf0Px3Xx17IGgP6cXLEgRw23KtFjWSAgepW9VZGIlDg==";
+
+test("pinned license wire: mintKey reproduces the cross-language fixture byte-for-byte", async () => {
+  const seed = new Uint8Array(32).fill(7);
+  expect(await mintKey(PINNED_LICENSE_PAYLOAD, seed)).toBe(PINNED_LICENSE_WIRE);
+
+  // And the pinned wire's payload half decodes to exactly the payload (field
+  // order fixed by the wire contract).
+  const json = new TextDecoder().decode(base64ToBytes(PINNED_LICENSE_WIRE.split(".")[0]));
+  expect(json).toBe(
+    `{"email":"buyer@example.com","license_id":"order:11111111-1111-1111-1111-111111111111","tier":"license","issued_at":1700000000000,"update_through":1731536000000,"name":"Ada Lovelace"}`,
+  );
+});
+
+test("production public key pin: bake-crl.ts matches license_verify.rs byte-for-byte", () => {
+  // The same base64 literal is asserted against PRODUCTION_LICENSE_PUBLIC_KEY
+  // in license_verify.rs — the two consts are kept in sync by hand.
+  expect(bytesToBase64(PRODUCTION_PUBLIC_KEY)).toBe("rUbJnIm3T6ZMNCoE+0wd/ef5olmoU/sTk38xkXP2Iog=");
+});
+
+// --- name field: always emitted on the wire ----------------------------------
+
+test("handleOrderPaid mints name:'' without a customer name and the real name with one", async () => {
+  mockResend();
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+
+  const { env } = fakeEnv(seedB64);
+  const anonymous = await handleOrderPaid(
+    { id: "ord_noname", billing_reason: "purchase", product_id: "prod_license", customer: { email: "n@x.io" } },
+    env,
+  );
+  const anonymousJson = new TextDecoder().decode(base64ToBytes(anonymous.key!.split(".")[0]));
+  expect(anonymousJson).toContain(`"name":""`); // emitted, never omitted
+  expect(JSON.parse(anonymousJson).name).toBe("");
+
+  const named = await handleOrderPaid(
+    { id: "ord_named", billing_reason: "purchase", product_id: "prod_license", customer: { email: "n2@x.io", name: "Zee Shaik" } },
+    env,
+  );
+  expect(JSON.parse(new TextDecoder().decode(base64ToBytes(named.key!.split(".")[0]))).name).toBe("Zee Shaik");
+});
+
 // --- (d) purchase and renewal both give update_through = issued_at + 365d ---
 
 test("purchase and renewal (from an owner) both mint update_through = issued_at + 365d", async () => {
@@ -216,6 +276,20 @@ test("purchase and renewal (from an owner) both mint update_through = issued_at 
     expect(payload.issued_at).toBe(now);
     expect(payload.update_through - payload.issued_at).toBe(365 * DAY_MS);
   }
+});
+
+test("mint dates from the order's created_at, not processing time (deterministic re-delivery)", async () => {
+  mockResend();
+  const seedB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(32)));
+  const { env } = fakeEnv(seedB64);
+  const createdAt = "2026-07-01T12:00:00.000Z";
+  const order = { id: "ord_dated", billing_reason: "purchase", product_id: "prod_license", created_at: createdAt, customer: { email: "d@e.io" } };
+
+  const res = await handleOrderPaid(order, env, Date.parse(createdAt) + 5_000_000);
+
+  const payload = JSON.parse(new TextDecoder().decode(base64ToBytes(res.key!.split(".")[0])));
+  expect(payload.issued_at).toBe(Date.parse(createdAt)); // order time, NOT the later `now`
+  expect(payload.update_through - payload.issued_at).toBe(365 * DAY_MS);
 });
 
 // --- renewal ownership gate: no license => auto-refund, no key --------------
@@ -421,6 +495,32 @@ test("webhook verify: rejects a timestamp outside the 5-min tolerance (replay gu
   const fresh = String(now - 299);
   const freshHeaders = await signWebhook(secretB64, "msg_fresh", fresh, body);
   expect(await verifyWebhook(body, freshHeaders, secretB64)).toBe(true);
+});
+
+test("webhook verify: multi-entry signature header — any valid v1 entry passes, v2-only fails", async () => {
+  // Standard Webhooks allows several space-delimited `v<n>,<sig>` entries (key
+  // rotation). The verifier must scan past junk/other versions to a good v1,
+  // and must NOT accept a signature under an unknown version.
+  const secretB64 = bytesToBase64(crypto.getRandomValues(new Uint8Array(24)));
+  const ts = String(Math.floor(Date.now() / 1000));
+  const body = JSON.stringify({ type: "order.paid", data: { id: "ord_multi" } });
+  const good = (await signWebhook(secretB64, "msg_multi", ts, body)).get("webhook-signature")!;
+  const goodSig = good.slice("v1,".length);
+
+  const withGoodLast = new Headers({
+    "webhook-id": "msg_multi",
+    "webhook-timestamp": ts,
+    "webhook-signature": `v2,junk malformed v1,${goodSig}`,
+  });
+  expect(await verifyWebhook(body, withGoodLast, secretB64)).toBe(true);
+
+  // The same (correct) signature labeled ONLY v2 must not verify.
+  const v2Only = new Headers({
+    "webhook-id": "msg_multi",
+    "webhook-timestamp": ts,
+    "webhook-signature": `v2,${goodSig}`,
+  });
+  expect(await verifyWebhook(body, v2Only, secretB64)).toBe(false);
 });
 
 test("webhook verify: rejects when any required header is missing", async () => {

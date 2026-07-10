@@ -32,6 +32,8 @@ interface PolarOrder {
   product_id?: string;
   status?: string;
   customer_id?: string;
+  created_at?: string; // ISO-8601 order timestamp — anchors the minted window
+
   // Net cents still refundable (before tax). Polar refunds the tax proportionally
   // on top of the `amount` we pass, so this — NOT total_amount — is the refund amount.
   refundable_amount?: number;
@@ -198,7 +200,8 @@ async function handleActivate(req: Request, env: Env, now: number = Date.now()):
 }
 
 // POST /reset — free a license's activation slots, gated once per 30 days.
-async function handleReset(req: Request, env: Env, now: number = Date.now()): Promise<Response> {
+// Exported so tests can drive the cooldown clock via `now`.
+export async function handleReset(req: Request, env: Env, now: number = Date.now()): Promise<Response> {
   let body: { key?: unknown };
   try {
     body = await req.json();
@@ -413,11 +416,20 @@ export async function handleOrderPaid(
   const email = order.customer?.email;
   if (!email) throw new Error("missing customer email");
 
-  // License, or a renewal from a verified owner: mint a fresh tier="license" key
-  // with a window starting now. Renewal is otherwise stateless — no prior-key lookup.
+  // License, or a renewal from a verified owner: mint a fresh tier="license" key.
+  // Renewal is otherwise stateless — no prior-key lookup.
+  //
+  // The window is anchored to the ORDER's own timestamp, never processing time
+  // (same rule as README "Re-mint rule"). This makes the mint deterministic per
+  // order: the get-then-put idempotency check above has no compare-and-swap, so
+  // a concurrent duplicate delivery (Polar retries on timeout) can reach here
+  // twice — with per-invocation `now` dating, that minted two DIFFERENT valid
+  // keys for one order. With order-anchored dating both invocations produce the
+  // same bytes; worst case the same key is emailed twice.
   const days = Number(env.UPDATE_WINDOW_DAYS ?? "365") || 365;
-  const issuedAt = now;
-  const updateThrough = now + days * DAY_MS;
+  const orderMs = Date.parse(order.created_at ?? "");
+  const issuedAt = Number.isFinite(orderMs) ? orderMs : now;
+  const updateThrough = issuedAt + days * DAY_MS;
 
   const seed = base64ToBytes(env.ED25519_PRIVATE_KEY);
   const key = await mintKey(

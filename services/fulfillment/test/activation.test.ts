@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import * as ed from "@noble/ed25519";
-import defaultExport, { type Env } from "../src/index";
+import defaultExport, { handleReset, type Env } from "../src/index";
 import { mintKey } from "../src/mint";
 import { signReceipt } from "../src/receipt";
 import { bytesToBase64, base64ToBytes } from "../src/util";
@@ -85,6 +85,20 @@ async function mintLicense(licenseId: string): Promise<string> {
 }
 
 // --- pinned cross-language vector -------------------------------------------
+
+test("machine hash frozen vector mirrors machine_id.rs byte-for-byte", async () => {
+  // hex(SHA-256("mnema-activation-v1:" + license_id + ":" + hardware_uuid)) —
+  // the app computes this (machine_id.rs pins the same digest); the worker only
+  // stores it, but the contract is cross-language, so pin it here too.
+  const digest = new Uint8Array(
+    await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode("mnema-activation-v1:order:x:uuid-y"),
+    ),
+  );
+  const hex = [...digest].map((b) => b.toString(16).padStart(2, "0")).join("");
+  expect(hex).toBe("930bf42716d983015865298a40d659fac566c83885479185ac95f43707c476b4");
+});
 
 test("signReceipt reproduces PINNED_RECEIPT_WIRE byte-for-byte", async () => {
   const wire = await signReceipt(
@@ -214,6 +228,37 @@ test("reset: a second reset within 30 days → 429 with retry_after_ms", async (
   const body = (await res.json()) as { retry_after_ms: number };
   expect(body.retry_after_ms).toBeGreaterThan(0);
   expect(body.retry_after_ms).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000);
+});
+
+test("reset: allowed again once the 30-day cooldown expires, and slots free", async () => {
+  const { env, store } = fakeEnv(bytesToBase64(TEST_SEED));
+  const key = await mintLicense(LICENSE);
+  for (const h of [HASH_A, HASH_B, HASH_C]) await activate(env, LICENSE, h);
+
+  const firstReset = 1_700_000_000_000;
+  const resetAt = (now: number) =>
+    handleReset(
+      new Request("https://f.example/reset", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key }),
+      }),
+      env,
+      now,
+    );
+
+  expect((await resetAt(firstReset)).status).toBe(200);
+  // Re-fill a slot so the second reset visibly frees it again.
+  await activate(env, LICENSE, HASH_D);
+
+  // One millisecond past the cooldown → allowed again.
+  const afterCooldown = firstReset + 30 * 24 * 60 * 60 * 1000 + 1;
+  expect((await resetAt(afterCooldown)).status).toBe(200);
+  expect([...store.keys()].filter((k) => k.startsWith(`activation:${LICENSE}:`)).length).toBe(0);
+  expect(JSON.parse(store.get(`activation-meta:${LICENSE}`)!).last_reset_at).toBe(afterCooldown);
+
+  // The second reset restarts the cooldown: an immediate third is limited again.
+  expect((await resetAt(afterCooldown + 1)).status).toBe(429);
 });
 
 // --- reset: bad signature → 403 ---------------------------------------------

@@ -24,8 +24,11 @@ key (ADR 0045). This service holds the **private** key as a cloud secret.
    retry re-attempts.
 4. Map `product_id`: `POLAR_LICENSE_PRODUCT_ID` and `POLAR_RENEWAL_PRODUCT_ID`
    both mint a fresh `tier="license"` key with
-   `update_through = now + UPDATE_WINDOW_DAYS` (default 365). Unknown product →
-   200 ACK, no mint.
+   `update_through = order created_at + UPDATE_WINDOW_DAYS` (default 365). The
+   window anchors to the **order's own timestamp**, never processing time, so a
+   concurrent duplicate delivery re-mints the *same* key bytes (get-then-put
+   idempotency has no CAS) — same anchoring as the Re-mint rule below. Unknown
+   product → 200 ACK, no mint.
 5. **Renewal ownership gate.** Since a renewal mints the same full `tier="license"`
    grant as the license SKU (just cheaper), a renewal from a non-owner would be a
    full-price bypass. Before minting a renewal, look up the buyer's license orders
