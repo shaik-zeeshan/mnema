@@ -2882,9 +2882,13 @@
     color: var(--app-bg);
   }
   .notification-popover {
-    position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
+    /* Fixed, not absolute: the titlebar clips its overflow (narrow-window
+       backstop above), so an absolutely-positioned child hanging below the
+       bar is invisible. Viewport-fixed escapes that clip; the titlebar is
+       sticky at top:0 with a fixed height, so this lands just under it. */
+    position: fixed;
+    top: calc(var(--app-titlebar-height) + 8px);
+    right: 8px;
     z-index: 20;
     width: min(340px, calc(100vw - 24px));
     max-height: 360px;
