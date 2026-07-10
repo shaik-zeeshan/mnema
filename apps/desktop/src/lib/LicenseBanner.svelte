@@ -2,83 +2,34 @@
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { licenseStatus } from "$lib/licensing-store.svelte";
   import { LICENSE_CHECKOUT_URL } from "$lib/licensing";
+  import { bannerFor, bannerVisible, days } from "$lib/licensing-banner";
   import { openSettings } from "$lib/surface-windows";
 
   // App-shell licensing banner. Renders off the shared `licenseStatus` store —
   // no dedicated backend event (the `license_status` event already carries
-  // `trial { daysLeft }` / `readOnly`). ponytail: `daysLeft` refreshes at
-  // startup and on capture-start (the gate's recompute cadence), which is enough
-  // for the final-week teach-in; a daily in-app timer is the upgrade path only
-  // if long-running sessions need the count to tick down live.
+  // `trial { daysLeft }` / `readOnly`). All policy (precedence, thresholds,
+  // tone, dismissal keying) lives in `licensing-banner.ts`; this component only
+  // renders. ponytail: `daysLeft` refreshes at startup and on capture-start
+  // (the gate's recompute cadence), which is enough for the final-week
+  // teach-in; a daily in-app timer is the upgrade path only if long-running
+  // sessions need the count to tick down live.
 
-  const status = $derived(licenseStatus.value);
+  const banner = $derived(bannerFor(licenseStatus.value));
 
-  // Final-week trial banner: only when a trial is running with ≤7 days left.
-  const trialDaysLeft = $derived(
-    status?.kind === "trial" && status.daysLeft <= 7 ? status.daysLeft : null,
-  );
-  const isReadOnly = $derived(status?.kind === "readOnly");
-  const isRevoked = $derived(status?.kind === "revoked");
-
-  // Activation banners on a licensed key (ADR 0053). Lapsed is the firm, capture-
-  // blocked end; a final-days provisional (≤3) is the soft "connect soon" nudge.
-  // refusedOverCap is deliberately Settings-only — capture still works, no nag.
-  const isLapsedActivation = $derived(
-    status?.kind === "licensed" && status.activation.state === "lapsed",
-  );
-  const provisionalDaysLeft = $derived(
-    status?.kind === "licensed" &&
-      status.activation.state === "pending" &&
-      status.activation.provisionalDaysLeft <= 3
-      ? status.activation.provisionalDaysLeft
-      : null,
-  );
-
-  // Tone escalates subtly as expiry nears; ReadOnly is the firm (non-dismissible) end.
-  const tone = $derived(
-    isReadOnly
-      ? "readonly"
-      : trialDaysLeft !== null && trialDaysLeft <= 1
-        ? "urgent"
-        : trialDaysLeft !== null && trialDaysLeft <= 3
-          ? "warn"
-          : "info",
-  );
-
-  function days(n: number): string {
-    return `${n} ${n === 1 ? "day" : "days"}`;
-  }
-
-  const trialMessage = $derived.by(() => {
-    if (trialDaysLeft === null) return "";
-    const lead =
-      trialDaysLeft <= 1
-        ? "Your free trial ends today."
-        : `Free trial ends in ${days(trialDaysLeft)}.`;
-    return `${lead} After that, Mnema switches to Read-Only Mode — your recorded history stays fully searchable; only new recording pauses until you buy.`;
-  });
-
-  // Dismissal is keyed to the current day-count so a fresh escalation (e.g. the
-  // count dropping into the ≤3 or ==1 tier) re-surfaces the banner. ReadOnly is
-  // never dismissible.
-  let dismissedAtDays = $state<number | null>(null);
-  const trialVisible = $derived(
-    trialDaysLeft !== null && dismissedAtDays !== trialDaysLeft,
+  // Dismissal is keyed per-kind to the banner's day-count so a fresh escalation
+  // (e.g. 3 → 2) re-surfaces it. Firm banners have a null key — never dismissible.
+  let dismissedTrialKey = $state<number | null>(null);
+  let dismissedProvisionalKey = $state<number | null>(null);
+  const visible = $derived(
+    bannerVisible(
+      banner,
+      banner?.kind === "provisional" ? dismissedProvisionalKey : dismissedTrialKey,
+    ),
   );
 
   function dismiss() {
-    dismissedAtDays = trialDaysLeft;
-  }
-
-  // Provisional nudge dismissal — keyed to its own day-count so a fresh
-  // escalation (3 → 2 → 1) re-surfaces the banner, same pattern as the trial.
-  let dismissedProvisionalAtDays = $state<number | null>(null);
-  const provisionalVisible = $derived(
-    provisionalDaysLeft !== null && dismissedProvisionalAtDays !== provisionalDaysLeft,
-  );
-
-  function dismissProvisional() {
-    dismissedProvisionalAtDays = provisionalDaysLeft;
+    if (banner?.kind === "trial") dismissedTrialKey = banner.dismissKey;
+    else if (banner?.kind === "provisional") dismissedProvisionalKey = banner.dismissKey;
   }
 
   function openCheckout() {
@@ -92,7 +43,7 @@
   }
 </script>
 
-{#if isReadOnly}
+{#if banner?.kind === "readOnly"}
   <div class="license-banner license-banner--readonly" role="alert">
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">
@@ -108,7 +59,7 @@
       </button>
     </div>
   </div>
-{:else if isRevoked}
+{:else if banner?.kind === "revoked"}
   <div class="license-banner license-banner--readonly" role="alert">
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">
@@ -124,7 +75,7 @@
       </button>
     </div>
   </div>
-{:else if isLapsedActivation}
+{:else if banner?.kind === "lapsed"}
   <div class="license-banner license-banner--readonly" role="alert">
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">
@@ -137,11 +88,11 @@
       </button>
     </div>
   </div>
-{:else if provisionalVisible}
+{:else if banner?.kind === "provisional" && visible}
   <div class="license-banner license-banner--warn" role="status">
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">
-      Activation still pending — connect to the internet within {days(provisionalDaysLeft ?? 0)} to
+      Activation still pending — connect to the internet within {days(banner.daysLeft)} to
       keep recording.
     </p>
     <div class="license-banner__actions">
@@ -149,16 +100,16 @@
         type="button"
         class="license-banner__btn license-banner__btn--dismiss"
         aria-label="Dismiss"
-        onclick={dismissProvisional}
+        onclick={dismiss}
       >
         Dismiss
       </button>
     </div>
   </div>
-{:else if trialVisible}
-  <div class="license-banner license-banner--{tone}" role="status">
+{:else if banner?.kind === "trial" && visible}
+  <div class="license-banner license-banner--{banner.tone}" role="status">
     <span class="license-banner__dot" aria-hidden="true"></span>
-    <p class="license-banner__text">{trialMessage}</p>
+    <p class="license-banner__text">{banner.message}</p>
     <div class="license-banner__actions">
       <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
         Buy Mnema

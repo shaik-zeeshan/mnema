@@ -1,46 +1,25 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { licenseStatus, activateLicense } from "$lib/licensing-store.svelte";
-  import { LICENSE_CHECKOUT_URL, RENEWAL_CHECKOUT_URL } from "$lib/licensing";
+  import {
+    badgeFor,
+    checkoutUrlFor,
+    licensedOutOfWindow as isLicensedOutOfWindow,
+    safeExternalUrl,
+    showBuyFor,
+  } from "$lib/licensing-panel";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import IconArrowUpRight from "~icons/lucide/arrow-up-right";
   import IconCheck from "~icons/lucide/check";
 
+  // All presentation policy (badge, buy-vs-renew, external-URL vetting) lives
+  // in `licensing-panel.ts`; this component only renders.
   const status = $derived(licenseStatus.value);
-
-  // Lapsed owner (out of update window) → Renew variant; in-window owner → hide Buy.
-  const licensedOutOfWindow = $derived(status?.kind === "licensed" && !status.inWindow);
-  const showBuy = $derived(!(status?.kind === "licensed" && status.inWindow));
-
-  // Scannable state signifier — a badge leads the Status row so the current
-  // state reads at a glance, with the prose kept as the explanation below it.
-  const badge = $derived.by((): { label: string; variant: "ok" | "neutral" | "warn" } | null => {
-    switch (status?.kind) {
-      case "licensed":
-        switch (status.activation.state) {
-          case "pending":
-            return { label: "Activating…", variant: "neutral" };
-          case "refusedOverCap":
-            return { label: "Device limit", variant: "warn" };
-          case "lapsed":
-            return { label: "Not activated", variant: "warn" };
-          default:
-            return { label: "Licensed", variant: "ok" };
-        }
-      case "trial":
-        return { label: "Trial", variant: "neutral" };
-      case "trialNotStarted":
-        return { label: "Trial ready", variant: "neutral" };
-      case "readOnly":
-        return { label: "Read-only", variant: "warn" };
-      case "revoked":
-        return { label: "Revoked", variant: "warn" };
-      default:
-        return null;
-    }
-  });
+  const licensedOutOfWindow = $derived(isLicensedOutOfWindow(status));
+  const showBuy = $derived(showBuyFor(status));
+  const badge = $derived(badgeFor(status));
 
   function fmtDate(ms: number): string {
     return new Date(ms).toLocaleDateString(undefined, {
@@ -91,12 +70,19 @@
 
   function openCheckout() {
     // Lapsed owners renew ($29); everyone else buys the license ($69).
-    const url = licensedOutOfWindow ? RENEWAL_CHECKOUT_URL : LICENSE_CHECKOUT_URL;
-    void openUrl(url).catch((e) => console.error("[License] open checkout failed", e));
+    void openUrl(checkoutUrlFor(status)).catch((e) =>
+      console.error("[License] open checkout failed", e),
+    );
   }
 
+  // Server-provided links (reset/buy from an over-cap 409) — https only.
   function openExternal(url: string) {
-    void openUrl(url).catch((e) => console.error("[License] open external failed", e));
+    const safe = safeExternalUrl(url);
+    if (!safe) {
+      console.error("[License] refusing to open non-https external url", url);
+      return;
+    }
+    void openUrl(safe).catch((e) => console.error("[License] open external failed", e));
   }
 </script>
 

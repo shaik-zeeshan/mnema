@@ -46,11 +46,16 @@ export const LICENSE_CHECKOUT_URL =
 	import.meta.env.VITE_LICENSE_CHECKOUT_URL ??
 	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";
 
-/** Checkout link for the $29 renewal. Polar preselects a product on a
- * multi-product checkout link via the `product_id` query param, so the default
- * reuses the license link with the (sandbox) renewal product preselected — the
- * link must have the renewal product attached in the Polar dashboard.
+/** Polar preselects a product on a multi-product checkout link via the
+ * `product_id` query param — append it with the right `?`/`&` join. */
+export function renewalCheckoutUrl(baseCheckoutUrl: string, productId: string): string {
+	return `${baseCheckoutUrl}${baseCheckoutUrl.includes("?") ? "&" : "?"}product_id=${productId}`;
+}
+
+/** Checkout link for the $29 renewal. The default reuses the license link with
+ * the (sandbox) renewal product preselected — the link must have the renewal
+ * product attached in the Polar dashboard.
  * Override via VITE_RENEWAL_CHECKOUT_URL (e.g. a dedicated renewal link). */
 export const RENEWAL_CHECKOUT_URL =
 	import.meta.env.VITE_RENEWAL_CHECKOUT_URL ??
-	`${LICENSE_CHECKOUT_URL}${LICENSE_CHECKOUT_URL.includes("?") ? "&" : "?"}product_id=adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6`;
+	renewalCheckoutUrl(LICENSE_CHECKOUT_URL, "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6");

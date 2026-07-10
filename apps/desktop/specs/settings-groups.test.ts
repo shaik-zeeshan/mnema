@@ -125,6 +125,12 @@ describe("settings deeplink resolution (verified gate expectations)", () => {
     expect(groupForSection(section)).toBe("data");
   });
 
+  test("?tab=license → About/license (email + banner deeplink target)", () => {
+    const section = resolveTabDeeplink("license");
+    expect(section).toBe("license");
+    expect(groupForSection(section!)).toBe("about");
+  });
+
   test("legacy aliases resolve to the same sections as before", () => {
     expect(resolveTabDeeplink("metadata")).toBe("privacy");
     expect(resolveTabDeeplink("microphone")).toBe("audio");

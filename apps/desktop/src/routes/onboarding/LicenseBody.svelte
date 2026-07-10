@@ -1,5 +1,6 @@
 <script lang="ts">
   import { licenseStatus } from "$lib/licensing-store.svelte";
+  import { statusLineFor } from "$lib/licensing-panel";
 
   // Purely explanatory — the trial starts at first Capture, not here. This body
   // takes no key and starts nothing; it only sets expectations. Reuses the shared
@@ -8,27 +9,8 @@
   // Optional live reflection: a returning trial/licensed user re-running
   // onboarding sees their real state instead of the generic pitch. `null` (the
   // gate hasn't run yet, or a genuine first run) → just the explainer below.
-  const status = $derived(licenseStatus.value);
-  const statusLine = $derived.by(() => {
-    const s = status;
-    if (!s) return null;
-    switch (s.kind) {
-      case "trial":
-        return `You're on the free trial — ${s.daysLeft} ${s.daysLeft === 1 ? "day" : "days"} left.`;
-      case "trialNotStarted":
-        return "Your free trial starts the moment you first record.";
-      case "readOnly":
-        return "Your trial has ended — you're in Read-Only Mode. Everything you recorded stays browsable; buy once to record again.";
-      case "revoked":
-        return "This license has been revoked — you're in Read-Only Mode. Everything you recorded stays browsable; buy once to record again.";
-      case "licensed":
-        // A lapsed activation blocks recording (same state License.svelte and
-        // LicenseBanner distinguish) — don't promise "never pauses" there.
-        return s.activation.state === "lapsed"
-          ? "You own Mnema, but activation hasn't finished — connect to the internet once to resume recording."
-          : "You own Mnema — thank you. Recording never pauses.";
-    }
-  });
+  // Copy lives in `licensing-panel.ts` (bun-tested).
+  const statusLine = $derived(statusLineFor(licenseStatus.value));
 </script>
 
 <div class="group">
