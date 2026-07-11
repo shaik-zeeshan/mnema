@@ -121,7 +121,25 @@ jobs:
           for file in assets/*; do
             name="$(basename "$file")"
             [[ "$name" == "latest.json" ]] && continue
-            aws s3 cp "$file" "s3://$R2_BUCKET/$artifact_path/$name" \
+            # These objects are immutable and edge-cached for a year, so an
+            # overwrite never reaches already-cached edges while the freshly
+            # rewritten feed advertises the new signature — updaters would fetch
+            # stale bytes that fail signature verification. Never overwrite:
+            # identical bytes are an idempotent re-run/backfill (skip); different
+            # bytes mean a rebuild under an already-uploaded version, which can
+            # only ship as a new version.
+            key="$artifact_path/$name"
+            if aws s3api head-object --bucket "$R2_BUCKET" --key "$key" >/dev/null 2>&1; then
+              aws s3 cp "s3://$R2_BUCKET/$key" existing-artifact
+              if ! cmp -s "$file" existing-artifact; then
+                echo "$key already exists in R2 with different bytes; immutable artifacts cannot be replaced (edge caches keep the old bytes ~1yr) — bump the version instead" >&2
+                exit 1
+              fi
+              rm -f existing-artifact
+              echo "keeping existing immutable artifact $key (identical bytes)"
+              continue
+            fi
+            aws s3 cp "$file" "s3://$R2_BUCKET/$key" \
               --cache-control "public, max-age=31536000, immutable"
           done
 
@@ -152,7 +170,17 @@ jobs:
             [[ "$code" == "200" ]]
           }
           check "$RELEASES_BASE_URL/$CHANNEL/latest.json"
-          curl -s "$RELEASES_BASE_URL/$CHANNEL/latest.json?$bust" | jq -e --arg v "${{ steps.release_version.outputs.version }}" '.version == $v'
+          feed="$(curl -s "$RELEASES_BASE_URL/$CHANNEL/latest.json?$bust")"
+          jq -e --arg v "${{ steps.release_version.outputs.version }}" '.version == $v' <<<"$feed"
+          # A broken feed rewrite would pass the version check while updaters
+          # 404: every platform URL must point at this run's R2 artifacts and
+          # resolve (HEAD, to avoid downloading the archives).
+          while read -r url; do
+            [[ "$url" == "$RELEASES_BASE_URL/releases/$RELEASE_TAG/"* ]]
+            code="$(curl -s -I -o /dev/null -w '%{http_code}' "$url?$bust")"
+            echo "$code $url"
+            [[ "$code" == "200" ]]
+          done < <(jq -r '.platforms[].url' <<<"$feed")
           if [[ "$CHANNEL" == "stable" ]]; then
             check "$RELEASES_BASE_URL/stable/Mnema.dmg"
           fi
