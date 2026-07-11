@@ -7,11 +7,33 @@ on:
         description: "Release version to promote, for example 0.3.0 or v0.3.0-preview.1"
         required: true
         type: string
+      republish:
+        description: "Re-publish an already-published release to R2 (seed/backfill; skips the draft check)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
+
+# Public distribution lives on Cloudflare R2 behind release.mnema.day, so
+# downloads and update feeds survive this repository going private. The GitHub
+# release is kept only as an internal record/staging area for smoke tests.
+# Bucket layout:
+#   releases/v{version}/  immutable artifacts (dmg, app.tar.gz, sig)
+#   stable/latest.json    stable updater feed (rewritten to R2 URLs)
+#   preview/latest.json   preview updater feed
+#   stable/Mnema.dmg      fixed download URL used by the website
+env:
+  RELEASES_BASE_URL: https://release.mnema.day
+  R2_BUCKET: mnema-releases
+  AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+  AWS_DEFAULT_REGION: auto
+  # R2 does not support the AWS CLI's newer default integrity checksums.
+  AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+  AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
 
 concurrency:
   group: macos-release-promote-${{ github.event.inputs.version }}
@@ -21,10 +43,6 @@ jobs:
   promote:
     name: Publish reviewed release
     runs-on: ubuntu-latest
-    outputs:
-      channel: ${{ steps.release_version.outputs.channel }}
-      tag: ${{ steps.release_version.outputs.tag }}
-      version: ${{ steps.release_version.outputs.version }}
 
     steps:
       - name: Validate version
@@ -50,15 +68,16 @@ jobs:
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Validate draft release assets
+      - name: Validate release assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+          REPUBLISH: ${{ github.event.inputs.republish }}
         run: |
           set -euo pipefail
-          release_json="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets)"
-          if [[ "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
-            echo "$RELEASE_TAG is not a draft release" >&2
+          release_json="$(gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)"
+          if [[ "$REPUBLISH" != "true" && "$(jq -r '.isDraft' <<<"$release_json")" != "true" ]]; then
+            echo "$RELEASE_TAG is not a draft release (pass republish=true to backfill R2)" >&2
             exit 1
           fi
 
@@ -78,50 +97,97 @@ jobs:
           require_asset ".app.tar.gz.sig updater signature" '\.app\.tar\.gz\.sig$'
           require_asset "latest.json" '^latest\.json$'
 
-      - name: Publish stable release
-        if: steps.release_version.outputs.channel == 'stable'
+      - name: Download release assets
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease=false
+        run: gh release download "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --dir assets --clobber
 
-      - name: Publish preview release
-        if: steps.release_version.outputs.channel == 'preview'
+      - name: Publish artifacts and update feed to R2
         env:
-          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
-        run: gh release edit "$RELEASE_TAG" --draft=false --prerelease=true
-
-  publish-preview-feed:
-    name: Publish preview update feed
-    needs: promote
-    if: needs.promote.outputs.channel == 'preview'
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Download preview latest.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.promote.outputs.tag }}
+          CHANNEL: ${{ steps.release_version.outputs.channel }}
         run: |
           set -euo pipefail
-          mkdir -p preview-feed/updates/preview
-          gh release download "$RELEASE_TAG" \
-            --pattern latest.json \
-            --dir preview-feed/updates/preview \
-            --clobber
+          artifact_path="releases/$RELEASE_TAG"
 
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
+          # The draft's latest.json points at GitHub asset URLs; repoint each
+          # platform at the immutable R2 copy. The updater signature covers the
+          # archive contents, not its URL, so the rewrite is safe.
+          jq --arg base "$RELEASES_BASE_URL/$artifact_path" \
+            '.platforms |= with_entries(.value.url = ($base + "/" + (.value.url | split("/") | last)))' \
+            assets/latest.json > latest.json
 
-      - name: Upload preview feed artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: preview-feed
+          for file in assets/*; do
+            name="$(basename "$file")"
+            [[ "$name" == "latest.json" ]] && continue
+            # These objects are immutable and edge-cached for a year, so an
+            # overwrite never reaches already-cached edges while the freshly
+            # rewritten feed advertises the new signature — updaters would fetch
+            # stale bytes that fail signature verification. Never overwrite:
+            # identical bytes are an idempotent re-run/backfill (skip); different
+            # bytes mean a rebuild under an already-uploaded version, which can
+            # only ship as a new version.
+            key="$artifact_path/$name"
+            if aws s3api head-object --bucket "$R2_BUCKET" --key "$key" >/dev/null 2>&1; then
+              aws s3 cp "s3://$R2_BUCKET/$key" existing-artifact
+              if ! cmp -s "$file" existing-artifact; then
+                echo "$key already exists in R2 with different bytes; immutable artifacts cannot be replaced (edge caches keep the old bytes ~1yr) — bump the version instead" >&2
+                exit 1
+              fi
+              rm -f existing-artifact
+              echo "keeping existing immutable artifact $key (identical bytes)"
+              continue
+            fi
+            aws s3 cp "$file" "s3://$R2_BUCKET/$key" \
+              --cache-control "public, max-age=31536000, immutable"
+          done
 
-      - name: Deploy preview feed
-        id: deployment
-        uses: actions/deploy-pages@v4
+          # Feed and the fixed-URL DMG are mutable: keep edge caching short so
+          # a new release is visible within minutes.
+          aws s3 cp latest.json "s3://$R2_BUCKET/$CHANNEL/latest.json" \
+            --content-type application/json \
+            --cache-control "public, max-age=300"
+
+          if [[ "$CHANNEL" == "stable" ]]; then
+            dmg="$(compgen -G 'assets/*.dmg')"
+            aws s3 cp "$dmg" "s3://$R2_BUCKET/stable/Mnema.dmg" \
+              --cache-control "public, max-age=300"
+          fi
+
+      - name: Verify public URLs
+        env:
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+          CHANNEL: ${{ steps.release_version.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # The query string busts Cloudflare's edge cache so we verify the
+          # just-uploaded objects, not a response cached before this run.
+          bust="cb=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          check() {
+            code="$(curl -s -o /dev/null -w '%{http_code}' "$1?$bust")"
+            echo "$code $1"
+            [[ "$code" == "200" ]]
+          }
+          check "$RELEASES_BASE_URL/$CHANNEL/latest.json"
+          feed="$(curl -s "$RELEASES_BASE_URL/$CHANNEL/latest.json?$bust")"
+          jq -e --arg v "${{ steps.release_version.outputs.version }}" '.version == $v' <<<"$feed"
+          # A broken feed rewrite would pass the version check while updaters
+          # 404: every platform URL must point at this run's R2 artifacts and
+          # resolve (HEAD, to avoid downloading the archives).
+          while read -r url; do
+            [[ "$url" == "$RELEASES_BASE_URL/releases/$RELEASE_TAG/"* ]]
+            code="$(curl -s -I -o /dev/null -w '%{http_code}' "$url?$bust")"
+            echo "$code $url"
+            [[ "$code" == "200" ]]
+          done < <(jq -r '.platforms[].url' <<<"$feed")
+          if [[ "$CHANNEL" == "stable" ]]; then
+            check "$RELEASES_BASE_URL/stable/Mnema.dmg"
+          fi
+
+      - name: Mark GitHub release published
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release_version.outputs.tag }}
+          PRERELEASE: ${{ steps.release_version.outputs.prerelease }}
+        run: gh release edit "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease="$PRERELEASE"
