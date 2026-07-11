@@ -3,7 +3,7 @@ import "../styles/global.css";
 import "@fontsource-variable/hanken-grotesk";
 import "@fontsource/spline-sans-mono/400.css";
 import "@fontsource/spline-sans-mono/500.css";
-import { GITHUB_RELEASES_API_URL } from "../config";
+import { STABLE_FEED_URL } from "../config";
 
 interface Props {
   title?: string;
@@ -30,7 +30,7 @@ const {
     <meta property="og:image" content={new URL("/icon.png", Astro.site)} />
     <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
     <meta name="twitter:card" content="summary" />
-    <meta name="mnema-latest-release-api" content={GITHUB_RELEASES_API_URL} />
+    <meta name="mnema-latest-release-feed" content={STABLE_FEED_URL} />
     <link rel="icon" type="image/png" href="/icon.png" />
     <script is:inline>
       (function () {
@@ -46,127 +46,34 @@ const {
       })();
     </script>
     <script is:inline>
-      // v3: cache is now paint-only (stale-while-revalidate). We always
-      // revalidate against GitHub on load, so a stale entry can no longer pin
-      // an old version for the life of a tab. Bump on any cache-shape change.
-      const RELEASE_CACHE_KEY = "mnema-latest-release-v3";
-      const RELEASE_CACHE_TTL_MS = 60 * 60 * 1000;
-
-      function selectMacDownloadAsset(assets) {
-        if (!Array.isArray(assets)) return null;
-
-        const downloadableAssets = assets.filter(
-          (asset) => asset && typeof asset.browser_download_url === "string",
-        );
-
-        return (
-          downloadableAssets.find(
-            (asset) =>
-              /\.dmg$/i.test(asset.name) &&
-              /(aarch64|arm64|apple[-_ ]?silicon)/i.test(asset.name),
-          ) ||
-          downloadableAssets.find((asset) => /\.dmg$/i.test(asset.name)) ||
-          downloadableAssets.find(
-            (asset) => /mac|darwin/i.test(asset.name) && /\.(zip|tar\.gz)$/i.test(asset.name),
-          ) ||
-          null
-        );
-      }
-
-      function normalizeReleaseVersion(tagName) {
-        if (typeof tagName !== "string") return "";
-        return tagName.replace(/^v/i, "");
-      }
-
-      function applyLatestRelease(release) {
-        if (!release || typeof release.html_url !== "string") return;
-
-        const version = normalizeReleaseVersion(release.tag_name);
-        const asset = selectMacDownloadAsset(release.assets);
-        const downloadUrl = asset?.browser_download_url || release.html_url;
-
-        document.querySelectorAll("[data-latest-download-link]").forEach((link) => {
-          if (link instanceof HTMLAnchorElement) link.href = downloadUrl;
-        });
-
-        document.querySelectorAll("[data-latest-release-link]").forEach((link) => {
-          if (link instanceof HTMLAnchorElement) link.href = release.html_url;
-        });
-
-        if (!version) return;
-        document.querySelectorAll("[data-latest-release-version]").forEach((el) => {
-          el.textContent = `v${version}`;
-        });
-      }
-
-      function readCachedRelease() {
-        try {
-          const cached = JSON.parse(sessionStorage.getItem(RELEASE_CACHE_KEY) || "null");
-          if (
-            cached &&
-            typeof cached.fetchedAt === "number" &&
-            Date.now() - cached.fetchedAt < RELEASE_CACHE_TTL_MS
-          ) {
-            return cached.release;
-          }
-        } catch {
-          sessionStorage.removeItem(RELEASE_CACHE_KEY);
-        }
-
-        return null;
-      }
-
-      function writeCachedRelease(release) {
-        try {
-          sessionStorage.setItem(
-            RELEASE_CACHE_KEY,
-            JSON.stringify({ fetchedAt: Date.now(), release }),
-          );
-        } catch {
-          // Ignore storage failures; the fallback links still work.
-        }
-      }
-
-      async function loadLatestRelease() {
-        const latestReleaseApiUrl = document.querySelector(
-          'meta[name="mnema-latest-release-api"]',
+      // Download links are static (the promote workflow keeps a fixed
+      // stable/Mnema.dmg object current), so the only live bit left is the
+      // footer version chip, read from the stable update feed. The feed is the
+      // published stable channel by construction — no prerelease filtering.
+      async function loadLatestVersion() {
+        const feedUrl = document.querySelector(
+          'meta[name="mnema-latest-release-feed"]',
         )?.content;
-        if (!latestReleaseApiUrl) return;
-
-        // Paint the cached release immediately for a fast, flash-free render,
-        // then always revalidate below so a newly published release shows up
-        // without waiting for the cache to expire or the tab to close.
-        const cachedRelease = readCachedRelease();
-        if (cachedRelease) applyLatestRelease(cachedRelease);
+        if (!feedUrl) return;
 
         try {
-          const response = await fetch(latestReleaseApiUrl, {
-            headers: { Accept: "application/vnd.github+json" },
-            cache: "no-store",
-          });
+          const response = await fetch(feedUrl);
           if (!response.ok) return;
 
-          const releases = await response.json();
-          // Mirror GitHub's "Latest" badge: newest release that is neither a
-          // draft nor a prerelease. The list is created_at-desc, so the first
-          // match is the latest stable. (Without the prerelease guard a
-          // prerelease like v0.1.0 gets shown/cached as "latest".)
-          const latestRelease = Array.isArray(releases)
-            ? releases.find((release) => release && !release.draft && !release.prerelease)
-            : null;
-          if (!latestRelease) return;
-
-          writeCachedRelease(latestRelease);
-          applyLatestRelease(latestRelease);
+          const feed = await response.json();
+          if (typeof feed?.version !== "string" || !feed.version) return;
+          document.querySelectorAll("[data-latest-release-version]").forEach((el) => {
+            el.textContent = `v${feed.version}`;
+          });
         } catch {
-          // Keep the static releases-page fallback when GitHub is unavailable.
+          // Keep the static "latest" fallback when the feed is unreachable.
         }
       }
 
       if (document.readyState === "loading") {
-        document.addEventListener("DOMContentLoaded", loadLatestRelease, { once: true });
+        document.addEventListener("DOMContentLoaded", loadLatestVersion, { once: true });
       } else {
-        loadLatestRelease();
+        loadLatestVersion();
       }
     </script>
   </head>

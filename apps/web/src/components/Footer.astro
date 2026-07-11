@@ -1,5 +1,5 @@
 ---
-import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
+import { DOWNLOAD_URL, GITHUB_URL } from "../config";
 ---
 
 <footer class="footer">
@@ -17,9 +17,8 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
           <span class="footer-name">mnema</span>
         </a>
         <a
-          href={RELEASE_URL}
+          href={DOWNLOAD_URL}
           class="footer-version"
-          data-latest-release-link
           data-latest-release-version
           target="_blank"
           rel="noopener noreferrer">latest</a
@@ -27,7 +26,7 @@ import { DOWNLOAD_URL, GITHUB_URL, RELEASE_URL } from "../config";
       </div>
 
       <nav class="footer-links" aria-label="Footer">
-        <a href={DOWNLOAD_URL} data-latest-download-link>Download</a>
+        <a href={DOWNLOAD_URL}>Download</a>
         <a href="/agents">Agents</a>
         <a href="/alternatives/rewind-ai">Rewind alternative</a>
         <a href="/alternatives/microsoft-recall-mac">Recall for Mac</a>
