@@ -84,7 +84,7 @@ Before promotion:
 
 ## Promote a Release
 
-Run **Promote macOS Release** (`.github/workflows/macos-release-promote.yml`) manually with the reviewed version.
+**Promote macOS Release** (`.github/workflows/macos-release-promote.yml`) runs automatically when the draft GitHub release is published (draft → published in the GitHub UI), or manually via workflow dispatch with the reviewed version.
 
 For both channels the workflow:
 
