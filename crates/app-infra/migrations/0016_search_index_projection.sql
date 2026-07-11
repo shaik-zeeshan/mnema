@@ -14,12 +14,25 @@ CREATE TABLE IF NOT EXISTS search_documents (
     window_title TEXT,
     group_key TEXT NOT NULL CHECK (LENGTH(TRIM(group_key)) > 0),
     text_source_kind TEXT NOT NULL CHECK (text_source_kind IN ('direct', 'equivalent_reuse')),
-    body_text TEXT NOT NULL CHECK (LENGTH(TRIM(body_text)) > 0),
+    -- `equivalent_reuse` rows do NOT copy the canonical frame's OCR text: they
+    -- store NULL `body_text` and borrow the canonical `direct` row's text through
+    -- `canonical_search_document_id` (visually-identical frames share one copy).
+    -- `direct` rows own their text. The CHECK below makes that the only legal shape.
+    body_text TEXT,
+    canonical_search_document_id INTEGER REFERENCES search_documents (id) ON DELETE CASCADE,
     context_text TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (
         (anchor_type = 'frame' AND frame_id IS NOT NULL AND audio_segment_id IS NULL)
         OR (anchor_type = 'audio' AND audio_segment_id IS NOT NULL)
+    ),
+    CHECK (
+        (text_source_kind = 'equivalent_reuse'
+            AND body_text IS NULL
+            AND canonical_search_document_id IS NOT NULL)
+        OR (text_source_kind = 'direct'
+            AND body_text IS NOT NULL AND LENGTH(TRIM(body_text)) > 0
+            AND canonical_search_document_id IS NULL)
     )
 );
 
@@ -31,6 +44,8 @@ CREATE INDEX IF NOT EXISTS search_documents_audio_idx
     ON search_documents (audio_segment_id);
 CREATE INDEX IF NOT EXISTS search_documents_result_idx
     ON search_documents (processing_result_id);
+CREATE INDEX IF NOT EXISTS search_documents_canonical_idx
+    ON search_documents (canonical_search_document_id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
     body_text,
@@ -40,8 +55,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
     tokenize='unicode61'
 );
 
+-- `equivalent_reuse` rows are never inserted into the FTS index (they carry no
+-- body_text of their own), so their delete must NOT issue an FTS `delete` op —
+-- doing so would corrupt the external-content index with a row it never held.
 CREATE TRIGGER IF NOT EXISTS search_documents_fts_after_delete
 AFTER DELETE ON search_documents
+WHEN OLD.text_source_kind <> 'equivalent_reuse'
 BEGIN
     INSERT INTO search_documents_fts(search_documents_fts, rowid, body_text, context_text)
     VALUES('delete', OLD.id, OLD.body_text, OLD.context_text);

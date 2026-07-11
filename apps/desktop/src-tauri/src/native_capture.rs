@@ -99,6 +99,21 @@ pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationG
 #[derive(Default)]
 pub struct SystemWakeNotifierState;
 
+// Holds the registration for the Core Graphics display-reconfiguration callback
+// used as the primary, polling-free wake-recovery signal (dark/deep-idle wakes
+// and monitor reconnects power the panel back on without posting
+// `NSWorkspaceDidWake`). The guard removes the callback on drop for symmetry.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+pub struct DisplayReconfigurationNotifierState(
+    // The guard is held only so its `Drop` deregisters the callback on teardown.
+    #[allow(dead_code)] std::sync::Mutex<Option<DisplayReconfigurationCallbackGuard>>,
+);
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct DisplayReconfigurationNotifierState(std::sync::Mutex<Option<()>>);
+
 #[cfg(target_os = "macos")]
 #[derive(Default)]
 pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
@@ -1231,6 +1246,7 @@ fn audio_transcription_provider_label(provider: AudioTranscriptionProvider) -> &
         AudioTranscriptionProvider::LocalWhisper => "Local Whisper",
         AudioTranscriptionProvider::AppleSpeechOnDevice => "Apple Speech on-device recognition",
         AudioTranscriptionProvider::Parakeet => "Parakeet",
+        AudioTranscriptionProvider::Deepgram => "Deepgram (cloud)",
     }
 }
 
@@ -1872,6 +1888,120 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
 
 #[cfg(not(target_os = "macos"))]
 pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
+
+// `NSWorkspaceDidWake` is only posted on a *full* wake; dark wakes, Power Nap,
+// and "Wake from Deep Idle" never post it, so capture would silently stay
+// paused until the next frontend permissions poll. The display panel powering
+// back up *does* drive a Core Graphics display reconfiguration, which we listen
+// on as the definitive, polling-free re-arm signal. This also covers external
+// monitor disconnect/reconnect — the other half of ADR 0021's
+// "display-unavailable as transient liveness".
+#[cfg(target_os = "macos")]
+fn display_reconfiguration_recovery_app_handle() -> &'static Mutex<Option<tauri::AppHandle>> {
+    static APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
+    APP_HANDLE.get_or_init(|| Mutex::new(None))
+}
+
+// Decide whether a reconfiguration callback's flags represent a display coming
+// (back) online at the *end* of a configuration pass — the moment recovery
+// should fire. We deliberately ignore the begin-configuration notification (the
+// pre-change half of every begin/end pair) and pure offline transitions
+// (remove/disable with nothing bringing a display online), so recovery runs
+// exactly once per reconfiguration and never on a display going away.
+#[cfg(target_os = "macos")]
+fn display_reconfiguration_flags_indicate_display_online(flags: u32) -> bool {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+
+    let flags = F::from_bits_retain(flags);
+
+    // The begin-configuration notification is the "about to change" half; wait
+    // for the matching end notification (begin flag clear) before re-arming.
+    if flags.contains(F::kCGDisplayBeginConfigurationFlag) {
+        return false;
+    }
+
+    // A display is now present/active if it was added, enabled, became main, or
+    // (re)acquired a mode. A reconfiguration that only removes/disables a
+    // display is a display going away, not a wake — skip it.
+    flags.intersects(
+        F::kCGDisplayAddFlag
+            | F::kCGDisplayEnabledFlag
+            | F::kCGDisplaySetMainFlag
+            | F::kCGDisplaySetModeFlag,
+    )
+}
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" fn display_reconfiguration_callback(
+    _display: core_graphics::display::CGDirectDisplayID,
+    flags: u32,
+    _user_info: *const std::ffi::c_void,
+) {
+    if !display_reconfiguration_flags_indicate_display_online(flags) {
+        return;
+    }
+
+    let app_handle = display_reconfiguration_recovery_app_handle()
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    if let Some(app_handle) = app_handle {
+        // Funnel through the shared recovery path: it is atomic-guarded
+        // (`begin/finish_system_wake_recovery`) and re-checks `!session_is_live`,
+        // so firing alongside the `NSWorkspaceDidWake` fallback is idempotent.
+        recover_screen_capture_after_system_wake(app_handle);
+    }
+}
+
+#[cfg(target_os = "macos")]
+struct DisplayReconfigurationCallbackGuard;
+
+#[cfg(target_os = "macos")]
+impl Drop for DisplayReconfigurationCallbackGuard {
+    fn drop(&mut self) {
+        unsafe {
+            core_graphics::display::CGDisplayRemoveReconfigurationCallback(
+                display_reconfiguration_callback,
+                std::ptr::null(),
+            );
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_display_reconfiguration_notifier(app_handle: tauri::AppHandle) {
+    use core_graphics::base::{kCGErrorSuccess, CGError};
+
+    // The C callback can't capture state, so stash the handle where it can reach
+    // it. Set before registering so no early callback races a missing handle.
+    if let Ok(mut slot) = display_reconfiguration_recovery_app_handle().lock() {
+        *slot = Some(app_handle.clone());
+    }
+
+    let error: CGError = unsafe {
+        core_graphics::display::CGDisplayRegisterReconfigurationCallback(
+            display_reconfiguration_callback,
+            std::ptr::null(),
+        )
+    };
+    if error != kCGErrorSuccess {
+        debug_log::log_warn(format!(
+            "failed to register display reconfiguration callback for wake recovery (CGError {error}); \
+             relying on NSWorkspaceDidWake fallback"
+        ));
+        return;
+    }
+
+    let notifier_state = app_handle.state::<DisplayReconfigurationNotifierState>();
+    let mut slot = notifier_state
+        .0
+        .lock()
+        .expect("display reconfiguration notifier state poisoned");
+    *slot = Some(DisplayReconfigurationCallbackGuard);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_display_reconfiguration_notifier(_app_handle: tauri::AppHandle) {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CaptureSupportSnapshot {
@@ -3059,18 +3189,45 @@ fn finish_recording_settings_update(
 
     if previous_settings.ocr.enabled && !settings.ocr.enabled {
         if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
-            match tauri::async_runtime::block_on(infra.fail_queued_ocr_jobs_because_disabled()) {
-                Ok(failed_count) => debug_log::log_info(format!(
-                    "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
-                )),
-                Err(error) => debug_log::log_error(format!(
-                    "failed to mark queued OCR jobs failed after disabling OCR: {error}"
-                )),
-            }
+            // Fire-and-forget off the main thread: this only marks already-queued
+            // OCR jobs failed now that OCR is disabled (cleanup whose result is
+            // merely logged). Settings commands run on the main thread, so we must
+            // not block the UI awaiting this capture-index write.
+            let infra = std::sync::Arc::clone(&*infra);
+            tauri::async_runtime::spawn(async move {
+                match infra.fail_queued_ocr_jobs_because_disabled().await {
+                    Ok(failed_count) => debug_log::log_info(format!(
+                        "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
+                    )),
+                    Err(error) => debug_log::log_error(format!(
+                        "failed to mark queued OCR jobs failed after disabling OCR: {error}"
+                    )),
+                }
+            });
         } else {
             debug_log::log_warn(
                 "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
             );
+        }
+    }
+
+    // An MCP connector whose auth mode flipped (Bearer↔OAuth) leaves the OLD
+    // mode's payload in its polymorphic keychain slot — worst case the OAuth
+    // Token Set JSON attached verbatim as an `Authorization: Bearer` header.
+    // Clear the slot at the save that lands the flip, so neither path can read
+    // the other mode's leftover (ADR 0051; the transport also refuses a
+    // mismatched payload as a backstop).
+    for id in crate::ask_ai::mcp::auth_mode_flipped_ids(
+        &previous_settings.ai_runtime.mcp_servers,
+        &settings.ai_runtime.mcp_servers,
+    ) {
+        match app_infra::delete_mcp_server_secret(&id) {
+            Ok(()) => debug_log::log_info(format!(
+                "cleared the keychain secret for MCP connector \"{id}\" after its auth mode changed"
+            )),
+            Err(error) => debug_log::log_error(format!(
+                "failed to clear the keychain secret for MCP connector \"{id}\" after its auth mode changed: {error}"
+            )),
         }
     }
 
@@ -3402,11 +3559,23 @@ pub fn update_ai_runtime_settings(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
+    let response = update_recording_settings_domain(
         &app_handle,
         state.inner(),
         RecordingSettingsDomainPatch::AiRuntime(request),
-    )
+    )?;
+    // MCP teardown (ADR 0048): reconcile the connection cache against the
+    // just-saved settings so removed/disabled connectors' handles — and their
+    // child processes — are dropped. Fire-and-forget: teardown never blocks the
+    // save, and an EDITED connector is reaped lazily on next use.
+    if let Some(manager) = app_handle.try_state::<crate::ask_ai::mcp::McpManager>() {
+        let manager = (*manager).clone();
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            manager.reconcile(&app_handle).await;
+        });
+    }
+    Ok(response)
 }
 
 #[tauri::command]
@@ -3594,11 +3763,24 @@ fn stop_native_capture_with_state(
 }
 
 #[tauri::command]
-pub fn stop_native_capture(
-    state: tauri::State<'_, NativeCaptureState>,
+pub async fn stop_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = stop_native_capture_with_state(state, &app_handle)?;
+    // Stopping does a synchronous capture-index write (marking sessions
+    // completed). This command runs on the main thread, so run the stop on the
+    // blocking pool and await it — keeping the UI responsive while preserving
+    // ordering (the completion write finishes before we emit the change event).
+    // The tray/relaunch/shortcut entry points keep calling the sync helper
+    // directly so they still complete in-line.
+    let handle = app_handle.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        stop_native_capture_with_state(handle.state::<NativeCaptureState>(), &handle)
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "stop_native_capture_join".to_string(),
+        message: format!("stop native capture task failed: {error}"),
+    })??;
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)

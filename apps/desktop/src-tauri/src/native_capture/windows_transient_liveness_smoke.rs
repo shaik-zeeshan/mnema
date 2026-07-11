@@ -507,7 +507,7 @@ fn install_smoke_recording_settings(
     settings.capture_microphone = sources.microphone;
     settings.capture_system_audio = sources.system_audio;
     settings.segment_duration_seconds = 300;
-    settings.screen_frame_rate = 1;
+    settings.screen_frame_rate = 1.0;
     settings.save_directory = config.save_directory.to_string_lossy().to_string();
     settings.auto_start = false;
     // Disable inactivity pause so the only screen pause we can observe is the

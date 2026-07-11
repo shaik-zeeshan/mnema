@@ -994,7 +994,7 @@ mod tests {
             capture_microphone: false,
             capture_system_audio: false,
             segment_duration_seconds: 60,
-            screen_frame_rate: 30,
+            screen_frame_rate: 30.0,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::Original,
             },

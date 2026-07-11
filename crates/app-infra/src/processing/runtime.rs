@@ -7,6 +7,9 @@ use crate::{AppInfraError, Result};
 pub enum ProcessingJobRunOutcome {
     Completed(ProcessingJobCompletion),
     Failed(ProcessingJob),
+    /// A transient-liveness condition (ADR 0048): the job was requeued with backoff WITHOUT
+    /// spending a failure attempt. Not terminal — the segment waits and retries indefinitely.
+    RequeuedForLiveness(ProcessingJob),
 }
 
 #[derive(Clone)]
@@ -109,6 +112,16 @@ impl ProcessingRuntime {
                 self.store.complete_job(job.id, &result).await?,
             )),
             Err(error) => {
+                if error.is_transient_liveness() {
+                    // ADR 0048: an environmental failure (offline/timeout/rate-limit/5xx, or a
+                    // rejected key for a cloud provider). Requeue with backoff without spending a
+                    // failure attempt so an offline stretch never burns a segment's retry cap.
+                    let requeued = self
+                        .store
+                        .requeue_job_for_transient_liveness(job.id, Some(&error.to_string()))
+                        .await?;
+                    return Ok(ProcessingJobRunOutcome::RequeuedForLiveness(requeued));
+                }
                 let failed = self
                     .store
                     .mark_job_failed(job.id, Some(&error.to_string()))
@@ -141,7 +154,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        db::Database,
+        db::{CaptureDb, Database},
         processing::{
             NewFrame, OcrProcessorBackend, ProcessingJobDraft, ProcessingResultDraft,
             ProcessingSubject, AUDIO_TRANSCRIPTION_PROCESSOR,
@@ -261,6 +274,36 @@ mod tests {
         }
     }
 
+    /// A backend that always reports a transient-liveness (ADR 0048) condition, used to exercise
+    /// the no-count requeue lane (offline/mis-keyed cloud provider) versus genuine failure.
+    #[derive(Debug)]
+    struct TransientLivenessBackend {
+        processor: &'static str,
+    }
+
+    impl TransientLivenessBackend {
+        fn new(processor: &'static str) -> Self {
+            Self { processor }
+        }
+    }
+
+    #[async_trait]
+    impl crate::ProcessorBackend for TransientLivenessBackend {
+        fn processor(&self) -> &'static str {
+            self.processor
+        }
+
+        async fn process(
+            &self,
+            _store: &ProcessingStore,
+            _job: &crate::ProcessingJob,
+        ) -> Result<ProcessingResultDraft> {
+            Err(AppInfraError::AudioTranscriptionTransientLiveness(
+                "offline".to_string(),
+            ))
+        }
+    }
+
     #[derive(Debug)]
     struct MockOcrEngine {
         response: MockOcrResponse,
@@ -293,7 +336,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let alpha = Arc::new(RecordingBackend::successful("alpha", "alpha result"));
             let beta = Arc::new(RecordingBackend::successful("beta", "beta result"));
             let runtime = ProcessingRuntime::new(
@@ -337,7 +380,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let alpha = Arc::new(RecordingBackend::successful("alpha", "alpha result"));
             let beta = Arc::new(RecordingBackend::successful("beta", "beta result"));
             let runtime = ProcessingRuntime::new(
@@ -393,7 +436,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -485,6 +528,105 @@ mod tests {
         });
     }
 
+    /// Money path for geometry compression: messy OCR coordinates serialize → round
+    /// to 3 decimals → zstd → store in the BLOB column → decompress on read → parse.
+    /// Asserts coords are rounded and observation count / text survive the round-trip.
+    #[test]
+    fn ocr_geometry_is_rounded_and_zstd_round_trips_through_blob_column() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-runtime-geometry-compression");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
+                    response: MockOcrResponse::Success(OcrOutput::new(
+                        "alpha\nbeta",
+                        OcrStructuredPayload::new(
+                            ocr::APPLE_VISION_PROVIDER_ID,
+                            None,
+                            vec![
+                                OcrObservation::new(
+                                    "alpha",
+                                    0.987_654,
+                                    OcrBoundingBox::new(
+                                        0.123_456_789,
+                                        0.234_567_891,
+                                        0.345_678_912,
+                                        0.456_789_123,
+                                    ),
+                                ),
+                                OcrObservation::new(
+                                    "beta",
+                                    0.111_999,
+                                    OcrBoundingBox::new(0.9999, 0.0001, 0.5005, 0.2225),
+                                ),
+                            ],
+                        ),
+                    )),
+                })),
+            );
+
+            let frame = store
+                .insert_frame(&NewFrame::new(
+                    "session-geometry",
+                    "/tmp/frame-geometry.png",
+                    "2026-04-12T10:00:00Z",
+                ))
+                .await
+                .expect("frame should persist");
+            store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_frame_ocr(frame.id)
+                        .with_payload_json("{\"language\":\"eng\"}"),
+                )
+                .await
+                .expect("job should persist");
+
+            let outcome = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should process queued job")
+                .expect("queued job should exist");
+            let ProcessingJobRunOutcome::Completed(completion) = outcome else {
+                panic!("expected completed outcome");
+            };
+
+            // Re-read from the BLOB column to exercise the full decompress boundary.
+            let stored = store
+                .get_result_for_job(completion.job.id)
+                .await
+                .expect("result should be readable")
+                .expect("result should exist");
+            let payload: serde_json::Value = serde_json::from_str(
+                stored
+                    .structured_payload_json
+                    .as_deref()
+                    .expect("structured payload should persist"),
+            )
+            .expect("decompressed payload should parse");
+
+            let observations = payload["observations"]
+                .as_array()
+                .expect("observations array");
+            assert_eq!(observations.len(), 2);
+            assert_eq!(observations[0]["text"], "alpha");
+            assert_eq!(observations[1]["text"], "beta");
+
+            // Every coordinate + confidence is rounded to 3 decimals.
+            let bbox = &observations[0]["boundingBox"];
+            assert_eq!(bbox["x"].as_f64().unwrap(), 0.123);
+            assert_eq!(bbox["y"].as_f64().unwrap(), 0.235);
+            assert_eq!(bbox["width"].as_f64().unwrap(), 0.346);
+            assert_eq!(bbox["height"].as_f64().unwrap(), 0.457);
+            assert_eq!(observations[0]["confidence"].as_f64().unwrap(), 0.988);
+            assert_eq!(observations[1]["boundingBox"]["x"].as_f64().unwrap(), 1.0);
+            assert_eq!(observations[1]["boundingBox"]["height"].as_f64().unwrap(), 0.223);
+        });
+    }
+
     #[test]
     fn runtime_can_skip_excluded_processors_without_starving_later_work() {
         run_async_test(async {
@@ -492,7 +634,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let blocked = Arc::new(RecordingBackend::successful("blocked", "blocked result"));
             let allowed = Arc::new(RecordingBackend::successful("allowed", "allowed result"));
             let runtime = ProcessingRuntime::new(
@@ -548,7 +690,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -602,7 +744,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -711,7 +853,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register(OcrProcessorBackend::new(MockOcrEngine {
@@ -788,7 +930,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new().register_arc(Arc::new(RecordingBackend::successful(
@@ -838,7 +980,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let backend = Arc::new(RecordingBackend::successful(
                 AUDIO_TRANSCRIPTION_PROCESSOR,
                 "recovered transcript",
@@ -916,7 +1058,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(
@@ -963,7 +1105,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(
@@ -1022,7 +1164,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let runtime = ProcessingRuntime::new(
                 store.clone(),
                 ProcessorRegistry::new()
@@ -1115,13 +1257,62 @@ mod tests {
     }
 
     #[test]
+    fn transient_liveness_error_requeues_without_spending_a_failure_attempt() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-audio-transient-liveness");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+            let runtime = ProcessingRuntime::new(
+                store.clone(),
+                ProcessorRegistry::new().register_arc(Arc::new(TransientLivenessBackend::new(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))),
+            );
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A transient-liveness error requeues (never terminal), leaving the failure cap alone.
+            let ProcessingJobRunOutcome::RequeuedForLiveness(requeued) = runtime
+                .process_next_queued_job()
+                .await
+                .expect("runtime should attempt the audio job")
+                .expect("a queued audio job should exist")
+            else {
+                panic!("expected a transient-liveness requeue, not a terminal failure");
+            };
+            assert_eq!(requeued.id, job.id);
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 0,
+                "transient liveness must never spend a failure attempt"
+            );
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(after.status, ProcessingJobStatus::Queued);
+            assert_eq!(after.failure_count, 0);
+        });
+    }
+
+    #[test]
     fn newly_enqueued_job_starts_with_zero_failure_count() {
         run_async_test(async {
             let dir = TestDir::new("processing-failure-count-default");
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
 
             let job = store
                 .enqueue_job(&ProcessingJobDraft::new(
@@ -1135,6 +1326,73 @@ mod tests {
                 job.failure_count, 0,
                 "the failure_count column should default to 0 after migration"
             );
+        });
+    }
+
+    /// ADR 0048: an offline/mis-keyed stretch must NEVER burn a segment. A transient-liveness
+    /// requeue is a clean claim->queued cycle, but `claim` increments `attempt_count` every time,
+    /// so a long offline stretch inflates `attempt_count` past `RECLAIM_ATTEMPT_CEILING` (the
+    /// crash-loop backstop). If the app is then force-quit while the segment is mid-attempt (left
+    /// `running`), the next startup's `reconcile_orphaned_running_jobs` permanently fails it --
+    /// burning the segment purely because the environment was down. The transient lane must not
+    /// let the reclaim ceiling trip.
+    #[test]
+    fn zz_transient_liveness_reclaim_ceiling_does_not_burn_offline_segment() {
+        run_async_test(async {
+            let dir = TestDir::new("processing-transient-liveness-reclaim-ceiling");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::new(
+                    ProcessingSubject::new("document", 1),
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                ))
+                .await
+                .expect("audio job should enqueue");
+
+            // A long offline stretch: RECLAIM_ATTEMPT_CEILING clean transient-liveness cycles.
+            // Each claim bumps attempt_count; each transient requeue leaves failure_count at 0.
+            for _ in 0..crate::processing::RECLAIM_ATTEMPT_CEILING {
+                let claimed = store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("claim should succeed")
+                    .expect("queued job should claim");
+                assert_eq!(claimed.status, ProcessingJobStatus::Running);
+                store
+                    .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                    .await
+                    .expect("transient-liveness requeue should succeed");
+            }
+
+            // The app is force-quit while the segment is mid-attempt: it is left running.
+            let running = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("claim should succeed")
+                .expect("queued job should claim");
+            assert_eq!(running.status, ProcessingJobStatus::Running);
+
+            // Next startup reconciles orphaned running jobs.
+            store
+                .reconcile_orphaned_running_jobs()
+                .await
+                .expect("reclamation should succeed");
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_ne!(
+                after.status,
+                ProcessingJobStatus::Failed,
+                "ADR 0048: an offline transient-liveness stretch must never burn the segment via the reclaim ceiling"
+            );
+            assert_eq!(after.failure_count, 0);
         });
     }
 }

@@ -1,12 +1,19 @@
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
+import Icons from "unplugin-icons/vite";
 
-// @ts-expect-error process is a nodejs global
+// @ts-ignore process is a nodejs global (typed via @types/node only in some envs)
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [sveltekit()],
+  plugins: [
+    sveltekit(),
+    // Lucide icons as on-demand Svelte components via `~icons/lucide/<name>`.
+    // CSS owns size/stroke/color (e.g. `.settings-icon-btn svg`); the compiled
+    // svg's presentation attrs are overridden by our stylesheets.
+    Icons({ compiler: "svelte" }),
+  ],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

@@ -62,8 +62,14 @@ export function createOnboardingAiStore() {
   // wired against this flow's draft provider list via injected closures.
   const aiRuntime = createAiRuntimeStore({
     getProviders: () => draftAiProviders,
+    // Onboarding doesn't configure MCP connectors — no server list to expose.
+    getMcpServers: () => [],
     isCloudProviderKind: (kind) => isCloudAiProviderKind(kind),
     labelForProvider: (id) => aiProviderLabelById(id),
+    // Onboarding has no Ask AI readiness pill (settings aren't persisted yet, so
+    // its status surface is deliberately omitted — see file header), so nothing
+    // to refresh after a key save/clear here.
+    loadAskAiAvailability: () => {},
   });
 
   // ── Provider list mutations (mirror the Settings controller) ──────────────

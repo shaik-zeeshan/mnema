@@ -3,7 +3,7 @@
   import Access from "./Access.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-data" tabindex="0">
+<div class="settings-panel" id="settings-panel-data">
   <Storage />
   <Access />
 </div>

@@ -838,7 +838,7 @@ fn capture_session_options(
             on_frame_exported: Arc::new(move |artifact| {
                 let metadata_snapshot = metadata_snapshot_provider
                     .as_ref()
-                    .and_then(|provider| provider());
+                    .and_then(|provider| provider(artifact.captured_at_unix_ms));
                 match try_forward_frame_artifact(&frame_artifact_tx, artifact, metadata_snapshot) {
                     FrameArtifactForwardingResult::Enqueued => {}
                     FrameArtifactForwardingResult::ReceiverClosed => {
@@ -1160,14 +1160,13 @@ pub(super) fn suspend_screen_system_audio_capture(
     }
     runtime.current_segment_sources = Some(explicit_privacy_suspension_sources(runtime));
     runtime.capture_suspension = Some(CaptureSuspension::with_kind(kind, error));
-    // A display-unavailable suspension means macOS already tore the screen stream
-    // down, so the in-flight segment's `.mov` is incomplete/unopenable. Trying to
-    // finalize it only emits a spurious "screen output missing" error every time
-    // the display sleeps; the prior segments are already committed and recovery
-    // starts a fresh segment, so skip the doomed commit for that kind.
-    if kind != CaptureSuspensionKind::DisplayUnavailable {
-        commit_suspended_screen_system_outputs(app_handle, runtime);
-    }
+    // Commit the in-flight segment for every suspension kind, including
+    // DisplayUnavailable: the stop above finalizes the writers even when the
+    // delegate already reported the stream dead (terminated streams skip the
+    // doomed second stop but still finish their writers), so the tail `.mov` is
+    // openable and committing it preserves the last partial segment instead of
+    // orphaning it. A finalize failure is logged and skipped inside.
+    commit_suspended_screen_system_outputs(app_handle, runtime);
     runtime.recording_file = None;
     runtime.system_audio_recording_file = None;
     preserve_live_microphone_continuation_outputs(runtime);
@@ -4358,7 +4357,12 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
         return Ok(());
     }
 
-    if !runtime.inactivity.is_screen_paused() {
+    // The writer must be detached whenever the backing stream is alive — even
+    // while the screen family is soft-paused (the ScreenCaptureKit stream stays
+    // live through a screen soft-pause and keeps feeding the writer). Gating
+    // this on screen-pause state used to leave the writer attached and
+    // recording while the family was marked paused.
+    {
         if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
             let system_audio_recording_file = runtime.system_audio_recording_file.clone();
             // Soft-pause: tell the screen backend to finalize and detach its
@@ -4526,6 +4530,39 @@ pub(super) fn resume_microphone_from_inactivity(
     Ok(())
 }
 
+/// How a system-audio inactivity resume must act given the screen backend
+/// state. The wrong arm here is what silently drops system audio: marking the
+/// family resumed without attaching a writer leaves
+/// `system_audio_recording_file` as `None`, so the screen soft-resume path
+/// skips the writer and nothing records until the next rotation replans it.
+#[cfg(target_os = "macos")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SystemAudioResumeAction {
+    /// Screen session live and the screen family active: attach a fresh writer.
+    ResumeWriter,
+    /// Cannot attach a writer right now (screen family soft-paused on a live
+    /// stream, or the session is gone outside a screen pause). Keep the family
+    /// marked paused so the tick after conditions clear re-fires this resume
+    /// and actually attaches the writer.
+    DeferKeepPaused,
+    /// Cold screen pause (session torn down): no writer can exist yet, but the
+    /// cold screen-resume path honors the unpaused flag and recreates the
+    /// writer with the new session, so flipping the flag now is correct.
+    MarkResumedOnly,
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn system_audio_resume_action(
+    session_live: bool,
+    screen_paused: bool,
+) -> SystemAudioResumeAction {
+    match (session_live, screen_paused) {
+        (true, false) => SystemAudioResumeAction::ResumeWriter,
+        (false, true) => SystemAudioResumeAction::MarkResumedOnly,
+        (true, true) | (false, false) => SystemAudioResumeAction::DeferKeepPaused,
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub(super) fn resume_system_audio_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
@@ -4549,44 +4586,50 @@ pub(super) fn resume_system_audio_from_inactivity(
 
     // If system audio was soft-paused while the screen session is still live,
     // allocate a fresh output path and resume the writer in-place.
-    if sources.system_audio && sources.screen && !runtime.inactivity.is_screen_paused() {
-        if !capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
-            // No active screen session — system audio cannot resume without one.
-            // Keep pause/source state unchanged so the inactivity system does not
-            // lose track of the paused writer.
-            return Ok(());
-        }
+    if sources.system_audio && sources.screen {
+        match system_audio_resume_action(
+            capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+            runtime.inactivity.is_screen_paused(),
+        ) {
+            SystemAudioResumeAction::DeferKeepPaused => return Ok(()),
+            SystemAudioResumeAction::MarkResumedOnly => {}
+            SystemAudioResumeAction::ResumeWriter => {
+                refresh_runtime_planner_dates(runtime);
+                // Always try to seed the planner for real writer resumes so future
+                // resumes/rotations preserve the dedicated system-audio session.
+                let system_audio_planner = ensure_system_audio_planner_for_runtime(
+                    runtime,
+                    "resuming system audio from inactivity",
+                )?;
 
-        refresh_runtime_planner_dates(runtime);
-        // Always try to seed the planner for real writer resumes so future
-        // resumes/rotations preserve the dedicated system-audio session.
-        let system_audio_planner = ensure_system_audio_planner_for_runtime(
-            runtime,
-            "resuming system audio from inactivity",
-        )?;
+                let planner = system_audio_planner.ok_or_else(|| CaptureErrorResponse {
+                    code: "invalid_runtime_state".to_string(),
+                    message: "Capture system-audio planner missing while resuming system audio"
+                        .to_string(),
+                })?;
+                let audio_dir = planner.audio_dir();
+                std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
+                    code: "io_error".to_string(),
+                    message: format!("Failed to create capture audio directory: {error}"),
+                })?;
+                let new_system_audio_file = planner
+                    .system_audio_resume_file(
+                        runtime.current_segment_index,
+                        super::runtime::now_unix_ms(),
+                    )
+                    .to_string_lossy()
+                    .to_string();
 
-        let planner = system_audio_planner.ok_or_else(|| CaptureErrorResponse {
-            code: "invalid_runtime_state".to_string(),
-            message: "Capture system-audio planner missing while resuming system audio".to_string(),
-        })?;
-        let audio_dir = planner.audio_dir();
-        std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
-            code: "io_error".to_string(),
-            message: format!("Failed to create capture audio directory: {error}"),
-        })?;
-        let new_system_audio_file = planner
-            .system_audio_resume_file(runtime.current_segment_index, super::runtime::now_unix_ms())
-            .to_string_lossy()
-            .to_string();
+                capture_screen::resume_system_audio_writer(
+                    &mut runtime.active_screen_session,
+                    &new_system_audio_file,
+                )?;
 
-        capture_screen::resume_system_audio_writer(
-            &mut runtime.active_screen_session,
-            &new_system_audio_file,
-        )?;
-
-        runtime.system_audio_recording_file = Some(new_system_audio_file.clone());
-        if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-            set_current_system_audio_output_file(output_files, new_system_audio_file);
+                runtime.system_audio_recording_file = Some(new_system_audio_file.clone());
+                if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+                    set_current_system_audio_output_file(output_files, new_system_audio_file);
+                }
+            }
         }
     }
 
@@ -4840,10 +4883,32 @@ fn mark_screen_paused_for_inactivity(runtime: &mut NativeCaptureRuntime) {
 }
 
 #[cfg(target_os = "macos")]
+/// Whether an activity-triggered screen resume should wait instead of starting
+/// capture: with the ScreenCaptureKit stream torn down and no drawable display
+/// (lid closed, display asleep or unplugged), a cold start is doomed to fail
+/// with `capture_display_unavailable`. Deferring keeps the screen paused so the
+/// next tick re-evaluates — the same wait-quietly stance display-unavailable
+/// suspension recovery takes (ADR 0021), which this path previously lacked,
+/// letting dark-wake activity blips hammer ScreenCaptureKit multiple times per
+/// second.
+pub(super) fn should_defer_screen_resume_for_missing_display(
+    screen_stream_live: bool,
+    display_available: bool,
+) -> bool {
+    !screen_stream_live && !display_available
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn resume_screen_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
+    if should_defer_screen_resume_for_missing_display(
+        capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
+        capture_screen::screen_display_available(),
+    ) {
+        return Ok(());
+    }
     let tail_trim_seconds = runtime.inactivity.idle_timeout_seconds;
     let microphone_activity_threshold = runtime.inactivity.microphone_activity_threshold();
     let microphone_tail_activity_mode = microphone_tail_trim_activity_mode_for_runtime(runtime);
@@ -4924,7 +4989,7 @@ where
         Option<&Path>,
         Option<&Path>,
         &CaptureSources,
-        u32,
+        f64,
         &capture_types::ScreenResolution,
         Option<u32>,
         Option<&str>,
@@ -5375,7 +5440,7 @@ where
         Option<&Path>,
         Option<&Path>,
         &CaptureSources,
-        u32,
+        f64,
         &capture_types::ScreenResolution,
         Option<u32>,
         Option<&str>,
@@ -5392,6 +5457,34 @@ where
     };
 
     if !requested_sources.screen {
+        return Ok(false);
+    }
+
+    // Never fight a deliberate suspension or manual pause. A DisplayUnavailable /
+    // LowDisk / privacy suspension owns the screen state and re-arms through its
+    // own path (`attempt_privacy_suspension_recovery`), and a user pause resumes
+    // explicitly. The system-wake callbacks (`NSWorkspaceDidWake` and the Core
+    // Graphics display-reconfiguration callback) fire on the same display events
+    // that surface those suspensions, so recovering here would race the owner:
+    // restart a segment the owner immediately re-tears-down, or leave a live
+    // session with `capture_suspension` still set. Defer to the owner. This
+    // mirrors the guard in `RecordingLifecycle::should_attempt_recovery_after_possible_wake`,
+    // which only covered the frontend permission-poll path, not these callbacks.
+    if runtime.capture_suspension.is_some() || runtime.user_capture_paused {
+        return Ok(false);
+    }
+
+    // A display-reconfiguration callback fires for *any* display change
+    // (resolution/SetMode, monitor connect/Add, set-main), not only a wake, and
+    // `NSWorkspaceDidWake` fires alongside it — so this path can be entered while
+    // the screen is still capturing normally. Recovering an already-live session
+    // would tear it down and rotate the segment (a spurious mid-recording boundary
+    // and a brief capture gap), and a second wake callback would re-rotate the
+    // segment the first just started. If the screen session is already live there
+    // is nothing to recover — this is the `!session_is_live` idempotency the wake
+    // callbacks document but never enforced on this path (the legitimate
+    // post-sleep path clears `active_screen_session`, so it still proceeds).
+    if capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()) {
         return Ok(false);
     }
 
@@ -5776,7 +5869,7 @@ pub(super) fn start_segment_with_current_privacy_filter(
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
     sources: &CaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &capture_types::ScreenResolution,
     effective_screen_bitrate_bps: Option<u32>,
     microphone_device_id: Option<&str>,
@@ -5830,7 +5923,7 @@ fn start_segment_with_inactivity_tail_trim_seconds(
     screen_output_file: Option<&Path>,
     system_audio_output_path: Option<&Path>,
     sources: &CaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &capture_types::ScreenResolution,
     effective_screen_bitrate_bps: Option<u32>,
     microphone_device_id: Option<&str>,
@@ -6237,7 +6330,7 @@ fn start_windows_screen_session_for_segment(
     segment_dir: &Path,
     screen_output_file: &Path,
     sources: &capture_screen::ScreenCaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &capture_types::ScreenResolution,
     video_bitrate_bps: Option<u32>,
     options: capture_screen::ScreenCaptureSessionOptions,
@@ -7280,12 +7373,13 @@ mod tests {
     }
 
     #[test]
-    fn display_unavailable_suspension_skips_dead_segment_commit_and_stays_running() {
-        // A display-unavailable suspension means macOS already tore the screen
-        // stream down, so the in-flight segment is unrecoverable. Even with an
-        // (otherwise openable) current segment, the suspend path must skip the
-        // commit — and must not fail the session — so a screen-only recording can
-        // resume automatically when the display returns.
+    fn display_unavailable_suspension_commits_tail_segment_and_stays_running() {
+        // A display-unavailable suspension used to skip committing the in-flight
+        // segment because the dead stream left it truncated. The stop path now
+        // finalizes the writers even for a delegate-terminated stream, so the
+        // tail `.mov` is openable — the suspend path must commit it (not orphan
+        // it) and must not fail the session, so a screen-only recording resumes
+        // automatically when the display returns (ADR 0021 amendment).
         let temp_dir = tempfile::tempdir().expect("temp dir should be created");
         let screen_path = temp_dir.path().join("screen-segment.mov");
         std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
@@ -7338,15 +7432,15 @@ mod tests {
                 .map(|suspension| suspension.kind),
             Some(CaptureSuspensionKind::DisplayUnavailable)
         );
-        // The dead in-flight segment is dropped, not committed.
+        // The finalized in-flight tail segment is committed, not orphaned.
         assert!(runtime.current_segment_output_files.is_none());
         assert!(runtime.recording_file.is_none());
         let output_files = runtime
             .output_files
             .expect("output files collection should be preserved");
         assert!(
-            output_files.screen_file.is_none() && output_files.screen_files.is_empty(),
-            "the unrecoverable in-flight segment must not be committed"
+            output_files.screen_files.contains(&screen_path),
+            "the finalized in-flight tail segment must be committed"
         );
     }
 

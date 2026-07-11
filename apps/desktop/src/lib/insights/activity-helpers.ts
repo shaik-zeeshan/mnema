@@ -46,9 +46,64 @@ export function startOfHour(ms: number): number {
   return d.getTime();
 }
 
+// ── Date-range window math (Overview range stepper) ────────────────────
+export type RangeMode = "day" | "week" | "month";
+
+// Local-calendar bounds [startMs, endMs) for the window containing `anchorMs`.
+export function windowFor(
+  anchorMs: number,
+  mode: RangeMode,
+): { startMs: number; endMs: number } {
+  if (mode === "day") {
+    const start = startOfDay(anchorMs);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { startMs: start, endMs: end.getTime() };
+  }
+  if (mode === "week") {
+    // Week starts Monday (local).
+    const d = new Date(startOfDay(anchorMs));
+    const dow = (d.getDay() + 6) % 7; // 0 = Monday
+    d.setDate(d.getDate() - dow);
+    const start = d.getTime();
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return { startMs: start, endMs: end.getTime() };
+  }
+  // month
+  const d = new Date(anchorMs);
+  const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
+  const end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
+  return { startMs: start, endMs: end };
+}
+
+// Move an anchor by one window unit (mirrors the stepper / range math).
+export function shiftAnchor(
+  anchorMs: number,
+  mode: RangeMode,
+  dir: -1 | 1,
+): number {
+  const d = new Date(anchorMs);
+  if (mode === "day") d.setDate(d.getDate() + dir);
+  else if (mode === "week") d.setDate(d.getDate() + dir * 7);
+  // Pin the day to the 1st when shifting months: `setMonth` alone keeps the
+  // anchor's day-of-month, which overflows when the target month is shorter
+  // (e.g. Mar 31 → "Feb 31" rolls forward to Mar 3), so the stepper lands back
+  // in the SAME month — freezing month navigation and corrupting the
+  // period-over-period baseline. windowFor(month) only reads year+month, so
+  // day=1 is safe and calendar-correct.
+  else d.setMonth(d.getMonth() + dir, 1);
+  return d.getTime();
+}
+
 // ── Humanisers ─────────────────────────────────────────────────────────
+// Adaptive duration: seconds under a minute (so a short activity reads "45s",
+// not a rounded-to-zero "0m"), minutes under an hour, else "Xh"/"Xh Ym". One
+// unit granularity — the coarsest unit that isn't zero, plus its remainder.
 export function humanizeMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "0m";
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
   const totalMin = Math.round(ms / 60000);
   const h = Math.floor(totalMin / 60);
   const m = totalMin % 60;

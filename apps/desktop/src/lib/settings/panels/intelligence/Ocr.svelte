@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -202,6 +203,7 @@
         <input
           id="ocr-tesseract-whitelist"
           class="text-input"
+          aria-label="Tesseract character whitelist"
           bind:value={rec.draftOcrTesseractCharWhitelist}
           disabled={!rec.draftOcrEnabled}
           placeholder="Optional, e.g. ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
@@ -232,14 +234,17 @@
               <div class="model-status__title">{selectedOcrModel.displayName}</div>
               <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedOcrModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedOcrModel.available}
+            >{selectedOcrModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedOcrModel.description}</p>
           {#if selectedOcrModel.runtimeMessage}
             <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
           {/if}
           {#if selectedOcrModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> {selectedOcrModel.installPath}</p>
+            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedOcrModel.installPath}</span></p>
           {/if}
           <ModelMissingFiles files={selectedOcrModel.missingFiles} />
           {#if selectedOcrModel.failureMessage}
@@ -263,13 +268,13 @@
                     {#if selectedOcrDownloadPercent !== null} · {selectedOcrDownloadPercent}%{/if}
                     {#if selectedOcrDownloadProgress?.message} · {selectedOcrDownloadProgress.message}{/if}
                   </p>
-                  <button class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload}>
-                    {cancellingOcrDownload ? "Cancelling" : "Cancel download"}
+                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedOcrModelDownload} disabled={cancellingOcrDownload} aria-busy={cancellingOcrDownload}>
+                    {#if cancellingOcrDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button class="btn btn--ghost" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available}>
-                  {startingOcrDownload ? "Starting" : `Download (${formatBytes(selectedOcrModel.download.byteSize)})`}
+                <button type="button" class="btn btn--primary" onclick={startSelectedOcrModelDownload} disabled={startingOcrDownload || selectedOcrModel.available} aria-busy={startingOcrDownload}>
+                  {#if startingOcrDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedOcrModel.download.byteSize)}){/if}
                 </button>
               {/if}
             {:else if !selectedOcrModel.available}
@@ -288,8 +293,8 @@
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning}>
-              Delete unused OCR models
+            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedOcrModels} disabled={deletingUnusedOcrModels || selectedOcrDownloadRunning} aria-busy={deletingUnusedOcrModels}>
+              {#if deletingUnusedOcrModels}<ButtonSpinner />Deleting…{:else}Delete unused OCR models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
@@ -373,4 +378,12 @@
     gap: 10px;
     width: 100%;
   }
+
+  /* Render filesystem paths in mono so they read as machine values, matching
+     the Developer log path treatment. */
+  .model-path {
+    font-family: var(--app-font-mono);
+    word-break: break-all;
+  }
+
 </style>

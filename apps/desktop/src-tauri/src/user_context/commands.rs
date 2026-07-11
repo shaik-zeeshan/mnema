@@ -9,8 +9,8 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, ActivityCategory, AuthoredContext, Conclusion, FocusLevel, SubjectTrajectory,
-    SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
+    Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
+    FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
     UserContextDistillationSummary, UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
@@ -73,6 +73,12 @@ pub async fn get_user_context_status(
     let activity_count = store.count_activities().await.map_err(|e| e.to_string())?;
     let conclusion_count = store.count_conclusions().await.map_err(|e| e.to_string())?;
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
+    // Summarized-up-to watermark: the end edge of the most-recently-COVERED
+    // window (failed runs advanced the scheduler cursor but summarized nothing,
+    // so they must not raise this), letting the frontend render the still-pending
+    // region. Best-effort — a read error degrades to "unknown" rather than
+    // failing the whole status.
+    let covered_until_ms = store.covered_until_ms().await.ok().flatten();
     let token_usage = store
         .token_usage_totals()
         .await
@@ -145,6 +151,7 @@ pub async fn get_user_context_status(
         activity_count,
         conclusion_count,
         last_derived_at_ms,
+        covered_until_ms,
         backfilling,
         token_usage,
         budget_tier: user_context.derivation_budget_tier,
@@ -159,8 +166,8 @@ pub async fn get_user_context_status(
 /// range-scoped view (e.g. Overview's selected day/week/month) gets the whole
 /// period rather than a recency-capped slice — fixing the case where a busy
 /// month exceeds the limit or a past range falls outside the newest page.
-/// Range results are NOT evidence-hydrated (the range consumers read only the
-/// Activity's own fields; skipping hydration keeps a month-wide fetch cheap).
+/// Range results ARE evidence-hydrated (the Journal's range read needs the
+/// evidence refs); the Digest reads the lean, non-hydrated store method directly.
 ///
 /// With no bounds it keeps the legacy `limit`/`offset` recency-paged behavior
 /// (newest-first, evidence hydrated) for the preview / evidence-resolution
@@ -176,7 +183,7 @@ pub async fn list_user_context_activities(
     if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
         return infra
             .user_context()
-            .list_activities_in_range(start_ms, end_ms)
+            .list_activities_in_range_with_evidence(start_ms, end_ms)
             .await
             .map_err(|e| e.to_string());
     }
@@ -196,8 +203,20 @@ pub async fn list_user_context_activities(
 pub async fn list_user_context_conclusions(
     infra: tauri::State<'_, AppInfraState>,
     include_faded: Option<bool>,
+    start_ms: Option<i64>,
+    end_ms: Option<i64>,
 ) -> Result<Vec<Conclusion>, String> {
     let include_faded = include_faded.unwrap_or(false);
+    // Range-scoped (Overview feed) returns only Conclusions with a delta in the
+    // window — bounded as the dossier grows. Absent bounds (Subjects, brokered
+    // access) return the whole dossier, as before.
+    if let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) {
+        return infra
+            .user_context()
+            .list_conclusions_in_range(include_faded, start_ms, end_ms)
+            .await
+            .map_err(|e| e.to_string());
+    }
     infra
         .user_context()
         .list_conclusions(include_faded)
@@ -322,6 +341,8 @@ pub async fn user_context_run_derivation_now(
     let distillation = run_conclusion_distillation(
         &engine,
         infra.user_context(),
+        &app_handle,
+        infra.subject_vectors(),
         provider_label,
         model_label,
     )
@@ -457,9 +478,88 @@ pub async fn user_context_dismiss_conclusion(
     infra: tauri::State<'_, AppInfraState>,
     id: i64,
 ) -> Result<(), String> {
-    infra
+    let dismissed_subject = infra
         .user_context()
         .dismiss_conclusion(id)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Lazy re-embed (slice 4): dismissing a Conclusion can change which row is the
+    // Subject's canonical statement, so the embedding text the Subject Vector
+    // worker derives may have changed. Mark the Subject's vector stale (NULL it) so
+    // the backfill worker re-claims and re-embeds it. Best-effort: a failure here
+    // never blocks the dismissal (the worker also refills genuinely-missing
+    // vectors, the load-bearing mechanism). NULL-ing is pure storage, not embedding
+    // work, so app-infra stays embedding-free.
+    if let Some(subject) = dismissed_subject {
+        if let Err(error) = infra.subject_vectors().mark_subject_vector_stale(&subject).await {
+            crate::native_capture::debug_log::log_warn(format!(
+                "failed to mark subject vector stale after dismissing a conclusion for '{subject}': {error}"
+            ));
+        }
+    }
+    let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// Collapse the raw, newest-first dismissal list into one render-only
+/// [`DismissedView`] per belief. A belief dismissed more than once accrues
+/// duplicate veto rows; keyed case-insensitively on `(subject, statement)` (the
+/// resurface-gate identity), the first occurrence — the newest, since the input
+/// is `dismissed_at_ms DESC` — wins, preserving newest-first order.
+fn dedupe_dismissed(dismissals: Vec<DismissalState>) -> Vec<DismissedView> {
+    let mut seen = std::collections::HashSet::new();
+    let mut views = Vec::new();
+    for dismissal in dismissals {
+        // ASCII-only folding to match SQLite `COLLATE NOCASE` — the identity used
+        // by the conclusions unique index, the resurface gate, and `undismiss`.
+        // Full Unicode `to_lowercase` over-folds (e.g. É == é), collapsing two
+        // distinct vetoes that `undismiss` can only delete one casing at a time,
+        // leaving a stale, un-restorable suppression behind.
+        let key = (
+            dismissal.subject.to_ascii_lowercase(),
+            dismissal.statement.to_ascii_lowercase(),
+        );
+        if seen.insert(key) {
+            views.push(DismissedView {
+                subject: dismissal.subject,
+                statement: dismissal.statement,
+                dismissed_at_ms: dismissal.dismissed_at_ms,
+            });
+        }
+    }
+    views
+}
+
+/// List the user's **dismissed beliefs** for the Context "Dismissed" archive —
+/// the negative space of the inferred dossier ("what you told Mnema you're
+/// not"). Deduplicated by `(subject, statement)`, newest first.
+#[tauri::command]
+pub async fn user_context_list_dismissed(
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<DismissedView>, String> {
+    let dismissals = infra
+        .user_context()
+        .list_dismissals()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(dedupe_dismissed(dismissals))
+}
+
+/// **Restore** a dismissed belief: lift the suppression veto (all matching rows)
+/// so the Conclusion can re-form on the next derivation pass IF its evidence
+/// still supports it. It does NOT resurrect the old Conclusion (that row was
+/// deleted at dismiss time). Emits `user_context_changed` so the archive
+/// refreshes.
+#[tauri::command]
+pub async fn user_context_restore_dismissed(
+    app_handle: tauri::AppHandle,
+    infra: tauri::State<'_, AppInfraState>,
+    subject: String,
+    statement: String,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .undismiss(&subject, &statement)
         .await
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
@@ -677,4 +777,93 @@ pub async fn wipe_user_context(
     // 4. Refresh the (now empty) User Context surface.
     let _ = app_handle.emit(USER_CONTEXT_CHANGED_EVENT, ());
     Ok(())
+}
+
+/// Record the frontend's current local UTC offset (minutes to ADD to UTC) so
+/// the distillation worker can label Activity times in the user's local clock.
+/// The Rust `time` crate can't soundly read the local offset under Tauri, so the
+/// frontend is the sound source (mirrors `askAiClock`). Invoked on app start and
+/// window focus; DST staleness between stamps is accepted.
+#[tauri::command]
+pub async fn user_context_stamp_local_offset(
+    infra: tauri::State<'_, AppInfraState>,
+    offset_minutes: i64,
+) -> Result<(), String> {
+    infra
+        .user_context()
+        .set_local_offset_minutes(offset_minutes)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use capture_types::DismissalState;
+
+    fn dismissal(subject: &str, statement: &str, dismissed_at_ms: i64) -> DismissalState {
+        DismissalState {
+            subject: subject.to_string(),
+            statement: statement.to_string(),
+            evidence_fingerprint: "fp".to_string(),
+            evidence_activity_count: 1,
+            dismissed_at_ms,
+            source: "user".to_string(),
+        }
+    }
+
+    #[test]
+    fn dedupe_dismissed_collapses_duplicates_keeping_newest() {
+        // Newest-first global order, as `list_dismissals` returns it.
+        let input = vec![
+            dismissal("Apple", "Interested in Apple", 200),
+            dismissal("Rust", "Learning Rust", 150),
+            dismissal("Apple", "Interested in Apple", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        // One entry per (subject, statement); the Apple duplicate collapses to its
+        // newest dismissal; newest-first order is preserved.
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].subject, "Apple");
+        assert_eq!(views[0].dismissed_at_ms, 200);
+        assert_eq!(views[1].subject, "Rust");
+    }
+
+    #[test]
+    fn dedupe_dismissed_keys_case_insensitively() {
+        let input = vec![
+            dismissal("Apple", "Interested in Apple", 200),
+            dismissal("apple", "INTERESTED IN APPLE", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        assert_eq!(views.len(), 1, "case variants are the same belief");
+        assert_eq!(views[0].dismissed_at_ms, 200);
+    }
+
+    #[test]
+    fn dedupe_dismissed_folds_only_ascii_case_to_match_undismiss_nocase() {
+        // `undismiss` and the resurface gate match beliefs with SQLite
+        // `COLLATE NOCASE`, which folds ONLY ASCII A–Z. Two dismissals differing
+        // solely by a non-ASCII case (É vs é) are DISTINCT veto rows that
+        // `undismiss(subject, statement)` deletes one casing at a time, so dedupe
+        // must keep them separate — collapsing them leaves a stale, un-restorable
+        // suppression after the single archive row is restored. (Regression: the
+        // dedupe key previously used full-Unicode `to_lowercase`, over-folding.)
+        let input = vec![
+            dismissal("CAFÉ", "Likes CAFÉ", 200),
+            dismissal("café", "Likes café", 100),
+        ];
+
+        let views = dedupe_dismissed(input);
+
+        assert_eq!(
+            views.len(),
+            2,
+            "non-ASCII case variants are distinct vetoes under NOCASE"
+        );
+    }
 }

@@ -39,8 +39,8 @@
   gap: 10px;
 }
 .onboarding-shell .group-title {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--app-text-muted);
@@ -58,12 +58,12 @@
   min-width: 0;
 }
 .onboarding-shell .ctl-label .name {
-  font-size: 12px;
-  font-weight: 540;
+  font-size: var(--text-base);
+  font-weight: 700;
   color: var(--app-text);
 }
 .onboarding-shell .ctl-label .desc {
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 400;
   color: var(--app-text-muted);
   margin-top: 3px;
@@ -87,7 +87,7 @@
 
 /* note / disclosure */
 .onboarding-shell .note {
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--app-text-muted);
   background: var(--app-surface-subtle);
@@ -97,7 +97,7 @@
 }
 .onboarding-shell .note b {
   color: var(--app-accent);
-  font-weight: 540;
+  font-weight: 700;
 }
 .onboarding-shell .note.muted {
   background: var(--app-surface-active);
@@ -107,7 +107,7 @@
   color: var(--app-text);
 }
 .onboarding-shell .kbd-hint {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-subtle);
 }
 
@@ -128,11 +128,11 @@
   justify-content: space-between;
 }
 .onboarding-shell .model-id {
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--app-text);
 }
 .onboarding-shell .model-id .meta {
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-muted);
   margin-top: 2px;
 }
@@ -158,11 +158,28 @@
   box-shadow: 0 0 10px var(--app-accent-glow);
   transition: width 0.3s ease;
 }
+/* Indeterminate fill: unknown totalBytes (percent === null) means we can't show a
+   real width, so a 0/8% sliver reads as stalled. A short fill sweeping across the
+   track signals "working, total unknown" instead. Reduced-motion (below) freezes
+   it to a static partial bar rather than an animated one. */
+.onboarding-shell .dl-fill--indeterminate {
+  width: 38%;
+  transition: none;
+  animation: onboarding-dl-indeterminate 1.3s ease-in-out infinite;
+}
+@keyframes onboarding-dl-indeterminate {
+  0% {
+    transform: translateX(-110%);
+  }
+  100% {
+    transform: translateX(290%);
+  }
+}
 .onboarding-shell .dl-meta {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-muted);
 }
 .onboarding-shell .dl-meta b {
@@ -183,12 +200,12 @@
   flex: 1 1 auto;
 }
 .onboarding-shell .perm .pn .t {
-  font-size: 12px;
-  font-weight: 540;
+  font-size: var(--text-base);
+  font-weight: 700;
   color: var(--app-text);
 }
 .onboarding-shell .perm .pn .s {
-  font-size: 11px;
+  font-size: var(--text-sm);
   font-weight: 400;
   color: var(--app-text-muted);
   margin-top: 2px;
@@ -206,7 +223,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-muted);
   background: var(--app-surface-active);
   border: 1px solid var(--app-border-strong);
@@ -253,7 +270,7 @@
    AppPrivacyExclusion component, which carries its own scoped styling — only
    the count line below is rendered with an onboarding primitive). */
 .onboarding-shell .count {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--app-text-muted);
 }
 .onboarding-shell .count b {
@@ -271,14 +288,15 @@
 }
 
 /* ===== unmet-prerequisite callout (in-body inline action) =====
-   Rendered at the TOP of a locked feature's body. It is a direct child of
-   `.body-inner` that is NEITHER `.group`/`.ctl`/`.model-card`, so the feature-off
-   dim below leaves it fully visible — accent-toned to read as "action needed".
-   Note: when the feature is OFF the body wrapper carries `inert` (FeatureRow), so
-   this callout's button is non-operable here too; the same prerequisite action is
-   always reachable from a never-inert surface — permission grants from the
-   (required) Permissions row, "enable transcription" from the Transcription row's
-   header toggle. */
+   The callout is HOISTED out of `.body-inner` by FeatureRow (registered via the
+   body's `useLockCalloutSlot`) and rendered into `.body-callout`, a SIBLING of
+   `.body-inner` that is OUTSIDE its `inert` subtree — so the "Grant access" /
+   "Turn on…" UNLOCK button is actually clickable (previously it sat inside the
+   inert body and silently did nothing). The wrapper mirrors `.body-inner`'s
+   left gutter so the callout still aligns under the row title. */
+.onboarding-shell .body-callout {
+  padding: 16px 16px 0 56px;
+}
 .onboarding-shell .lock-callout {
   display: flex;
   align-items: center;
@@ -292,7 +310,7 @@
 .onboarding-shell .lock-callout-text {
   flex: 1 1 auto;
   min-width: 0;
-  font-size: 11px;
+  font-size: var(--text-sm);
   line-height: 1.5;
   color: var(--app-text);
 }
@@ -304,7 +322,7 @@
 .onboarding-shell .row.disabled-feature .body-inner > .group:not(.always-on),
 .onboarding-shell .row.disabled-feature .body-inner > .ctl,
 .onboarding-shell .row.disabled-feature .body-inner > .model-card {
-  opacity: 0.42;
+  opacity: var(--app-disabled-opacity);
   pointer-events: none;
 }
 
@@ -322,7 +340,7 @@
   z-index: 3;
 }
 .onboarding-shell .footer .hint {
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--app-text-muted);
 }
 .onboarding-shell .footer .hint b {
@@ -335,7 +353,7 @@
 }
 .onboarding-shell .footer .secondary {
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--app-text-muted);
   background: transparent;
   border: none;
@@ -353,14 +371,16 @@
 }
 .onboarding-shell .cta {
   font: inherit;
-  font-size: 13px;
+  font-size: var(--text-md);
   font-weight: 600;
   letter-spacing: -0.005em;
   color: var(--app-bg);
   background: var(--app-accent);
   border: 1px solid var(--app-accent);
   border-radius: 8px;
-  padding: 10px 20px;
+  /* Unified CTA padding shared with the bookend-screen `.cta`
+     (onboarding-screens.css) so the primary button is consistent across phases. */
+  padding: 12px 24px;
   cursor: pointer;
   transition: box-shadow 0.15s ease, transform 0.08s ease;
 }
@@ -370,8 +390,12 @@
 .onboarding-shell .cta:active:not(:disabled) {
   transform: translateY(1px);
 }
+.onboarding-shell .cta:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
 .onboarding-shell .cta:disabled {
-  opacity: 0.45;
+  opacity: var(--app-disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -382,7 +406,7 @@
 .onboarding-shell input.input,
 .onboarding-shell select.input {
   font: inherit;
-  font-size: 12px;
+  font-size: var(--text-base);
   color: var(--app-text);
   background: var(--app-surface-active);
   border: 1px solid var(--app-border-strong);
@@ -399,7 +423,7 @@
 .onboarding-shell select.input:focus {
   outline: none;
   border-color: var(--app-accent-border);
-  box-shadow: 0 0 0 3px var(--app-accent-glow);
+  box-shadow: var(--app-ring);
 }
 .onboarding-shell input.input.path {
   flex: 1 1 auto;
@@ -407,6 +431,23 @@
 }
 .onboarding-shell input.input[readonly] {
   cursor: default;
+}
+/* Error state — a failed key-save / empty required base-URL gets a red border so
+   the field itself reads as invalid, not just the hint line beneath it. Applies
+   on rest AND focus (the danger ring replaces the accent one) so the error stays
+   legible while editing. */
+.onboarding-shell input.input.is-error,
+.onboarding-shell select.input.is-error {
+  border-color: var(--app-danger-border);
+}
+.onboarding-shell input.input.is-error:hover,
+.onboarding-shell select.input.is-error:hover {
+  border-color: var(--app-danger);
+}
+.onboarding-shell input.input.is-error:focus,
+.onboarding-shell select.input.is-error:focus {
+  border-color: var(--app-danger);
+  box-shadow: 0 0 0 3px var(--app-danger-bg);
 }
 
 /* ===== button family (download / cancel / grant / browse / configure) =====
@@ -416,28 +457,33 @@
    (OcrBody / TranscriptionBody / AskAiBody) consume these classes directly. */
 .onboarding-shell .btn {
   font: inherit;
-  font-size: 12px;
-  font-weight: 540;
+  font-size: var(--text-base);
+  font-weight: 700;
   color: var(--app-text);
   background: var(--app-surface-raised);
   border: 1px solid var(--app-border-strong);
   border-radius: 8px;
-  padding: 7px 13px;
+  padding: 7px 14px;
   cursor: pointer;
   white-space: nowrap;
   transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease,
-    box-shadow 0.15s ease;
+    box-shadow 0.15s ease, transform 0.08s ease;
 }
 .onboarding-shell .btn:hover:not(:disabled) {
   border-color: var(--app-border-hover);
   color: var(--app-text-strong);
 }
+/* Press feedback mirroring `.cta:active` — the shared `.btn` family (download /
+   cancel / grant / browse / retry) otherwise gave no tactile cue on click. */
+.onboarding-shell .btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
 .onboarding-shell .btn:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px var(--app-accent-glow);
+  box-shadow: var(--app-ring);
 }
 .onboarding-shell .btn:disabled {
-  opacity: 0.5;
+  opacity: var(--app-disabled-opacity);
   cursor: not-allowed;
 }
 .onboarding-shell .btn.accent {
@@ -459,7 +505,7 @@
     color-mix(in srgb, var(--app-danger) 18%, transparent);
 }
 .onboarding-shell .btn.sm {
-  font-size: 11px;
+  font-size: var(--text-sm);
   padding: 5px 10px;
 }
 
@@ -474,5 +520,11 @@
   .onboarding-shell .dl-fill,
   .onboarding-shell .footer .secondary {
     transition: none;
+  }
+  /* Freeze the indeterminate sweep to a static partial bar (still clearly not a
+     stalled 0%) rather than animating it. */
+  .onboarding-shell .dl-fill--indeterminate {
+    animation: none;
+    transform: none;
   }
 }

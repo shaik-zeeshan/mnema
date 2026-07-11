@@ -870,10 +870,12 @@ impl WorkerCadence {
 pub(crate) async fn run_conclusion_distillation(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
+    app_handle: &tauri::AppHandle,
+    subject_vectors: &app_infra::SubjectVectorStore,
     provider_label: Option<String>,
     model_label: Option<String>,
 ) -> Option<derivation::ConclusionDistillationOutcome> {
-    match derivation::distill_conclusions(engine, store).await {
+    match derivation::distill_conclusions(engine, store, app_handle, subject_vectors).await {
         Ok(outcome) => {
             let _ = store
                 .insert_derivation_run(NewDerivationRun {
@@ -907,6 +909,15 @@ pub(crate) async fn run_conclusion_distillation(
                     drops.guardrail_suppressed,
                     drops.below_formation_bar,
                     drops.resurface_blocked,
+                ));
+            }
+            // ADR 0046: supersede activity is an OUTCOME, not a withholding — logged
+            // separately from the "withheld N drafts" line so retirements are visible.
+            let drops = outcome.gate_drops;
+            if drops.superseded + drops.supersede_degraded + drops.supersede_blocked > 0 {
+                crate::native_capture::debug_log::log_info(format!(
+                    "user context supersede: {} retired, {} degraded, {} blocked",
+                    drops.superseded, drops.supersede_degraded, drops.supersede_blocked,
                 ));
             }
             Some(outcome)
@@ -1241,6 +1252,8 @@ async fn worker_tick(
         let changed = run_conclusion_distillation(
             &engine,
             infra.user_context(),
+            app_handle,
+            infra.subject_vectors(),
             provider_label.clone(),
             model_label.clone(),
         )

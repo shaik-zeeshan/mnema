@@ -46,11 +46,11 @@
       <div class="custom-res-field">
         <label class="custom-res-label" for="bitrate-mbps">Bitrate (Mbps)</label>
         <div class="custom-bitrate-input-wrap">
-          <Stepper id="bitrate-mbps" bind:value={customMbpsRaw} min={1} max={40} unit="Mbps" placeholder="e.g. 12" ariaLabel="Bitrate (Mbps)" invalid={customErrors.length > 0} />
+          <Stepper id="bitrate-mbps" bind:value={customMbpsRaw} min={1} max={40} unit="Mbps" placeholder="e.g. 12" ariaLabel="Bitrate (Mbps)" invalid={customErrors.length > 0} errorId="bitrate-custom-error" />
         </div>
       </div>
-      <FieldWarning messages={customErrors} />
     </div>
+    <FieldWarning id="bitrate-custom-error" messages={customErrors} />
 
     {#if customErrors.length === 0 && customMbps !== null}
       <p class="group-hint">Custom bitrate: <strong>{customMbps} Mbps</strong>.</p>
@@ -91,11 +91,6 @@
 
   .custom-bitrate-input-wrap {
     max-width: 240px;
-  }
-
-  /* Sit the warning badge on the input row, not below the label. */
-  .custom-bitrate-row :global(.field-warning) {
-    height: 34px;
   }
 
   .group-hint {

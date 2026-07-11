@@ -298,6 +298,7 @@ pub enum AudioTranscriptionProvider {
     LocalWhisper,
     AppleSpeechOnDevice,
     Parakeet,
+    Deepgram,
 }
 
 pub fn default_audio_transcription_enabled() -> bool {
@@ -519,6 +520,12 @@ pub struct AccessSettings {
     /// conversation can pull through the broker.
     #[serde(default = "default_ask_ai_max_tool_calls")]
     pub ask_ai_max_tool_calls: u32,
+    /// Whether Ask AI may re-fetch a page the user actually visited (keyed by an
+    /// opaque capture id; the model never supplies a URL) over the network to
+    /// check its CURRENT state. Opt-in — default `false`. The address is scrubbed
+    /// of secrets before it leaves the device (see `web_fetch.rs`).
+    #[serde(default)]
+    pub ask_ai_web_fetch_enabled: bool,
     /// The Ask AI **model override** (ADR 0034): a bare rig-core model id that
     /// replaces the global default model's *model* for Quick Recall and
     /// unpinned Chat threads, riding on the default model's provider.
@@ -533,6 +540,7 @@ impl Default for AccessSettings {
         Self {
             ask_ai_enabled: false,
             ask_ai_max_tool_calls: default_ask_ai_max_tool_calls(),
+            ask_ai_web_fetch_enabled: false,
             ask_ai_model: None,
         }
     }
@@ -636,6 +644,88 @@ impl AiProviderConfig {
     }
 }
 
+/// How an `Http` MCP tool connector authenticates. `Bearer` delivers a
+/// user-pasted Static Secret as `Authorization: Bearer` (0048's model, the
+/// back-compat default); `OAuth` runs a browser authorization flow and manages
+/// an OAuth Token Set (ADR 0051). OAuth is an auth MODE on the `Http`
+/// transport, never a distinct transport. Ignored for `Stdio`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum McpAuthMode {
+    #[default]
+    Bearer,
+    #[serde(rename = "oauth")]
+    OAuth,
+}
+
+/// The transport an MCP tool connector speaks. `stdio` spawns a child process
+/// and talks over its stdin/stdout; `http` connects to a streamable-HTTP MCP
+/// endpoint. (An MCP server is a *tool connector*, never an inference
+/// "provider" — that word is reserved for ADR 0034/0035 reasoning providers.)
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum McpTransport {
+    Stdio,
+    Http,
+}
+
+/// One non-secret stdio environment variable for a connector's child process.
+/// The single per-server secret is delivered separately (keychain → the env var
+/// named by [`McpServerConfig::secret_env_name`]); everything here is plain,
+/// persisted settings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpEnvVar {
+    pub name: String,
+    pub value: String,
+}
+
+/// One user-configured MCP tool connector. Flat by transport (mirroring
+/// [`AiProviderConfig`] for an easy TS hand-mirror). The single optional secret
+/// lives ONLY in the OS keychain keyed by [`id`](Self::id); never persisted here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerConfig {
+    /// Stable slug id (`[a-z0-9-]`), assigned once at creation. Keys the keychain
+    /// secret account AND the model-facing `mcp__<id>__<tool>` prefix, so the
+    /// charset is load-bearing — a later slice parses that prefix.
+    #[serde(default)]
+    pub id: String,
+    /// User-facing display name.
+    pub label: String,
+    /// Whether this connector is offered to the chat agent. Disabling ≠ deleting:
+    /// the keychain secret and tool curation survive a disable.
+    #[serde(default)]
+    pub enabled: bool,
+    pub transport: McpTransport,
+    /// Auth mode for an `Http` connector (ADR 0051). Defaults to `Bearer` for
+    /// back-compat; `OAuth` opts into the browser authorization flow. Unused for
+    /// `Stdio`.
+    #[serde(default)]
+    pub auth_mode: McpAuthMode,
+    /// stdio: the child-process command to spawn.
+    #[serde(default)]
+    pub command: Option<String>,
+    /// stdio: arguments passed to `command`.
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// stdio: non-secret environment variables for the child process.
+    #[serde(default)]
+    pub env: Vec<McpEnvVar>,
+    /// http: the streamable-HTTP MCP endpoint URL.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// stdio: the env var name the single keychain secret is delivered as (e.g.
+    /// `GITHUB_TOKEN`). http delivers the secret as an `Authorization: Bearer`
+    /// header instead, so this is unused there.
+    #[serde(default)]
+    pub secret_env_name: Option<String>,
+    /// Tool curation. `None` = default-offer (a later slice caps the first N);
+    /// `Some(list)` = exactly these tool names, no cap.
+    #[serde(default)]
+    pub enabled_tools: Option<Vec<String>>,
+}
+
 /// An engine identity `{provider, model}` (ADR 0034) — the same shape the
 /// conversation engine pin uses. The global default model is one of these, and
 /// every model decision resolves to one through the single precedence chain
@@ -663,6 +753,10 @@ pub struct AiRuntimeSettings {
     pub enabled: bool,
     pub providers: Vec<AiProviderConfig>,
     pub default_model: Option<AiEngineRef>,
+    /// User-configured MCP tool connectors (Workstream C). Rides the same
+    /// provider-centric autosave; secrets live in the keychain, never here.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerConfig>,
 }
 
 impl Default for AiRuntimeSettings {
@@ -671,6 +765,7 @@ impl Default for AiRuntimeSettings {
             enabled: false,
             providers: Vec::new(),
             default_model: None,
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -789,6 +884,8 @@ struct AiRuntimeSettingsWire {
     providers: Option<Vec<AiProviderConfig>>,
     #[serde(default)]
     default_model: Option<AiEngineRef>,
+    #[serde(default)]
+    mcp_servers: Vec<McpServerConfig>,
     // Legacy engine-centric shape.
     engine_kind: Option<LegacyAiEngineKind>,
     cloud_provider: Option<LegacyAiCloudProvider>,
@@ -815,6 +912,7 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
                 default_model: wire
                     .default_model
                     .filter(|model| !model.model.trim().is_empty()),
+                mcp_servers: wire.mcp_servers,
             };
         }
 
@@ -877,6 +975,8 @@ impl From<AiRuntimeSettingsWire> for AiRuntimeSettings {
             enabled: wire.enabled,
             providers,
             default_model,
+            // No legacy engine-centric file ever carried MCP connectors.
+            mcp_servers: Vec::new(),
         }
     }
 }
@@ -914,6 +1014,9 @@ pub struct UpdateAiRuntimeSettingsRequest {
     /// Global default model. Absent = unchanged; explicit `null` = clear.
     #[serde(default, deserialize_with = "deserialize_double_option_engine_ref")]
     pub default_model: Option<Option<AiEngineRef>>,
+    /// Replacement MCP connector list (wholesale, like `providers`). `None`
+    /// leaves the existing list unchanged; `Some` replaces it.
+    pub mcp_servers: Option<Vec<McpServerConfig>>,
 }
 
 /// The named **Derivation Budget** intensity tier for a cloud Reasoning Engine
@@ -978,14 +1081,14 @@ pub struct UpdateUserContextSettingsRequest {
     pub backfill_go_deeper: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettings {
     pub capture_screen: bool,
     pub capture_microphone: bool,
     pub capture_system_audio: bool,
     pub segment_duration_seconds: u64,
-    pub screen_frame_rate: u32,
+    pub screen_frame_rate: f64,
     #[serde(default = "default_screen_resolution")]
     pub screen_resolution: ScreenResolution,
     #[serde(default = "default_video_bitrate")]
@@ -1069,7 +1172,7 @@ pub enum SettingsOwnershipDomain {
     OneTimePromptState,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecordingSettingsDomainUpdateResponse {
     pub domain: SettingsOwnershipDomain,
@@ -1083,7 +1186,7 @@ pub struct UpdateRecordingSettingsRequest {
     pub capture_microphone: bool,
     pub capture_system_audio: bool,
     pub segment_duration_seconds: u64,
-    pub screen_frame_rate: u32,
+    pub screen_frame_rate: f64,
     #[serde(default = "default_screen_resolution")]
     pub screen_resolution: ScreenResolution,
     #[serde(default = "default_video_bitrate")]
@@ -1177,7 +1280,7 @@ pub struct UpdateCaptureTimingSettingsRequest {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateVideoSettingsRequest {
-    pub screen_frame_rate: Option<u32>,
+    pub screen_frame_rate: Option<f64>,
     pub screen_resolution: Option<ScreenResolution>,
     pub video_bitrate: Option<VideoBitrateSettings>,
 }
@@ -1228,6 +1331,8 @@ pub struct UpdateAccessSettingsRequest {
     pub ask_ai_enabled: Option<bool>,
     /// New per-question tool-call cap (`0` = no cap). `None` leaves it unchanged.
     pub ask_ai_max_tool_calls: Option<u32>,
+    /// Toggle the opt-in `fetch_url` web-fetch tool. `None` leaves it unchanged.
+    pub ask_ai_web_fetch_enabled: Option<bool>,
     /// New Quick Recall model id — a rig-core model id used against the default
     /// Reasoning Engine (not a PI `provider:modelId` pair). `None` leaves it
     /// unchanged; an empty string clears the selection back to the engine's

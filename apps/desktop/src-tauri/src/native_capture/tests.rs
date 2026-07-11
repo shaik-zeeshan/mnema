@@ -55,7 +55,8 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    stop_capture_runtime, StartedSegmentState,
+    should_defer_screen_resume_for_missing_display, stop_capture_runtime,
+    system_audio_resume_action, StartedSegmentState, SystemAudioResumeAction,
 };
 use super::segments::{
     flush_frame_artifacts, try_forward_frame_artifact, FrameArtifactEnvelope,
@@ -115,6 +116,48 @@ use tokio::sync::mpsc;
 
 struct TestDir {
     path: PathBuf,
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn display_reconfiguration_online_flags_trigger_wake_recovery() {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+    use super::display_reconfiguration_flags_indicate_display_online as online;
+
+    // End-of-configuration with a display coming (back) online re-arms capture:
+    // the dark/deep-idle wake case where NSWorkspaceDidWake never fires.
+    assert!(online(F::kCGDisplayAddFlag.bits()));
+    assert!(online(F::kCGDisplayEnabledFlag.bits()));
+    assert!(online(F::kCGDisplaySetMainFlag.bits()));
+    assert!(online(F::kCGDisplaySetModeFlag.bits()));
+    assert!(online(
+        (F::kCGDisplayAddFlag | F::kCGDisplaySetModeFlag).bits()
+    ));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn display_reconfiguration_begin_and_offline_flags_skip_wake_recovery() {
+    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
+    use super::display_reconfiguration_flags_indicate_display_online as online;
+
+    // The begin-configuration half of the pair must not fire — even when paired
+    // with online flags — so recovery runs once, at end-of-configuration.
+    assert!(!online(F::kCGDisplayBeginConfigurationFlag.bits()));
+    assert!(!online(
+        (F::kCGDisplayBeginConfigurationFlag | F::kCGDisplayAddFlag).bits()
+    ));
+
+    // A display going away (remove/disable only) is not a wake.
+    assert!(!online(F::kCGDisplayRemoveFlag.bits()));
+    assert!(!online(F::kCGDisplayDisabledFlag.bits()));
+    assert!(!online(
+        (F::kCGDisplayRemoveFlag | F::kCGDisplayDisabledFlag).bits()
+    ));
+
+    // A bare move/mirror reconfiguration with no display coming online is a no-op.
+    assert!(!online(F::kCGDisplayMovedFlag.bits()));
+    assert!(!online(0));
 }
 
 #[cfg(target_os = "macos")]
@@ -246,7 +289,7 @@ fn recording_settings_fixture() -> RecordingSettings {
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -1024,7 +1067,7 @@ fn paused_runtime_fixture() -> NativeCaptureRuntime {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -1100,7 +1143,7 @@ fn running_screen_capture_runtime_fixture() -> NativeCaptureRuntime {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         capture_clock: Some(CaptureClock::start_now()),
         segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
@@ -1323,7 +1366,7 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
         follow_timeline_live: true,
         appearance: AppearanceSetting::Dark,
         segment_duration_seconds: 120,
-        screen_frame_rate: 24,
+        screen_frame_rate: 24.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::P720,
         },
@@ -1354,7 +1397,7 @@ fn describe_recording_settings_changes_lists_high_signal_differences() {
     )));
     assert!(changes.contains(&"follow_timeline_live false -> true".to_string()));
     assert!(changes.contains(&"segment_duration_seconds 60 -> 120".to_string()));
-    assert!(changes.contains(&"screen_frame_rate 30 -> 24".to_string()));
+    assert!(changes.contains(&"screen_frame_rate 5 -> 24".to_string()));
     assert!(changes.contains(&"screen_resolution original -> 720p".to_string()));
     assert!(changes.contains(&"video_bitrate preset:medium -> custom:8mbps".to_string()));
     assert!(changes.contains(&"pause_on_inactivity true -> false".to_string()));
@@ -1625,15 +1668,42 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
 }
 
 #[test]
+fn validate_recording_settings_accepts_frame_rate_bounds() {
+    for rate in [0.5, 10.0] {
+        validate_recording_settings(UpdateRecordingSettingsRequest {
+            screen_frame_rate: rate,
+            ..update_recording_settings_request_fixture()
+        })
+        .unwrap_or_else(|error| panic!("frame rate {rate} must be accepted: {error:?}"));
+    }
+}
+
+#[test]
+fn validate_recording_settings_rejects_out_of_range_frame_rates() {
+    for rate in [0.4, 10.1, 0.0, -1.0, 30.0, 120.0, f64::NAN] {
+        let error = validate_recording_settings(UpdateRecordingSettingsRequest {
+            screen_frame_rate: rate,
+            ..update_recording_settings_request_fixture()
+        })
+        .expect_err(&format!("frame rate {rate} must be rejected"));
+
+        assert_eq!(error.code, "invalid_recording_settings");
+        assert_eq!(error.message, "screenFrameRate must be between 0.5 and 10");
+    }
+}
+
+#[test]
 fn compute_effective_screen_bitrate_uses_preset_formula() {
     let settings = RecordingSettings {
         capture_screen: true,
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30,
+        // 1920 * 1080 * 4.5 * 0.10 = 933,120 rounds to 1,000,000; an integer-truncated
+        // rate (4.0) would round to 750,000, so this pins the fractional f64 path.
+        screen_frame_rate: 4.5,
         screen_resolution: ScreenResolution::Preset {
-            preset: ScreenResolutionPreset::P720,
+            preset: ScreenResolutionPreset::P1080,
         },
         video_bitrate: VideoBitrateSettings {
             mode: VideoBitrateMode::Preset,
@@ -1669,7 +1739,7 @@ fn compute_effective_screen_bitrate_uses_preset_formula() {
     let bitrate = compute_effective_screen_bitrate_bps(&settings)
         .expect("screen capture should produce a bitrate");
 
-    assert_eq!(bitrate, 2_750_000);
+    assert_eq!(bitrate, 1_000_000);
 }
 
 #[test]
@@ -1679,7 +1749,7 @@ fn compute_effective_screen_bitrate_uses_custom_value() {
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -1727,7 +1797,7 @@ fn compute_effective_screen_bitrate_none_when_screen_disabled() {
         capture_microphone: true,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::P1080,
         },
@@ -1784,7 +1854,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         }),
         current_segment_output_files: None,
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -1909,7 +1979,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         }),
         current_segment_output_files: None,
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -2001,6 +2071,43 @@ fn paused_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
     let mut lifecycle = RecordingLifecycle::default();
     *lifecycle.runtime_mut() = screen_paused_runtime_fixture();
 
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn suspended_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    // Sleep-clearing the screen state makes it eligible (the resync entry point).
+    assert!(lifecycle.handle_system_will_sleep());
+    assert!(lifecycle.should_attempt_recovery_after_possible_wake());
+
+    // A live suspension owns the screen and re-arms through its own path; a
+    // possible-wake resync must not fight it.
+    let suspension_error = CaptureErrorResponse {
+        code: "capture_low_disk".to_string(),
+        message: "disk full".to_string(),
+    };
+    lifecycle.runtime_mut().capture_suspension = Some(CaptureSuspension::with_kind(
+        CaptureSuspensionKind::LowDisk,
+        &suspension_error,
+    ));
+    assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn user_paused_screen_state_is_not_eligible_for_possible_wake_recovery_resync() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+
+    assert!(lifecycle.handle_system_will_sleep());
+    assert!(lifecycle.should_attempt_recovery_after_possible_wake());
+
+    // A manual pause must survive a possible-wake resync.
+    lifecycle.runtime_mut().user_capture_paused = true;
     assert!(!lifecycle.should_attempt_recovery_after_possible_wake());
 }
 
@@ -2618,7 +2725,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         }),
         current_segment_output_files: None,
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -2690,7 +2797,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         }),
         current_segment_output_files: None,
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -2952,7 +3059,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
             system_audio_files: Vec::new(),
         }),
         current_segment_index: 3,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -3905,7 +4012,7 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
                     system_audio: true,
                 }
             );
-            assert_eq!(frame_rate, 30);
+            assert_eq!(frame_rate, 5.0);
             assert_eq!(resolution, &ScreenResolution::default());
             assert_eq!(bitrate, None);
             assert_eq!(microphone_device_id, None);
@@ -4281,7 +4388,7 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
                     system_audio: true,
                 }
             );
-            assert_eq!(screen_frame_rate, 30);
+            assert_eq!(screen_frame_rate, 5.0);
 
             let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
             state.0.system_audio_file = Some(expected_system_audio_file.clone());
@@ -4394,7 +4501,7 @@ fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_f
                     system_audio: false,
                 }
             );
-            assert_eq!(screen_frame_rate, 30);
+            assert_eq!(screen_frame_rate, 5.0);
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -4484,7 +4591,7 @@ fn inactivity_resume_with_paused_audio_refreshes_sources_without_planning_system
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -4543,7 +4650,7 @@ fn inactivity_resume_does_not_restart_or_plan_dedicated_outputs_for_legacy_soft_
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -4747,7 +4854,7 @@ fn audio_paused_runtime_fixture() -> NativeCaptureRuntime {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -4796,7 +4903,7 @@ fn pause_microphone_for_inactivity_sets_microphone_paused_preserves_screen() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -4848,7 +4955,7 @@ fn pause_microphone_for_inactivity_clears_backend_truth_and_current_output() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -4911,7 +5018,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -7710,7 +7817,7 @@ fn screen_paused_runtime_fixture() -> NativeCaptureRuntime {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -7760,7 +7867,7 @@ fn pause_screen_for_inactivity_sets_screen_paused_preserves_audio() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -7847,6 +7954,21 @@ fn resume_screen_from_inactivity_requires_requested_sources() {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn screen_resume_waits_quietly_while_no_display_is_available() {
+    // Regression: during a dark wake with the lid closed (2026-07-05), screen
+    // "activity" blips triggered a doomed cold ScreenCaptureKit start on every
+    // segment-loop iteration (~3/sec), each failing capture_display_unavailable.
+    // A dead stream with no drawable display must defer, not start.
+    assert!(should_defer_screen_resume_for_missing_display(false, false));
+    // Display returned: attempt the cold start.
+    assert!(!should_defer_screen_resume_for_missing_display(false, true));
+    // Live stream soft-resume path never defers; it never cold-starts.
+    assert!(!should_defer_screen_resume_for_missing_display(true, false));
+    assert!(!should_defer_screen_resume_for_missing_display(true, true));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn resume_screen_from_inactivity_is_noop_when_not_paused() {
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -7887,7 +8009,7 @@ fn pause_screen_preserves_audio_paused_state() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -8310,7 +8432,7 @@ fn screen_paused_with_system_audio_runtime_fixture(audio_paused: bool) -> Native
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -8636,7 +8758,7 @@ fn pause_audio_for_inactivity_updates_current_segment_sources() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -8701,7 +8823,7 @@ fn pause_audio_for_inactivity_clears_system_audio_recording_file() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -8759,7 +8881,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -8933,7 +9055,7 @@ fn pause_audio_for_inactivity_clears_system_audio_output_file_bookkeeping() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9112,7 +9234,7 @@ fn pause_audio_for_inactivity_does_not_clear_mic_if_screen_restart_fails() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9170,7 +9292,7 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused() {
         }),
         current_segment_sources: None, // cleared by screen pause
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -9240,7 +9362,7 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused_without_sou
         }),
         current_segment_sources: None,
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -9352,7 +9474,7 @@ fn pause_screen_for_inactivity_preserves_sources_for_active_audio() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9422,7 +9544,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
                 system_audio: false,
             }),
             current_segment_index: 1,
-            screen_frame_rate: 30,
+            screen_frame_rate: 5.0,
             screen_resolution: ScreenResolution::default(),
             current_segment_output_files: Some(CaptureOutputFiles {
                 screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9504,7 +9626,7 @@ fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_fa
                 system_audio: true,
             }),
             current_segment_index: 1,
-            screen_frame_rate: 30,
+            screen_frame_rate: 5.0,
             screen_resolution: ScreenResolution::default(),
             current_segment_output_files: Some(CaptureOutputFiles {
                 screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9585,7 +9707,7 @@ fn pause_screen_for_inactivity_clears_sources_when_audio_also_paused() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9646,7 +9768,7 @@ fn pause_audio_restart_screen_fails_fast_on_no_planner() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -9903,7 +10025,7 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: None,
@@ -10048,7 +10170,7 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
@@ -10096,6 +10218,96 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
     assert!(output_files.screen_file.is_some());
 }
 
+// --- System-audio inactivity transitions while the screen family is paused ---
+
+#[cfg(target_os = "macos")]
+#[test]
+fn system_audio_resume_action_never_marks_resumed_without_a_writer_on_a_live_stream() {
+    // The wedge this pins down: system audio pauses (writer detached,
+    // bookkeeping cleared), the screen family then soft-pauses (stream stays
+    // live), audio starts playing. Resuming here used to mark the family
+    // unpaused without attaching a writer, so nothing recorded until the next
+    // rotation — and the screen soft-resume path skipped the writer too
+    // because system_audio_recording_file was still None.
+    assert_eq!(
+        system_audio_resume_action(true, true),
+        SystemAudioResumeAction::DeferKeepPaused,
+        "live stream + screen soft-paused must defer and stay paused"
+    );
+    assert_eq!(
+        system_audio_resume_action(true, false),
+        SystemAudioResumeAction::ResumeWriter,
+        "live stream + active screen family attaches the writer"
+    );
+    assert_eq!(
+        system_audio_resume_action(false, true),
+        SystemAudioResumeAction::MarkResumedOnly,
+        "cold screen pause marks resumed; the cold screen-resume recreates the writer"
+    );
+    assert_eq!(
+        system_audio_resume_action(false, false),
+        SystemAudioResumeAction::DeferKeepPaused,
+        "missing session outside a screen pause must defer and stay paused"
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_system_audio_clears_bookkeeping_even_when_screen_paused() {
+    // Pausing system audio while the screen family is already paused used to
+    // skip all backend and bookkeeping work, leaving a stale
+    // system_audio_recording_file that later paths could re-commit.
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 1,
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+            system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+        }),
+        recording_file: None,
+        system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+        active_screen_session: None,
+        active_microphone_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            screen_paused: true,
+            is_paused: true,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_system_audio_for_inactivity(&mut runtime)
+        .expect("pause while screen paused should succeed");
+
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(
+        runtime.system_audio_recording_file.is_none(),
+        "system_audio_recording_file must be cleared even while the screen family is paused"
+    );
+    let output_files = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("output files struct should still exist");
+    assert!(output_files.system_audio_file.is_none());
+    assert!(output_files.system_audio_files.is_empty());
+}
+
 // --- Slice 3b9: restart failure reconciles paused/source bookkeeping ---
 
 #[cfg(target_os = "macos")]
@@ -10120,7 +10332,7 @@ fn pause_audio_soft_pause_no_session_reconciles_paused_and_source_state() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
@@ -10208,7 +10420,7 @@ fn pause_audio_mic_stop_skipped_still_refreshes_sources_after_screen_restart() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10280,7 +10492,7 @@ fn resume_audio_mic_start_failure_refreshes_current_segment_sources() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
@@ -10358,7 +10570,7 @@ fn resume_audio_mic_start_failure_with_system_audio_refreshes_rolled_back_source
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
@@ -10432,7 +10644,7 @@ fn resume_audio_soft_resume_no_session_succeeds_without_planner() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10505,7 +10717,7 @@ fn pause_audio_missing_planner_clears_recording_file() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10570,7 +10782,7 @@ fn pause_screen_preserves_audio_continuation_output_files() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10636,7 +10848,7 @@ fn pause_screen_clears_output_files_when_audio_also_paused() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10686,7 +10898,7 @@ fn pause_screen_preserves_output_files_with_system_audio_and_mic() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10755,7 +10967,7 @@ fn pause_screen_for_inactivity_no_continuation_for_system_audio_only() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10810,7 +11022,7 @@ fn pause_audio_restart_screen_no_planner_clears_screen_output_files() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10886,7 +11098,7 @@ fn pause_screen_for_inactivity_no_continuation_without_live_mic_session_or_file(
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -10943,7 +11155,7 @@ fn pause_screen_for_inactivity_continuation_with_mic_recording_file() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -11006,7 +11218,7 @@ fn resume_audio_screen_restart_failure_reconciles_bookkeeping() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
@@ -11105,7 +11317,7 @@ fn pause_runtime_mic_fail_preserves_screen_bookkeeping() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -11174,7 +11386,7 @@ fn pause_screen_fatal_finalize_preserves_audio_continuation() {
             system_audio: false,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         current_segment_output_files: Some(CaptureOutputFiles {
             screen_file: Some("/tmp/screen.mov".to_string()),
@@ -11264,7 +11476,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -11346,7 +11558,7 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
             system_audio: true,
         }),
         current_segment_index: 1,
-        screen_frame_rate: 30,
+        screen_frame_rate: 5.0,
         screen_resolution: ScreenResolution::default(),
         segment_loop_control: None,
         capture_clock: Some(CaptureClock::start_now()),
@@ -11530,7 +11742,7 @@ mod low_disk {
                 system_audio: true,
             }),
             current_segment_index: 1,
-            screen_frame_rate: 30,
+            screen_frame_rate: 5.0,
             screen_resolution: ScreenResolution::default(),
             effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
             segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(
@@ -11869,7 +12081,7 @@ mod low_disk {
                 system_audio: true,
             }),
             current_segment_index: 2,
-            screen_frame_rate: 30,
+            screen_frame_rate: 5.0,
             screen_resolution: ScreenResolution::default(),
             effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
             output_files: Some(super::super::segments::empty_output_files()),
@@ -12396,7 +12608,7 @@ mod low_disk_windows {
                 system_audio: true,
             }),
             current_segment_index: 1,
-            screen_frame_rate: 30,
+            screen_frame_rate: 30.0,
             screen_resolution: ScreenResolution::default(),
             effective_screen_bitrate_bps: Some(SCREEN_BITRATE_BPS),
             segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(

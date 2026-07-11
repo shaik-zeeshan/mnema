@@ -93,7 +93,7 @@
   }
 
   .rg-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -137,8 +137,9 @@
   }
 
   :global(.rg-item:focus-visible) {
-    outline: 1px solid var(--app-accent);
-    outline-offset: 1px;
+    outline: 2px solid var(--app-accent);
+    outline-offset: -2px;
+    box-shadow: var(--app-ring);
   }
 
   .rg-indicator {
@@ -173,7 +174,7 @@
   }
 
   .rg-item-label {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;
@@ -185,7 +186,7 @@
     letter-spacing: 0.02em;
   }
   :global(.rg-item[data-disabled]) {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
     pointer-events: none;
   }
@@ -234,7 +235,7 @@
   }
 
   :global(.rg-item--card) .rg-item-label {
-    font-size: 13.5px;
+    font-size: var(--text-md);
     font-weight: 600;
     color: var(--app-text-strong);
   }

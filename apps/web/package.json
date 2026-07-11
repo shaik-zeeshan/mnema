@@ -10,6 +10,7 @@
     "test": "bun test"
   },
   "dependencies": {
+    "@astrojs/sitemap": "^3.7.3",
     "@fontsource-variable/hanken-grotesk": "^5.1.1",
     "@fontsource/spline-sans-mono": "^5.1.1",
     "astro": "6.3.7"

@@ -4,10 +4,22 @@ Mnema currently ships Apple Silicon macOS builds. These builds are ad hoc signed
 
 The first update-capable build must still be installed manually by existing users. Only builds that already contain the App Update Service can receive later updates in-app.
 
+## Distribution Bucket
+
+Public distribution lives on Cloudflare R2 behind `https://release.mnema.day` (bucket `mnema-release`), never on GitHub, so downloads and update feeds keep working if the source repository goes private. GitHub Releases remain as an internal build-staging area and record. Bucket layout:
+
+- `releases/v{version}/` — immutable artifacts (DMG, `.app.tar.gz`, `.app.tar.gz.sig`).
+- `stable/latest.json` and `preview/latest.json` — the per-channel updater feeds, with URLs rewritten to the R2 artifacts.
+- `stable/Mnema.dmg` — fixed download URL used by the website, replaced on each stable promotion.
+
+The promote workflow authenticates with three repository secrets: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2 API token with Object Read & Write on the bucket). The website's footer version chip reads `stable/latest.json` cross-origin, which requires a CORS rule on the bucket allowing `GET` from the site's origins.
+
+Transition note: installs of v0.1.12 and earlier still poll the old GitHub feeds. To migrate them while the old repo is public, upload the next release's rewritten `latest.json` to the old repo's newest release: `gh release upload v0.1.12 latest.json --clobber`. Once no such installs remain, this can stop.
+
 ## Update Channels
 
-- Stable Update is the default channel. It uses the latest published, non-prerelease GitHub Release at `https://github.com/shaik-zeeshan/mnema/releases/latest/download/latest.json`.
-- Preview Update is explicit opt-in. It uses prerelease versions such as `0.3.0-preview.1` and reads `https://shaik-zeeshan.github.io/mnema/updates/preview/latest.json`.
+- Stable Update is the default channel. It reads `https://release.mnema.day/stable/latest.json`.
+- Preview Update is explicit opt-in. It uses prerelease versions such as `0.3.0-preview.1` and reads `https://release.mnema.day/preview/latest.json`.
 - Draft releases are smoke-test staging only and must not be update-visible on either channel.
 - Preview builds may be less stable and may show macOS security warnings while builds remain ad hoc signed and non-notarized.
 
@@ -72,21 +84,13 @@ Before promotion:
 
 ## Promote a Release
 
-Run **Promote macOS Release** (`.github/workflows/macos-release-promote.yml`) manually with the reviewed version.
+**Promote macOS Release** (`.github/workflows/macos-release-promote.yml`) runs automatically when the draft GitHub release is published (draft → published in the GitHub UI), or manually via workflow dispatch with the reviewed version.
 
-For stable versions:
+For both channels the workflow:
 
-- The workflow confirms the release is still draft and has required assets.
-- It publishes the release as non-draft and non-prerelease.
-- No GitHub Pages update is made. GitHub `releases/latest/download/latest.json` becomes the stable feed.
-
-For preview versions:
-
-- The workflow confirms the release is still draft and has required assets.
-- It publishes the release as non-draft prerelease.
-- It downloads that release's `latest.json` and deploys it through GitHub Pages at `updates/preview/latest.json`.
-
-GitHub Pages must be configured for GitHub Actions deployment. The promote workflow needs `contents: write` for release publication plus `pages: write` and `id-token: write` for preview feed deployment.
+- Confirms the release is still draft (unless `republish=true`, which backfills R2 from an already-published release) and has the required assets.
+- Downloads the assets, rewrites `latest.json`'s platform URLs to `https://release.mnema.day/releases/v{version}/…`, and uploads artifacts plus the channel feed (`stable/latest.json` or `preview/latest.json`) to R2. Stable promotions also replace the fixed `stable/Mnema.dmg` download.
+- Verifies the public URLs serve the promoted version, then marks the GitHub release published (stable: non-prerelease; preview: prerelease) as the internal record.
 
 ## Combined macOS + Windows Release
 

@@ -1,0 +1,13 @@
+-- Headline evidence frame for an Activity.
+--
+-- An Activity's evidence is a flat set of grounding frames; the UI picks the
+-- "representative" one to land the Timeline on when the user clicks the
+-- Activity. That pick was `evidence[0]` = earliest by `captured_at_ms`, which
+-- for a multi-sub-topic episode lands on the FIRST sub-topic — not the one the
+-- Activity title describes. The derivation engine now nominates the single
+-- evidence frame that best represents the title; this flag marks that row so
+-- `list_activity_evidence` can order it first (headline, else earliest).
+--
+-- 0 for every existing row (falls back to earliest-frame behaviour) and for any
+-- Activity where the engine omits or mis-tags the headline.
+ALTER TABLE user_context_activity_evidence ADD COLUMN is_headline INTEGER NOT NULL DEFAULT 0;

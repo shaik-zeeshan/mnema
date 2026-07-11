@@ -33,6 +33,47 @@
   // can't change mid-session — and mirrored by the controller's on/attention counts.
   const features = platformFeatures(detectKeyboardPlatform());
 
+  // Cross-phase wayfinding: map the three-state phase machine
+  // (welcome → configure → done) to a 1-based step so the shell can show a quiet
+  // "Welcome · Configure · Finish" stepper telling the user where they are and
+  // what remains. Purely presentational — derived from the existing phase state.
+  const phaseStep = $derived(c.phase === "welcome" ? 1 : c.phase === "configure" ? 2 : 3);
+
+  // Intra-step progress for the otherwise-undifferentiated Configure dot: the
+  // accordion is many rows, so surface "X of Y ready" — every row minus those
+  // still flagged for attention. Derived from existing controller state.
+  const configureTotal = features.length;
+  const configureReady = $derived(Math.max(0, configureTotal - c.attentionCount));
+
+  // Spoken step announcement for the polite live region below: a phase change is a
+  // full content swap (welcome hero ↔ accordion ↔ finale crest), so without an
+  // announcement a screen-reader user only hears silence after activating the CTA.
+  const phaseAnnouncement = $derived(
+    c.phase === "welcome"
+      ? "Step 1 of 3: Welcome."
+      : c.phase === "configure"
+        ? "Step 2 of 3: Configure what mnema records."
+        : "Step 3 of 3: Finish and start recording.",
+  );
+
+  // Move focus to the new phase's heading on every transition. Each phase renders
+  // a different component tree, so without this the focus is stranded on the
+  // (now-unmounted) button the user just pressed — keyboard/SR users would land on
+  // <body>. The headings carry `tabindex="-1"` + `data-ob-phase-heading` so they
+  // accept programmatic focus. The first run (initial mount) is skipped so we
+  // don't yank focus to the heading before the user has interacted.
+  let phaseFocusPrimed = false;
+  $effect(() => {
+    c.phase; // track phase transitions
+    if (!phaseFocusPrimed) {
+      phaseFocusPrimed = true;
+      return;
+    }
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>("[data-ob-phase-heading]")?.focus();
+    });
+  });
+
   // Mount loaders. The `untrack` is MANDATORY: without it, editing a draft
   // re-runs init and reverts the edit (known onboarding/settings mount-effect
   // bug in this app — see CLAUDE memory "Settings init effect untrack").
@@ -75,6 +116,43 @@
 </script>
 
 <div class="onboarding-root">
+  <!-- Polite step announcement for assistive tech — phase transitions otherwise
+       swap the whole screen silently. Visually hidden; mirrors the access-request
+       page's `.sr-only` live-status pattern. -->
+  <span class="ob-sr-only" role="status" aria-live="polite">{phaseAnnouncement}</span>
+  <nav class="ob-progress" aria-label="Setup progress">
+    <ol class="ob-progress__list">
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 1}
+        class:is-done={phaseStep > 1}
+        aria-current={phaseStep === 1 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Welcome</span>
+      </li>
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 2}
+        class:is-done={phaseStep > 2}
+        aria-current={phaseStep === 2 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Configure</span>
+        {#if phaseStep === 2}
+          <span class="ob-progress__count">{configureReady} of {configureTotal} ready</span>
+        {/if}
+      </li>
+      <li
+        class="ob-progress__step"
+        class:is-active={phaseStep === 3}
+        aria-current={phaseStep === 3 ? "step" : undefined}
+      >
+        <span class="ob-progress__dot" aria-hidden="true"></span>
+        <span class="ob-progress__label">Finish</span>
+      </li>
+    </ol>
+  </nav>
   {#if c.phase === "welcome"}
     <WelcomeScreen controller={c} />
   {:else if c.phase === "done"}
@@ -83,6 +161,8 @@
     <FeatureStack
       onCount={c.onCount}
       attentionCount={c.attentionCount}
+      blockReason={c.configureBlockReason}
+      onJumpToAttention={c.firstConfigureBlockerId ? () => c.jumpToFirstAttention() : undefined}
       ctaLabel="Review &amp; finish →"
       ctaDisabled={!c.canProceedToFinale}
       errorMessage={c.errorMessage}
@@ -92,6 +172,7 @@
     >
     {#each features as f (f.id)}
       <FeatureRow
+        featureId={f.id}
         icon={f.icon}
         name={f.name}
         eyebrow={f.eyebrow}
@@ -150,5 +231,109 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
+    position: relative;
+  }
+
+  /* Visually-hidden live region (step announcements). Same recipe as the
+     access-request page's `.sr-only`. */
+  .ob-sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* Programmatic focus targets (phase headings) must not paint a focus ring — the
+     focus is moved by the phase-transition effect, not a user tab, so a ring here
+     would read as a stray highlight. */
+  :global(.onboarding-root [data-ob-phase-heading]:focus) {
+    outline: none;
+  }
+  :global(.onboarding-root [data-ob-phase-heading]:focus-visible) {
+    outline: none;
+  }
+
+  /* Quiet cross-phase wayfinding stepper, pinned top-center across all three
+     phases (welcome hero / configure accordion / finale crest) so the user can
+     always see where they are and what remains. Non-interactive — purely a
+     signifier — so it ignores pointer events. */
+  .ob-progress {
+    position: absolute;
+    top: 16px;
+    left: 0;
+    right: 0;
+    z-index: 5;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+    font-family: var(--app-font-mono);
+  }
+  .ob-progress__list {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    margin: 0;
+    padding: 6px 14px;
+    list-style: none;
+    border-radius: var(--app-radius-pill, 999px);
+    background: color-mix(in srgb, var(--app-surface) 70%, transparent);
+    border: 1px solid var(--app-border);
+  }
+  .ob-progress__step {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+    color: var(--app-text-subtle);
+  }
+  /* Connector tick between steps. */
+  .ob-progress__step:not(:last-child)::after {
+    content: "";
+    width: 14px;
+    height: 1px;
+    margin-left: 11px;
+    background: var(--app-border);
+  }
+  .ob-progress__dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 999px;
+    border: 1px solid var(--app-border);
+    background: transparent;
+    flex: 0 0 auto;
+  }
+  /* Completed steps: filled accent dot, muted label. */
+  .ob-progress__step.is-done {
+    color: var(--app-text-muted);
+  }
+  .ob-progress__step.is-done .ob-progress__dot {
+    background: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+  /* Current step: accent label + weight per the active-nav contract, glowing dot. */
+  .ob-progress__step.is-active {
+    color: var(--app-accent);
+    font-weight: 600;
+  }
+  .ob-progress__step.is-active .ob-progress__dot {
+    background: var(--app-accent);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-bg);
+  }
+  /* Intra-step "X of Y ready" tally on the active Configure step — the accordion
+     is many rows, so the single dot otherwise hid all progress. Kept quiet
+     (muted, tabular) so it reads as a sub-signifier, not a second label. */
+  .ob-progress__count {
+    font-size: var(--text-xs);
+    font-weight: 400;
+    letter-spacing: 0.02em;
+    color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
   }
 </style>

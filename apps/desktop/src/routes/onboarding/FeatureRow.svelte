@@ -1,7 +1,37 @@
-<script lang="ts">
+<script lang="ts" module>
+  import { getContext, setContext } from "svelte";
   import type { Snippet } from "svelte";
-  import Icon, { type IconName } from "$lib/settings/Icon.svelte";
+
+  // Lets a body component (rendered INSIDE the inert `.body-inner` via the `body`
+  // snippet) hoist its unmet-prerequisite callout OUT of the inert subtree, so the
+  // "Grant access" / "Turn on…" UNLOCK button is actually clickable. Without this
+  // the one control that promises to unlock the feature is itself inert. The body
+  // registers its callout snippet here; FeatureRow renders it as a SIBLING of
+  // `.body-inner` (never inert). Keyed by a Symbol so it can't collide.
+  const LOCK_CALLOUT_KEY = Symbol("feature-row-lock-callout");
+
+  interface LockCalloutSlot {
+    set: (snippet: Snippet | null) => void;
+  }
+
+  // Body components call this ONCE at init (it reads context, which Svelte only
+  // allows during component initialization) and get back a setter to register or
+  // clear their lock-callout snippet from an `$effect`. A no-op fallback keeps
+  // bodies usable if ever rendered outside a FeatureRow.
+  export function useLockCalloutSlot(): (snippet: Snippet | null) => void {
+    const slot = getContext<LockCalloutSlot | undefined>(LOCK_CALLOUT_KEY);
+    return (snippet) => slot?.set(snippet);
+  }
+</script>
+
+<script lang="ts">
+  import { tip } from "$lib/components/tooltip";
+  import type { IconName } from "$lib/settings/groups";
+  import { SECTION_ICONS } from "$lib/settings/section-icons";
   import Switch from "$lib/components/Switch.svelte";
+  import IconChevron from "~icons/lucide/chevron-right";
+
+  const IconLock = SECTION_ICONS.lock;
 
   // One capability row of the onboarding accordion. PRESENTATIONAL only — it
   // owns no `open`/`enabled` state. The PARENT controls `open` (so one-open-at-
@@ -9,6 +39,9 @@
   // `onExpand`. Styling lives in the global `onboarding-ui.css` (imported once by
   // FeatureStack); the only thing scoped here is the header `id` plumbing.
   interface Props {
+    // The feature id, stamped onto the row as `data-feature-id` so the controller
+    // can jump-scroll to a specific row (the footer's "jump to first attention").
+    featureId?: string;
     icon: IconName;
     name: string;
     eyebrow: string;
@@ -31,6 +64,7 @@
   }
 
   let {
+    featureId,
     icon,
     name,
     eyebrow,
@@ -46,6 +80,9 @@
     onExpand,
     body,
   }: Props = $props();
+
+  // The feature's chip glyph, resolved from the shared Lucide map.
+  const RowIcon = $derived(SECTION_ICONS[icon]);
 
   // Stable ids so the header button can `aria-controls` the body region and the
   // body region can be `aria-labelledby` the row title (a11y). Slug from `name`
@@ -74,14 +111,23 @@
     if (toggleDisabled) return; // prerequisite unmet — enabling is gated
     onToggle();
   }
+
+  // The body's hoisted lock-callout (registered via `useLockCalloutSlot`),
+  // rendered OUTSIDE the inert `.body-inner` so its unlock button is clickable.
+  let lockCallout = $state<Snippet | null>(null);
+  setContext<LockCalloutSlot>(LOCK_CALLOUT_KEY, {
+    set: (snippet) => (lockCallout = snippet),
+  });
 </script>
 
 <section
   class="row"
   class:open
   class:is-on={armed}
+  class:needs-attention={required && attention}
   class:disabled-feature={open && !enabled && !required}
   data-feature-row
+  data-feature-id={featureId}
 >
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- A `role="button"` DIV, not a real <button>: the enable Switch is a nested
@@ -99,7 +145,7 @@
     aria-controls={bodyId}
     onclick={onHeadClick}
   >
-    <div class="icon-chip"><Icon name={icon} /></div>
+    <div class="icon-chip"><RowIcon aria-hidden="true" /></div>
     <div class="row-titlewrap">
       <div class="row-eyebrow">{eyebrow}</div>
       <div class="row-name" id={titleId}>{name}</div>
@@ -107,30 +153,61 @@
     </div>
 
     {#if required}
-      <span class="row-status row-status--req" title="Required — always on">
-        <span class="lock-ico"><Icon name="lock" /></span>Required
+      <span
+        class="row-status row-status--req"
+        use:tip={attention
+          ? "Required — a permission still needs to be granted."
+          : "Required — always on"}
+      >
+        <span class="lock-ico"><IconLock aria-hidden="true" /></span>Required
       </span>
+      {#if attention}
+        <!-- A required feature can still need setup (e.g. an ungranted capture
+             permission). Without this the row read identically to a satisfied
+             required row — the warn chip + row accent (`needs-attention`) make
+             the outstanding action visible. Kept shown even when the row is open
+             so it stays legible while the user resolves it. -->
+        <span
+          class="row-attn row-attn--req"
+          use:tip={"A required permission still needs to be granted before recording can start."}
+        >
+          <span class="attn-dot"></span>Needs setup
+        </span>
+      {/if}
     {:else}
       <span class="row-status">
         {#if download?.running}
           <!-- A live download takes precedence over the On/Off + Needs-setup /
                lock labels: the row should read "Downloading N%" while fetching.
                Kept shown even when open, to confirm continuity. percent may be
-               null (unknown totalBytes) — always render `{percent ?? 0}%`. -->
+               null (unknown totalBytes) — show an indeterminate "Downloading…"
+               (the pulsing dot alone carries progress) rather than a misleading
+               "0%" that reads as a stalled/failed fetch. -->
           <span class="row-dl"
-            ><span class="dl-dot"></span>Downloading {download.percent ?? 0}%</span
+            ><span class="dl-dot"></span>{download.percent === null
+              ? "Downloading…"
+              : `Downloading ${download.percent}%`}</span
           >
         {:else}
           <span class="status-dot" class:on={enabled}></span>{enabled
             ? "On"
             : "Off"}
           {#if attention}
-            <span class="row-attn"
+            <!-- Warn chip (active blocker): the feature is ON but something it
+                 needs is unresolved. Distinct from the muted lock chip below via
+                 warn color + an explicit title (the two "not ready" states read
+                 alike at a glance otherwise). -->
+            <span class="row-attn" use:tip={"This feature is on but needs setup before it can run."}
               ><span class="attn-dot"></span>Needs setup</span
             >
           {:else if !enabled && lockReason}
-            <span class="row-lock"
-              ><span class="lock-ico"><Icon name="lock" /></span>{lockReason}</span
+            <!-- Muted lock chip (gated/optional): the feature is OFF and can't be
+                 turned on until a prerequisite is met — quieter than the warn
+                 chip because nothing is actively broken yet. -->
+            <span class="row-lock" use:tip={`Locked: ${lockReason}`}
+              ><span class="lock-ico"><IconLock aria-hidden="true" /></span><span class="row-lock-text"
+                >{lockReason}</span
+              ></span
             >
           {/if}
         {/if}
@@ -149,18 +226,36 @@
         />
       {/if}
     </div>
+
+    <!-- Static expand affordance: a muted chevron that rotates open (mirrors the
+         nested AdvancedReveal disclosure), so a collapsed row signals it expands
+         without relying on hover/cursor hints alone. Decorative — the header's
+         aria-expanded already conveys state to assistive tech. -->
+    <span class="row-chevron" class:row-chevron--open={open} aria-hidden="true">
+      <IconChevron />
+    </span>
   </div>
 
   <!-- `hidden` when collapsed so a closed row exposes no empty labelled region. -->
   <div class="row-body" id={bodyId} role="region" aria-labelledby={titleId} hidden={!open}>
     {#if open}
+      <!-- The unmet-prerequisite callout (registered by the body via
+           `useLockCalloutSlot`) is rendered HERE, as a sibling of `.body-inner`
+           and OUTSIDE its `inert` subtree, so its "Grant access" / "Turn on…"
+           UNLOCK button is actually clickable. Rendering it inside the inert body
+           (where the body component physically runs) made the one control that
+           unlocks the feature itself inert. -->
+      {#if lockCallout}
+        <div class="body-callout">{@render lockCallout()}</div>
+      {/if}
       <!-- When the feature is OFF but expanded, its body is visually dimmed
            (`.disabled-feature` in onboarding-body.css). `pointer-events: none`
            blocks the mouse but NOT the keyboard, so without `inert` the dimmed
            draft controls / model-download buttons stay tab-reachable and
            keyboard-activatable. `inert` removes the whole subtree from the tab
            order and blocks activation, matching the visual dim. Same condition
-           that drives `disabled-feature` on the row above. -->
+           that drives `disabled-feature` on the row above. The hoisted callout
+           above is deliberately NOT a descendant of this inert wrapper. -->
       <div class="body-inner" inert={open && !enabled && !required}>
         {#if body}{@render body()}{/if}
       </div>

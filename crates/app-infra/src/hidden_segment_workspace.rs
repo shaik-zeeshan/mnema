@@ -448,7 +448,11 @@ fn is_safe_frame_artifact_path(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{db::Database, processing::NewFrame, ProcessingJobDraft, ProcessingJobStatus};
+    use crate::{
+        db::{CaptureDb, Database},
+        processing::NewFrame,
+        ProcessingJobDraft, ProcessingJobStatus,
+    };
     use std::{
         fs,
         path::PathBuf,
@@ -540,8 +544,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store, processing.clone());
 
             let workspace_dir = dir.path().join("2026/04/12/.session-preview-segment-0001");
@@ -587,8 +591,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store, processing.clone());
 
             // Dead segment (no visible .mov) whose frame artifacts have already
@@ -633,8 +637,8 @@ mod tests {
                 .expect("database should initialize");
             let pool = database.pool().clone();
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
-                crate::ProcessingStore::new(pool),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
+                crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
 
             let workspace_dir = dir.path().join("2026/04/12/.session-empty-segment-0001");
@@ -666,8 +670,8 @@ mod tests {
                 .expect("database should initialize");
             let pool = database.pool().clone();
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
-                crate::ProcessingStore::new(pool),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
+                crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
 
             let segment_dir = dir.path().join("2026/04/12");
@@ -703,8 +707,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
 
             let workspace_dir = dir.path().join("2026/04/12/.session-preview-segment-0002");
@@ -754,8 +758,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
 
             let segment_dir = dir.path().join("2026/04/12");
@@ -820,8 +824,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
 
             let segment_dir = dir.path().join("2026/04/12");
@@ -902,8 +906,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
 
             let segment_dir = dir.path().join("2026/04/12");
@@ -987,8 +991,8 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
-            let store = crate::FrameBatchStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
+            let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
             let recordings_root = dir.path().join("recordings");
             // Component-wise joins: the repair scan discovers workspaces via
@@ -1133,8 +1137,8 @@ mod tests {
                 .expect("database should initialize");
             let pool = database.pool().clone();
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
-                crate::ProcessingStore::new(pool),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
+                crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
             let recordings_root = dir.path().join("recordings");
             let workspace_dir = recordings_root.join("2026/04/12/.session-empty-segment-0001");
@@ -1168,9 +1172,9 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
                 processing.clone(),
             );
             let recordings_root = dir.path().join("recordings");
@@ -1225,9 +1229,9 @@ mod tests {
                 .await
                 .expect("database should initialize");
             let pool = database.pool().clone();
-            let processing = crate::ProcessingStore::new(pool.clone());
+            let processing = crate::ProcessingStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
                 processing.clone(),
             );
             let recordings_root = dir.path().join("recordings");
@@ -1325,8 +1329,8 @@ mod tests {
                 .expect("database should initialize");
             let pool = database.pool().clone();
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
-                crate::ProcessingStore::new(pool),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
+                crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
             let recordings_root = dir.path().join("recordings");
             // Component-wise joins: the repair scan discovers workspaces via
@@ -1373,8 +1377,8 @@ mod tests {
                 .expect("database should initialize");
             let pool = database.pool().clone();
             let repair = HiddenSegmentWorkspaceRepair::new(
-                crate::FrameBatchStore::new(pool.clone()),
-                crate::ProcessingStore::new(pool),
+                crate::FrameBatchStore::new(CaptureDb::single(pool.clone())),
+                crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
             let recordings_root = dir.path().join("recordings");
             // Component-wise joins: the repair scan discovers workspaces via

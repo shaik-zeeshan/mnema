@@ -479,7 +479,7 @@ fn install_smoke_recording_settings(
     settings.capture_microphone = true;
     settings.capture_system_audio = true;
     settings.segment_duration_seconds = 300;
-    settings.screen_frame_rate = 1;
+    settings.screen_frame_rate = 1.0;
     settings.save_directory = config.save_directory.to_string_lossy().to_string();
     settings.auto_start = false;
     settings.pause_capture_on_inactivity = true;

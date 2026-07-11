@@ -339,13 +339,11 @@ _Avoid_: dashboard suggestion dropdown, always-on listbox, body-operator menu, s
 - **Secure Field Capture Suspension** is separate from the **Live Privacy Filter** and requires its own ADR before becoming a product guarantee.
 - **Stable Update** checks do not target draft releases or **Prerelease Build** values.
 - A **Prerelease Build** can become eligible for **Stable Update** only after it is published as a stable release.
-- V1 **Stable Update** uses the stable GitHub Release `latest.json` asset as its update feed.
+- V1 **Stable Update** uses the `latest.json` feed published to Cloudflare R2 at `https://release.mnema.day/stable/latest.json`.
 - V1 **Preview Update** is opt-in and must disclose that preview builds may be less stable and may show macOS security warnings until Developer ID signing and notarization are available.
 - Normal **Preview Update** UI explains practical risk and possible macOS security warnings rather than exposing signing implementation details.
-- V1 **Preview Update** uses a separate static preview update feed rather than GitHub Releases `latest`.
-- V1 **Preview Update** feed is published through GitHub Pages.
-- V1 **Preview Update** feed URL is `https://shaik-zeeshan.github.io/mnema/updates/preview/latest.json`.
-- **Stable Update** continues to use GitHub Releases `latest`; only **Preview Update** uses a custom static feed.
+- V1 **Preview Update** uses a separate per-channel feed: `https://release.mnema.day/preview/latest.json`.
+- Both channel feeds and all release artifacts are published to the public Cloudflare R2 bucket behind `release.mnema.day` by the promote workflow; GitHub Releases are an internal staging record only, so distribution survives the source repository going private.
 - **App Update** feeds and artifacts are public HTTPS resources; Mnema does not store GitHub credentials for update checks.
 - V1 **App Update** adds no app-owned analytics or telemetry beyond the necessary HTTPS feed/artifact requests.
 - V1 **App Update** channels follow [ADR 0018](../../docs/adr/0018-support-opt-in-preview-update-channel.md).

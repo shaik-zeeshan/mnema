@@ -32,9 +32,9 @@ export type GrantStatus = "active" | "expired" | "revoked";
 
 // ── Pure helpers (label/format) ─────────────────────────────────────────────
 
-export function grantStatus(grant: BrokerGrant): GrantStatus {
+export function grantStatus(grant: BrokerGrant, nowMs: number = Date.now()): GrantStatus {
   if (grant.revoked) return "revoked";
-  if (grant.expiresAtUnixMs <= Date.now()) return "expired";
+  if (grant.expiresAtUnixMs <= nowMs) return "expired";
   return "active";
 }
 
@@ -47,8 +47,8 @@ export function formatGrantScope(scope: BrokerGrant["scope"]): string {
   return "Limited scope";
 }
 
-export function formatGrantTime(unixMs: number): string {
-  const diffMs = unixMs - Date.now();
+export function formatGrantTime(unixMs: number, nowMs: number = Date.now()): string {
+  const diffMs = unixMs - nowMs;
   const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
   const abs = Math.abs(diffMs);
   if (abs < 60 * 60 * 1000) return rtf.format(Math.round(diffMs / 60000), "minute");
@@ -56,11 +56,11 @@ export function formatGrantTime(unixMs: number): string {
   return rtf.format(Math.round(diffMs / 86400000), "day");
 }
 
-export function grantStatusLabel(grant: BrokerGrant): string {
-  const status = grantStatus(grant);
+export function grantStatusLabel(grant: BrokerGrant, nowMs: number = Date.now()): string {
+  const status = grantStatus(grant, nowMs);
   if (status === "revoked") return "Revoked";
-  if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs)}`;
-  return `Expires ${formatGrantTime(grant.expiresAtUnixMs)}`;
+  if (status === "expired") return `Expired ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
+  return `Expires ${formatGrantTime(grant.expiresAtUnixMs, nowMs)}`;
 }
 
 // ── Reactive store ──────────────────────────────────────────────────────────
@@ -68,7 +68,11 @@ export function grantStatusLabel(grant: BrokerGrant): string {
 export function createCliAccessStore() {
   let brokerGrants = $state<BrokerGrant[]>([]);
   let brokerGrantLoading = $state(false);
-  let brokerGrantSaving = $state(false);
+  // Ids of grants whose revoke is currently in flight, so the panel can
+  // spin/disable only those grants' buttons (mirrors aiProviderKeySavingProvider).
+  // A Set (not a single slot) so two concurrent revokes of different grants each
+  // track their own spinner — clearing one never prematurely stops another.
+  let brokerGrantSavingIds = $state<Set<string>>(new Set());
   let brokerGrantError = $state<string | null>(null);
   let mnemaCliStatus = $state<MnemaCliStatus | null>(null);
   let mnemaCliLoading = $state(false);
@@ -115,7 +119,7 @@ export function createCliAccessStore() {
   }
 
   async function revokeAgentBrokerGrant(grantId: string) {
-    brokerGrantSaving = true;
+    brokerGrantSavingIds = new Set(brokerGrantSavingIds).add(grantId);
     brokerGrantError = null;
     try {
       await invoke<boolean>("revoke_cli_access_grant", { grantId });
@@ -123,14 +127,17 @@ export function createCliAccessStore() {
     } catch (err) {
       brokerGrantError = describeError(err);
     } finally {
-      brokerGrantSaving = false;
+      const next = new Set(brokerGrantSavingIds);
+      next.delete(grantId);
+      brokerGrantSavingIds = next;
     }
   }
 
   return {
     get brokerGrants() { return brokerGrants; },
     get brokerGrantLoading() { return brokerGrantLoading; },
-    get brokerGrantSaving() { return brokerGrantSaving; },
+    get brokerGrantSaving() { return brokerGrantSavingIds.size > 0; },
+    isGrantRevoking(grantId: string) { return brokerGrantSavingIds.has(grantId); },
     get brokerGrantError() { return brokerGrantError; },
     get mnemaCliStatus() { return mnemaCliStatus; },
     get mnemaCliLoading() { return mnemaCliLoading; },

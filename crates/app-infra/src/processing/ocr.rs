@@ -129,7 +129,10 @@ mod tests {
     };
 
     use super::*;
-    use crate::{db::Database, AppInfraError, ProcessorBackend};
+    use crate::{
+        db::{CaptureDb, Database},
+        AppInfraError, ProcessorBackend,
+    };
 
     #[derive(Debug, Clone)]
     enum MockOcrResponse {
@@ -223,7 +226,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let frame = store
                 .insert_frame(&super::super::NewFrame::new(
                     "session-ocr",
@@ -309,7 +312,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let frame = store
                 .insert_frame(&super::super::NewFrame::new(
                     "session-ocr",
@@ -356,7 +359,7 @@ mod tests {
             let database = Database::initialize(dir.path())
                 .await
                 .expect("database should initialize");
-            let store = ProcessingStore::new(database.pool().clone());
+            let store = ProcessingStore::new(CaptureDb::single(database.pool().clone()));
             let job = store
                 .enqueue_job(&super::super::ProcessingJobDraft::new(
                     super::super::ProcessingSubject::new("document", 42),

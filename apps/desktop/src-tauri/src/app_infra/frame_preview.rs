@@ -1021,27 +1021,29 @@ fn persist_generated_frame_preview_in_dir(
         )
     })?;
     let output_path = cache_dir.join(generated_frame_preview_file_name(frame_id, mime_type));
+    // Always overwrite: a later tier can produce a better image than what an
+    // earlier fallback persisted under the same frame id (e.g. a nearest-
+    // sibling image written while the video was still finalizing must not
+    // shadow a later exact video extract).
     let created = !output_path.is_file();
-    if created {
-        let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
-            format!(
-                "failed to create temporary preview file in {}: {error}",
-                cache_dir.display()
-            )
-        })?;
-        fs::write(temp_file.path(), bytes).map_err(|error| {
-            format!(
-                "failed to write temporary preview file {}: {error}",
-                temp_file.path().display()
-            )
-        })?;
-        temp_file.persist(&output_path).map_err(|error| {
-            format!(
-                "failed to persist generated preview file {}: {error}",
-                output_path.display()
-            )
-        })?;
-    }
+    let temp_file = tempfile::NamedTempFile::new_in(cache_dir).map_err(|error| {
+        format!(
+            "failed to create temporary preview file in {}: {error}",
+            cache_dir.display()
+        )
+    })?;
+    fs::write(temp_file.path(), bytes).map_err(|error| {
+        format!(
+            "failed to write temporary preview file {}: {error}",
+            temp_file.path().display()
+        )
+    })?;
+    temp_file.persist(&output_path).map_err(|error| {
+        format!(
+            "failed to persist generated preview file {}: {error}",
+            output_path.display()
+        )
+    })?;
     if created {
         cleanup_generated_frame_preview_cache_dir(cache_dir)?;
     }
@@ -1323,39 +1325,39 @@ fn find_indexed_frame_preview_offset(
     None
 }
 
+// A sibling frame further away than this is a different moment on screen —
+// serving it under this frame's id lies to the metadata overlay. Beyond the
+// cap the caller returns the underlying video error instead.
+const SEGMENT_FRAME_FALLBACK_MAX_DISTANCE_MS: i128 = 5_000;
+
 fn read_nearest_segment_frame_preview(
     frame: &::app_infra::Frame,
     related_frames: &[::app_infra::Frame],
 ) -> std::io::Result<Option<Vec<u8>>> {
-    let target_unix_ms = frame_preview_unix_ms(frame);
-    let mut best_match: Option<(bool, i128, usize, &str)> = None;
+    let Some(target_unix_ms) = frame_preview_unix_ms(frame) else {
+        return Ok(None);
+    };
+    let mut best_match: Option<(i128, &str)> = None;
 
-    for (index, related_frame) in related_frames.iter().enumerate() {
+    for related_frame in related_frames {
         let candidate_path = Path::new(&related_frame.file_path);
         if !candidate_path.is_file() {
             continue;
         }
-
-        let candidate_unix_ms = frame_preview_unix_ms(related_frame);
-        let (has_distance, distance) = match (target_unix_ms, candidate_unix_ms) {
-            (Some(target), Some(candidate)) => (true, (target - candidate).abs()),
-            _ => (false, 0),
+        let Some(candidate_unix_ms) = frame_preview_unix_ms(related_frame) else {
+            continue;
         };
-
-        let should_replace = match best_match {
-            Some((best_has_distance, best_distance, best_index, _)) => {
-                (!has_distance, distance, index) < (!best_has_distance, best_distance, best_index)
-            }
-            None => true,
-        };
-
-        if should_replace {
-            best_match = Some((has_distance, distance, index, &related_frame.file_path));
+        let distance = (target_unix_ms - candidate_unix_ms).abs();
+        if distance > SEGMENT_FRAME_FALLBACK_MAX_DISTANCE_MS {
+            continue;
+        }
+        if best_match.is_none_or(|(best_distance, _)| distance < best_distance) {
+            best_match = Some((distance, &related_frame.file_path));
         }
     }
 
     best_match
-        .map(|(_, _, _, file_path)| fs::read(file_path))
+        .map(|(_, file_path)| fs::read(file_path))
         .transpose()
 }
 
@@ -3122,6 +3124,91 @@ fn scrub_preview_adjacent_next_segment_started_unix_ms(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn nearest_preview_test_frame(id: i64, file_path: &str, captured_at: &str) -> ::app_infra::Frame {
+        ::app_infra::Frame {
+            id,
+            session_id: "session".to_string(),
+            file_path: file_path.to_string(),
+            captured_at: captured_at.to_string(),
+            width: None,
+            height: None,
+            equivalence: ::app_infra::FrameEquivalence {
+                hint: None,
+                proof: None,
+                version: None,
+                status: None,
+                error: None,
+            },
+            metadata_snapshot: None,
+            created_at: captured_at.to_string(),
+            updated_at: captured_at.to_string(),
+        }
+    }
+
+    #[test]
+    fn nearest_segment_frame_preview_rejects_siblings_beyond_distance_cap() {
+        let unique = format!(
+            "mnema-nearest-preview-cap-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        );
+        let base_dir = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base_dir).expect("base dir should be created");
+
+        // Filenames carry the capture timestamp (frame-{unix_ms}-{index}).
+        let near_path = base_dir.join("frame-1000004000-000001.jpg");
+        let far_path = base_dir.join("frame-1000060000-000002.jpg");
+        fs::write(&near_path, b"near").expect("near sibling should be written");
+        fs::write(&far_path, b"far").expect("far sibling should be written");
+
+        let target = nearest_preview_test_frame(
+            1,
+            &base_dir.join("frame-1000000000-000000.jpg").to_string_lossy(),
+            "",
+        );
+        let near = nearest_preview_test_frame(2, &near_path.to_string_lossy(), "");
+        let far = nearest_preview_test_frame(3, &far_path.to_string_lossy(), "");
+
+        // 4s away: within the cap, chosen.
+        let bytes = read_nearest_segment_frame_preview(&target, &[near, far.clone()])
+            .expect("read should succeed");
+        assert_eq!(bytes.as_deref(), Some(b"near".as_slice()));
+
+        // Only sibling is 60s away: beyond the cap, no fallback.
+        let bytes = read_nearest_segment_frame_preview(&target, &[far])
+            .expect("read should succeed");
+        assert!(bytes.is_none());
+
+        fs::remove_dir_all(&base_dir).expect("base dir should be removed");
+    }
+
+    #[test]
+    fn persist_generated_frame_preview_overwrites_existing_file() {
+        let unique = format!(
+            "mnema-preview-overwrite-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be after epoch")
+                .as_nanos()
+        );
+        let cache_dir = std::env::temp_dir().join(unique);
+
+        let first = persist_generated_frame_preview_in_dir(&cache_dir, 7, b"stale", "image/jpeg")
+            .expect("first persist should succeed");
+        let second = persist_generated_frame_preview_in_dir(&cache_dir, 7, b"fresh", "image/jpeg")
+            .expect("second persist should succeed");
+
+        assert_eq!(first, second);
+        assert_eq!(
+            fs::read(&second).expect("preview should be readable"),
+            b"fresh"
+        );
+
+        fs::remove_dir_all(&cache_dir).expect("cache dir should be removed");
+    }
 
     #[test]
     fn scrub_preview_last_bucket_emits_one_interval_for_indexed_zero_duration_segment() {

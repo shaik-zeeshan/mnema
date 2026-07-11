@@ -95,7 +95,7 @@
     border-radius: 6px;
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     cursor: pointer;
     user-select: none;
     transition: color 0.15s, background 0.15s;
@@ -107,7 +107,11 @@
   .settings-shell .rail-back:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+  .settings-shell .rail-back:active {
+    background: var(--app-surface-active);
+    transform: translateY(0.5px);
   }
   .settings-shell .rail-back svg {
     width: 13px;
@@ -124,7 +128,9 @@
     display: flex;
     align-items: center;
   }
-  .settings-shell .rail-search svg {
+  /* Leading search glyph only (direct child) — the trailing clear button nests
+     its own svg and styles it itself. */
+  .settings-shell .rail-search > svg {
     position: absolute;
     left: 10px;
     width: 14px;
@@ -142,10 +148,11 @@
     background: var(--app-surface);
     border: 1px solid var(--app-border);
     border-radius: 8px;
-    padding: 8px 10px 8px 32px;
+    /* Right padding reserves room for the in-field clear (X) button. */
+    padding: 8px 32px 8px 32px;
     color: var(--app-text);
     font-family: inherit;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     outline: none;
     transition: border-color 0.15s, box-shadow 0.15s;
   }
@@ -154,7 +161,7 @@
   }
   .settings-shell .rail-search input:focus {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   /* ── Scrolling nav zone ───────────────────────────────────────────── */
@@ -181,11 +188,11 @@
 
   .settings-shell .nav-cat {
     margin: 0 0 5px 8px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
   }
 
   .settings-shell .nav-item {
@@ -194,7 +201,7 @@
     align-items: center;
     gap: 9px;
     width: 100%;
-    height: 31px;
+    height: 32px;
     padding: 6px 10px;
     background: transparent;
     border: 1px solid transparent;
@@ -218,7 +225,7 @@
     stroke-linejoin: round;
   }
   .settings-shell .nav-item span {
-    font-size: 13px;
+    font-size: var(--text-md);
     font-weight: 500;
     line-height: 1;
     color: inherit;
@@ -233,14 +240,18 @@
   .settings-shell .nav-item:focus-visible {
     outline: none;
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+  /* Momentary press cue so a click registers before a slow section switch. */
+  .settings-shell .nav-item:active {
+    background: var(--app-surface-active);
   }
 
   /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
      left edge bar, accent-tinted icon, strong label. */
   .settings-shell .nav-item--active,
   .settings-shell .nav-item--active:hover {
-    background: var(--app-surface-hover);
+    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
     color: var(--app-text-strong);
   }
   .settings-shell .nav-item--active::before {
@@ -325,13 +336,45 @@
   }
 
   .settings-shell .rail-foot__label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
     white-space: nowrap;
+    transition: color 0.15s ease;
+  }
+
+  /* Raise footer salience on a state change so an edit near the bottom registers
+     as saved/saving rather than being acknowledged only by a far-off 6px dot.
+     The whole footer tints to the status color, and a "saved" change briefly
+     washes the footer background so it reads as a transient confirmation. */
+  .settings-shell .rail-foot--saving .rail-foot__label,
+  .settings-shell .rail-foot--ok .rail-foot__label {
+    color: var(--app-accent);
+  }
+  .settings-shell .rail-foot--blocked .rail-foot__label {
+    color: var(--app-warn-strong);
+  }
+  .settings-shell .rail-foot--error .rail-foot__label {
+    color: var(--app-danger-text);
+  }
+  .settings-shell .rail-foot--ok {
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--app-accent) 9%, transparent);
+    animation: rail-foot-flash 1.6s ease-out;
+  }
+
+  @keyframes rail-foot-flash {
+    0% { background: color-mix(in srgb, var(--app-accent) 20%, transparent); }
+    100% { background: color-mix(in srgb, var(--app-accent) 9%, transparent); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .settings-shell .rail-foot--ok {
+      animation: none;
+    }
   }
 
   @keyframes status-pulse {
@@ -375,10 +418,13 @@
      (Processing, Capture) they lay out in a column with an airy gap that reads
      as distinct sections. The trailing `padding-bottom` lives on this scrolling
      child so WebKit counts it in scrollHeight and the last row stays reachable. */
-  .settings-shell [role="tabpanel"] {
+  /* Group panels are plain content regions (not tabpanels — the rail is a
+     navigation landmark over one scrolling panel, not a tablist), so layout
+     keys off a class. */
+  .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 26px;
+    gap: 24px;
     width: 100%;
     max-width: 640px;
     margin: 0 auto;

@@ -386,7 +386,7 @@ pub fn start_capture_session_with_options(
     screen_output_file: Option<&Path>,
     _system_audio_output_path: Option<&Path>,
     sources: &ScreenCaptureSources,
-    screen_frame_rate: u32,
+    screen_frame_rate: f64,
     screen_resolution: &ScreenResolution,
     video_bitrate_bps: Option<u32>,
     options: ScreenCaptureSessionOptions,
@@ -495,7 +495,7 @@ pub fn start_capture_session_with_options(
 struct CaptureThreadConfig {
     segment_dir: PathBuf,
     output_path: PathBuf,
-    frame_rate: u32,
+    frame_rate: f64,
     screen_resolution: ScreenResolution,
     video_bitrate_bps: Option<u32>,
     frame_export: Option<ScreenFrameExportConfig>,
@@ -622,7 +622,7 @@ struct CaptureEngine {
     width: u32,
     height: u32,
     scale_map: ScaleMap,
-    frame_rate: u32,
+    frame_rate: f64,
     video_bitrate_bps: Option<u32>,
     min_interval_ticks: i64,
     timeline: SegmentTimeline,
@@ -1674,10 +1674,11 @@ fn create_sink_writer(
     output_path: &Path,
     width: u32,
     height: u32,
-    frame_rate: u32,
+    frame_rate: f64,
     video_bitrate_bps: Option<u32>,
 ) -> Result<SinkWriter, CaptureErrorResponse> {
-    let rate = if frame_rate == 0 { 30 } else { frame_rate };
+    let rate = sanitized_frame_rate(frame_rate);
+    let (rate_numerator, rate_denominator) = frame_rate_ratio(rate);
     let bitrate = video_bitrate_bps.unwrap_or_else(|| default_bitrate_bps(width, height, rate));
     let url: Vec<u16> = output_path
         .as_os_str()
@@ -1707,7 +1708,7 @@ fn create_sink_writer(
             .SetUINT64(&MF_MT_FRAME_SIZE, pack_u32_pair(width, height))
             .map_err(|e| win_error("set output frame size failed", &e))?;
         output_type
-            .SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(rate, 1))
+            .SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(rate_numerator, rate_denominator))
             .map_err(|e| win_error("set output frame rate failed", &e))?;
         output_type
             .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))
@@ -1732,7 +1733,7 @@ fn create_sink_writer(
             .SetUINT64(&MF_MT_FRAME_SIZE, pack_u32_pair(width, height))
             .map_err(|e| win_error("set input frame size failed", &e))?;
         input_type
-            .SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(rate, 1))
+            .SetUINT64(&MF_MT_FRAME_RATE, pack_u32_pair(rate_numerator, rate_denominator))
             .map_err(|e| win_error("set input frame rate failed", &e))?;
         input_type
             .SetUINT64(&MF_MT_PIXEL_ASPECT_RATIO, pack_u32_pair(1, 1))
@@ -1970,17 +1971,34 @@ fn pack_u32_pair(high: u32, low: u32) -> u64 {
     ((high as u64) << 32) | low as u64
 }
 
-fn frame_duration_ticks(frame_rate: u32) -> i64 {
-    let rate = if frame_rate == 0 { 30 } else { frame_rate };
-    TICKS_PER_SECOND / rate as i64
+/// Sanitize a runtime frame rate to a positive, finite value, falling back to
+/// the historical 30 fps default for the degenerate cases (0, negative, NaN).
+/// Fractional rates (the app's 0.5 fps default) pass through unchanged.
+fn sanitized_frame_rate(frame_rate: f64) -> f64 {
+    if frame_rate.is_finite() && frame_rate > 0.0 {
+        frame_rate
+    } else {
+        30.0
+    }
+}
+
+/// The MF frame-rate ratio (numerator, denominator) for a (possibly fractional)
+/// frames-per-second value: `rate * 1000 / 1000`, so `0.5` fps → `500/1000`.
+fn frame_rate_ratio(frame_rate: f64) -> (u32, u32) {
+    let numerator = (sanitized_frame_rate(frame_rate) * 1000.0).round();
+    (numerator.clamp(1.0, u32::MAX as f64) as u32, 1000)
+}
+
+fn frame_duration_ticks(frame_rate: f64) -> i64 {
+    (TICKS_PER_SECOND as f64 / sanitized_frame_rate(frame_rate)) as i64
 }
 
 /// Default average H.264 bitrate when the runtime does not specify one.
 ///
 /// ~0.1 bits/pixel/frame with a 2 Mbps floor and 60 Mbps ceiling.
-fn default_bitrate_bps(width: u32, height: u32, frame_rate: u32) -> u32 {
+fn default_bitrate_bps(width: u32, height: u32, frame_rate: f64) -> u32 {
     let pixels = width as u64 * height as u64;
-    let raw = pixels * frame_rate as u64 / 10;
+    let raw = (pixels as f64 * sanitized_frame_rate(frame_rate) / 10.0) as u64;
     raw.clamp(2_000_000, 60_000_000) as u32
 }
 
@@ -2413,7 +2431,7 @@ mod tests {
         height: u32,
         frames: usize,
     ) -> WinResult<()> {
-        let writer = create_sink_writer(path, width, height, 30, None).unwrap();
+        let writer = create_sink_writer(path, width, height, 30.0, None).unwrap();
         let nv12 = vec![0u8; (width * height * 3 / 2) as usize];
         let frame_ticks = 333_333i64;
         for i in 0..frames {

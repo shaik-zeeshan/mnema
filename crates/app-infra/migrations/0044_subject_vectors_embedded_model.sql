@@ -1,0 +1,15 @@
+-- Model identity for Subject Vectors (embedding-free in app-infra).
+--
+-- Records which Semantic Search Model a stored Subject Vector was embedded
+-- under, as the active model's `provider/model_id` identity string. The Tauri
+-- layer owns the embedding model and supplies this string; app-infra only
+-- string-compares it (no model imports stay in this crate).
+--
+-- NULL `embedded_model` (existing 0043 rows + any freshly-staled row) means
+-- "not embedded under any known model → needs (re)embedding". The backfill
+-- worker keys "needs embedding" off rows whose `embedded_model` is NULL or does
+-- not equal the active `provider/model_id`, and `subject_vector_knn` keys
+-- "usable vector" off equality with the active model — so a model switch
+-- (dimension change OR same-dimension swap) silently excludes stale vectors
+-- from retrieval until the worker re-embeds them under the new model.
+ALTER TABLE user_context_subject_vectors ADD COLUMN embedded_model TEXT;

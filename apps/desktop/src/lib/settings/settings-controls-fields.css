@@ -37,7 +37,7 @@
 
   .settings-shell .text-input:focus {
     border-color: var(--app-accent);
-    box-shadow: var(--app-input-recess), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-input-recess), var(--app-ring);
   }
 
   .settings-shell .text-input--empty {
@@ -73,11 +73,11 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 7px;
-    padding: 9px 18px;
+    gap: 8px;
+    padding: 8px 16px;
     border-radius: 8px;
     font-family: inherit;
-    font-size: 10.5px;
+    font-size: var(--text-sm);
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -90,12 +90,17 @@
   }
 
   .settings-shell .btn:focus-visible {
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
   }
 
   .settings-shell .btn:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+
+  /* Pressed — shared nudge; each variant darkens its own resting fill below. */
+  .settings-shell .btn:not(:disabled):active {
+    transform: translateY(0.5px);
   }
 
   .settings-shell .btn--ghost {
@@ -110,9 +115,13 @@
     border-color: var(--app-border-hover);
   }
 
+  .settings-shell .btn--ghost:not(:disabled):active {
+    background: var(--app-surface-active);
+  }
+
   .settings-shell .btn--sm {
     padding: 6px 12px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     background: transparent;
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
@@ -122,6 +131,10 @@
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+
+  .settings-shell .btn--sm:not(:disabled):active {
+    background: var(--app-surface-active);
   }
 
   /* The About tab's update actions are the only primary buttons in this
@@ -142,6 +155,11 @@
     box-shadow: 0 0 14px var(--app-accent-glow);
   }
 
+  .settings-shell .btn--primary:not(:disabled):active {
+    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
+    box-shadow: none;
+  }
+
   .settings-shell .btn--danger {
     background: var(--app-danger-bg);
     color: var(--app-danger);
@@ -155,23 +173,39 @@
     box-shadow: 0 0 14px color-mix(in srgb, var(--app-danger) 18%, transparent);
   }
 
-  .settings-shell .btn--danger:focus-visible {
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-danger) 18%, transparent);
+  .settings-shell .btn--danger:not(:disabled):active {
+    background: color-mix(in srgb, var(--app-danger) 22%, transparent);
+    box-shadow: none;
   }
 
+  .settings-shell .btn--danger:focus-visible {
+    box-shadow: var(--app-ring-danger);
+  }
+
+  /* PERSISTENT status indicator — the key actually lives in the keychain for
+     as long as this renders, so it must NOT auto-erase. A brief one-shot
+     fade-in is fine (gated for reduced motion), but there is no fade-OUT
+     keyframe: the badge stays fully visible. */
   .settings-shell .saved-badge {
-    font-size: 11px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--text-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
     color: var(--app-accent);
-    animation: fade-in-out 2.2s ease forwards;
+    animation: saved-badge-in 0.25s ease both;
   }
 
-  @keyframes fade-in-out {
+  .settings-shell .saved-badge svg {
+    display: block;
+    width: 13px;
+    height: 13px;
+  }
+
+  @keyframes saved-badge-in {
     0% { opacity: 0; transform: translateX(-4px); }
-    15% { opacity: 1; transform: translateX(0); }
-    80% { opacity: 1; }
-    100% { opacity: 0; }
+    100% { opacity: 1; transform: translateX(0); }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -191,7 +225,7 @@
     background: var(--app-surface);
     color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     font-weight: 600;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -223,7 +257,18 @@
 
   .settings-shell .badge--sm {
     padding: 1px 7px;
-    font-size: 9px;
+    font-size: var(--text-xs);
+  }
+
+  /* Muted, non-uppercase pill — an authorized OAuth connector that is switched
+     off (mockup `mcp-row__badge--muted`): the token is kept, but the row is
+     dimmed and reads "authorized" in a quiet register. */
+  .settings-shell .badge--muted {
+    background: var(--app-surface);
+    color: var(--app-text-subtle);
+    border-color: var(--app-border-strong);
+    text-transform: none;
+    letter-spacing: 0.02em;
   }
 
   /* ── Effective device ─────────────────────────────────────── */
@@ -325,7 +370,7 @@
     padding: 12px 14px;
     background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
-    border-radius: 10px;
+    border-radius: 6px;
   }
 
   .settings-shell .inline-error__icon {
@@ -333,6 +378,16 @@
     font-size: 11px;
     flex-shrink: 0;
     margin-top: 1px;
+  }
+  .settings-shell .inline-error__icon svg {
+    display: block;
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .settings-shell .inline-error__msg {
@@ -343,15 +398,18 @@
   }
 
   /* ── Misc ──────────────────────────────────────────────────── */
+  /* Loading/empty are exactly the states a user must read — conveyed copy must
+     clear AA, so --app-text-muted (secondary), not the sub-AA placeholder
+     --app-text-faint. */
   .settings-shell .loading-text {
-    font-size: 11px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
     font-style: italic;
   }
 
   .settings-shell .empty-state {
-    font-size: 11px;
-    color: var(--app-text-faint);
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
     font-style: italic;
   }
 
@@ -363,7 +421,7 @@
     padding: 12px 14px;
     background: var(--app-warn-bg);
     border: 1px solid var(--app-warn-border);
-    border-radius: 10px;
+    border-radius: 6px;
   }
 
   .settings-shell .inline-validation__item {

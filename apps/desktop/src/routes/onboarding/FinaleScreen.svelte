@@ -3,8 +3,11 @@
   // crest that summarizes the armed config and starts (or skips) recording via
   // the controller. Presentational — all state/logic lives on the controller.
   // The decorative `.finale*` styles live in `onboarding-ui.css`, namespaced
-  // under `.ob-screen` (this root is NOT inside `.onboarding-shell`). Finishing
-  // is gated on `c.ctaDisabled` (model readiness + zero attention items).
+  // under `.ob-screen` (this root is NOT inside `.onboarding-shell`). "Start
+  // recording" is gated on `c.ctaDisabled` (model readiness + zero attention
+  // items); the "Just open the dashboard" escape hatch uses the looser
+  // `c.skipDisabled` (serializable config only) so a mid-download/un-ready model
+  // never dead-ends the user out of onboarding.
   import type { OnboardingController } from "./onboarding.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
@@ -40,7 +43,7 @@
         <span class="finale__crest-dot"></span>
         All set
       </span>
-      <h2 id="finale-title" class="finale__title">Press record.</h2>
+      <h1 id="finale-title" class="finale__title" tabindex="-1" data-ob-phase-heading>Press record.</h1>
       <p class="finale__tag">
         Setup is complete. {sourceSummary} · {c.draftFrameRate} fps · {formatDuration(c.draftSegmentDuration)}
         segments{c.draftPauseCaptureOnInactivity
@@ -72,9 +75,9 @@
         </button>
         <button
           type="button"
-          class="finale__link"
+          class="ghost finale__link"
           onclick={() => c.finish(false)}
-          disabled={c.ctaDisabled}
+          disabled={c.skipDisabled}
         >
           {c.completing && !c.starting ? "Opening…" : "Just open the dashboard →"}
         </button>
@@ -101,7 +104,7 @@
     margin: 4px auto 0;
     max-width: 40ch;
     padding: 10px 14px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-danger);
     background: var(--app-danger-bg);
@@ -115,7 +118,7 @@
   .finale__hint {
     margin: 8px auto 0;
     max-width: 40ch;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-text-muted);
   }

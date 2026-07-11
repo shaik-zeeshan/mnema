@@ -122,7 +122,7 @@ pub struct NativeCaptureRuntime {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub current_segment_output_files: Option<CaptureOutputFiles>,
     pub current_segment_index: u64,
-    pub screen_frame_rate: u32,
+    pub screen_frame_rate: f64,
     pub screen_resolution: ScreenResolution,
     pub effective_screen_bitrate_bps: Option<u32>,
     pub microphone_device_id_for_capture: Option<String>,

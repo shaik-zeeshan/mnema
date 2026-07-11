@@ -5,8 +5,9 @@ use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
 };
-use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, Transaction};
 
+use crate::db::CaptureDb;
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::secret_redaction_pipeline::SecretRedactionPipeline;
@@ -194,12 +195,12 @@ pub struct FocusedFrameWindow {
 
 #[derive(Clone)]
 pub struct ProcessingStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl ProcessingStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     fn workspace_like_pattern(workspace_prefix: &str) -> String {
@@ -215,11 +216,11 @@ impl ProcessingStore {
     }
 
     pub(crate) async fn begin_transaction(&self) -> Result<Transaction<'_, Sqlite>> {
-        Ok(self.pool.begin().await?)
+        Ok(self.db.begin_write().await?)
     }
 
     pub async fn insert_frame(&self, frame: &NewFrame) -> Result<Frame> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let frame_id = insert_frame_record_in_transaction(&mut transaction, frame).await?;
         let frame = get_frame_optional(&mut *transaction, frame_id)
             .await?
@@ -229,12 +230,12 @@ impl ProcessingStore {
     }
 
     pub async fn upsert_audio_segment(&self, segment: &NewAudioSegment) -> Result<AudioSegment> {
-        upsert_audio_segment_record(&self.pool, segment).await?;
-        get_audio_segment_by_unique_key(&self.pool, segment).await
+        upsert_audio_segment_record(self.db.write(), segment).await?;
+        get_audio_segment_by_unique_key(self.db.write(), segment).await
     }
 
     pub async fn get_audio_segment(&self, audio_segment_id: i64) -> Result<Option<AudioSegment>> {
-        get_audio_segment_optional(&self.pool, audio_segment_id).await
+        get_audio_segment_optional(self.db.read(), audio_segment_id).await
     }
 
     pub(crate) async fn insert_frame_in_transaction(
@@ -258,7 +259,7 @@ impl ProcessingStore {
 
     pub async fn enqueue_job(&self, draft: &ProcessingJobDraft) -> Result<ProcessingJob> {
         let job_id = insert_processing_job_record(
-            &self.pool,
+            self.db.write(),
             &draft.subject,
             &draft.processor,
             draft.payload_json.as_deref(),
@@ -395,7 +396,7 @@ impl ProcessingStore {
     }
 
     pub async fn get_frame(&self, frame_id: i64) -> Result<Option<Frame>> {
-        get_frame_optional(&self.pool, frame_id).await
+        get_frame_optional(self.db.read(), frame_id).await
     }
 
     /// Load the metadata snapshots for many frame ids in ONE query, keyed by
@@ -425,7 +426,7 @@ impl ProcessingStore {
             separated.push_bind(*frame_id);
         }
         query.push(")");
-        let rows = query.build().fetch_all(&self.pool).await?;
+        let rows = query.build().fetch_all(self.db.read()).await?;
         for row in rows {
             let frame_id: i64 = row.get("frame_id");
             let json: Option<String> = row.try_get("metadata_snapshot_json").ok().flatten();
@@ -469,7 +470,7 @@ impl ProcessingStore {
             .bind(before_frame_id)
             .bind(equivalence_hint)
             .bind(like_pattern)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read())
             .await?
         } else {
             sqlx::query(
@@ -483,7 +484,7 @@ impl ProcessingStore {
             .bind(session_id)
             .bind(before_frame_id)
             .bind(equivalence_hint)
-            .fetch_all(&self.pool)
+            .fetch_all(self.db.read())
             .await?
         };
 
@@ -609,7 +610,7 @@ impl ProcessingStore {
         )
         .bind(session_id)
         .bind(like_pattern)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_frame).collect()
@@ -640,7 +641,7 @@ impl ProcessingStore {
         ))
         .bind(super::FRAME_SUBJECT_TYPE)
         .bind(super::OCR_PROCESSOR)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut references = Vec::new();
@@ -739,7 +740,7 @@ impl ProcessingStore {
             (None, None) => {}
         };
 
-        let rows = query_builder.build().fetch_all(&self.pool).await?;
+        let rows = query_builder.build().fetch_all(self.db.read()).await?;
 
         rows.into_iter().map(map_frame).collect()
     }
@@ -757,7 +758,7 @@ impl ProcessingStore {
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_frame_summary).collect()
@@ -784,7 +785,7 @@ impl ProcessingStore {
         )
         .bind(frame_id)
         .bind(newer_limit as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let older_rows = sqlx::query(
@@ -800,7 +801,7 @@ impl ProcessingStore {
         )
         .bind(frame_id)
         .bind(older_limit as i64)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut newer_frames = newer_rows
@@ -829,12 +830,12 @@ impl ProcessingStore {
             .ok_or(AppInfraError::FrameNotFound(frame_id))?;
         let has_newer = sqlx::query("SELECT 1 FROM frames WHERE id > ?1 LIMIT 1")
             .bind(head_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
             .is_some();
         let has_older = sqlx::query("SELECT 1 FROM frames WHERE id < ?1 LIMIT 1")
             .bind(tail_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
             .is_some();
 
@@ -864,14 +865,14 @@ impl ProcessingStore {
         )
         .bind(captured_at_start)
         .bind(captured_at_end)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_frame).transpose()
     }
 
     pub async fn get_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
-        get_processing_job_optional(&self.pool, job_id).await
+        get_processing_job_optional(self.db.read(), job_id).await
     }
 
     pub async fn list_jobs_for_subject(
@@ -888,7 +889,7 @@ impl ProcessingStore {
         )
         .bind(subject.subject_type())
         .bind(subject.subject_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -907,7 +908,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(processor)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -919,7 +920,7 @@ impl ProcessingStore {
              WHERE processor = ?1 AND status IN ('queued', 'running')",
         )
         .bind(processor)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
 
         Ok(count)
@@ -943,7 +944,7 @@ impl ProcessingStore {
             )
             .bind(&frame.session_id)
             .bind(like_pattern)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
         } else {
             sqlx::query(
@@ -953,7 +954,7 @@ impl ProcessingStore {
                  ORDER BY frame.id DESC LIMIT 1",
             )
             .bind(&frame.session_id)
-            .fetch_optional(&self.pool)
+            .fetch_optional(self.db.read())
             .await?
         };
         let Some(row) = row else {
@@ -984,7 +985,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(processor)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_job).collect()
@@ -1005,7 +1006,7 @@ impl ProcessingStore {
         )
         .bind(processor)
         .bind(last_error)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(update.rows_affected())
@@ -1023,7 +1024,7 @@ impl ProcessingStore {
         )
         .bind(job_id)
         .bind(payload_json)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         if update.rows_affected() == 0 {
@@ -1039,7 +1040,7 @@ impl ProcessingStore {
         model_keys: &BTreeSet<String>,
         lock_token: &str,
     ) -> Result<ProcessingModelCleanupLock> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let mut acquired_model_keys = BTreeSet::new();
 
         for model_key in model_keys {
@@ -1078,7 +1079,7 @@ impl ProcessingStore {
         )
         .bind(&lock.processor)
         .bind(&lock.lock_token)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(delete.rows_affected())
@@ -1086,7 +1087,7 @@ impl ProcessingStore {
 
     pub async fn clear_model_cleanup_locks(&self) -> Result<u64> {
         let delete = sqlx::query("DELETE FROM processing_model_cleanup_locks")
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
 
         Ok(delete.rows_affected())
@@ -1108,7 +1109,7 @@ impl ProcessingStore {
              WHERE created_at <= datetime('now', printf('-%d seconds', ?1))",
         )
         .bind(stale_after_seconds)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(delete.rows_affected())
@@ -1168,7 +1169,13 @@ impl ProcessingStore {
             speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
         );
         loop {
-            let mut transaction = self.pool.begin().await?;
+            // Scan for the next eligible job on the Reader Pool so the costly
+            // claim SELECT (json parsing + the cleanup-lock NOT EXISTS) does not
+            // run under the writer lock. The claim UPDATE below re-validates both
+            // `status='queued'` and the same cleanup-lock condition atomically,
+            // so a job claimed by another worker or newly locked for model
+            // deletion between the scan and the write loses (`rows_affected == 0`)
+            // and we re-scan. Read and claim share the predicate, so no spin.
             let row = match (processor, excluded_processors.is_empty()) {
                 (Some(processor), _) => sqlx::query(
                     "SELECT \
@@ -1206,7 +1213,7 @@ impl ProcessingStore {
                 )
                 .bind(processor)
                 .bind(&speaker_analysis_model_key)
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.db.read())
                 .await?,
                 (None, false) => {
                     let mut query = sqlx::QueryBuilder::new(
@@ -1263,7 +1270,7 @@ impl ProcessingStore {
                          ORDER BY pj.id ASC \
                          LIMIT 1",
                     );
-                    query.build().fetch_optional(&mut *transaction).await?
+                    query.build().fetch_optional(self.db.read()).await?
                 }
                 (None, true) => sqlx::query(
                     "SELECT \
@@ -1299,16 +1306,20 @@ impl ProcessingStore {
                      LIMIT 1",
                 )
                 .bind(&speaker_analysis_model_key)
-                .fetch_optional(&mut *transaction)
+                .fetch_optional(self.db.read())
                 .await?,
             };
 
             let job_id = row.map(map_processing_job).transpose()?.map(|job| job.id);
             let Some(job_id) = job_id else {
-                transaction.commit().await?;
                 return Ok(None);
             };
 
+            let mut transaction = self.db.begin_write().await?;
+            // Re-validate atomically: claim only if the job is still queued AND its
+            // model is not locked for deletion. The cleanup-lock NOT EXISTS mirrors
+            // the scan predicate (with `pj` bound to the row under update), so a
+            // lock acquired between scan and claim correctly blocks the claim.
             let update = sqlx::query(
                 "UPDATE processing_jobs \
                  SET status = 'running', \
@@ -1317,9 +1328,32 @@ impl ProcessingStore {
                      started_at = CURRENT_TIMESTAMP, \
                      finished_at = NULL, \
                      updated_at = CURRENT_TIMESTAMP \
-                 WHERE id = ?1 AND status = 'queued'",
+                 WHERE id = ?1 AND status = 'queued' \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                     WHERE lock.processor = processing_jobs.processor \
+                       AND lock.model_key = CASE \
+                         WHEN processing_jobs.processor = 'speaker_analysis' \
+                          AND processing_jobs.payload_json IS NOT NULL \
+                          AND json_valid(processing_jobs.payload_json) \
+                         THEN ?2 \
+                         WHEN processing_jobs.processor IN ('ocr', 'audio_transcription') \
+                          AND processing_jobs.payload_json IS NOT NULL \
+                          AND json_valid(processing_jobs.payload_json) \
+                         THEN CASE \
+                           WHEN json_type(processing_jobs.payload_json, '$.provider') = 'text' \
+                            AND json_type(processing_jobs.payload_json, '$.modelId') = 'text' \
+                            AND NULLIF(TRIM(json_extract(processing_jobs.payload_json, '$.provider')), '') IS NOT NULL \
+                            AND NULLIF(TRIM(json_extract(processing_jobs.payload_json, '$.modelId')), '') IS NOT NULL \
+                           THEN TRIM(json_extract(processing_jobs.payload_json, '$.provider')) || '/' || TRIM(json_extract(processing_jobs.payload_json, '$.modelId')) \
+                           ELSE NULL \
+                         END \
+                         ELSE NULL \
+                       END \
+                   )",
             )
             .bind(job_id)
+            .bind(&speaker_analysis_model_key)
             .execute(&mut *transaction)
             .await?;
 
@@ -1339,7 +1373,7 @@ impl ProcessingStore {
     }
 
     pub async fn claim_queued_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let Some(job) = get_processing_job_optional(&mut *transaction, job_id).await? else {
             transaction.commit().await?;
             return Ok(None);
@@ -1382,7 +1416,7 @@ impl ProcessingStore {
     }
 
     pub async fn mark_job_running(&self, job_id: i64) -> Result<ProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1449,7 +1483,7 @@ impl ProcessingStore {
     /// `failed` as a crash-loop backstop. Safe to run only when nothing is executing: at startup
     /// (workers spawn afterward) and at graceful shutdown (after workers are aborted and awaited).
     pub async fn reconcile_orphaned_running_jobs(&self) -> Result<ProcessingJobReclamationSummary> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         // Requeue orphaned running jobs that are still under the ceiling. `next_attempt_at` is
         // cleared so they are immediately eligible (abandonment is not a failure to back off from),
@@ -1498,7 +1532,7 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT id, file_path FROM frames WHERE equivalence_status IS NULL ORDER BY id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         let mut updated = 0_u64;
@@ -1547,7 +1581,7 @@ impl ProcessingStore {
                     .map(FrameEquivalenceStatus::as_str),
             )
             .bind(equivalence.error.as_deref())
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
 
             updated = updated.saturating_add(1);
@@ -1561,7 +1595,7 @@ impl ProcessingStore {
         job_id: i64,
         error_text: Option<&str>,
     ) -> Result<ProcessingJob> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1623,7 +1657,7 @@ impl ProcessingStore {
         &self,
         job_id: i64,
     ) -> Result<Option<ProcessingJob>> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1663,6 +1697,81 @@ impl ProcessingStore {
         Ok(Some(requeued))
     }
 
+    /// Requeue a **running** job as a transient-liveness retry (ADR 0048): status running→queued,
+    /// deferred by the processor's backoff, with `failure_count` deliberately UNTOUCHED so an
+    /// offline or mis-keyed stretch never exhausts a segment's failure cap. Distinct from the
+    /// failure lane (`requeue_failed_job_within_attempt_cap`), which is gated on and increments
+    /// `failure_count`. The segment waits indefinitely, exactly like one waiting for a model.
+    pub(crate) async fn requeue_job_for_transient_liveness(
+        &self,
+        job_id: i64,
+        reason: Option<&str>,
+    ) -> Result<ProcessingJob> {
+        let mut transaction = self.db.begin_write().await?;
+
+        let job = get_processing_job_optional(&mut *transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+
+        if job.status != ProcessingJobStatus::Running {
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &job.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        // Reuse the processor's saturating backoff schedule (no new tuning constants). Because
+        // `failure_count` is never incremented on this lane, it selects the first backoff step.
+        let backoff_seconds = failure_retry_policy_for_processor(&job.processor)
+            .map(|policy| policy.backoff_seconds(job.failure_count))
+            .unwrap_or(0);
+
+        // `attempt_count` is ALSO reset to 0 below: every `claim` bumps `attempt_count`, so a long
+        // offline/mis-keyed stretch of transient requeues would otherwise inflate it past
+        // `RECLAIM_ATTEMPT_CEILING`. A clean claim->queued transient cycle is the opposite of an
+        // abandonment (the crash-loop condition the ceiling guards), so it must clear that tally —
+        // otherwise a force-quit while the segment is mid-attempt would let reclamation permanently
+        // fail an offline segment, exactly the "never burn a segment" case ADR 0048 forbids.
+
+        let update = sqlx::query(
+            "UPDATE processing_jobs \
+             SET status = 'queued', \
+                 attempt_count = 0, \
+                 last_error = ?2, \
+                 next_attempt_at = datetime(CURRENT_TIMESTAMP, ?3), \
+                 queued_at = CURRENT_TIMESTAMP, \
+                 started_at = NULL, \
+                 finished_at = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 AND status = 'running'",
+        )
+        .bind(job_id)
+        .bind(reason)
+        .bind(format!("+{backoff_seconds} seconds"))
+        .execute(&mut *transaction)
+        .await?;
+
+        if update.rows_affected() == 0 {
+            let current = get_processing_job_optional(&mut *transaction, job_id)
+                .await?
+                .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+            return Err(processing_job_invalid_transition(
+                job_id,
+                &current.status,
+                ProcessingJobStatus::Queued.as_str(),
+            ));
+        }
+
+        delete_processing_result_for_job(&mut *transaction, job_id).await?;
+
+        let job = get_processing_job_optional(&mut *transaction, job_id)
+            .await?
+            .ok_or(AppInfraError::ProcessingJobNotFound(job_id))?;
+        transaction.commit().await?;
+        Ok(job)
+    }
+
     /// Test-only: clear a job's retry backoff so the automatic queue drain treats
     /// it as immediately eligible again, simulating the backoff window elapsing
     /// without waiting in wall-clock time.
@@ -1673,7 +1782,7 @@ impl ProcessingStore {
     ) -> Result<()> {
         sqlx::query("UPDATE processing_jobs SET next_attempt_at = NULL WHERE id = ?1")
             .bind(job_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -1683,7 +1792,7 @@ impl ProcessingStore {
         job_id: i64,
         result: &ProcessingResultDraft,
     ) -> Result<ProcessingJobCompletion> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
 
         let job = get_processing_job_optional(&mut *transaction, job_id)
             .await?
@@ -1714,7 +1823,17 @@ impl ProcessingStore {
             result,
         )?;
 
-        let result_insert = sqlx::query(
+        let draft = result_persistence_plan.draft();
+        let structured_payload_json = draft.structured_payload_json.as_deref();
+        // OCR geometry is zstd-compressed into the BLOB column (geometry compression);
+        // every other processor keeps plain JSON text. `structured_payload_json_from_row`
+        // mirrors this split off the `processor` column on the read path.
+        let ocr_payload_blob = if job.processor == OCR_PROCESSOR {
+            compress_ocr_structured_payload(structured_payload_json)?
+        } else {
+            None
+        };
+        let result_query = sqlx::query(
             "INSERT INTO processing_results (\
                 job_id, subject_type, subject_id, processor, result_text, structured_payload_json, processor_version, \
                 redaction_detector_version, redaction_checked_at\
@@ -1724,17 +1843,17 @@ impl ProcessingStore {
         .bind(&job.subject_type)
         .bind(job.subject_id)
         .bind(&job.processor)
-        .bind(result_persistence_plan.draft().result_text.as_deref())
-        .bind(
-            result_persistence_plan
-                .draft()
-                .structured_payload_json
-                .as_deref(),
-        )
-        .bind(result_persistence_plan.draft().processor_version.as_deref())
-        .bind(result_persistence_plan.redaction_detector_version())
-        .execute(&mut *transaction)
-        .await?;
+        .bind(draft.result_text.as_deref());
+        let result_query = if job.processor == OCR_PROCESSOR {
+            result_query.bind(ocr_payload_blob)
+        } else {
+            result_query.bind(structured_payload_json)
+        };
+        let result_insert = result_query
+            .bind(draft.processor_version.as_deref())
+            .bind(result_persistence_plan.redaction_detector_version())
+            .execute(&mut *transaction)
+            .await?;
 
         let update = sqlx::query(
             "UPDATE processing_jobs \
@@ -1883,10 +2002,24 @@ impl ProcessingStore {
         {
             refresh_speaker_turn_transcript_texts(&mut transaction, job.subject_id).await?;
         }
-        crate::search::project_processing_result_in_transaction(&mut transaction, &stored_result)
-            .await?;
+        // Direct projection only — O(1), stays atomic with the job/result write.
+        // It hands back the equivalence-reuse fan-out as a `#[must_use]` obligation
+        // so this completion path cannot forget the off-lock second half.
+        let deferred_reuse = crate::search::project_processing_result_direct_in_transaction(
+            &mut transaction,
+            &stored_result,
+        )
+        .await?;
 
         transaction.commit().await?;
+
+        // Equivalence-reuse fan-out: one FTS insert of the full OCR text per
+        // visually-equivalent frame. Running it off-lock in batched short
+        // transactions (lock released between chunks) keeps it from holding the
+        // single writer lock and stalling interactive capture start/stop. It still
+        // completes before we return, so callers observe the same final state; a
+        // crash mid-fan-out is reconciled by the startup equivalence-reuse backfill.
+        deferred_reuse.run(&self.db, &stored_result).await?;
 
         Ok(ProcessingJobCompletion {
             job: completed_job,
@@ -1903,7 +2036,7 @@ impl ProcessingStore {
              WHERE job_id = ?1",
         )
         .bind(job_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_processing_result).transpose()
@@ -1923,7 +2056,7 @@ impl ProcessingStore {
         )
         .bind(subject.subject_type())
         .bind(subject.subject_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_processing_result).collect()
@@ -1950,7 +2083,7 @@ impl ProcessingStore {
              ORDER BY speaker_turns.start_ms ASC, speaker_turns.end_ms ASC, speaker_turns.id ASC",
         )
         .bind(audio_segment_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_speaker_turn_view).collect()
@@ -1967,7 +2100,7 @@ impl ProcessingStore {
              GROUP BY person_profiles.id \
              ORDER BY person_profiles.display_name COLLATE NOCASE ASC, person_profiles.id ASC",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         rows.into_iter().map(map_person_profile).collect()
@@ -1988,7 +2121,7 @@ impl ProcessingStore {
             sqlx::query("INSERT INTO person_profiles (display_name, notes) VALUES (?1, ?2)")
                 .bind(display_name)
                 .bind(notes.map(str::trim).filter(|value| !value.is_empty()))
-                .execute(&self.pool)
+                .execute(self.db.write())
                 .await?;
         self.get_required_person_profile(result.last_insert_rowid())
             .await
@@ -1997,7 +2130,7 @@ impl ProcessingStore {
     pub async fn delete_person_profile(&self, person_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM person_profiles WHERE id = ?1")
             .bind(person_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -2017,7 +2150,7 @@ impl ProcessingStore {
              ORDER BY id ASC",
         )
         .bind(session_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter().map(map_speaker_cluster_view).collect()
     }
@@ -2040,7 +2173,7 @@ impl ProcessingStore {
         )
         .bind(cluster_id)
         .bind(label)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         self.get_required_speaker_cluster(cluster_id).await
     }
@@ -2051,7 +2184,7 @@ impl ProcessingStore {
         person_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         if cluster
             .person_id
@@ -2099,7 +2232,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2125,7 +2258,7 @@ impl ProcessingStore {
         cluster_id: i64,
         add_embedding: bool,
     ) -> Result<SpeakerClusterView> {
-        let cluster = get_speaker_cluster_row(&self.pool, cluster_id).await?;
+        let cluster = get_speaker_cluster_row(self.db.read(), cluster_id).await?;
         let Some(person_id) = cluster.recognition_person_id else {
             return Err(AppInfraError::SpeakerAnalysisEngine(
                 "speaker cluster has no recognition suggestion to confirm".to_string(),
@@ -2139,7 +2272,7 @@ impl ProcessingStore {
         &self,
         cluster_id: i64,
     ) -> Result<SpeakerClusterView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
         persist_speaker_recognition_rejection_for_cluster(
             &mut transaction,
@@ -2171,7 +2304,7 @@ impl ProcessingStore {
                 "cannot merge a speaker cluster into itself".to_string(),
             ));
         }
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let source = get_speaker_cluster_row(&mut *transaction, source_cluster_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if source.session_id != target.session_id {
@@ -2207,7 +2340,7 @@ impl ProcessingStore {
         turn_id: i64,
         target_cluster_id: i64,
     ) -> Result<SpeakerTurnView> {
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.db.begin_write().await?;
         let turn = fetch_required_speaker_turn(&mut *transaction, turn_id).await?;
         let target = get_speaker_cluster_row(&mut *transaction, target_cluster_id).await?;
         if turn.session_id != target.session_id {
@@ -2245,7 +2378,7 @@ impl ProcessingStore {
         )
         .bind(provider)
         .bind(model_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter()
             .map(|row| {
@@ -2273,7 +2406,7 @@ impl ProcessingStore {
         )
         .bind(provider)
         .bind(model_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         rows.into_iter()
             .map(|row| {
@@ -2310,7 +2443,7 @@ impl ProcessingStore {
              GROUP BY person_profiles.id",
         )
         .bind(person_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         map_person_profile(row)
     }
@@ -2326,13 +2459,13 @@ impl ProcessingStore {
              WHERE id = ?1",
         )
         .bind(cluster_id)
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
         map_speaker_cluster_view(row)
     }
 
     async fn get_required_speaker_turn(&self, turn_id: i64) -> Result<SpeakerTurnView> {
-        fetch_required_speaker_turn(&self.pool, turn_id).await
+        fetch_required_speaker_turn(self.db.read(), turn_id).await
     }
 }
 
@@ -3139,7 +3272,7 @@ mod tests {
             .await
             .expect("in-memory db should open");
         MIGRATOR.run(&pool).await.expect("migrations should apply");
-        ProcessingStore::new(pool)
+        ProcessingStore::new(CaptureDb::single(pool))
     }
 
     /// FIX 3 (SQL claim path): the SQL-atomic claim in
@@ -3217,6 +3350,280 @@ mod tests {
                 .expect("legacy sherpa job should be claimable once unlocked");
             assert_eq!(claimed.id, job.id);
             assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    /// ADR 0048: a transient-liveness requeue must return a running job to `queued` without
+    /// spending a failure attempt, and (once its backoff elapses) the job must be claimable again.
+    #[test]
+    fn transient_liveness_requeue_returns_job_to_queued_without_spending_failure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            let claimed = store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+
+            let requeued = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 0,
+                "transient liveness must never spend a failure attempt"
+            );
+            assert_eq!(requeued.last_error.as_deref(), Some("offline"));
+
+            // The requeue is deferred by a backoff window; clear it, then confirm the job is
+            // claimable again — the segment simply waits, never terminally failing.
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable again");
+            assert_eq!(reclaimed.id, job.id);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+            assert_eq!(reclaimed.failure_count, 0);
+        });
+    }
+
+    /// ADR 0048: the requeue must actually DEFER the job by the processor's first backoff step
+    /// (60s for audio) — not requeue it with a zero/immediate window. Guards a regression the
+    /// sibling "returns to queued" test cannot catch, since that one expires the backoff before
+    /// asserting claimability.
+    #[test]
+    fn transient_liveness_requeue_defers_by_backoff() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+
+            store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+
+            // The first backoff step (~60s) is still in the future, so the automatic drain must
+            // NOT hand the job back yet — a zero-backoff regression would fail here.
+            let too_soon = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should not error while backoff is pending");
+            assert!(
+                too_soon.is_none(),
+                "a transient-liveness requeue must be deferred by its backoff window"
+            );
+
+            // Once the backoff elapses, the same job becomes claimable again.
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable once backoff elapses");
+            assert_eq!(reclaimed.id, job.id);
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    /// ADR 0048: the transient lane only moves a *running* job. Calling it on a still-queued job
+    /// is an invalid transition and must leave the row completely untouched.
+    #[test]
+    fn transient_liveness_requeue_on_non_running_job_is_invalid_transition() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+            assert_eq!(job.status, ProcessingJobStatus::Queued);
+
+            let result = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await;
+            assert!(
+                matches!(
+                    result,
+                    Err(AppInfraError::ProcessingJobInvalidTransition { .. })
+                ),
+                "requeuing a queued (non-running) job must be an invalid transition, got {result:?}"
+            );
+
+            // The failed transition must not have mutated the row.
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("get_job should succeed")
+                .expect("job should still exist");
+            assert_eq!(after.status, ProcessingJobStatus::Queued);
+            assert_eq!(after.failure_count, 0);
+            assert_eq!(after.last_error, None);
+        });
+    }
+
+    /// ADR 0048: an offline/mis-keyed stretch can requeue the same segment indefinitely; it must
+    /// never terminally fail. `attempt_count` resetting to 0 each cycle (the reviewed fix) is what
+    /// keeps reclamation from ever burning the segment.
+    #[test]
+    fn repeated_transient_liveness_requeue_never_terminally_fails() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+
+            for cycle in 0..5 {
+                let claimed = store
+                    .claim_queued_job(job.id)
+                    .await
+                    .expect("job claim should succeed")
+                    .expect("job should claim");
+                assert_eq!(
+                    claimed.status,
+                    ProcessingJobStatus::Running,
+                    "cycle {cycle}: job should claim into running"
+                );
+
+                let requeued = store
+                    .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                    .await
+                    .expect("transient-liveness requeue should succeed");
+                assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+                assert_eq!(
+                    requeued.failure_count, 0,
+                    "cycle {cycle}: transient liveness must never spend a failure"
+                );
+                assert_eq!(
+                    requeued.attempt_count, 0,
+                    "cycle {cycle}: transient liveness must reset attempt_count"
+                );
+
+                store
+                    .expire_processing_job_retry_backoff_for_test(job.id)
+                    .await
+                    .expect("retry backoff should expire for test");
+            }
+
+            let after = store
+                .get_job(job.id)
+                .await
+                .expect("get_job should succeed")
+                .expect("job should still exist");
+            assert_ne!(
+                after.status,
+                ProcessingJobStatus::Failed,
+                "repeated transient requeues must never terminally fail the segment"
+            );
+        });
+    }
+
+    /// ADR 0048: the transient lane resets `attempt_count` but must PRESERVE `failure_count` — a
+    /// genuine prior failure is not erased by a later offline stretch (nor incremented by it).
+    #[test]
+    fn transient_liveness_requeue_preserves_prior_failure_count() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(1))
+                .await
+                .expect("audio transcription job should enqueue");
+
+            // Accrue one genuine failure through the failure lane.
+            store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            let failed = store
+                .mark_job_failed(job.id, Some("boom"))
+                .await
+                .expect("mark_job_failed should succeed");
+            assert_eq!(failed.failure_count, 1);
+
+            store
+                .requeue_failed_job_within_attempt_cap(job.id)
+                .await
+                .expect("failed job requeue should succeed")
+                .expect("job should requeue within the attempt cap");
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            let reclaimed = store
+                .claim_next_queued_job()
+                .await
+                .expect("claim should succeed after backoff elapses")
+                .expect("the requeued job should be claimable again");
+            assert_eq!(reclaimed.status, ProcessingJobStatus::Running);
+            assert_eq!(reclaimed.failure_count, 1);
+
+            // Now a transient requeue on the running job: attempt_count resets, but the prior
+            // failure_count must survive — neither cleared to 0 nor bumped to 2.
+            let requeued = store
+                .requeue_job_for_transient_liveness(job.id, Some("offline"))
+                .await
+                .expect("transient-liveness requeue should succeed");
+            assert_eq!(requeued.status, ProcessingJobStatus::Queued);
+            assert_eq!(
+                requeued.failure_count, 1,
+                "transient liveness must preserve a prior genuine failure count"
+            );
+            assert_eq!(
+                requeued.attempt_count, 0,
+                "transient liveness resets attempt_count"
+            );
         });
     }
 }
@@ -3667,6 +4074,37 @@ fn speaker_analysis_model_key_for_job(job: &ProcessingJob) -> Result<Option<Stri
         .map(|model_id| model_key(&payload.provider, model_id)))
 }
 
+/// zstd level for OCR geometry payloads. Default level; tune only if measured.
+const OCR_PAYLOAD_ZSTD_LEVEL: i32 = 3;
+
+/// Compress an OCR structured-payload JSON string for storage in the BLOB column.
+/// Only OCR rows are compressed (geometry compression); the read path decodes the
+/// same rows via `structured_payload_json_from_row`.
+fn compress_ocr_structured_payload(payload_json: Option<&str>) -> Result<Option<Vec<u8>>> {
+    payload_json
+        .map(|json| zstd::encode_all(json.as_bytes(), OCR_PAYLOAD_ZSTD_LEVEL).map_err(Into::into))
+        .transpose()
+}
+
+/// Read `structured_payload_json` as a JSON string. OCR rows hold a zstd-compressed
+/// BLOB and are inflated here; every other processor stores plain JSON text. Keying
+/// off `processor` is deterministic (no magic-byte sniff) and matches the write path.
+pub(crate) fn structured_payload_json_from_row(row: &SqliteRow) -> Result<Option<String>> {
+    let processor: String = row.get("processor");
+    if processor == OCR_PROCESSOR {
+        row.get::<Option<Vec<u8>>, _>("structured_payload_json")
+            .map(|blob| {
+                let json = zstd::decode_all(blob.as_slice())?;
+                String::from_utf8(json).map_err(|error| {
+                    AppInfraError::OcrEngine(format!("structured payload utf8 decode: {error}"))
+                })
+            })
+            .transpose()
+    } else {
+        Ok(row.get("structured_payload_json"))
+    }
+}
+
 fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
     Ok(ProcessingResult {
         id: row.get("id"),
@@ -3675,7 +4113,7 @@ fn map_processing_result(row: SqliteRow) -> Result<ProcessingResult> {
         subject_id: row.get("subject_id"),
         processor: row.get("processor"),
         result_text: row.get("result_text"),
-        structured_payload_json: row.get("structured_payload_json"),
+        structured_payload_json: structured_payload_json_from_row(&row)?,
         processor_version: row.get("processor_version"),
         redaction_detector_version: row.get("redaction_detector_version"),
         redaction_checked_at: row.get("redaction_checked_at"),

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { KeyboardBindingsSettings } from "$lib/types";
+import { humanizeError } from "$lib/format-error";
 export {
   normalizeShortcutBinding,
   parseShortcutBinding,
@@ -182,7 +183,7 @@ export const keyboardBindings = {
 };
 
 function serializeError(err: unknown): string {
-  return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  return humanizeError(err);
 }
 
 export function initKeyboardBindings(): void {

@@ -23,3 +23,6 @@ apps/desktop/THIRD_PARTY_LICENSES.md
 # AI coding agents
 .pi
 pi-session-*.html
+
+# /design-sync generated upload bundle
+ds-bundle/

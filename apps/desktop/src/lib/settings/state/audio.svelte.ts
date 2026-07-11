@@ -9,6 +9,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { humanizeError } from "$lib/format-error";
 import { MIC_AUTOSAVE_DEBOUNCE_MS } from "./autosave-core";
 import { computeApplyDrafts } from "./recording-build";
 import type { AutosaveEngine } from "./autosave.svelte";
@@ -114,7 +115,7 @@ export class AudioStore {
       this.micState = s;
       this.syncMicDrafts(s);
     } catch (err) {
-      this.micError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.micError = humanizeError(err);
     } finally {
       this.loadingMicState = false;
     }
@@ -151,7 +152,7 @@ export class AudioStore {
       this.micSaved = true;
       setTimeout(() => { this.micSaved = false; }, 2200);
     } catch (err) {
-      this.micError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.micError = humanizeError(err);
     } finally {
       this.savingMicSettings = false;
     }

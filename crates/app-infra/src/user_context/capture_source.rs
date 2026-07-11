@@ -15,7 +15,7 @@
 //! tokens/PII in its path/query, and a window title can carry document/recipient
 //! names. Because this window is handed to a (possibly cloud) Reasoning Engine, we
 //! reduce the metadata to a privacy-safe form at read time:
-//! [`search_context_from_snapshot`] drops the window title (keeping only the app
+//! [`search_context_from_parsed`] drops the window title (keeping only the app
 //! name) and reduces any browser URL to its bare origin host (scheme/path/query/
 //! fragment stripped). The redacted `result_text` remains the only free text sent.
 
@@ -44,6 +44,18 @@ pub struct CaptureWindowItem {
     pub app_label: Option<String>,
     /// Search Context URL, if available (frames only, best-effort).
     pub url: Option<String>,
+    /// Audio only — the capture source: `"microphone"` (the user's own voice) or
+    /// `"system_audio"` (the other party). `None` for frames. Lets the derivation
+    /// prompt tag speech `you` vs `other-side` so words spoken TO the user are not
+    /// misattributed as words the user said (ADR 0050).
+    pub source_kind: Option<String>,
+    /// Audio only — diarized speaker turns as `(cluster_id, transcript_text)`,
+    /// time-ordered. ANONYMOUS BY CONSTRUCTION (ADR 0050): the reader never selects
+    /// a `person_id` / `display_name` / any name column into this, so a recognized
+    /// person's name is UNREPRESENTABLE here and can never reach the (possibly
+    /// cloud) Reasoning Engine — names resolve on-device only. Empty for frames and
+    /// for audio whose diarization has produced no turns (yet).
+    pub speaker_turns: Vec<(i64, String)>,
 }
 
 /// The redacted-text captures inside `[start_ms, end_ms]`, time-ordered.
@@ -115,7 +127,15 @@ impl UserContextStore {
             };
             let text: String = row.get("result_text");
             let snapshot_json: Option<String> = row.get("snapshot_json");
-            let (app_label, url) = search_context_from_snapshot(snapshot_json.as_deref());
+            let snapshot = parse_snapshot(snapshot_json.as_deref());
+            // Skip frames of Mnema's own UI (best-effort: frames without a
+            // snapshot cannot be identified and pass through). ponytail: self
+            // frames still eat the SQL LIMIT budget; push the filter into SQL
+            // json_extract if that ever matters.
+            if snapshot.as_ref().is_some_and(is_self_capture) {
+                continue;
+            }
+            let (app_label, url) = snapshot.map_or((None, None), search_context_from_parsed);
 
             items.push(CaptureWindowItem {
                 subject_type: FRAME_SUBJECT_TYPE.to_string(),
@@ -124,6 +144,8 @@ impl UserContextStore {
                 text,
                 app_label,
                 url,
+                source_kind: None,
+                speaker_turns: Vec::new(),
             });
         }
 
@@ -135,6 +157,7 @@ impl UserContextStore {
         let audio_rows = sqlx::query(
             "SELECT audio_segments.id AS subject_id, \
                     audio_segments.started_at AS started_at, \
+                    audio_segments.source_kind AS source_kind, \
                     processing_results.result_text AS result_text \
              FROM audio_segments \
              JOIN (\
@@ -162,24 +185,63 @@ impl UserContextStore {
             let Some(captured_at_ms) = rfc3339_to_ms(&started_at) else {
                 continue;
             };
+            let subject_id: i64 = row.get("subject_id");
             let text: String = row.get("result_text");
+            let source_kind: Option<String> = row.get("source_kind");
+
+            // Anonymous diarized turns for this segment (ADR 0050): read ONLY
+            // (cluster_id, transcript_text) — deliberately NOT `person_id` /
+            // `display_name` / any name column — so a recognized person's name is
+            // UNREPRESENTABLE in the window handed to the (possibly cloud) engine.
+            // Names resolve on-device only, never over the wire.
+            // ponytail: one query per audio segment (N+1), bounded by max_items;
+            // batch by `audio_segment_id IN (...)` only if a wide window makes it matter.
+            // ponytail: this per-segment turn read degrades to empty on error rather
+            // than `?`-failing the whole window — a segment with no turns is already a
+            // valid state (the flat `text` still carries the words), so one flaky
+            // segment (e.g. a transient SQLITE_BUSY) must not fail the entire window
+            // read and advance the derivation cursor past it. Mirrors the frontend
+            // loader's `.catch(() => [])`. Upgrade to a logged/surfaced error only if
+            // silent turn-loss ever needs to be observable.
+            let turn_rows = sqlx::query(
+                "SELECT cluster_id, transcript_text \
+                 FROM speaker_turns \
+                 WHERE audio_segment_id = ?1 \
+                   AND LENGTH(TRIM(COALESCE(transcript_text, ''))) > 0 \
+                 ORDER BY start_ms ASC, end_ms ASC, id ASC",
+            )
+            .bind(subject_id)
+            .fetch_all(self.pool())
+            .await
+            .unwrap_or_default();
+            let speaker_turns: Vec<(i64, String)> = turn_rows
+                .iter()
+                .map(|turn| (turn.get::<i64, _>("cluster_id"), turn.get::<String, _>("transcript_text")))
+                .collect();
+
             items.push(CaptureWindowItem {
                 subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
-                subject_id: row.get("subject_id"),
+                subject_id,
                 captured_at_ms,
                 text,
                 app_label: None,
                 url: None,
+                source_kind,
+                speaker_turns,
             });
         }
 
-        // Merge the two time-ordered streams, then re-cap at max_items.
+        // Merge the two time-ordered streams, collapse runs of near-identical
+        // frames (a screen held static at 1fps otherwise floods the prompt with
+        // dozens of duplicate OCR blocks), then re-cap at max_items. Dedup runs
+        // BEFORE the truncate so the cap keeps compacted (distinct) content.
         items.sort_by(|a, b| {
             a.captured_at_ms
                 .cmp(&b.captured_at_ms)
                 .then_with(|| a.subject_type.cmp(&b.subject_type))
                 .then_with(|| a.subject_id.cmp(&b.subject_id))
         });
+        let mut items = dedup_adjacent_frames(items);
         if max_items >= 0 {
             items.truncate(max_items as usize);
         }
@@ -192,8 +254,92 @@ impl UserContextStore {
     }
 }
 
-/// Builds a privacy-reduced best-effort `(app_label, url)` pair from a frame
-/// metadata snapshot JSON blob, for egress to a (possibly cloud) Reasoning Engine.
+/// Word-set Jaccard at or above which two consecutive same-app frames are treated
+/// as the same screen and collapsed. 0.9 tolerates OCR jitter (a blinking cursor,
+/// a ticking clock, a changing % readout) without merging genuinely different
+/// screens; a starting point to tune against real windows like the ADR 0042 floor.
+const FRAME_DEDUP_JACCARD_THRESHOLD: f64 = 0.9;
+
+/// Lowercased whitespace-token set of `text`, for near-duplicate frame detection.
+/// Punctuation stays attached to tokens — OCR noise is the target, and exact-token
+/// overlap is a good-enough signal without pulling in a tokenizer. `// ponytail:
+/// word-set Jaccard, upgrade to shingles/edit-distance only if jitter still leaks.`
+fn word_set(text: &str) -> std::collections::HashSet<String> {
+    text.split_whitespace().map(str::to_lowercase).collect()
+}
+
+/// Jaccard similarity of two frames' word sets: `|A∩B| / |A∪B|`. Two empty texts
+/// count as identical (1.0); one empty as disjoint (0.0).
+fn text_similarity(a: &str, b: &str) -> f64 {
+    let (sa, sb) = (word_set(a), word_set(b));
+    let union = sa.union(&sb).count();
+    if union == 0 {
+        return 1.0;
+    }
+    sa.intersection(&sb).count() as f64 / union as f64
+}
+
+/// Collapse runs of CONSECUTIVE near-identical frames from the SAME app into one
+/// representative (the frame with the most OCR text), so a static screen captured
+/// at 1fps does not flood the derivation prompt with duplicate blocks. Only frames
+/// collapse, and only against the immediately-preceding KEPT frame of the same
+/// `app_label`: audio transcript items and app switches break a run, so a genuine
+/// return to a screen after other work stays a distinct item. Dropped duplicates
+/// lose their own evidence tag — the representative frame carries the run's
+/// evidence, which is the intent (one clean frame, not sixty identical ones).
+fn dedup_adjacent_frames(items: Vec<CaptureWindowItem>) -> Vec<CaptureWindowItem> {
+    let mut out: Vec<CaptureWindowItem> = Vec::with_capacity(items.len());
+    for item in items {
+        if item.subject_type == FRAME_SUBJECT_TYPE {
+            if let Some(last) = out.last_mut() {
+                if last.subject_type == FRAME_SUBJECT_TYPE
+                    && last.app_label == item.app_label
+                    && text_similarity(&last.text, &item.text) >= FRAME_DEDUP_JACCARD_THRESHOLD
+                {
+                    // Near-duplicate of the current representative: keep whichever
+                    // carries the richer OCR text, drop the other.
+                    if item.text.chars().count() > last.text.chars().count() {
+                        *last = item;
+                    }
+                    continue;
+                }
+            }
+        }
+        out.push(item);
+    }
+    out
+}
+
+/// Parses a frame metadata snapshot JSON blob; `None` when absent or unparseable.
+fn parse_snapshot(
+    snapshot_json: Option<&str>,
+) -> Option<capture_metadata::FrameMetadataSnapshot> {
+    serde_json::from_str(snapshot_json?).ok()
+}
+
+/// Mnema's own app identities (prod + dev builds). Frames of Mnema's own UI are
+/// excluded from the capture window: otherwise the app OCRs its own generated
+/// insights/digests and re-ingests them as activity evidence (a self-capture
+/// feedback loop).
+const SELF_APP_BUNDLE_IDS: &[&str] = &["com.shaikzeeshan.mnema", "com.shaikzeeshan.mnema.dev"];
+const SELF_APP_NAMES: &[&str] = &["mnema", "mnema-dev"];
+
+/// True when a frame's metadata snapshot identifies Mnema itself: exact bundle-id
+/// match OR case-insensitive app-name match.
+fn is_self_capture(snapshot: &capture_metadata::FrameMetadataSnapshot) -> bool {
+    snapshot
+        .app_bundle_id
+        .as_deref()
+        .is_some_and(|id| SELF_APP_BUNDLE_IDS.contains(&id))
+        || snapshot.app_name.as_deref().is_some_and(|name| {
+            SELF_APP_NAMES
+                .iter()
+                .any(|own| name.eq_ignore_ascii_case(own))
+        })
+}
+
+/// Builds a privacy-reduced best-effort `(app_label, url)` pair from a parsed
+/// frame metadata snapshot, for egress to a (possibly cloud) Reasoning Engine.
 ///
 /// The snapshot metadata is NOT covered by the secret-redaction pipeline (which
 /// only rewrites `result_text`), so this deliberately keeps only the low-risk
@@ -203,18 +349,9 @@ impl UserContextStore {
 /// - `url` is reduced to its **bare origin host** via [`url_origin_host`]
 ///   (scheme, userinfo, path, query, fragment, and port all stripped) — a
 ///   `BrowserUrlMode::Full` URL can otherwise carry tokens/PII in its path/query.
-fn search_context_from_snapshot(
-    snapshot_json: Option<&str>,
+fn search_context_from_parsed(
+    snapshot: capture_metadata::FrameMetadataSnapshot,
 ) -> (Option<String>, Option<String>) {
-    let Some(snapshot_json) = snapshot_json else {
-        return (None, None);
-    };
-    let Ok(snapshot) =
-        serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(snapshot_json)
-    else {
-        return (None, None);
-    };
-
     // App name only (bundle id fallback). Window title is intentionally dropped.
     let app_label = snapshot.app_name.or(snapshot.app_bundle_id);
     // Reduce any browser URL to its bare origin host before it can egress.
@@ -286,6 +423,73 @@ fn rfc3339_to_ms(value: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// Test convenience: parse-then-reduce in one step, as the frame loop does.
+    fn search_context_from_snapshot(
+        snapshot_json: Option<&str>,
+    ) -> (Option<String>, Option<String>) {
+        parse_snapshot(snapshot_json).map_or((None, None), search_context_from_parsed)
+    }
+
+    fn frame(id: i64, t: i64, text: &str, app: &str) -> CaptureWindowItem {
+        CaptureWindowItem {
+            subject_type: FRAME_SUBJECT_TYPE.to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: Some(app.to_string()),
+            url: None,
+            source_kind: None,
+            speaker_turns: Vec::new(),
+        }
+    }
+
+    fn audio(id: i64, t: i64, text: &str, source: &str) -> CaptureWindowItem {
+        CaptureWindowItem {
+            subject_type: AUDIO_SEGMENT_SUBJECT_TYPE.to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: None,
+            url: None,
+            source_kind: Some(source.to_string()),
+            speaker_turns: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn dedup_adjacent_frames_collapses_static_screen_runs() {
+        // A static screen: 20 shared tokens plus one jittering readout token.
+        let s = |extra: &str| -> String {
+            let mut v: Vec<String> = (0..20).map(|i| format!("w{i}")).collect();
+            v.extend(extra.split_whitespace().map(str::to_string));
+            v.join(" ")
+        };
+        // Jitter-only difference is treated as the same screen (>= 0.9)...
+        assert!(text_similarity(&s("12%"), &s("13%")) >= FRAME_DEDUP_JACCARD_THRESHOLD);
+        // ...but genuinely different content is not.
+        assert!(
+            text_similarity(&s("12%"), "totally unrelated different screen text here now")
+                < FRAME_DEDUP_JACCARD_THRESHOLD
+        );
+
+        let items = vec![
+            frame(1, 100, &s("12%"), "Hitch"),       // run representative
+            frame(2, 101, &s("12%"), "Hitch"),       // identical dup -> dropped
+            frame(3, 102, &s("12% bonus"), "Hitch"), // near-dup + richer -> new representative
+            audio(4, 103, "spoken words here", "microphone"), // audio breaks the run
+            frame(5, 104, &s("12%"), "Hitch"),       // new run after audio -> kept
+            frame(6, 105, &s("12%"), "Zen"),         // app switch -> kept
+        ];
+        let out = dedup_adjacent_frames(items);
+
+        // 1/2/3 collapse to the richest (id 3); audio, post-audio frame, and the
+        // app-switched frame all survive.
+        let ids: Vec<i64> = out.iter().map(|i| i.subject_id).collect();
+        assert_eq!(ids, vec![3, 4, 5, 6]);
+        // The representative carries the richest OCR text of its run.
+        assert_eq!(out[0].text, s("12% bonus"));
+    }
+
     #[test]
     fn url_origin_host_reduces_to_bare_host() {
         // Path, query, and fragment are all dropped — these carry tokens/PII.
@@ -351,5 +555,310 @@ mod tests {
     fn snapshot_none_or_unparseable_yields_no_context() {
         assert_eq!(search_context_from_snapshot(None), (None, None));
         assert_eq!(search_context_from_snapshot(Some("not json")), (None, None));
+    }
+
+    /// NAMES-NEVER-TO-CLOUD, exercised against the REAL schema (ADR 0050).
+    ///
+    /// Unlike the pure-function proxy tests, this seeds a state where the spoken
+    /// cluster IS recognized as a named person on-device: `person_profiles` holds
+    /// "Jane Doe" and the `recording_speaker_clusters` row the turn points at has
+    /// `recognition_person_id` set to her. If `read_capture_window`'s projection
+    /// ever joined the cluster to its person (or selected a name column), the name
+    /// would surface in the returned window that is handed to the (possibly cloud)
+    /// engine. The projection reads ONLY `(cluster_id, transcript_text)`, so the
+    /// name must be absent from every field of the returned `CaptureWindow`.
+    #[test]
+    fn read_capture_window_never_surfaces_a_recognized_person_name() {
+        use sqlx::sqlite::SqlitePoolOptions;
+        const SENTINEL: &str = "Jane Doe";
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the full
+            // migrator, which needs the vec0 extension). Mirrors migrations
+            // 0003/0007/0010 for the columns under test.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE person_profiles (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL)",
+                "CREATE TABLE recording_speaker_clusters (id INTEGER PRIMARY KEY, session_id TEXT, provider TEXT, provider_cluster_id TEXT, stable_label TEXT, recognition_person_id INTEGER)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // On-device identity: this cluster resolves to the named person.
+            sqlx::query("INSERT INTO person_profiles (id, display_name) VALUES (1, ?1)")
+                .bind(SENTINEL)
+                .execute(&pool)
+                .await
+                .expect("seed person");
+            sqlx::query(
+                "INSERT INTO recording_speaker_clusters \
+                    (id, session_id, provider, provider_cluster_id, stable_label, recognition_person_id) \
+                 VALUES (1, 's1', 'speakrs', '0', 'Speaker 1', 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed cluster");
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'thanks for the update')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+            sqlx::query(
+                "INSERT INTO speaker_turns \
+                    (audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text) \
+                 VALUES (1, 's1', 1, 0, 1000, 'thanks for the update')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed turn");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            // The audio item and its anonymous turn are present...
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item present");
+            assert_eq!(
+                audio.speaker_turns,
+                vec![(1_i64, "thanks for the update".to_string())]
+            );
+            // ...but the recognized person's name never appears in ANY field of
+            // the window handed to the engine.
+            let dumped = format!("{window:?}");
+            assert!(
+                !dumped.contains(SENTINEL),
+                "recognized person name leaked into the capture window: {dumped}"
+            );
+        });
+    }
+
+    /// A failure of the per-segment speaker-turn query must NOT fail the whole
+    /// window read (which would record a `failed` run and advance the derivation
+    /// cursor past the window). The turn read degrades to empty — the flat
+    /// transcript `text` still carries the words. Here the `speaker_turns` table is
+    /// absent, so the query errors deterministically, standing in for any transient
+    /// error (e.g. SQLITE_BUSY). Revert the query's `.unwrap_or_default()` back to
+    /// `?` and `read_capture_window` returns `Err` instead — the teeth.
+    #[test]
+    fn read_capture_window_tolerates_a_failing_speaker_turn_query() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Full read-path schema EXCEPT `speaker_turns`, so the per-segment turn
+            // query fails with "no such table" — a stand-in for a transient error.
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) \
+                 VALUES (1, 'system_audio', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segment");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (1, ?1, 1, ?2, 'spoken words survive')",
+            )
+            .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+            .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed transcription");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("window read must succeed despite the failing turn query");
+
+            let audio = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE)
+                .expect("audio item still present");
+            // Turns degraded to empty; the flat transcript text is intact.
+            assert!(audio.speaker_turns.is_empty());
+            assert_eq!(audio.text, "spoken words survive");
+        });
+    }
+
+    /// The DB→item `source_kind` projection (ADR 0050). Every audio item must
+    /// carry its segment's capture source — `microphone` (the user's own voice)
+    /// vs `system_audio` (the other party) — so the derivation prompt can tag
+    /// speech `you` vs `other-side`; a frame item carries `None`. Drop the
+    /// `source_kind` column read in the audio SELECT (or bind `None`) and the
+    /// source-kind asserts below fail — the teeth.
+    #[test]
+    fn read_capture_window_projects_audio_source_kind() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("open db");
+            // Minimal real-schema slice the reader touches (avoids the vec0 migrator).
+            for statement in [
+                "CREATE TABLE frames (id INTEGER PRIMARY KEY, captured_at TEXT NOT NULL, metadata_snapshot_id INTEGER)",
+                "CREATE TABLE frame_metadata_snapshots (id INTEGER PRIMARY KEY, snapshot_json TEXT)",
+                "CREATE TABLE processing_results (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id INTEGER, subject_type TEXT NOT NULL, subject_id INTEGER NOT NULL, processor TEXT NOT NULL, result_text TEXT, structured_payload_json BLOB)",
+                "CREATE TABLE audio_segments (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT NOT NULL)",
+                "CREATE TABLE speaker_turns (id INTEGER PRIMARY KEY AUTOINCREMENT, audio_segment_id INTEGER NOT NULL, session_id TEXT, cluster_id INTEGER NOT NULL, start_ms INTEGER NOT NULL, end_ms INTEGER NOT NULL, transcript_text TEXT)",
+            ] {
+                sqlx::query(statement).execute(&pool).await.expect("create table");
+            }
+
+            // One microphone segment (the user's own voice) and one system_audio
+            // segment (the other party), each with a transcription result.
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, started_at, ended_at) VALUES \
+                    (1, 'microphone', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z'), \
+                    (2, 'system_audio', '2026-01-01T00:00:10Z', '2026-01-01T00:01:10Z')",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed segments");
+            for (subject_id, text) in [(1_i64, "i said this"), (2, "they said that")] {
+                sqlx::query(
+                    "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                     VALUES (1, ?1, ?2, ?3, ?4)",
+                )
+                .bind(AUDIO_SEGMENT_SUBJECT_TYPE)
+                .bind(subject_id)
+                .bind(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .bind(text)
+                .execute(&pool)
+                .await
+                .expect("seed transcription");
+            }
+
+            // A frame + OCR result — its projected source_kind must be None.
+            sqlx::query(
+                "INSERT INTO frames (id, captured_at, metadata_snapshot_id) \
+                 VALUES (1, '2026-01-01T00:00:05Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("seed frame");
+            sqlx::query(
+                "INSERT INTO processing_results (job_id, subject_type, subject_id, processor, result_text) \
+                 VALUES (2, ?1, 1, ?2, 'on-screen text')",
+            )
+            .bind(FRAME_SUBJECT_TYPE)
+            .bind(OCR_PROCESSOR)
+            .execute(&pool)
+            .await
+            .expect("seed ocr");
+
+            let store = UserContextStore::new(crate::db::CaptureDb::single(pool));
+            let window = store
+                .read_capture_window(0, 32_503_680_000_000, 100)
+                .await
+                .expect("read window");
+
+            let source_of = |id: i64| {
+                window
+                    .items
+                    .iter()
+                    .find(|i| i.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE && i.subject_id == id)
+                    .unwrap_or_else(|| panic!("audio item {id} present"))
+                    .source_kind
+                    .clone()
+            };
+            assert_eq!(source_of(1), Some("microphone".to_string()));
+            assert_eq!(source_of(2), Some("system_audio".to_string()));
+
+            // The frame item carries no capture source.
+            let frame = window
+                .items
+                .iter()
+                .find(|i| i.subject_type == FRAME_SUBJECT_TYPE)
+                .expect("frame item present");
+            assert_eq!(frame.source_kind, None);
+        });
+    }
+
+    #[test]
+    fn self_capture_matches_mnema_identities_only() {
+        let snap = |name: Option<&str>, bundle: Option<&str>| {
+            capture_metadata::FrameMetadataSnapshot {
+                app_name: name.map(str::to_string),
+                app_bundle_id: bundle.map(str::to_string),
+                ..Default::default()
+            }
+        };
+        // App-name match is case-insensitive, prod and dev.
+        assert!(is_self_capture(&snap(Some("mnema"), None)));
+        assert!(is_self_capture(&snap(Some("Mnema"), None)));
+        assert!(is_self_capture(&snap(Some("MNEMA-DEV"), None)));
+        // Bundle-id-only variants (no app name).
+        assert!(is_self_capture(&snap(None, Some("com.shaikzeeshan.mnema"))));
+        assert!(is_self_capture(&snap(
+            None,
+            Some("com.shaikzeeshan.mnema.dev")
+        )));
+        // Other apps pass through, including near-miss names/bundle ids.
+        assert!(!is_self_capture(&snap(
+            Some("Safari"),
+            Some("com.apple.Safari")
+        )));
+        assert!(!is_self_capture(&snap(Some("mnemanote"), None)));
+        assert!(!is_self_capture(&snap(None, Some("com.other.mnema"))));
+        assert!(!is_self_capture(&snap(None, None)));
+        // The parsed round-trip used by the frame loop detects self frames too.
+        let json = snap(Some("mnema-dev"), Some("com.shaikzeeshan.mnema.dev")).normalized_json();
+        assert!(parse_snapshot(Some(&json)).is_some_and(|s| is_self_capture(&s)));
     }
 }

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
@@ -26,6 +27,7 @@
   const semanticSearchDownloadError = $derived(models.semanticSearchDownloadError);
   const startingSemanticSearchDownload = $derived(models.startingSemanticSearchDownload);
   const cancellingSemanticSearchDownload = $derived(models.cancellingSemanticSearchDownload);
+  const deletingSemanticSearchModel = $derived(models.deletingSemanticSearchModel);
   const semanticSearchReindexing = $derived(models.semanticSearchReindexing);
   const semanticSearchReindexMessage = $derived(models.semanticSearchReindexMessage);
 
@@ -47,12 +49,15 @@
   const chooseSemanticSearchPickedModel = (
     model: Parameters<typeof c.chooseSemanticSearchPickedModel>[0],
   ) => c.chooseSemanticSearchPickedModel(model);
+  const deleteSemanticSearchPickedModel = (
+    model: Parameters<typeof c.deleteSemanticSearchPickedModel>[0],
+  ) => c.deleteSemanticSearchPickedModel(model);
 </script>
 
 <SettingGroup
   id="settings-section-semanticSearch"
   title="Semantic Search Model"
-  hint="Meaning-based search runs fully on-device — on the GPU where available, otherwise the CPU. Pick a supported model, then Mnema embeds your captures in the background. Nothing is downloaded until you choose a model. The model stays on as a background indexer — it keeps re-embedding new captures (ongoing CPU/GPU and battery while it catches up), and switching models re-indexes every existing capture."
+  hint="Meaning-based search runs fully on-device. Pick a supported model and Mnema embeds your captures in the background; nothing downloads until you choose one."
 >
   {#snippet actions()}
     <ReloadButton
@@ -66,13 +71,19 @@
   <SettingRow
     label="Enable semantic search"
     description="Fuse meaning-based results with keyword search. Inert until a model below is installed."
+    full
   >
-    {#snippet control()}
+    {#snippet aside()}
       <Switch
         ariaLabel="Enable semantic search"
         checked={rec.draftSemanticSearchEnabled}
         onCheckedChange={(value) => void setSemanticSearchEnabled(value)}
       />
+    {/snippet}
+    {#snippet control()}
+      <p class="group-hint group-hint--warn">
+        Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
+      </p>
     {/snippet}
   </SettingRow>
 
@@ -121,7 +132,7 @@
                 progress.status === "starting" ||
                 progress.status === "installing")}
             <div class="settings-group ss-picked" role="group" aria-label={picked.displayName}>
-              <div class="row-actions" style="justify-content: space-between; align-items: flex-start;">
+              <div class="row-actions row-actions--between">
                 <div>
                   <strong>{picked.displayName}</strong>
                   <p class="group-hint">{picked.description}</p>
@@ -155,31 +166,51 @@
                 <div class="row-actions">
                   {#if downloading}
                     <button
+                      type="button"
                       class="btn btn--ghost btn--sm"
                       onclick={() => void cancelSemanticSearchModelDownload()}
                       disabled={cancellingSemanticSearchDownload}
+                      aria-busy={cancellingSemanticSearchDownload}
                     >
-                      Cancel
+                      {#if cancellingSemanticSearchDownload}<ButtonSpinner />Cancelling{:else}Cancel{/if}
                     </button>
                   {:else if !installed}
                     <!-- Step 1: download. Mnema never auto-downloads (ADR 0036). -->
                     <button
+                      type="button"
                       class="btn btn--primary btn--sm"
                       onclick={() => void startSemanticSearchPickedDownload(picked)}
                       disabled={!picked.provider || startingSemanticSearchDownload}
+                      aria-busy={startingSemanticSearchDownload}
                     >
-                      {picked.approxDownloadBytes != null
-                        ? `Download (${formatBytes(picked.approxDownloadBytes)})`
-                        : "Download"}
+                      {#if startingSemanticSearchDownload}
+                        <ButtonSpinner />Starting
+                      {:else}
+                        {picked.approxDownloadBytes != null
+                          ? `Download (${formatBytes(picked.approxDownloadBytes)})`
+                          : "Download"}
+                      {/if}
                     </button>
                   {:else if !selected}
                     <!-- Step 2: use (installed, not yet active). -->
                     <button
+                      type="button"
                       class="btn btn--primary btn--sm"
                       onclick={() => void chooseSemanticSearchPickedModel(picked)}
                       disabled={semanticSearchReindexing}
+                      aria-busy={semanticSearchReindexing}
                     >
-                      Use this model
+                      {#if semanticSearchReindexing}<ButtonSpinner />Re-indexing{:else}Use this model{/if}
+                    </button>
+                    <!-- Installed but not active = unused: allow reclaiming its disk. -->
+                    <button
+                      type="button"
+                      class="btn btn--ghost btn--sm"
+                      onclick={() => void deleteSemanticSearchPickedModel(picked)}
+                      disabled={deletingSemanticSearchModel}
+                      aria-busy={deletingSemanticSearchModel}
+                    >
+                      {#if deletingSemanticSearchModel}<ButtonSpinner />Deleting{:else}Delete{/if}
                     </button>
                   {/if}
                   {#if !installed && !downloading}
@@ -218,4 +249,12 @@
     gap: 10px;
     width: 100%;
   }
+
+  /* Picked-model header lays its label/description column opposite the status
+     badge; override the shared .row-actions (which packs to the end). */
+  .row-actions.row-actions--between {
+    justify-content: space-between;
+    align-items: flex-start;
+  }
+
 </style>

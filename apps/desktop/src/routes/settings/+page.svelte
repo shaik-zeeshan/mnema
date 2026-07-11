@@ -89,6 +89,7 @@
   // the same store methods, just bound to local names for the mount effect.
   const rec = c.rec;
   const refreshAiProviderKeyPresence = () => c.aiRuntime.refreshAiProviderKeyPresence();
+  const refreshMcpServerSecretPresence = () => c.aiRuntime.refreshMcpServerSecretPresence();
   const loadAiRuntimeStatus = () => c.aiRuntime.loadAiRuntimeStatus();
   const refreshUserContext = () => c.userContext.refreshUserContext();
   const loadCaptureSupport = () => c.loadCaptureSupport();
@@ -437,7 +438,10 @@
       // refreshAiProviderKeyPresence reads rec.draftAiProviders, which loadRecordingSettings
       // only populates after its async fetch resolves. Chain it so the "key in keychain"
       // badge reflects saved keys on load instead of seeing a still-empty provider list.
-      void rec.loadRecordingSettings().then(() => refreshAiProviderKeyPresence());
+      // refreshMcpServerSecretPresence shares that draft-list dependency (the MCP card's
+      // "secret in keychain" badge, placeholder, and Clear button read the draft connector
+      // list), so chain it off the same load.
+      void rec.loadRecordingSettings().then(() => refreshAiProviderKeyPresence()).then(() => refreshMcpServerSecretPresence());
       loadKeyboardBindingsSettings();
       loadMicState();
       loadOcrModelStatus();
@@ -581,6 +585,7 @@
     return () => {
       destroyed = true;
       c.autosaveEngine.cancelAll();
+      c.cancelPendingSaveRetries();
       stopMicListeners();
       unlistenRecordingSettingsChanged?.();
       unlistenRecordingSettingsDomainChanged?.();
@@ -601,6 +606,10 @@
      scrolls. One group panel is mounted at a time, so the rail and window
      chrome stay pinned. -->
 <div class="settings-shell">
+  <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
+       <h1>, so the route reads as untitled to a screen reader. Visually hidden —
+       the visible title is the window chrome + the rail's grouped sections. -->
+  <h1 class="settings-page-title">Settings</h1>
   <SettingsRail
     {activeGroup}
     {activeSection}
@@ -644,5 +653,21 @@
     min-height: 0;
     display: flex;
     gap: 18px;
+  }
+
+  /* Visually-hidden page heading — present in the AT accessibility tree as the
+     route's <h1> landmark, but removed from the visual layout (the flex shell's
+     two columns are unaffected). */
+  .settings-page-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
   }
 </style>

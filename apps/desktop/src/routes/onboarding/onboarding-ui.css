@@ -23,9 +23,7 @@
   flex-direction: column;
   min-height: 0;
   height: 100%;
-  font-family:
-    "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code",
-    "Fira Code", monospace;
+  font-family: var(--app-font-mono);
   color: var(--app-text);
 }
 
@@ -37,22 +35,22 @@
   z-index: 2;
 }
 .onboarding-shell .head .eyebrow {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--app-text-subtle);
   margin-bottom: 8px;
 }
 .onboarding-shell .head .subtitle {
-  font-size: 12px;
+  font-size: var(--text-base);
   font-weight: 400;
   color: var(--app-text-muted);
   line-height: 1.5;
 }
 .onboarding-shell .head .subtitle b {
   color: var(--app-text);
-  font-weight: 540;
+  font-weight: 700;
 }
 
 /* ===== scrolling stack area =====
@@ -103,6 +101,15 @@
   border-color: var(--app-border-strong);
   background: var(--app-surface-raised);
 }
+/* A required row whose prerequisite (e.g. a capture permission) is still unmet:
+   warn-tinted edge so it's distinguishable from a satisfied required row at a
+   glance. Applies collapsed AND open (the user resolves it inside the open row). */
+.onboarding-shell .row.needs-attention {
+  border-color: var(--app-warn-border);
+}
+.onboarding-shell .row.needs-attention:not(.open):hover {
+  border-color: var(--app-warn-border);
+}
 /* accent hairline on expanded panel */
 .onboarding-shell .row.open::after {
   content: "";
@@ -140,8 +147,12 @@
   outline: none;
 }
 .onboarding-shell .row-head:focus-visible {
-  box-shadow: inset 0 0 0 2px var(--app-accent-glow);
+  /* Canonical app focus ring (a solid accent edge), not the prior 18%-glow inset
+     that was barely visible on the raised surface — this is the most-used
+     keyboard target, so it gets the unambiguous indicator. */
+  outline: none;
   border-radius: 12px;
+  box-shadow: var(--app-ring);
 }
 .onboarding-shell .row.open .row-head {
   align-items: flex-start;
@@ -191,24 +202,32 @@
   min-width: 0;
 }
 .onboarding-shell .row-name {
-  font-size: 13px;
-  font-weight: 540;
+  font-size: var(--text-md);
+  font-weight: 700;
   color: var(--app-text-strong);
   display: flex;
   align-items: center;
   gap: 8px;
   white-space: nowrap;
+  /* Clip rather than visually overflow when the header is tight (a long gated
+     lockReason chip competes for the same row on narrow widths). The full title
+     is short and the titlewrap has `min-width: 0`, so it degrades gracefully. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .onboarding-shell .row.open .row-name {
   font-size: 17px;
   font-weight: 600;
-  letter-spacing: -0.01em;
+  /* Tighter tracking on the larger open-row heading (17px) so the title doesn't
+     read loose against the body copy below. */
+  letter-spacing: -0.02em;
   white-space: normal;
 }
 .onboarding-shell .row-eyebrow {
   display: none;
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--text-xs);
+  font-weight: 800;
   letter-spacing: 0.16em;
   text-transform: uppercase;
   color: var(--app-text-subtle);
@@ -219,7 +238,7 @@
 }
 .onboarding-shell .row-sub {
   display: none;
-  font-size: 11px;
+  font-size: var(--text-sm);
   color: var(--app-text-muted);
   line-height: 1.5;
   margin-top: 5px;
@@ -234,7 +253,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-muted);
 }
 .onboarding-shell .row.open .row-status {
@@ -262,7 +281,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-warn);
   background: var(--app-warn-bg);
   border: 1px solid var(--app-warn-border);
@@ -279,6 +298,12 @@
 .onboarding-shell .row.open .row-attn {
   display: none;
 }
+/* Required-row "Needs setup" chip stays visible when open (the user resolves the
+   permission inside the open body), unlike the optional-row variant above. */
+.onboarding-shell .row.open .row-attn--req {
+  display: inline-flex;
+  margin-top: 5px;
+}
 /* live model-download indicator on a (possibly collapsed) feature row. Accent
    (green) chip so an in-progress fetch reads as active work, not a warning;
    stays visible even when the row is open to confirm continuity. */
@@ -287,7 +312,7 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-accent);
   background: var(--app-accent-bg);
   border: 1px solid var(--app-accent-border);
@@ -323,16 +348,27 @@
    surface chip with a lock glyph and the reason text. Hidden when open (the
    body's lock-callout explains it). */
 .onboarding-shell .row-lock {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  /* Bound the chip so a long reason ("Turn on Transcription first") can't crowd
+     out the nowrap title on narrow widths — the full text stays in the title
+     attribute and the open-body lock-callout. */
+  max-width: 18ch;
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 10px;
+  font-size: var(--text-xs);
   color: var(--app-text-muted);
   background: var(--app-surface-active);
   border: 1px solid var(--app-border);
   border-radius: 999px;
   padding: 2px 8px;
+}
+.onboarding-shell .row-lock .row-lock-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .onboarding-shell .row-lock .lock-ico {
   color: var(--app-text-subtle);
@@ -372,6 +408,43 @@
   margin-top: 2px;
 }
 /* the shared component already styles the 36x20 track/thumb; nothing to add */
+
+/* ===== expand chevron (static affordance) =====
+   Mirrors AdvancedReveal's rotating disclosure caret so a collapsed row visibly
+   advertises that it expands (the role="button" header otherwise gave only
+   hover/cursor hints). Muted/subtle so it never competes with the enable Switch;
+   rotates 90deg open. Decorative — aria-expanded carries the real state. */
+.onboarding-shell .row-chevron {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  color: var(--app-text-subtle);
+  transition: transform 0.18s ease, color 0.15s ease;
+}
+.onboarding-shell .row.open .row-chevron {
+  margin-top: 4px;
+}
+.onboarding-shell .row:not(.open):hover .row-chevron {
+  color: var(--app-text-muted);
+}
+.onboarding-shell .row-chevron svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  display: block;
+}
+.onboarding-shell .row-chevron--open {
+  transform: rotate(90deg);
+}
+@media (prefers-reduced-motion: reduce) {
+  .onboarding-shell .row-chevron {
+    transition: none;
+  }
+}
 
 /* The expanded row body, the Slice-4 body-layout primitives, the lock-callout,
    the footer, text input, and the button family live in onboarding-body.css

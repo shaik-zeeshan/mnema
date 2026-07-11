@@ -40,7 +40,7 @@ struct SmokeConfig {
     bitrate_label: String,
     bitrate_bps: Option<u32>,
     seconds: u64,
-    frame_rate: u32,
+    frame_rate: f64,
     expected_dimensions: Option<(u32, u32)>,
 }
 
@@ -203,7 +203,7 @@ fn parse_args() -> SmokeConfig {
     let mut resolution_label = "original".to_string();
     let mut bitrate_label = "medium".to_string();
     let mut seconds = 4_u64;
-    let mut frame_rate = 30_u32;
+    let mut frame_rate = 30.0_f64;
     let mut label: Option<String> = None;
     let mut expected_dimensions: Option<(u32, u32)> = None;
 
@@ -272,7 +272,7 @@ fn parse_resolution(value: &str) -> ScreenResolution {
 fn bitrate_bps_for_preset(
     bitrate_label: &str,
     resolution: &ScreenResolution,
-    frame_rate: u32,
+    frame_rate: f64,
 ) -> Option<u32> {
     let factor = match bitrate_label {
         "none" => return None,
@@ -294,7 +294,7 @@ fn bitrate_bps_for_preset(
         },
         ScreenResolution::Custom { width, height } => (*width, *height),
     };
-    let raw = (width as f64) * (height as f64) * (frame_rate as f64) * factor;
+    let raw = (width as f64) * (height as f64) * frame_rate * factor;
     Some(clamp_and_round_bitrate_bits_per_second(raw))
 }
 

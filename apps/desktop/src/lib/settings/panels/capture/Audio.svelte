@@ -5,6 +5,9 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
 
   const c = getSettingsController();
   const audio = c.audio;
@@ -13,6 +16,7 @@
   const micDeviceOptions = $derived(audio.micDeviceOptions);
   const loadingMicState = $derived(audio.loadingMicState);
   const loadMicState = () => audio.loadMicState();
+
 </script>
 
 <SettingGroup id="settings-section-audio" title="Microphone Controller">
@@ -23,7 +27,7 @@
   {#if loadingMicState}
     <SettingRow label="Microphone" description="Microphone state is loading." divider={false}>
       {#snippet control()}
-        <p class="loading-text">Loading microphone state…</p>
+        <p class="loading-text"><ButtonSpinner />Loading microphone state…</p>
       {/snippet}
     </SettingRow>
   {:else if micState}
@@ -108,31 +112,33 @@
       </SettingRow>
     {/if}
 
-    <SettingRow
-      label="On Disconnect"
-      description="What to do when the chosen microphone disconnects."
-      full
-      divider={!!audio.micError}
-    >
-      {#snippet control()}
-        <Segmented
-          bind:value={audio.draftDisconnectPolicy}
-          ariaLabel="On disconnect policy"
-          options={[
-            { value: "fallback_to_default", label: "Fallback to Default" },
-            { value: "wait_for_same_device", label: "Wait for Same Device" },
-          ]}
-        />
-      {/snippet}
-    </SettingRow>
+    {#if audio.draftPreferenceMode === "specific_device"}
+      <SettingRow
+        label="On Disconnect"
+        description="What to do when the chosen microphone disconnects."
+        full
+        divider={!!audio.micError}
+      >
+        {#snippet control()}
+          <Segmented
+            bind:value={audio.draftDisconnectPolicy}
+            ariaLabel="On disconnect policy"
+            options={[
+              { value: "fallback_to_default", label: "Fallback to Default" },
+              { value: "wait_for_same_device", label: "Wait for Same Device" },
+            ]}
+          />
+        {/snippet}
+      </SettingRow>
+    {/if}
 
     {#if audio.micError}
       <SettingRow label="Error" warn full divider={false}>
         {#snippet control()}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{audio.micError}</span>
-            <button class="btn btn--ghost btn--sm" onclick={() => audio.micError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => audio.micError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/snippet}
       </SettingRow>
@@ -142,7 +148,7 @@
       {#snippet control()}
         <div class="control-stack">
           <p class="empty-state">Failed to load microphone state.</p>
-          <button class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
+          <button type="button" class="btn btn--ghost btn--sm" onclick={loadMicState}>Retry</button>
         </div>
       {/snippet}
     </SettingRow>

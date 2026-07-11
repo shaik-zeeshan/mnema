@@ -223,14 +223,33 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
     //         segment are still caught — secrets never span a `/`.
     let guarded_authority = redact_known_shape(&authority);
 
+    let mut guarded_path = redact_path(path);
+    if path_overflowed {
+        // The path exceeded the guard's bound and was cut. The dropped remainder
+        // could be (part of) a secret token, so emit a redaction marker in its
+        // place rather than silently truncating.
+        guarded_path.push_str(ARMED_TOKEN_PLACEHOLDER);
+    }
+
+    Some(format!("{guarded_authority}{guarded_path}"))
+}
+
+/// Apply the per-path-sub-part arming + redaction passes to one already-cut
+/// path and return the guarded path string. Shared by [`guard_url`] (the
+/// model-text boundary) and [`secret_scrubbed_fetch_target`] (the fetch-target
+/// boundary) so BOTH redact magic-link / reset / share tokens in the path
+/// identically — a redacted path 404s at the origin, which is the fetch
+/// target's fail-closed behavior.
+///
+/// `path` always begins with '/' for http(s) URLs. Splitting on '/' keeps the
+/// empty leading/trailing segments so we can rejoin faithfully. The `url` crate
+/// leaves `%2F` verbatim in `path()`, so we additionally split each segment on
+/// `%2F`/`%2f` into sub-parts (see `process_segment`) and run the same arming
+/// logic across the sub-parts.
+fn redact_path(path: &str) -> String {
     let mut redacted_count = 0usize;
     let mut passed_count = 0usize;
 
-    // `path` always begins with '/' for http(s) URLs. Splitting on '/' keeps
-    // the empty leading/trailing segments so we can rejoin faithfully. The
-    // `url` crate leaves `%2F` verbatim in `path()`, so we additionally split
-    // each segment on `%2F`/`%2f` into sub-parts (see `process_segment`) and
-    // run the same arming logic across the sub-parts.
     let segments: Vec<&str> = path.split('/').collect();
     let mut out: Vec<String> = Vec::with_capacity(segments.len());
     // Track the previous NON-EMPTY raw sub-part as the arming predecessor;
@@ -249,22 +268,218 @@ pub fn guard_url(raw_url: &str) -> Option<String> {
         );
         out.push(processed);
     }
-    let mut guarded_path = out.join("/");
-    if path_overflowed {
-        // The path exceeded the guard's bound and was cut. The dropped remainder
-        // could be (part of) a secret token, so emit a redaction marker in its
-        // place rather than silently truncating — and count it.
-        guarded_path.push_str(ARMED_TOKEN_PLACEHOLDER);
-        redacted_count += 1;
-    }
 
-    // 6. Observability: one debug line per call. Never logs URL contents at
-    //    info level; the counts keep the residual observable.
+    // Observability: one debug line per call. Never logs URL contents at info
+    // level; the counts keep the residual observable.
     log::debug!(
         "brokered url_guard positional-arming: redacted={redacted_count} passed={passed_count}"
     );
 
-    Some(format!("{guarded_authority}{guarded_path}"))
+    out.join("/")
+}
+
+/// Query-parameter NAMES that mark a credential-bearing param (compared after
+/// [`normalize_keyword`], which lowercases and drops non-alphanumerics, so
+/// `access_token`, `Access-Token`, and `accesstoken` all collapse to
+/// `accesstoken`). Used only by [`secret_scrubbed_fetch_target`]: a param with
+/// one of these names is DROPPED from the fetch target regardless of its value.
+const CREDENTIAL_PARAM_NAMES: &[&str] = &[
+    "token",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "code",
+    "auth",
+    "authorization",
+    "bearer",
+    "jwt",
+    "key",
+    "apikey",
+    "apisecret",
+    "secret",
+    "clientsecret",
+    "password",
+    "passwd",
+    "pwd",
+    "session",
+    "sessionid",
+    "sid",
+    "sig",
+    "signature",
+    "otp",
+    "credential",
+    "credentials",
+];
+
+/// True when a query-param NAME is credential-shaped (member of
+/// [`CREDENTIAL_PARAM_NAMES`] after normalization).
+fn is_credential_param_name(name: &str) -> bool {
+    CREDENTIAL_PARAM_NAMES.contains(&normalize_keyword(name).as_str())
+}
+
+/// True when a query-param VALUE is secret-shaped per the module's deterministic
+/// detector: a known fixed-prefix token (`ghp_`, `sk-`, JWT, …) OR a
+/// high-entropy backstop token. Reuses the exact machinery `guard_url` applies
+/// to path segments, so the two boundaries judge secrets identically.
+fn is_secret_value(value: &str) -> bool {
+    redact_known_shape(value) != value || is_backstop_token(value)
+}
+
+/// Fetch-target boundary: raw captured URL -> `Option<absolute URL string>` that
+/// is safe to send to the ORIGIN over the network.
+///
+/// Contrast with [`guard_url`], the MODEL-TEXT boundary (strips the whole query
+/// and emits only `host[:port]/path`). The origin already knows its own URL, so
+/// here we keep everything EXCEPT secrets (the "two-boundary" design, grill G6):
+///
+/// - Scheme forced to **https**.
+/// - **Query params**: a param is DROPPED when its NAME is credential-shaped
+///   ([`is_credential_param_name`]) OR its VALUE is secret-shaped
+///   ([`is_secret_value`]); every other param is kept verbatim (`?v=`, `?id=`,
+///   `?tab=`, `?page=` survive).
+/// - **Path**: the SAME per-segment secret redaction [`guard_url`] applies via
+///   [`redact_path`], so a magic-link / reset path token becomes a
+///   `[REDACTED_SECRET: …]` placeholder and the target 404s at the origin —
+///   fail closed by design.
+/// - **Fragment**: dropped (never sent to the origin anyway).
+///
+/// Returns `None` for a non-`http(s)` or unparseable input.
+pub fn secret_scrubbed_fetch_target(raw_url: &str) -> Option<String> {
+    let parsed = Url::parse(raw_url).ok()?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+
+    // SSRF fail-closed: never produce a fetch target for a loopback / private /
+    // link-local / metadata host. The captured URL comes from the user's own
+    // browsing history, which can legitimately include `http://localhost:3000`,
+    // a LAN device (`https://192.168.1.1`), or a link-local address — fetching it
+    // and streaming the body into a (possibly cloud) model exfiltrates
+    // internal-network / localhost service content. Screened here (initial
+    // target) AND on every redirect hop (see `is_disallowed_fetch_url`).
+    if is_disallowed_fetch_url(&parsed) {
+        return None;
+    }
+
+    let mut target = parsed.clone();
+    // Force https. http and https are both "special" schemes, so this switch is
+    // always permitted; a failure here means an unexpected input, so bail.
+    if target.set_scheme("https").is_err() {
+        return None;
+    }
+
+    // Strip URL-embedded Basic-auth credentials (`user:pass@`). They are a secret,
+    // and the cookie-less fetch client can never ride the user's authenticated
+    // session — keeping userinfo would send the credential over the network as an
+    // `Authorization: Basic` header and do exactly that. Fail closed (a 401 is the
+    // safe outcome), matching the model-text boundary (`guard_url`), which already
+    // emits only host+port and never userinfo.
+    let _ = target.set_username("");
+    let _ = target.set_password(None);
+
+    // Path: redact secrets exactly as the model-text boundary does. A redacted
+    // magic-link / reset token becomes a nonsense path -> 404 at the origin.
+    let redacted_path = redact_path(parsed.path());
+    target.set_path(&redacted_path);
+
+    // Query: keep every param whose name is not credential-shaped and whose
+    // value is not secret-shaped. `query_pairs()` percent-decodes; re-appending
+    // through `query_pairs_mut` re-encodes, so kept params round-trip faithfully.
+    let kept: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(name, value)| !is_credential_param_name(name) && !is_secret_value(value))
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect();
+    if kept.is_empty() {
+        target.set_query(None);
+    } else {
+        target.query_pairs_mut().clear();
+        for (name, value) in &kept {
+            target.query_pairs_mut().append_pair(name, value);
+        }
+    }
+
+    target.set_fragment(None);
+    Some(target.to_string())
+}
+
+/// SSRF host screen for the `fetch_url` egress. Returns `true` when `url`'s host
+/// must NEVER be fetched: a loopback, private (RFC 1918), link-local (incl. the
+/// cloud metadata IP `169.254.169.254`), unique-local, carrier-grade-NAT, or
+/// unspecified address, or the `localhost` name. Applied to BOTH the initial
+/// fetch target ([`secret_scrubbed_fetch_target`]) and every redirect hop (the
+/// origin controls `Location`, so a benign captured URL can be redirected into
+/// internal infrastructure). The `url` crate parses decimal / hex / octal IPv4
+/// literals (`http://2130706433`, `http://0x7f000001`) into `Host::Ipv4`, so
+/// those encodings are screened too.
+///
+/// Residual (documented, not fixed here): a DNS *name* that resolves to a private
+/// IP (a rebinding vector) is NOT caught — that needs a resolving connector. IP
+/// literals and `localhost` — the concrete, testable vectors — are closed.
+pub fn is_disallowed_fetch_url(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ipv4_is_disallowed(ip),
+        Some(url::Host::Ipv6(ip)) => ipv6_is_disallowed(ip),
+        Some(url::Host::Domain(host)) => host_is_local_name(host),
+        // No host (opaque / non-network URL) — never fetch.
+        None => true,
+    }
+}
+
+/// SSRF screen on a RESOLVED connection address. This is the real boundary the
+/// fetch client's custom DNS resolver applies: it catches a public host NAME that
+/// resolves to a private IP (split-horizon DNS / DNS-rebinding) — the case
+/// [`is_disallowed_fetch_url`] (URL host only) cannot see — as well as IP-literal
+/// hosts and every redirect hop's connection. Returns `true` when the client must
+/// refuse to connect to `ip`.
+pub fn ip_is_disallowed_fetch_target(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => ipv4_is_disallowed(v4),
+        std::net::IpAddr::V6(v6) => ipv6_is_disallowed(v6),
+    }
+}
+
+/// True for an IPv4 address the fetch client must never reach.
+fn ipv4_is_disallowed(ip: std::net::Ipv4Addr) -> bool {
+    let [a, b, ..] = ip.octets();
+    ip.is_private()          // 10/8, 172.16/12, 192.168/16
+        || ip.is_loopback()  // 127/8
+        || ip.is_link_local()// 169.254/16 (incl. metadata 169.254.169.254)
+        || ip.is_unspecified()// 0.0.0.0
+        || ip.is_broadcast() // 255.255.255.255
+        || a == 0            // 0.0.0.0/8 "this network"
+        || (a == 100 && (b & 0xc0) == 64) // 100.64/10 carrier-grade NAT
+}
+
+/// True for an IPv6 address the fetch client must never reach.
+fn ipv6_is_disallowed(ip: std::net::Ipv6Addr) -> bool {
+    // An address embedding an IPv4 reaches the same host — screen the embedded v4
+    // with the v4 rules. `to_ipv4()` covers both IPv4-mapped (`::ffff:a.b.c.d`)
+    // and the deprecated IPv4-compatible form (`::a.b.c.d`, e.g. `::7f00:1`), so
+    // `[::ffff:169.254.169.254]` and `[::7f00:1]` are caught. (`::1`/`::` land
+    // here too, as 0.0.0.1/0.0.0.0 — both disallowed v4s, same verdict.)
+    if let Some(v4) = ip.to_ipv4() {
+        return ipv4_is_disallowed(v4);
+    }
+    let seg = ip.segments();
+    // NAT64 well-known prefix 64:ff9b::/96 (RFC 6052) also embeds an IPv4 in the
+    // low 32 bits — screen it the same way.
+    if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        let v4 = std::net::Ipv4Addr::from((u32::from(seg[6]) << 16) | u32::from(seg[7]));
+        return ipv4_is_disallowed(v4);
+    }
+    ip.is_loopback()              // ::1
+        || ip.is_unspecified()    // ::
+        || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
+        || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+}
+
+/// True when a host NAME is a loopback name (`localhost` or a `*.localhost`
+/// subdomain, which RFC 6761 reserves to loopback).
+fn host_is_local_name(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    host == "localhost" || host.ends_with(".localhost")
 }
 
 /// Process one '/'-delimited path segment, which may itself contain one or more
@@ -1401,5 +1616,213 @@ mod tests {
             "oversized-token output stays bounded: {} bytes",
             out.len()
         );
+    }
+
+    // --- Fetch-target boundary (`secret_scrubbed_fetch_target`) ---
+
+    #[test]
+    fn fetch_target_drops_credential_named_param_keeps_others() {
+        let out =
+            secret_scrubbed_fetch_target("https://site.com/page?token=abcSECRET123&v=2").unwrap();
+        assert!(!out.contains("token"), "credential-named param must drop: {out}");
+        assert!(!out.contains("abcSECRET123"), "its value must not leak: {out}");
+        assert!(out.contains("v=2"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_drops_secret_valued_param() {
+        // A known-shape GitHub token as a value with an innocent NAME (`x`) is
+        // still dropped by the value detector.
+        let out = secret_scrubbed_fetch_target(
+            "https://site.com/page?x=ghp_1234567890abcdefABCDEF1234567890abcd&id=42",
+        )
+        .unwrap();
+        assert!(
+            !out.contains("ghp_1234567890abcdefABCDEF1234567890abcd"),
+            "secret-valued param must drop: {out}"
+        );
+        assert!(out.contains("id=42"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_drops_jwt_valued_param() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N";
+        let out =
+            secret_scrubbed_fetch_target(&format!("https://site.com/p?ref={jwt}&page=3")).unwrap();
+        assert!(!out.contains(jwt), "JWT-valued param must drop: {out}");
+        assert!(out.contains("page=3"), "innocent param must survive: {out}");
+    }
+
+    #[test]
+    fn fetch_target_keeps_innocent_params_verbatim() {
+        let out =
+            secret_scrubbed_fetch_target("https://github.com/o/r/pulls?v=2&id=42&tab=files").unwrap();
+        assert!(out.contains("v=2"), "{out}");
+        assert!(out.contains("id=42"), "{out}");
+        assert!(out.contains("tab=files"), "{out}");
+        assert_eq!(out, "https://github.com/o/r/pulls?v=2&id=42&tab=files");
+    }
+
+    #[test]
+    fn fetch_target_still_redacts_path_secret_fail_closed() {
+        // A magic-link token in the PATH is redacted in the fetch target too, so
+        // the origin sees a nonsense path and 404s — fail closed by design.
+        let out =
+            secret_scrubbed_fetch_target("https://app.com/reset-password/AbC9xK2mP4qR7sT0").unwrap();
+        assert!(
+            !out.contains("AbC9xK2mP4qR7sT0"),
+            "path secret must be redacted in the fetch target: {out}"
+        );
+        assert!(out.contains("reset-password"), "keyword stays: {out}");
+    }
+
+    #[test]
+    fn fetch_target_upgrades_http_to_https() {
+        let out = secret_scrubbed_fetch_target("http://example.com/page?v=1").unwrap();
+        assert!(out.starts_with("https://"), "scheme must be forced to https: {out}");
+        assert_eq!(out, "https://example.com/page?v=1");
+    }
+
+    #[test]
+    fn fetch_target_rejects_non_http_scheme() {
+        assert_eq!(secret_scrubbed_fetch_target("file:///Users/me/secret.txt"), None);
+        assert_eq!(secret_scrubbed_fetch_target("not a url"), None);
+    }
+
+    #[test]
+    fn fetch_target_preserves_port_and_drops_fragment() {
+        let out =
+            secret_scrubbed_fetch_target("https://example.com:8443/dashboard?tab=x#frag").unwrap();
+        assert_eq!(out, "https://example.com:8443/dashboard?tab=x");
+    }
+
+    #[test]
+    fn fetch_target_strips_userinfo_credentials() {
+        // A URL-embedded Basic-auth credential is a secret. The fetch target must
+        // NOT carry it: the cookie-less client would turn `user:pass@` into an
+        // `Authorization: Basic` header, leaking the credential to the origin and
+        // riding the user's session. The model-text boundary (`guard_url`) already
+        // drops userinfo; fail closed here too.
+        let out = secret_scrubbed_fetch_target("https://user:hunter2@internal.example.com/dash?v=1")
+            .unwrap();
+        assert!(!out.contains("hunter2"), "password must not leak: {out}");
+        assert!(!out.contains("user:"), "username must not leak: {out}");
+        assert_eq!(out, "https://internal.example.com/dash?v=1");
+    }
+}
+
+#[cfg(test)]
+mod ssrf_review_security_a {
+    use super::secret_scrubbed_fetch_target;
+
+    // SSRF: the fetch target reaches the network and its body is streamed into a
+    // (potentially CLOUD) model's context. A captured or attacker-redirected URL
+    // whose host is loopback / private / link-local / metadata must NOT produce a
+    // fetch target — otherwise internal-network / localhost service content is
+    // exfiltrated to the cloud model. `secret_scrubbed_fetch_target` is the
+    // fetch-target boundary; it must fail closed (None) on such hosts.
+    #[test]
+    fn fetch_target_refuses_private_and_loopback_hosts() {
+        for raw in [
+            "https://127.0.0.1/admin",
+            "http://localhost:3000/admin",
+            "https://[::1]:8443/",
+            "https://192.168.1.1/router",
+            "https://10.0.0.5/internal",
+            "https://172.16.9.9/internal",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://0.0.0.0/",
+        ] {
+            assert_eq!(
+                secret_scrubbed_fetch_target(raw),
+                None,
+                "private/loopback host must not produce a fetch target: {raw}"
+            );
+        }
+    }
+
+    // A normal public host still produces a fetch target (no false-positive that
+    // would break the feature outright).
+    #[test]
+    fn fetch_target_still_allows_public_hosts() {
+        assert!(secret_scrubbed_fetch_target("https://github.com/o/r/pull/1?v=2").is_some());
+        assert!(secret_scrubbed_fetch_target("https://example.com/page").is_some());
+    }
+
+    // The classifier is also applied on every redirect hop. Cover the hop path
+    // (reqwest's `Attempt` is not constructible in a unit test) and the numeric
+    // IPv4 encodings the `url` crate normalizes, so a decimal/hex-encoded loopback
+    // redirect (`http://2130706433`) is screened too.
+    #[test]
+    fn classifier_blocks_private_hosts_including_numeric_encodings() {
+        use super::is_disallowed_fetch_url;
+        use url::Url;
+        for raw in [
+            "https://127.0.0.1/",
+            "http://localhost/",
+            "https://[::1]/",
+            "https://10.1.2.3/",
+            "https://169.254.169.254/",
+            "https://2130706433/",   // decimal 127.0.0.1
+            "https://0x7f000001/",   // hex 127.0.0.1
+            "https://[::ffff:10.0.0.1]/",
+        ] {
+            let url = Url::parse(raw).unwrap();
+            assert!(
+                is_disallowed_fetch_url(&url),
+                "must be screened as a disallowed fetch host: {raw}"
+            );
+        }
+        for raw in ["https://github.com/", "https://8.8.8.8/", "https://example.com/"] {
+            let url = Url::parse(raw).unwrap();
+            assert!(
+                !is_disallowed_fetch_url(&url),
+                "public host must be allowed: {raw}"
+            );
+        }
+    }
+
+    // The connect-time (resolved-IP) screen is what closes the realistic exploit:
+    // a public host NAME with a valid public cert that resolves to a private IP
+    // (enterprise split-horizon DNS / DNS rebinding). The URL host is a domain, so
+    // only the resolved-IP predicate can catch it. Assert the predicate directly.
+    #[test]
+    fn resolved_ip_predicate_blocks_private_and_metadata_addresses() {
+        use super::ip_is_disallowed_fetch_target;
+        use std::net::IpAddr;
+        for ip in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "172.16.9.9",
+            "192.168.1.1",
+            "169.254.169.254", // cloud metadata
+            "0.0.0.0",
+            "::1",
+            "fc00::1",         // unique-local
+            "fe80::1",         // link-local
+            "::ffff:10.0.0.1", // v4-mapped private
+            "::7f00:1",        // deprecated v4-compatible loopback (127.0.0.1)
+            "64:ff9b::7f00:1", // NAT64 loopback (127.0.0.1)
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(
+                ip_is_disallowed_fetch_target(ip),
+                "resolved private/metadata address must be refused: {ip}"
+            );
+        }
+        for ip in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "140.82.121.3",
+            "2606:4700:4700::1111",
+            "64:ff9b::808:808", // NAT64 8.8.8.8 — public, stays allowed
+        ] {
+            let ip: IpAddr = ip.parse().unwrap();
+            assert!(
+                !ip_is_disallowed_fetch_target(ip),
+                "public address must be allowed: {ip}"
+            );
+        }
     }
 }

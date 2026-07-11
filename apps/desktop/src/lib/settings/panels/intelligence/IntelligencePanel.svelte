@@ -1,5 +1,6 @@
 <script lang="ts">
   import Providers from "./Providers.svelte";
+  import McpConnectors from "./McpConnectors.svelte";
   import AskAi from "./AskAi.svelte";
   import UserContext from "./UserContext.svelte";
   import Ocr from "./Ocr.svelte";
@@ -9,8 +10,9 @@
   import SemanticSearch from "./SemanticSearch.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-intelligence" tabindex="0">
+<div class="settings-panel" id="settings-panel-intelligence">
   <Providers />
+  <McpConnectors />
   <AskAi />
   <UserContext />
   <Ocr />

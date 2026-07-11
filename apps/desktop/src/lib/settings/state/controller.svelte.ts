@@ -15,6 +15,7 @@
 import { getContext, setContext } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { ask, confirm } from "@tauri-apps/plugin-dialog";
+import { humanizeError } from "$lib/format-error";
 import { retentionToDays } from "$lib/components/retention";
 import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
@@ -37,7 +38,6 @@ import {
   customBitrateBlocked as customBitrateBlockedFn,
   parseCustomDimension,
 } from "./recording-validation";
-import { errorText, formatBytes } from "./format";
 import { createCliAccessStore } from "./cli-access.svelte";
 import { createGeckoUrlAccessStore } from "./gecko-url-access.svelte";
 import { createLogsStore } from "./logs.svelte";
@@ -49,7 +49,7 @@ import { createModelStatusStore } from "./model-status.svelte";
 import { createAudioStore } from "./audio.svelte";
 import { createKeyboardStore } from "./keyboard.svelte";
 import { createProcessingModelsView } from "./controller-processing.svelte";
-import { semanticSearchTierLabel } from "./models-format";
+import { createSemanticSearchView } from "./controller-semantic-search.svelte";
 import {
   AI_PROVIDER_KINDS,
   CLOUD_AI_PROVIDER_KINDS,
@@ -61,6 +61,8 @@ import {
   aiProviderInstanceLabel,
   newAiProviderId,
 } from "./ai-providers";
+import { createMcpConnectorActions } from "./controller-mcp";
+import type { McpPreset } from "./mcp-presets";
 import type {
   CaptureSupport,
   OcrProvider,
@@ -69,10 +71,10 @@ import type {
   AiProviderKind,
   AiProviderConfig,
   AiEngineRef,
+  McpServerConfig,
   BrowserUrlMode,
   GpuAccelerationPackDownloadProgress,
   SemanticSearchModelStatus,
-  SemanticSearchModelDownloadProgress,
 } from "$lib/types";
 
 export type RetentionCleanupSummary = {
@@ -89,16 +91,6 @@ export type RetentionCleanupSummary = {
   pendingFileTombstones: number;
 };
 
-interface SemanticSearchPickedView {
-  modelId: string;
-  provider: string | null;
-  displayName: string;
-  description: string;
-  metaLine: string;
-  available: boolean;
-  approxDownloadBytes: number | null;
-}
-
 export class SettingsController {
   // Re-exported so markup/components can reference these constants verbatim.
   readonly ModelPickerMenu = ModelPickerMenu;
@@ -112,7 +104,9 @@ export class SettingsController {
     setDeveloperOptionsEnabled: (value) => setDeveloperOptionsEnabled(value),
     loadDebugLogStatus: () => this.logs.loadDebugLogStatus(),
     refreshAiProviderKeyPresence: () => void this.aiRuntime.refreshAiProviderKeyPresence(),
+    refreshMcpServerSecretPresence: () => void this.aiRuntime.refreshMcpServerSecretPresence(),
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
+    loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
     // The OCR default resolves to the first backend-selectable provider; feed the
     // recording store the live model-status response (lazy — `this.models` is
@@ -132,8 +126,10 @@ export class SettingsController {
   about = createAboutStore();
   aiRuntime = createAiRuntimeStore({
     getProviders: () => this.rec.draftAiProviders,
+    getMcpServers: () => this.rec.draftMcpServers,
     isCloudProviderKind: (kind) => this.isCloudAiProviderKind(kind),
     labelForProvider: (id) => this.aiProviderLabelById(id),
+    loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
   });
   userContext = createUserContextStore({
     onWiped: () => {
@@ -173,6 +169,27 @@ export class SettingsController {
   retentionCleanupRunning = $state(false);
   retentionCleanupError = $state<string | null>(null);
 
+  // ─── Autosave failure surfacing + exponential backoff ──────────────────────
+  // A failed recording-domain save leaves the domain dirty, so the autosave
+  // engine's re-tick (on the `savingRecDomains` flag flipping back to false)
+  // would re-fire the save every ~450ms forever — a silent hammer. These track
+  // the failed domain (so the rail footer can offer a targeted Retry/Dismiss),
+  // the consecutive-failure count, and the per-domain "don't retry before"
+  // timestamp that throttles the loop with capped exponential backoff.
+  lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
+  recSaveFailureCount = $state<Record<string, number>>({});
+  recSaveBackoffUntil = $state<Record<string, number>>({});
+  // One-shot backoff re-tick timers, tracked per domain so teardown can cancel
+  // them — an orphaned timer would re-arm saves (and tick the engine) on a
+  // detached controller after Settings closes.
+  private recSaveRetryTimers = new Map<
+    AutosaveRecordingDomain,
+    ReturnType<typeof setTimeout>
+  >();
+  // The domain whose save most recently succeeded — drives a near-the-control
+  // "Saved" micro-affordance (the rail footer status is remote from the edit).
+  recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
+
   // Ask AI / AI model picker open state.
   askAiModelOpen = $state(false);
   aiModelOpen = $state(false);
@@ -182,9 +199,6 @@ export class SettingsController {
   // provider can't be added mid-clear and race a same-kind id re-add (ADR 0035)
   // into a false "key in keychain" probe.
   aiProviderRemoving = $state(false);
-
-  // Semantic-search picked model (page picker draft).
-  semanticSearchPickedModelId = $state<string | null>(null);
 
   // Access prompt + section ref (focus deeplink target).
   brokerAuthorizationPromptVisible = $state(false);
@@ -277,6 +291,22 @@ export class SettingsController {
 
   async removeAiProvider(id: string): Promise<void> {
     const removed = this.rec.draftAiProviders.find((p) => p.id === id);
+    // Removing a cloud provider tears down its keychain secret immediately
+    // (clearKeyForRemovedProvider below), with no undo — gate that on an
+    // explicit confirm so a single mis-click can't wipe a saved API key.
+    if (removed && this.isCloudAiProviderKind(removed.kind)) {
+      const label = this.aiProviderInstanceLabel(removed);
+      const confirmed = await confirm(
+        `Removing “${label}” deletes its API key from the macOS keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
+        {
+          title: "Remove this provider?",
+          kind: "warning",
+          okLabel: "Remove & Delete Key",
+          cancelLabel: "Keep Provider",
+        },
+      );
+      if (!confirmed) return;
+    }
     this.rec.draftAiProviders = this.rec.draftAiProviders.filter((p) => p.id !== id);
     if (this.rec.draftAiDefaultModel?.provider === id) {
       this.rec.draftAiDefaultModel = null;
@@ -297,6 +327,29 @@ export class SettingsController {
         this.aiProviderRemoving = false;
       }
     }
+  }
+
+  // ─── MCP connectors ─────────────────────────────────────────────────────────
+  // Actions live in controller-mcp.ts (800-line cap); thin delegates here keep
+  // call sites on the controller. The blank-draft addMcpServer died with the
+  // inline form — the picker (preset / Custom) is the only add path now.
+  mcp = createMcpConnectorActions({
+    rec: this.rec,
+    aiRuntime: this.aiRuntime,
+    saveAiRuntime: () => this.saveRecordingDomain("ai_runtime"),
+  });
+
+  addMcpServerDraft(draft: McpServerConfig): string {
+    return this.mcp.addMcpServerDraft(draft);
+  }
+  addMcpServerFromPreset(preset: McpPreset, overrides?: Partial<McpServerConfig>): string {
+    return this.mcp.addMcpServerFromPreset(preset, overrides);
+  }
+  removeMcpServer(id: string, opts?: { confirm?: boolean }): Promise<void> {
+    return this.mcp.removeMcpServer(id, opts);
+  }
+  flushAiRuntimeSave(): Promise<void> {
+    return this.mcp.flushAiRuntimeSave();
   }
 
   // ─── Model-pool picker ──────────────────────────────────────────────────────
@@ -475,175 +528,23 @@ export class SettingsController {
     this.models.startSemanticSearchModelDownload(model);
   cancelSemanticSearchModelDownload = () => this.models.cancelSemanticSearchModelDownload();
 
-  // Seed the page picker from the persisted (sticky) selection, but ONLY while
-  // the picker has not been touched (`semanticSearchPickedModelId === null`), so
-  // a live user edit is never clobbered. Idempotent — safe to call from every
-  // path that might learn the persisted selection (status load, download
-  // progress, or a post-settings-load re-seed that fixes the init race where the
-  // picker status resolved before recording settings).
-  reseedSemanticSearchPickedModel() {
-    if (this.semanticSearchPickedModelId === null && this.rec.semanticSearchSelectedModelId !== null) {
-      this.semanticSearchPickedModelId = this.rec.semanticSearchSelectedModelId;
-    }
-  }
+  // ─── Semantic-search picker ─────────────────────────────────────────────────
+  // Split into SemanticSearchView to keep this file under the 800-line cap.
+  // Members are re-exposed below so panel markup stays flat + verbatim.
+  semanticSearch = createSemanticSearchView(this.rec, this.models);
 
-  async loadSemanticSearchModelStatus() {
-    await this.models.loadSemanticSearchModelStatus();
-    this.reseedSemanticSearchPickedModel();
-  }
-
-  async handleSemanticSearchDownloadProgress(progress: SemanticSearchModelDownloadProgress) {
-    await this.models.handleSemanticSearchDownloadProgress(progress);
-    this.reseedSemanticSearchPickedModel();
-  }
-
-  async chooseSemanticSearchModel(model: SemanticSearchModelStatus) {
-    // In-flight re-entry guard (mirrors `saveRecordingDomain`'s `savingRecDomains`
-    // gate). The confirm() dialog below awaits, so without this a second invocation
-    // while a `select_semantic_search_model` invoke is in flight would stack a
-    // second clear/reindex. Correctness must not depend solely on the UI `disabled`.
-    if (this.models.semanticSearchReindexing) return;
-    if (!this.rec.recordingSettingsLoaded) await this.rec.loadRecordingSettings();
-    if (this.rec.semanticSearchSelectedModelId === model.modelId) return;
-
-    // Arm the in-flight guard BEFORE the (awaited) confirm dialog — same as
-    // `saveRecordingDomain` arms `savingRecDomains[domain]` before its retention
-    // preview + confirm. The earlier check at the top is checked while the flag is
-    // still false through the whole dialog, so two rapid selections could both pass
-    // and stack two clear/reindex passes. Setting it here closes that window; the
-    // single `finally` below always clears it on every early-return path (including
-    // the cancel path).
-    this.models.semanticSearchReindexing = true;
-    try {
-      const isFirstSelection = this.rec.semanticSearchSelectedModelId === null;
-      if (!isFirstSelection) {
-        const confirmed = await confirm(
-          `Switching to “${model.displayName}” re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed.`,
-          {
-            title: "Re-index for new search model?",
-            kind: "warning",
-            okLabel: "Switch & Re-index",
-            cancelLabel: "Keep Current Model",
-          },
-        );
-        if (!confirmed) return;
-      }
-
-      this.models.semanticSearchModelError = null;
-      this.models.semanticSearchReindexMessage = null;
-      try {
-        const cleared = await invoke<number>("select_semantic_search_model", {
-          modelId: model.modelId,
-        });
-        this.rec.semanticSearchSelectedModelId = model.modelId;
-        if (!isFirstSelection) {
-          this.models.semanticSearchReindexMessage =
-            cleared > 0
-              ? `Cleared ${cleared} vector${cleared === 1 ? "" : "s"}; re-indexing in the background.`
-              : "Re-index started in the background.";
-        }
-        await this.loadSemanticSearchModelStatus();
-      } catch (err) {
-        this.models.semanticSearchModelError = errorText(err);
-      }
-    } finally {
-      this.models.semanticSearchReindexing = false;
-    }
-  }
-
-  async setSemanticSearchEnabled(enabled: boolean) {
-    this.models.semanticSearchModelError = null;
-    try {
-      await invoke<RecordingSettingsDomainUpdateResponse>("update_semantic_search_settings", {
-        request: { enabled },
-      });
-      this.rec.draftSemanticSearchEnabled = enabled;
-    } catch (err) {
-      this.models.semanticSearchModelError = errorText(err);
-      this.rec.draftSemanticSearchEnabled = !enabled;
-    }
-  }
-
-  // ─── Semantic-search picker derivations ─────────────────────────────────────
-  semanticSearchGuidedModels = $derived(
-    (this.models.semanticSearchModelStatus?.models ?? []).filter((m) => m.tier !== "custom"),
-  );
-  semanticSearchProvider = $derived(
-    (this.models.semanticSearchModelStatus?.models ?? [])[0]?.provider ?? null,
-  );
-  semanticSearchGuidedModelIds = $derived(
-    new Set(this.semanticSearchGuidedModels.map((m) => m.modelId)),
-  );
-  semanticSearchCustomOptions = $derived(
-    this.models.semanticSearchSupportedModels.filter(
-      (m) => !this.semanticSearchGuidedModelIds.has(m.modelId),
-    ),
-  );
-  semanticSearchModelOptions = $derived([
-    ...this.semanticSearchGuidedModels.map((m) => ({
-      value: m.modelId,
-      label: `${m.displayName} · ${m.dimension}d${m.tier === "multilingual" ? " · multilingual" : ""} · recommended`,
-    })),
-    ...this.semanticSearchCustomOptions.map((m) => ({
-      value: m.modelId,
-      label: `${m.displayName} — ${m.dimension}d${m.multilingual ? " · multilingual" : ""}`,
-    })),
-  ]);
-
-  semanticSearchPickedModel = $derived.by((): SemanticSearchPickedView | null => {
-    const id = this.semanticSearchPickedModelId;
-    if (!id) return null;
-    const live = (this.models.semanticSearchModelStatus?.models ?? []).find((m) => m.modelId === id);
-    if (live) {
-      return {
-        modelId: live.modelId,
-        provider: live.provider,
-        displayName: live.displayName,
-        description: live.description,
-        metaLine: `${semanticSearchTierLabel(live.tier)} · ${formatBytes(live.approxDownloadBytes)} on disk · ${live.dimension}-dim · runs on-device${live.licenseLabel ? ` · ${live.licenseLabel}` : ""}`,
-        available: live.available,
-        approxDownloadBytes: live.approxDownloadBytes,
-      };
-    }
-    const catalog = this.models.semanticSearchSupportedModels.find((m) => m.modelId === id);
-    if (catalog) {
-      const size =
-        catalog.approxDownloadBytes != null
-          ? `${formatBytes(catalog.approxDownloadBytes)} on disk · `
-          : "";
-      return {
-        modelId: catalog.modelId,
-        provider: this.semanticSearchProvider,
-        displayName: catalog.displayName,
-        description: catalog.description,
-        metaLine: `${semanticSearchTierLabel("custom")} · ${size}${catalog.dimension}-dim · runs on-device${catalog.multilingual ? " · multilingual" : ""}`,
-        available: false,
-        approxDownloadBytes: catalog.approxDownloadBytes,
-      };
-    }
-    return null;
-  });
-
-  semanticSearchPickedProgress = $derived.by(() => {
-    const id = this.semanticSearchPickedModelId;
-    const p = this.models.semanticSearchDownloadProgress;
-    return id && p && p.modelId === id ? p : null;
-  });
-
-  async startSemanticSearchPickedDownload(model: SemanticSearchPickedView) {
-    if (!model.provider) return;
-    await this.startSemanticSearchModelDownload({
-      provider: model.provider,
-      modelId: model.modelId,
-    } as SemanticSearchModelStatus);
-  }
-
-  async chooseSemanticSearchPickedModel(model: SemanticSearchPickedView) {
-    await this.chooseSemanticSearchModel({
-      modelId: model.modelId,
-      displayName: model.displayName,
-    } as SemanticSearchModelStatus);
-  }
+  get semanticSearchPickedModelId() { return this.semanticSearch.semanticSearchPickedModelId; }
+  set semanticSearchPickedModelId(value: string | null) { this.semanticSearch.semanticSearchPickedModelId = value; }
+  get reseedSemanticSearchPickedModel() { return this.semanticSearch.reseedSemanticSearchPickedModel; }
+  get loadSemanticSearchModelStatus() { return this.semanticSearch.loadSemanticSearchModelStatus; }
+  get handleSemanticSearchDownloadProgress() { return this.semanticSearch.handleSemanticSearchDownloadProgress; }
+  get setSemanticSearchEnabled() { return this.semanticSearch.setSemanticSearchEnabled; }
+  get startSemanticSearchPickedDownload() { return this.semanticSearch.startSemanticSearchPickedDownload; }
+  get chooseSemanticSearchPickedModel() { return this.semanticSearch.chooseSemanticSearchPickedModel; }
+  get deleteSemanticSearchPickedModel() { return this.semanticSearch.deleteSemanticSearchPickedModel; }
+  get semanticSearchModelOptions() { return this.semanticSearch.semanticSearchModelOptions; }
+  get semanticSearchPickedModel() { return this.semanticSearch.semanticSearchPickedModel; }
+  get semanticSearchPickedProgress() { return this.semanticSearch.semanticSearchPickedProgress; }
 
   // ─── Recording-domain save + retention ──────────────────────────────────────
   async saveRecordingDomain(domain: AutosaveRecordingDomain) {
@@ -651,6 +552,9 @@ export class SettingsController {
     if (this.rec.recDomainSaveBlocked(domain)) {
       if (domain === "video" && this.resolutionSupportPendingForNonOriginal) {
         this.rec.recError = "Wait for capture support to load before saving preset/custom resolution.";
+        // This is a validation-block, not a failed dispatch — don't offer Retry
+        // against a stale failed domain alongside this message.
+        this.lastFailedSaveDomain = null;
       }
       return;
     }
@@ -662,6 +566,13 @@ export class SettingsController {
     // SECOND preview + confirm. Setting it now closes that window; the single
     // `finally` below always clears it.
     if (this.rec.savingRecDomains[domain]) return;
+    // Exponential-backoff gate: a failed save leaves the domain dirty, so the
+    // autosave engine would otherwise re-fire every ~450ms forever. While a
+    // backoff window is open, skip the attempt — the engine quiesces because we
+    // return before toggling `savingRecDomains` (no flag flip = no re-tick), and
+    // `noteSaveFailure` has scheduled a single one-shot re-tick at expiry. The
+    // manual Retry clears the window so it is never swallowed here.
+    if (Date.now() < (this.recSaveBackoffUntil[domain] ?? 0)) return;
     this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: true };
 
     try {
@@ -697,7 +608,7 @@ export class SettingsController {
             return;
           }
         } catch (err) {
-          this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+          this.noteSaveFailure(domain, humanizeError(err));
           return;
         }
       }
@@ -717,7 +628,12 @@ export class SettingsController {
         this.rec.recordingSettings = updated;
         this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
         this.rec.recSaved = true;
-        setTimeout(() => { this.rec.recSaved = false; }, 2200);
+        this.recSavedDomain = domain;
+        this.clearSaveFailure(domain);
+        setTimeout(() => {
+          this.rec.recSaved = false;
+          if (this.recSavedDomain === domain) this.recSavedDomain = null;
+        }, 2200);
 
         // Only run cleanup when retention was TIGHTENED (same predicate that
         // gates the confirm dialog above). Loosening the policy (longer window or
@@ -729,16 +645,88 @@ export class SettingsController {
           try {
             this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
           } catch (err) {
-            this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+            this.retentionCleanupError = humanizeError(err);
           } finally {
             this.retentionCleanupRunning = false;
           }
         }
       } catch (err) {
-        this.rec.recError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+        this.noteSaveFailure(domain, humanizeError(err));
       }
     } finally {
       this.rec.savingRecDomains = { ...this.rec.savingRecDomains, [domain]: false };
+    }
+  }
+
+  // Record a failed recording-domain save: surface the message, remember the
+  // domain (so the rail footer can target Retry/Dismiss), and arm capped
+  // exponential backoff with a single one-shot re-tick so the retry resumes
+  // once — not as a tight ~450ms hammer — when the window elapses.
+  private noteSaveFailure(domain: AutosaveRecordingDomain, message: string) {
+    this.rec.recError = message;
+    this.lastFailedSaveDomain = domain;
+    const failures = (this.recSaveFailureCount[domain] ?? 0) + 1;
+    this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: failures };
+    const delay = Math.min(30_000, 500 * 2 ** (failures - 1));
+    this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: Date.now() + delay };
+    const existing = this.recSaveRetryTimers.get(domain);
+    if (existing) clearTimeout(existing);
+    this.recSaveRetryTimers.set(
+      domain,
+      setTimeout(() => {
+        this.recSaveRetryTimers.delete(domain);
+        this.autosaveEngine.tick();
+      }, delay + 50),
+    );
+  }
+
+  // Clear the failure bookkeeping for a domain (on a successful save, a manual
+  // retry, or a dismiss-and-reconcile).
+  private clearSaveFailure(domain: AutosaveRecordingDomain) {
+    const timer = this.recSaveRetryTimers.get(domain);
+    if (timer) {
+      clearTimeout(timer);
+      this.recSaveRetryTimers.delete(domain);
+    }
+    if (this.lastFailedSaveDomain === domain) this.lastFailedSaveDomain = null;
+    if (this.recSaveFailureCount[domain]) {
+      this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: 0 };
+    }
+    if (this.recSaveBackoffUntil[domain]) {
+      this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: 0 };
+    }
+  }
+
+  // Cancel any pending backoff re-tick timers. Called on teardown so a failed
+  // save's backoff cannot fire on a detached controller (re-arming saves /
+  // ticking the engine) after Settings closes.
+  cancelPendingSaveRetries(): void {
+    for (const timer of this.recSaveRetryTimers.values()) clearTimeout(timer);
+    this.recSaveRetryTimers.clear();
+  }
+
+  // Re-run the last failed domain save immediately (the user pressed Retry).
+  // Clears the backoff window first so the attempt is not swallowed by the gate.
+  retryFailedSave(): void {
+    const domain = this.lastFailedSaveDomain;
+    if (!domain) return;
+    this.recSaveBackoffUntil = { ...this.recSaveBackoffUntil, [domain]: 0 };
+    this.recSaveFailureCount = { ...this.recSaveFailureCount, [domain]: 0 };
+    void this.saveRecordingDomain(domain);
+  }
+
+  // Dismiss the autosave error banner. When a domain save is the source, reconcile
+  // its control back to the last-saved canonical value — this both shows the user
+  // what is actually persisted and clears the dirtiness that was driving the retry
+  // loop. Non-domain errors (e.g. a privacy-echo failure) just clear the message.
+  dismissRecError(): void {
+    const domain = this.lastFailedSaveDomain;
+    this.rec.recError = null;
+    if (domain) {
+      if (this.rec.recordingSettings) {
+        this.rec.syncRecordingDomainFromCanonical(domain, this.rec.recordingSettings, true);
+      }
+      this.clearSaveFailure(domain);
     }
   }
 
@@ -755,7 +743,7 @@ export class SettingsController {
     try {
       this.retentionCleanupSummary = await invoke<RetentionCleanupSummary>("run_retention_cleanup_now");
     } catch (err) {
-      this.retentionCleanupError = typeof err === "string" ? err : JSON.stringify(err, null, 2);
+      this.retentionCleanupError = humanizeError(err);
     } finally {
       this.retentionCleanupRunning = false;
     }

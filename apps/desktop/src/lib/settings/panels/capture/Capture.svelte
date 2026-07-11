@@ -15,6 +15,7 @@
   const recValidationErrors = $derived(c.recValidationErrors);
 
   const loadRecordingSettings = () => rec.loadRecordingSettings();
+
 </script>
 
 <SettingGroup

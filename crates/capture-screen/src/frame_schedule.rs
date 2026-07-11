@@ -16,15 +16,15 @@
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
 /// Minimum spacing, in 100ns ticks, between two kept frames for a given target
-/// frame rate.
+/// frame rate. Fractional rates are supported (e.g. `0.5` fps → a 2s interval).
 ///
-/// A `frame_rate` of `0` means "no cap" and returns `0`, so
+/// A non-positive or non-finite `frame_rate` means "no cap" and returns `0`, so
 /// [`should_drop_frame`] keeps every frame.
-pub fn frame_cap_min_interval_ticks(frame_rate: u32) -> i64 {
-    if frame_rate == 0 {
+pub fn frame_cap_min_interval_ticks(frame_rate: f64) -> i64 {
+    if !frame_rate.is_finite() || frame_rate <= 0.0 {
         return 0;
     }
-    TICKS_PER_SECOND / frame_rate as i64
+    (TICKS_PER_SECOND as f64 / frame_rate) as i64
 }
 
 /// Decide whether an arriving frame should be dropped to honor the frame-rate
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn zero_frame_rate_disables_the_cap() {
-        assert_eq!(frame_cap_min_interval_ticks(0), 0);
+        assert_eq!(frame_cap_min_interval_ticks(0.0), 0);
         // With no cap, every candidate is kept regardless of spacing.
         assert!(!should_drop_frame(Some(0), 1, 0));
         assert!(!should_drop_frame(None, 0, 0));
@@ -125,21 +125,32 @@ mod tests {
 
     #[test]
     fn interval_ticks_match_frame_rate() {
-        assert_eq!(frame_cap_min_interval_ticks(1), 10_000_000);
-        assert_eq!(frame_cap_min_interval_ticks(30), 333_333);
-        assert_eq!(frame_cap_min_interval_ticks(60), 166_666);
+        assert_eq!(frame_cap_min_interval_ticks(1.0), 10_000_000);
+        assert_eq!(frame_cap_min_interval_ticks(30.0), 333_333);
+        assert_eq!(frame_cap_min_interval_ticks(60.0), 166_666);
+    }
+
+    #[test]
+    fn fractional_frame_rate_stretches_the_interval_past_one_second() {
+        // The 0.5 fps default keeps one frame every 2 seconds.
+        assert_eq!(frame_cap_min_interval_ticks(0.5), 20_000_000);
+        assert_eq!(frame_cap_min_interval_ticks(0.25), 40_000_000);
+        // Degenerate rates disable the cap instead of overflowing.
+        assert_eq!(frame_cap_min_interval_ticks(-1.0), 0);
+        assert_eq!(frame_cap_min_interval_ticks(f64::NAN), 0);
+        assert_eq!(frame_cap_min_interval_ticks(f64::INFINITY), 0);
     }
 
     #[test]
     fn first_frame_is_always_kept() {
-        let interval = frame_cap_min_interval_ticks(30);
+        let interval = frame_cap_min_interval_ticks(30.0);
         assert!(!should_drop_frame(None, 0, interval));
         assert!(!should_drop_frame(None, 5, interval));
     }
 
     #[test]
     fn sub_interval_frame_is_dropped() {
-        let interval = frame_cap_min_interval_ticks(30);
+        let interval = frame_cap_min_interval_ticks(30.0);
         // Arrives only half an interval after the last kept frame.
         assert!(should_drop_frame(
             Some(1_000_000),
@@ -150,7 +161,7 @@ mod tests {
 
     #[test]
     fn frame_at_or_above_interval_is_kept() {
-        let interval = frame_cap_min_interval_ticks(30);
+        let interval = frame_cap_min_interval_ticks(30.0);
         assert!(!should_drop_frame(
             Some(1_000_000),
             1_000_000 + interval,
@@ -195,14 +206,14 @@ mod tests {
     #[test]
     fn lookahead_duration_uses_next_frame_delta() {
         assert_eq!(
-            lookahead_sample_duration_ticks(1_000_000, 1_400_000, frame_cap_min_interval_ticks(30)),
+            lookahead_sample_duration_ticks(1_000_000, 1_400_000, frame_cap_min_interval_ticks(30.0)),
             400_000
         );
     }
 
     #[test]
     fn lookahead_duration_falls_back_for_non_increasing_timestamps() {
-        let fallback = frame_cap_min_interval_ticks(30);
+        let fallback = frame_cap_min_interval_ticks(30.0);
         assert_eq!(
             lookahead_sample_duration_ticks(1_000_000, 1_000_000, fallback),
             fallback

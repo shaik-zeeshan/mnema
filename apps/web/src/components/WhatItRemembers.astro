@@ -1,77 +1,149 @@
 ---
-const capabilities = [
+const screenResults = [
   {
-    label: "screen",
-    type: "text",
-    description:
-      "Every window, tab, and document you look at becomes searchable text — so you can find that paragraph even if you never saved it.",
-    example: {
-      query: "api response format",
-      match: '...the <em>API response format</em> uses JSON with pagination...',
-      source: "VS Code — 2:41 PM",
-    },
+    match: "...the <em>API response format</em> uses JSON with pagination...",
+    source: "VS Code · 2:41 PM",
   },
   {
-    label: "audio",
-    type: "transcript",
-    description:
-      "Meetings, calls, and voice notes are transcribed with speaker labels, so you can search what was said as easily as what was written.",
-    example: {
-      query: "deadline moved",
-      match: '"...the <em>deadline moved</em> to next Friday, so we have..."',
-      source: "Zoom call — 11:20 AM",
-    },
+    match: "Re: <em>API response format</em>, we settled on cursor pages...",
+    source: "Slack · 10:05 AM",
+  },
+];
+
+const transcript = [
+  {
+    speaker: "maya",
+    time: "11:20 AM",
+    line: '"...so the <em>deadline moved</em> to next Friday, which gives us..."',
   },
   {
-    label: "activity",
-    type: "timeline",
-    description:
-      "Which app, which site, how long — a quiet log of your workday you can filter, scrub, and ask questions about.",
-    example: {
-      query: "figma prototype",
-      match: "Figma — <em>Prototype</em> review (43 min)",
-      source: "Activity log — 3:15 PM",
-    },
+    speaker: "you",
+    time: "11:21 AM",
+    line: '"okay, then I\'ll shift the design review to Monday."',
   },
+];
+
+const activity = [
+  { app: "Figma", note: "Prototype review", mins: 43, pct: 86 },
+  { app: "Zoom", note: "Weekly sync", mins: 31, pct: 62 },
+  { app: "VS Code", note: "api-client", mins: 28, pct: 56 },
 ];
 ---
 
 <section class="remembers">
   <div class="section-inner">
-    <p class="kicker">// what it captures</p>
-    <h2 class="section-heading">Screen, audio, and activity — all searchable.</h2>
-    <p class="section-sub">
-      Three streams of your day, captured continuously and turned into one
-      searchable record. Every result points back to the exact moment it came
-      from.
-    </p>
+    <header class="section-header" data-reveal>
+      <p class="kicker">// what it captures</p>
+      <h2 class="section-heading">Screen, audio, and activity. All searchable.</h2>
+      <p class="section-sub">
+        Three streams of your day, captured continuously and turned into one
+        searchable record.
+      </p>
+    </header>
 
-    <div class="capabilities">
-      {
-        capabilities.map((cap) => (
-          <div class="capability">
-            <div class="cap-header">
-              <h3 class="cap-label">{cap.label}</h3>
-              <span class="cap-type">{cap.type}</span>
-            </div>
-            <p class="cap-desc">{cap.description}</p>
-            <div class="cap-example" aria-hidden="true">
-              <div class="cap-search-row">
-                <span class="cap-search-icon">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-                  </svg>
-                </span>
-                <span class="cap-query">{cap.example.query}</span>
-              </div>
-              <div class="cap-match">
-                <span class="cap-match-text" set:html={cap.example.match} />
-                <span class="cap-match-source">{cap.example.source}</span>
-              </div>
-            </div>
+    <div class="bento">
+      <!-- screen: wide demo cell -->
+      <article class="cell cell-screen" data-reveal>
+        <div class="cell-head">
+          <h3 class="cell-label">screen</h3>
+          <span class="cell-type">text</span>
+        </div>
+        <p class="cell-desc">
+          Every window, tab, and document you look at becomes searchable text.
+          Find that paragraph by its exact words, or by what it meant when you
+          can't remember the wording.
+        </p>
+        <div class="demo" aria-hidden="true">
+          <div class="demo-search">
+            <span class="demo-search-icon">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+              </svg>
+            </span>
+            <span class="demo-query">api response format</span>
+            <span class="demo-count">2 results</span>
           </div>
-        ))
-      }
+          {
+            screenResults.map((r) => (
+              <div class="demo-row">
+                <span class="demo-match" set:html={r.match} />
+                <span class="demo-source">{r.source}</span>
+              </div>
+            ))
+          }
+        </div>
+      </article>
+
+      <!-- pipeline: small machine cell -->
+      <aside class="cell cell-pipeline" data-reveal style="--reveal-delay: 0.06s" aria-hidden="true">
+        <p class="pipeline-title">// pipeline</p>
+        <div class="pipeline-lines">
+          <span class="pipeline-line"><i class="dot dot-live"></i>capture <b>live</b></span>
+          <span class="pipeline-line"><i class="dot"></i>ocr <b>indexed</b></span>
+          <span class="pipeline-line"><i class="dot"></i>transcribe <b>indexed</b></span>
+          <span class="pipeline-line pipeline-ready">searchable ✓</span>
+        </div>
+      </aside>
+
+      <!-- audio: transcript cell -->
+      <article class="cell cell-audio" data-reveal style="--reveal-delay: 0.12s">
+        <div class="cell-head">
+          <h3 class="cell-label">audio</h3>
+          <span class="cell-type">transcript</span>
+        </div>
+        <p class="cell-desc">
+          Meetings, calls, and voice notes are transcribed with speaker labels,
+          so you can search what was said as easily as what was written.
+        </p>
+        <div class="demo" aria-hidden="true">
+          {
+            transcript.map((t) => (
+              <div class="demo-turn">
+                <span class="demo-speaker">
+                  {t.speaker} <span class="demo-time">{t.time}</span>
+                </span>
+                <span class="demo-match" set:html={t.line} />
+              </div>
+            ))
+          }
+        </div>
+      </article>
+
+      <!-- activity: timeline cell -->
+      <article class="cell cell-activity" data-reveal style="--reveal-delay: 0.18s">
+        <div class="cell-head">
+          <h3 class="cell-label">activity</h3>
+          <span class="cell-type">timeline</span>
+        </div>
+        <p class="cell-desc">
+          Which app, which site, how long: a quiet log of your workday you can
+          filter, scrub, and ask questions about. It even remembers the page,
+          so you can jump back to the exact tab.
+        </p>
+        <div class="demo" aria-hidden="true">
+          {
+            activity.map((a) => (
+              <div class="demo-app">
+                <span class="demo-app-name">
+                  {a.app} <span class="demo-app-note">{a.note}</span>
+                </span>
+                <span class="demo-bar">
+                  <i class="demo-bar-fill" style={`width: ${a.pct}%`} />
+                </span>
+                <span class="demo-mins">{a.mins} min</span>
+              </div>
+            ))
+          }
+        </div>
+      </article>
+
+      <!-- moment strip: full-width machine cell -->
+      <aside class="cell cell-moment" data-reveal style="--reveal-delay: 0.24s">
+        <p class="moment-text">
+          Every result points back to the exact moment it came from.
+        </p>
+        <span class="moment-chip" aria-hidden="true">▸ jump to 2:41:07 PM</span>
+      </aside>
     </div>
   </div>
 </section>
@@ -82,8 +154,12 @@ const capabilities = [
   }
 
   .section-inner {
-    max-width: 56rem;
+    max-width: var(--container-wide);
     margin: 0 auto;
+  }
+
+  .section-header {
+    margin-bottom: var(--space-lg);
   }
 
   .kicker {
@@ -103,46 +179,71 @@ const capabilities = [
     color: var(--fg-muted);
     font-size: var(--text-sm);
     max-width: 50ch;
-    margin-bottom: var(--space-lg);
     line-height: 1.6;
   }
 
-  .capabilities {
+  /* bento grid */
+  .bento {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: var(--space-md);
   }
 
-  .capability {
-    padding: var(--space-md);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
+  .cell {
     background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
     display: flex;
     flex-direction: column;
     gap: var(--space-sm);
-    transition: border-color 0.3s var(--ease-out-quart);
+    transition:
+      border-color 0.3s var(--ease-out-quart),
+      transform 0.3s var(--ease-out-quart);
   }
 
-  .capability:hover {
+  .cell:hover {
     border-color: var(--border-strong);
+    transform: translateY(-2px);
   }
 
-  .cap-header {
+  .cell-screen {
+    grid-column: span 4;
+  }
+
+  .cell-pipeline {
+    grid-column: span 2;
+  }
+
+  .cell-audio,
+  .cell-activity {
+    grid-column: span 3;
+  }
+
+  .cell-moment {
+    grid-column: span 6;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    padding: var(--space-sm) var(--space-md);
+  }
+
+  .cell-head {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: var(--space-sm);
   }
 
-  .cap-label {
+  .cell-label {
     font-family: var(--font-mono);
     font-size: var(--text-sm);
     font-weight: 500;
     letter-spacing: 0.02em;
   }
 
-  .cap-type {
+  .cell-type {
     font-family: var(--font-mono);
     font-size: 0.65rem;
     color: var(--fg-muted);
@@ -151,41 +252,54 @@ const capabilities = [
     border-radius: 3px;
   }
 
-  .cap-desc {
+  .cell-desc {
     color: var(--fg-muted);
     font-size: var(--text-xs);
     line-height: 1.6;
+    max-width: 52ch;
   }
 
-  .cap-example {
+  /* shared demo chrome */
+  .demo {
     margin-top: auto;
-    padding-top: var(--space-xs);
+    padding-top: var(--space-sm);
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 0.3rem;
+    gap: 0.35rem;
     font-family: var(--font-mono);
     font-size: 0.65rem;
   }
 
-  .cap-search-row {
+  .demo-search {
     display: flex;
     align-items: center;
     gap: 0.35rem;
     color: var(--fg-muted);
+    padding: 0.3rem 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
   }
 
-  .cap-search-icon {
+  .demo-search-icon {
     color: var(--accent);
     display: flex;
     flex-shrink: 0;
   }
 
-  .cap-query {
+  .demo-query {
     color: var(--fg);
   }
 
-  .cap-match {
+  .demo-count {
+    margin-left: auto;
+    font-size: 0.55rem;
+    opacity: 0.7;
+  }
+
+  .demo-row,
+  .demo-turn {
     padding: 0.35rem 0.5rem;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -195,26 +309,204 @@ const capabilities = [
     gap: 0.15rem;
   }
 
-  .cap-match-text {
+  .demo-match {
     color: var(--fg-muted);
     line-height: 1.5;
   }
 
-  .cap-match-text :global(em) {
+  .demo-match :global(em) {
     font-style: normal;
     color: var(--accent);
     font-weight: 500;
   }
 
-  .cap-match-source {
+  .demo-source {
     color: var(--fg-muted);
     font-size: 0.55rem;
     opacity: 0.7;
   }
 
-  @media (max-width: 768px) {
-    .capabilities {
+  .demo-speaker {
+    color: var(--fg);
+    font-size: 0.6rem;
+  }
+
+  .demo-time {
+    color: var(--fg-muted);
+    font-size: 0.55rem;
+    opacity: 0.7;
+  }
+
+  /* activity bars */
+  .demo-app {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .demo-app-name {
+    color: var(--fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .demo-app-note {
+    color: var(--fg-muted);
+    font-size: 0.55rem;
+  }
+
+  .demo-bar {
+    display: block;
+    height: 4px;
+    border-radius: 2px;
+    background: var(--accent-bg);
+    overflow: hidden;
+  }
+
+  .demo-bar-fill {
+    display: block;
+    height: 100%;
+    border-radius: 2px;
+    background: var(--accent-strong);
+  }
+
+  .demo-mins {
+    color: var(--fg-muted);
+    font-size: 0.6rem;
+  }
+
+  /* pipeline cell */
+  .cell-pipeline {
+    justify-content: center;
+    gap: var(--space-sm);
+  }
+
+  .pipeline-title {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+
+  .pipeline-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--fg-muted);
+  }
+
+  .pipeline-line {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .pipeline-line b {
+    font-weight: 400;
+    color: var(--fg);
+    margin-left: auto;
+  }
+
+  .pipeline-ready {
+    color: var(--accent);
+    padding-top: 0.4rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    flex-shrink: 0;
+  }
+
+  .dot-live {
+    background: var(--accent);
+    animation: pulse 2.4s var(--ease-out-quart) infinite;
+  }
+
+  @keyframes pulse {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 var(--accent-glow);
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 0 4px var(--accent-glow);
+      opacity: 0.7;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .dot-live {
+      animation: none;
+    }
+    .cell:hover {
+      transform: none;
+    }
+  }
+
+  /* moment strip */
+  .moment-text {
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+  }
+
+  .moment-chip {
+    font-family: var(--font-mono);
+    font-size: 0.65rem;
+    color: var(--accent);
+    padding: 0.25rem 0.6rem;
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-sm);
+    white-space: nowrap;
+  }
+
+  @media (max-width: 900px) {
+    .bento {
+      grid-template-columns: 1fr 1fr;
+    }
+    .cell-screen,
+    .cell-pipeline,
+    .cell-moment {
+      grid-column: span 2;
+    }
+    .cell-audio,
+    .cell-activity {
+      grid-column: span 1;
+    }
+    .cell-pipeline {
+      flex-direction: row;
+      align-items: center;
+      justify-content: space-between;
+    }
+  }
+
+  @media (max-width: 640px) {
+    .bento {
       grid-template-columns: 1fr;
+    }
+    .cell-screen,
+    .cell-pipeline,
+    .cell-audio,
+    .cell-activity,
+    .cell-moment {
+      grid-column: span 1;
+    }
+    .cell-pipeline {
+      flex-direction: column;
+      align-items: stretch;
+    }
+    .cell-moment {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: var(--space-sm);
     }
   }
 </style>

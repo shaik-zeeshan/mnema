@@ -1,6 +1,6 @@
 [package]
 name = "mnema"
-version = "0.1.9"
+version = "0.1.12"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -110,6 +110,24 @@ url = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2.4.9"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+htmd = "0.5.4"
+# Charset-aware decode of the fetched body (already in the tree via reqwest's
+# `charset` feature). `bytes_stream()` yields raw bytes, so we decode by the
+# declared Content-Type charset rather than assuming UTF-8.
+encoding_rs = "0.8"
+rmcp = { version = "2.1.0", default-features = false, features = ["client", "macros", "auth", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-io", "transport-async-rw"] }
+# rmcp 2.1.0's OAuth `AuthClient<C>` is only a `StreamableHttpClient` when `C` is
+# rmcp's OWN reqwest — which is 0.13, a semver bump from the workspace's 0.12 (a
+# different, incompatible `reqwest::Client` type). rmcp neither re-exports reqwest
+# nor exposes its default client builder, so the OAuth transport must name the
+# 0.13 client itself. Aliased to `reqwest13` so it coexists with the 0.12 dep
+# above; 0.13 defaults to rustls (`default-tls = ["rustls"]`), so `rustls` keeps
+# us native-tls-free (ADR 0037), matching the workspace's rustls alignment.
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
+# Same semver line as rmcp's internal process-wrap dep (versions unify in Cargo.lock);
+# used to spawn stdio MCP servers as a process-group leader so drop-kill takes the
+# whole group (launcher + grandchildren), not just the launcher.
+process-wrap = { version = "9.0", features = ["tokio1", "process-group"] }
 
 [target.'cfg(windows)'.dependencies]
 # Enable the speakrs on-device diarization engine on Windows (CPU backend via

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Insights workspace — the second top-level Surface of Main (alongside the
   // Timeline). It hosts four sub-surfaces (Overview / Subjects / Context / Chat)
   // switched via local state (NOT separate routes), plus a Subject drill-in.
@@ -14,6 +15,7 @@
     RecordingSettings,
   } from "$lib/types/recording";
   import Overview from "$lib/insights/Overview.svelte";
+  import DayTimeline from "$lib/insights/DayTimeline.svelte";
   import Subjects from "$lib/insights/Subjects.svelte";
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
   import Context from "$lib/insights/Context.svelte";
@@ -22,7 +24,7 @@
   import RailResizer from "$lib/insights/RailResizer.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
-  type InsightsTab = "overview" | "subjects" | "context" | "chat";
+  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
 
   // Active sub-surface. Default is Overview. Subject-detail is a drill-in over
   // the Subjects tab held in `selectedSubject` (null = the index).
@@ -92,6 +94,45 @@
     Boolean(aiStatus?.enabled && aiStatus?.available) ||
       Boolean(ctxStatus?.engineAvailable),
   );
+
+  // Whole-page gate: every Insights sub-surface is built from Reasoning Engine
+  // output (digest, journal activities, subjects, context, chat), so with the
+  // engine never set up the page is uniformly empty — show a pitch instead.
+  // Keyed on the user's SETUP state (enabled && configured), NOT on `available`:
+  // a configured engine that is momentarily unreachable (local model not
+  // running, network blip) keeps the page and its per-surface error states —
+  // transient liveness must not lock the user out of existing content.
+  // Only asserted after `statusLoaded` so the page never flashes the gate while
+  // the status calls are still in flight.
+  const engineGated = $derived(
+    statusLoaded && !(aiStatus?.enabled && aiStatus?.configured),
+  );
+
+  // Continuous-derivation lock: the runtime is set up (page not gated) but the
+  // User Context opt-in is off. Overview / Journal / Subjects / Context are all
+  // rendered FROM derivation output, so they'd sit empty forever — the rail
+  // locks them (tooltip + click-through to the derivation setting) and the shell
+  // lands on Chat, the one sub-surface that works without derivation. Keyed on
+  // the specific `user_context_disabled` reason so transient engine trouble
+  // (unreachable local model) does NOT lock the tabs — the per-surface error
+  // states own that case.
+  const derivationOff = $derived(
+    statusLoaded && ctxStatus?.reason === "user_context_disabled",
+  );
+
+  // While derivation is off the four locked tabs are unreachable via the rail,
+  // but `view` can still point at one (default "overview", or derivation was
+  // turned off while on a locked tab) — steer to Chat.
+  $effect(() => {
+    if (derivationOff && view !== "chat") {
+      view = "chat";
+      selectedSubject = null;
+    }
+  });
+
+  function openDerivationSettings(): void {
+    void openSettings("userContext");
+  }
 
   function shortModel(model: string): string {
     const trimmed = model.trim();
@@ -179,7 +220,10 @@
   const RAIL_WIDTH_KEY = "mnema.insights.rail-width";
   const RAIL_MIN_WIDTH = 180;
   const RAIL_MAX_WIDTH = 400;
-  const RAIL_DEFAULT_WIDTH = 200;
+  // First-run width sits in the conventional 240-280px expanded-sidebar band so
+  // long conversation titles + the engine/model footer get room (still drag-
+  // resizable within [min,max] and persisted).
+  const RAIL_DEFAULT_WIDTH = 240;
 
   function clampRailWidth(px: number): number {
     return Math.min(RAIL_MAX_WIDTH, Math.max(RAIL_MIN_WIDTH, Math.round(px)));
@@ -292,10 +336,42 @@
   });
 </script>
 
+{#if engineGated}
+  <!-- Engine never set up — the whole workspace is engine-derived, so pitch it.
+       `recording_settings_changed` re-runs loadEngineStatus, so finishing setup
+       in Settings unlocks this page live, no reload needed. -->
+  <div class="gate">
+    <div class="gate-panel">
+      <p class="gate-eyebrow">
+        <span class="diamond" aria-hidden="true">◆</span>
+        Insights
+      </p>
+      <h1 class="gate-title">Turn on the Reasoning Engine to unlock Insights.</h1>
+      <p class="gate-detail">
+        Insights is what the engine writes about your days — everything on this
+        surface is derived from it:
+      </p>
+      <ul class="gate-list">
+        <li><strong>The read</strong> — a daily digest of what you actually did.</li>
+        <li><strong>Journal</strong> — your day reconstructed as a timeline of activities.</li>
+        <li><strong>Subjects</strong> — the views it forms about you, with confidence trajectories.</li>
+        <li><strong>Chat</strong> — ask questions over your own history.</li>
+      </ul>
+      <button type="button" class="gate-cta" onclick={enableEngine}>
+        Open engine settings
+      </button>
+      <p class="gate-note">
+        Runs on your own provider — local (Ollama, Llamafile) or your cloud API key.
+      </p>
+    </div>
+  </div>
+{:else}
 <div class="insights" class:insights--collapsed={railCollapsed}>
   <InsightsRail
     {view}
     onOpenTab={openTab}
+    {derivationOff}
+    onOpenDerivationSettings={openDerivationSettings}
     {engineOn}
     {modelLabel}
     {statusLoaded}
@@ -326,7 +402,7 @@
         class="rail-expand-float"
         aria-label="Expand sidebar"
         aria-expanded="false"
-        title="Expand sidebar"
+        use:tip={"Expand sidebar"}
         onclick={toggleRailCollapsed}
       >
         <span aria-hidden="true">»</span>
@@ -334,6 +410,8 @@
     {/if}
     {#if view === "overview"}
       <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
+    {:else if view === "journal"}
+      <DayTimeline />
     {:else if view === "subjects"}
       {#if selectedSubject}
         <div class="breadcrumb">
@@ -353,6 +431,7 @@
     {/if}
   </main>
 </div>
+{/if}
 
 <style>
   /* Insights workspace shell — mirrors `.insights` from the mockup (app.css),
@@ -367,12 +446,121 @@
     height: 100%;
   }
 
+  /* ── Engine gate — full-surface pitch shown until the engine is set up ── */
+  .gate {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    overflow-y: auto;
+    padding: 28px 20px;
+  }
+  .gate-panel {
+    /* Auto margins center when there's room but keep the top reachable when the
+       panel is taller than the viewport (flex centering would clip it). */
+    margin: auto;
+    max-width: 460px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 26px 28px;
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: 11px;
+  }
+  .gate-eyebrow {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--text-xs);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+  .gate-eyebrow .diamond {
+    color: var(--app-accent);
+    letter-spacing: 0;
+  }
+  .gate-title {
+    margin: 0;
+    font-size: var(--text-lg);
+    line-height: 1.35;
+    color: var(--app-text-strong);
+  }
+  .gate-detail {
+    margin: 0;
+    font-size: var(--text-md);
+    line-height: 1.6;
+    color: var(--app-text-muted);
+  }
+  .gate-list {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: var(--text-md);
+    line-height: 1.55;
+    color: var(--app-text-muted);
+  }
+  /* Hanging indent — wrapped lines align under the text, not the ◆ marker. */
+  .gate-list li {
+    position: relative;
+    padding-left: 16px;
+  }
+  .gate-list li::before {
+    content: "◆";
+    position: absolute;
+    left: 0;
+    font-size: 8px;
+    color: var(--app-accent);
+    vertical-align: 1px;
+  }
+  .gate-list strong {
+    color: var(--app-text-strong);
+    font-weight: 600;
+  }
+  .gate-cta {
+    align-self: flex-start;
+    margin-top: 8px;
+    font: inherit;
+    font-size: var(--text-md);
+    padding: 7px 15px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
+  }
+  .gate-cta:hover {
+    border-color: var(--app-accent);
+  }
+  .gate-cta:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .gate-cta:active {
+    transform: translateY(1px);
+  }
+  .gate-note {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--app-text-faint);
+  }
+
   .insights-main {
     flex: 1 1 auto;
     min-width: 0;
     /* Position context for the floating expand button (collapsed state). */
     position: relative;
     overflow-y: auto;
+    /* Reading surfaces never scroll sideways; a stray wide element (long
+       unwrapped token, 1px rounding) must not summon a horizontal scrollbar. */
+    overflow-x: hidden;
     padding: 18px 20px 28px;
   }
   /* When the rail is collapsed, the padded sub-surfaces (overview / subjects /
@@ -459,6 +647,12 @@
   .breadcrumb-link:hover {
     color: var(--app-text-strong);
   }
+  .breadcrumb-link:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
   .breadcrumb .sep {
     color: var(--app-text-faint);
   }
@@ -478,10 +672,18 @@
     font: inherit;
     font-size: 11.5px;
     cursor: pointer;
-    transition: background 0.12s ease, color 0.12s ease;
+    transition:
+      background 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .breadcrumb-back:hover {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
+  }
+  .breadcrumb-back:focus-visible {
+    outline: none;
+    color: var(--app-text-strong);
+    box-shadow: var(--app-ring);
   }
 </style>

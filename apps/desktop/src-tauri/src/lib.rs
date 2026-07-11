@@ -25,6 +25,7 @@ mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
 mod third_party_notices;
+mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
 mod windows;
@@ -220,6 +221,17 @@ fn broker_opaque_id_from_url(url: &url::Url) -> Option<String> {
     }
 }
 
+/// Whether `url` is our MCP OAuth deep-link callback (`mnema://oauth/callback` in
+/// prod, `mnema-dev://oauth/callback` in dev). A custom-scheme URL parses its first
+/// path element as the HOST, so the callback lands as host `oauth` + path
+/// `/callback`. Broker deep links use host `open`/`broker`, so the two never
+/// collide — this is the dispatch discriminator in `on_open_url`.
+fn is_oauth_callback_url(url: &url::Url) -> bool {
+    matches!(url.scheme(), "mnema" | "mnema-dev")
+        && url.host_str() == Some("oauth")
+        && url.path() == "/callback"
+}
+
 async fn broker_payload_from_url(
     config_dir: &Path,
     url: &url::Url,
@@ -388,6 +400,7 @@ pub fn run() {
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
         .manage(native_capture::SystemWakeNotifierState::default())
+        .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(native_capture::RecordingSettingsState::default())
@@ -410,6 +423,9 @@ pub fn run() {
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
+        // MCP tool connectors (Workstream C, ADR 0048): persistent connection
+        // manager. Lazy — nothing connects here at launch; it dials on first use.
+        .manage(ask_ai::mcp::McpManager::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if notify_pending_broker_authorization_request_if_onboarded(app) {
                 return;
@@ -489,6 +505,12 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
+            ask_ai::mcp::manager::mcp_warm_connectors,
+            ask_ai::mcp::manager::mcp_list_server_tools,
+            ask_ai::mcp::oauth_flow::mcp_oauth_begin,
+            ask_ai::mcp::oauth_flow::mcp_oauth_disconnect,
+            ask_ai::mcp::oauth_flow::mcp_oauth_statuses,
+            ask_ai::mcp::node_check::mcp_check_node,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
@@ -509,6 +531,7 @@ pub fn run() {
             semantic_search_models::start_semantic_search_model_download,
             semantic_search_models::cancel_semantic_search_model_download,
             semantic_search_models::select_semantic_search_model,
+            semantic_search_models::delete_semantic_search_model,
             native_capture::update_semantic_search_settings,
             speaker_analysis_models::get_speaker_analysis_model_status,
             speaker_analysis_models::start_speaker_analysis_model_download,
@@ -606,6 +629,14 @@ pub fn run() {
             ai_runtime::ai_runtime_set_provider_key,
             ai_runtime::ai_runtime_clear_provider_key,
             ai_runtime::ai_runtime_has_provider_key,
+            ai_runtime::mcp_set_server_secret,
+            ai_runtime::mcp_clear_server_secret,
+            ai_runtime::mcp_has_server_secret,
+            transcription_deepgram::transcription_set_deepgram_key,
+            transcription_deepgram::transcription_has_deepgram_key,
+            transcription_deepgram::transcription_clear_deepgram_key,
+            transcription_deepgram::transcription_deepgram_auth_status,
+            transcription_deepgram::transcription_test_deepgram,
             ai_runtime::get_ai_runtime_status,
             ai_runtime::ai_runtime_test_connection,
             ai_runtime::ai_runtime_list_models,
@@ -617,6 +648,8 @@ pub fn run() {
             user_context::commands::regenerate_user_context_digest,
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
+            user_context::commands::user_context_list_dismissed,
+            user_context::commands::user_context_restore_dismissed,
             user_context::commands::user_context_set_pinned,
             user_context::commands::user_context_correct_activity_category,
             user_context::commands::user_context_correct_activity_focus,
@@ -625,6 +658,7 @@ pub fn run() {
             user_context::commands::user_context_update_authored,
             user_context::commands::user_context_delete_authored,
             user_context::commands::wipe_user_context,
+            user_context::commands::user_context_stamp_local_offset,
             conversation::commands::list_conversations,
             conversation::commands::get_conversation,
             conversation::commands::search_conversations,
@@ -646,10 +680,12 @@ pub fn run() {
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
+            windows::request_app_relaunch,
             windows::open_debug_window,
             windows::close_current_window,
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
+            windows::summon_quick_recall_window_command,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
@@ -665,12 +701,28 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    enqueue_broker_open_result(&app_handle, &url);
+                    // The deep-link scheme carries two unrelated payloads: the MCP
+                    // OAuth callback (host `oauth`) and the capture broker handoff
+                    // (host `open`/`broker`). Dispatch by host so neither swallows
+                    // the other.
+                    if is_oauth_callback_url(&url) {
+                        app_handle
+                            .state::<ask_ai::mcp::McpManager>()
+                            .complete_oauth_callback(&app_handle, &url);
+                    } else {
+                        enqueue_broker_open_result(&app_handle, &url);
+                    }
                 }
             });
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    enqueue_broker_open_result(app.handle(), &url);
+                    if is_oauth_callback_url(&url) {
+                        app.handle()
+                            .state::<ask_ai::mcp::McpManager>()
+                            .complete_oauth_callback(app.handle(), &url);
+                    } else {
+                        enqueue_broker_open_result(app.handle(), &url);
+                    }
                 }
             }
             let _ = app.deep_link().register_all();
@@ -704,6 +756,7 @@ pub fn run() {
             native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
             native_capture::start_microphone_device_change_notifier(app.handle().clone());
             native_capture::start_system_wake_notifier(app.handle().clone());
+            native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
             let handled_startup_authorization_request =
@@ -820,10 +873,34 @@ pub fn maybe_run_windows_browser_url_smoke_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_payload_from_url, exit_request_action_for_exit_request, is_app_log_target,
-        should_forward_window_event, should_notify_pending_broker_authorization_request,
+        broker_opaque_id_from_url, broker_payload_from_url, exit_request_action_for_exit_request,
+        is_app_log_target, is_oauth_callback_url, should_forward_window_event,
+        should_notify_pending_broker_authorization_request,
         should_open_pending_broker_authorization_request, ExitRequestAction,
     };
+
+    /// The deep-link dispatch discriminator: an OAuth callback and a capture-broker
+    /// handoff share the `mnema`/`mnema-dev` scheme, so they must NOT swallow each
+    /// other. `is_oauth_callback_url` claims only the `oauth/callback` host+path,
+    /// and `broker_opaque_id_from_url` claims only the broker hosts — in BOTH
+    /// directions.
+    #[test]
+    fn oauth_callback_and_broker_urls_dispatch_apart() {
+        let prod = url::Url::parse("mnema://oauth/callback?code=abc&state=xyz").expect("url");
+        let dev = url::Url::parse("mnema-dev://oauth/callback?code=abc&state=xyz").expect("url");
+        assert!(is_oauth_callback_url(&prod));
+        assert!(is_oauth_callback_url(&dev));
+
+        let broker_open = url::Url::parse("mnema://open/f1").expect("url");
+        let broker_nested = url::Url::parse("mnema://broker/open/f1").expect("url");
+        // A broker URL is never read as an oauth callback…
+        assert!(!is_oauth_callback_url(&broker_open));
+        assert!(!is_oauth_callback_url(&broker_nested));
+        // …and an oauth callback is never read as a broker URL (no cross-swallow).
+        assert!(broker_opaque_id_from_url(&prod).is_none());
+        assert_eq!(broker_opaque_id_from_url(&broker_open).as_deref(), Some("f1"));
+        assert_eq!(broker_opaque_id_from_url(&broker_nested).as_deref(), Some("f1"));
+    }
 
     #[test]
     fn broker_deep_link_rejects_unsigned_opaque_id() {

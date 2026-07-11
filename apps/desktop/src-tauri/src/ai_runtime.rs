@@ -47,6 +47,10 @@ pub struct AiRuntimeModel {
     id: String,
     /// Stable provider id ([`AiProviderKind::id`]).
     provider: String,
+    /// Provider-reported context-window size in tokens, when the listing route
+    /// advertises one (many OpenAI-compatible vendors and the Fireworks catalog
+    /// do; Anthropic/OpenAI don't expose it at all).
+    context_window: Option<u64>,
 }
 
 /// One connected provider that failed to list its models, so the picker can
@@ -125,6 +129,38 @@ struct ModelsListResponse {
 #[derive(Debug, Deserialize)]
 struct ModelsListEntry {
     id: String,
+    /// Context-window size, under the names OpenAI-compatible vendors use:
+    /// `context_length` (OpenRouter, DeepSeek, …) or `max_model_len` (vLLM).
+    #[serde(default)]
+    context_length: Option<u64>,
+    #[serde(default)]
+    max_model_len: Option<u64>,
+    /// llama.cpp-style servers (incl. llamafile) nest it as `meta.n_ctx_train`.
+    #[serde(default)]
+    meta: Option<ModelsListEntryMeta>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsListEntryMeta {
+    #[serde(default)]
+    n_ctx_train: Option<u64>,
+}
+
+impl ModelsListEntry {
+    fn context_window(&self) -> Option<u64> {
+        self.context_length
+            .or(self.max_model_len)
+            .or(self.meta.as_ref().and_then(|meta| meta.n_ctx_train))
+            .filter(|&tokens| tokens > 0)
+    }
+}
+
+/// One discovered model: its id plus the provider-reported context window,
+/// when the listing route advertised one.
+#[derive(Debug)]
+struct DiscoveredModel {
+    id: String,
+    context_window: Option<u64>,
 }
 
 /// One page of Fireworks' proprietary Gateway catalog
@@ -151,6 +187,9 @@ struct FireworksCatalogModel {
     name: String,
     #[serde(default)]
     supports_serverless: bool,
+    /// The model's context-window size in tokens (`contextLength`).
+    #[serde(default)]
+    context_length: Option<u64>,
 }
 
 /// One page of `GET /v1/accounts` — the accounts the API key belongs to. Used
@@ -272,6 +311,20 @@ pub struct AiRuntimeProviderKeyRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AiRuntimeProviderRequest {
     provider: String,
+}
+
+/// Set/clear the single secret of an MCP tool connector, keyed by server id.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerSecretRequest {
+    id: String,
+    secret: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerRequest {
+    id: String,
 }
 
 /// Map a cloud provider kind onto the engine crate's provider enum. `None`
@@ -464,35 +517,96 @@ pub(crate) async fn engine_configured_prerequisite(
     Ok(())
 }
 
+// Keychain access shells out to `security`, which can block on a macOS
+// authorization dialog. These run `async` + `spawn_blocking` so the blocking
+// subprocess never freezes the Tauri main thread (sync commands run there).
 #[tauri::command]
-pub fn ai_runtime_set_provider_key(request: AiRuntimeProviderKeyRequest) -> Result<(), String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_set_provider_key(
+    request: AiRuntimeProviderKeyRequest,
+) -> Result<(), String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    let key = request.key.trim();
+    let key = request.key.trim().to_string();
     if key.is_empty() {
         return Err("an API key is required".to_string());
     }
-    app_infra::store_ai_provider_key(provider, key).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::store_ai_provider_key(&provider, &key))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn ai_runtime_clear_provider_key(request: AiRuntimeProviderRequest) -> Result<(), String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_clear_provider_key(
+    request: AiRuntimeProviderRequest,
+) -> Result<(), String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    app_infra::delete_ai_provider_key(provider).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::delete_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-pub fn ai_runtime_has_provider_key(request: AiRuntimeProviderRequest) -> Result<bool, String> {
-    let provider = request.provider.trim();
+pub async fn ai_runtime_has_provider_key(
+    request: AiRuntimeProviderRequest,
+) -> Result<bool, String> {
+    let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    app_infra::has_ai_provider_key(provider).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || app_infra::has_ai_provider_key(&provider))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+// MCP connector secrets: same keychain-off-the-main-thread pattern as the
+// provider keys above, keyed by the MCP server instance id (which also keys the
+// `mcp__<id>__` tool prefix a later slice parses).
+#[tauri::command]
+pub async fn mcp_set_server_secret(request: McpServerSecretRequest) -> Result<(), String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    let secret = request.secret.trim().to_string();
+    if secret.is_empty() {
+        return Err("a secret is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::store_mcp_server_secret(&id, &secret))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mcp_clear_server_secret(request: McpServerRequest) -> Result<(), String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::delete_mcp_server_secret(&id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn mcp_has_server_secret(request: McpServerRequest) -> Result<bool, String> {
+    let id = request.id.trim().to_string();
+    if id.is_empty() {
+        return Err("a server id is required".to_string());
+    }
+    tokio::task::spawn_blocking(move || app_infra::has_mcp_server_secret(&id))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -625,7 +739,7 @@ fn is_chat_capable_model(id: &str) -> bool {
 async fn list_models_for_provider(
     client: &reqwest::Client,
     provider: &AiProviderConfig,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     let base_url = provider.base_url.trim();
 
     // OpenAI-compatible is the only kind that POSTs the keychain key to a
@@ -709,8 +823,11 @@ async fn list_models_for_provider(
     Ok(parsed
         .data
         .into_iter()
-        .map(|entry| entry.id.trim().to_string())
-        .filter(|id| !id.is_empty())
+        .map(|entry| DiscoveredModel {
+            context_window: entry.context_window(),
+            id: entry.id.trim().to_string(),
+        })
+        .filter(|model| !model.id.is_empty())
         .collect())
 }
 
@@ -728,7 +845,7 @@ async fn list_fireworks_models(
     client: &reqwest::Client,
     host: &str,
     api_key: &str,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     // Public serverless catalog first — this is the failure that should mark
     // the provider unlisted (e.g. an invalid key surfaces here).
     let mut ids = list_fireworks_account_models(client, host, api_key, "fireworks", true).await?;
@@ -827,9 +944,9 @@ async fn list_fireworks_account_models(
     api_key: &str,
     account: &str,
     serverless_only: bool,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<DiscoveredModel>, String> {
     let catalog_url = format!("https://{host}/v1/accounts/{account}/models");
-    let mut ids: Vec<String> = Vec::new();
+    let mut ids: Vec<DiscoveredModel> = Vec::new();
     let mut page_token: Option<String> = None;
 
     for page in 0..MODELS_MAX_PAGES {
@@ -863,8 +980,11 @@ async fn list_fireworks_account_models(
                 .models
                 .into_iter()
                 .filter(|model| !serverless_only || model.supports_serverless)
-                .map(|model| model.name.trim().to_string())
-                .filter(|id| !id.is_empty()),
+                .map(|model| DiscoveredModel {
+                    id: model.name.trim().to_string(),
+                    context_window: model.context_length.filter(|&tokens| tokens > 0),
+                })
+                .filter(|model| !model.id.is_empty()),
         );
 
         match parsed.next_page_token {
@@ -912,12 +1032,13 @@ pub async fn ai_runtime_list_models(
                     // embeddings, TTS/whisper, rerank, moderation are filtered);
                     // free-form custom-model entry still lets a user pick a
                     // hidden model id by hand.
-                    .filter(|id| is_chat_capable_model(id))
-                    .map(|id| AiRuntimeModel {
-                        id,
+                    .filter(|model| is_chat_capable_model(&model.id))
+                    .map(|model| AiRuntimeModel {
+                        id: model.id,
                         // Tag with the provider instance id so same-kind
                         // instances stay attributable in the merged pool.
                         provider: provider.id.clone(),
+                        context_window: model.context_window,
                     }),
             ),
             Err(error) => {
@@ -964,6 +1085,7 @@ mod tests {
                 provider: "ollama".to_string(),
                 model: "llama-default".to_string(),
             }),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -1102,6 +1224,7 @@ mod tests {
                 provider: "ollama".to_string(),
                 model: "default-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
 
         // Pin to the second instance resolves to ITS endpoint.
@@ -1133,6 +1256,7 @@ mod tests {
                 provider: "openai_compatible".to_string(),
                 model: "some-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         // The base-URL check fires before any keychain access.
         assert_eq!(
@@ -1279,6 +1403,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         assert_eq!(
             resolve_engine_config(&settings, None, None).map(|_| ()),
@@ -1301,6 +1426,7 @@ mod tests {
                 provider: "openai_compatible-2".to_string(),
                 model: "some-model".to_string(),
             }),
+            mcp_servers: Vec::new(),
         };
         let result = resolve_engine_config(&custom, None, None);
         if let Err(reason) = result {
@@ -1309,5 +1435,37 @@ mod tests {
                 "custom compat host must not be rejected by the binding, got {reason}"
             );
         }
+    }
+
+    #[test]
+    fn mcp_secret_commands_guard_blank_ids_and_secrets() {
+        // The guards return BEFORE any spawn_blocking, so these calls never
+        // touch the keychain / secret store — safe to run against the real
+        // commands with no fixture.
+        let err = tauri::async_runtime::block_on(mcp_set_server_secret(McpServerSecretRequest {
+            id: "  ".to_string(),
+            secret: "token".to_string(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
+
+        let err = tauri::async_runtime::block_on(mcp_set_server_secret(McpServerSecretRequest {
+            id: "github".to_string(),
+            secret: "  ".to_string(),
+        }))
+        .expect_err("blank secret must be rejected");
+        assert_eq!(err, "a secret is required");
+
+        let err = tauri::async_runtime::block_on(mcp_clear_server_secret(McpServerRequest {
+            id: String::new(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
+
+        let err = tauri::async_runtime::block_on(mcp_has_server_secret(McpServerRequest {
+            id: " ".to_string(),
+        }))
+        .expect_err("blank id must be rejected");
+        assert_eq!(err, "a server id is required");
     }
 }

@@ -1,14 +1,19 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import ModelPickerMenu from "$lib/insights/ModelPickerMenu.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import IconCheck from "~icons/lucide/check";
+  import IconAlert from "~icons/lucide/triangle-alert";
 
   const c = getSettingsController();
   const rec = c.rec;
   const aiRuntime = c.aiRuntime;
+
 
   // Re-exported constants the markup references verbatim.
   const AI_PROVIDER_KINDS = c.AI_PROVIDER_KINDS;
@@ -87,6 +92,16 @@
         <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
         <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
       </div>
+      <!-- Near-the-switch readiness cue: the full runtime-status pill lives in the
+           Status group far below, so a user who flips the master switch on with
+           nothing configured gets no nearby signal. Echo the "still not ready"
+           condition right under the switch so the next step (connect a provider /
+           pick a default model) is obvious. -->
+      {#if rec.draftAiEnabled && !aiRuntimeStatusLoading && aiRuntimeStatus && !aiRuntimeStatus.available}
+        <p class="group-hint group-hint--warn" role="status">
+          AI features are on, but nothing is ready yet. {aiRuntimeReasonLabel(aiRuntimeStatus.reason)} Connect a provider and choose a default model below.
+        </p>
+      {/if}
     {/snippet}
   </SettingRow>
 </SettingGroup>
@@ -105,10 +120,10 @@
                   <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                   <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
                   {#if isCloudAiProviderKind(provider.kind) && aiProviderKeySavedByProvider[provider.id]}
-                    <span class="saved-badge">✓ key in keychain</span>
+                    <span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />key in keychain</span>
                   {/if}
                   <button
-                    class="btn btn--ghost btn--sm provider-row__remove"
+                    class="btn btn--danger btn--sm provider-row__remove"
                     type="button"
                     disabled={aiProviderKeySavingProvider !== null || c.aiProviderRemoving}
                     onclick={() => removeAiProvider(provider.id)}
@@ -129,8 +144,10 @@
                   <input
                     id="ai-provider-base-url-{provider.id}"
                     class="text-input"
+                    class:text-input--empty={provider.baseUrl.trim().length === 0}
                     autocomplete="off"
                     placeholder="https://api.fireworks.ai/inference/v1"
+                    aria-invalid={provider.baseUrl.trim().length === 0}
                     bind:value={provider.baseUrl}
                     oninput={() => aiRuntime.resetTestResult()}
                   />
@@ -154,9 +171,12 @@
                   <input
                     id="ai-provider-key-{provider.id}"
                     class="text-input"
+                    class:text-input--error={!!aiProviderKeyErrors[provider.id]}
                     type="password"
                     autocomplete="off"
                     placeholder={aiProviderKeySavedByProvider[provider.id] ? "A key is saved — enter a new one to replace it" : "Paste your provider API key"}
+                    aria-invalid={!!aiProviderKeyErrors[provider.id]}
+                    aria-describedby={aiProviderKeyErrors[provider.id] ? `ai-provider-key-error-${provider.id}` : undefined}
                     disabled={aiProviderKeySavingProvider === provider.id}
                     bind:value={
                       () => aiProviderKeyInputs[provider.id] ?? "",
@@ -170,9 +190,10 @@
                       class="btn btn--ghost btn--sm"
                       type="button"
                       disabled={aiProviderKeySavingProvider !== null || (aiProviderKeyInputs[provider.id] ?? "").trim().length === 0}
+                      aria-busy={aiProviderKeySavingProvider === provider.id}
                       onclick={() => saveAiProviderKey(provider.id)}
                     >
-                      {aiProviderKeySavingProvider === provider.id ? "Saving" : "Save key"}
+                      {#if aiProviderKeySavingProvider === provider.id}<ButtonSpinner />Saving{:else}Save key{/if}
                     </button>
                     <button
                       class="btn btn--ghost btn--sm"
@@ -184,7 +205,14 @@
                     </button>
                   </div>
                   {#if aiProviderKeyErrors[provider.id]}
-                    <p class="error-text">{aiProviderKeyErrors[provider.id]}</p>
+                    <p class="error-text" id="ai-provider-key-error-{provider.id}" role="alert">{aiProviderKeyErrors[provider.id]}</p>
+                  {:else if (aiProviderKeyInputs[provider.id] ?? "").trim().length > 0 && aiProviderKeySavingProvider !== provider.id}
+                    <!-- Unlike the autosaving Label/Base URL fields, the API key
+                         only reaches the keychain on an explicit "Save key" click.
+                         A typed-but-unsaved key is lost on navigate-away, so warn
+                         while the input is dirty so the user can't leave thinking
+                         the provider is connected. -->
+                    <p class="group-hint group-hint--warn">Unsaved API key — click <strong>Save key</strong> to store it in the keychain.</p>
                   {/if}
                 {/if}
               </li>
@@ -197,7 +225,7 @@
               class="btn btn--ghost btn--sm"
               type="button"
               disabled={c.aiProviderRemoving}
-              title={aiProviderKindDescription(kind)}
+              use:tip={aiProviderKindDescription(kind)}
               onclick={() => addAiProvider(kind)}
             >
               + {aiProviderKindLabel(kind)}
@@ -206,11 +234,11 @@
         </div>
         <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
         {#if aiProviderRemovalError}
-          <p class="error-text">{aiProviderRemovalError}</p>
+          <p class="error-text" role="alert">{aiProviderRemovalError}</p>
         {/if}
         {#if anyCloudAiProviderConnected}
           <div class="cloud-egress-disclosure" role="note">
-            <span class="cloud-egress-disclosure__icon" aria-hidden="true">⚠</span>
+            <span class="cloud-egress-disclosure__icon" aria-hidden="true"><IconAlert /></span>
             <div class="cloud-egress-disclosure__body">
               <strong>Cloud egress consent</strong>
               <p>
@@ -260,7 +288,7 @@
           }}
         />
         {#if settingsModelsError}
-          <p class="group-hint group-hint--warn">
+          <p class="group-hint group-hint--warn" role="alert">
             Could not list every provider's models — check keys/base URLs/endpoints above, then use Retry in the menu. You can still type any model id.
           </p>
           <p class="error-text">{aiRuntimeReasonLabel(settingsModelsError)}</p>
@@ -280,7 +308,7 @@
       <div class="prov-stack">
         <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
           <div>
-            <div class="model-status__title">AI {aiRuntimeStatus?.available ? "ready" : "unavailable"}</div>
+            <div class="model-status__title">{aiRuntimeStatus?.available ? "AI runtime is ready" : "AI runtime isn’t ready yet"}</div>
             <div class="model-status__meta">
               {#if aiRuntimeStatusLoading}
                 Checking providers…
@@ -293,19 +321,23 @@
               {/if}
             </div>
           </div>
-          <span class="model-status__pill">{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
+          <span
+            class="model-status__pill"
+            class:model-status__pill--ok={aiRuntimeStatus?.available}
+          >{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
         </div>
         {#if aiRuntimeStatusError}
-          <p class="error-text">{aiRuntimeStatusError}</p>
+          <p class="error-text" role="alert">{aiRuntimeStatusError}</p>
         {/if}
         <div class="row-actions">
           <button
             class="btn btn--ghost btn--sm"
             type="button"
             disabled={aiRuntimeTestRunning || rec.draftAiDefaultModel === null}
+            aria-busy={aiRuntimeTestRunning}
             onclick={runAiRuntimeTestConnection}
           >
-            {aiRuntimeTestRunning ? "Testing" : "Test connection"}
+            {#if aiRuntimeTestRunning}<ButtonSpinner />Testing{:else}Test connection{/if}
           </button>
           <ReloadButton
             onclick={loadAiRuntimeStatus}
@@ -323,13 +355,18 @@
             <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
             <p>Provider: {aiProviderLabelById(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
             {#if aiRuntimeTestResult.rawJson}
-              <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              <details class="ai-runtime-details">
+                <summary>Raw response</summary>
+                <pre class="ai-runtime-raw">{aiRuntimeTestResult.rawJson}</pre>
+              </details>
             {/if}
           </div>
         {/if}
         {#if aiRuntimeTestError}
-          <p class="group-hint group-hint--warn">Test connection failed.</p>
-          <p class="error-text">{aiRuntimeTestError}</p>
+          <div role="alert">
+            <p class="group-hint group-hint--warn">Test connection failed.</p>
+            <p class="error-text">{aiRuntimeTestError}</p>
+          </div>
         {/if}
       </div>
     {/snippet}
@@ -343,7 +380,8 @@
   .prov-stack {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
     width: 100%;
   }
+
 </style>

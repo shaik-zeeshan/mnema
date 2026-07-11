@@ -316,6 +316,9 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     },
     access: {
       askAiEnabled: draft.draftAskAiEnabled,
+      // Round-trip the opt-in web-fetch toggle (set on the Settings page); this
+      // full save is authoritative, so omitting it would reset it to off.
+      askAiWebFetchEnabled: base.access?.askAiWebFetchEnabled ?? false,
       askAiMaxToolCalls: base.access?.askAiMaxToolCalls ?? 12,
       // `access` is sent whole and is authoritative, so we must round-trip the
       // Ask AI model selection (chosen on the Settings page); omitting it would
@@ -341,6 +344,9 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       defaultModel: draft.ai.draftAiDefaultModel
         ? { provider: draft.ai.draftAiDefaultModel.provider, model: draft.ai.draftAiDefaultModel.model }
         : null,
+      // Onboarding doesn't configure MCP connectors — preserve any the returning
+      // user already has (the Settings page owns this list).
+      mcpServers: base.aiRuntime?.mcpServers ?? [],
     },
   };
 }
@@ -354,5 +360,8 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
 // nothing regressed (empty names → null, so the finale stays clean).
 export function finaleBlockReasonFor(active: boolean, names: string[]): string | null {
   if (!active || names.length === 0) return null;
-  return `Needs attention: ${names.join(", ")}. Return to setup to fix it.`;
+  // Only "Start recording" is gated by these — the "Just open the dashboard"
+  // escape hatch stays enabled, so the copy points at both the recover path
+  // (back to setup) and the still-available skip rather than implying a dead end.
+  return `Start recording is waiting on: ${names.join(", ")}. Open the dashboard now, or return to setup to fix it.`;
 }

@@ -133,6 +133,9 @@ export interface TurnView {
   sources: unknown;
   errorMessage: string | null;
   seededResultCount: number | null;
+  /** Tokens occupying the model's context window after the turn's latest
+   *  completion request, or null when the provider reported no usage. */
+  contextTokens: number | null;
 }
 
 /** A versioned snapshot of a turn's `TurnView`. `version` lets the frontend
@@ -154,6 +157,7 @@ export type TurnUpdate =
   | { op: "toolActivity"; entry: ToolActivityEntry }
   | { op: "liveActivity"; entry: ToolActivityEntry | null }
   | { op: "sources"; sources: unknown }
+  | { op: "contextTokens"; tokens: number }
   | { op: "error"; message: string }
   | { op: "done" };
 
@@ -228,6 +232,29 @@ export function shortModelLabel(model: string): string {
   const trimmed = model.trim();
   const tail = trimmed.split("/").pop()?.trim() ?? "";
   return tail.length > 0 ? tail : trimmed;
+}
+
+// ponytail: known-family fallback table for the composer occupancy ring, used
+// when the provider's model listing doesn't advertise a window (Anthropic and
+// OpenAI never do). Null for everything else — the readout stays a plain used
+// count rather than guess a denominator.
+const MODEL_CONTEXT_WINDOWS: Array<[RegExp, number]> = [
+  [/claude/i, 200_000],
+  [/gpt-5/i, 400_000],
+  [/gpt-4\.1/i, 1_000_000],
+  [/gpt-4o/i, 128_000],
+  [/\bo[34]\b/i, 200_000],
+  [/gemini/i, 1_048_576],
+  [/deepseek/i, 128_000],
+];
+
+/** The context-window size (tokens) for a model id, or null when unknown. */
+export function contextWindowForModel(model: string): number | null {
+  const tail = shortModelLabel(model);
+  for (const [pattern, tokens] of MODEL_CONTEXT_WINDOWS) {
+    if (pattern.test(tail)) return tokens;
+  }
+  return null;
 }
 
 /** A short, friendly label for one provider KIND id. Returns the raw string for

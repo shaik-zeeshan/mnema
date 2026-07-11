@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Overview — the default Insights sub-surface (issues #104/#105/#108).
   //
   // Two tiers, tagged inline via .tier-badge (mirrors overview.html):
@@ -21,6 +22,7 @@
   import { untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
   import {
     appIconFallback,
@@ -48,9 +50,13 @@
     humanizeHours,
     startOfDay,
     startOfHour,
+    windowFor,
+    shiftAnchor,
     buildActivityThreads,
     type ActivityThread,
+    type RangeMode,
   } from "$lib/insights/activity-helpers";
+  import { computeLedeStats } from "$lib/insights/lede-stats";
   import CategoryDetailModal from "$lib/insights/CategoryDetailModal.svelte";
   import AppDetailModal from "$lib/insights/AppDetailModal.svelte";
   import FocusDetailModal from "$lib/insights/FocusDetailModal.svelte";
@@ -59,6 +65,9 @@
   import Heatmap from "$lib/insights/charts/Heatmap.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import Select from "$lib/components/Select.svelte";
+  import { humanizeError } from "$lib/format-error";
 
   interface Props {
     onOpenSubject?: (subject: string) => void;
@@ -98,7 +107,6 @@
   }
 
   // ── Date range ─────────────────────────────────────────────────────────
-  type RangeMode = "day" | "week" | "month";
   let rangeMode = $state<RangeMode>("week");
   // `anchor` is a millis timestamp inside the currently-selected window; the
   // stepper moves it by one unit, the mode picks the window size. Bounds are
@@ -106,41 +114,43 @@
   let anchor = $state<number>(Date.now());
 
   // Local-calendar bounds [startMs, endMs) for the active range.
-  const range = $derived.by<{ startMs: number; endMs: number }>(() => {
-    if (rangeMode === "day") {
-      const start = startOfDay(anchor);
-      const end = new Date(start);
-      end.setDate(end.getDate() + 1);
-      return { startMs: start, endMs: end.getTime() };
-    }
-    if (rangeMode === "week") {
-      // Week starts Monday (local).
-      const d = new Date(startOfDay(anchor));
-      const dow = (d.getDay() + 6) % 7; // 0 = Monday
-      d.setDate(d.getDate() - dow);
-      const start = d.getTime();
-      const end = new Date(start);
-      end.setDate(end.getDate() + 7);
-      return { startMs: start, endMs: end.getTime() };
-    }
-    // month
-    const d = new Date(anchor);
-    const start = new Date(d.getFullYear(), d.getMonth(), 1).getTime();
-    const end = new Date(d.getFullYear(), d.getMonth() + 1, 1).getTime();
-    return { startMs: start, endMs: end };
-  });
+  const range = $derived(windowFor(anchor, rangeMode));
+  // The window immediately before the active one — the baseline the headline
+  // "tracked" figure is compared against for the period-over-period delta.
+  const prevWindow = $derived(
+    windowFor(shiftAnchor(anchor, rangeMode, -1), rangeMode),
+  );
 
   function stepRange(dir: -1 | 1): void {
-    const d = new Date(anchor);
-    if (rangeMode === "day") d.setDate(d.getDate() + dir);
-    else if (rangeMode === "week") d.setDate(d.getDate() + dir * 7);
-    else d.setMonth(d.getMonth() + dir);
-    anchor = d.getTime();
+    anchor = shiftAnchor(anchor, rangeMode, dir);
   }
 
   function setMode(mode: RangeMode): void {
     rangeMode = mode;
   }
+
+  // Jump back to the current period (today / this week / this month) — the
+  // stepper otherwise has no one-click way home once you've paged into the past.
+  function resetRange(): void {
+    anchor = Date.now();
+  }
+
+  // Date-range Segmented options (shared primitive replaces the hand-rolled
+  // button group).
+  const RANGE_OPTIONS = [
+    { value: "day", label: "Day" },
+    { value: "week", label: "Week" },
+    { value: "month", label: "Month" },
+  ];
+
+  // The shared Select primitive can't round-trip an empty-string value (it
+  // reads "" as "no selection" and shows the placeholder), so map the
+  // Uncategorized option onto a sentinel and translate back on change.
+  const CATEGORY_NONE = "__uncategorized__";
+  const CATEGORY_SELECT_OPTIONS = CATEGORY_OPTIONS.map((o) => ({
+    value: o.value === "" ? CATEGORY_NONE : o.value,
+    label: o.label,
+  }));
 
   const rangeLabel = $derived.by<string>(() => {
     const { startMs, endMs } = range;
@@ -188,6 +198,8 @@
 
   // ── Loaded data ────────────────────────────────────────────────────────
   let usage = $state<UsageCharts | null>(null);
+  // Previous-window usage, the baseline for the tracked-delta (see `loadPrev`).
+  let prevUsage = $state<UsageCharts | null>(null);
   let activities = $state<Activity[]>([]);
   let conclusions = $state<Conclusion[]>([]);
   // Narrative lede for the active range. `null` is the normal absent case
@@ -206,6 +218,11 @@
   let loadingFree = $state(true);
   let loadingEngine = $state(false);
   let freeError = $state<string | null>(null);
+  // Engine-data (activities + conclusions) load failure for the active range.
+  // Mirrors `freeError`: kept DISTINCT from the "still learning" empty state so a
+  // real fetch failure surfaces a recoverable error (with Retry) instead of
+  // misrepresenting itself as "the engine hasn't formed anything yet".
+  let engineError = $state<string | null>(null);
   // Whether the engine-status calls have resolved at least once. Until then we
   // don't yet know engine on/off, so engine tiles + the story feed show a
   // skeleton rather than flashing the "enable the engine" invite.
@@ -341,6 +358,20 @@
     );
   });
 
+  // The three lede-footer stats (tracked / deep focus % / top category),
+  // computed once in a shared pure helper so Overview and the Journal surface
+  // derive the same label from the same computation. Overview reads back into
+  // `summary` (tracked / deep %) and `topCategory` below — output unchanged.
+  const ledeStats = $derived(
+    computeLedeStats({
+      timePerApp: usage?.timePerApp ?? [],
+      rangeActivities,
+      rangeStartMs: range.startMs,
+      rangeEndMs: range.endMs,
+      engineOn,
+    }),
+  );
+
   const categorySegments = $derived.by(() => {
     const { startMs, endMs } = range;
     const totals = new Map<string, number>();
@@ -362,7 +393,7 @@
     // human-readable legend readout. Rounding to whole hours here would
     // collapse every category under ~30min to a 0-width sliver — a single
     // hour-scale category (e.g. creating) would then claim the whole bar.
-    const segments: {
+    const named: {
       label: string;
       value: number;
       colorVar: string;
@@ -371,13 +402,29 @@
     for (const c of CATEGORY_ORDER) {
       const v = totals.get(c);
       if (v && v > 0) {
-        segments.push({
+        named.push({
           label: categoryLabel(c),
           value: v,
           colorVar: CATEGORY_COLOR[c],
           display: humanizeMs(v),
         });
       }
+    }
+    // Cap the chart at the top categories by time and fold the rest into a
+    // single neutral "Other" bucket. Past ~5-6 distinct hues the segment→legend
+    // mapping stops being readable, so the long tail collapses into one grey.
+    named.sort((a, b) => b.value - a.value);
+    const TOP_CATEGORY_HUES = 5;
+    const segments = named.slice(0, TOP_CATEGORY_HUES);
+    const overflow = named.slice(TOP_CATEGORY_HUES);
+    if (overflow.length > 0) {
+      const otherMs = overflow.reduce((sum, s) => sum + s.value, 0);
+      segments.push({
+        label: "Other",
+        value: otherMs,
+        colorVar: "--chart-grey-4",
+        display: humanizeMs(otherMs),
+      });
     }
     const uncat = totals.get("__uncat__");
     if (uncat && uncat > 0) {
@@ -391,12 +438,9 @@
     return segments;
   });
 
-  // `categorySegments` is ordered by CATEGORY_ORDER for a stable bar layout,
-  // so its first element is NOT the busiest category. Rank by actual time
-  // (`value` is raw ms) to surface the real top category in the lede.
-  const topCategory = $derived(
-    [...categorySegments].sort((a, b) => b.value - a.value)[0],
-  );
+  // Surface the busiest category in the lede — the shared helper reproduces the
+  // old `categorySegments`-minus-"Other" pick exactly (see lede-stats.ts).
+  const topCategory = $derived(ledeStats.topCategory);
 
   // ── ENGINE TILE 3: focus heatmap (day rows × time-of-day slots) ───────
   // Twelve 2h slots covering the full local day (12a-12a); cell value = avg
@@ -413,6 +457,7 @@
   const SLOT_COUNT = 24 / SLOT_SPAN_HOURS; // 12 slots: 12a,2a,…,10p
 
   const focusRows = $derived.by(() => {
+    const { startMs, endMs } = range;
     // Group range activities by local day → slot, averaging focus weight.
     const days = new Map<number, { sum: number[]; n: number[] }>();
     for (const a of rangeActivities) {
@@ -421,6 +466,12 @@
       const w = FOCUS_WEIGHT[focus] ?? 0;
       const start = new Date(a.startedAtMs);
       const dayKey = startOfDay(a.startedAtMs);
+      // `rangeActivities` includes boundary-straddling activities whose START
+      // day falls OUTSIDE the selected range; bucketing by start day would then
+      // add an extra row for that out-of-range day (and, since labels are
+      // weekday names, a second "Sun"/"Mon" within a week). Keep the heatmap to
+      // days actually in range.
+      if (dayKey < startMs || dayKey >= endMs) continue;
       const hour = start.getHours();
       // Full-day band: every 0–23 hour maps to its own slot, so off-band
       // (early/late) hours aren't folded into an edge slot. The clamp is now
@@ -451,11 +502,9 @@
   // ── FREE TILE 4: this-range summary stats ─────────────────────────────
   const summary = $derived.by(() => {
     const buckets = usage?.activityHeatmap ?? [];
-    // Total tracked time ≈ sum of app active time (the honest "time on app").
-    const totalMs = (usage?.timePerApp ?? []).reduce(
-      (acc, a) => acc + a.activeMs,
-      0,
-    );
+    // Total tracked time ≈ sum of app active time (the honest "time on app") —
+    // shared helper so the "tracked" figure matches the Journal surface.
+    const totalMs = ledeStats.trackedMs;
     // Active days = distinct local-calendar days with any heatmap intensity.
     const activeDays = new Set<number>();
     const perDay = new Map<number, number>();
@@ -481,19 +530,8 @@
         : startOfDay(b.bucketStartMs);
       perBucket.set(key, (perBucket.get(key) ?? 0) + b.intensityCount);
     }
-    // Deep-focus % over range activities (engine tier only).
-    let deepPct: number | null = null;
-    if (engineOn) {
-      let deep = 0;
-      let counted = 0;
-      for (const a of rangeActivities) {
-        const focus = a.focus;
-        if (focus == null) continue;
-        counted += 1;
-        if (focus === "deep") deep += 1;
-      }
-      deepPct = counted > 0 ? Math.round((deep / counted) * 100) : null;
-    }
+    // Deep-focus % over range activities (engine tier only) — shared helper.
+    const deepPct = ledeStats.deepPct;
     // Period-aware spark for the mini bar strip (ordered by bucket start).
     const spark = [...perBucket.entries()]
       .sort((a, b) => a[0] - b[0])
@@ -508,6 +546,26 @@
       sparkMax,
       sparkLabel,
     };
+  });
+
+  // Period-over-period delta for the headline "tracked" figure. Compares the
+  // active window's total active time against the matched slice of the previous
+  // window (see `loadPrev` — an in-progress period compares pace-vs-pace, a
+  // finished period full-vs-full). Hidden when there's no prior baseline to
+  // divide by (oldest period, or a window with no captured activity).
+  const trackedDelta = $derived.by<{
+    pct: number;
+    dir: "up" | "down" | "steady";
+  } | null>(() => {
+    if (!usage || !prevUsage) return null;
+    const cur = (usage.timePerApp ?? []).reduce((acc, a) => acc + a.activeMs, 0);
+    const prev = (prevUsage.timePerApp ?? []).reduce(
+      (acc, a) => acc + a.activeMs,
+      0,
+    );
+    if (prev <= 0) return null;
+    const pct = Math.round(((cur - prev) / prev) * 100);
+    return { pct, dir: pct > 0 ? "up" : pct < 0 ? "down" : "steady" };
   });
 
   // ── Conclusion deltas (engine tier) ───────────────────────────────────
@@ -669,9 +727,35 @@
       freeError = null;
     } catch (error) {
       if (token === freeRequestToken)
-        freeError = error instanceof Error ? error.message : String(error);
+        freeError = humanizeError(error);
     } finally {
       if (token === freeRequestToken) loadingFree = false;
+    }
+  }
+
+  // Baseline fetch for the tracked-delta. Reuses get_usage_charts on the
+  // previous window, truncated to the active window's elapsed fraction so an
+  // in-progress period compares like-for-like (a finished period reads the full
+  // previous window). Its own token guards stale overlapping responses; on
+  // error (or no prior data) the delta simply hides via `prevUsage = null`.
+  let prevRequestToken = 0;
+  async function loadPrev(): Promise<void> {
+    const token = ++prevRequestToken;
+    const pw = prevWindow;
+    const now = Date.now();
+    const compareEnd =
+      now >= range.endMs
+        ? pw.endMs
+        : Math.min(pw.startMs + Math.max(0, now - range.startMs), pw.endMs);
+    try {
+      const next = await invoke<UsageCharts>("get_usage_charts", {
+        startMs: pw.startMs,
+        endMs: compareEnd,
+      });
+      if (token !== prevRequestToken) return; // range moved on — stale
+      prevUsage = next;
+    } catch {
+      if (token === prevRequestToken) prevUsage = null;
     }
   }
 
@@ -686,29 +770,36 @@
     if (!engineOn) {
       activities = [];
       conclusions = [];
+      engineError = null;
       engineLoadedOnce = true;
       return;
     }
     loadingEngine = true;
     try {
       const { startMs, endMs } = range;
-      const nextActivities = await invoke<Activity[]>(
-        "list_user_context_activities",
-        { startMs, endMs },
-      );
-      if (token !== engineRequestToken) return; // range moved on — stale
-      const nextConclusions = await invoke<Conclusion[]>(
-        "list_user_context_conclusions",
-        { includeFaded: true },
-      );
+      // Activities and conclusions are independent DB queries and BOTH gate
+      // every engine tile + the whole story feed, so fetch them concurrently —
+      // serialising them made the slowest tile wait on the SUM of both.
+      const [nextActivities, nextConclusions] = await Promise.all([
+        invoke<Activity[]>("list_user_context_activities", { startMs, endMs }),
+        invoke<Conclusion[]>("list_user_context_conclusions", {
+          includeFaded: true,
+          startMs,
+          endMs,
+        }),
+      ]);
       if (token !== engineRequestToken) return; // range moved on — stale
       activities = nextActivities;
       conclusions = nextConclusions;
+      engineError = null;
       // Clear stale optimistic overrides now that we have fresh truth.
       pinnedOverride = new Map();
       dismissedIds = new Set();
-    } catch {
-      // Best-effort; engine tiles degrade to empty / "still learning".
+    } catch (error) {
+      // A real fetch failure is NOT the "still learning" empty state — record it
+      // so the feed renders a recoverable error with Retry.
+      if (token === engineRequestToken)
+        engineError = humanizeError(error);
     } finally {
       if (token === engineRequestToken) {
         loadingEngine = false;
@@ -769,7 +860,7 @@
         digestError = "Not enough activity in this range to write a read.";
       }
     } catch (error) {
-      if (token === digestRequestToken) digestError = String(error);
+      if (token === digestRequestToken) digestError = humanizeError(error);
     } finally {
       if (token === digestRequestToken) digestRegenerating = false;
     }
@@ -780,6 +871,9 @@
   // `loadDigest` directly instead.
   const DIGEST_DEBOUNCE_MS = 500;
   let digestDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  // Guards the range-watch effect against double-loading on mount — see the
+  // effect below. Plain (non-reactive) flag: it only gates effect bookkeeping.
+  let rangeWatchPrimed = false;
   function scheduleDigestLoad(): void {
     // Drop the old range's prose at once and invalidate in-flight responses —
     // last week's lede never sits over this week's cards.
@@ -804,7 +898,7 @@
 
   async function reloadAll(): Promise<void> {
     await loadStatus();
-    await Promise.all([loadFree(), loadEngine(), loadDigest()]);
+    await Promise.all([loadFree(), loadPrev(), loadEngine(), loadDigest()]);
   }
 
   // Re-query when the range changes (mode or step). Mark the range-scoped data
@@ -816,11 +910,21 @@
     range.startMs;
     range.endMs;
     void untrack(() => {
+      // Skip the initial mount run: `reloadAll()` (the mount effect below) owns
+      // the first load. Without this guard both effects fire on mount, so
+      // loadFree/loadEngine run twice and the digest gets an immediate model
+      // call that the 500ms-debounced one then discards. React only to genuine
+      // range *changes* here.
+      if (!rangeWatchPrimed) {
+        rangeWatchPrimed = true;
+        return;
+      }
       engineLoadedOnce = false;
       // A new range is new content: stale expansion state would leave rows
       // open over different (possibly empty) content.
       expandedDeltaRows = new Set();
       void loadFree();
+      void loadPrev();
       void loadEngine();
       scheduleDigestLoad();
     });
@@ -848,8 +952,14 @@
       activities = activities.map((x) =>
         x.id === a.id ? { ...x, category } : x,
       );
-    } catch {
-      // leave as-is; the event refresh will reconcile
+    } catch (error) {
+      // Surface the failure — a silent no-op leaves the user thinking the
+      // correction stuck. The event refresh will still reconcile state.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't update category",
+        kind: "error",
+      });
     } finally {
       const done = new Set(correctingActivity);
       done.delete(a.id);
@@ -869,8 +979,14 @@
       activities = activities.map((x) =>
         x.id === a.id ? ({ ...x, focus } as Activity) : x,
       );
-    } catch {
-      // ignore
+    } catch (error) {
+      // Surface the failure — a silent no-op leaves the user thinking the
+      // correction stuck. The event refresh will still reconcile state.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't update focus",
+        kind: "error",
+      });
     } finally {
       const done = new Set(correctingActivity);
       done.delete(a.id);
@@ -885,24 +1001,73 @@
     pinnedOverride = map;
     try {
       await invoke("user_context_set_pinned", { id: c.id, pinned: next });
-    } catch {
-      // revert on failure
+    } catch (error) {
+      // revert on failure — and explain why the pin snapped back.
       const revert = new Map(pinnedOverride);
       revert.set(c.id, !next);
       pinnedOverride = revert;
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: next ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
+        kind: "error",
+      });
     }
   }
 
-  async function dismissConclusion(c: Conclusion): Promise<void> {
+  // Dismiss now has an UNDO window: rather than vanishing (and persisting) at
+  // once, the row collapses into a "Dismissed · Undo" placeholder and the backend
+  // dismiss is DEFERRED. If the user clicks Undo before the window elapses the
+  // pending commit is cancelled and the row returns — no backend call was made,
+  // so no un-dismiss command is needed. After the window the commit fires and the
+  // row leaves the feed for good.
+  const DISMISS_UNDO_MS = 5000;
+  let pendingDismiss = $state<Map<number, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+
+  function dismissConclusion(c: Conclusion): void {
+    if (pendingDismiss.has(c.id)) return;
+    const timer = setTimeout(() => void commitDismiss(c), DISMISS_UNDO_MS);
+    const next = new Map(pendingDismiss);
+    next.set(c.id, timer);
+    pendingDismiss = next;
+  }
+
+  // Belt-and-braces: clear any pending dismiss-undo timers on unmount so a
+  // queued `commitDismiss` can't fire (and invoke) after the component is gone
+  // — same class as the autosave-timer leak fixed elsewhere this branch. Only
+  // the teardown reads `pendingDismiss`, so this effect never re-runs.
+  $effect(() => () => {
+    for (const timer of pendingDismiss.values()) clearTimeout(timer);
+  });
+
+  function undoDismiss(c: Conclusion): void {
+    const timer = pendingDismiss.get(c.id);
+    if (timer !== undefined) clearTimeout(timer);
+    const next = new Map(pendingDismiss);
+    next.delete(c.id);
+    pendingDismiss = next;
+  }
+
+  async function commitDismiss(c: Conclusion): Promise<void> {
+    // Clear the pending state, hide the row (optimistic), then persist.
+    const next = new Map(pendingDismiss);
+    next.delete(c.id);
+    pendingDismiss = next;
     const set = new Set(dismissedIds);
     set.add(c.id);
     dismissedIds = set;
     try {
       await invoke("user_context_dismiss_conclusion", { id: c.id });
-    } catch {
+    } catch (error) {
       const revert = new Set(dismissedIds);
       revert.delete(c.id);
       dismissedIds = revert;
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     }
   }
 
@@ -919,6 +1084,11 @@
     void listen("user_context_changed", () => {
       void loadStatus();
       void loadEngine();
+      // The engine beat is the only live signal during recording, so refresh the
+      // usage tiles (time-per-app / heatmap / transitions) and the vs-previous
+      // baseline here too — otherwise they freeze while the engine tiles update.
+      void loadFree();
+      void loadPrev();
       // Same range → cache hit; keeps the current lede up until fresh prose.
       void loadDigest();
     }).then((fn) => {
@@ -981,26 +1151,12 @@
       <p class="subtitle">Scan your {rangeMode}, then read what it adds up to.</p>
     </div>
     <div class="ov-controls">
-      <div class="date-range" role="group" aria-label="Date range">
-        <button
-          type="button"
-          class:active={rangeMode === "day"}
-          aria-pressed={rangeMode === "day"}
-          onclick={() => setMode("day")}>Day</button
-        >
-        <button
-          type="button"
-          class:active={rangeMode === "week"}
-          aria-pressed={rangeMode === "week"}
-          onclick={() => setMode("week")}>Week</button
-        >
-        <button
-          type="button"
-          class:active={rangeMode === "month"}
-          aria-pressed={rangeMode === "month"}
-          onclick={() => setMode("month")}>Month</button
-        >
-      </div>
+      <Segmented
+        options={RANGE_OPTIONS}
+        value={rangeMode}
+        onValueChange={(v) => setMode(v as RangeMode)}
+        ariaLabel="Date range"
+      />
       <div class="date-stepper">
         <button class="nav" type="button" aria-label="Previous" onclick={() => stepRange(-1)}>‹</button>
         <span class="range-label">{rangeLabel}</span>
@@ -1011,6 +1167,22 @@
           disabled={atLatest}
           onclick={() => stepRange(1)}>›</button
         >
+        <!-- Jump home — only when paged into the past (the stepper otherwise has
+             no one-click way back to the current period). -->
+        {#if !atLatest}
+          <button
+            class="range-today"
+            type="button"
+            onclick={resetRange}
+            use:tip={"Jump to the current period"}
+          >
+            {rangeMode === "day"
+              ? "Today"
+              : rangeMode === "week"
+                ? "This week"
+                : "This month"}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -1041,7 +1213,7 @@
           class:is-busy={digestRegenerating}
           onclick={regenerateDigest}
           disabled={digestRegenerating || (!digest && digestLoading)}
-          title="Write a fresh read for this range"
+          use:tip={"Write a fresh read for this range"}
         >
           <span class="re-read-ico" aria-hidden="true">↻</span>
           {digestRegenerating ? "reading…" : "re-read"}
@@ -1085,7 +1257,25 @@
           </div>
         {:else}
           <div class="lede-stat">
-            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-figure">
+              <span class="lede-stat-n">{summary.totalLabel}</span>
+              {#if trackedDelta}
+                <span
+                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
+                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
+                    trackedDelta.dir === "down" ? "less" : "more"
+                  } than the same span of last ${rangeMode}`}
+                >
+                  <span class="lede-stat-delta-arrow" aria-hidden="true"
+                    >{trackedDelta.dir === "up"
+                      ? "↑"
+                      : trackedDelta.dir === "down"
+                        ? "↓"
+                        : "→"}</span
+                  >{Math.abs(trackedDelta.pct)}%</span
+                >
+              {/if}
+            </span>
             <span class="lede-stat-cap">tracked</span>
           </div>
           <div class="lede-stat">
@@ -1169,7 +1359,25 @@
           </div>
         {:else}
           <div class="lede-stat">
-            <span class="lede-stat-n">{summary.totalLabel}</span>
+            <span class="lede-stat-figure">
+              <span class="lede-stat-n">{summary.totalLabel}</span>
+              {#if trackedDelta}
+                <span
+                  class="lede-stat-delta lede-stat-delta--{trackedDelta.dir}"
+                  use:tip={`${Math.abs(trackedDelta.pct)}% ${
+                    trackedDelta.dir === "down" ? "less" : "more"
+                  } than the same span of last ${rangeMode}`}
+                >
+                  <span class="lede-stat-delta-arrow" aria-hidden="true"
+                    >{trackedDelta.dir === "up"
+                      ? "↑"
+                      : trackedDelta.dir === "down"
+                        ? "↓"
+                        : "→"}</span
+                  >{Math.abs(trackedDelta.pct)}%</span
+                >
+              {/if}
+            </span>
             <span class="lede-stat-cap">tracked</span>
           </div>
           <div class="lede-stat">
@@ -1297,6 +1505,22 @@
             </div>
           {:else if !engineOn}
             <p class="tile-note tile-note--locked">Enable the engine to light up categories.</p>
+          {:else if engineError}
+            <!-- A failed engine fetch must NOT masquerade as "no data" — say it
+                 couldn't load and offer a compact retry. -->
+            <p class="tile-note tile-note--error">
+              Couldn't load.
+              <button
+                type="button"
+                class="tile-retry"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  void loadEngine();
+                }}
+              >
+                Retry
+              </button>
+            </p>
           {:else if categorySegments.length === 0}
             <p class="tile-note">No categorized activity yet.</p>
           {:else}
@@ -1344,6 +1568,22 @@
             </div>
           {:else if !engineOn}
             <p class="tile-note tile-note--locked">Enable the engine to see focus.</p>
+          {:else if engineError}
+            <!-- A failed engine fetch must NOT masquerade as "no data" — say it
+                 couldn't load and offer a compact retry. -->
+            <p class="tile-note tile-note--error">
+              Couldn't load.
+              <button
+                type="button"
+                class="tile-retry"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  void loadEngine();
+                }}
+              >
+                Retry
+              </button>
+            </p>
           {:else if focusRows.length === 0}
             <p class="tile-note">No focus signal yet.</p>
           {:else}
@@ -1363,6 +1603,15 @@
     <div class="state state--error">
       <p class="state-title">Couldn't load your usage charts.</p>
       <p class="state-detail">{freeError}</p>
+      <button
+        type="button"
+        class="re-read state-retry"
+        onclick={() => void loadFree()}
+        disabled={loadingFree}
+      >
+        <span class="re-read-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {/if}
 
@@ -1395,7 +1644,23 @@
          renders here. -->
   {:else}
     <!-- ── Story / dossier feed (ENGINE) ── -->
-    {#if engineEmpty}
+    {#if engineError}
+      <div class="feed-column">
+        <div class="state state--error">
+          <p class="state-title">Couldn't load your engine data.</p>
+          <p class="state-detail">{engineError}</p>
+          <button
+            type="button"
+            class="re-read state-retry"
+            onclick={() => void loadEngine()}
+            disabled={loadingEngine}
+          >
+            <span class="re-read-ico" aria-hidden="true">↻</span>
+            Try again
+          </button>
+        </div>
+      </div>
+    {:else if engineEmpty}
       <div class="feed-column">
         <div class="state state--empty">
           <p class="state-title">Mnema is still learning…</p>
@@ -1417,6 +1682,21 @@
         {#snippet deltaRow(d: ConclusionDelta)}
           {@const c = d.c}
           {@const open = expandedDeltaRows.has(c.id)}
+          {#if pendingDismiss.has(c.id)}
+            <!-- Undo window: the dismiss hasn't committed yet — collapse to a
+                 quiet "Dismissed · Undo" line so the action is reversible and
+                 isn't a silent vanish. -->
+            <div class="delta-row delta-row--dismissed" role="status">
+              <span class="dismissed-note">Dismissed “{c.statement}”</span>
+              <button
+                type="button"
+                class="dismissed-undo"
+                onclick={() => undoDismiss(c)}
+              >
+                Undo
+              </button>
+            </div>
+          {:else}
           <div class="delta-row" class:delta-row--faded={d.kind === "fading"}>
             <div class="delta-line">
               <span class="delta-statement">{c.statement}</span>
@@ -1477,7 +1757,11 @@
                   {#if c.evidence.length === 0}
                     <p class="evidence-empty">No grounding activities recorded.</p>
                   {:else}
-                    {#each c.evidence as ev (ev.activityId + "-" + ev.stance)}
+                    <!-- Index key: (activityId, stance) is not guaranteed unique
+                         (the engine can record the same activity+stance twice),
+                         and a duplicate key throws + aborts the flush. Evidence
+                         is a positional, recomputed list, so index is safe. -->
+                    {#each c.evidence as ev, evIdx (evIdx)}
                       <div class="evidence-row">
                         <span
                           class="ev-stance"
@@ -1497,6 +1781,7 @@
               </div>
             {/if}
           </div>
+          {/if}
         {/snippet}
 
         <!-- Pinned — conclusions the user pinned, kept in view and out of the
@@ -1531,6 +1816,12 @@
               <span class="rule"></span>
               expand a row for detail
             </p>
+            <!-- One-line explainer so the vocabulary ("conclusion", confidence)
+                 isn't opaque to a first-time reader. -->
+            <p class="section-explainer">
+              Conclusions are what the engine has inferred about you — each carries
+              a confidence the evidence keeps raising or letting fade.
+            </p>
             <div class="delta-groups">
               {#each visibleDeltaGroups as g (g.kind)}
                 <div class="delta-group">
@@ -1541,6 +1832,23 @@
                 </div>
               {/each}
             </div>
+            <!-- The group heads sum the FULL group sizes but the list is capped,
+                 so when more changed than fits, say so honestly and point to the
+                 standing dossier (Subjects) where they all live. -->
+            {#if unpinnedDeltas.length > WHAT_CHANGED_CAP}
+              <div class="delta-overflow">
+                <span class="delta-overflow-count">
+                  showing {visibleDeltas.length} of {unpinnedDeltas.length}
+                </span>
+                <button
+                  type="button"
+                  class="evidence-link"
+                  onclick={() => onOpenTab?.("subjects")}
+                >
+                  View all in Subjects →
+                </button>
+              </div>
+            {/if}
           </article>
         {/if}
 
@@ -1569,23 +1877,19 @@
                       )}</span
                     >
                   </div>
-                  <label class="attn-pick">
+                  <div class="attn-pick">
                     <span class="attn-pick-label">Category</span>
-                    <select
-                      class="corr-select"
-                      value={a.category ?? ""}
+                    <Select
+                      options={CATEGORY_SELECT_OPTIONS}
+                      value={a.category ?? CATEGORY_NONE}
                       disabled={correctingActivity.has(a.id)}
-                      onchange={(e) =>
+                      onValueChange={(v) =>
                         void correctCategory(
                           a,
-                          (e.currentTarget.value || null) as ActivityCategory | null,
+                          (v === CATEGORY_NONE ? null : v) as ActivityCategory | null,
                         )}
-                    >
-                      {#each CATEGORY_OPTIONS as opt (opt.value)}
-                        <option value={opt.value}>{opt.label}</option>
-                      {/each}
-                    </select>
-                  </label>
+                    />
+                  </div>
                 </div>
               {/each}
             </div>
@@ -1694,14 +1998,15 @@
   }
   .ov-header h1 {
     margin: 0;
-    font-size: 18px;
+    font-size: var(--text-xl);
+    line-height: 1.2;
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
   }
   .ov-header .subtitle {
     margin: 3px 0 0;
-    font-size: 12px;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
     text-transform: capitalize;
   }
@@ -1712,52 +2017,16 @@
     flex: 0 0 auto;
   }
 
-  /* Date-range segmented control (mirrors the canonical segmented look). */
-  .date-range {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .date-range button {
-    font: inherit;
-    font-size: 11.5px;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    padding: 0 11px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .date-range button:hover {
-    color: var(--app-text-strong);
-  }
-  .date-range button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-
   .date-stepper {
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
   .date-stepper .nav {
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -1777,14 +2046,41 @@
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
   }
+  .date-stepper .nav:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .date-stepper .nav:disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     cursor: default;
   }
   .date-stepper .range-label {
     color: var(--app-text);
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
+  }
+  /* "Today / This week / This month" reset — quiet pill, only shown in the past. */
+  .date-stepper .range-today {
+    margin-left: 2px;
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.02em;
+    padding: 3px 9px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .date-stepper .range-today:hover {
+    border-color: var(--app-accent);
+  }
+  .date-stepper .range-today:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   /* ---- Bento glance band ---- */
@@ -1834,9 +2130,6 @@
     overflow: hidden;
     transition: border-color 0.12s ease;
   }
-  .exhibit:hover {
-    border-color: var(--app-border-hover);
-  }
   /* The whole card is the trigger when its detail modal is openable. */
   .exhibit--clickable {
     cursor: pointer;
@@ -1844,9 +2137,19 @@
   .exhibit--clickable:hover {
     border-color: var(--app-border-hover);
   }
+  /* Reinforce the "whole card opens detail" affordance: on card hover the hint
+     lifts to accent (text + underline) so the cue and hover feedback agree. */
+  .exhibit--clickable:hover .exhibit-hint {
+    color: var(--app-accent);
+    border-bottom-color: var(--app-accent-border);
+  }
   .exhibit--clickable:focus-visible {
     outline: none;
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+  .exhibit--clickable:focus-visible .exhibit-hint {
+    color: var(--app-accent);
+    border-bottom-color: var(--app-accent-border);
   }
   .exhibit-head {
     display: flex;
@@ -1855,10 +2158,10 @@
     margin-bottom: 9px;
   }
   .exhibit-title {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.07em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     white-space: nowrap;
   }
   .exhibit-body {
@@ -1873,13 +2176,45 @@
 
   .tile-note {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
   .tile-note--locked {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     font-style: italic;
+  }
+  /* Engine-fetch failure on a glance tile — distinct from the muted "no data"
+     note, with an inline retry. */
+  .tile-note--error {
+    color: var(--app-danger);
+    display: inline-flex;
+    align-items: baseline;
+    gap: 7px;
+    flex-wrap: wrap;
+  }
+  .tile-retry {
+    font: inherit;
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 1px 7px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-danger-text);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .tile-retry:hover {
+    border-color: var(--app-danger);
+    background: var(--app-danger-bg);
+  }
+  .tile-retry:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring-danger);
   }
 
   /* Non-interactive visual cue at the bottom of each exhibit card hinting that
@@ -1893,10 +2228,13 @@
     margin-top: auto;
     padding-top: 12px;
     align-self: flex-start;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     border-bottom: 1px dotted var(--app-border-strong);
     line-height: 1.3;
+    transition:
+      color 0.12s ease,
+      border-bottom-color 0.12s ease;
   }
 
   /* ---- Tile / feed loading skeletons ---- */
@@ -2007,21 +2345,31 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
   }
+  /* Visible keyboard focus on the primary Overview→Chat handoff. The second
+     shadow layer preserves the sticky bottom-padding mask (see box-shadow above). */
+  .ask-entry:focus-visible {
+    outline: none;
+    border-color: var(--app-accent-border);
+    box-shadow:
+      var(--app-ring),
+      0 28px 0 0 var(--app-bg);
+  }
   .ask-entry .glyph {
     color: var(--app-accent-strong);
-    font-size: 13px;
+    font-size: var(--text-md);
   }
   .ask-entry .label {
     flex: 1 1 auto;
-    font-size: 12.5px;
+    font-size: var(--text-md);
   }
   .ask-entry .hint {
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
-  .ask-entry:hover .hint {
+  .ask-entry:hover .hint,
+  .ask-entry:focus-visible .hint {
     color: var(--app-accent-strong);
   }
 
@@ -2044,7 +2392,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2083,7 +2431,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: 10px;
+    font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -2101,8 +2449,17 @@
     cursor: default;
     opacity: 0.6;
   }
+  /* Retry affordance on a page-level error card — the re-read pill, sized to its
+     content and nudged off the detail line. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+  }
+  .re-read:not(:disabled):active {
+    transform: translateY(1px);
+  }
   .re-read-ico {
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1;
     letter-spacing: 0;
   }
@@ -2118,12 +2475,15 @@
     .re-read.is-busy .re-read-ico {
       animation: none;
     }
+    .re-read:not(:disabled):active {
+      transform: none;
+    }
   }
   /* Re-read failure reason — sits where the prose would, in the same scale,
      tinted toward the app's danger register without shouting. */
   .lede-error {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.7;
     color: var(--app-danger, var(--app-text-subtle));
   }
@@ -2171,7 +2531,7 @@
   }
   .lede-text {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1.7;
     color: var(--app-text);
   }
@@ -2191,8 +2551,16 @@
     gap: 4px;
     min-width: 0;
   }
+  /* Figure row: the headline number with its delta riding alongside on a shared
+     baseline, so the "tracked" cell stays the same height as its siblings and
+     all captions line up across the footer. */
+  .lede-stat-figure {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 8px;
+  }
   .lede-stat-n {
-    font-size: 17px;
+    font-size: var(--text-lg);
     line-height: 1.1;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -2215,10 +2583,35 @@
     border-radius: 50%;
   }
   .lede-stat-cap {
-    font-size: 9px;
+    font-size: var(--text-xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);
+  }
+  /* Period-over-period delta — only the delta carries colour (the figure stays
+     neutral). Direction colours mirror the Subjects rank-trend convention:
+     accent for up, QUIET muted for down (the saturated --app-danger token stays
+     reserved for destructive/contradiction states — more screen time is not an
+     error), subtle for flat. */
+  .lede-stat-delta {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted);
+  }
+  .lede-stat-delta-arrow {
+    line-height: 1;
+  }
+  .lede-stat-delta--up {
+    color: var(--app-accent);
+  }
+  .lede-stat-delta--down {
+    color: var(--app-text-muted);
+  }
+  .lede-stat-delta--steady {
+    color: var(--app-text-subtle);
   }
   /* The per-day sparkbar rides the stats footer as a final cell, pushed to the
      right so the figures read first. Reuses the shared .sparkbar primitive. */
@@ -2242,7 +2635,7 @@
     flex: 1 1 240px;
     min-width: 0;
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -2259,10 +2652,33 @@
   }
   .delta-group-head {
     margin: 0 0 2px;
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
+  }
+  /* Quiet one-line explainer for first-time readers, under a section eyebrow. */
+  .section-explainer {
+    margin: -2px 0 12px;
+    font-size: var(--text-sm);
+    color: var(--app-text-muted);
+    line-height: 1.5;
+  }
+  /* Honest "showing N of M" footer + path to the rest when the capped list hides
+     changes. */
+  .delta-overflow {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--app-border);
+  }
+  .delta-overflow-count {
+    font-size: var(--text-xs);
+    color: var(--app-text-subtle);
   }
   .delta-row {
     display: flex;
@@ -2275,6 +2691,43 @@
   .delta-row--faded {
     opacity: 0.7;
   }
+  /* Undo-window placeholder: a quiet single line with a dotted Undo link. */
+  .delta-row--dismissed {
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .dismissed-note {
+    font-size: var(--text-sm);
+    color: var(--app-text-subtle);
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+  }
+  .dismissed-undo {
+    flex: 0 0 auto;
+    font: inherit;
+    font-size: var(--text-sm);
+    padding: 0 0 1px;
+    border: 0;
+    border-bottom: 1px dotted var(--app-accent-border);
+    background: transparent;
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }
+  .dismissed-undo:hover {
+    color: var(--app-accent);
+  }
+  .dismissed-undo:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
   /* Statement stacks above a meta line (subject + time + toggle) — the
      subject no longer competes with the statement for horizontal room. */
   .delta-line {
@@ -2284,7 +2737,7 @@
   }
   .delta-statement {
     min-width: 0;
-    font-size: 12.5px;
+    font-size: var(--text-base);
     line-height: 1.45;
     color: var(--app-text-strong);
     display: -webkit-box;
@@ -2303,7 +2756,7 @@
        the left and only ellipsises if the subject is very long. */
     margin-left: auto;
     flex: 0 0 auto;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -2312,17 +2765,18 @@
      itself can't be one (a button inside a button is invalid HTML). */
   .delta-toggle {
     flex: 0 0 auto;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     font: inherit;
-    font-size: 13px;
+    font-size: var(--text-md);
     line-height: 1;
     border: none;
+    border-radius: 5px;
     background: transparent;
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
     cursor: pointer;
     transition:
       transform 0.12s ease,
@@ -2330,6 +2784,10 @@
   }
   .delta-toggle:hover {
     color: var(--app-text-strong);
+  }
+  .delta-toggle:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .delta-toggle.open {
     transform: rotate(90deg);
@@ -2354,7 +2812,7 @@
     align-items: center;
     gap: 5px;
     font: inherit;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -2382,7 +2840,7 @@
   }
   .gentle-btn {
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     padding: 3px 9px;
     border: 1px solid transparent;
     border-radius: 6px;
@@ -2407,7 +2865,7 @@
 
   .evidence-link {
     font: inherit;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     background: transparent;
     border: none;
@@ -2437,11 +2895,11 @@
     align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text);
   }
   .ev-stance {
-    font-size: 9.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 1px 6px;
@@ -2460,18 +2918,18 @@
     color: var(--app-text-strong);
   }
   .ev-time {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .evidence-empty {
     margin: 0;
-    font-size: 11px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
   }
 
   .fade-note {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-faint);
     font-style: italic;
   }
@@ -2505,14 +2963,14 @@
     flex: 1 1 auto;
   }
   .attn-title {
-    font-size: 12.5px;
+    font-size: var(--text-base);
     color: var(--app-text-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .attn-time {
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -2523,43 +2981,23 @@
     flex: 0 0 auto;
   }
   .attn-pick-label {
-    font-size: 9px;
+    font-size: var(--text-xs);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
+  }
+  .attn-pick :global(.select-wrapper) {
+    width: 160px;
   }
   .attn-more {
     align-self: flex-start;
     margin-top: 9px;
   }
-  .corr-select {
-    font: inherit;
-    font-size: 11px;
-    padding: 3px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    cursor: pointer;
-    transition: border-color 0.12s ease;
-  }
-  .corr-select:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-  }
-  .corr-select:focus {
-    outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .corr-select:disabled {
-    opacity: 0.6;
-    cursor: default;
-  }
 
   .feed-end {
     text-align: center;
     padding: 6px 0 0;
-    font-size: 10.5px;
+    font-size: var(--text-xs);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-faint);
@@ -2568,7 +3006,7 @@
   /* ---- Free-tier enable-engine CTA button ---- */
   .btn {
     font: inherit;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -2584,11 +3022,20 @@
     transition:
       background 0.12s ease,
       border-color 0.12s ease,
-      color 0.12s ease;
+      color 0.12s ease,
+      box-shadow 0.12s ease,
+      transform 0.06s ease;
   }
   .btn:hover {
     color: var(--app-text-strong);
     border-color: var(--app-border-hover);
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
   }
   .btn--accent {
     border-color: var(--app-accent-border);
@@ -2619,12 +3066,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--text-md);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: 11.5px;
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     line-height: 1.6;
   }

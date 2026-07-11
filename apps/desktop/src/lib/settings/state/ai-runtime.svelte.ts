@@ -13,19 +13,31 @@
 // into its own draft module, only the injected closures change.
 
 import { invoke } from "@tauri-apps/api/core";
+import { confirm } from "@tauri-apps/plugin-dialog";
+import { humanizeError } from "$lib/format-error";
 import type {
   AiProviderConfig,
   AiRuntimeStatus,
   AiRuntimeTestResult,
+  McpOAuthState,
+  McpOAuthStatus,
+  McpServerConfig,
 } from "$lib/types";
 
 export interface AiRuntimeStoreDeps {
   // The current connected provider instances (page draft state).
   getProviders: () => AiProviderConfig[];
+  // The current MCP tool connectors (page draft state) — for secret presence
+  // refresh and the "still in the list" guard on a late save.
+  getMcpServers: () => McpServerConfig[];
   // Is this provider kind a cloud provider (cloud → has a keychain key)?
   isCloudProviderKind: (kind: string) => boolean;
   // Human label for a provider instance id (resolved against the draft list).
   labelForProvider: (id: string) => string;
+  // Re-check Ask AI availability after a key save/clear so its readiness pill
+  // reflects the fresh runtime state without a manual Refresh. Lives in a
+  // sibling store — injected, mirroring the closure contract above.
+  loadAskAiAvailability: () => void;
 }
 
 export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
@@ -80,7 +92,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeStatus = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
     } catch (error) {
-      aiRuntimeStatusError = error instanceof Error ? error.message : String(error);
+      aiRuntimeStatusError = humanizeError(error);
     } finally {
       aiRuntimeStatusLoading = false;
     }
@@ -125,7 +137,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
         delete probed[id];
         aiProviderKeyErrors = {
           ...aiProviderKeyErrors,
-          [id]: error instanceof Error ? error.message : String(error),
+          [id]: humanizeError(error),
         };
       }
     }
@@ -167,10 +179,11 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
+      deps.loadAskAiAvailability();
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -181,6 +194,32 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
   async function clearAiProviderKey(provider: string) {
     // A save/clear for this same id is already in flight — bail so a rapid
     // double-invoke (save+clear, or two clears) can't race on the keychain.
+    if (aiProviderKeyInFlight.has(provider)) return;
+    // Clearing deletes the keychain credential with no undo — gate it on an
+    // explicit confirm, matching the Remove-provider flow, so a single mis-click
+    // can't wipe a saved API key. Arm the in-flight latch BEFORE the awaited
+    // dialog so a second click can't open a second dialog mid-confirm; release it
+    // if the user cancels.
+    aiProviderKeyInFlight.add(provider);
+    try {
+      const confirmed = await confirm(
+        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the macOS keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
+        {
+          title: "Delete this API key?",
+          kind: "warning",
+          okLabel: "Delete Key",
+          cancelLabel: "Keep Key",
+        },
+      );
+      if (!confirmed) return;
+    } catch {
+      // A dialog failure must not silently delete the key — bail.
+      return;
+    } finally {
+      // The block below re-arms the latch for the actual keychain call; release
+      // it here so a cancel/dialog-error path doesn't leave it stuck.
+      aiProviderKeyInFlight.delete(provider);
+    }
     if (aiProviderKeyInFlight.has(provider)) return;
     aiProviderKeyInFlight.add(provider);
     aiProviderKeySavingProvider = provider;
@@ -193,10 +232,11 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       resetTestResult();
       await refreshAiProviderKeyPresence();
       await loadAiRuntimeStatus();
+      deps.loadAskAiAvailability();
     } catch (error) {
       aiProviderKeyErrors = {
         ...aiProviderKeyErrors,
-        [provider]: error instanceof Error ? error.message : String(error),
+        [provider]: humanizeError(error),
       };
     } finally {
       aiProviderKeyInFlight.delete(provider);
@@ -227,9 +267,173 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
       aiProviderKeySavedByProvider = rest;
       aiProviderRemovalError = null;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = humanizeError(error);
       aiProviderRemovalError = `Could not clear the saved key for the removed provider ${label} — it may still be in the keychain. ${message}`;
     }
+  }
+
+  // ─── MCP connector secrets ──────────────────────────────────────────────────
+  // The single optional secret per MCP server, keyed by server instance id (the
+  // keychain account). MCP ids are unique slugs assigned once at creation and
+  // never reused, so this needs none of the same-kind re-add race handling the
+  // provider-key store above carries — a per-id in-flight guard + confirm-on-clear
+  // is enough.
+  let mcpSecretInputs = $state<Record<string, string>>({});
+  let mcpSecretSavedById = $state<Record<string, boolean>>({});
+  let mcpSecretSavingId = $state<string | null>(null);
+  let mcpSecretErrors = $state<Record<string, string>>({});
+  const mcpSecretInFlight = new Set<string>();
+
+  // Re-check which MCP connectors have a secret in the keychain (keyed by id).
+  async function refreshMcpServerSecretPresence() {
+    const ids = deps.getMcpServers().map((s) => s.id);
+    const probed: Record<string, boolean> = {};
+    for (const id of ids) {
+      try {
+        probed[id] = await invoke<boolean>("mcp_has_server_secret", { request: { id } });
+      } catch (error) {
+        mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+      }
+    }
+    mcpSecretSavedById = probed;
+  }
+
+  // Probe for a Node runtime on the user's login-shell PATH (local stdio
+  // presets spawn via npx). Resolves to the version string ("v22.11.0") or
+  // null when Node is missing.
+  function checkNode(): Promise<string | null> {
+    return invoke<string | null>("mcp_check_node");
+  }
+
+  function mcpServerStillPresent(id: string): boolean {
+    return deps.getMcpServers().some((s) => s.id === id);
+  }
+
+  async function saveMcpServerSecret(id: string) {
+    if (mcpSecretInFlight.has(id)) return;
+    const secret = (mcpSecretInputs[id] ?? "").trim();
+    if (!secret) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: "Enter a secret first." };
+      return;
+    }
+    // The server may have been removed between render and this click — bail
+    // before touching the keychain so a late save can't orphan a secret.
+    if (!mcpServerStillPresent(id)) return;
+    mcpSecretInFlight.add(id);
+    mcpSecretSavingId = id;
+    const { [id]: _saveErr, ...restErrors } = mcpSecretErrors;
+    mcpSecretErrors = restErrors;
+    try {
+      await invoke("mcp_set_server_secret", { request: { id, secret } });
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: "" };
+      await refreshMcpServerSecretPresence();
+    } catch (error) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+    } finally {
+      mcpSecretInFlight.delete(id);
+      mcpSecretSavingId = null;
+    }
+  }
+
+  async function clearMcpServerSecret(id: string) {
+    if (mcpSecretInFlight.has(id)) return;
+    // Deleting the keychain secret has no undo — gate on an explicit confirm,
+    // matching the provider-key flow. Arm the latch before the awaited dialog.
+    mcpSecretInFlight.add(id);
+    try {
+      const confirmed = await confirm(
+        `Deleting the saved secret for this connector removes it from the macOS keychain right away. The connector will stop authenticating until you enter a new secret.`,
+        {
+          title: "Delete this secret?",
+          kind: "warning",
+          okLabel: "Delete Secret",
+          cancelLabel: "Keep Secret",
+        },
+      );
+      if (!confirmed) return;
+    } catch {
+      return;
+    } finally {
+      mcpSecretInFlight.delete(id);
+    }
+    if (mcpSecretInFlight.has(id)) return;
+    mcpSecretInFlight.add(id);
+    mcpSecretSavingId = id;
+    const { [id]: _clearErr, ...restErrors } = mcpSecretErrors;
+    mcpSecretErrors = restErrors;
+    try {
+      await invoke("mcp_clear_server_secret", { request: { id } });
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: "" };
+      await refreshMcpServerSecretPresence();
+    } catch (error) {
+      mcpSecretErrors = { ...mcpSecretErrors, [id]: humanizeError(error) };
+    } finally {
+      mcpSecretInFlight.delete(id);
+      mcpSecretSavingId = null;
+    }
+  }
+
+  // Clear the keychain secret for an MCP connector the user just removed. Best
+  // effort: a failure only leaves an orphaned secret (recorded under an id no
+  // longer rendered), never blocks the removal.
+  async function clearSecretForRemovedMcpServer(id: string): Promise<void> {
+    try {
+      await invoke("mcp_clear_server_secret", { request: { id } });
+    } catch {
+      // The secret is orphaned in the keychain; nothing renders this id anymore.
+    }
+    const { [id]: _cleared, ...rest } = mcpSecretSavedById;
+    mcpSecretSavedById = rest;
+  }
+
+  // ─── MCP connector OAuth authorization (ADR 0051) ───────────────────────────
+  // The browser-authorization lifecycle state per http+oauth connector, keyed by
+  // id. Mirrors the secret-presence machinery above: a snapshot the panel reads,
+  // refreshed on demand and on the `mcp_authorization_changed` event so rows flip
+  // live. A failed `begin` (e.g. the server has no dynamic client registration)
+  // is recorded per-id — like `mcpSecretErrors` — so the row can surface why the
+  // browser never opened, instead of throwing into the click handler.
+  let mcpOAuthStateById = $state<Record<string, McpOAuthState>>({});
+  let mcpOAuthErrors = $state<Record<string, string>>({});
+
+  // Re-fetch every http+oauth connector's authorization state and rebuild the
+  // map. Swallow/log failures (transient) like `refreshMcpServerSecretPresence`.
+  async function refreshMcpOAuthStates(): Promise<void> {
+    try {
+      const statuses = await invoke<McpOAuthStatus[]>("mcp_oauth_statuses");
+      const next: Record<string, McpOAuthState> = {};
+      for (const s of statuses) next[s.id] = s.state;
+      mcpOAuthStateById = next;
+    } catch (error) {
+      console.error("[ai-runtime] refreshMcpOAuthStates failed", error);
+    }
+  }
+
+  // Begin the browser authorization flow (opens the browser, inserts a pending
+  // entry). Used for BOTH Connect and Reconnect. The bare `{ id }` arg shape is
+  // the oauth command contract (NOT the `{ request: { id } }` of the secret
+  // commands). Errors land in `mcpOAuthErrors[id]` so the row shows them.
+  async function beginMcpOAuth(id: string): Promise<void> {
+    const { [id]: _prev, ...rest } = mcpOAuthErrors;
+    mcpOAuthErrors = rest;
+    try {
+      await invoke("mcp_oauth_begin", { id });
+    } catch (error) {
+      mcpOAuthErrors = { ...mcpOAuthErrors, [id]: humanizeError(error) };
+    }
+  }
+
+  // Best-effort revoke + drop the token, returning the connector to "needs
+  // authorization". Refresh after so the row flips even without the event.
+  async function disconnectMcpOAuth(id: string): Promise<void> {
+    const { [id]: _prev, ...rest } = mcpOAuthErrors;
+    mcpOAuthErrors = rest;
+    try {
+      await invoke("mcp_oauth_disconnect", { id });
+    } catch (error) {
+      mcpOAuthErrors = { ...mcpOAuthErrors, [id]: humanizeError(error) };
+    }
+    await refreshMcpOAuthStates();
   }
 
   // Clear the last test-connection banner (result + error). The banner reports
@@ -248,7 +452,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     try {
       aiRuntimeTestResult = await invoke<AiRuntimeTestResult>("ai_runtime_test_connection");
     } catch (error) {
-      aiRuntimeTestError = error instanceof Error ? error.message : String(error);
+      aiRuntimeTestError = humanizeError(error);
     } finally {
       aiRuntimeTestRunning = false;
       void loadAiRuntimeStatus();
@@ -278,6 +482,25 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     clearKeyForRemovedProvider,
     resetTestResult,
     runAiRuntimeTestConnection,
+    // MCP connector secrets.
+    get mcpSecretInputs() { return mcpSecretInputs; },
+    setMcpSecretInput(id: string, value: string) {
+      mcpSecretInputs = { ...mcpSecretInputs, [id]: value };
+    },
+    get mcpSecretSavedById() { return mcpSecretSavedById; },
+    get mcpSecretSavingId() { return mcpSecretSavingId; },
+    get mcpSecretErrors() { return mcpSecretErrors; },
+    refreshMcpServerSecretPresence,
+    saveMcpServerSecret,
+    clearMcpServerSecret,
+    clearSecretForRemovedMcpServer,
+    checkNode,
+    // MCP connector OAuth (ADR 0051).
+    get mcpOAuthStateById() { return mcpOAuthStateById; },
+    get mcpOAuthErrors() { return mcpOAuthErrors; },
+    refreshMcpOAuthStates,
+    beginMcpOAuth,
+    disconnectMcpOAuth,
   };
 }
 

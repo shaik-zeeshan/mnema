@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP connectors — A: Modal catalog grid</title>
+<style>
+:root {
+  --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
+  --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#33334a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18); --app-accent-contrast:#07120c;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-ring:0 0 0 3px var(--app-accent-glow);
+  --app-shadow-popover:0 8px 24px rgba(0,0,0,0.22);
+  --app-overlay-bg:rgba(10,10,16,0.78);
+  --app-font-mono:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px; --text-xl:20px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--app-bg); color:var(--app-text); font-family:var(--app-font-mono); font-size:var(--text-md); padding:40px 24px 80px; }
+a { color:var(--app-text-muted); }
+
+/* ---------- caption ---------- */
+.caption { max-width:1100px; margin:0 auto 20px; }
+.caption__eyebrow { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-accent); }
+.caption h1 { font-size:16px; font-weight:600; color:var(--app-text-strong); margin:6px 0 4px; letter-spacing:-.01em; }
+.caption p { font-size:11px; color:var(--app-text-muted); line-height:1.5; }
+
+/* ---------- app window ---------- */
+.window { width:1100px; height:740px; margin:0 auto; border:1px solid var(--app-border-strong); border-radius:12px;
+  background:var(--app-bg); box-shadow:0 24px 60px rgba(0,0,0,.45); overflow:hidden; display:flex; flex-direction:column; position:relative; }
+.titlebar { flex:0 0 38px; display:flex; align-items:center; gap:8px; padding:0 14px; border-bottom:1px solid var(--app-border); }
+.titlebar__dot { width:11px; height:11px; border-radius:50%; background:#26262f; border:1px solid #33333f; }
+.titlebar__title { margin-left:10px; font-size:11px; color:var(--app-text-subtle); letter-spacing:.04em; }
+
+/* ---------- settings shell ---------- */
+.settings-shell { display:flex; gap:18px; flex:1; min-height:0; padding:18px 22px 0; }
+.rail { flex:0 0 232px; padding-right:18px; display:flex; flex-direction:column; min-height:0; position:relative; }
+.rail::after { content:""; position:absolute; top:0; bottom:0; right:0; width:1px;
+  background:repeating-linear-gradient(to bottom,var(--app-border-strong) 0 3px,transparent 3px 8px);
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 8%,#000 92%,transparent); mask-image:linear-gradient(to bottom,transparent,#000 8%,#000 92%,transparent); }
+.rail__back { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--app-text-muted); text-decoration:none; padding:4px 8px; margin-bottom:10px; border-radius:6px; }
+.rail__back:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
+.rail__search { margin-bottom:16px; }
+.rail__search .text-input { width:100%; font-size:11px; padding:6px 10px; }
+.rail-cat { font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--app-text-muted); margin:0 0 5px 8px; }
+.rail-cat + .rail-cat, .rail-nav + .rail-cat { margin-top:16px; }
+.rail-nav { display:flex; flex-direction:column; gap:1px; }
+.rail-item { position:relative; display:flex; align-items:center; gap:9px; height:32px; padding:6px 10px; border-radius:6px;
+  font-size:13px; font-weight:500; color:var(--app-text-muted); cursor:pointer; text-decoration:none; }
+.rail-item:hover { background:var(--app-surface-hover); color:var(--app-text); }
+.rail-item .ic { width:16px; height:16px; flex-shrink:0; }
+.rail-item.is-active { background:rgba(61,255,160,.08); color:var(--app-text-strong); }
+.rail-item.is-active .ic { color:var(--app-accent); }
+.rail-item.is-active::before { content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:2px;
+  background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+.rail__spacer { flex:1; }
+.rail__footer { display:flex; align-items:center; gap:7px; padding:12px 10px 16px; font-size:10px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-muted); }
+.rail__footer .dot { width:6px; height:6px; border-radius:50%; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+
+.settings-scroll { flex:1; overflow-y:auto; min-height:0; }
+.settings-panel { max-width:640px; margin:0 auto; display:flex; flex-direction:column; gap:24px; padding:8px 24px 48px; }
+.ic { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+
+/* ---------- setting group ---------- */
+.setting-group { display:flex; flex-direction:column; gap:12px; }
+.setting-group__title { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-text-strong); }
+.setting-group__hint { font-size:11px; color:var(--app-text-muted); line-height:1.5; letter-spacing:.01em; }
+.setting-group__card { position:relative; background:var(--app-surface-raised); border:1px solid var(--app-border); border-radius:12px; }
+.setting-group__card::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+  background:linear-gradient(90deg,transparent,rgba(61,255,160,.12) 22%,rgba(61,255,160,.12) 78%,transparent); pointer-events:none; }
+.setting-row { position:relative; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; }
+.setting-row + .setting-row::before { content:""; position:absolute; top:0; left:20px; right:20px; height:1px; background:var(--app-border); }
+.setting-row__label { font-size:13px; font-weight:550; color:var(--app-text-strong); letter-spacing:.01em; }
+.setting-row__description { font-size:11px; color:var(--app-text-muted); line-height:1.45; letter-spacing:.01em; }
+
+/* ---------- mcp connector row ---------- */
+.mcp-row__main { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; }
+.mcp-row__meta { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.mcp-row__tag { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--app-text-muted);
+  background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:5px; padding:2px 6px; }
+.mcp-row__badge { display:inline-flex; align-items:center; gap:4px; font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--app-accent); background:var(--app-accent-bg); border:1px solid var(--app-accent-border); border-radius:999px; padding:2px 8px; }
+.mcp-row__count { font-size:11px; color:var(--app-text-subtle); letter-spacing:.02em; }
+.mcp-row__badge--warn { color:var(--app-warn); background:var(--app-warn-bg); border-color:var(--app-warn-border); }
+@keyframes row-flash { from { background:rgba(61,255,160,.08); } to { background:transparent; } }
+.setting-row--new { animation:row-flash 1.4s ease-out; }
+
+/* ---------- buttons / inputs (verbatim) ---------- */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:8px 16px; border-radius:8px;
+  font-family:inherit; font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap;
+  cursor:pointer; border:1px solid transparent; transition:all .15s; outline:none; }
+.btn:focus-visible { box-shadow:var(--app-ring); }
+.btn:active:not(:disabled) { transform:translateY(1px); }
+.btn--ghost { background:transparent; color:var(--app-text); border-color:var(--app-border-strong); }
+.btn--ghost:hover { background:var(--app-surface-hover); color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.btn--sm { padding:6px 12px; font-size:10px; color:var(--app-text-muted); border-color:var(--app-border-strong); background:transparent; }
+.btn--sm:hover { background:var(--app-surface-hover); color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.btn--danger { background:var(--app-danger-bg); color:var(--app-danger); border-color:var(--app-danger-border); }
+.btn--danger:hover { border-color:var(--app-danger); box-shadow:0 0 14px rgba(255,107,122,.15); }
+.btn--primary { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+.btn--primary:hover:not(:disabled) { background:rgba(61,255,160,.12); border-color:var(--app-accent); box-shadow:0 0 14px var(--app-accent-glow); }
+.btn:disabled { opacity:.4; cursor:not-allowed; }
+.text-input { padding:8px 12px; background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:8px;
+  font-family:inherit; font-size:12px; color:var(--app-text); outline:none; box-shadow:inset 0 1px 2px rgba(0,0,0,.25); }
+.text-input:focus { border-color:var(--app-accent); box-shadow:inset 0 1px 2px rgba(0,0,0,.25), var(--app-ring); }
+.text-input::placeholder { color:var(--app-text-faint); }
+.text-input.is-error { border-color:var(--app-danger); }
+.text-input.is-error:focus { box-shadow:inset 0 1px 2px rgba(0,0,0,.25), 0 0 0 3px rgba(255,107,122,.15); }
+.field__error { font-size:10.5px; color:var(--app-danger); line-height:1.4; }
+.field-label { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--app-text-muted); }
+.group-hint { font-size:11px; color:var(--app-text-muted); letter-spacing:.03em; line-height:1.5; }
+.group-hint--warn { color:var(--app-warn); font-weight:600; }
+.group-hint--accent { color:var(--app-accent); }
+.switch-track { position:relative; display:inline-flex; align-items:center; width:36px; height:20px; background:var(--app-surface);
+  border:1px solid var(--app-border-strong); border-radius:999px; cursor:pointer; flex-shrink:0; transition:all .18s; }
+.switch-thumb { position:absolute; left:2px; width:14px; height:14px; border-radius:50%; background:var(--app-text-subtle); transition:all .18s; }
+.switch-track.is-on { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+.switch-track.is-on .switch-thumb { transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+.segmented { display:inline-flex; width:fit-content; gap:2px; padding:2px; border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface); }
+.seg { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border:0; border-radius:6px; background:transparent;
+  color:var(--app-text-muted); font:inherit; font-size:12px; font-weight:540; line-height:1; cursor:pointer; }
+.seg--active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+
+/* ---------- modal (verbatim) ---------- */
+.cat-modal { position:fixed; inset:0; z-index:2000; display:grid; place-items:center; padding:24px;
+  background:var(--app-overlay-bg); backdrop-filter:blur(10px); }
+.cat-modal[hidden] { display:none; }
+.cat-modal__panel { width:min(560px,100%); max-height:min(720px,calc(100vh - 48px)); display:flex; flex-direction:column;
+  border:1px solid var(--app-border-strong); border-radius:18px; background:var(--app-surface-raised); box-shadow:var(--app-shadow-popover); }
+.cat-modal__header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 18px 12px; }
+.cat-modal__eyebrow { margin:0 0 2px; font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--app-text-muted); }
+.cat-modal__header h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--app-text-strong); }
+.cat-modal__close { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; font-size:16px;
+  border:1px solid var(--app-border); border-radius:8px; background:transparent; color:var(--app-text-muted); cursor:pointer; }
+.cat-modal__close:hover { color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.cat-modal__body { overflow-y:auto; padding:0 18px 18px; }
+
+/* ---------- catalog grid ---------- */
+.catalog__search { width:100%; margin-bottom:14px; }
+.catalog-eyebrow { font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--app-text-subtle); margin:14px 0 8px 2px; }
+.catalog-group:first-of-type .catalog-eyebrow { margin-top:0; }
+.catalog-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.tile { display:flex; align-items:center; gap:11px; padding:11px 12px; text-align:left; border:1px solid var(--app-border);
+  border-radius:10px; background:var(--app-surface); font-family:inherit; cursor:pointer; transition:all .15s; outline:none; }
+.tile:hover { background:var(--app-surface-hover); border-color:var(--app-border-hover); }
+.tile:focus-visible { box-shadow:var(--app-ring); }
+.tile__icon { width:30px; height:30px; flex-shrink:0; display:grid; place-items:center; border:1px solid var(--app-border-strong);
+  border-radius:7px; color:var(--app-text-muted); font-size:11px; font-weight:700; letter-spacing:.02em; }
+.tile__icon .ic { width:15px; height:15px; }
+.brand-icon { width:16px; height:16px; fill:currentColor; }
+.tile__text { min-width:0; flex:1; }
+.tile__name { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; color:var(--app-text-strong); }
+.tile__tagline { font-size:10.5px; color:var(--app-text-muted); line-height:1.35; margin-top:2px; }
+.tile__badge { font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--app-text-subtle);
+  border:1px solid var(--app-border-strong); border-radius:4px; padding:1px 5px; background:var(--app-surface-subtle); }
+.tile:active { background:var(--app-surface-active); }
+.tile__badge--added { color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+.tile--custom { grid-column:1 / -1; border-style:dashed; background:transparent; }
+.tile--custom .tile__name { color:var(--app-text-muted); }
+.tile--custom:hover { background:var(--app-surface-hover); }
+.catalog-custom { margin-top:8px; }
+.catalog-custom .tile { width:100%; }
+.catalog-empty { font-size:11px; color:var(--app-text-subtle); padding:18px 2px; }
+
+/* ---------- connect step ---------- */
+.connect { display:flex; flex-direction:column; gap:14px; }
+.connect__lede { font-size:11px; color:var(--app-text-muted); line-height:1.5; letter-spacing:.01em; }
+.chip-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.chip { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--app-text-muted);
+  background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:5px; padding:3px 7px; }
+.chip--path { text-transform:none; letter-spacing:.01em; }
+.field { display:flex; flex-direction:column; gap:6px; }
+.field .text-input { width:100%; }
+.field__help { font-size:10.5px; color:var(--app-text-muted); text-decoration:none; width:fit-content; }
+.field__help:hover { color:var(--app-text); text-decoration:underline; }
+.adv { border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface); overflow:hidden; }
+.adv__toggle { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px;
+  background:transparent; border:0; font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--app-text-muted); cursor:pointer; }
+.adv__toggle:hover { color:var(--app-text-strong); }
+.adv__chev { transition:transform .15s; font-size:11px; }
+.adv.is-open .adv__chev { transform:rotate(90deg); }
+.adv__body { display:none; flex-direction:column; gap:12px; padding:2px 12px 14px; border-top:1px solid var(--app-border); }
+.adv.is-open .adv__body { display:flex; }
+.connect__footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:4px; }
+
+/* ---------- static state sections ---------- */
+.state-section { max-width:1100px; margin:44px auto 0; }
+.state-section__eyebrow { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-warn); margin-bottom:12px; }
+.state-section__eyebrow--ok { color:var(--app-accent); }
+.state-panel { position:static; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-4"/><path d="M9 8V3"/><path d="M15 8V3"/><path d="M6 8h12v4a6 6 0 0 1-12 0V8z"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h8"/><path d="M7 12h10"/><path d="M7 16h6"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></symbol>
+<symbol id="b-github" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+<symbol id="b-linear" viewBox="0 0 24 24"><path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"/></symbol>
+<symbol id="b-notion" viewBox="0 0 24 24"><path d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z"/></symbol>
+<symbol id="b-sentry" viewBox="0 0 24 24"><path d="M13.91 2.505c-.873-1.448-2.972-1.448-3.844 0L6.904 7.92a15.478 15.478 0 0 1 8.53 12.811h-2.221A13.301 13.301 0 0 0 5.784 9.814l-2.926 5.06a7.65 7.65 0 0 1 4.435 5.848H2.194a.365.365 0 0 1-.298-.534l1.413-2.402a5.16 5.16 0 0 0-1.614-.913L.296 19.275a2.182 2.182 0 0 0 .812 2.999 2.24 2.24 0 0 0 1.086.288h6.983a9.322 9.322 0 0 0-3.845-8.318l1.11-1.922a11.47 11.47 0 0 1 4.95 10.24h5.915a17.242 17.242 0 0 0-7.885-15.28l2.244-3.845a.37.37 0 0 1 .504-.13c.255.14 9.75 16.708 9.928 16.9a.365.365 0 0 1-.327.543h-2.287c.029.612.029 1.223 0 1.831h2.297a2.206 2.206 0 0 0 1.922-3.31z"/></symbol>
+<symbol id="b-stripe" viewBox="0 0 24 24"><path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z"/></symbol>
+<symbol id="b-postgres" viewBox="0 0 24 24"><path d="M23.5594 14.7228a.5269.5269 0 0 0-.0563-.1191c-.139-.2632-.4768-.3418-1.0074-.2321-1.6533.3411-2.2935.1312-2.5256-.0191 1.342-2.0482 2.445-4.522 3.0411-6.8297.2714-1.0507.7982-3.5237.1222-4.7316a1.5641 1.5641 0 0 0-.1509-.235C21.6931.9086 19.8007.0248 17.5099.0005c-1.4947-.0158-2.7705.3461-3.1161.4794a9.449 9.449 0 0 0-.5159-.0816 8.044 8.044 0 0 0-1.3114-.1278c-1.1822-.0184-2.2038.2642-3.0498.8406-.8573-.3211-4.7888-1.645-7.2219.0788C.9359 2.1526.3086 3.8733.4302 6.3043c.0409.818.5069 3.334 1.2423 5.7436.4598 1.5065.9387 2.7019 1.4334 3.582.553.9942 1.1259 1.5933 1.7143 1.7895.4474.1491 1.1327.1441 1.8581-.7279.8012-.9635 1.5903-1.8258 1.9446-2.2069.4351.2355.9064.3625 1.39.3772a.0569.0569 0 0 0 .0004.0041 11.0312 11.0312 0 0 0-.2472.3054c-.3389.4302-.4094.5197-1.5002.7443-.3102.064-1.1344.2339-1.1464.8115-.0025.1224.0329.2309.0919.3268.2269.4231.9216.6097 1.015.6331 1.3345.3335 2.5044.092 3.3714-.6787-.017 2.231.0775 4.4174.3454 5.0874.2212.5529.7618 1.9045 2.4692 1.9043.2505 0 .5263-.0291.8296-.0941 1.7819-.3821 2.5557-1.1696 2.855-2.9059.1503-.8707.4016-2.8753.5388-4.1012.0169-.0703.0357-.1207.057-.1362.0007-.0005.0697-.0471.4272.0307a.3673.3673 0 0 0 .0443.0068l.2539.0223.0149.001c.8468.0384 1.9114-.1426 2.5312-.4308.6438-.2988 1.8057-1.0323 1.5951-1.6698zM2.371 11.8765c-.7435-2.4358-1.1779-4.8851-1.2123-5.5719-.1086-2.1714.4171-3.6829 1.5623-4.4927 1.8367-1.2986 4.8398-.5408 6.108-.13-.0032.0032-.0066.0061-.0098.0094-2.0238 2.044-1.9758 5.536-1.9708 5.7495-.0002.0823.0066.1989.0162.3593.0348.5873.0996 1.6804-.0735 2.9184-.1609 1.1504.1937 2.2764.9728 3.0892.0806.0841.1648.1631.2518.2374-.3468.3714-1.1004 1.1926-1.9025 2.1576-.5677.6825-.9597.5517-1.0886.5087-.3919-.1307-.813-.5871-1.2381-1.3223-.4796-.839-.9635-2.0317-1.4155-3.5126zm6.0072 5.0871c-.1711-.0428-.3271-.1132-.4322-.1772.0889-.0394.2374-.0902.4833-.1409 1.2833-.2641 1.4815-.4506 1.9143-1.0002.0992-.126.2116-.2687.3673-.4426a.3549.3549 0 0 0 .0737-.1298c.1708-.1513.2724-.1099.4369-.0417.156.0646.3078.26.3695.4752.0291.1016.0619.2945-.0452.4444-.9043 1.2658-2.2216 1.2494-3.1676 1.0128zm2.094-3.988-.0525.141c-.133.3566-.2567.6881-.3334 1.003-.6674-.0021-1.3168-.2872-1.8105-.8024-.6279-.6551-.9131-1.5664-.7825-2.5004.1828-1.3079.1153-2.4468.079-3.0586-.005-.0857-.0095-.1607-.0122-.2199.2957-.2621 1.6659-.9962 2.6429-.7724.4459.1022.7176.4057.8305.928.5846 2.7038.0774 3.8307-.3302 4.7363-.084.1866-.1633.3629-.2311.5454zm7.3637 4.5725c-.0169.1768-.0358.376-.0618.5959l-.146.4383a.3547.3547 0 0 0-.0182.1077c-.0059.4747-.054.6489-.115.8693-.0634.2292-.1353.4891-.1794 1.0575-.11 1.4143-.8782 2.2267-2.4172 2.5565-1.5155.3251-1.7843-.4968-2.0212-1.2217a6.5824 6.5824 0 0 0-.0769-.2266c-.2154-.5858-.1911-1.4119-.1574-2.5551.0165-.5612-.0249-1.9013-.3302-2.6462.0044-.2932.0106-.5909.019-.8918a.3529.3529 0 0 0-.0153-.1126 1.4927 1.4927 0 0 0-.0439-.208c-.1226-.4283-.4213-.7866-.7797-.9351-.1424-.059-.4038-.1672-.7178-.0869.067-.276.1831-.5875.309-.9249l.0529-.142c.0595-.16.134-.3257.213-.5012.4265-.9476 1.0106-2.2453.3766-5.1772-.2374-1.0981-1.0304-1.6343-2.2324-1.5098-.7207.0746-1.3799.3654-1.7088.5321a5.6716 5.6716 0 0 0-.1958.1041c.0918-1.1064.4386-3.1741 1.7357-4.4823a4.0306 4.0306 0 0 1 .3033-.276.3532.3532 0 0 0 .1447-.0644c.7524-.5706 1.6945-.8506 2.802-.8325.4091.0067.8017.0339 1.1742.081 1.939.3544 3.2439 1.4468 4.0359 2.3827.8143.9623 1.2552 1.9315 1.4312 2.4543-1.3232-.1346-2.2234.1268-2.6797.779-.9926 1.4189.543 4.1729 1.2811 5.4964.1353.2426.2522.4522.2889.5413.2403.5825.5515.9713.7787 1.2552.0696.087.1372.1714.1885.245-.4008.1155-1.1208.3825-1.0552 1.717-.0123.1563-.0423.4469-.0834.8148-.0461.2077-.0702.4603-.0994.7662zm.8905-1.6211c-.0405-.8316.2691-.9185.5967-1.0105a2.8566 2.8566 0 0 0 .135-.0406 1.202 1.202 0 0 0 .1342.103c.5703.3765 1.5823.4213 3.0068.1344-.2016.1769-.5189.3994-.9533.6011-.4098.1903-1.0957.333-1.7473.3636-.7197.0336-1.0859-.0807-1.1721-.151zm.5695-9.2712c-.0059.3508-.0542.6692-.1054 1.0017-.055.3576-.112.7274-.1264 1.1762-.0142.4368.0404.8909.0932 1.3301.1066.887.216 1.8003-.2075 2.7014a3.5272 3.5272 0 0 1-.1876-.3856c-.0527-.1276-.1669-.3326-.3251-.6162-.6156-1.1041-2.0574-3.6896-1.3193-4.7446.3795-.5427 1.3408-.5661 2.1781-.463zm.2284 7.0137a12.3762 12.3762 0 0 0-.0853-.1074l-.0355-.0444c.7262-1.1995.5842-2.3862.4578-3.4385-.0519-.4318-.1009-.8396-.0885-1.2226.0129-.4061.0666-.7543.1185-1.0911.0639-.415.1288-.8443.1109-1.3505.0134-.0531.0188-.1158.0118-.1902-.0457-.4855-.5999-1.938-1.7294-3.253-.6076-.7073-1.4896-1.4972-2.6889-2.0395.5251-.1066 1.2328-.2035 2.0244-.1859 2.0515.0456 3.6746.8135 4.8242 2.2824a.908.908 0 0 1 .0667.1002c.7231 1.3556-.2762 6.2751-2.9867 10.5405zm-8.8166-6.1162c-.025.1794-.3089.4225-.6211.4225a.5821.5821 0 0 1-.0809-.0056c-.1873-.026-.3765-.144-.5059-.3156-.0458-.0605-.1203-.178-.1055-.2844.0055-.0401.0261-.0985.0925-.1488.1182-.0894.3518-.1226.6096-.0867.3163.0441.6426.1938.6113.4186zm7.9305-.4114c.0111.0792-.049.201-.1531.3102-.0683.0717-.212.1961-.4079.2232a.5456.5456 0 0 1-.075.0052c-.2935 0-.5414-.2344-.5607-.3717-.024-.1765.2641-.3106.5611-.352.297-.0414.6111.0088.6356.1851z"/></symbol>
+</defs></svg>
+
+<div class="caption">
+  <div class="caption__eyebrow">Variant A · Modal catalog grid</div>
+  <h1>MCP connectors — pick a service from a catalog, paste one token, done</h1>
+  <p>"+ ADD CONNECTOR" opens a two-step settings modal: step 1 is a searchable 2-column grid of preset tiles (hosted vs local, Custom as the dashed escape hatch); step 2 pre-fills everything and asks only for the token. ADD CONNECTOR verifies the connection (lists tools) before closing; the new row flashes in at the top of the list. CONFIGURE on a row reopens the same modal in edit mode (token "Unchanged — paste to replace", REMOVE / SAVE footer).</p>
+</div>
+
+<div class="window">
+  <div class="titlebar">
+    <span class="titlebar__dot"></span><span class="titlebar__dot"></span><span class="titlebar__dot"></span>
+    <span class="titlebar__title">Mnema — Settings</span>
+  </div>
+  <div class="settings-shell">
+    <nav class="rail">
+      <a class="rail__back" href="#">← Back to app</a>
+      <div class="rail__search"><input class="text-input" type="text" placeholder="Search settings…"></div>
+      <div class="rail-cat">Recording</div>
+      <div class="rail-cat">Intelligence</div>
+      <div class="rail-nav">
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-box"/></svg>Providers</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-chat"/></svg>Ask AI</a>
+        <a class="rail-item is-active" href="#"><svg class="ic"><use href="#i-plug"/></svg>MCP connectors</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-mic"/></svg>Transcription</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-scan"/></svg>OCR</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-search"/></svg>Semantic search</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-users"/></svg>Speakers</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-spark"/></svg>User context</a>
+      </div>
+      <div class="rail-cat">Privacy</div>
+      <div class="rail-cat">Storage</div>
+      <div class="rail__spacer"></div>
+      <div class="rail__footer"><span class="dot"></span>Saved</div>
+    </nav>
+    <div class="settings-scroll">
+      <div class="settings-panel">
+        <section class="setting-group">
+          <div class="setting-group__title">MCP connectors</div>
+          <p class="setting-group__hint">Connect Model Context Protocol servers so chat can use their tools (GitHub, Linear, a filesystem, …). Each connector is offered to the chat agent only while enabled. A connector's single secret is stored only in the macOS keychain — never in Mnema's settings.</p>
+          <div class="setting-group__card" id="connector-list">
+            <div class="setting-row" data-id="github" data-name="GitHub">
+              <div class="mcp-row__main">
+                <span class="setting-row__label">GitHub</span>
+                <span class="mcp-row__tag">hosted</span>
+                <span class="mcp-row__badge">✓ secret in keychain</span>
+                <span class="mcp-row__count">12 tools · 5 active</span>
+              </div>
+              <div class="mcp-row__meta">
+                <button class="btn btn--ghost btn--sm js-configure">Configure</button>
+                <span class="switch-track is-on" role="switch" aria-checked="true" tabindex="0"><span class="switch-thumb"></span></span>
+              </div>
+            </div>
+          </div>
+          <div><button class="btn btn--ghost btn--sm" id="open-picker">+ Add connector</button></div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ modal ============ -->
+<div class="cat-modal" id="picker" hidden>
+  <div class="cat-modal__panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <div class="cat-modal__header">
+      <div>
+        <p class="cat-modal__eyebrow" id="picker-eyebrow">Add connector</p>
+        <h2 id="picker-title">Pick a service</h2>
+      </div>
+      <button class="cat-modal__close" id="picker-close" aria-label="Close">×</button>
+    </div>
+    <div class="cat-modal__body" id="picker-step1">
+      <input class="text-input catalog__search" id="catalog-search" type="text" placeholder="Search services…">
+      <div id="catalog"></div>
+    </div>
+    <div class="cat-modal__body" id="picker-step2" hidden></div>
+  </div>
+</div>
+
+<!-- ============ static states ============ -->
+<div class="state-section">
+  <div class="state-section__eyebrow state-section__eyebrow--ok">State: connect step — hosted preset</div>
+  <div class="cat-modal__panel state-panel" id="state-hosted"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow">State: connect step — local preset with Node missing (warn)</div>
+  <div class="cat-modal__panel state-panel" id="state-local-warn"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow">State: connect step — hosted preset, token rejected (error)</div>
+  <div class="cat-modal__panel state-panel" id="state-hosted-error"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow">State: connector row — local preset saved while Node is missing (switch off until Node is found)</div>
+  <div class="setting-group__card state-panel" style="max-width:640px">
+    <div class="setting-row">
+      <div class="mcp-row__main">
+        <span class="setting-row__label">Filesystem</span>
+        <span class="mcp-row__tag">local</span>
+        <span class="mcp-row__badge mcp-row__badge--warn">needs Node — install from nodejs.org</span>
+      </div>
+      <div class="mcp-row__meta">
+        <button class="btn btn--ghost btn--sm">Configure</button>
+        <span class="switch-track" role="switch" aria-checked="false" tabindex="0"><span class="switch-thumb"></span></span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PRESETS = [
+  { id:"github",  kind:"hosted", label:"GitHub",  tagline:"Issues, pull requests, code search.", lede:"Chat can search code, read issues, and open pull requests in your repos.", tools:12, url:"api.githubcopilot.com/mcp/", fullUrl:"https://api.githubcopilot.com/mcp/", secretLabel:"Personal access token", brandSvg:"b-github" },
+  { id:"linear",  kind:"hosted", label:"Linear",  tagline:"Issues, projects, cycles.",           lede:"Chat can look up and update issues, projects, and cycles.", tools:9, url:"mcp.linear.app/mcp",  fullUrl:"https://mcp.linear.app/mcp",  secretLabel:"API key",            brandSvg:"b-linear" },
+  { id:"notion",  kind:"hosted", label:"Notion",  tagline:"Pages and databases.",                lede:"Chat can read and edit your pages and databases.", tools:7, url:"mcp.notion.com/mcp",  fullUrl:"https://mcp.notion.com/mcp",  secretLabel:"Integration token",  brandSvg:"b-notion" },
+  { id:"sentry",  kind:"hosted", label:"Sentry",  tagline:"Errors and performance traces.",      lede:"Chat can pull up errors and performance traces.", tools:6, url:"mcp.sentry.dev/mcp",  fullUrl:"https://mcp.sentry.dev/mcp",  secretLabel:"Auth token",         brandSvg:"b-sentry" },
+  { id:"stripe",  kind:"hosted", label:"Stripe",  tagline:"Customers, payments, invoices.",      lede:"Chat can look up customers, payments, and invoices.", tools:10, url:"mcp.stripe.com",      fullUrl:"https://mcp.stripe.com",      secretLabel:"Restricted API key", brandSvg:"b-stripe" },
+  { id:"context7",kind:"hosted", label:"Context7",tagline:"Up-to-date library docs.",            lede:"Chat can pull up-to-date docs for the libraries you use.", tools:2, url:"mcp.context7.com/mcp",fullUrl:"https://mcp.context7.com/mcp",secretLabel:"API key (optional)", icon:"C7", optional:true },
+  { id:"filesystem",kind:"local",label:"Filesystem",tagline:"Read and write files in folders you choose.", lede:"Chat can read and write files in the folders you pick.", tools:11, command:"npx -y @modelcontextprotocol/server-filesystem ~/Documents", pathLabel:"Folder", pathValue:"~/Documents", iconSvg:"i-folder" },
+  { id:"postgres",  kind:"local",label:"Postgres",  tagline:"Query a database.",                 lede:"Chat can run queries against your database.", tools:1, command:"npx -y @modelcontextprotocol/server-postgres postgresql://…", pathLabel:"Connection string", pathValue:"", pathPlaceholder:"postgresql://user@host/db", brandSvg:"b-postgres" },
+  { id:"custom",  kind:"custom", label:"Custom",  tagline:"Any other MCP server — fill in every field yourself.", iconSvg:"i-sliders" },
+];
+
+const $ = (s, r=document) => r.querySelector(s);
+const added = { github: 1 }; // GitHub row pre-exists in the list
+const picker = $("#picker"), step1 = $("#picker-step1"), step2 = $("#picker-step2"), title = $("#picker-title");
+
+function tileIcon(p) {
+  if (p.brandSvg) return `<svg class="brand-icon" fill="currentColor" aria-hidden="true"><use href="#${p.brandSvg}"/></svg>`;
+  return p.iconSvg ? `<svg class="ic"><use href="#${p.iconSvg}"/></svg>` : p.icon;
+}
+
+/* ---------- step 1: catalog grid ---------- */
+function renderCatalog(filter="") {
+  const q = filter.trim().toLowerCase();
+  const match = p => !q || (p.label + " " + p.tagline).toLowerCase().includes(q);
+  const tile = p => `
+    <button class="tile ${p.kind === "custom" ? "tile--custom" : ""}" data-id="${p.id}">
+      <span class="tile__icon">${tileIcon(p)}</span>
+      <span class="tile__text">
+        <span class="tile__name">${p.label}${added[p.id] ? `<span class="tile__badge tile__badge--added">✓ added</span>` : ""}</span>
+        <span class="tile__tagline">${p.tagline}</span>
+      </span>
+    </button>`;
+  const hosted = PRESETS.filter(p => p.kind === "hosted" && match(p));
+  const local  = PRESETS.filter(p => p.kind === "local"  && match(p));
+  let html = "";
+  if (hosted.length) html += `<div class="catalog-group"><div class="catalog-eyebrow">Hosted — just paste a token</div><div class="catalog-grid">${hosted.map(tile).join("")}</div></div>`;
+  if (local.length) html += `<div class="catalog-group"><div class="catalog-eyebrow">Runs on this Mac</div><div class="catalog-grid">${local.map(tile).join("")}</div></div>`;
+  if (!hosted.length && !local.length) html += `<p class="catalog-empty">No service matches "${filter}" — add it yourself:</p>`;
+  html += `<div class="catalog-custom">${tile(PRESETS.find(p => p.kind === "custom"))}</div>`;
+  $("#catalog").innerHTML = html;
+}
+
+/* ---------- step 2: connect panel ---------- */
+let fldSeq = 0;
+function connectBody(p, opts={}) {
+  const nodeMissing = !!opts.nodeMissing, edit = !!opts.edit;
+  const fid = "fld-" + (++fldSeq);
+  const el = document.createElement("div");
+  el.className = "connect";
+  let html = "";
+
+  if (p.lede) html += `<p class="connect__lede">${p.lede}</p>`;
+
+  if (p.kind === "hosted") {
+    html += `<div class="chip-row"><span class="chip">HTTP</span><span class="chip chip--path">${p.url}</span></div>`;
+    html += `<div class="field">
+      <label class="field-label" for="${fid}">${p.secretLabel}</label>
+      <input class="text-input js-token${opts.tokenError ? " is-error" : ""}" id="${fid}" type="password" ${opts.tokenError ? 'value="wrong-key-1234"' : ""} placeholder="${edit ? `Unchanged — paste a new ${p.secretLabel.toLowerCase().replace(" (optional)","")} to replace it` : `Paste your ${p.secretLabel.toLowerCase().replace(" (optional)","")}…`}" autocomplete="off">
+      ${opts.tokenError ? `<p class="field__error">${opts.tokenError}</p>` : ""}
+      <a class="field__help" href="#">Create one →</a>
+    </div>`;
+  } else if (p.kind === "local") {
+    html += `<div class="chip-row"><span class="chip">stdio</span><span class="chip chip--path">${p.command}</span></div>`;
+    html += nodeMissing
+      ? `<p class="group-hint group-hint--warn">Runs locally and needs Node, which wasn't found. <a href="#" style="color:inherit">Install it from nodejs.org →</a></p>`
+      : `<p class="group-hint group-hint--accent">Runs locally via Node — found <code>node v22.11</code> ✓</p>`;
+    html += `<div class="field">
+      <label class="field-label" for="${fid}">${p.pathLabel}</label>
+      <input class="text-input" id="${fid}" type="text" value="${p.pathValue || ""}" placeholder="${p.pathPlaceholder || ""}">
+    </div>`;
+  } else { /* custom: today's blank form, expanded */
+    html += `<div class="field"><label class="field-label">Name</label><input class="text-input" type="text" placeholder="My server"></div>
+      <div class="field"><label class="field-label">Transport</label>
+        <div class="segmented"><button class="seg seg--active" type="button">HTTP</button><button class="seg" type="button">stdio</button></div></div>
+      <div class="field"><label class="field-label">URL</label><input class="text-input" type="text" placeholder="https://…"></div>
+      <div class="field"><label class="field-label">Secret (optional)</label><input class="text-input" type="password" placeholder="Token, if the server needs one…" autocomplete="off"></div>`;
+  }
+
+  if (p.kind !== "local") html += `<p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>`;
+
+  if (p.kind !== "custom") {
+    const isHttp = p.kind === "hosted";
+    html += `<div class="adv">
+      <button class="adv__toggle" type="button"><span>Advanced</span><span class="adv__chev">›</span></button>
+      <div class="adv__body">
+        <div class="field"><label class="field-label">Name</label><input class="text-input" type="text" value="${p.label}"></div>
+        <div class="field"><label class="field-label">${isHttp ? "URL" : "Command"}</label><input class="text-input" type="text" value="${isHttp ? p.fullUrl : p.command}"></div>
+      </div>
+    </div>`;
+  }
+
+  const needsToken = p.kind === "hosted" && !p.optional && !opts.tokenError && !edit;
+  html += `<div class="connect__footer">
+    ${edit
+      ? `<button class="btn btn--danger btn--sm js-remove" type="button">Remove</button>`
+      : `<button class="btn btn--ghost btn--sm js-back" type="button">Back</button>`}
+    <button class="btn btn--primary js-add" type="button" ${needsToken ? "disabled" : ""}>${edit ? "Save" : "Add connector"}</button>
+  </div>`;
+
+  el.innerHTML = html;
+
+  const adv = $(".adv", el);
+  if (adv) $(".adv__toggle", adv).addEventListener("click", () => adv.classList.toggle("is-open"));
+  const token = $(".js-token", el), addBtn = $(".js-add", el);
+  if (token && needsToken) token.addEventListener("input", () => { addBtn.disabled = token.value.trim() === ""; });
+  return el;
+}
+
+/* ---------- modal wiring ---------- */
+let editMode = false;
+function openPicker() { picker.hidden = false; showStep1(); $("#catalog-search").focus(); }
+function closePicker() { picker.hidden = true; editMode = false; }
+function showStep1() {
+  editMode = false;
+  $("#picker-eyebrow").textContent = "Add connector";
+  title.textContent = "Pick a service";
+  step2.hidden = true; step2.innerHTML = "";
+  step1.hidden = false;
+  $("#catalog-search").value = ""; renderCatalog();
+}
+function showStep2(p) {
+  title.textContent = p.kind === "custom" ? "Custom connector" : `Connect ${p.label}`;
+  step1.hidden = true;
+  step2.innerHTML = ""; step2.hidden = false;
+  const body = connectBody(p);
+  step2.append(body);
+  $(".js-back", body).addEventListener("click", showStep1);
+  $(".js-add", body).addEventListener("click", e => {
+    const b = e.currentTarget;
+    b.disabled = true; b.textContent = "Connecting…";
+    setTimeout(() => { addConnectorRow(p); closePicker(); }, 700);
+  });
+  const focusable = $(".js-token", body) || $(".text-input", body);
+  if (focusable) focusable.focus();
+}
+
+function showEdit(p, row) {
+  editMode = true;
+  $("#picker-eyebrow").textContent = "Edit connector";
+  title.textContent = row.dataset.name || p.label;
+  step1.hidden = true;
+  step2.innerHTML = ""; step2.hidden = false;
+  const body = connectBody(p, { edit:true });
+  step2.append(body);
+  $(".js-remove", body).addEventListener("click", () => {
+    row.remove();
+    added[p.id]--; if (!added[p.id]) delete added[p.id];
+    closePicker();
+  });
+  $(".js-add", body).addEventListener("click", closePicker);
+  picker.hidden = false;
+  const f = $(".js-token", body) || $(".text-input", body);
+  if (f) f.focus();
+}
+
+function addConnectorRow(p) {
+  added[p.id] = (added[p.id] || 0) + 1;
+  const name = (p.kind === "custom" ? "My server" : p.label) + (added[p.id] > 1 ? ` (${added[p.id]})` : "");
+  const row = document.createElement("div");
+  row.className = "setting-row setting-row--new";
+  row.dataset.id = p.id; row.dataset.name = name;
+  row.innerHTML = `
+    <div class="mcp-row__main">
+      <span class="setting-row__label">${name}</span>
+      <span class="mcp-row__tag">${p.kind === "custom" ? "http" : p.kind}</span>
+      ${p.kind === "local" ? "" : `<span class="mcp-row__badge">✓ secret in keychain</span>`}
+      ${p.tools ? `<span class="mcp-row__count">${p.tools} ${p.tools === 1 ? "tool" : "tools"} · ${p.tools} active</span>` : ""}
+    </div>
+    <div class="mcp-row__meta">
+      <button class="btn btn--ghost btn--sm js-configure">Configure</button>
+      <span class="switch-track is-on" role="switch" aria-checked="true" tabindex="0"><span class="switch-thumb"></span></span>
+    </div>`;
+  const list = $("#connector-list");
+  list.insertBefore(row, list.firstElementChild);
+}
+
+$("#connector-list").addEventListener("click", e => {
+  const btn = e.target.closest(".js-configure");
+  if (!btn) return;
+  const row = btn.closest(".setting-row");
+  showEdit(PRESETS.find(p => p.id === row.dataset.id), row);
+});
+
+$("#open-picker").addEventListener("click", openPicker);
+$("#picker-close").addEventListener("click", closePicker);
+picker.addEventListener("click", e => { if (e.target === picker) closePicker(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !picker.hidden) { (step2.hidden || editMode) ? closePicker() : showStep1(); }
+});
+$("#catalog-search").addEventListener("input", e => renderCatalog(e.target.value));
+$("#catalog-search").addEventListener("keydown", e => { if (e.key === "Enter") { const t = $("#catalog .tile"); if (t) t.click(); } });
+$("#catalog").addEventListener("click", e => {
+  const t = e.target.closest(".tile");
+  if (t) showStep2(PRESETS.find(p => p.id === t.dataset.id));
+});
+renderCatalog();
+
+/* ---------- static state sections (rendered from the same builder) ---------- */
+function staticPanel(host, p, opts) {
+  host.innerHTML = `
+    <div class="cat-modal__header">
+      <div><p class="cat-modal__eyebrow">Add connector</p><h2>Connect ${p.label}</h2></div>
+      <button class="cat-modal__close" aria-label="Close">×</button>
+    </div>`;
+  const body = document.createElement("div");
+  body.className = "cat-modal__body";
+  body.append(connectBody(p, opts));
+  host.append(body);
+}
+staticPanel($("#state-hosted"), PRESETS.find(p => p.id === "linear"));
+staticPanel($("#state-local-warn"), PRESETS.find(p => p.id === "filesystem"), { nodeMissing:true });
+staticPanel($("#state-hosted-error"), PRESETS.find(p => p.id === "linear"), { tokenError:"Linear rejected this key — check it and try again." });
+</script>
+</body>
+</html>

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
@@ -21,6 +23,7 @@
   const c = getSettingsController();
   const rec = c.rec;
   const models = c.models;
+
 
   // Store-read aliases.
   const loadingTranscriptionModelStatus = $derived(models.loadingTranscriptionModelStatus);
@@ -56,6 +59,87 @@
   const startSelectedTranscriptionModelDownload = () => c.startSelectedTranscriptionModelDownload();
   const cancelSelectedTranscriptionModelDownload = () => c.cancelSelectedTranscriptionModelDownload();
   const requestDeleteUnusedTranscriptionModels = () => c.requestDeleteUnusedTranscriptionModels();
+
+  // ─── Deepgram API-key management (panel-local; direct invoke, no controller) ──
+  let deepgramKeyInput = $state("");
+  let deepgramKeyPresent = $state(false);
+  let deepgramAuthStatus = $state<string | null>(null);
+  let deepgramSaving = $state(false);
+  let deepgramSaveError = $state<string | null>(null);
+  let deepgramChecking = $state(false);
+  let deepgramCheckResult = $state<{ ok: boolean; message: string } | null>(null);
+
+  async function loadDeepgramKeyState() {
+    deepgramKeyPresent = await invoke<boolean>("transcription_has_deepgram_key");
+    deepgramAuthStatus = await invoke<string | null>("transcription_deepgram_auth_status");
+  }
+
+  // Validate the key against Deepgram (GET /v1/auth/token — no audio). Mirrors the AI runtime's
+  // connection test; also refreshes the auth-status line, which the probe may have set.
+  async function checkDeepgram() {
+    deepgramChecking = true;
+    deepgramCheckResult = null;
+    try {
+      deepgramCheckResult = await invoke<{ ok: boolean; message: string }>("transcription_test_deepgram");
+    } catch (e) {
+      deepgramCheckResult = { ok: false, message: String(e) };
+    } finally {
+      deepgramChecking = false;
+      await loadDeepgramKeyState();
+    }
+  }
+
+  async function saveDeepgramKey() {
+    deepgramSaving = true;
+    deepgramSaveError = null;
+    deepgramCheckResult = null;
+    try {
+      await invoke("transcription_set_deepgram_key", { key: deepgramKeyInput });
+      deepgramKeyInput = "";
+      await loadDeepgramKeyState();
+      // Deepgram availability = key presence, so refresh the model-status pill now that it changed.
+      await loadTranscriptionModelStatus();
+      // Evaluate availability right away so a bad key/model surfaces on save, not on the first job.
+      await checkDeepgram();
+    } catch (e) {
+      deepgramSaveError = String(e);
+    } finally {
+      deepgramSaving = false;
+    }
+  }
+
+  async function removeDeepgramKey() {
+    deepgramSaveError = null;
+    deepgramCheckResult = null;
+    try {
+      await invoke("transcription_clear_deepgram_key");
+      await loadDeepgramKeyState();
+      // Key gone → Deepgram is now unavailable; refresh the model-status pill to reflect it.
+      await loadTranscriptionModelStatus();
+    } catch (e) {
+      deepgramSaveError = String(e);
+    }
+  }
+
+  // Load presence + auth status once each time the provider becomes deepgram.
+  // `deepgramLoaded` is a plain (non-reactive) let, so the effect only depends
+  // on `draftTranscriptionProvider` — it never re-runs from the $state that
+  // loadDeepgramKeyState() writes (which would otherwise loop).
+  let deepgramLoaded = false;
+  $effect(() => {
+    if (rec.draftTranscriptionProvider === "deepgram") {
+      if (!deepgramLoaded) {
+        deepgramLoaded = true;
+        // Start each visit with a clean action-result slate — these transient messages only render
+        // inside the deepgram block, so without this they'd re-appear stale on a later re-entry.
+        deepgramCheckResult = null;
+        deepgramSaveError = null;
+        void loadDeepgramKeyState();
+      }
+    } else {
+      deepgramLoaded = false;
+    }
+  });
 </script>
 
 <SettingGroup
@@ -149,6 +233,62 @@
     {/snippet}
   </SettingRow>
 
+  {#if rec.draftTranscriptionProvider === "deepgram"}
+    <SettingRow label="Deepgram API key" full>
+      {#snippet control()}
+        <div class="tx-stack">
+          <label class="field-label" for="deepgram-api-key">API key</label>
+          <input
+            id="deepgram-api-key"
+            class="text-input"
+            type="password"
+            autocomplete="off"
+            placeholder={deepgramKeyPresent ? "A key is saved — enter a new one to replace it" : "Paste your Deepgram API key"}
+            disabled={deepgramSaving}
+            bind:value={deepgramKeyInput}
+          />
+          <div class="row-actions">
+            <button
+              class="btn btn--ghost btn--sm"
+              type="button"
+              disabled={deepgramSaving || deepgramKeyInput.trim().length === 0}
+              aria-busy={deepgramSaving}
+              onclick={saveDeepgramKey}
+            >
+              {#if deepgramSaving}<ButtonSpinner />Saving{:else}Save key{/if}
+            </button>
+            {#if deepgramKeyPresent}
+              <button
+                class="btn btn--ghost btn--sm"
+                type="button"
+                disabled={deepgramSaving || deepgramChecking}
+                aria-busy={deepgramChecking}
+                onclick={checkDeepgram}
+              >
+                {#if deepgramChecking}<ButtonSpinner />Checking{:else}Check connection{/if}
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" disabled={deepgramSaving} onclick={removeDeepgramKey}>
+                Remove key
+              </button>
+            {/if}
+          </div>
+          {#if deepgramKeyPresent}
+            <p class="group-hint">Key saved to the macOS keychain.</p>
+          {/if}
+          {#if deepgramSaveError}
+            <p class="group-hint group-hint--warn" role="alert">Couldn’t save key: {deepgramSaveError}</p>
+          {/if}
+          {#if deepgramCheckResult}
+            <p class="group-hint" class:group-hint--warn={!deepgramCheckResult.ok} role="status">{deepgramCheckResult.message}</p>
+          {/if}
+          {#if deepgramAuthStatus}
+            <p class="group-hint group-hint--warn" role="alert">{deepgramAuthStatus}</p>
+          {/if}
+        </div>
+      {/snippet}
+    </SettingRow>
+  {/if}
+
   {#if rec.draftTranscriptionProvider === "parakeet"}
     <SettingRow label="Parakeet memory mode" full>
       {#snippet control()}
@@ -208,14 +348,17 @@
     {#snippet control()}
       <div class="tx-stack">
         {#if transcriptionModelError}
-          <p class="group-hint group-hint--warn">Failed to load model status: {transcriptionModelError}</p>
+          <p class="group-hint group-hint--warn" role="alert">Failed to load model status: {transcriptionModelError}</p>
         {:else if selectedTranscriptionModel}
           <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
             <div>
               <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
               <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
             </div>
-            <span class="model-status__pill">{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
+            <span
+              class="model-status__pill"
+              class:model-status__pill--ok={selectedTranscriptionModel.available}
+            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
           </div>
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}
@@ -228,25 +371,27 @@
               {#if selectedAppleSpeechNeedsPermission}
                 {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
                   <button
+                    type="button"
                     class="btn btn--ghost"
                     onclick={requestAppleSpeechPermission}
                     disabled={requestingAppleSpeechPermission}
+                    aria-busy={requestingAppleSpeechPermission}
                   >
-                    {requestingAppleSpeechPermission ? "Requesting" : "Get permission"}
+                    {#if requestingAppleSpeechPermission}<ButtonSpinner />Requesting{:else}Get permission{/if}
                   </button>
                 {:else}
-                  <button class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
+                  <button type="button" class="btn btn--ghost" onclick={openAppleSpeechPrivacySettings}>
                     Open System Settings
                   </button>
                 {/if}
               {/if}
             </div>
             {#if appleSpeechPermissionError}
-              <p class="group-hint group-hint--warn">Permission request failed: {appleSpeechPermissionError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Permission request failed: {appleSpeechPermissionError}</p>
             {/if}
           {/if}
           {#if selectedTranscriptionModel.installPath}
-            <p class="group-hint"><strong>Install path:</strong> {selectedTranscriptionModel.installPath}</p>
+            <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedTranscriptionModel.installPath}</span></p>
           {/if}
           <ModelMissingFiles files={selectedTranscriptionModel.missingFiles} />
           {#if selectedTranscriptionModel.failureMessage}
@@ -270,13 +415,13 @@
                     {#if selectedTranscriptionDownloadPercent !== null} · {selectedTranscriptionDownloadPercent}%{/if}
                     {#if selectedTranscriptionDownloadProgress?.message} · {selectedTranscriptionDownloadProgress.message}{/if}
                   </p>
-                  <button class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload}>
-                    {cancellingTranscriptionDownload ? "Cancelling" : "Cancel download"}
+                  <button type="button" class="btn btn--ghost" onclick={cancelSelectedTranscriptionModelDownload} disabled={cancellingTranscriptionDownload} aria-busy={cancellingTranscriptionDownload}>
+                    {#if cancellingTranscriptionDownload}<ButtonSpinner />Cancelling{:else}Cancel download{/if}
                   </button>
                 </div>
               {:else}
-                <button class="btn btn--ghost" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available}>
-                  {startingTranscriptionDownload ? "Starting" : `Download (${formatBytes(selectedTranscriptionModel.download.byteSize)})`}
+                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
+                  {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
                 </button>
               {/if}
               <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
@@ -286,14 +431,16 @@
               </p>
             {/if}
             {#if transcriptionDownloadError}
-              <p class="group-hint group-hint--warn">Download failed: {transcriptionDownloadError}</p>
+              <p class="group-hint group-hint--warn" role="alert">Download failed: {transcriptionDownloadError}</p>
             {/if}
+          {:else if rec.draftTranscriptionProvider === "deepgram"}
+            <p class="group-hint">Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.</p>
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>
           {/if}
           <div class="debug-log-actions">
-            <button class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning}>
-              Delete unused transcription models
+            <button type="button" class="btn btn--danger" onclick={requestDeleteUnusedTranscriptionModels} disabled={deletingUnusedTranscriptionModels || selectedTranscriptionDownloadRunning} aria-busy={deletingUnusedTranscriptionModels}>
+              {#if deletingUnusedTranscriptionModels}<ButtonSpinner />Deleting…{:else}Delete unused transcription models{/if}
             </button>
           </div>
           <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
@@ -327,7 +474,7 @@
             </div>
           {/if}
           {#if deleteUnusedTranscriptionModelsError}
-            <p class="group-hint group-hint--warn">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
+            <p class="group-hint group-hint--warn" role="alert">Delete failed: {deleteUnusedTranscriptionModelsError}</p>
           {/if}
         {:else if loadingTranscriptionModelStatus}
           <p class="group-hint">Checking installed transcription models…</p>
@@ -348,4 +495,12 @@
     gap: 10px;
     width: 100%;
   }
+
+  /* Render filesystem paths in mono so they read as machine values, matching
+     the Developer log path treatment. */
+  .model-path {
+    font-family: var(--app-font-mono);
+    word-break: break-all;
+  }
+
 </style>

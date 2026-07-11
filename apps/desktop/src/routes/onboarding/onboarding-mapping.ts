@@ -2,6 +2,7 @@
 // legacy `routes/onboarding/+page.svelte` so the settings round-trip
 // (syncDrafts ⇄ buildSettingsRequest) stays byte-identical. No reactive state
 // lives here — only stateless transforms the controller composes.
+import { humanizeError } from "$lib/format-error";
 import type {
   AudioTranscriptionModelStatus,
   AudioTranscriptionProvider,
@@ -25,7 +26,7 @@ export const DEFAULT_SPEAKER_PROVIDER = "speakrs";
 export const DEFAULT_SPEAKER_MODEL_ID = "pyannote-community-1-wespeaker";
 
 export function serializeError(err: unknown): string {
-  return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  return humanizeError(err);
 }
 
 export function parsePositiveInteger(raw: string): number | null {

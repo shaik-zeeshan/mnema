@@ -1,107 +1,57 @@
 <script lang="ts">
-  // Compact validation affordance: a small amber "!" badge that reveals its
-  // messages in a tooltip on hover/focus, instead of a persistent box that
-  // clutters the control. Renders nothing when there are no messages. Ships its
-  // own styles so it looks the same in settings and onboarding.
-  let { messages = [] }: { messages?: string[] } = $props();
+  // Persistent, inline validation feedback for the custom resolution/bitrate
+  // fields. A hover-only tooltip hid hard errors behind a pointer gesture (and
+  // was invisible to keyboard/touch), so the message is rendered as standing
+  // helper text in the SAME danger color family as the field's red border —
+  // no more amber/red mismatch. Exposes a stable `id` so the offending field
+  // can point at it via aria-describedby/aria-errormessage. Renders nothing
+  // when there are no messages. Ships its own styles so it looks identical in
+  // settings and onboarding.
+  let { messages = [], id }: { messages?: string[]; id?: string } = $props();
 </script>
 
 {#if messages.length > 0}
-  <button
-    type="button"
-    class="field-warning"
-    aria-label={`Invalid input: ${messages.join(" ")}`}
-  >
+  <p class="field-warning" {id} role="alert" aria-live="polite">
     <span class="field-warning__badge" aria-hidden="true">!</span>
-    <span class="field-warning__tip" aria-hidden="true">
-      {#each messages as message}
-        <span class="field-warning__line">{message}</span>
+    <span class="field-warning__text">
+      {#each messages as message, index}
+        {#if index > 0}<br />{/if}{message}
       {/each}
     </span>
-  </button>
+  </p>
 {/if}
 
 <style>
   .field-warning {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex: 0 0 auto;
-    padding: 0;
-    border: none;
-    background: none;
-    cursor: help;
-    outline: none;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    margin: 0;
+    color: var(--app-danger);
+    font-size: 10px;
+    line-height: 1.45;
+    text-align: left;
   }
 
   .field-warning__badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 20px;
-    height: 20px;
-    border: 1px solid var(--app-warn-border);
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    margin-top: 0.5px;
+    border: 1px solid var(--app-danger-border);
     border-radius: 50%;
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-    font-size: 11px;
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    font-size: 10px;
     font-weight: 800;
     line-height: 1;
-    transition: border-color 0.12s, background 0.12s;
   }
 
-  .field-warning:hover .field-warning__badge,
-  .field-warning:focus-visible .field-warning__badge {
-    border-color: var(--app-warn);
-  }
-
-  .field-warning:focus-visible {
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-    border-radius: 50%;
-  }
-
-  .field-warning__tip {
-    position: absolute;
-    bottom: calc(100% + 8px);
-    right: 0;
-    z-index: 30;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    width: max-content;
-    max-width: 240px;
-    padding: 8px 10px;
-    border: 1px solid var(--app-warn-border);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-    color: var(--app-warn);
-    font-size: 10px;
-    line-height: 1.45;
-    text-align: left;
-    opacity: 0;
-    transform: translateY(4px);
-    pointer-events: none;
-    transition: opacity 0.12s, transform 0.12s;
-  }
-
-  .field-warning__tip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    right: 7px;
-    border: 5px solid transparent;
-    border-top-color: var(--app-warn-border);
-  }
-
-  .field-warning:hover .field-warning__tip,
-  .field-warning:focus-visible .field-warning__tip {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
-  .field-warning__line {
-    display: block;
+  .field-warning__text {
+    min-width: 0;
+    padding-top: 1px;
   }
 </style>

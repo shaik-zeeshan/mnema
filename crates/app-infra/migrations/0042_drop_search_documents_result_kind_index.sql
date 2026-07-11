@@ -1,0 +1,14 @@
+-- Drop the dead `search_documents_result_kind_idx` created by migration 0041.
+--
+-- 0041 added the composite `(processing_result_id, text_source_kind)` index to
+-- speed up a `DELETE ... WHERE processing_result_id = ? AND text_source_kind =
+-- 'equivalent_reuse'`, but that delete shape was removed in the same change that
+-- ships this migration — the projection delete now seeks the per-anchor indexes
+-- (`search_documents_frame_idx` / `search_documents_audio_idx`) and narrows by
+-- processor instead, so nothing reaches for this index anymore. Carrying an
+-- unused secondary index only adds write/maintenance cost to every
+-- `search_documents` insert and delete, so drop it.
+--
+-- (0041 itself is left byte-for-byte unchanged: editing an already-applied
+-- migration would trip sqlx's checksum guard on existing databases.)
+DROP INDEX IF EXISTS search_documents_result_kind_idx;

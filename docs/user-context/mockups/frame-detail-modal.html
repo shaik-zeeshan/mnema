@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frame detail modal</title>
+<style>
+  :root{
+    --app-bg:#0c0c0e;
+    --app-surface:#0e0e16;
+    --app-surface-raised:#13131a;
+    --app-surface-hover:#1a1a2a;
+    --app-border:#1e1e2e;
+    --app-border-strong:#2a2a3a;
+    --app-text-strong:#e2e2e8;
+    --app-text:#c0c0d0;
+    --app-text-muted:#9696ae;
+    --app-text-subtle:#7e7e98;
+    --app-accent:#3dffa0;
+    --app-accent-bg:#0d1f15;
+    --app-accent-border:#1a4a30;
+    --app-accent-glow:rgba(61,255,160,0.18);
+    --app-warn:#d6a14a;
+    --app-danger:#ff6b7a;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--app-bg);
+    color:var(--app-text);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:13px;
+    line-height:1.5;
+    overflow:hidden;
+  }
+
+  /* ── caption bar (outside the mockup) ─────────────────────── */
+  .caption{
+    position:fixed;top:0;left:0;right:0;z-index:100;
+    display:flex;align-items:center;gap:10px;
+    padding:8px 16px;
+    background:#000;
+    border-bottom:1px solid var(--app-border-strong);
+    font-size:11px;color:var(--app-text-muted);
+    letter-spacing:.04em;
+  }
+  .caption b{color:var(--app-accent);font-weight:600}
+
+  /* ── faint fake chat background ───────────────────────────── */
+  .stage{position:fixed;inset:33px 0 0 0;overflow:hidden}
+  .chat{
+    max-width:720px;margin:0 auto;padding:36px 24px;
+  }
+  .chat .q{
+    color:var(--app-text-subtle);font-size:12px;margin-bottom:14px;
+  }
+  .chat .q::before{content:"you › ";color:var(--app-text-muted)}
+  .chat .a p{
+    color:var(--app-text);font-size:13px;margin-bottom:12px;max-width:60ch;
+  }
+  .chat .a p em{color:var(--app-accent);font-style:normal}
+  .sources-label{
+    font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--app-text-subtle);margin:20px 0 8px;
+  }
+  .src-row{display:flex;gap:10px;flex-wrap:wrap}
+  .src-card{
+    flex:1 1 200px;max-width:260px;
+    background:var(--app-surface-raised);
+    border:1px solid var(--app-border);
+    border-radius:9px;padding:10px 12px;
+    font-size:11px;
+  }
+  .src-card .app{color:var(--app-text-strong);display:flex;gap:6px;align-items:center}
+  .src-card .app .dot{width:6px;height:6px;border-radius:2px;background:var(--app-accent);flex:none}
+  .src-card .title{color:var(--app-text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .src-card .t{color:var(--app-text-subtle);margin-top:4px;font-size:10px}
+  .src-card.active{border-color:var(--app-accent-border);box-shadow:0 0 0 1px var(--app-accent-border), 0 0 24px var(--app-accent-glow)}
+
+  /* ── modal ────────────────────────────────────────────────── */
+  .backdrop{
+    position:fixed;inset:33px 0 0 0;z-index:10;
+    background:rgba(8,8,12,.62);
+    backdrop-filter:blur(10px);
+    -webkit-backdrop-filter:blur(10px);
+    display:flex;align-items:center;justify-content:center;
+    padding:24px;
+  }
+  .peek{
+    width:min(1060px, calc(100vw - 64px));max-height:calc(100vh - 100px);
+    display:flex;flex-direction:column;
+    background:var(--app-surface);
+    border:1px solid var(--app-border-strong);
+    border-radius:18px;
+    box-shadow:0 24px 80px rgba(0,0,0,.6);
+    overflow:hidden;
+  }
+
+  .peek-head{
+    display:flex;align-items:baseline;gap:10px;
+    padding:14px 16px 10px;
+  }
+  .eyebrow{
+    font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--app-accent);
+  }
+  .peek-head h1{
+    font-size:13px;font-weight:600;color:var(--app-text-strong);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;
+  }
+  .close{
+    flex:none;width:24px;height:24px;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;
+    color:var(--app-text-subtle);border:1px solid transparent;
+    cursor:pointer;font-size:14px;line-height:1;align-self:center;
+    background:none;font-family:inherit;
+  }
+  .close:hover{background:var(--app-surface-hover);border-color:var(--app-border);color:var(--app-text-strong)}
+
+  /* hero frame */
+  .body{display:flex;margin:0 16px;min-height:0;flex:1}
+  .hero{position:relative;border:1px solid var(--app-border);border-radius:9px;overflow:hidden;background:#0a0a10;flex:1;min-width:0}
+  .hero img{display:block;width:100%;height:100%;object-fit:contain}
+
+  /* OCR overlay — same visual system as the Timeline's:
+     boxes drawn at the recognized text positions, text revealed on hover */
+  :root{
+    --app-ocr-box:rgba(120,220,160,.45);
+    --app-ocr-box-hover:rgba(120,220,160,.95);
+    --app-ocr-box-fill:rgba(120,220,160,.10);
+    --app-ocr-chip-bg:rgba(8,14,10,.96);
+    --app-ocr-chip-text:#eaffef;
+    --app-ocr-chip-border:rgba(120,220,160,.6);
+  }
+  #ocr-toggle{display:none}
+  .ocr-overlay{position:absolute;inset:0;overflow:hidden;pointer-events:none;display:none}
+  #ocr-toggle:checked ~ .body .ocr-overlay{display:block}
+  .ocr-box{
+    position:absolute;
+    border:1px solid var(--app-ocr-box);
+    background:rgba(120,220,160,.035);
+    border-radius:2px;min-width:1px;min-height:1px;
+    pointer-events:auto;cursor:text;
+    transition:border-color 120ms ease,background 120ms ease;
+  }
+  .ocr-box:hover{
+    border-color:var(--app-ocr-box-hover);
+    background:var(--app-ocr-box-fill);
+    box-shadow:0 0 0 1px rgba(0,0,0,.45),inset 0 0 0 1px rgba(255,255,255,.04);
+    z-index:2;
+  }
+  .ocr-chip{
+    position:absolute;inset:0;
+    display:flex;align-items:center;justify-content:flex-start;
+    padding:0 4px;
+    background:var(--app-ocr-chip-bg);color:var(--app-ocr-chip-text);
+    border:1px solid var(--app-ocr-chip-border);border-radius:2px;
+    font-size:11px;line-height:1;letter-spacing:-.01em;white-space:nowrap;
+    width:max-content;min-width:100%;
+    pointer-events:none;user-select:text;
+    opacity:0;transition:opacity 80ms ease;
+  }
+  .ocr-box:hover .ocr-chip{opacity:1;pointer-events:auto}
+  .ocr-hint{
+    position:absolute;right:6px;bottom:6px;
+    padding:2px 6px;border-radius:3px;
+    background:var(--app-ocr-chip-bg);color:var(--app-ocr-chip-text);
+    border:1px solid var(--app-ocr-chip-border);
+    font-size:10px;letter-spacing:.02em;line-height:1.2;white-space:nowrap;
+    opacity:.72;pointer-events:none;
+  }
+  .act-ocr{user-select:none}
+  .act-ocr .count{color:var(--app-text-subtle)}
+  #ocr-toggle:checked ~ .actions .act-ocr{
+    background:var(--app-accent-bg);border-color:var(--app-accent-border);color:var(--app-accent);
+  }
+  #ocr-toggle:checked ~ .actions .act-ocr .count{color:var(--app-accent)}
+  .redactions{
+    position:absolute;top:8px;right:8px;
+    display:flex;align-items:center;gap:5px;
+    font-size:10px;color:var(--app-warn);
+    background:rgba(12,12,14,.82);
+    border:1px solid var(--app-border-strong);
+    border-radius:5px;padding:3px 7px;
+    backdrop-filter:blur(4px);
+  }
+  .redactions::before{content:"";width:5px;height:5px;border-radius:50%;background:var(--app-warn)}
+
+  /* footer strip */
+  .meta{
+    display:flex;align-items:center;gap:8px;
+    padding:12px 18px 4px;
+    font-size:11px;color:var(--app-text-muted);
+    white-space:nowrap;overflow:hidden;
+  }
+  .meta .app{color:var(--app-text-strong)}
+  .meta .title{overflow:hidden;text-overflow:ellipsis}
+  .meta .sep{color:var(--app-text-subtle);flex:none}
+  .meta time{color:var(--app-accent);flex:none}
+  .meta .dims{color:var(--app-text-subtle);flex:none;font-size:10px}
+
+  /* quick actions */
+  .actions{
+    display:flex;align-items:center;gap:6px;
+    padding:8px 14px 14px;
+  }
+  .act{
+    display:inline-flex;align-items:center;gap:6px;
+    font-family:inherit;font-size:11px;color:var(--app-text-muted);
+    background:none;border:1px solid var(--app-border);
+    border-radius:6px;padding:5px 10px;cursor:pointer;
+  }
+  .act:hover{background:var(--app-surface-hover);border-color:var(--app-border-strong);color:var(--app-text-strong)}
+  .act svg{width:12px;height:12px;flex:none;stroke:currentColor;fill:none;stroke-width:1.5}
+  .act.url{max-width:230px}
+  .act.url span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .spacer{flex:1}
+  .escape{
+    font-size:10px;color:var(--app-text-subtle);text-decoration:none;
+    padding:5px 4px;border-radius:4px;
+  }
+  .escape:hover{color:var(--app-text-muted);text-decoration:underline}
+
+  .esc-hint{
+    position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:11;
+    font-size:10px;color:var(--app-text-subtle);letter-spacing:.06em;
+  }
+  .esc-hint kbd{
+    font-family:inherit;font-size:10px;color:var(--app-text-muted);
+    border:1px solid var(--app-border-strong);border-radius:4px;
+    padding:1px 5px;background:var(--app-surface-raised);
+  }
+</style>
+</head>
+<body>
+
+<div class="caption"><b>Frame detail modal</b> · in-place replacement for "View on timeline" · hero image + metadata strip + timeline-style OCR overlay · Esc to dismiss</div>
+
+<!-- faint chat context behind the backdrop -->
+<div class="stage" aria-hidden="true">
+  <div class="chat">
+    <div class="q">what was I doing with the ask_ai streaming refactor yesterday afternoon?</div>
+    <div class="a">
+      <p>Yesterday between <em>14:10 and 15:40</em> you were refactoring the Ask AI streaming path in Zed — mostly in <em>ask_ai.rs</em> and <em>answer_view.rs</em>, moving fence parsing server-side. Around 14:30 you cross-referenced the rig-core streaming docs on GitHub.</p>
+      <p>You committed the change at 15:37 and switched to reviewing the migration for parsed block persistence.</p>
+      <div class="sources-label">sources · 3 frames</div>
+      <div class="src-row">
+        <div class="src-card active">
+          <div class="app"><span class="dot"></span>Zed</div>
+          <div class="title">ask_ai.rs — mnema</div>
+          <div class="t">14:32:07</div>
+        </div>
+        <div class="src-card">
+          <div class="app"><span class="dot"></span>Arc</div>
+          <div class="title">rig-core streaming · GitHub</div>
+          <div class="t">14:29:51</div>
+        </div>
+        <div class="src-card">
+          <div class="app"><span class="dot"></span>Zed</div>
+          <div class="title">answer_view.rs — mnema</div>
+          <div class="t">15:04:18</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- modal -->
+<div class="backdrop">
+  <section class="peek" role="dialog" aria-modal="true" aria-label="Captured frame">
+    <header class="peek-head">
+      <span class="eyebrow">frame</span>
+      <h1 title="ask_ai.rs — mnema (dev.zed.Zed · segment 5f2c19 · session 42)">ask_ai.rs — mnema</h1>
+      <button class="close" aria-label="Close">×</button>
+    </header>
+
+    <input type="checkbox" id="ocr-toggle">
+    <div class="body">
+    <figure class="hero">
+      <!-- fake captured screen: Zed-ish editor window as inline SVG -->
+      <img alt="Captured frame: Zed editor showing ask_ai.rs" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1120 700' font-family='monospace'%3E%3Crect width='1120' height='700' fill='%23101018'/%3E%3Crect width='1120' height='34' fill='%2316161f'/%3E%3Ccircle cx='20' cy='17' r='6' fill='%23ff5f57'/%3E%3Ccircle cx='40' cy='17' r='6' fill='%23febc2e'/%3E%3Ccircle cx='60' cy='17' r='6' fill='%2328c840'/%3E%3Ctext x='560' y='22' fill='%237e7e98' font-size='13' text-anchor='middle'%3Eask_ai.rs %E2%80%94 mnema%3C/text%3E%3Crect y='34' width='190' height='666' fill='%230d0d14'/%3E%3Ctext x='16' y='64' fill='%239696ae' font-size='12'%3Emnema%3C/text%3E%3Ctext x='24' y='92' fill='%237e7e98' font-size='12'%3Eapps/desktop%3C/text%3E%3Ctext x='32' y='118' fill='%237e7e98' font-size='12'%3Esrc-tauri/src%3C/text%3E%3Crect x='34' y='130' width='150' height='20' rx='4' fill='%231a1a2a'/%3E%3Ctext x='40' y='144' fill='%23e2e2e8' font-size='12'%3Eask_ai.rs%3C/text%3E%3Ctext x='40' y='170' fill='%237e7e98' font-size='12'%3Eanswer_view.rs%3C/text%3E%3Ctext x='40' y='194' fill='%237e7e98' font-size='12'%3Elib.rs%3C/text%3E%3Ctext x='40' y='218' fill='%237e7e98' font-size='12'%3Estatus_bar.rs%3C/text%3E%3Crect x='190' y='34' width='1' height='666' fill='%231e1e2e'/%3E%3Cg font-size='13'%3E%3Ctext x='210' y='72' fill='%237e7e98'%3E142%3C/text%3E%3Ctext x='250' y='72' fill='%23c586c0'%3Epub async fn%3C/text%3E%3Ctext x='356' y='72' fill='%23dcdcaa'%3Estream_turn%3C/text%3E%3Ctext x='444' y='72' fill='%23c0c0d0'%3E(%26amp;self, turn: TurnView) -%26gt; Result%26lt;()%26gt; %7B%3C/text%3E%3Ctext x='210' y='98' fill='%237e7e98'%3E143%3C/text%3E%3Ctext x='274' y='98' fill='%23569cd6'%3Elet%3C/text%3E%3Ctext x='306' y='98' fill='%23c0c0d0'%3Emut blocks = %3C/text%3E%3Ctext x='410' y='98' fill='%23dcdcaa'%3Eparse_answer%3C/text%3E%3Ctext x='506' y='98' fill='%23c0c0d0'%3E(%26amp;turn.answer)%3F;%3C/text%3E%3Ctext x='210' y='124' fill='%237e7e98'%3E144%3C/text%3E%3Ctext x='274' y='124' fill='%23608b4e'%3E// stream structured ops over ask_ai_update%3C/text%3E%3Ctext x='210' y='150' fill='%237e7e98'%3E145%3C/text%3E%3Ctext x='274' y='150' fill='%23569cd6'%3Efor%3C/text%3E%3Ctext x='306' y='150' fill='%23c0c0d0'%3Eop %3C/text%3E%3Ctext x='330' y='150' fill='%23569cd6'%3Ein%3C/text%3E%3Ctext x='354' y='150' fill='%23c0c0d0'%3Eblocks.drain(..) %7B%3C/text%3E%3Ctext x='210' y='176' fill='%237e7e98'%3E146%3C/text%3E%3Ctext x='298' y='176' fill='%23c0c0d0'%3Eself.emit(%3C/text%3E%3Ctext x='378' y='176' fill='%23ce9178'%3E%22ask_ai_update%22%3C/text%3E%3Ctext x='494' y='176' fill='%23c0c0d0'%3E, %26amp;op)%3F;%3C/text%3E%3Ctext x='210' y='202' fill='%237e7e98'%3E147%3C/text%3E%3Ctext x='298' y='202' fill='%23c0c0d0'%3Eself.version += %3C/text%3E%3Ctext x='422' y='202' fill='%23b5cea8'%3E1%3C/text%3E%3Ctext x='432' y='202' fill='%23c0c0d0'%3E;%3C/text%3E%3Ctext x='210' y='228' fill='%237e7e98'%3E148%3C/text%3E%3Ctext x='274' y='228' fill='%23c0c0d0'%3E%7D%3C/text%3E%3Ctext x='210' y='254' fill='%237e7e98'%3E149%3C/text%3E%3Ctext x='274' y='254' fill='%23569cd6'%3Elet%3C/text%3E%3Ctext x='306' y='254' fill='%23c0c0d0'%3Esnapshot = self.turn_view.read().%3C/text%3E%3Ctext x='562' y='254' fill='%23dcdcaa'%3Eclone%3C/text%3E%3Ctext x='602' y='254' fill='%23c0c0d0'%3E();%3C/text%3E%3Ctext x='210' y='280' fill='%237e7e98'%3E150%3C/text%3E%3Ctext x='274' y='280' fill='%23608b4e'%3E// cold reattach: ask_ai_snapshot command%3C/text%3E%3Ctext x='210' y='306' fill='%237e7e98'%3E151%3C/text%3E%3Ctext x='274' y='306' fill='%23c0c0d0'%3EOk(())%3C/text%3E%3Ctext x='210' y='332' fill='%237e7e98'%3E152%3C/text%3E%3Ctext x='250' y='332' fill='%23c0c0d0'%3E%7D%3C/text%3E%3C/g%3E%3Crect x='210' y='360' width='250' height='16' rx='3' fill='%231e1e2e'/%3E%3Crect x='210' y='386' width='340' height='16' rx='3' fill='%23181822'/%3E%3Crect x='210' y='412' width='290' height='16' rx='3' fill='%231e1e2e'/%3E%3Crect x='190' y='560' width='930' height='1' fill='%231e1e2e'/%3E%3Ctext x='210' y='592' fill='%233dffa0' font-size='12'%3E%E2%9D%AF cargo check -p ai-runtime%3C/text%3E%3Ctext x='210' y='618' fill='%237e7e98' font-size='12'%3EChecking ai-runtime v0.1.0 (crates/ai-runtime)%3C/text%3E%3Ctext x='210' y='644' fill='%239696ae' font-size='12'%3EFinished dev profile in 4.21s%3C/text%3E%3Crect y='678' width='1120' height='22' fill='%2316161f'/%3E%3Ctext x='14' y='693' fill='%237e7e98' font-size='11'%3Emain*  Rust  UTF-8  Ln 146, Col 32%3C/text%3E%3C/svg%3E">
+      <span class="redactions">2 redactions applied</span>
+
+      <!-- OCR overlay: boxes at recognized-text positions, chip on hover -->
+      <div class="ocr-overlay" role="list" aria-label="Recognized on-screen text">
+        <div class="ocr-box" style="left:43%;top:1.6%;width:14%;height:2.6%"><span class="ocr-chip">ask_ai.rs — mnema</span></div>
+        <div class="ocr-box" style="left:1.4%;top:7.3%;width:6%;height:2.6%"><span class="ocr-chip">mnema</span></div>
+        <div class="ocr-box" style="left:2.1%;top:11.3%;width:10%;height:2.6%"><span class="ocr-chip">apps/desktop</span></div>
+        <div class="ocr-box" style="left:3.4%;top:18.7%;width:9%;height:2.7%"><span class="ocr-chip">ask_ai.rs</span></div>
+        <div class="ocr-box" style="left:22.3%;top:8.4%;width:47%;height:2.9%"><span class="ocr-chip">pub async fn stream_turn(&amp;self, turn: TurnView) -&gt; Result&lt;()&gt; {</span></div>
+        <div class="ocr-box" style="left:24.5%;top:12.1%;width:33%;height:2.9%"><span class="ocr-chip">let mut blocks = parse_answer(&amp;turn.answer)?;</span></div>
+        <div class="ocr-box" style="left:24.5%;top:15.9%;width:32%;height:2.9%"><span class="ocr-chip">// stream structured ops over ask_ai_update</span></div>
+        <div class="ocr-box" style="left:24.5%;top:19.6%;width:25%;height:2.9%"><span class="ocr-chip">for op in blocks.drain(..) {</span></div>
+        <div class="ocr-box" style="left:26.6%;top:23.3%;width:28%;height:2.9%"><span class="ocr-chip">self.emit("ask_ai_update", &amp;op)?;</span></div>
+        <div class="ocr-box" style="left:24.5%;top:34.4%;width:32%;height:2.9%"><span class="ocr-chip">let snapshot = self.turn_view.read().clone();</span></div>
+        <div class="ocr-box" style="left:18.7%;top:82.7%;width:24%;height:2.9%"><span class="ocr-chip">❯ cargo check -p ai-runtime</span></div>
+        <div class="ocr-box" style="left:18.7%;top:86.4%;width:33%;height:2.6%"><span class="ocr-chip">Checking ai-runtime v0.1.0 (crates/ai-runtime)</span></div>
+        <div class="ocr-box" style="left:18.7%;top:90.1%;width:25%;height:2.6%"><span class="ocr-chip">Finished dev profile in 4.21s</span></div>
+        <div class="ocr-box" style="left:1.2%;top:96.9%;width:26%;height:2.5%"><span class="ocr-chip">main*  Rust  UTF-8  Ln 146, Col 32</span></div>
+        <span class="ocr-hint" aria-hidden="true">hover to read · copy all in ⋯</span>
+      </div>
+    </figure>
+
+    </div>
+
+    <div class="meta">
+      <span class="app">Zed</span>
+      <span class="sep">·</span>
+      <span class="title">ask_ai.rs — mnema</span>
+      <span class="sep">·</span>
+      <time>14:32:07</time>
+      <span class="sep">·</span>
+      <span class="dims">2560×1600</span>
+    </div>
+
+    <div class="actions">
+      <button class="act">
+        <svg viewBox="0 0 16 16"><rect x="5" y="5" width="9" height="9" rx="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>
+        copy image
+      </button>
+      <button class="act url" title="github.com/0xPlaygrounds/rig/blob/main/rig-core/src/streaming.rs">
+        <svg viewBox="0 0 16 16"><path d="M6.5 9.5 9.5 6.5M7 4.5 8.5 3a2.1 2.1 0 0 1 3 0l1.5 1.5a2.1 2.1 0 0 1 0 3L11.5 9M9 11.5 7.5 13a2.1 2.1 0 0 1-3 0L3 11.5a2.1 2.1 0 0 1 0-3L4.5 7"/></svg>
+        <span>github.com/0xPlaygrounds/rig/…/streaming.rs</span>
+      </button>
+      <label class="act act-ocr" for="ocr-toggle">
+        <svg viewBox="0 0 16 16"><path d="M2 5V3.5A1.5 1.5 0 0 1 3.5 2H5M11 2h1.5A1.5 1.5 0 0 1 14 3.5V5M14 11v1.5a1.5 1.5 0 0 1-1.5 1.5H11M5 14H3.5A1.5 1.5 0 0 1 2 12.5V11M4.5 6h7M4.5 8.5h7M4.5 11h4.5"/></svg>
+        show ocr <span class="count">· 14</span>
+      </label>
+      <span class="spacer"></span>
+      <a class="escape" href="#">open full timeline →</a>
+    </div>
+  </section>
+</div>
+
+<div class="esc-hint"><kbd>esc</kbd> back to chat</div>
+
+</body>
+</html>

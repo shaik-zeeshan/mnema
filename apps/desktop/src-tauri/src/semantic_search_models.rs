@@ -419,6 +419,71 @@ pub fn cancel_semantic_search_model_download(
     Ok(())
 }
 
+/// Delete an **installed but unused** Semantic Search Model from disk.
+///
+/// "Unused" = installed and NOT the currently-selected model. The backfill worker
+/// only ever loads the *selected* model's files, so removing any other model's
+/// install dir is safe with none of the cleanup-lock dance the speaker/OCR paths
+/// need (those run concurrent per-model jobs; this one does not). We refuse to
+/// delete the selected model (search depends on it) and refuse while that model is
+/// mid-download (the writer still owns the dir). `model_install_dir` is the
+/// traversal-safe resolver, so the removed path can never escape the models dir.
+#[tauri::command]
+pub fn delete_semantic_search_model(
+    app_handle: tauri::AppHandle,
+    request: SemanticSearchModelDownloadRequestDto,
+    download_state: tauri::State<'_, SemanticSearchModelDownloadState>,
+) -> Result<(), String> {
+    {
+        let active = download_state
+            .lock()
+            .map_err(|_| "semantic search model download state poisoned".to_string())?;
+        if active
+            .as_ref()
+            .is_some_and(|d| d.provider == request.provider && d.model_id == request.model_id)
+        {
+            return Err(
+                "cannot delete a semantic search model while it is downloading".to_string(),
+            );
+        }
+    }
+
+    let selected =
+        crate::semantic_search_worker::effective_semantic_search_settings(&app_handle).model_id;
+    if selected.as_deref() == Some(request.model_id.as_str()) {
+        return Err(
+            "cannot delete the model that is currently in use — switch to another model first"
+                .to_string(),
+        );
+    }
+
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let models_dir = semantic_search_models_dir(app_data_dir);
+    let install_dir = model_install_dir(&models_dir, &request.provider, &request.model_id)
+        .map_err(|error| error.to_string())?;
+
+    match std::fs::remove_dir_all(&install_dir) {
+        Ok(()) => {
+            log_info(format!(
+                "semantic search model deleted: {}/{} removed from {}",
+                request.provider,
+                request.model_id,
+                install_dir.display()
+            ));
+            Ok(())
+        }
+        // Already gone is success — the UI just wanted it off disk.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "failed to delete semantic search model {}/{}: {error}",
+            request.provider, request.model_id
+        )),
+    }
+}
+
 /// The vec0 column dimension migration 0039 ships with — the English default
 /// tier (`nomic-embed-text-v1.5`). Used as the rebuild fallback when no model is
 /// selected, so the table matches a fresh-migration DB.

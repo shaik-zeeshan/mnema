@@ -10,7 +10,10 @@
   // closes the popover first, then defers to onClose. Corrections delegate to
   // the parent via the onCorrectCategory / onCorrectFocus callbacks.
 
+  import { tick } from "svelte";
   import type { Activity } from "$lib/types/recording";
+  import { trapTabKey } from "$lib/keyboard";
+  import Select from "$lib/components/Select.svelte";
   import {
     CATEGORY_OPTIONS,
     FOCUS_OPTIONS,
@@ -20,6 +23,20 @@
     type ActivityThread,
     type ActivityCategory,
   } from "$lib/insights/activity-helpers";
+
+  // The shared Select primitive reads an empty-string value as "no selection"
+  // (showing the placeholder), so the "" sentinels in CATEGORY_OPTIONS /
+  // FOCUS_OPTIONS are mapped onto explicit tokens and translated back on change.
+  const CATEGORY_NONE = "__uncategorized__";
+  const FOCUS_NONE = "__none__";
+  const CATEGORY_SELECT_OPTIONS = CATEGORY_OPTIONS.map((o) => ({
+    value: o.value === "" ? CATEGORY_NONE : o.value,
+    label: o.label,
+  }));
+  const FOCUS_SELECT_OPTIONS = FOCUS_OPTIONS.map((o) => ({
+    value: o.value === "" ? FOCUS_NONE : o.value,
+    label: o.label,
+  }));
 
   interface Props {
     open: boolean;
@@ -85,10 +102,22 @@
   }
 
   // Move keyboard focus into the dialog when it opens, so Escape/Tab act on
-  // the modal immediately (WebKit gives the opener no focus handoff).
+  // the modal immediately (WebKit gives the opener no focus handoff). On open we
+  // also capture the opener so focus can return to it on close (else it falls to
+  // <body>); mirrors ModelPickerMenu's trigger-focus return.
   let panelEl = $state<HTMLDivElement | null>(null);
+  let opener: HTMLElement | null = null;
+  let wasOpen = false;
   $effect(() => {
-    if (open) panelEl?.focus();
+    if (open && !wasOpen) {
+      opener = document.activeElement as HTMLElement | null;
+      panelEl?.focus();
+    } else if (!open && wasOpen) {
+      const trigger = opener;
+      opener = null;
+      void tick().then(() => trigger?.focus());
+    }
+    wasOpen = open;
   });
 </script>
 
@@ -105,7 +134,10 @@
     }
   }}
   onkeydown={(e) => {
-    if (!open || e.key !== "Escape") return;
+    if (!open) return;
+    // Keep Tab inside the dialog so focus never escapes behind the backdrop.
+    if (trapTabKey(e, panelEl)) return;
+    if (e.key !== "Escape") return;
     if (editingActivity.size > 0) {
       e.stopPropagation();
       closeActivityEdit();
@@ -211,46 +243,38 @@
                                 role="group"
                                 aria-label="Adjust activity"
                               >
-                                <label class="corr">
+                                <div class="corr">
                                   <span class="corr-label">Category</span>
-                                  <select
-                                    class="corr-select"
-                                    value={a.category ?? ""}
+                                  <Select
+                                    options={CATEGORY_SELECT_OPTIONS}
+                                    value={a.category ?? CATEGORY_NONE}
                                     disabled={correctingActivity.has(a.id)}
-                                    onchange={(e) =>
+                                    onValueChange={(v) =>
                                       onCorrectCategory(
                                         a,
-                                        (e.currentTarget.value || null) as
+                                        (v === CATEGORY_NONE ? null : v) as
                                           | ActivityCategory
                                           | null,
                                       )}
-                                  >
-                                    {#each CATEGORY_OPTIONS as opt (opt.value)}
-                                      <option value={opt.value}>{opt.label}</option>
-                                    {/each}
-                                  </select>
-                                </label>
-                                <label class="corr">
+                                  />
+                                </div>
+                                <div class="corr">
                                   <span class="corr-label">Focus</span>
-                                  <select
-                                    class="corr-select"
-                                    value={a.focus ?? ""}
+                                  <Select
+                                    options={FOCUS_SELECT_OPTIONS}
+                                    value={a.focus ?? FOCUS_NONE}
                                     disabled={correctingActivity.has(a.id)}
-                                    onchange={(e) =>
+                                    onValueChange={(v) =>
                                       onCorrectFocus(
                                         a,
-                                        (e.currentTarget.value || null) as
+                                        (v === FOCUS_NONE ? null : v) as
                                           | "deep"
                                           | "mixed"
                                           | "distracted"
                                           | null,
                                       )}
-                                  >
-                                    {#each FOCUS_OPTIONS as opt (opt.value)}
-                                      <option value={opt.value}>{opt.label}</option>
-                                    {/each}
-                                  </select>
-                                </label>
+                                  />
+                                </div>
                               </div>
                             {/if}
                           </div>
@@ -277,7 +301,7 @@
     display: grid;
     place-items: center;
     padding: 24px;
-    background: rgba(0, 0, 0, 0.42);
+    background: var(--app-overlay-bg);
     backdrop-filter: blur(10px);
   }
   .cat-modal__panel {
@@ -287,8 +311,9 @@
     flex-direction: column;
     border: 1px solid var(--app-border-strong);
     border-radius: 18px;
-    background: var(--app-surface);
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+    /* Depth comes from the lighter raised surface, not a heavy drop shadow. */
+    background: var(--app-surface-raised);
+    box-shadow: var(--app-shadow-popover);
   }
   .cat-modal__header {
     display: flex;
@@ -318,7 +343,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: 18px;
+    font-size: var(--text-lg);
     line-height: 1;
     border: 1px solid var(--app-border);
     border-radius: 8px;
@@ -336,6 +361,12 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
     outline: none;
+  }
+  .cat-modal__close:focus-visible {
+    box-shadow: var(--app-ring);
+  }
+  .cat-modal__close:not(:disabled):active {
+    transform: translateY(1px);
   }
   .cat-modal__body {
     overflow-y: auto;
@@ -512,46 +543,19 @@
   }
   .adjust-pop .corr {
     display: flex;
+    align-items: center;
     justify-content: space-between;
     gap: 12px;
   }
-  .adjust-pop .corr-select {
+  .adjust-pop .corr :global(.select-wrapper) {
     flex: 0 0 auto;
-    min-width: 120px;
-  }
-  .corr {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
+    width: 132px;
   }
   .corr-label {
     font-size: 9px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
-  }
-  .corr-select {
-    font: inherit;
-    font-size: 11px;
-    padding: 3px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    cursor: pointer;
-    transition: border-color 0.12s ease;
-  }
-  .corr-select:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-  }
-  .corr-select:focus {
-    outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-  .corr-select:disabled {
-    opacity: 0.6;
-    cursor: default;
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -560,9 +564,11 @@
     .thread-chevron,
     .act-row,
     .act-adjust-caret,
-    .corr-select,
     .evidence-link {
       transition: none;
+    }
+    .cat-modal__close:not(:disabled):active {
+      transform: none;
     }
   }
 </style>

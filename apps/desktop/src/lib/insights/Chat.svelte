@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Chat — the conversation pane of the Insights surface (issue #110, ADR 0031).
   // The history list / search / new-chat / rename / delete now live in the
   // persistent shell rail (<InsightsRail>); Chat is JUST the active-conversation
@@ -30,13 +31,16 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
+  import { humanizeError } from "$lib/format-error";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
@@ -52,11 +56,16 @@
     type TurnSnapshot,
     type TurnUpdate,
     type AskAiUpdateEvent,
+    contextWindowForModel,
+    defaultEngineModel,
+    defaultEnginePinProvider,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
+    AiRuntimeModel,
+    AiRuntimeModelsResult,
     AiRuntimeSettings,
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
@@ -81,7 +90,7 @@
     } catch (error) {
       askAvailability = {
         available: false,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: humanizeError(error),
       };
     }
   }
@@ -124,6 +133,10 @@
     sources: AskAiSource[];
     errorMessage: string | null;
     seededResultCount: number | null;
+    // Tokens occupying the model's context window after this turn's latest
+    // completion request; null when the provider reported no usage (and on
+    // hydrated past turns — usage isn't persisted).
+    contextTokens: number | null;
     // Last applied `ask_ai_update` version for this turn (0 if none — e.g. a
     // hydrated past turn that isn't live).
     version: number;
@@ -151,6 +164,10 @@
   );
   let turns = $state<ChatTurn[]>([]);
   let loadingConversation = $state(false);
+  // Set when opening a thread from the rail/handoff throws — so a failed load
+  // renders a recoverable error state (with Retry) instead of silently dropping
+  // the user on an empty "new chat" invite that looks like nothing happened.
+  let conversationLoadError = $state<string | null>(null);
   // True between a turn starting and that turn's terminal done/error event.
   let streaming = $state(false);
   // The live activity line just above the composer: what the engine is doing
@@ -229,6 +246,79 @@
   let composerEl = $state<HTMLTextAreaElement | null>(null);
   let transcriptEl = $state<HTMLDivElement | null>(null);
 
+  // Context-window occupancy shown in the composer bar: the latest turn that
+  // carries a provider-reported count. Null hides the readout (no live turn
+  // yet, or a cold-loaded thread — usage isn't persisted, so it reappears on
+  // the next answer).
+  const contextTokens = $derived(
+    turns.findLast((t) => t.contextTokens !== null)?.contextTokens ?? null,
+  );
+
+  // The engine answering this thread (pin → Ask AI override → global default —
+  // same precedence as the backend resolver).
+  const activeEngineProvider = $derived(
+    activePinProvider ??
+      (aiRuntimeSnapshot !== null
+        ? defaultEnginePinProvider(aiRuntimeSnapshot)
+        : null),
+  );
+  const activeEngineModel = $derived(
+    activePinModel ??
+      askAiModelOverride ??
+      (aiRuntimeSnapshot !== null ? defaultEngineModel(aiRuntimeSnapshot) : null),
+  );
+
+  // Provider-reported context windows: the active provider's model listing
+  // (the same call the picker makes), fetched lazily once per provider id and
+  // only once usage is actually on screen. Best-effort — a failed listing just
+  // leaves the known-family table as the only source.
+  let providerModels = $state<Record<string, AiRuntimeModel[]>>({});
+  const providerModelsRequested = new Set<string>();
+  $effect(() => {
+    const provider = activeEngineProvider;
+    if (provider === null || contextTokens === null) return;
+    if (providerModelsRequested.has(provider)) return;
+    const config = aiRuntimeSnapshot?.providers.find((p) => p.id === provider);
+    if (config === undefined) return;
+    providerModelsRequested.add(provider);
+    void invoke<AiRuntimeModelsResult>("ai_runtime_list_models", {
+      request: { providers: [$state.snapshot(config)] },
+    })
+      .then((result) => {
+        providerModels[provider] = result.models;
+      })
+      .catch(() => {});
+  });
+
+  // The context-window size of the model answering this thread: the provider-
+  // reported size when its listing advertises one, else the known-family
+  // table. Null (unknown model, or a local server that doesn't say) keeps the
+  // readout text-only — the used count still shows, the ring needs a real
+  // denominator.
+  const contextWindow = $derived.by(() => {
+    const model = activeEngineModel;
+    if (model === null) return null;
+    const reported =
+      activeEngineProvider !== null
+        ? (providerModels[activeEngineProvider]?.find((m) => m.id === model)
+            ?.contextWindow ?? null)
+        : null;
+    return reported ?? contextWindowForModel(model);
+  });
+  // 0..1 occupancy for the ring (clamped — usage can exceed a guessed window).
+  const contextFraction = $derived(
+    contextTokens !== null && contextWindow !== null
+      ? Math.min(1, contextTokens / contextWindow)
+      : null,
+  );
+
+  // "812" / "12.4k" / "1.2M" — compact enough for the composer bar.
+  function formatTokenCount(tokens: number): string {
+    if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+    if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+    return `${tokens}`;
+  }
+
   function makeTurn(
     turnIndex: number,
     question: string,
@@ -245,6 +335,7 @@
       sources: [],
       errorMessage: null,
       seededResultCount: null,
+      contextTokens: null,
       version: 0,
       reasoningExpanded: false,
       summaryExpanded: false,
@@ -258,20 +349,30 @@
   }
 
   // ── New chat / select / delete ───────────────────────────────────────────
-  function startNewChat(): void {
+  // `prefill` (a Subject→Chat hand-off) seeds the composer with a question to
+  // review/edit; it is NOT auto-sent, mirroring the example-question affordance.
+  function startNewChat(prefill: string | null = null): void {
     // A brand-new thread is created lazily on the first turn (ask_ai_start
     // upserts the row from title/origin), so here we just clear the right pane
     // and arm a fresh id.
     activeConversationId = crypto.randomUUID();
     activeTitle = "";
     turns = [];
+    conversationLoadError = null;
     streaming = false;
     liveActivity = null;
     activePinProvider = null;
     activePinModel = null;
     enginePickerOpen = false;
-    composerInput = "";
-    void tick().then(() => composerEl?.focus());
+    composerInput = prefill ?? "";
+    void tick().then(() => {
+      composerEl?.focus();
+      // Drop the caret at the end so the user can keep typing after a prefill.
+      if (composerEl) {
+        const end = composerEl.value.length;
+        composerEl.setSelectionRange(end, end);
+      }
+    });
   }
 
   // Empty-state example questions: tapping one prefills the composer (the user
@@ -299,6 +400,7 @@
     // Already on this thread with its transcript loaded — nothing to do.
     if (id === activeConversationId && turns.length > 0) return;
     loadingConversation = true;
+    conversationLoadError = null;
     activeConversationId = id;
     activeTitle = "";
     turns = [];
@@ -321,8 +423,13 @@
       if (activeConversationId !== id) return;
       await tick();
       scrollTranscriptToBottom();
-    } catch {
-      // Best-effort: leave the pane on the armed (empty) thread on a load failure.
+    } catch (error) {
+      // A load failure must not masquerade as an empty "new chat" pane — record
+      // it so the transcript renders a recoverable error state with Retry.
+      if (activeConversationId === id) {
+        conversationLoadError =
+          humanizeError(error);
+      }
     } finally {
       if (activeConversationId === id) loadingConversation = false;
     }
@@ -380,6 +487,7 @@
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
     turn.seededResultCount = view.seededResultCount;
+    turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
   }
@@ -396,7 +504,7 @@
     untrack(() => {
       if (pending.nonce === 0 || pending.nonce === lastOpenNonce) return;
       lastOpenNonce = pending.nonce;
-      if (pending.id === null) startNewChat();
+      if (pending.id === null) startNewChat(pending.prefill);
       else void loadConversationById(pending.id);
     });
   });
@@ -559,9 +667,38 @@
       const t = turns[turnIndex];
       if (t) {
         t.phase = "error";
-        t.errorMessage = error instanceof Error ? error.message : String(error);
+        t.errorMessage = humanizeError(error);
       }
+      // A failed send cleared the composer above — put the question back so the
+      // user can edit + resend without retyping (only if they haven't started
+      // typing something else in the meantime).
+      restoreFailedQuestion(question);
     }
+  }
+
+  // Restore a failed turn's question into the composer so it isn't lost. Only
+  // when the composer is empty, so we never clobber a new draft the user typed
+  // while the turn was in flight.
+  function restoreFailedQuestion(question: string): void {
+    if (composerInput.trim().length === 0) {
+      composerInput = question;
+    }
+  }
+
+  // Retry a failed turn: re-issue the SAME question. The error turn is terminal
+  // (and therefore trailing for its index), so we drop it and let send() re-run
+  // the start/follow-up path — turns.length lands back on the right turnIndex, so
+  // a failed first turn re-starts and a failed follow-up re-follows-up.
+  async function retryTurn(turn: ChatTurn): Promise<void> {
+    if (streaming || !askAvailable) return;
+    // Only the trailing turn can be retried: send() re-derives turnIndex from
+    // turns.length, so dropping a non-trailing turn would orphan the stream and
+    // collide turnIndexes. Mid-thread errors keep their message but no Retry.
+    if (turn.turnIndex !== turns.length - 1) return;
+    const question = turn.question;
+    turns = turns.filter((t) => t.turnIndex !== turn.turnIndex);
+    composerInput = question;
+    await send();
   }
 
   function onComposerKeydown(event: KeyboardEvent): void {
@@ -587,10 +724,36 @@
   }
 
   // ── Scroll helper ────────────────────────────────────────────────────────
+  // Auto-scroll is PINNED: a streaming turn only drags the view to the bottom
+  // when the user is already there. If they've scrolled up to read, new tokens
+  // no longer yank them down — a "Jump to latest" pill appears instead so the
+  // jump is theirs to take. `atBottom` is recomputed from the scroll position;
+  // `BOTTOM_EPSILON_PX` tolerates sub-pixel rounding + the bottom padding.
+  const BOTTOM_EPSILON_PX = 40;
+  let atBottom = $state(true);
+
   function scrollTranscriptToBottom(): void {
     const el = transcriptEl;
     if (el === null) return;
     el.scrollTop = el.scrollHeight;
+    atBottom = true;
+  }
+
+  // Recompute the pinned flag from the live scroll position (transcript onscroll).
+  function onTranscriptScroll(): void {
+    const el = transcriptEl;
+    if (el === null) return;
+    atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_EPSILON_PX;
+  }
+
+  // Auto-scroll ONLY when pinned to the bottom; otherwise leave the user where
+  // they are (the "Jump to latest" pill handles catching up).
+  function maybeAutoScroll(): void {
+    if (atBottom) void tick().then(scrollTranscriptToBottom);
+  }
+
+  function jumpToLatest(): void {
+    void tick().then(scrollTranscriptToBottom);
   }
 
   function activitySummaryFor(
@@ -625,6 +788,38 @@
 
   function toggleSummary(turn: ChatTurn): void {
     turn.summaryExpanded = !turn.summaryExpanded;
+  }
+
+  // ── Copy a completed answer ──────────────────────────────────────────────
+  // A quiet hover affordance on done turns copies the answer's raw Markdown (the
+  // prose blocks joined; graphical blocks have no useful clipboard form), keyed
+  // by turnIndex so the "Copied" flash stays scoped to the copied turn. Mirrors
+  // Quick Recall's per-turn copy.
+  let copiedTurnIndex = $state<number | null>(null);
+  let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function answerPlainText(turn: ChatTurn): string {
+    return turn.blocks
+      .filter((b): b is { kind: "prose"; markdown: string } => b.kind === "prose")
+      .map((b) => b.markdown)
+      .join("\n\n")
+      .trim();
+  }
+
+  async function copyAnswer(turn: ChatTurn): Promise<void> {
+    const text = answerPlainText(turn);
+    if (text.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      copiedTurnIndex = turn.turnIndex;
+      if (copyResetTimer !== null) clearTimeout(copyResetTimer);
+      copyResetTimer = setTimeout(() => {
+        copiedTurnIndex = null;
+        copyResetTimer = null;
+      }, 1600);
+    } catch {
+      // Best-effort: a rejected clipboard write just leaves the button idle.
+    }
   }
 
   function toggleReasoning(turn: ChatTurn): void {
@@ -680,8 +875,38 @@
     }
   }
 
-  // Hand off an Answer Source to the main timeline window (frame xor audio).
-  async function selectSource(source: AskAiSource): Promise<void> {
+  // In-place frame peek (FrameDetailModal). A frame source — or an audio source
+  // that carries an aligned frame — opens the modal instead of hopping to the raw
+  // Timeline window; the old timeline hand-off survives only as the modal's
+  // demoted escape hatch (`onOpenInTimeline`) and as the fallback for audio with
+  // no frame to peek.
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalApp = $state<string | null>(null);
+  let frameModalTitle = $state<string | null>(null);
+  let frameModalCapturedAt = $state<string | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  // Select an Answer Source: peek a frame in place when one is available, else
+  // keep the old raw-Timeline hand-off (audio with no aligned frame).
+  function selectSource(source: AskAiSource): void {
+    const frameId =
+      source.kind === "frame" ? source.frameId : (source.alignedFrameId ?? null);
+    if (frameId == null) {
+      void openSourceInTimeline(source);
+      return;
+    }
+    frameModalId = frameId;
+    frameModalApp = source.appName;
+    frameModalTitle = source.windowTitle;
+    frameModalCapturedAt = source.startedAt;
+    frameModalOpenInTimeline = () => void openSourceInTimeline(source);
+    frameModalOpen = true;
+  }
+
+  // Hand off an Answer Source to the main timeline window (frame xor audio) — the
+  // legacy behavior, now the modal's escape hatch + the audio-no-frame fallback.
+  async function openSourceInTimeline(source: AskAiSource): Promise<void> {
     try {
       await invoke("open_capture_result_in_main_window", {
         kind: source.kind,
@@ -690,8 +915,14 @@
         spanStartMs: source.spanStartMs ?? null,
         alignedFrameId: source.alignedFrameId ?? null,
       });
-    } catch {
-      // Best-effort hand-off.
+    } catch (error) {
+      // Opening the source in the timeline failed — surface it rather than
+      // letting the click look like a no-op.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't open in timeline",
+        kind: "error",
+      });
     }
   }
 
@@ -763,6 +994,9 @@
         turn.sources = coerceSources(update.sources);
         void loadSourceThumbnails(turn.sources);
         break;
+      case "contextTokens":
+        turn.contextTokens = update.tokens;
+        break;
       case "error":
         turn.errorMessage = update.message;
         turn.phase = "error";
@@ -779,14 +1013,55 @@
   // re-hydrates if the turn already finalized); stale/duplicate is ignored.
   async function handleUpdateEvent(event: AskAiUpdateEvent): Promise<void> {
     if (event.conversationId !== activeConversationId) return;
-    const turn = turns.find((t) => t.turnIndex === event.turnIndex);
-    if (!turn) return; // send() appends the in-flight turn locally; nothing else expected.
+    let turn = turns.find((t) => t.turnIndex === event.turnIndex);
+    if (!turn) {
+      // No local turn for this index: a turn was started on this SAME open
+      // conversation from another window (e.g. Quick Recall). Hydrate the missing
+      // turn from the authoritative live snapshot — the exact reattach path
+      // `adoptLiveSnapshot` uses — insert it in order, then fall through so the
+      // version contract below applies this and subsequent ops. A null / mismatched
+      // snapshot means there is nothing to attach to, so we drop as before.
+      const conversationId = event.conversationId;
+      let snapshot: TurnSnapshot | null;
+      try {
+        snapshot = await invoke<TurnSnapshot | null>("ask_ai_snapshot", {
+          request: { conversationId },
+        });
+      } catch {
+        return;
+      }
+      if (activeConversationId !== conversationId) return;
+      if (snapshot === null || snapshot.view.turnIndex !== event.turnIndex) return;
+      // Re-check after the await: the listener fires handleUpdateEvent without
+      // awaiting, so a concurrent invocation for this same missing turnIndex may
+      // have hydrated it while we were suspended in ask_ai_snapshot — appending
+      // again would duplicate the turn. Only the first resolver hydrates; the
+      // rest fall through to the version contract below.
+      turn = turns.find((t) => t.turnIndex === event.turnIndex);
+      if (!turn) {
+        const hydrated = makeTurn(
+          snapshot.view.turnIndex,
+          snapshot.view.question,
+          normalizePhase(snapshot.view.phase),
+        );
+        turns = [...turns, hydrated].sort((a, b) => a.turnIndex - b.turnIndex);
+        turn = turns.find((t) => t.turnIndex === event.turnIndex);
+        if (!turn) return;
+        adoptView(turn, snapshot.view, snapshot.version);
+        reconcileComposer(turn);
+      }
+    }
 
     if (event.version === turn.version + 1) {
       applyUpdate(turn, event.update);
       turn.version = event.version;
+      // A streamed error on the trailing turn: put the question back so it can be
+      // edited + resent (the in-transcript Retry re-issues it verbatim).
+      if (event.update.op === "error" && turn.turnIndex === turns.length - 1) {
+        restoreFailedQuestion(turn.question);
+      }
       reconcileComposer(turn);
-      void tick().then(scrollTranscriptToBottom);
+      maybeAutoScroll();
       return;
     }
     if (event.version <= turn.version) return; // already applied / stale.
@@ -805,7 +1080,7 @@
     if (snapshot !== null && snapshot.view.turnIndex === turn.turnIndex) {
       adoptView(turn, snapshot.view, snapshot.version);
       reconcileComposer(turn);
-      void tick().then(scrollTranscriptToBottom);
+      maybeAutoScroll();
       return;
     }
     // Snapshot is null (turn already finalized/removed server-side) — fall back
@@ -855,6 +1130,9 @@
   // ── Stream event wiring ──────────────────────────────────────────────────
   onMount(() => {
     void loadAskAvailability();
+    // MCP connectors (Workstream C): warm-on-open discovery — background-connect
+    // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
+    void invoke("mcp_warm_connectors").catch(() => {});
     // The shared store owns the history list + its `conversation_changed`
     // refresh listener (set up once, lives for the app session); ensureStarted()
     // is idempotent, so calling it here just kicks the first fetch.
@@ -941,6 +1219,16 @@
   </span>
 {/snippet}
 
+<!-- Answer-shaped placeholder shown beneath the working line while a turn is
+     seeding/thinking (before any prose block arrives), so the answer region
+     reads as "an answer is forming" rather than a lone pulsing dot. -->
+{#snippet answerSkeleton()}
+  <div class="answer-sk" aria-hidden="true">
+    <Skeleton variant="text" width="94%" height="12px" />
+    <Skeleton variant="text" width="68%" height="12px" muted />
+  </div>
+{/snippet}
+
 <!-- The active conversation: transcript + composer. The history list / search /
      new-chat / rename / delete all live in the persistent shell rail
      (<InsightsRail>); this surface is JUST the conversation pane. -->
@@ -954,20 +1242,46 @@
       charts.
     </p>
     {#if askAvailable}
-      <button type="button" class="btn btn--accent" onclick={startNewChat}>
+      <button type="button" class="btn btn--accent" onclick={() => startNewChat()}>
         ＋ New chat
+      </button>
+    {:else}
+      <!-- Engine-off + no conversation: surface the same enable affordance the
+           composer's engine-off card shows, so the empty pane isn't a dead end. -->
+      <button type="button" class="btn btn--accent" onclick={enableEngine}>
+        Enable engine
       </button>
     {/if}
   </div>
 {:else}
   <!-- ONLY this transcript scrolls (not the page). -->
-  <div class="transcript" bind:this={transcriptEl} aria-live="polite">
+  <div
+    class="transcript"
+    bind:this={transcriptEl}
+    aria-live="polite"
+    onscroll={onTranscriptScroll}
+  >
     <!-- Centered conversation column: user question right, AI answer left. -->
     <div class="thread-col">
       {#if loadingConversation}
         <div class="convo-skeleton">
           <Skeleton width="55%" height="13px" radius="6px" />
           <Skeleton width="100%" height="48px" radius="8px" muted />
+        </div>
+      {:else if conversationLoadError}
+        <div class="thread-load-error" role="alert">
+          <p class="thread-empty-title">Couldn't open this conversation.</p>
+          <p class="thread-empty-detail">{conversationLoadError}</p>
+          <button
+            type="button"
+            class="btn btn--accent thread-retry"
+            onclick={() => {
+              const id = activeConversationId;
+              if (id !== null) void loadConversationById(id);
+            }}
+          >
+            ↻ Try again
+          </button>
         </div>
       {:else if turns.length === 0}
         <div class="thread-empty">
@@ -995,7 +1309,7 @@
           <article class="turn">
             <!-- USER question: right-aligned bubble -->
             <div class="msg msg-user">
-              <div class="user-bubble" title={turn.question}>
+              <div class="user-bubble" use:tip={turn.question}>
                 {turn.question}
               </div>
             </div>
@@ -1004,9 +1318,28 @@
             <div class="msg msg-assistant">
               <div class="answer-col">
                 {#if turn.phase === "error"}
-                  <p class="state state--error">
-                    {turn.errorMessage ?? "The engine couldn't answer."}
-                  </p>
+                  <div class="turn-error" role="alert">
+                    <p class="state state--error">
+                      {turn.errorMessage ?? "The engine couldn't answer."}
+                    </p>
+                    <!-- Re-issue the same question. The composer is also restored
+                         with the question, so this and a manual edit-and-resend
+                         both work. Retry is gated to the TRAILING turn: send()
+                         re-derives turnIndex from turns.length, so retrying a
+                         mid-thread error would collide turnIndexes and orphan
+                         the stream. -->
+                    {#if ti === turns.length - 1}
+                      <button
+                        type="button"
+                        class="turn-retry"
+                        disabled={streaming || !askAvailable}
+                        onclick={() => void retryTurn(turn)}
+                      >
+                        <span class="turn-retry-ico" aria-hidden="true">↻</span>
+                        Retry
+                      </button>
+                    {/if}
+                  </div>
                 {:else}
                   <!-- Thinking disclosure: the model's reasoning, ABOVE the
                        answer body. Rendered only when reasoning text arrived.
@@ -1052,11 +1385,13 @@
                       <span class="dot" aria-hidden="true"></span>
                       Searching your captures…
                     </p>
+                    {@render answerSkeleton()}
                   {:else if turn.phase === "thinking" && turn.liveActivity === null}
                     <p class="state state--working">
                       <span class="dot" aria-hidden="true"></span>
                       Thinking…
                     </p>
+                    {@render answerSkeleton()}
                   {:else}
                     {#if turn.phase === "streaming" || turn.phase === "done"}
                       <!-- Collapsed, expandable tool-activity summary chip. -->
@@ -1147,6 +1482,22 @@
                         {/each}
                       </div>
 
+                      <!-- Quiet hover Copy on a completed answer (raw Markdown).
+                           Always in the DOM for keyboard reach; CSS reveals it on
+                           turn hover/focus. -->
+                      {#if turn.phase === "done" && answerPlainText(turn).length > 0}
+                        <div class="answer-tools">
+                          <button
+                            type="button"
+                            class="answer-copy"
+                            class:is-copied={copiedTurnIndex === turn.turnIndex}
+                            onclick={() => void copyAnswer(turn)}
+                          >
+                            {copiedTurnIndex === turn.turnIndex ? "✓ Copied" : "Copy"}
+                          </button>
+                        </div>
+                      {/if}
+
                       <!-- Answer Sources: the captures this turn drew on. -->
                       {#if turn.phase === "done" && turn.sources.length > 0}
                         <div class="sources">
@@ -1226,6 +1577,20 @@
     </div>
   </div>
 
+  <!-- "Jump to latest" — only when the user has scrolled up off the bottom while
+       there's content (streaming no longer yanks them down; this is their opt-in
+       to catch up). Anchored just above the composer. -->
+  {#if !atBottom && turns.length > 0}
+    <button
+      type="button"
+      class="jump-latest"
+      onclick={jumpToLatest}
+      aria-label="Jump to latest"
+    >
+      ↓ Jump to latest
+    </button>
+  {/if}
+
   <!-- Composer (engine-on) or quiet enable card (engine-off). -->
   {#if askAvailable}
     <div class="composer-wrap">
@@ -1265,6 +1630,34 @@
             bind:open={enginePickerOpen}
             onselect={handleModelSelect}
           />
+          <!-- Context-window occupancy for this thread (provider-reported
+               tokens from the latest answer). Hidden until a turn reports. -->
+          {#if contextTokens !== null}
+            <span
+              class="composer-context"
+              use:tip={contextWindow !== null && contextFraction !== null
+                ? `${formatTokenCount(contextTokens)} of ${formatTokenCount(contextWindow)} tokens (${Math.round(contextFraction * 100)}% of context window)`
+                : "Tokens in the model's context window"}
+            >
+              {#if contextFraction !== null}
+                <!-- Occupancy ring, shown only when the model's total window is
+                     known: dasharray fills the circumference (2πr, r=6.5 →
+                     ~40.84) by the used fraction, starting at 12 o'clock. -->
+                <svg class="composer-context-ring" viewBox="0 0 16 16" aria-hidden="true">
+                  <circle class="ring-track" cx="8" cy="8" r="6.5" />
+                  <circle
+                    class="ring-fill"
+                    cx="8"
+                    cy="8"
+                    r="6.5"
+                    stroke-dasharray="{(contextFraction * 40.84).toFixed(2)} 40.84"
+                    transform="rotate(-90 8 8)"
+                  />
+                </svg>
+              {/if}
+              {formatTokenCount(contextTokens)} tokens
+            </span>
+          {/if}
           <!-- Send ⇄ Stop morph: while a turn streams the button becomes a
                stop control that asks the backend to cancel; the resulting
                done/error event settles the UI. -->
@@ -1275,7 +1668,7 @@
             disabled={!streaming && composerInput.trim().length === 0}
             onclick={() => (streaming ? void stopStreaming() : void send())}
             aria-label={streaming ? "Stop" : "Send"}
-            title={streaming ? "Stop generating" : "Send (Enter)"}
+            use:tip={streaming ? "Stop generating" : "Send (Enter)"}
           >
             {#if streaming}
               ■
@@ -1303,6 +1696,18 @@
 {/if}
 </section>
 
+<!-- In-place frame peek for Answer Sources. Its "open full timeline →" escape
+     hatch replays the old raw-Timeline hand-off captured at open time. -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  appName={frameModalApp}
+  windowTitle={frameModalTitle}
+  capturedAt={frameModalCapturedAt}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
+
 <style>
   /* The conversation pane filling the insights surface. Mirrors the terminal/
      green token system (--app-* / --cat-*) used across Overview/Subjects/Context.
@@ -1322,6 +1727,43 @@
     border-top: 1px solid var(--app-border);
     overflow: hidden;
     background: var(--app-surface);
+    /* Anchor for the floating "Jump to latest" pill. */
+    position: relative;
+  }
+
+  /* Floating "Jump to latest" pill — sits just above the composer, centered. */
+  .jump-latest {
+    position: absolute;
+    left: 50%;
+    bottom: 96px;
+    transform: translateX(-50%);
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: inherit;
+    font-size: 11px;
+    padding: 5px 12px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-surface-raised);
+    color: var(--app-accent-strong);
+    cursor: pointer;
+    box-shadow: var(--app-shadow-popover, 0 4px 14px rgba(0, 0, 0, 0.35));
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .jump-latest:hover {
+    border-color: var(--app-accent);
+    background: var(--app-surface-hover);
+  }
+  .jump-latest:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .jump-latest:active {
+    transform: translateX(-50%) translateY(1px);
   }
   .pane-empty {
     margin: auto;
@@ -1372,6 +1814,21 @@
     flex-direction: column;
     gap: 8px;
   }
+  /* Recoverable load-failure state for a thread that threw while opening. */
+  .thread-load-error {
+    margin: 4px 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 16px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 9px;
+    background: var(--app-danger-bg);
+  }
+  .thread-retry {
+    margin-top: 2px;
+  }
   .thread-empty-title {
     font-size: 13px;
     font-weight: 600;
@@ -1406,6 +1863,10 @@
   .example-q:hover {
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
+  }
+  .example-q:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   /* One transcript turn: a user bubble (right) then the AI answer (left). */
@@ -1454,6 +1915,98 @@
   .state--error {
     color: var(--app-danger);
   }
+  /* Failed-turn block: the error line + a Retry that re-issues the question. */
+  .turn-error {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .turn-retry {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font: inherit;
+    font-size: 11px;
+    padding: 4px 11px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 7px;
+    background: var(--app-danger-bg);
+    color: var(--app-danger-text);
+    cursor: pointer;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease,
+      opacity 0.12s ease;
+  }
+  .turn-retry:hover:not(:disabled) {
+    border-color: var(--app-danger);
+  }
+  .turn-retry:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring-danger);
+  }
+  .turn-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .turn-retry:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .turn-retry-ico {
+    font-size: 12px;
+    line-height: 1;
+  }
+
+  /* Quiet hover Copy on a completed answer. Hidden until the turn is hovered or
+     the button itself is focused (keyboard reach), then a quiet pill. */
+  .answer-tools {
+    display: flex;
+    margin-top: 2px;
+    min-height: 18px;
+  }
+  .answer-copy {
+    font: inherit;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    padding: 2px 9px;
+    border: 1px solid var(--app-border);
+    border-radius: 999px;
+    background: var(--app-surface-subtle);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition:
+      opacity 0.12s ease,
+      border-color 0.12s ease,
+      color 0.12s ease;
+  }
+  .turn:hover .answer-copy,
+  .answer-copy:focus-visible,
+  .answer-copy.is-copied {
+    opacity: 1;
+  }
+  .answer-copy:hover {
+    border-color: var(--app-border-hover);
+    color: var(--app-text-strong);
+  }
+  .answer-copy:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .answer-copy.is-copied {
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .turn-retry:not(:disabled):active {
+      transform: none;
+    }
+    /* Keep the pill centered (translateX) but drop the press-down nudge. */
+    .jump-latest:active {
+      transform: translateX(-50%);
+    }
+  }
   .state--working {
     color: var(--app-text-muted);
   }
@@ -1499,7 +2052,7 @@
     height: 7px;
     border-radius: 50%;
     background: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
     animation: chat-pulse 1.1s ease-in-out infinite;
     flex: 0 0 auto;
   }
@@ -1566,6 +2119,10 @@
     border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
+  .activity-chip:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
   .activity-caret {
     font-size: 8px;
     transition: transform 0.12s ease;
@@ -1595,6 +2152,13 @@
     display: flex;
     flex-direction: column;
     gap: 12px;
+  }
+  /* Answer-shaped placeholder while a turn seeds/thinks (before prose lands). */
+  .answer-sk {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-top: 8px;
   }
 
   /* Inline graphical answer segments. */
@@ -1716,10 +2280,13 @@
     border: 1px solid var(--app-border);
     border-radius: 9px;
     background: var(--app-surface);
-    transition: border-color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .composer:focus-within {
     border-color: var(--app-accent-border);
+    box-shadow: var(--app-ring);
   }
   .composer-input {
     flex: 0 0 auto;
@@ -1752,6 +2319,34 @@
     gap: 8px;
     padding: 6px 8px 8px 10px;
   }
+  /* Quiet context-window readout, tucked against the send button. */
+  .composer-context {
+    flex: 0 0 auto;
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: 10.5px;
+    color: var(--app-text-muted);
+    cursor: default;
+  }
+  .composer-context-ring {
+    width: 12px;
+    height: 12px;
+  }
+  .composer-context-ring circle {
+    fill: none;
+    stroke-width: 2.5;
+  }
+  .composer-context-ring .ring-track {
+    stroke: currentColor;
+    opacity: 0.25;
+  }
+  .composer-context-ring .ring-fill {
+    stroke: currentColor;
+    stroke-linecap: round;
+  }
   .composer-send {
     flex: 0 0 auto;
     width: 30px;
@@ -1765,18 +2360,38 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
     cursor: pointer;
-    transition: border-color 0.12s ease, opacity 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease,
+      color 0.12s ease,
+      box-shadow 0.12s ease,
+      opacity 0.12s ease;
   }
   .composer-send:hover:not(:disabled) {
     border-color: var(--app-accent);
+  }
+  .composer-send:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .composer-send:disabled {
     opacity: 0.45;
     cursor: not-allowed;
   }
-  /* The send glyph morphs into a stop square while a turn streams. */
+  /* The send glyph morphs into a stop square while a turn streams. The Stop
+     action must not read as the affirmative green Send — give it a neutral
+     danger palette so interrupting is visually distinct. */
   .composer-send--stop {
     font-size: 10px;
+    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
+    color: var(--app-danger-text);
+  }
+  .composer-send--stop:hover:not(:disabled) {
+    border-color: var(--app-danger);
+  }
+  .composer-send--stop:focus-visible {
+    box-shadow: var(--app-ring-danger);
   }
 
   /* Engine-off quiet card (replaces the composer block, same centered width). */
@@ -1810,10 +2425,19 @@
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
     cursor: pointer;
-    transition: border-color 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
   .engine-off-enable:hover {
     border-color: var(--app-accent);
+  }
+  .engine-off-enable:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .engine-off-enable:not(:disabled):active {
+    transform: translateY(1px);
   }
 
   /* Shared accent button (mirrors Overview's .btn--accent). */
@@ -1824,7 +2448,19 @@
     border-radius: 7px;
     cursor: pointer;
     border: 1px solid transparent;
-    transition: border-color 0.12s ease, background 0.12s ease;
+    transition:
+      border-color 0.12s ease,
+      background 0.12s ease,
+      box-shadow 0.12s ease,
+      filter 0.12s ease,
+      transform 0.06s ease;
+  }
+  .btn:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .btn:not(:disabled):active {
+    transform: translateY(1px);
   }
   .btn--accent {
     background: var(--app-accent-bg);
@@ -1833,5 +2469,8 @@
   }
   .btn--accent:hover {
     border-color: var(--app-accent);
+  }
+  .btn--accent:not(:disabled):active {
+    filter: brightness(0.95);
   }
 </style>

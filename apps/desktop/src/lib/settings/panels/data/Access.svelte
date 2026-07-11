@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import {
     grantStatus,
@@ -8,6 +9,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
 
   const c = getSettingsController();
   const cliAccess = c.cliAccess;
@@ -15,6 +17,7 @@
   const brokerGrants = $derived(cliAccess.brokerGrants);
   const brokerGrantLoading = $derived(cliAccess.brokerGrantLoading);
   const brokerGrantSaving = $derived(cliAccess.brokerGrantSaving);
+  const isGrantRevoking = (id: string) => cliAccess.isGrantRevoking(id);
   const brokerGrantError = $derived(cliAccess.brokerGrantError);
   const mnemaCliStatus = $derived(cliAccess.mnemaCliStatus);
   const mnemaCliLoading = $derived(cliAccess.mnemaCliLoading);
@@ -25,6 +28,24 @@
   const loadMnemaCliStatus = () => cliAccess.loadMnemaCliStatus();
   const installMnemaCli = () => cliAccess.installMnemaCli();
   const revokeAgentBrokerGrant = (id: string) => cliAccess.revokeAgentBrokerGrant(id);
+
+  // Grants have NO backend change event: they can be approved via the consent
+  // window, revoked elsewhere, or simply expire while this panel sits open. This
+  // panel only mounts while the Data group is the active surface, so a lazy poll
+  // + window-focus refetch keeps the list honest, and a ticking `now` keeps the
+  // expiry labels from freezing at mount. All torn down on unmount.
+  let now = $state(Date.now());
+  $effect(() => {
+    const tick = setInterval(() => (now = Date.now()), 15000);
+    const poll = setInterval(() => void loadBrokerGrants(), 30000);
+    const onFocus = () => void loadBrokerGrants();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      clearInterval(tick);
+      clearInterval(poll);
+      window.removeEventListener("focus", onFocus);
+    };
+  });
 </script>
 
 <SettingGroup
@@ -55,18 +76,19 @@
           <div class="privacy-disclosure">
             <p>CLI Access lets local tools request time-bounded access to searchable Mnema text, including screen text, audio transcripts, and timeline results.</p>
             <p>CLI output does not include media paths, raw database rows, app/window titles, browser URLs, or deep-link URLs.</p>
-            {#if mnemaCliStatus}
-              <p>
-                CLI: {mnemaCliStatus.installed ? `mnema installed at ${mnemaCliStatus.installPath}` : `mnema not installed at ${mnemaCliStatus.installPath}`}
-              </p>
-              {#if mnemaCliStatus.installed && !mnemaCliStatus.installDirInPath}
-                <p>{mnemaCliStatus.installDir} is not in PATH for this app session.</p>
-              {/if}
-            {/if}
           </div>
+          {#if mnemaCliStatus}
+            {#if !mnemaCliStatus.installed}
+              <p class="group-hint group-hint--warn">mnema is not installed at {mnemaCliStatus.installPath} — install the CLI before local tools can request access.</p>
+            {:else if !mnemaCliStatus.installDirInPath}
+              <p class="group-hint group-hint--warn">mnema is installed at {mnemaCliStatus.installPath}, but {mnemaCliStatus.installDir} is not in PATH for this app session.</p>
+            {:else}
+              <p class="group-hint">mnema installed at {mnemaCliStatus.installPath}.</p>
+            {/if}
+          {/if}
           <div class="row-actions">
-            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} onclick={installMnemaCli}>
-              {mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}
+            <button class="btn btn--ghost btn--sm" type="button" disabled={mnemaCliInstalling || mnemaCliLoading} aria-busy={mnemaCliInstalling} onclick={installMnemaCli}>
+              {#if mnemaCliInstalling}<ButtonSpinner />Installing…{:else}{mnemaCliStatus?.installed ? "Reinstall CLI" : "Install CLI"}{/if}
             </button>
             <ReloadButton
               onclick={() => { void loadBrokerGrants(); void loadMnemaCliStatus(); }}
@@ -87,24 +109,25 @@
           {:else if brokerGrants.length > 0}
             <ul class="grant-list">
               {#each brokerGrants as grant (grant.id)}
-                {@const status = grantStatus(grant)}
+                {@const status = grantStatus(grant, now)}
                 <li class="grant-row" class:grant-row--inactive={status !== "active"}>
                   <span class="grant-row__status grant-row__status--{status}" aria-hidden="true"></span>
                   <div class="grant-row__meta">
-                    <span class="grant-row__name" title={grant.label}>{grant.label}</span>
+                    <span class="grant-row__name" use:tip={grant.label}>{grant.label}</span>
                     <span class="grant-row__detail">
                       <span class="grant-row__scope">{formatGrantScope(grant.scope)}</span>
                       <span class="grant-row__sep" aria-hidden="true">·</span>
-                      <span title={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant)}</span>
+                      <span use:tip={new Date(grant.expiresAtUnixMs).toLocaleString()}>{grantStatusLabel(grant, now)}</span>
                     </span>
                   </div>
                   <button
-                    class="btn btn--ghost btn--sm"
+                    class="btn btn--danger btn--sm"
                     type="button"
-                    disabled={brokerGrantSaving || status !== "active"}
+                    disabled={isGrantRevoking(grant.id) || status !== "active"}
+                    aria-busy={isGrantRevoking(grant.id)}
                     onclick={() => revokeAgentBrokerGrant(grant.id)}
                   >
-                    Revoke
+                    {#if isGrantRevoking(grant.id)}<ButtonSpinner />Revoking…{:else}Revoke{/if}
                   </button>
                 </li>
               {/each}

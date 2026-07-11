@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { humanizeError } from "$lib/format-error";
 import type {
   ExcludedAppEntry,
   RecordingSettingsDomainUpdateResponse,
@@ -45,7 +46,7 @@ type AppPrivacyExclusionState = {
 };
 
 function serializeError(err: unknown): string {
-  return typeof err === "string" ? err : (JSON.stringify(err) ?? "Unknown error");
+  return humanizeError(err);
 }
 
 function makeDraftId(prefix: string): string {
@@ -337,6 +338,18 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
   $effect(() => {
     if (!state.comboboxOpen) return;
     void resolveAppIcons(controller.filteredCandidates.map((candidate) => candidate.bundleId));
+  });
+
+  // ponytail: candidate list is otherwise mount-only, so newly-seen apps never
+  // surface until reload. Window focus is the cheap "user came back, refresh"
+  // signal for this main-window-only surface; timeline_data_changed if capture-live freshness matters.
+  $effect(() => {
+    if (typeof window === "undefined") return;
+    const onFocus = () => {
+      void loadPrivacyAppCandidates();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   });
 
   $effect(() => {

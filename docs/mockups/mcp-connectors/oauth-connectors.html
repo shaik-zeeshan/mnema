@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCP connectors — Finalized (inline connect + lifecycle list)</title>
+<style>
+/* ===== tokens + base (verbatim from preset-picker.html) ===== */
+:root {
+  --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
+  --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#33334a;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18); --app-accent-contrast:#07120c;
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-ring:0 0 0 3px var(--app-accent-glow);
+  --app-shadow-popover:0 8px 24px rgba(0,0,0,0.22);
+  --app-overlay-bg:rgba(10,10,16,0.78);
+  --app-font-mono:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px; --text-xl:20px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--app-bg); color:var(--app-text); font-family:var(--app-font-mono); font-size:var(--text-md); padding:40px 24px 80px; }
+a { color:var(--app-text-muted); }
+
+/* ---------- caption ---------- */
+.caption { max-width:1100px; margin:0 auto 20px; }
+.caption__eyebrow { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-accent); }
+.caption h1 { font-size:16px; font-weight:600; color:var(--app-text-strong); margin:6px 0 4px; letter-spacing:-.01em; }
+.caption p { font-size:11px; color:var(--app-text-muted); line-height:1.5; }
+
+/* ---------- app window ---------- */
+.window { width:1100px; height:740px; margin:0 auto; border:1px solid var(--app-border-strong); border-radius:12px;
+  background:var(--app-bg); box-shadow:0 24px 60px rgba(0,0,0,.45); overflow:hidden; display:flex; flex-direction:column; position:relative; }
+.titlebar { flex:0 0 38px; display:flex; align-items:center; gap:8px; padding:0 14px; border-bottom:1px solid var(--app-border); }
+.titlebar__dot { width:11px; height:11px; border-radius:50%; background:#26262f; border:1px solid #33333f; }
+.titlebar__title { margin-left:10px; font-size:11px; color:var(--app-text-subtle); letter-spacing:.04em; }
+
+/* ---------- settings shell ---------- */
+.settings-shell { display:flex; gap:18px; flex:1; min-height:0; padding:18px 22px 0; }
+.rail { flex:0 0 232px; padding-right:18px; display:flex; flex-direction:column; min-height:0; position:relative; }
+.rail::after { content:""; position:absolute; top:0; bottom:0; right:0; width:1px;
+  background:repeating-linear-gradient(to bottom,var(--app-border-strong) 0 3px,transparent 3px 8px);
+  -webkit-mask-image:linear-gradient(to bottom,transparent,#000 8%,#000 92%,transparent); mask-image:linear-gradient(to bottom,transparent,#000 8%,#000 92%,transparent); }
+.rail__back { display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--app-text-muted); text-decoration:none; padding:4px 8px; margin-bottom:10px; border-radius:6px; }
+.rail__back:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
+.rail__search { margin-bottom:16px; }
+.rail__search .text-input { width:100%; font-size:11px; padding:6px 10px; }
+.rail-cat { font-size:10px; font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--app-text-muted); margin:0 0 5px 8px; }
+.rail-cat + .rail-cat, .rail-nav + .rail-cat { margin-top:16px; }
+.rail-nav { display:flex; flex-direction:column; gap:1px; }
+.rail-item { position:relative; display:flex; align-items:center; gap:9px; height:32px; padding:6px 10px; border-radius:6px;
+  font-size:13px; font-weight:500; color:var(--app-text-muted); cursor:pointer; text-decoration:none; }
+.rail-item:hover { background:var(--app-surface-hover); color:var(--app-text); }
+.rail-item .ic { width:16px; height:16px; flex-shrink:0; }
+.rail-item.is-active { background:rgba(61,255,160,.08); color:var(--app-text-strong); }
+.rail-item.is-active .ic { color:var(--app-accent); }
+.rail-item.is-active::before { content:""; position:absolute; left:0; top:6px; bottom:6px; width:2px; border-radius:2px;
+  background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+.rail__spacer { flex:1; }
+.rail__footer { display:flex; align-items:center; gap:7px; padding:12px 10px 16px; font-size:10px; font-weight:700;
+  letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-muted); }
+.rail__footer .dot { width:6px; height:6px; border-radius:50%; background:var(--app-accent); box-shadow:0 0 6px var(--app-accent-glow); }
+
+.settings-scroll { flex:1; overflow-y:auto; min-height:0; }
+.settings-panel { max-width:660px; margin:0 auto; display:flex; flex-direction:column; gap:24px; padding:8px 24px 48px; }
+.ic { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.75; stroke-linecap:round; stroke-linejoin:round; }
+
+/* ---------- setting group ---------- */
+.setting-group { display:flex; flex-direction:column; gap:12px; }
+.setting-group__title { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-text-strong); }
+.setting-group__hint { font-size:11px; color:var(--app-text-muted); line-height:1.5; letter-spacing:.01em; }
+.setting-group__card { position:relative; background:var(--app-surface-raised); border:1px solid var(--app-border); border-radius:12px; }
+.setting-group__card::before { content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+  background:linear-gradient(90deg,transparent,rgba(61,255,160,.12) 22%,rgba(61,255,160,.12) 78%,transparent); pointer-events:none; }
+.setting-row { position:relative; display:flex; align-items:center; justify-content:space-between; gap:16px; padding:16px 20px; }
+.setting-row + .setting-row::before { content:""; position:absolute; top:0; left:20px; right:20px; height:1px; background:var(--app-border); }
+.setting-row__label { font-size:13px; font-weight:550; color:var(--app-text-strong); letter-spacing:.01em; }
+.setting-row__description { font-size:11px; color:var(--app-text-muted); line-height:1.45; letter-spacing:.01em; }
+
+/* ---------- mcp connector row (badges verbatim) ---------- */
+.mcp-row__main { display:flex; align-items:center; gap:10px; flex-wrap:wrap; min-width:0; }
+.mcp-row__meta { display:flex; align-items:center; gap:10px; flex-shrink:0; }
+.mcp-row__tag { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--app-text-muted);
+  background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:5px; padding:2px 6px; }
+.mcp-row__badge { display:inline-flex; align-items:center; gap:4px; font-size:10px; text-transform:uppercase; letter-spacing:.06em;
+  color:var(--app-accent); background:var(--app-accent-bg); border:1px solid var(--app-accent-border); border-radius:999px; padding:2px 8px; }
+.mcp-row__count { font-size:11px; color:var(--app-text-subtle); letter-spacing:.02em; }
+.mcp-row__badge--warn { color:var(--app-warn); background:var(--app-warn-bg); border-color:var(--app-warn-border); }
+.mcp-row__count--warn { color:var(--app-warn); }
+@keyframes row-flash { from { background:rgba(61,255,160,.08); } to { background:transparent; } }
+.setting-row--new { animation:row-flash 1.4s ease-out; }
+
+/* ---------- buttons / inputs (verbatim) ---------- */
+.btn { display:inline-flex; align-items:center; justify-content:center; gap:8px; padding:8px 16px; border-radius:8px;
+  font-family:inherit; font-size:11px; font-weight:600; letter-spacing:.1em; text-transform:uppercase; white-space:nowrap;
+  cursor:pointer; border:1px solid transparent; transition:all .15s; outline:none; }
+.btn:focus-visible { box-shadow:var(--app-ring); }
+.btn:active:not(:disabled) { transform:translateY(1px); }
+.btn--ghost { background:transparent; color:var(--app-text); border-color:var(--app-border-strong); }
+.btn--ghost:hover { background:var(--app-surface-hover); color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.btn--sm { padding:6px 12px; font-size:10px; color:var(--app-text-muted); border-color:var(--app-border-strong); background:transparent; }
+.btn--sm:hover { background:var(--app-surface-hover); color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.btn--danger { background:var(--app-danger-bg); color:var(--app-danger); border-color:var(--app-danger-border); }
+.btn--danger:hover { border-color:var(--app-danger); box-shadow:0 0 14px rgba(255,107,122,.15); }
+.btn--primary { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+.btn--primary:hover:not(:disabled) { background:rgba(61,255,160,.12); border-color:var(--app-accent); box-shadow:0 0 14px var(--app-accent-glow); }
+.btn:disabled { opacity:.4; cursor:not-allowed; }
+.text-input { padding:8px 12px; background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:8px;
+  font-family:inherit; font-size:12px; color:var(--app-text); outline:none; box-shadow:inset 0 1px 2px rgba(0,0,0,.25); }
+.text-input:focus { border-color:var(--app-accent); box-shadow:inset 0 1px 2px rgba(0,0,0,.25), var(--app-ring); }
+.text-input::placeholder { color:var(--app-text-faint); }
+.text-input.is-error { border-color:var(--app-danger); }
+.text-input.is-error:focus { box-shadow:inset 0 1px 2px rgba(0,0,0,.25), 0 0 0 3px rgba(255,107,122,.15); }
+.field__error { font-size:10.5px; color:var(--app-danger); line-height:1.4; }
+.field-label { font-size:10px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--app-text-muted); }
+.group-hint { font-size:11px; color:var(--app-text-muted); letter-spacing:.03em; line-height:1.5; }
+.group-hint--warn { color:var(--app-warn); font-weight:600; }
+.group-hint--accent { color:var(--app-accent); }
+.switch-track { position:relative; display:inline-flex; align-items:center; width:36px; height:20px; background:var(--app-surface);
+  border:1px solid var(--app-border-strong); border-radius:999px; cursor:pointer; flex-shrink:0; transition:all .18s; }
+.switch-thumb { position:absolute; left:2px; width:14px; height:14px; border-radius:50%; background:var(--app-text-subtle); transition:all .18s; }
+.switch-track.is-on { background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+.switch-track.is-on .switch-thumb { transform:translateX(16px); background:var(--app-accent); box-shadow:0 0 8px var(--app-accent-glow); }
+.switch-track:focus-visible { box-shadow:var(--app-ring); }
+.segmented { display:inline-flex; width:fit-content; gap:2px; padding:2px; border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface); }
+.seg { display:inline-flex; align-items:center; gap:5px; padding:5px 12px; border:0; border-radius:6px; background:transparent;
+  color:var(--app-text-muted); font:inherit; font-size:12px; font-weight:540; line-height:1; cursor:pointer; }
+.seg--active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+
+/* ---------- modal (verbatim) ---------- */
+.cat-modal { position:fixed; inset:0; z-index:2000; display:grid; place-items:center; padding:24px;
+  background:var(--app-overlay-bg); backdrop-filter:blur(10px); }
+.cat-modal[hidden] { display:none; }
+.cat-modal__panel { width:min(560px,100%); max-height:min(720px,calc(100vh - 48px)); display:flex; flex-direction:column;
+  border:1px solid var(--app-border-strong); border-radius:18px; background:var(--app-surface-raised); box-shadow:var(--app-shadow-popover); }
+.cat-modal__header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:18px 18px 12px; }
+.cat-modal__eyebrow { margin:0 0 2px; font-size:10.5px; letter-spacing:.07em; text-transform:uppercase; color:var(--app-text-muted); }
+.cat-modal__header h2 { margin:0; font-size:16px; font-weight:600; letter-spacing:-.01em; color:var(--app-text-strong); }
+.cat-modal__close { width:28px; height:28px; display:inline-flex; align-items:center; justify-content:center; font-size:16px;
+  border:1px solid var(--app-border); border-radius:8px; background:transparent; color:var(--app-text-muted); cursor:pointer; }
+.cat-modal__close:hover { color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.cat-modal__body { overflow-y:auto; padding:0 18px 18px; }
+
+/* ---------- catalog grid ---------- */
+.catalog__search { width:100%; margin-bottom:14px; }
+.catalog-eyebrow { font-size:10px; font-weight:700; letter-spacing:.12em; text-transform:uppercase; color:var(--app-text-subtle); margin:14px 0 8px 2px; }
+.catalog-group:first-of-type .catalog-eyebrow { margin-top:0; }
+.catalog-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.tile { display:flex; align-items:center; gap:11px; padding:11px 12px; text-align:left; border:1px solid var(--app-border);
+  border-radius:10px; background:var(--app-surface); font-family:inherit; cursor:pointer; transition:all .15s; outline:none; }
+.tile:hover { background:var(--app-surface-hover); border-color:var(--app-border-hover); }
+.tile:focus-visible { box-shadow:var(--app-ring); }
+.tile__icon { width:30px; height:30px; flex-shrink:0; display:grid; place-items:center; border:1px solid var(--app-border-strong);
+  border-radius:7px; color:var(--app-text-muted); font-size:11px; font-weight:700; letter-spacing:.02em; }
+.tile__icon .ic { width:15px; height:15px; }
+.brand-icon { width:16px; height:16px; fill:currentColor; }
+.tile__text { min-width:0; flex:1; }
+.tile__name { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; color:var(--app-text-strong); }
+.tile__tagline { font-size:10.5px; color:var(--app-text-muted); line-height:1.35; margin-top:2px; }
+.tile__badge { font-size:9px; font-weight:700; letter-spacing:.08em; text-transform:uppercase; color:var(--app-text-subtle);
+  border:1px solid var(--app-border-strong); border-radius:4px; padding:1px 5px; background:var(--app-surface-subtle); }
+.tile:active { background:var(--app-surface-active); }
+.tile__badge--added { color:var(--app-accent); background:var(--app-accent-bg); border-color:var(--app-accent-border); }
+.tile__badge--oauth { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+.tile--custom { grid-column:1 / -1; border-style:dashed; background:transparent; }
+.tile--custom .tile__name { color:var(--app-text-muted); }
+.tile--custom:hover { background:var(--app-surface-hover); }
+.catalog-custom { margin-top:8px; }
+.catalog-custom .tile { width:100%; }
+.catalog-empty { font-size:11px; color:var(--app-text-subtle); padding:18px 2px; }
+
+/* ---------- connect step ---------- */
+.connect { display:flex; flex-direction:column; gap:14px; }
+.connect__lede { font-size:11px; color:var(--app-text-muted); line-height:1.5; letter-spacing:.01em; }
+.chip-row { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.chip { font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--app-text-muted);
+  background:var(--app-surface); border:1px solid var(--app-border-strong); border-radius:5px; padding:3px 7px; }
+.chip--path { text-transform:none; letter-spacing:.01em; }
+.chip--oauth { color:var(--app-accent); border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+.field { display:flex; flex-direction:column; gap:6px; }
+.field .text-input { width:100%; }
+.field__help { font-size:10.5px; color:var(--app-text-muted); text-decoration:none; width:fit-content; }
+.field__help:hover { color:var(--app-text); text-decoration:underline; }
+.adv { border:1px solid var(--app-border); border-radius:10px; background:var(--app-surface); overflow:hidden; }
+.adv__toggle { width:100%; display:flex; align-items:center; justify-content:space-between; gap:8px; padding:10px 12px;
+  background:transparent; border:0; font-family:inherit; font-size:10px; font-weight:700; letter-spacing:.1em;
+  text-transform:uppercase; color:var(--app-text-muted); cursor:pointer; }
+.adv__toggle:hover { color:var(--app-text-strong); }
+.adv__chev { transition:transform .15s; font-size:11px; }
+.adv.is-open .adv__chev { transform:rotate(90deg); }
+.adv__body { display:none; flex-direction:column; gap:12px; padding:2px 12px 14px; border-top:1px solid var(--app-border); }
+.adv.is-open .adv__body { display:flex; }
+.connect__footer { display:flex; align-items:center; justify-content:space-between; gap:12px; padding-top:4px; }
+
+/* ---------- static state sections ---------- */
+.state-section { max-width:1100px; margin:44px auto 0; }
+.state-section__eyebrow { font-size:10px; font-weight:700; letter-spacing:.13em; text-transform:uppercase; color:var(--app-warn); margin-bottom:12px; }
+.state-section__eyebrow--ok { color:var(--app-accent); }
+.state-section__note { font-size:10.5px; color:var(--app-text-subtle); line-height:1.5; margin:-6px 0 12px; max-width:640px; }
+.state-panel { position:static; }
+
+/* ---------- oauth connect stages (variant A additions) ---------- */
+.oauth { display:flex; flex-direction:column; }
+.oauth__stage { display:none; flex-direction:column; align-items:center; text-align:center; gap:12px; padding:26px 8px 12px; }
+.oauth[data-state="idle"] .oauth__stage--idle,
+.oauth[data-state="authorizing"] .oauth__stage--authorizing,
+.oauth[data-state="authorized"] .oauth__stage--authorized,
+.oauth[data-state="denied"] .oauth__stage--denied { display:flex; }
+.oauth--inline .oauth__stage { padding:12px 4px 4px; gap:9px; }
+.oauth__connect.btn { padding:11px 24px; font-size:12px; letter-spacing:.06em; }
+.oauth__reassure { font-size:10.5px; color:var(--app-text-subtle); line-height:1.5; max-width:360px; }
+.oauth__back { margin-top:2px; }
+.oauth__sub { font-size:10.5px; color:var(--app-text-subtle); line-height:1.5; max-width:340px; margin-top:-4px; }
+.oauth__ok { font-size:13px; font-weight:600; color:var(--app-text-strong); }
+.oauth__check { width:36px; height:36px; border-radius:50%; display:grid; place-items:center;
+  background:var(--app-accent-bg); border:1px solid var(--app-accent-border); color:var(--app-accent);
+  font-size:17px; box-shadow:0 0 18px var(--app-accent-glow); animation:oauth-in .2s ease-out; }
+.oauth__check--sm { width:22px; height:22px; font-size:12px; box-shadow:none; animation:none; }
+@keyframes oauth-in { from { transform:scale(.4); opacity:0; } to { transform:scale(1); opacity:1; } }
+.oauth-status { display:flex; align-items:center; gap:10px; font-size:12px; color:var(--app-text-strong);
+  background:var(--app-accent-bg); border:1px solid var(--app-accent-border); border-radius:10px; padding:12px 14px; }
+
+/* browser-handoff waiting stage (variant B copy) */
+.oauth__glyph { width:46px; height:46px; border-radius:50%; display:grid; place-items:center;
+  background:var(--app-accent-bg); border:1px solid var(--app-accent-border); color:var(--app-accent);
+  box-shadow:0 0 18px var(--app-accent-glow); animation:oauth-in .2s ease-out; }
+.oauth__glyph .ic { width:22px; height:22px; }
+.oauth__waiting { display:inline-flex; align-items:center; gap:8px; font-size:10.5px; font-weight:700;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--app-text-muted); }
+.oauth__pulse { width:8px; height:8px; border-radius:50%; background:var(--app-accent);
+  box-shadow:0 0 8px var(--app-accent-glow); animation:oauth-pulse 1.4s ease-in-out infinite; }
+@keyframes oauth-pulse { 0%,100% { opacity:.3; transform:scale(.8); } 50% { opacity:1; transform:scale(1); } }
+/* denied / error stage */
+.oauth__x { width:36px; height:36px; border-radius:50%; display:grid; place-items:center;
+  background:var(--app-danger-bg); border:1px solid var(--app-danger-border); color:var(--app-danger);
+  font-size:18px; font-weight:700; animation:oauth-in .2s ease-out; }
+
+/* =====================================================================
+   Lifecycle list components (variant C). Built on the tokens above.
+   ===================================================================== */
+.gate-legend { display:flex; align-items:center; gap:10px; flex-wrap:wrap; font-size:10.5px; color:var(--app-text-subtle); }
+.gate-legend .gate { display:inline-flex; align-items:center; gap:6px; }
+.gate-legend .gate b { color:var(--app-text); font-weight:600; }
+.gate-legend .amp { color:var(--app-text-faint); font-size:12px; }
+
+.mcp-row__lead { display:flex; align-items:center; gap:12px; min-width:0; }
+.mcp-row__icon { width:32px; height:32px; flex-shrink:0; display:grid; place-items:center; border:1px solid var(--app-border-strong);
+  border-radius:8px; background:var(--app-surface); color:var(--app-text-muted); font-size:11px; font-weight:700; letter-spacing:.02em; }
+.mcp-row__body { min-width:0; display:flex; flex-direction:column; gap:5px; }
+.mcp-row__title { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.mcp-row__sub { display:flex; align-items:center; gap:8px; flex-wrap:wrap; font-size:11px; color:var(--app-text-subtle); letter-spacing:.02em; line-height:1.4; }
+.mcp-row__sub .dotsep { color:var(--app-text-faint); }
+.mcp-row__account { color:var(--app-text-muted); }
+.mcp-row__note { color:var(--app-warn); }
+.setting-row.is-off .mcp-row__icon,
+.setting-row.is-off .setting-row__label,
+.setting-row.is-off .mcp-row__sub { opacity:.5; }
+
+.mcp-row__badge--pending { color:var(--app-text-muted); background:var(--app-surface); border-color:var(--app-border-strong); }
+.mcp-row__badge--muted { color:var(--app-text-subtle); background:var(--app-surface); border-color:var(--app-border-strong); text-transform:none; letter-spacing:.02em; }
+
+.spinner { width:10px; height:10px; border-radius:50%; border:1.5px solid var(--app-border-hover); border-top-color:var(--app-accent);
+  animation:spin .7s linear infinite; display:inline-block; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.btn--xs { padding:6px 12px; font-size:10px; }
+.btn--warn { background:var(--app-warn-bg); color:var(--app-warn); border-color:var(--app-warn-border); }
+.btn--warn:hover { border-color:var(--app-warn); box-shadow:0 0 14px rgba(214,161,74,.15); }
+
+/* empty state — the card never renders blank */
+.mcp-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:12px; padding:36px 24px; }
+.mcp-empty__icon { width:42px; height:42px; display:grid; place-items:center; border:1px solid var(--app-border-strong);
+  border-radius:11px; background:var(--app-surface); color:var(--app-text-subtle); }
+.mcp-empty__icon .ic { width:20px; height:20px; }
+.mcp-empty__title { font-size:13px; font-weight:600; color:var(--app-text-strong); }
+.mcp-empty__hint { font-size:11px; color:var(--app-text-muted); line-height:1.5; max-width:360px; }
+.mcp-empty .btn { margin-top:2px; }
+
+/* schematic deep-link round-trip diagram */
+.flow { display:flex; align-items:stretch; gap:0; }
+.flow__node { flex:1 1 0; min-width:0; display:flex; flex-direction:column; gap:6px; padding:12px; border:1px solid var(--app-border);
+  border-radius:10px; background:var(--app-surface); }
+.flow__node--ok { border-color:var(--app-accent-border); background:var(--app-accent-bg); }
+.flow__step { font-size:9px; font-weight:700; letter-spacing:.11em; text-transform:uppercase; color:var(--app-text-subtle); }
+.flow__label { display:flex; align-items:center; gap:6px; font-size:12px; font-weight:600; color:var(--app-text-strong); }
+.flow__label .ic { width:14px; height:14px; color:var(--app-text-muted); }
+.flow__node--ok .flow__label, .flow__node--ok .flow__label .ic { color:var(--app-accent); }
+.flow__mono { font-size:10px; color:var(--app-text-muted); word-break:break-all; }
+.flow__desc { font-size:10px; color:var(--app-text-muted); line-height:1.4; }
+.flow__arrow { flex:0 0 26px; display:grid; place-items:center; color:var(--app-text-faint); }
+.flow__arrow .ic { width:16px; height:16px; }
+.flow__foot { margin-top:12px; font-size:10.5px; color:var(--app-text-subtle); line-height:1.55; }
+.flow__foot code { color:var(--app-text); background:var(--app-surface); border:1px solid var(--app-border); border-radius:4px; padding:1px 5px; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="i-box" viewBox="0 0 24 24"><path d="M21 8l-9-5-9 5v8l9 5 9-5V8z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></symbol>
+<symbol id="i-plug" viewBox="0 0 24 24"><path d="M12 22v-4"/><path d="M9 8V3"/><path d="M15 8V3"/><path d="M6 8h12v4a6 6 0 0 1-12 0V8z"/></symbol>
+<symbol id="i-mic" viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+<symbol id="i-scan" viewBox="0 0 24 24"><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 8h8"/><path d="M7 12h10"/><path d="M7 16h6"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></symbol>
+<symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="10" cy="7" r="4"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
+<symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+<symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 21v-7"/><path d="M4 10V3"/><path d="M12 21v-9"/><path d="M12 8V3"/><path d="M20 21v-5"/><path d="M20 12V3"/><path d="M1 14h6"/><path d="M9 8h6"/><path d="M17 16h6"/></symbol>
+<symbol id="i-lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18a14 14 0 0 1 0-18z"/></symbol>
+<symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1-1"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M13 6l6 6-6 6"/></symbol>
+<symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14L21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+<symbol id="b-github" viewBox="0 0 24 24"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></symbol>
+<symbol id="b-linear" viewBox="0 0 24 24"><path d="M2.886 4.18A11.982 11.982 0 0 1 11.99 0C18.624 0 24 5.376 24 12.009c0 3.64-1.62 6.903-4.18 9.105L2.887 4.18ZM1.817 5.626l16.556 16.556c-.524.33-1.075.62-1.65.866L.951 7.277c.247-.575.537-1.126.866-1.65ZM.322 9.163l14.515 14.515c-.71.172-1.443.282-2.195.322L0 11.358a12 12 0 0 1 .322-2.195Zm-.17 4.862 9.823 9.824a12.02 12.02 0 0 1-9.824-9.824Z"/></symbol>
+<symbol id="b-notion" viewBox="0 0 24 24"><path d="M4.459 4.208c.746.606 1.026.56 2.428.466l13.215-.793c.28 0 .047-.28-.046-.326L17.86 1.968c-.42-.326-.981-.7-2.055-.607L3.01 2.295c-.466.046-.56.28-.374.466zm.793 3.08v13.904c0 .747.373 1.027 1.214.98l14.523-.84c.841-.046.935-.56.935-1.167V6.354c0-.606-.233-.933-.748-.887l-15.177.887c-.56.047-.747.327-.747.933zm14.337.745c.093.42 0 .84-.42.888l-.7.14v10.264c-.608.327-1.168.514-1.635.514-.748 0-.935-.234-1.495-.933l-4.577-7.186v6.952L12.21 19s0 .84-1.168.84l-3.222.186c-.093-.186 0-.653.327-.746l.84-.233V9.854L7.822 9.76c-.094-.42.14-1.026.793-1.073l3.456-.233 4.764 7.279v-6.44l-1.215-.139c-.093-.514.28-.887.747-.933zM1.936 1.035l13.31-.98c1.634-.14 2.055-.047 3.082.7l4.249 2.986c.7.513.934.653.934 1.213v16.378c0 1.026-.373 1.634-1.68 1.726l-15.458.934c-.98.047-1.448-.093-1.962-.747l-3.129-4.06c-.56-.747-.793-1.306-.793-1.96V2.667c0-.839.374-1.54 1.447-1.632z"/></symbol>
+<symbol id="b-sentry" viewBox="0 0 24 24"><path d="M13.91 2.505c-.873-1.448-2.972-1.448-3.844 0L6.904 7.92a15.478 15.478 0 0 1 8.53 12.811h-2.221A13.301 13.301 0 0 0 5.784 9.814l-2.926 5.06a7.65 7.65 0 0 1 4.435 5.848H2.194a.365.365 0 0 1-.298-.534l1.413-2.402a5.16 5.16 0 0 0-1.614-.913L.296 19.275a2.182 2.182 0 0 0 .812 2.999 2.24 2.24 0 0 0 1.086.288h6.983a9.322 9.322 0 0 0-3.845-8.318l1.11-1.922a11.47 11.47 0 0 1 4.95 10.24h5.915a17.242 17.242 0 0 0-7.885-15.28l2.244-3.845a.37.37 0 0 1 .504-.13c.255.14 9.75 16.708 9.928 16.9a.365.365 0 0 1-.327.543h-2.287c.029.612.029 1.223 0 1.831h2.297a2.206 2.206 0 0 0 1.922-3.31z"/></symbol>
+<symbol id="b-stripe" viewBox="0 0 24 24"><path d="M13.976 9.15c-2.172-.806-3.356-1.426-3.356-2.409 0-.831.683-1.305 1.901-1.305 2.227 0 4.515.858 6.09 1.631l.89-5.494C18.252.975 15.697 0 12.165 0 9.667 0 7.589.654 6.104 1.872 4.56 3.147 3.757 4.992 3.757 7.218c0 4.039 2.467 5.76 6.476 7.219 2.585.92 3.445 1.574 3.445 2.583 0 .98-.84 1.545-2.354 1.545-1.875 0-4.965-.921-6.99-2.109l-.9 5.555C5.175 22.99 8.385 24 11.714 24c2.641 0 4.843-.624 6.328-1.813 1.664-1.305 2.525-3.236 2.525-5.732 0-4.128-2.524-5.851-6.594-7.305h.003z"/></symbol>
+<symbol id="b-postgres" viewBox="0 0 24 24"><path d="M23.5594 14.7228a.5269.5269 0 0 0-.0563-.1191c-.139-.2632-.4768-.3418-1.0074-.2321-1.6533.3411-2.2935.1312-2.5256-.0191 1.342-2.0482 2.445-4.522 3.0411-6.8297.2714-1.0507.7982-3.5237.1222-4.7316a1.5641 1.5641 0 0 0-.1509-.235C21.6931.9086 19.8007.0248 17.5099.0005c-1.4947-.0158-2.7705.3461-3.1161.4794a9.449 9.449 0 0 0-.5159-.0816 8.044 8.044 0 0 0-1.3114-.1278c-1.1822-.0184-2.2038.2642-3.0498.8406-.8573-.3211-4.7888-1.645-7.2219.0788C.9359 2.1526.3086 3.8733.4302 6.3043c.0409.818.5069 3.334 1.2423 5.7436.4598 1.5065.9387 2.7019 1.4334 3.582.553.9942 1.1259 1.5933 1.7143 1.7895.4474.1491 1.1327.1441 1.8581-.7279.8012-.9635 1.5903-1.8258 1.9446-2.2069.4351.2355.9064.3625 1.39.3772a.0569.0569 0 0 0 .0004.0041 11.0312 11.0312 0 0 0-.2472.3054c-.3389.4302-.4094.5197-1.5002.7443-.3102.064-1.1344.2339-1.1464.8115-.0025.1224.0329.2309.0919.3268.2269.4231.9216.6097 1.015.6331 1.3345.3335 2.5044.092 3.3714-.6787-.017 2.231.0775 4.4174.3454 5.0874.2212.5529.7618 1.9045 2.4692 1.9043.2505 0 .5263-.0291.8296-.0941 1.7819-.3821 2.5557-1.1696 2.855-2.9059.1503-.8707.4016-2.8753.5388-4.1012.0169-.0703.0357-.1207.057-.1362.0007-.0005.0697-.0471.4272.0307a.3673.3673 0 0 0 .0443.0068l.2539.0223.0149.001c.8468.0384 1.9114-.1426 2.5312-.4308.6438-.2988 1.8057-1.0323 1.5951-1.6698zM7.152 8.2376c-.0299.7897-.3038 1.0779-.5952 1.0779-.2914 0-.5644-.2882-.5952-1.0779-.0299-.7897.2739-1.1364.5952-1.1364.3213 0 .6251.3467.5952 1.1364z"/></symbol>
+</defs></svg>
+
+<div class="caption">
+  <div class="caption__eyebrow">Finalized · Inline connect + lifecycle list</div>
+  <h1>MCP connectors — the list carries the lifecycle, the modal carries the connect</h1>
+  <p>The final merge: variant&nbsp;A's page keeps the familiar two-step "+ Add connector" catalog and runs the whole authorize flow <em>inside</em> the same modal panel — pick a service, click Connect, we open your browser, and the panel moves through <strong>approve → authorized</strong> in place. Variant&nbsp;C's realistic connector list becomes the main card: every row is rendered from <code>(enabled, authMode, authState)</code>, so the two-gate rule — a connector is usable only when it is both <strong>enabled and authorized</strong> — reads at a glance, and the crux row (switched on, yet not connected) is impossible to miss. The waiting panel uses B's plain browser-handoff wording instead of a bare spinner. Under the hood this rides Mnema's existing <code>mnema://oauth/callback</code> deep link with dynamic client registration (DCR) — but none of that jargon reaches the UI.</p>
+</div>
+
+<div class="window">
+  <div class="titlebar">
+    <span class="titlebar__dot"></span><span class="titlebar__dot"></span><span class="titlebar__dot"></span>
+    <span class="titlebar__title">Mnema — Settings</span>
+  </div>
+  <div class="settings-shell">
+    <nav class="rail">
+      <a class="rail__back" href="#">← Back to app</a>
+      <div class="rail__search"><input class="text-input" type="text" placeholder="Search settings…"></div>
+      <div class="rail-cat">Recording</div>
+      <div class="rail-cat">Intelligence</div>
+      <div class="rail-nav">
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-box"/></svg>Providers</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-chat"/></svg>Ask AI</a>
+        <a class="rail-item is-active" href="#"><svg class="ic"><use href="#i-plug"/></svg>MCP connectors</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-mic"/></svg>Transcription</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-scan"/></svg>OCR</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-search"/></svg>Semantic search</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-users"/></svg>Speakers</a>
+        <a class="rail-item" href="#"><svg class="ic"><use href="#i-spark"/></svg>User context</a>
+      </div>
+      <div class="rail-cat">Privacy</div>
+      <div class="rail-cat">Storage</div>
+      <div class="rail__spacer"></div>
+      <div class="rail__footer"><span class="dot"></span>Saved</div>
+    </nav>
+    <div class="settings-scroll">
+      <div class="settings-panel">
+        <section class="setting-group">
+          <div class="setting-group__title">MCP connectors</div>
+          <p class="setting-group__hint">Connect Model Context Protocol servers so chat can use their tools (GitHub, Notion, a filesystem, …). A connector works only when it is both <strong>enabled and authorized</strong> — two separate things. Some servers sign in with OAuth: click Connect and approve in your browser; others take a pasted token. Either way the secret lives only in the macOS keychain.</p>
+          <div class="gate-legend">
+            <span class="gate"><span class="switch-track is-on" style="pointer-events:none"><span class="switch-thumb"></span></span> <b>Enabled</b> — offered to chat</span>
+            <span class="amp">&amp;</span>
+            <span class="gate"><span class="mcp-row__badge">✓ authorized</span> <b>holds a token</b></span>
+            <span class="amp">=</span>
+            <span class="gate"><b>usable</b></span>
+          </div>
+          <div class="setting-group__card" id="connector-list"></div>
+          <div><button class="btn btn--ghost btn--sm" id="open-picker">+ Add connector</button></div>
+        </section>
+
+        <!-- how connecting works: schematic deep-link round-trip (variant C) -->
+        <section class="setting-group">
+          <div class="setting-group__title">How connecting works</div>
+          <div class="setting-group__card" style="padding:18px 20px">
+            <div class="flow">
+              <div class="flow__node">
+                <span class="flow__step">01 · you click</span>
+                <span class="flow__label"><svg class="ic"><use href="#i-plug"/></svg>Mnema</span>
+                <span class="flow__desc">Connect registers Mnema with the server and opens your browser.</span>
+              </div>
+              <div class="flow__arrow"><svg class="ic"><use href="#i-arrow"/></svg></div>
+              <div class="flow__node">
+                <span class="flow__step">02 · you approve</span>
+                <span class="flow__label"><svg class="ic"><use href="#i-globe"/></svg>Your browser</span>
+                <span class="flow__desc">The provider's own consent screen. This is the gate — nothing is pasted into Mnema.</span>
+              </div>
+              <div class="flow__arrow"><svg class="ic"><use href="#i-arrow"/></svg></div>
+              <div class="flow__node">
+                <span class="flow__step">03 · deep link back</span>
+                <span class="flow__label"><svg class="ic"><use href="#i-link"/></svg>Callback</span>
+                <span class="flow__mono">mnema://oauth/callback</span>
+                <span class="flow__desc">The browser hands the code back through Mnema's own URL scheme — no local server.</span>
+              </div>
+              <div class="flow__arrow"><svg class="ic"><use href="#i-arrow"/></svg></div>
+              <div class="flow__node flow__node--ok">
+                <span class="flow__step">04 · token stored</span>
+                <span class="flow__label"><svg class="ic"><use href="#i-check"/></svg>Authorized</span>
+                <span class="flow__desc">Token saved to the macOS keychain. The row flips to authorized, live.</span>
+              </div>
+            </div>
+            <p class="flow__foot">Refresh happens silently in the background. If it fails, the connector reads <code>needs reconnect</code> — chat reports it as unavailable and you click Reconnect. Mnema never pops a browser on its own.</p>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Add / connect / edit modal (variant A) ============ -->
+<div class="cat-modal" id="picker" hidden>
+  <div class="cat-modal__panel" role="dialog" aria-modal="true" aria-labelledby="picker-title">
+    <div class="cat-modal__header">
+      <div>
+        <p class="cat-modal__eyebrow" id="picker-eyebrow">Add connector</p>
+        <h2 id="picker-title">Pick a service</h2>
+      </div>
+      <button class="cat-modal__close" id="picker-close" aria-label="Close">×</button>
+    </div>
+    <div class="cat-modal__body" id="picker-step1">
+      <input class="text-input catalog__search" id="catalog-search" type="text" placeholder="Search services…">
+      <div id="catalog"></div>
+    </div>
+    <div class="cat-modal__body" id="picker-step2" hidden></div>
+  </div>
+</div>
+
+<!-- ============ pinned resting states (design review) ============ -->
+<div class="state-section">
+  <div class="state-section__eyebrow">Connector card — Empty state</div>
+  <div class="state-section__note">A connector card never renders blank. With nothing added yet it explains the point and puts the one action front and centre.</div>
+  <div class="setting-group__card state-panel" style="max-width:660px">
+    <div class="mcp-empty">
+      <span class="mcp-empty__icon"><svg class="ic"><use href="#i-plug"/></svg></span>
+      <p class="mcp-empty__title">No connectors yet</p>
+      <p class="mcp-empty__hint">Add an MCP server and chat can use its tools. Sign in with OAuth or paste a token — the secret only ever lives in your macOS keychain.</p>
+      <button class="btn btn--primary btn--sm js-empty-add">+ Add connector</button>
+    </div>
+  </div>
+</div>
+
+<div class="state-section">
+  <div class="state-section__eyebrow state-section__eyebrow--ok">Connect step — Notion (OAuth), at rest</div>
+  <div class="state-section__note">Step 2 for an OAuth server: no field to fill. Try the live flow via "+ Add connector → Notion" above — this pins the same panel so you can read it without clicking.</div>
+  <div class="cat-modal__panel state-panel" id="state-oauth-idle"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow">Connect step — Approve in your browser (waiting)</div>
+  <div class="state-section__note">Not a bare spinner: plain words for the browser hand-off, a gently pulsing wait, and a Cancel out.</div>
+  <div class="cat-modal__panel state-panel" id="state-oauth-authorizing"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow state-section__eyebrow--ok">Connect step — Authorized</div>
+  <div class="cat-modal__panel state-panel" id="state-oauth-authorized"></div>
+</div>
+<div class="state-section">
+  <div class="state-section__eyebrow">Connect step — Approval didn't go through (error)</div>
+  <div class="state-section__note">The browser round-trip can end in a denial or a cancel. It fails soft — nothing is stored — with a single Try again.</div>
+  <div class="cat-modal__panel state-panel" id="state-oauth-denied"></div>
+</div>
+
+<div class="state-section">
+  <div class="state-section__eyebrow state-section__eyebrow--ok">Custom connector — auth toggle set to OAuth</div>
+  <div class="state-section__note">Point Mnema at any OAuth MCP server you type. The Authorization toggle swaps the token field for a Connect button; Add stays disabled until you've authorized.</div>
+  <div class="cat-modal__panel state-panel" id="state-custom-oauth"></div>
+</div>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s);
+
+/* ========================================================================
+   PRESETS + modal (variant A) — the "+ Add connector" catalog and the live
+   inline connect flow (catalog → connect panel → approve-in-browser → authorized)
+   ======================================================================== */
+const PRESETS = [
+  { id:"github",  kind:"hosted", label:"GitHub",  tagline:"Issues, pull requests, code search.", lede:"Chat can search code, read issues, and open pull requests in your repos.", tools:12, url:"api.githubcopilot.com/mcp/", fullUrl:"https://api.githubcopilot.com/mcp/", secretLabel:"Personal access token", brandSvg:"b-github" },
+  { id:"linear",  kind:"hosted", label:"Linear",  tagline:"Issues, projects, cycles.",           lede:"Chat can look up and update issues, projects, and cycles.", tools:9, url:"mcp.linear.app/mcp",  fullUrl:"https://mcp.linear.app/mcp",  secretLabel:"API key",            brandSvg:"b-linear" },
+  { id:"notion",  kind:"hosted", auth:"oauth", label:"Notion", tagline:"Pages and databases — signs in with OAuth.", lede:"Chat can read and edit your pages and databases.", tools:7, url:"mcp.notion.com/mcp",  fullUrl:"https://mcp.notion.com/mcp",  brandSvg:"b-notion" },
+  { id:"sentry",  kind:"hosted", auth:"oauth", label:"Sentry",  tagline:"Errors and traces — signs in with OAuth.", lede:"Chat can pull up errors and performance traces.", tools:6, url:"mcp.sentry.dev/mcp",  fullUrl:"https://mcp.sentry.dev/mcp",  brandSvg:"b-sentry" },
+  { id:"stripe",  kind:"hosted", label:"Stripe",  tagline:"Customers, payments, invoices.",      lede:"Chat can look up customers, payments, and invoices.", tools:10, url:"mcp.stripe.com",      fullUrl:"https://mcp.stripe.com",      secretLabel:"Restricted API key", brandSvg:"b-stripe" },
+  { id:"context7",kind:"hosted", label:"Context7",tagline:"Up-to-date library docs.",            lede:"Chat can pull up-to-date docs for the libraries you use.", tools:2, url:"mcp.context7.com/mcp",fullUrl:"https://mcp.context7.com/mcp",secretLabel:"API key (optional)", icon:"C7", optional:true },
+  { id:"filesystem",kind:"local",label:"Filesystem",tagline:"Read and write files in folders you choose.", lede:"Chat can read and write files in the folders you pick.", tools:11, command:"npx -y @modelcontextprotocol/server-filesystem ~/Documents", pathLabel:"Folder", pathValue:"~/Documents", iconSvg:"i-folder" },
+  { id:"postgres",  kind:"local",label:"Postgres",  tagline:"Query a database.",                 lede:"Chat can run queries against your database.", tools:1, command:"npx -y @modelcontextprotocol/server-postgres postgresql://…", pathLabel:"Connection string", pathValue:"", pathPlaceholder:"postgresql://user@host/db", brandSvg:"b-postgres" },
+  { id:"custom",  kind:"custom", label:"Custom",  tagline:"Any other MCP server — fill in every field yourself.", iconSvg:"i-sliders" },
+];
+
+const isOauth = p => p.kind === "hosted" && p.auth === "oauth";
+const picker = $("#picker"), step1 = $("#picker-step1"), step2 = $("#picker-step2"), title = $("#picker-title");
+
+function tileIcon(p) {
+  if (p.brandSvg) return `<svg class="brand-icon" fill="currentColor" aria-hidden="true"><use href="#${p.brandSvg}"/></svg>`;
+  return p.iconSvg ? `<svg class="ic"><use href="#${p.iconSvg}"/></svg>` : p.icon;
+}
+
+/* ---------- step 1: catalog grid ---------- */
+function renderCatalog(filter="") {
+  const q = filter.trim().toLowerCase();
+  const match = p => !q || (p.label + " " + p.tagline).toLowerCase().includes(q);
+  const badge = p => added[p.id]
+    ? `<span class="tile__badge tile__badge--added">✓ added</span>`
+    : (isOauth(p) ? `<span class="tile__badge tile__badge--oauth">OAuth</span>` : "");
+  const tile = p => `
+    <button class="tile ${p.kind === "custom" ? "tile--custom" : ""}" data-id="${p.id}">
+      <span class="tile__icon">${tileIcon(p)}</span>
+      <span class="tile__text">
+        <span class="tile__name">${p.label}${badge(p)}</span>
+        <span class="tile__tagline">${p.tagline}</span>
+      </span>
+    </button>`;
+  const hosted = PRESETS.filter(p => p.kind === "hosted" && match(p));
+  const local  = PRESETS.filter(p => p.kind === "local"  && match(p));
+  let html = "";
+  if (hosted.length) html += `<div class="catalog-group"><div class="catalog-eyebrow">Hosted — sign in, or paste a token</div><div class="catalog-grid">${hosted.map(tile).join("")}</div></div>`;
+  if (local.length) html += `<div class="catalog-group"><div class="catalog-eyebrow">Runs on this Mac</div><div class="catalog-grid">${local.map(tile).join("")}</div></div>`;
+  if (!hosted.length && !local.length) html += `<p class="catalog-empty">No service matches "${filter}" — add it yourself:</p>`;
+  html += `<div class="catalog-custom">${tile(PRESETS.find(p => p.kind === "custom"))}</div>`;
+  $("#catalog").innerHTML = html;
+}
+
+/* ---------- shared OAuth stage markup (idle / approve-in-browser / authorized / denied) ---------- */
+function oauthStageHTML(label, tools, opts={}) {
+  const who = label || "access";
+  return `<div class="oauth${opts.inline ? " oauth--inline" : ""}" data-state="${opts.state || "idle"}">
+    <div class="oauth__stage oauth__stage--idle">
+      <button class="btn btn--primary oauth__connect" type="button">Connect${label ? " " + label : " with OAuth"}</button>
+      <p class="oauth__reassure">${opts.reassure || "Opens your browser to approve. Nothing is pasted here — only the returned token lands in your macOS keychain."}</p>
+      ${opts.back ? `<button class="btn btn--ghost btn--sm js-back oauth__back" type="button">← Back to services</button>` : ""}
+    </div>
+    <div class="oauth__stage oauth__stage--authorizing">
+      <span class="oauth__glyph"><svg class="ic"><use href="#i-external"/></svg></span>
+      <p class="oauth__ok">Approve ${who} in your browser</p>
+      <p class="oauth__sub">We opened your browser — approve access there, then you'll come right back.</p>
+      <div class="oauth__waiting"><span class="oauth__pulse"></span>Waiting…</div>
+      <button class="btn btn--ghost btn--sm oauth__cancel" type="button">Cancel</button>
+    </div>
+    <div class="oauth__stage oauth__stage--authorized">
+      <span class="oauth__check">✓</span>
+      <p class="oauth__ok">Connected${tools ? ` · ${tools} tools` : ""}</p>
+      ${opts.done ? `<button class="btn btn--primary oauth__done" type="button">Done</button>` : ""}
+    </div>
+    <div class="oauth__stage oauth__stage--denied">
+      <span class="oauth__x">!</span>
+      <p class="oauth__ok">Approval didn't go through</p>
+      <p class="oauth__sub">You cancelled or denied access in the browser. Nothing was stored.</p>
+      <button class="btn btn--primary oauth__retry" type="button">Try again</button>
+    </div>
+  </div>`;
+}
+
+function wireOauthStage(scope, cb={}) {
+  const oauth = scope.querySelector(".oauth");
+  if (!oauth) return;
+  const connect = oauth.querySelector(".oauth__connect");
+  const cancel = oauth.querySelector(".oauth__cancel");
+  const retry = oauth.querySelector(".oauth__retry");
+  const done = oauth.querySelector(".oauth__done");
+  const label0 = connect ? connect.innerHTML : "";
+  const resetConnect = () => { if (connect) { connect.disabled = false; connect.innerHTML = label0; } };
+  const set = st => { oauth.dataset.state = st; if (st === "idle") resetConnect(); if (st === "authorized" && cb.onAuthorized) cb.onAuthorized(); };
+  if (connect) connect.addEventListener("click", () => {
+    connect.disabled = true;                                   // loading state on the Connect button
+    connect.innerHTML = `<span class="spinner"></span>Connecting…`;
+    clearTimeout(oauth._t);
+    oauth._t = setTimeout(() => { set("authorizing"); oauth._t = setTimeout(() => set("authorized"), 1900); }, 340);
+  });
+  if (cancel) cancel.addEventListener("click", () => { clearTimeout(oauth._t); set("idle"); });
+  if (retry)  retry.addEventListener("click", () => { clearTimeout(oauth._t); set("idle"); });
+  if (done && cb.onDone) done.addEventListener("click", cb.onDone);
+}
+
+/* ---------- step 2 (OAuth): Connect panel ---------- */
+function oauthConnectBody(p, opts={}) {
+  const el = document.createElement("div");
+  el.className = "connect";
+  el.innerHTML = `
+    <p class="connect__lede">${p.lede}</p>
+    <div class="chip-row"><span class="chip">HTTP</span><span class="chip chip--path">${p.url}</span><span class="chip chip--oauth">OAuth</span></div>
+    ${oauthStageHTML(p.label, p.tools, { back: opts.back !== false, done: opts.done !== false, state: opts.state })}`;
+  return el;
+}
+
+/* ---------- step 2 (OAuth edit): status + Disconnect ---------- */
+function oauthEditBody(p) {
+  const el = document.createElement("div");
+  el.className = "connect";
+  el.innerHTML = `
+    <p class="connect__lede">${p.lede}</p>
+    <div class="chip-row"><span class="chip">HTTP</span><span class="chip chip--path">${p.url}</span><span class="chip chip--oauth">OAuth</span></div>
+    <div class="oauth-status"><span class="oauth__check oauth__check--sm">✓</span><span>Connected · ${p.tools} tools · authorized in your browser</span></div>
+    <p class="group-hint">The token lives only in your macOS keychain. Disconnect drops it and returns this connector to <em>Needs authorization</em> — without removing it.</p>
+    <div class="connect__footer">
+      <button class="btn btn--ghost btn--sm js-disconnect" type="button">Disconnect</button>
+      <button class="btn btn--primary js-add" type="button">Done</button>
+    </div>`;
+  return el;
+}
+
+/* ---------- step 2 (static token / local / custom): the form ---------- */
+function customAuthSlot(mode) {
+  if (mode === "oauth") {
+    return oauthStageHTML("", null, { inline:true, done:false, reassure:"Opens your browser to approve. Only the resulting token is stored, in your macOS keychain." });
+  }
+  return `<label class="field-label">Bearer secret (optional)</label>
+    <input class="text-input" type="password" placeholder="Token, if the server needs one…" autocomplete="off">
+    <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>`;
+}
+
+let fldSeq = 0;
+function connectBody(p, opts={}) {
+  const nodeMissing = !!opts.nodeMissing, edit = !!opts.edit;
+  const authMode = opts.authMode || "bearer";
+  const fid = "fld-" + (++fldSeq);
+  const el = document.createElement("div");
+  el.className = "connect";
+  let html = "";
+
+  if (p.lede) html += `<p class="connect__lede">${p.lede}</p>`;
+
+  if (p.kind === "hosted") {
+    html += `<div class="chip-row"><span class="chip">HTTP</span><span class="chip chip--path">${p.url}</span></div>`;
+    html += `<div class="field">
+      <label class="field-label" for="${fid}">${p.secretLabel}</label>
+      <input class="text-input js-token${opts.tokenError ? " is-error" : ""}" id="${fid}" type="password" ${opts.tokenError ? 'value="wrong-key-1234"' : ""} placeholder="${edit ? `Unchanged — paste a new ${p.secretLabel.toLowerCase().replace(" (optional)","")} to replace it` : `Paste your ${p.secretLabel.toLowerCase().replace(" (optional)","")}…`}" autocomplete="off">
+      ${opts.tokenError ? `<p class="field__error">${opts.tokenError}</p>` : ""}
+      <a class="field__help" href="#">Create one →</a>
+    </div>`;
+  } else if (p.kind === "local") {
+    html += `<div class="chip-row"><span class="chip">stdio</span><span class="chip chip--path">${p.command}</span></div>`;
+    html += nodeMissing
+      ? `<p class="group-hint group-hint--warn">Runs locally and needs Node, which wasn't found. <a href="#" style="color:inherit">Install it from nodejs.org →</a></p>`
+      : `<p class="group-hint group-hint--accent">Runs locally via Node — found <code>node v22.11</code> ✓</p>`;
+    html += `<div class="field">
+      <label class="field-label" for="${fid}">${p.pathLabel}</label>
+      <input class="text-input" id="${fid}" type="text" value="${p.pathValue || ""}" placeholder="${p.pathPlaceholder || ""}">
+    </div>`;
+  } else { /* custom: Name / Transport / URL / Authorization (Bearer secret | OAuth) */
+    html += `<div class="field"><label class="field-label">Name</label><input class="text-input" type="text" placeholder="My server"></div>
+      <div class="field"><label class="field-label">Transport</label>
+        <div class="segmented"><button class="seg seg--active" type="button">HTTP</button><button class="seg" type="button">stdio</button></div></div>
+      <div class="field"><label class="field-label">URL</label><input class="text-input" type="text" value="${opts.url || ""}" placeholder="https://…"></div>
+      <div class="field"><label class="field-label">Authorization</label>
+        <div class="segmented js-authmode">
+          <button class="seg${authMode === "bearer" ? " seg--active" : ""}" type="button" data-mode="bearer">Bearer secret</button>
+          <button class="seg${authMode === "oauth" ? " seg--active" : ""}" type="button" data-mode="oauth">OAuth</button>
+        </div></div>
+      <div class="field js-auth-slot">${customAuthSlot(authMode)}</div>`;
+  }
+
+  if (p.kind === "hosted") html += `<p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>`;
+
+  if (p.kind !== "custom") {
+    const isHttp = p.kind === "hosted";
+    html += `<div class="adv">
+      <button class="adv__toggle" type="button"><span>Advanced</span><span class="adv__chev">›</span></button>
+      <div class="adv__body">
+        <div class="field"><label class="field-label">Name</label><input class="text-input" type="text" value="${p.label}"></div>
+        <div class="field"><label class="field-label">${isHttp ? "URL" : "Command"}</label><input class="text-input" type="text" value="${isHttp ? p.fullUrl : p.command}"></div>
+      </div>
+    </div>`;
+  }
+
+  const needsToken = p.kind === "hosted" && !p.optional && !opts.tokenError && !edit;
+  const disableAdd = needsToken || (p.kind === "custom" && authMode === "oauth");
+  html += `<div class="connect__footer">
+    ${edit
+      ? `<button class="btn btn--danger btn--sm js-remove" type="button">Remove</button>`
+      : `<button class="btn btn--ghost btn--sm js-back" type="button">Back</button>`}
+    <button class="btn btn--primary js-add" type="button" ${disableAdd ? "disabled" : ""}>${edit ? "Save" : "Add connector"}</button>
+  </div>`;
+
+  el.innerHTML = html;
+
+  const adv = $(".adv", el);
+  if (adv) $(".adv__toggle", adv).addEventListener("click", () => adv.classList.toggle("is-open"));
+  const token = $(".js-token", el), addBtn = $(".js-add", el);
+  if (token && needsToken) token.addEventListener("input", () => { addBtn.disabled = token.value.trim() === ""; });
+  return el;
+}
+
+/* wire the custom Authorization toggle (Bearer secret <-> OAuth) */
+function wireCustom(body) {
+  const authmode = $(".js-authmode", body);
+  if (!authmode) return;
+  const slot = $(".js-auth-slot", body), addBtn = $(".js-add", body);
+  authmode.addEventListener("click", e => {
+    const seg = e.target.closest(".seg"); if (!seg) return;
+    const mode = seg.dataset.mode;
+    authmode.querySelectorAll(".seg").forEach(s => s.classList.toggle("seg--active", s.dataset.mode === mode));
+    slot.innerHTML = customAuthSlot(mode);
+    if (mode === "oauth") {
+      addBtn.disabled = true;
+      wireOauthStage(slot, { onAuthorized: () => { addBtn.disabled = false; } });
+    } else {
+      addBtn.disabled = false;
+    }
+  });
+}
+
+/* ---------- modal wiring ---------- */
+function openPicker() { picker.hidden = false; showStep1(); $("#catalog-search").focus(); }
+function closePicker() { picker.hidden = true; }
+function showStep1() {
+  $("#picker-eyebrow").textContent = "Add connector";
+  title.textContent = "Pick a service";
+  step2.hidden = true; step2.innerHTML = "";
+  step1.hidden = false;
+  $("#catalog-search").value = ""; renderCatalog();
+}
+function showStep2(p) {
+  title.textContent = p.kind === "custom" ? "Custom connector" : `Connect ${p.label}`;
+  $("#picker-eyebrow").textContent = "Add connector";
+  step1.hidden = true;
+  step2.innerHTML = ""; step2.hidden = false;
+
+  if (isOauth(p)) {
+    const body = oauthConnectBody(p);
+    step2.append(body);
+    $(".js-back", body).addEventListener("click", showStep1);
+    wireOauthStage(body, { onDone: () => { addConnector(p, { oauth:true, authState:"authorized" }); closePicker(); } });
+    return;
+  }
+
+  const body = connectBody(p);
+  step2.append(body);
+  $(".js-back", body).addEventListener("click", showStep1);
+  $(".js-add", body).addEventListener("click", e => {
+    const b = e.currentTarget;
+    const oauthMode = p.kind === "custom" && $(".js-authmode .seg--active", body)?.dataset.mode === "oauth";
+    b.disabled = true; b.textContent = "Connecting…";
+    setTimeout(() => { addConnector(p, oauthMode ? { oauth:true, authState:"authorized" } : {}); closePicker(); }, 700);
+  });
+  if (p.kind === "custom") wireCustom(body);
+  const focusable = $(".js-token", body) || $(".text-input", body);
+  if (focusable) focusable.focus();
+}
+
+/* ========================================================================
+   Connector list (variant C) — rows derived from (enabled, authMode, authState).
+   Row actions route Connect / Reconnect / Configure into the modal above.
+   ======================================================================== */
+let conns = [
+  { id:"notion",  name:"Notion",        brand:"b-notion", authMode:"oauth",  authState:"authorized", enabled:true,  account:"workspace: Acme", tools:7,  active:5, url:"mcp.notion.com/mcp",       lede:"Chat can read and edit your Notion pages and databases." },
+  { id:"sentry",  name:"Sentry",        brand:"b-sentry", authMode:"oauth",  authState:"none",       enabled:true,                             tools:6,  active:0, url:"mcp.sentry.dev/mcp",        lede:"Chat can pull up errors and performance traces from Sentry." },
+  { id:"grafana", name:"Grafana Cloud", mono:"GC", custom:true, authMode:"oauth", authState:"reconnect", enabled:true, account:"org: acme-eng", tools:8, active:3, url:"acme.grafana.net/mcp",    lede:"Chat can query dashboards and metrics in Grafana Cloud." },
+  { id:"figma",   name:"Figma",         mono:"Fi", authMode:"oauth", authState:"authorized", enabled:false, account:"you@acme.co", tools:4, active:0, url:"mcp.figma.com/mcp",           lede:"Chat can read your Figma files and comments." },
+  { id:"github",  name:"GitHub",        brand:"b-github", authMode:"static", enabled:true,  tools:12, active:5, url:"api.githubcopilot.com/mcp/" },
+];
+
+/* which preset ids already sit in the list (drives the catalog "✓ added" pip) */
+const added = {};
+conns.forEach(c => { if (PRESETS.some(p => p.id === c.id)) added[c.id] = (added[c.id] || 0) + 1; });
+
+const iconEl = c => c.brand ? `<svg class="brand-icon"><use href="#${c.brand}"/></svg>` : c.mono;
+
+function badge(c) {
+  if (c.authMode === "static") return `<span class="mcp-row__badge">✓ secret in keychain</span>`;
+  switch (c.authState) {
+    case "authorized":  return c.enabled
+      ? `<span class="mcp-row__badge">✓ authorized</span>`
+      : `<span class="mcp-row__badge mcp-row__badge--muted">authorized</span>`;
+    case "none":        return `<span class="mcp-row__badge mcp-row__badge--warn">not connected</span>`;
+    case "authorizing": return `<span class="mcp-row__badge mcp-row__badge--pending"><span class="spinner"></span> authorizing…</span>`;
+    case "reconnect":   return `<span class="mcp-row__badge mcp-row__badge--warn">needs reconnect</span>`;
+  }
+}
+
+function sub(c) {
+  const dot = `<span class="dotsep">·</span>`;
+  if (c.authMode === "static") return `<span>${c.tools} tools</span>${dot}<span>${c.active} active</span>`;
+  switch (c.authState) {
+    case "authorized": return c.enabled
+      ? `<span class="mcp-row__account">${c.account}</span>${dot}<span>${c.tools} tools</span>${dot}<span>${c.active} active</span>`
+      : `<span class="mcp-row__account">${c.account}</span>${dot}<span>authorized · token kept — turn on to use it again</span>`;
+    case "none":        return `<span>Enabled, but not authorized yet — approve in your browser to start using it.</span>`;
+    case "authorizing": return `<span>Waiting for your browser… approve access in the tab that opened.</span>`;
+    case "reconnect":   return `<span class="mcp-row__note">Token expired — chat reports it as unavailable until you reconnect.</span>`;
+  }
+}
+
+function actions(c) {
+  const sw = `<span class="switch-track ${c.enabled ? "is-on" : ""} js-switch" role="switch" aria-checked="${c.enabled}" tabindex="0"><span class="switch-thumb"></span></span>`;
+  if (c.authMode === "static") return `<button class="btn btn--ghost btn--sm js-configure">Configure</button>${sw}`;
+  switch (c.authState) {
+    case "authorized": return c.enabled
+      ? `<button class="btn btn--ghost btn--sm js-disconnect">Disconnect</button><button class="btn btn--ghost btn--sm js-configure">Configure</button>${sw}`
+      : `<button class="btn btn--ghost btn--sm js-configure">Configure</button>${sw}`;
+    case "none":       return `<button class="btn btn--primary btn--xs js-connect" type="button">Connect</button>${sw}`;
+    case "authorizing":return `<button class="btn btn--ghost btn--sm js-cancel">Cancel</button>${sw}`;
+    case "reconnect":  return `<button class="btn btn--primary btn--xs js-reconnect" type="button">Reconnect</button><button class="btn btn--ghost btn--sm js-disconnect">Disconnect</button>${sw}`;
+  }
+}
+
+function rowHTML(c) {
+  const off = (c.authMode === "static" && !c.enabled) || (c.authState === "authorized" && !c.enabled);
+  const tag = c.authMode === "static" ? "Bearer" : "OAuth";
+  const cls = ["setting-row"];
+  if (off) cls.push("is-off");
+  if (c.flash) cls.push("setting-row--new");
+  return `<div class="${cls.join(" ")}" data-id="${c.id}">
+    <div class="mcp-row__lead">
+      <span class="mcp-row__icon">${iconEl(c)}</span>
+      <div class="mcp-row__body">
+        <div class="mcp-row__title">
+          <span class="setting-row__label">${c.name}</span>
+          <span class="mcp-row__tag">${tag}</span>
+          ${c.custom ? `<span class="mcp-row__tag">custom</span>` : ""}
+          ${badge(c)}
+        </div>
+        <div class="mcp-row__sub">${sub(c)}</div>
+      </div>
+    </div>
+    <div class="mcp-row__meta">${actions(c)}</div>
+  </div>`;
+}
+
+const list = $("#connector-list");
+function render() { list.innerHTML = conns.map(rowHTML).join(""); }
+function get(id) { return conns.find(c => c.id === id); }
+function flashClear(c) { setTimeout(() => { if (c) { c.flash = false; } }, 1500); }
+render();
+
+/* ---------- adapter: a list connector → the shape the modal's OAuth panels expect ---------- */
+function connToPreset(c) {
+  return { id:c.id, kind:"hosted", label:c.name, url:c.url, tools:c.tools || 6,
+    lede: c.lede || `Chat can use ${c.name}'s tools once you approve access in your browser.` };
+}
+
+/* ---------- open the modal's OAuth connect panel for a specific row ---------- */
+function openConnectFor(c, mode) {
+  const p = connToPreset(c);
+  picker.hidden = false;
+  $("#picker-eyebrow").textContent = mode === "reconnect" ? "Reconnect" : "Connect";
+  title.textContent = `Connect ${c.name}`;
+  step1.hidden = true; step2.innerHTML = ""; step2.hidden = false;
+  const body = oauthConnectBody(p, { back:false });
+  step2.append(body);
+  wireOauthStage(body, { onDone: () => {
+    c.authState = "authorized"; c.enabled = true;
+    if (!c.tools) c.tools = 6;
+    c.active = c.tools;
+    if (!c.account) c.account = "workspace: you";
+    c.flash = true; render(); flashClear(get(c.id)); closePicker();
+  }});
+}
+
+/* ---------- open the modal's edit panel for a specific row ---------- */
+function openEditFor(c) {
+  picker.hidden = false;
+  $("#picker-eyebrow").textContent = "Edit connector";
+  title.textContent = c.name;
+  step1.hidden = true; step2.innerHTML = ""; step2.hidden = false;
+
+  if (c.authMode === "oauth") {
+    const body = oauthEditBody(connToPreset(c));
+    step2.append(body);
+    $(".js-disconnect", body).addEventListener("click", () => { c.authState = "none"; render(); closePicker(); });
+    $(".js-add", body).addEventListener("click", closePicker);
+    return;
+  }
+  const p = PRESETS.find(pp => pp.id === c.id) || { kind:"hosted", label:c.name, url:c.url, fullUrl:"https://" + c.url, secretLabel:"Token", lede:"" };
+  const body = connectBody(p, { edit:true });
+  step2.append(body);
+  $(".js-remove", body).addEventListener("click", () => { conns = conns.filter(x => x.id !== c.id); render(); closePicker(); });
+  $(".js-add", body).addEventListener("click", closePicker);
+}
+
+/* ---------- add a connector to the list (from the catalog / custom form) ---------- */
+let addSeq = 0;
+function addConnector(p, opts={}) {
+  const id = added[p.id] ? `${p.id}-${++addSeq}` : p.id;
+  const c = {
+    id,
+    name: p.kind === "custom" ? "Custom server" : p.label,
+    brand: p.brandSvg || null,
+    mono: p.brandSvg ? null : (p.icon || p.label.slice(0, 2).toUpperCase()),
+    url: p.kind === "custom" ? "mcp.acme.example/mcp" : p.url,
+    tools: p.tools || 6,
+    active: p.tools || 6,
+    enabled: true,
+    custom: p.kind === "custom",
+    flash: true,
+    lede: p.lede,
+  };
+  if (isOauth(p) || opts.oauth) {
+    c.authMode = "oauth";
+    c.authState = opts.authState || "authorized";
+    if (c.authState === "authorized") { c.account = "workspace: you"; c.active = c.tools; }
+    else { c.active = 0; }
+  } else {
+    c.authMode = "static";
+  }
+  conns.unshift(c);
+  added[p.id] = (added[p.id] || 0) + 1;
+  render(); flashClear(get(c.id));
+}
+
+/* ---------- list interactions ---------- */
+list.addEventListener("click", e => {
+  const row = e.target.closest(".setting-row"); if (!row) return;
+  const c = get(row.dataset.id); if (!c) return;
+  if (e.target.closest(".js-connect"))    { openConnectFor(c, "connect"); return; }
+  if (e.target.closest(".js-reconnect"))  { openConnectFor(c, "reconnect"); return; }
+  if (e.target.closest(".js-disconnect")) { c.authState = "none"; render(); return; }   // drops token, keeps connector → Needs authorization
+  if (e.target.closest(".js-configure"))  { openEditFor(c); return; }
+  if (e.target.closest(".js-switch"))     { c.enabled = !c.enabled; render(); return; }  // enabled toggles independently of the token
+});
+list.addEventListener("keydown", e => {
+  const sw = e.target.closest(".js-switch"); if (!sw) return;
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    const c = get(e.target.closest(".setting-row").dataset.id);
+    if (c) { c.enabled = !c.enabled; render(); }
+  }
+});
+
+/* ---------- global modal wiring ---------- */
+$("#open-picker").addEventListener("click", openPicker);
+$("#picker-close").addEventListener("click", closePicker);
+picker.addEventListener("click", e => { if (e.target === picker) closePicker(); });
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !picker.hidden) { (step2.hidden || $("#picker-eyebrow").textContent !== "Add connector") ? closePicker() : showStep1(); }
+});
+$("#catalog-search").addEventListener("input", e => renderCatalog(e.target.value));
+$("#catalog-search").addEventListener("keydown", e => { if (e.key === "Enter") { const t = $("#catalog .tile"); if (t) t.click(); } });
+$("#catalog").addEventListener("click", e => {
+  const t = e.target.closest(".tile");
+  if (t) showStep2(PRESETS.find(p => p.id === t.dataset.id));
+});
+const emptyAdd = $(".js-empty-add"); if (emptyAdd) emptyAdd.addEventListener("click", openPicker);
+renderCatalog();
+
+/* ========================================================================
+   pinned resting-state panels (design review only — not wired to the list)
+   ======================================================================== */
+function staticOauthPanel(host, p, state) {
+  host.innerHTML = `
+    <div class="cat-modal__header">
+      <div><p class="cat-modal__eyebrow">Add connector</p><h2>Connect ${p.label}</h2></div>
+      <button class="cat-modal__close" aria-label="Close">×</button>
+    </div>`;
+  const body = document.createElement("div");
+  body.className = "cat-modal__body";
+  body.append(oauthConnectBody(p, { back:false, done: state === "authorized", state }));
+  host.append(body);
+}
+function staticCustomPanel(host, opts) {
+  host.innerHTML = `
+    <div class="cat-modal__header">
+      <div><p class="cat-modal__eyebrow">Add connector</p><h2>Custom connector</h2></div>
+      <button class="cat-modal__close" aria-label="Close">×</button>
+    </div>`;
+  const body = document.createElement("div");
+  body.className = "cat-modal__body";
+  const form = connectBody(PRESETS.find(p => p.kind === "custom"), opts);
+  body.append(form);
+  host.append(body);
+  wireCustom(form);
+  // if it opens in OAuth mode, wire the initial Connect button too (the toggle wires later switches)
+  if (opts.authMode === "oauth") wireOauthStage($(".js-auth-slot", form) || form);
+}
+const notionPreset = PRESETS.find(p => p.id === "notion");
+staticOauthPanel($("#state-oauth-idle"), notionPreset, "idle");
+staticOauthPanel($("#state-oauth-authorizing"), notionPreset, "authorizing");
+staticOauthPanel($("#state-oauth-authorized"), notionPreset, "authorized");
+staticOauthPanel($("#state-oauth-denied"), notionPreset, "denied");
+staticCustomPanel($("#state-custom-oauth"), { authMode:"oauth", url:"https://mcp.acme.example/mcp" });
+</script>
+</body>
+</html>

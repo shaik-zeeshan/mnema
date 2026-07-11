@@ -1,8 +1,12 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import IconAlert from "~icons/lucide/triangle-alert";
+  import IconClear from "~icons/lucide/x";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -68,7 +72,7 @@
               </div>
               <div class="debug-log-status__row">
                 <span class="debug-log-status__label">Path</span>
-                <span class="debug-log-status__path" title={debugLogStatus.path}>{debugLogStatus.path}</span>
+                <span class="debug-log-status__path" use:tip={debugLogStatus.path}>{debugLogStatus.path}</span>
               </div>
               <div class="debug-log-status__row">
                 <span class="debug-log-status__label">File</span>
@@ -78,12 +82,14 @@
 
             <div class="debug-log-actions">
               <button
+                type="button"
                 class="btn btn--ghost btn--sm"
                 onclick={openDebugLog}
                 disabled={openingDebugLog}
+                aria-busy={openingDebugLog}
               >
                 {#if openingDebugLog}
-                  Opening…
+                  <ButtonSpinner />Opening…
                 {:else if debugLogStatus.exists}
                   Open Log File
                 {:else}
@@ -92,11 +98,13 @@
               </button>
               {#if debugLogStatus.exists}
                 <button
+                  type="button"
                   class="btn btn--danger btn--sm"
                   onclick={deleteDebugLog}
                   disabled={deletingDebugLog}
+                  aria-busy={deletingDebugLog}
                 >
-                  {deletingDebugLog ? "Deleting…" : "Delete Log File"}
+                  {#if deletingDebugLog}<ButtonSpinner />Deleting…{:else}Delete Log File{/if}
                 </button>
               {/if}
               {#if debugLogDeleted}
@@ -109,9 +117,9 @@
 
           {#if logs.debugLogError}
             <div class="inline-error">
-              <span class="inline-error__icon">⚠</span>
+              <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
               <span class="inline-error__msg">{logs.debugLogError}</span>
-              <button class="btn btn--ghost btn--sm" onclick={() => logs.debugLogError = null}>×</button>
+              <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.debugLogError = null}><IconClear aria-hidden="true" /></button>
             </div>
           {/if}
         </div>
@@ -131,7 +139,7 @@
           <div class="debug-log-status">
             <div class="debug-log-status__row">
               <span class="debug-log-status__label">Path</span>
-              <span class="debug-log-status__path" title={generalLogStatus.path}>{generalLogStatus.path}</span>
+              <span class="debug-log-status__path" use:tip={generalLogStatus.path}>{generalLogStatus.path}</span>
             </div>
             <div class="debug-log-status__row">
               <span class="debug-log-status__label">File</span>
@@ -141,12 +149,14 @@
 
           <div class="debug-log-actions">
             <button
+              type="button"
               class="btn btn--ghost btn--sm"
               onclick={openGeneralLog}
               disabled={openingGeneralLog}
+              aria-busy={openingGeneralLog}
             >
               {#if openingGeneralLog}
-                Opening…
+                <ButtonSpinner />Opening…
               {:else if generalLogStatus.exists}
                 Open Log File
               {:else}
@@ -155,11 +165,13 @@
             </button>
             {#if generalLogStatus.exists}
               <button
+                type="button"
                 class="btn btn--danger btn--sm"
                 onclick={deleteGeneralLog}
                 disabled={deletingGeneralLog}
+                aria-busy={deletingGeneralLog}
               >
-                {deletingGeneralLog ? "Deleting…" : "Delete Log File"}
+                {#if deletingGeneralLog}<ButtonSpinner />Deleting…{:else}Delete Log File{/if}
               </button>
             {/if}
             {#if generalLogDeleted}
@@ -172,9 +184,9 @@
 
         {#if logs.generalLogError}
           <div class="inline-error">
-            <span class="inline-error__icon">⚠</span>
+            <span class="inline-error__icon" aria-hidden="true"><IconAlert /></span>
             <span class="inline-error__msg">{logs.generalLogError}</span>
-            <button class="btn btn--ghost btn--sm" onclick={() => logs.generalLogError = null}>×</button>
+            <button type="button" class="settings-icon-btn" aria-label="Dismiss error" onclick={() => logs.generalLogError = null}><IconClear aria-hidden="true" /></button>
           </div>
         {/if}
       </div>
@@ -190,4 +202,5 @@
     gap: 10px;
     width: 100%;
   }
+
 </style>

@@ -163,7 +163,7 @@ pub(crate) fn default_recording_settings() -> RecordingSettings {
         capture_microphone: false,
         capture_system_audio: false,
         segment_duration_seconds: 60,
-        screen_frame_rate: 1,
+        screen_frame_rate: 0.5,
         screen_resolution: ScreenResolution::Preset {
             preset: ScreenResolutionPreset::Original,
         },
@@ -294,6 +294,17 @@ fn validate_audio_transcription_settings(
                 return Err(CaptureErrorResponse {
                     code: "invalid_recording_settings".to_string(),
                     message: "transcription.modelId must be parakeet-tdt-0.6b-v3-onnx or parakeet-tdt-0.6b-v3-onnx-int8 for parakeet"
+                        .to_string(),
+                });
+            }
+            Some(model_id.to_string())
+        }
+        AudioTranscriptionProvider::Deepgram => {
+            let model_id = model_id.unwrap_or("nova-3");
+            if !matches!(model_id, "nova-3" | "nova-2") {
+                return Err(CaptureErrorResponse {
+                    code: "invalid_recording_settings".to_string(),
+                    message: "transcription.modelId must be nova-3 or nova-2 for deepgram"
                         .to_string(),
                 });
             }
@@ -707,7 +718,7 @@ pub(crate) fn compute_effective_screen_bitrate_bps(settings: &RecordingSettings)
             let factor = video_bitrate_preset_factor(preset);
             let (width, height) =
                 resolve_bitrate_dimensions(&settings.screen_resolution).unwrap_or((1920, 1080));
-            (width as f64) * (height as f64) * (settings.screen_frame_rate as f64) * factor
+            (width as f64) * (height as f64) * settings.screen_frame_rate * factor
         }
     };
 
@@ -779,10 +790,10 @@ pub(crate) fn validate_recording_settings_with_capture_support(
         });
     }
 
-    if !(1..=120).contains(&request.screen_frame_rate) {
+    if !(0.5..=10.0).contains(&request.screen_frame_rate) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
-            message: "screenFrameRate must be between 1 and 120".to_string(),
+            message: "screenFrameRate must be between 0.5 and 10".to_string(),
         });
     }
 
@@ -1301,6 +1312,10 @@ fn apply_domain_patch_to_settings(
                 settings.access.ask_ai_enabled = value;
                 touched = true;
             }
+            if let Some(value) = request.ask_ai_web_fetch_enabled {
+                settings.access.ask_ai_web_fetch_enabled = value;
+                touched = true;
+            }
             if let Some(value) = request.ask_ai_max_tool_calls {
                 settings.access.ask_ai_max_tool_calls = value;
                 touched = true;
@@ -1324,6 +1339,11 @@ fn apply_domain_patch_to_settings(
                 // Replacement provider list (wholesale, like additionalEngines
                 // before it); normalization (trim/dedupe) happens in validation.
                 settings.ai_runtime.providers = value;
+                touched = true;
+            }
+            if let Some(value) = request.mcp_servers {
+                // Replacement MCP connector list (wholesale, like providers).
+                settings.ai_runtime.mcp_servers = value;
                 touched = true;
             }
             if let Some(value) = request.default_model {
@@ -1630,6 +1650,7 @@ mod tests {
     #[test]
     fn default_recording_settings_disable_ask_ai_access() {
         assert!(!default_recording_settings().access.ask_ai_enabled);
+        assert!(!default_recording_settings().access.ask_ai_web_fetch_enabled);
     }
 
     #[test]
@@ -2037,12 +2058,14 @@ mod tests {
             RecordingSettingsDomainPatch::Access(UpdateAccessSettingsRequest {
                 ask_ai_enabled: Some(true),
                 ask_ai_max_tool_calls: Some(0),
+                ask_ai_web_fetch_enabled: Some(true),
                 ask_ai_model: Some("anthropic:claude-opus-4".to_string()),
             }),
         )
         .expect("access patch should validate");
 
         assert!(updated.access.ask_ai_enabled);
+        assert!(updated.access.ask_ai_web_fetch_enabled);
         assert_eq!(updated.access.ask_ai_max_tool_calls, 0);
         assert_eq!(
             updated.access.ask_ai_model.as_deref(),
@@ -2069,6 +2092,7 @@ mod tests {
                 provider: "anthropic".to_string(),
                 model: "claude-haiku-4-5".to_string(),
             }),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -2132,6 +2156,7 @@ mod tests {
                 ]),
                 // Explicit `null` over the wire clears the default model.
                 default_model: Some(None),
+                mcp_servers: None,
             }),
         )
         .expect("ai runtime patch should validate");
@@ -2155,6 +2180,84 @@ mod tests {
             ]
         );
         assert_eq!(updated.ai_runtime.default_model, None);
+    }
+
+    #[test]
+    fn ai_runtime_patch_persists_mcp_servers_on_some() {
+        // The MCP connector list is what reconcile/warm/turn all read. The other
+        // ai_runtime patch tests pass `mcp_servers: None`, so the wholesale-replace
+        // branch (native_capture_settings.rs) never runs — a regression that
+        // dropped the write would go unnoticed. Exercise the `Some` branch.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+
+        let server = capture_types::McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
+            command: Some("npx".to_string()),
+            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: Some(vec!["search".to_string()]),
+        };
+
+        let updated = apply_domain_patch_for_test(
+            base,
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: None,
+                providers: None,
+                default_model: None,
+                mcp_servers: Some(vec![server.clone()]),
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert_eq!(updated.ai_runtime.mcp_servers, vec![server]);
+    }
+
+    #[test]
+    fn ai_runtime_patch_mcp_servers_none_leaves_existing_list_unchanged() {
+        // `mcp_servers: None` means "leave unchanged", not "clear". This exact
+        // partial-update shape is reachable via `wipe_user_context`, whose
+        // `enabled: Some(false)` patch must not drop configured connectors.
+        let mut base = default_recording_settings();
+        base.ai_runtime = enabled_ai_runtime_settings();
+        base.ai_runtime.mcp_servers = vec![capture_types::McpServerConfig {
+            id: "connector".to_string(),
+            label: "GitHub".to_string(),
+            enabled: true,
+            transport: capture_types::McpTransport::Stdio,
+            auth_mode: capture_types::McpAuthMode::Bearer,
+            command: Some("npx".to_string()),
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
+            env: Vec::new(),
+            url: None,
+            secret_env_name: Some("GITHUB_TOKEN".to_string()),
+            enabled_tools: Some(vec!["search".to_string()]),
+        }];
+
+        let updated = apply_domain_patch_for_test(
+            base.clone(),
+            RecordingSettingsDomainPatch::AiRuntime(UpdateAiRuntimeSettingsRequest {
+                enabled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .expect("ai runtime patch should validate");
+
+        assert!(!updated.ai_runtime.enabled);
+        assert_eq!(
+            updated.ai_runtime.mcp_servers,
+            base.ai_runtime.mcp_servers,
+            "mcp_servers: None must leave the existing connector list unchanged"
+        );
     }
 
     #[test]
@@ -2444,7 +2547,7 @@ mod tests {
                 capture_microphone: true,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2507,7 +2610,7 @@ mod tests {
                 capture_microphone: false,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2584,7 +2687,7 @@ mod tests {
                 capture_microphone: false,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2712,7 +2815,7 @@ mod tests {
                 capture_microphone: true,
                 capture_system_audio: false,
                 segment_duration_seconds: 60,
-                screen_frame_rate: 1,
+                screen_frame_rate: 1.0,
                 screen_resolution: ScreenResolution::Preset {
                     preset: ScreenResolutionPreset::Original,
                 },
@@ -2759,11 +2862,38 @@ mod tests {
     }
 
     #[test]
+    fn validate_audio_transcription_settings_deepgram_model_rules() {
+        let deepgram = |model_id: Option<&str>| {
+            let mut settings = default_audio_transcription_settings();
+            settings.provider = AudioTranscriptionProvider::Deepgram;
+            settings.model_id = model_id.map(str::to_string);
+            validate_audio_transcription_settings(settings)
+        };
+
+        // Explicit supported model is preserved.
+        let ok = deepgram(Some("nova-2")).expect("nova-2 should validate");
+        assert_eq!(ok.model_id.as_deref(), Some("nova-2"));
+
+        // Missing model falls back to the nova-3 default.
+        let defaulted = deepgram(None).expect("missing model should default");
+        assert_eq!(defaulted.model_id.as_deref(), Some("nova-3"));
+
+        // Unsupported model is rejected.
+        let err = deepgram(Some("whisper-large")).expect_err("whisper-large should be rejected");
+        assert_eq!(err.code, "invalid_recording_settings");
+    }
+
+    #[test]
     fn default_recording_settings_include_preview_cache_ttl() {
         assert_eq!(
             default_recording_settings().preview_cache_ttl_seconds,
             default_preview_cache_ttl_seconds()
         );
+    }
+
+    #[test]
+    fn default_recording_settings_capture_screen_at_half_fps() {
+        assert_eq!(default_recording_settings().screen_frame_rate, 0.5);
     }
 
     #[test]
@@ -2814,7 +2944,7 @@ mod tests {
             capture_microphone: false,
             capture_system_audio: false,
             segment_duration_seconds: 60,
-            screen_frame_rate: 1,
+            screen_frame_rate: 1.0,
             screen_resolution: ScreenResolution::Preset {
                 preset: ScreenResolutionPreset::Original,
             },

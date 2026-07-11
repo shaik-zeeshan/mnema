@@ -4,7 +4,7 @@
   import Shortcuts from "./Shortcuts.svelte";
 </script>
 
-<div role="tabpanel" id="settings-panel-general" tabindex="0">
+<div class="settings-panel" id="settings-panel-general">
   <Appearance />
   <Startup />
   <Shortcuts />

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // RailHistory — the chat search field + time-grouped conversation history that
   // sits in the persistent Insights rail (Insights-rail refactor, Slices 2/3).
   // It renders the shared `conversationStore`: a debounced search over the list,
@@ -14,6 +15,8 @@
   // on click, so the input focuses/selects itself once mounted; keydown is
   // attached on the input for the same reason.
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import { slide } from "svelte/transition";
+  import { cubicOut } from "svelte/easing";
   import {
     conversationStore,
     relativeTime,
@@ -85,11 +88,15 @@
     {#each conversationStore.historyGroups as group (group.label)}
       <div class="rail-group" role="presentation">{group.label}</div>
       {#each group.items as c (c.conversationId)}
+        <!-- Deleting a row just makes it vanish; a short local slide+fade makes
+             the removal (and post-rename re-sort) perceptible. `|local` keeps it
+             from firing on the initial list mount. -->
         <div
           class="rail-chat-row"
           class:active={c.conversationId ===
             conversationStore.activeConversationId}
           role="listitem"
+          transition:slide|local={{ duration: 150, easing: cubicOut }}
         >
           {#if conversationStore.renamingId === c.conversationId}
             <!-- Inline rename: Enter commits, Escape cancels, blur
@@ -116,7 +123,7 @@
                 ? "true"
                 : undefined}
             >
-              <span class="t" title={c.title || c.preview}>
+              <span class="t" use:tip={c.title || c.preview}>
                 {c.title || c.preview || "Untitled chat"}
               </span>
               <span class="when">{relativeTime(c.updatedAtMs)}</span>
@@ -129,7 +136,7 @@
                 type="button"
                 class="rail-action"
                 aria-label="Rename conversation"
-                title="Rename conversation"
+                use:tip={"Rename conversation"}
                 onclick={(e) => {
                   e.stopPropagation();
                   conversationStore.startRename(c);
@@ -141,7 +148,7 @@
                 type="button"
                 class="rail-action rail-action--delete"
                 aria-label="Delete conversation"
-                title="Delete conversation"
+                use:tip={"Delete conversation"}
                 onclick={(e) => {
                   e.stopPropagation();
                   void conversationStore.deleteConversation(c);
@@ -165,19 +172,35 @@
      on focus the only cue is the glyph brightening to the accent (plus the
      caret), matching the nav's box-free focus idiom. Token-driven,
      sentence-case placeholder. */
+  /* search — shares the nav / new-chat row geometry exactly (28px tall, 0 8px
+     padding, 8px gap, 16px leading-glyph box) so the magnifier lands on the nav
+     icon guide and the input text on the nav label guide. Sits tight under New
+     chat as one "actions" cluster, then the history list. */
   .rail-search {
     display: flex;
     align-items: center;
     gap: 8px;
-    height: 30px;
-    margin-top: 16px;
+    height: 28px;
+    margin-top: 8px;
+    padding: 0 8px;
+    border-radius: 6px;
+    transition: background 0.12s ease;
   }
-  /* Focus the search → the glyph brightens to the accent (quiet, no box/line). */
+  /* Focus the search → glyph brightens to the accent + a quiet tint fill, matching
+     the nav/new-chat hover idiom (no box/line). */
+  .rail-search:focus-within {
+    background: var(--app-surface-hover);
+  }
   .rail-search:focus-within .icon {
     color: var(--app-accent);
   }
   .rail-search .icon {
-    flex: 0 0 auto;
+    flex: 0 0 16px;
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     color: var(--app-text-subtle);
     transition: color 0.12s ease;
   }
@@ -271,7 +294,12 @@
     position: relative;
     display: flex;
     align-items: center;
-    min-height: 24px;
+    /* Reserve room for the active row's 3px inset bar on EVERY row so toggling
+       the active state never shifts the title horizontally. */
+    padding-left: 8px;
+    /* The inner `.rail-chat` is a fixed 24px tall, so the row height matches it
+       without an explicit `min-height` — and dropping the min-height lets the
+       removal slide collapse smoothly to 0 instead of snapping at 24px. */
   }
   .rail-chat {
     flex: 1 1 auto;
@@ -322,7 +350,23 @@
   .rail-chat-row:focus-within .when {
     opacity: 0;
   }
-  /* active row — accent title only (matches active nav). */
+  /* active row — accent title PLUS a tinted background and a 3px inset accent
+     bar, so the selection never relies on text colour alone (matches the
+     primary nav's multi-signal active treatment). */
+  .rail-chat-row.active {
+    background: var(--app-accent-bg);
+    border-radius: 5px;
+  }
+  .rail-chat-row.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 3px;
+    bottom: 3px;
+    width: 3px;
+    border-radius: 0 2px 2px 0;
+    background: var(--app-accent-strong);
+  }
   .rail-chat-row.active .t {
     color: var(--app-accent-strong);
   }

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dayflow × Mnema — feature mockups</title>
+<style>
+  :root {
+    --surface: #0e0e16; --surface-subtle: #101018; --surface-hover: #1a1a2a;
+    --border: #1e1e2e; --border-strong: #2a2a3a; --border-hover: #3a3a5a;
+    --text-strong: #e2e2e8; --text: #c0c0d0; --text-muted: #9696ae; --text-subtle: #7e7e98; --text-faint: #33334a;
+    --accent: #3dffa0; --accent-strong: #2a8a60; --accent-bg: #0d1f15; --accent-border: #1a4a30;
+    --warn: #d6a14a;
+    --cat-creating: #5fe07a; --cat-communication: #c0b0ff; --cat-meetings: #ff9fd0;
+    --cat-research: #60b0ff; --cat-personal: #d6a14a; --cat-entertainment: #ff7a4d;
+    --mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #060608; color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.7; -webkit-font-smoothing: antialiased; padding: 56px 28px 80px; }
+  .page { max-width: 880px; margin: 0 auto; }
+  .eyebrow { display: flex; align-items: center; gap: 9px; font-size: 10px; letter-spacing: .18em; text-transform: uppercase; color: var(--text-subtle); margin-bottom: 14px; }
+  .eyebrow .diamond { color: var(--text-faint); letter-spacing: 0; }
+  .eyebrow .rule { flex: 1; height: 1px; background: var(--border-strong); }
+  h1 { font-size: 26px; line-height: 1.25; font-weight: 650; letter-spacing: -.02em; color: var(--text-strong); margin-bottom: 14px; }
+  .verdict {
+    padding: 22px 26px; border: 1px solid var(--border); border-left: 2px solid var(--accent);
+    border-radius: 12px; background: linear-gradient(to right, var(--accent-bg), var(--surface) 42%);
+    margin: 22px 0 34px;
+  }
+  .verdict p { font-size: 13.5px; line-height: 1.8; color: var(--text); }
+  .verdict strong { color: var(--accent); font-weight: 600; }
+  .verdict .sub { margin-top: 10px; font-size: 12px; color: var(--text-muted); }
+  .verdict code { background: #16161f; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 11.5px; color: #c0b0ff; }
+
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .cards { grid-template-columns: 1fr; } }
+  a.mock { display: block; text-decoration: none; color: inherit; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 18px 20px 16px; transition: border-color .12s ease; }
+  a.mock:hover { border-color: var(--border-hover); }
+  a.mock:hover .go { color: var(--accent); }
+  .mock .num { font-size: 10px; letter-spacing: .18em; color: var(--text-faint); }
+  .mock h2 { font-size: 16px; font-weight: 600; letter-spacing: -.01em; color: var(--text-strong); margin: 6px 0 6px; }
+  .mock p { font-size: 12px; line-height: 1.7; color: var(--text-muted); }
+  .mock .meta { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+  .mock .tag { padding: 1px 7px; border-radius: 999px; border: 1px solid var(--accent-border); background: var(--accent-bg); color: var(--accent-strong); }
+  .mock .tag--warn { border-color: #3a2818; background: #1a1208; color: var(--warn); }
+  .mock .go { margin-left: auto; color: var(--text-subtle); letter-spacing: .02em; text-transform: none; }
+  .swatches { display: inline-flex; gap: 4px; }
+  .swatches i { width: 8px; height: 8px; border-radius: 50%; }
+
+  .foot { margin-top: 36px; font-size: 11px; color: var(--text-subtle); }
+  .foot code { background: #16161f; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-family: inherit; font-size: 10.5px; color: #c0b0ff; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="eyebrow"><span class="diamond">◆</span><span>docs/mockups/dayflow</span><span class="rule"></span><span>Jul 2026</span></div>
+  <h1>Dayflow-style features, inside Mnema</h1>
+
+  <div class="verdict">
+    <p><strong>Verdict: we already have the backend — this is mostly presentation.</strong> Dayflow's core loop (capture the screen, have an LLM turn it into a chronological journal of activity cards) is exactly what Mnema's User Context worker has been doing since it shipped: every ~30 minutes of capture becomes a titled, summarized, categorized activity row with focus level and evidence frames, and a daily digest narrates the whole day. The four features mocked here are one new Insights sub-tab family (frontend), one small on-demand LLM module cloned from the digest pattern (Standup), and one modal built entirely on existing frame commands (Timelapse). Zero new workers, zero new capture plumbing, one optional table.</p>
+    <p class="sub">Existing raw material: <code>user_context_activities</code> · <code>user_context_digests</code> · <code>user_context_activity_evidence</code> · <code>get_usage_charts</code> · frames + OCR + app/window/url metadata per segment. Each mockup page reproduces the real app chrome (titlebar surface toggle, Insights rail) so it's clear exactly where every feature lives, and carries What-it-does / How-it-works / Net-new-code / Data-it-uses annotations with real file paths.</p>
+    <p class="sub"><strong>Decided scope (Jul 3 review):</strong> build 01 Journal + 04 Receipt first (the receipt is what makes the journal trustworthy), 02 Blocks as a fast follow inside the same tab, 03 Standup on hold until Journal proves the daily habit.</p>
+    <p class="sub"><strong>Grill outcomes (Jul 3, recorded in <code>docs/user-context/CONTEXT.md</code>):</strong> Journal = Insights sub-tab (not a third surface); receipt = bounded <em>evidence playback</em>, the one carved exception to "inspection stays on Timeline"; digest lede + stats render in both Overview and Journal (same cached row, shared stat helper — same label ⇒ same computation); day = local midnight, no 4am logical day; pending slot driven by a new <code>coveredUntilMs</code> field on <code>get_user_context_status</code>; card frame counts = frames still on disk. Net: "frontend only" became <em>frontend + three field-level backend touches</em> (watermark field, range-path evidence hydration, <code>is_headline</code> on the wire) — still no new tables, commands, workers, or prompts. Standup's persistence design deliberately deferred until it's scheduled.</p>
+  </div>
+
+  <div class="cards">
+    <a class="mock" href="01-day-journal.html">
+      <div class="num">01 · BUILD SLICE</div>
+      <h2>Day Journal</h2>
+      <p>Dayflow's card river as a new Insights → Journal sub-tab: the digest as lede, then every activity of the day on a time spine — colored by category, one click from its real footage.</p>
+      <div class="meta"><span class="tag">frontend + 3 backend fields</span><span class="swatches"><i style="background:var(--cat-creating)"></i><i style="background:var(--cat-communication)"></i><i style="background:var(--cat-research)"></i><i style="background:var(--cat-entertainment)"></i></span><span class="go">open mockup →</span></div>
+    </a>
+
+    <a class="mock" href="02-day-blocks.html">
+      <div class="num">02 · FAST FOLLOW</div>
+      <h2>Day Blocks + Stats</h2>
+      <p>The same day as a calendar: proportional time blocks on an hour grid, a live now-line, capture-density strip, and the day's numbers from the charts backend Overview already uses.</p>
+      <div class="meta"><span class="tag">frontend only</span><span class="go">open mockup →</span></div>
+    </a>
+
+    <a class="mock" href="03-standup.html">
+      <div class="num">03 · ON HOLD</div>
+      <h2>Standup Brief</h2>
+      <p>Walk into standup with the update written — as the markdown doc it exports: AI bullets dim, your edits bright and regenerate-proof, per-bullet provenance chips, Blockers flagged. One cached LLM call cloned from the digest pattern.</p>
+      <div class="meta"><span class="tag--warn tag">1 small module + 1 command</span><span class="go">open mockup →</span></div>
+    </a>
+
+    <a class="mock" href="04-timelapse.html">
+      <div class="num">04 · BUILD SLICE</div>
+      <h2>Timelapse Receipt</h2>
+      <p>Every journal card is provable: scrub the actual captured frames behind it, with evidence ticks for the frames the engine cited. No video encoding — the frames already exist.</p>
+      <div class="meta"><span class="tag">frontend only</span><span class="go">open mockup →</span></div>
+    </a>
+  </div>
+
+  <p class="foot">Reference: Dayflow (github.com/JerryZLiu/dayflow) — an open-source macOS auto-journal. Mnema equivalents verified against <code>apps/desktop/src-tauri/src/user_context/worker.rs</code>, <code>digest.rs</code>, <code>usage_charts</code>, and the command registry in <code>apps/desktop/src-tauri/src/lib.rs</code>. All activity data in these mockups is fabricated.</p>
+</div>
+</body>
+</html>

@@ -6,9 +6,10 @@ use std::{
 
 use rayon::ThreadPool;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Row};
 use tokio::sync::oneshot;
 
+use crate::db::CaptureDb;
 use crate::error::{AppInfraError, Result};
 
 pub(crate) const ORPHANED_RUNNING_JOB_ERROR: &str =
@@ -169,12 +170,12 @@ impl DebugCpuJobRequest {
 
 #[derive(Clone)]
 pub struct JobStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl JobStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     pub async fn enqueue(
@@ -188,7 +189,7 @@ impl JobStore {
         .bind(descriptor.kind())
         .bind(BackgroundJobStatus::Queued.as_str())
         .bind(payload_json)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(result.last_insert_rowid()).await
@@ -203,7 +204,7 @@ impl JobStore {
              WHERE id = ?1",
         )
         .bind(job_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         row.map(map_background_job).transpose()
@@ -225,7 +226,7 @@ impl JobStore {
                      LIMIT ?1",
                 )
                 .bind(limit as i64)
-                .fetch_all(&self.pool)
+                .fetch_all(self.db.read())
                 .await?
             }
             None => {
@@ -236,7 +237,7 @@ impl JobStore {
                      FROM background_jobs \
                      ORDER BY id DESC",
                 )
-                .fetch_all(&self.pool)
+                .fetch_all(self.db.read())
                 .await?
             }
         };
@@ -257,7 +258,7 @@ impl JobStore {
              WHERE id = ?1",
         )
         .bind(job_id)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(job_id).await
@@ -279,7 +280,7 @@ impl JobStore {
         )
         .bind(job_id)
         .bind(result_text)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(job_id).await
@@ -301,7 +302,7 @@ impl JobStore {
         )
         .bind(job_id)
         .bind(error_text)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         self.get_required(job_id).await
@@ -318,7 +319,7 @@ impl JobStore {
              WHERE status = 'running'",
         )
         .bind(ORPHANED_RUNNING_JOB_ERROR)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         Ok(result.rows_affected())
@@ -334,7 +335,7 @@ impl JobStore {
                 COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed \
             FROM background_jobs",
         )
-        .fetch_one(&self.pool)
+        .fetch_one(self.db.read())
         .await?;
 
         Ok(JobCounts {

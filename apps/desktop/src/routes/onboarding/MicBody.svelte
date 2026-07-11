@@ -4,6 +4,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Segmented from "$lib/components/Segmented.svelte";
+  import { useLockCalloutSlot } from "./FeatureRow.svelte";
 
   let { controller }: { controller: OnboardingController } = $props();
 
@@ -30,9 +31,24 @@
         return "Off — legacy microphone peak-level activity, tuned by the sensitivity slider below.";
     }
   };
+
+  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
+  // (registered every render so it tracks the lock state) — otherwise its "Grant
+  // Microphone access" button renders but is itself inert and does nothing.
+  const setLockCallout = useLockCalloutSlot();
+  const lockReason = $derived(controller.featureLockReason("mic"));
+  $effect(() => {
+    setLockCallout(lockReason ? lockCallout : null);
+    return () => setLockCallout(null);
+  });
 </script>
 
-{#if controller.featureLockReason("mic")}
+{#snippet lockCallout()}
+  <!-- macOS won't re-prompt once mic access is denied, so `requestPermission`
+       deep-links to System Settings instead — mirror PermissionsBody and relabel
+       the button ("Open Settings"/"Opening…") so it doesn't promise a prompt that
+       never appears. `permissionAction` returns the mode for the current state. -->
+  {@const micAction = controller.permissionAction(controller.permissions?.microphone)}
   <div class="lock-callout">
     <div class="lock-callout-text">
       Microphone access is required before you can record your mic.
@@ -43,10 +59,14 @@
       disabled={controller.requestingPerm === "microphone"}
       onclick={() => controller.requestPermission("microphone")}
     >
-      {controller.requestingPerm === "microphone" ? "…" : "Grant Microphone access"}
+      {#if controller.requestingPerm === "microphone"}
+        {micAction?.mode === "settings" ? "Opening…" : "Requesting…"}
+      {:else}
+        {micAction?.mode === "settings" ? "Open Settings" : "Grant Microphone access"}
+      {/if}
     </button>
   </div>
-{/if}
+{/snippet}
 
 <div class="group">
   <div class="ctl">

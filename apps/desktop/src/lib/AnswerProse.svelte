@@ -386,4 +386,9 @@
       opacity: 0;
     }
   }
+  @media (prefers-reduced-motion: reduce) {
+    .answer-prose.is-streaming::after {
+      animation: none;
+    }
+  }
 </style>

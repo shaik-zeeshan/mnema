@@ -4,33 +4,67 @@ import { DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
 
 <section class="final-cta">
   <div class="section-inner">
-    <p class="kicker">// get started</p>
-    <h2 class="cta-heading">Stop forgetting. Start recalling.</h2>
-    <p class="cta-sub">
-      Download Mnema and build a private, searchable memory of your work — one
-      you can scrub, search, and ask anything. Free, open source, runs entirely
-      on your Mac.
-    </p>
-    <a href={DOWNLOAD_URL} class="btn-primary" data-latest-download-link>
-      Download for {PLATFORM_LABEL.split(" · ")[0]}
-      <span class="btn-platform">{PLATFORM_LABEL.split(" · ")[1]}</span>
-    </a>
+    <div class="cta-field">
+      <p class="kicker" data-reveal>// get started</p>
+      <h2 class="cta-heading" data-reveal style="--reveal-delay: 0.06s">
+        Stop forgetting. Start recalling.
+      </h2>
+      <p class="cta-sub" data-reveal style="--reveal-delay: 0.12s">
+        Download Mnema and build a private, searchable memory of your work: one
+        you can scrub, search, and ask anything. Free and open source.
+      </p>
+      <a
+        href={DOWNLOAD_URL}
+        class="btn-primary"
+        data-reveal
+        style="--reveal-delay: 0.18s"
+      >
+        Download for {PLATFORM_LABEL.split(" · ")[0]}
+        <span class="btn-platform">{PLATFORM_LABEL.split(" · ")[1]}</span>
+      </a>
+    </div>
   </div>
 </section>
 
 <style>
   .final-cta {
     padding: var(--space-2xl) var(--space-lg);
-    text-align: center;
   }
 
   .section-inner {
-    max-width: 56rem;
+    max-width: var(--container-wide);
     margin: 0 auto;
+  }
+
+  .cta-field {
+    position: relative;
+    overflow: hidden;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--space-sm);
+    text-align: center;
+    padding: var(--space-2xl) var(--space-lg);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-lg);
+    background: color-mix(in srgb, var(--accent-bg) 55%, var(--bg));
+  }
+
+  /* One quiet light source at the top of the field, tinted from tokens. */
+  .cta-field::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      42rem 18rem at 50% -6rem,
+      var(--accent-glow),
+      transparent 70%
+    );
+    pointer-events: none;
+  }
+
+  .cta-field > * {
+    position: relative;
   }
 
   .kicker {
@@ -41,12 +75,14 @@ import { DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
   }
 
   .cta-heading {
-    font-size: var(--text-2xl);
+    font-size: var(--text-3xl);
+    line-height: 1.08;
+    max-width: 18ch;
   }
 
   .cta-sub {
     color: var(--fg-muted);
-    font-size: var(--text-sm);
+    font-size: var(--text-base);
     max-width: 45ch;
     line-height: 1.6;
   }
@@ -60,19 +96,28 @@ import { DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
     font-weight: 500;
     color: var(--bg);
     background: var(--accent);
-    padding: 0.6rem 1.25rem;
+    padding: 0.75rem 1.5rem;
     border-radius: var(--radius-md);
     text-decoration: none;
     letter-spacing: 0.02em;
-    margin-top: var(--space-sm);
-    transition: box-shadow 0.3s var(--ease-out-quart),
+    margin-top: var(--space-md);
+    transition:
+      box-shadow 0.3s var(--ease-out-quart),
+      transform 0.3s var(--ease-out-quart),
       opacity 0.2s var(--ease-out-quart);
   }
 
   .btn-primary:hover {
     text-decoration: none;
-    box-shadow: 0 0 24px var(--accent-glow);
+    box-shadow: 0 0 28px var(--accent-glow);
+    transform: translateY(-1px);
     opacity: 0.92;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .btn-primary:hover {
+      transform: none;
+    }
   }
 
   .btn-platform {

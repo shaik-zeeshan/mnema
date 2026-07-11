@@ -26,21 +26,27 @@
   // aria-describedby — otherwise the role="switch" has no accessible name.
   const labelId = `switch-label-${Math.random().toString(36).slice(2, 9)}`;
   const descriptionId = `switch-desc-${Math.random().toString(36).slice(2, 9)}`;
+  // Forwarded to the bits-ui button (a labelable <button role="switch">) so the
+  // visible <label for> is part of the toggle's hit target: clicking the text
+  // natively activates the button. No JS click handler (keyboard/AT stay on the
+  // button), so no duplicate tab stop and no double-toggle.
+  const switchId = `switch-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="switch-wrapper" class:switch-wrapper--disabled={disabled}>
   {#if label || description}
-    <div class="switch-text">
+    <label class="switch-text" for={switchId}>
       {#if label}
         <span class="switch-label" id={labelId}>{label}</span>
       {/if}
       {#if description}
         <span class="switch-description" id={descriptionId}>{description}</span>
       {/if}
-    </div>
+    </label>
   {/if}
   <BitsSwitch.Root
     bind:checked
+    id={switchId}
     {disabled}
     {onCheckedChange}
     class="switch-track"
@@ -62,8 +68,11 @@
   }
 
   .switch-wrapper--disabled {
-    opacity: 0.38;
+    opacity: var(--app-disabled-opacity);
     cursor: not-allowed;
+    /* Kill the label's `cursor: pointer` (and any hit-target activation) while
+       disabled, matching the Select/Combobox `--disabled` wrappers. */
+    pointer-events: none;
   }
 
   .switch-text {
@@ -71,17 +80,18 @@
     flex-direction: column;
     gap: 2px;
     flex: 1;
+    cursor: pointer;
   }
 
   .switch-label {
-    font-size: 12px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;
   }
 
   .switch-description {
-    font-size: 10px;
+    font-size: var(--text-xs);
     color: var(--app-text-muted);
     letter-spacing: 0.03em;
   }
@@ -96,7 +106,8 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 999px;
     cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
+      transform 0.18s ease;
     flex-shrink: 0;
     padding: 0;
     outline: none;
@@ -104,11 +115,17 @@
 
   :global(.switch-track:hover:not([data-disabled])) {
     border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   :global(.switch-track:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+
+  /* Momentary press cue before the state flips. */
+  :global(.switch-track:active:not([data-disabled])) {
+    transform: scale(0.96);
   }
 
   :global(.switch-track[data-state="checked"]) {

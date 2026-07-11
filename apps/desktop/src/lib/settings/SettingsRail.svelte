@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // Settings left rail — Codex-style (Slice 3).
   //
   // Renders the 5 navigation groups from `groups.ts` (the source of truth) as
@@ -16,7 +17,10 @@
   // footer shows the live auto-save status, styled per the mockup.
 
   import { goto } from "$app/navigation";
-  import Icon from "./Icon.svelte";
+  import IconBack from "~icons/lucide/chevron-left";
+  import IconSearch from "~icons/lucide/search";
+  import IconClear from "~icons/lucide/x";
+  import { SECTION_ICONS } from "./section-icons";
   import {
     SETTINGS_GROUPS,
     type SettingsGroupId,
@@ -43,6 +47,21 @@
   const rec = c.rec;
   const keyboard = c.keyboard;
   const audio = c.audio;
+
+  // The single auto-save status that drives the footer dot + label. Hoisted to a
+  // derived so the footer element can carry a matching status modifier class
+  // (raising salience on a change instead of leaning on the 6px dot alone).
+  const footStatus = $derived<"error" | "blocked" | "saving" | "ok" | "idle">(
+    rec.recError || keyboard.keyboardBindingsError || audio.micError
+      ? "error"
+      : c.recSaveBlocked || audio.micApplyBlocked
+        ? "blocked"
+        : c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings
+          ? "saving"
+          : rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved
+            ? "ok"
+            : "idle",
+  );
 
   // Slice 4: the search field narrows the nav as you type. The (pure) filter
   // helper lives in `rail-filter.ts`; here we only bind state + render.
@@ -83,6 +102,13 @@
   // Defer the clear to a macrotask so the pending click + navigation fire first.
   function clearSearch() {
     searchQuery = "";
+  }
+  // The in-field clear button and the empty-state "Clear search" CTA both wipe
+  // the query and return focus to the input so the user can keep typing without
+  // a second click — distinct from `clearSearch` (the deferred blur path).
+  function clearSearchAndFocus() {
+    searchQuery = "";
+    searchInput?.focus();
   }
   function onSearchBlur(event: FocusEvent) {
     // Only clear when focus actually leaves the rail. A keyboard user who Tabs
@@ -166,15 +192,12 @@
   <!-- Fixed top zone: back link + search -->
   <div class="rail-top">
     <button class="rail-back" type="button" onclick={backToApp}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 18l-6-6 6-6" /></svg>
+      <IconBack aria-hidden="true" />
       Back to app
     </button>
 
     <div class="rail-search">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" />
-        <path d="M21 21l-4.3-4.3" />
-      </svg>
+      <IconSearch aria-hidden="true" />
       <input
         bind:this={searchInput}
         type="text"
@@ -184,6 +207,17 @@
         onkeydown={onSearchKeydown}
         onblur={onSearchBlur}
       />
+      {#if searchQuery}
+        <button
+          class="rail-search__clear"
+          type="button"
+          aria-label="Clear search"
+          use:tip={"Clear search"}
+          onclick={clearSearchAndFocus}
+        >
+          <IconClear aria-hidden="true" />
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -199,8 +233,9 @@
     <div class="rail-nav__list" role="list">
       {#each visibleGroups as group (group.id)}
         <div class="nav-group" role="group" aria-labelledby="settings-cat-{group.id}">
-          <p class="nav-cat" id="settings-cat-{group.id}">{group.label}</p>
+          <h2 class="nav-cat" id="settings-cat-{group.id}">{group.label}</h2>
           {#each group.sections as section (section.id)}
+            {@const SectionIcon = SECTION_ICONS[section.id]}
             <button
               class="nav-item"
               class:nav-item--active={activeSection === section.id}
@@ -212,30 +247,42 @@
               onclick={() => onNavigate(section.id)}
               onkeydown={handleNavKeydown}
             >
-              <Icon name={section.id} />
+              <SectionIcon aria-hidden="true" />
               <span>{section.label}</span>
             </button>
           {/each}
         </div>
       {/each}
       {#if visibleGroups.length === 0}
-        <p class="rail-empty" role="status">No settings match</p>
+        <div class="rail-empty" role="status">
+          <p class="rail-empty__msg">No settings match “{searchQuery.trim()}”.</p>
+          <button class="btn btn--ghost btn--sm" type="button" onclick={clearSearchAndFocus}>
+            Clear search
+          </button>
+        </div>
       {/if}
     </div>
   </nav>
 
   <!-- Pinned footer: live auto-save status (relocated from the old rail head). -->
-  <div class="rail-foot" aria-live="polite">
-    {#if rec.recError || keyboard.keyboardBindingsError || audio.micError}
+  <div
+    class="rail-foot"
+    class:rail-foot--error={footStatus === "error"}
+    class:rail-foot--blocked={footStatus === "blocked"}
+    class:rail-foot--saving={footStatus === "saving"}
+    class:rail-foot--ok={footStatus === "ok"}
+    aria-live="polite"
+  >
+    {#if footStatus === "error"}
       <span class="rail-foot__dot rail-foot__dot--error"></span>
       <span class="rail-foot__label">save failed</span>
-    {:else if c.recSaveBlocked || audio.micApplyBlocked}
+    {:else if footStatus === "blocked"}
       <span class="rail-foot__dot rail-foot__dot--blocked"></span>
       <span class="rail-foot__label">resolve issues</span>
-    {:else if c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings}
+    {:else if footStatus === "saving"}
       <span class="rail-foot__dot rail-foot__dot--saving"></span>
       <span class="rail-foot__label">saving</span>
-    {:else if rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved}
+    {:else if footStatus === "ok"}
       <span class="rail-foot__dot rail-foot__dot--ok"></span>
       <span class="rail-foot__label">saved</span>
     {:else}
@@ -243,6 +290,64 @@
       <span class="rail-foot__label">auto-save on</span>
     {/if}
   </div>
+
+  <!-- Autosave failure detail: the bare "save failed" dot above discards the
+       message, so surface the actual error here. Each of the three error sources
+       that light the footer dot (recording, keyboard, microphone) gets its own
+       detail line so none is left as just an unexplained dot. role="alert" so the
+       failure is announced, not just shown.
+
+       The recording path has a targeted Retry (re-runs the failed domain save,
+       bypassing the backoff window) + a Dismiss that reconciles the control back
+       to the last-saved value. The keyboard + microphone domains have no
+       equivalent manual-retry surface (their autosave engine re-attempts a dirty
+       save on its own), so they show the message text + a Dismiss that clears the
+       error — consistent with the recError treatment. -->
+  {#if rec.recError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{rec.recError}</p>
+      <div class="rail-foot-error__actions">
+        {#if c.lastFailedSaveDomain}
+          <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.retryFailedSave()}>
+            Retry
+          </button>
+        {/if}
+        <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.dismissRecError()}>
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if keyboard.keyboardBindingsError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{keyboard.keyboardBindingsError}</p>
+      <div class="rail-foot-error__actions">
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          onclick={() => (keyboard.keyboardBindingsError = null)}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
+
+  {#if audio.micError}
+    <div class="rail-foot-error" role="alert">
+      <p class="rail-foot-error__msg">{audio.micError}</p>
+      <div class="rail-foot-error__actions">
+        <button
+          class="btn btn--ghost btn--sm"
+          type="button"
+          onclick={() => (audio.micError = null)}
+        >
+          Dismiss
+        </button>
+      </div>
+    </div>
+  {/if}
 </aside>
 
 <style>
@@ -251,10 +356,86 @@
      to match `.nav-cat`). Component-scoped so it never touches the shared
      `.settings-shell` cascade in settings-layout.css. */
   .rail-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
     margin: 4px 8px;
     padding: 6px 10px;
     font-size: 12px;
     line-height: 1.4;
     color: var(--app-text-subtle);
+  }
+
+  .rail-empty__msg {
+    margin: 0;
+    word-break: break-word;
+  }
+
+  /* In-field clear (X) for the search input. Sits at the right edge of the
+     recessed search field, mirroring the leading search glyph; tokens-only and
+     namespaced under the rail's search family. */
+  .rail-search__clear {
+    position: absolute;
+    right: 6px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+  .rail-search__clear:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+  }
+  .rail-search__clear:focus-visible {
+    outline: none;
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+  .rail-search__clear :global(svg) {
+    width: 13px;
+    height: 13px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* Autosave failure banner pinned under the footer status line. Keeps the real
+     error message visible (it scrolls if long) with the Retry/Dismiss actions
+     directly beneath it. Tokens-only, namespaced under the rail. */
+  .rail-foot-error {
+    margin: 0 8px 8px;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid var(--app-danger-border);
+    border-radius: 6px;
+    background: var(--app-danger-bg);
+  }
+
+  .rail-foot-error__msg {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--app-danger-text);
+    max-height: 6.4em;
+    overflow-y: auto;
+    word-break: break-word;
+  }
+
+  .rail-foot-error__actions {
+    display: flex;
+    gap: 6px;
   }
 </style>

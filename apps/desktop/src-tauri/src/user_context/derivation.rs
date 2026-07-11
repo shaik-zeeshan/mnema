@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use app_infra::{
     evidence_fingerprint, ActivityCorrection, CaptureWindow, NewActivity, NewActivityEvidence,
-    NewConclusion, NewConclusionEvidence, UserContextStore,
+    NewConclusion, NewConclusionEvidence, SubjectVectorStore, SupersedeOutcome, UserContextStore,
 };
 use app_infra::user_context::{confidence, guardrail};
 
@@ -49,7 +49,9 @@ from this fixed taxonomy (deep = sustained single-thread deep \
 work, mixed = some focus but context-switching or interleaved, distracted = scattered, interrupted, \
 or off-task) or omit it when unsure, and the list of evidence reference tags (the f<id>/a<id> tags \
 shown on each input item) that belong to that Activity. Only use tags that appear in the input. \
-Do NOT describe an \
+Also give a headline_ref: the SINGLE evidence tag from that list that best represents the title — \
+the one moment someone should see first to recognize the Activity (must be one of the Activity's \
+own evidence tags). Do NOT describe an \
 Activity, or label its category or focus, in terms of the user's health or mental health, sexual \
 orientation, religion, political views, or similar protected/intimate domains; keep titles and \
 summaries to the work/task itself. Return the structured result.";
@@ -94,6 +96,12 @@ pub struct DerivedActivity {
     /// `f<id>` (frame) / `a<id>` (audio_segment) evidence tags.
     #[serde(default)]
     pub evidence_refs: Vec<String>,
+    /// The single evidence tag (from `evidence_refs`) that best represents the
+    /// title — the frame the Timeline should land on when the user opens this
+    /// Activity. Optional: when omitted or not present in `evidence_refs`, the
+    /// store falls back to the chronologically earliest evidence frame.
+    #[serde(default)]
+    pub headline_ref: Option<String>,
 }
 
 /// The structured batch the engine returns for one capture window.
@@ -130,6 +138,60 @@ fn item_tag(subject_type: &str, subject_id: i64) -> String {
         "audio_segment" => format!("a{subject_id}"),
         other => format!("{other}{subject_id}"),
     }
+}
+
+/// Map an audio item's `source_kind` to the prompt tag telling the model WHO
+/// spoke: `you` = the user's own voice (microphone), `other-side` = the other
+/// party (system audio). `None` for frames or an unknown/absent source, so no
+/// tag is rendered. This is the ADR 0050 attribution signal — it keeps words
+/// spoken TO the user (system audio) from being read as words the user said.
+fn source_tag(subject_type: &str, source_kind: Option<&str>) -> Option<&'static str> {
+    if subject_type != "audio_segment" {
+        return None;
+    }
+    match source_kind {
+        Some("microphone") => Some("you"),
+        Some("system_audio") => Some("other-side"),
+        _ => None,
+    }
+}
+
+/// The Nth ephemeral speaker-label suffix: 0→`A`, 1→`B`, … 25→`Z`, then a numeric
+/// fallback for the (never-in-practice) 27th+ distinct voice in one segment.
+fn speaker_label(index: usize) -> String {
+    if index < 26 {
+        ((b'A' + index as u8) as char).to_string()
+    } else {
+        // ponytail: >26 distinct speakers in one segment does not happen; number it.
+        format!("#{}", index + 1)
+    }
+}
+
+/// Render diarized speaker turns as anonymous per-item "Speaker A/B/…" lines,
+/// mapping each distinct `cluster_id` to an ephemeral label in first-appearance
+/// order (labels are transient, per-item, never stored — like the cited-id tags).
+///
+/// PRIVACY BY CONSTRUCTION (ADR 0050): the input is `(cluster_id, text)` ONLY —
+/// there is NO name field — so a recognized person's display name is
+/// unrepresentable here and cannot leak into the prompt handed to a (possibly
+/// cloud) engine. Names resolve on-device only. Empty string when there are no
+/// turns (the flat transcript text stays the only audio content in that case).
+fn render_speaker_turns(turns: &[(i64, String)]) -> String {
+    let mut labels: HashMap<i64, String> = HashMap::new();
+    let mut out = String::new();
+    for (cluster_id, text) in turns {
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        let next = labels.len();
+        let label = labels
+            .entry(*cluster_id)
+            .or_insert_with(|| format!("Speaker {}", speaker_label(next)))
+            .clone();
+        out.push_str(&format!("{label}: {text}\n"));
+    }
+    out
 }
 
 /// Parse an `f<id>` / `a<id>` evidence ref back to `(subject_type, subject_id)`.
@@ -208,6 +270,32 @@ fn format_utc_ms(ms: i64) -> String {
     )
 }
 
+/// Format signed timezone offset MINUTES as `UTC+05:30` / `UTC-08:00`.
+fn offset_label(offset_min: i64) -> String {
+    let sign = if offset_min < 0 { '-' } else { '+' };
+    let abs = offset_min.abs();
+    format!("UTC{}{:02}:{:02}", sign, abs / 60, abs % 60)
+}
+
+/// Format a unix-millis instant as a local wall-clock string with an explicit
+/// offset suffix (`2026-06-11 22:12 UTC+05:30`). Mirrors [`format_utc_ms`] but
+/// shifts the instant by `offset_ms` (offset in MILLIseconds) before rendering.
+fn format_local_ms(ms: i64, offset_ms: i64) -> String {
+    let dt = time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(ms + offset_ms) * 1_000_000)
+        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH);
+    let date = dt.date();
+    let clock = dt.time();
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} {}",
+        date.year(),
+        u8::from(date.month()),
+        date.day(),
+        clock.hour(),
+        clock.minute(),
+        offset_label(offset_ms / 60_000),
+    )
+}
+
 /// Render the capture window into the per-call prompt. Each item is tagged
 /// `f<id>`/`a<id>` with its time, optional Search Context app/url, and its
 /// (truncated, already-redacted) text.
@@ -217,8 +305,14 @@ fn build_prompt(window: &CaptureWindow) -> String {
     prompt.push_str(
         "Below is a chronological list of capture items from one window of the user's activity. \
 Each item is tagged with an id (f<id> = on-screen text frame, a<id> = audio transcript segment), \
-its capture time, and (when known) the app/URL it came from. All times are UTC. Segment these \
-items into Activity episodes by intent shift and return DerivedActivityBatch.\n\n",
+its capture time, and (when known) the app/URL it came from. All times are UTC. Audio (a<id>) \
+items also carry a speaker source tag: source=you means the user's OWN voice (microphone), \
+source=other-side means the OTHER party (system audio). Attribute speech by this tag — never \
+render another party's words as the user's own, and never render the user's words as someone \
+else's. An audio item may list \"Speaker A\"/\"Speaker B\"/… lines beneath its text: those are the \
+distinct anonymized voices within that one segment (the labels are local to that item only, not \
+identities). Segment these items into Activity episodes by intent shift and return \
+DerivedActivityBatch.\n\n",
     );
     prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
     prompt.push_str(&format!(
@@ -231,6 +325,9 @@ items into Activity episodes by intent shift and return DerivedActivityBatch.\n\
     for item in &window.items {
         let tag = item_tag(&item.subject_type, item.subject_id);
         prompt.push_str(&format!("[{tag}] t={}", format_utc_ms(item.captured_at_ms)));
+        if let Some(source) = source_tag(&item.subject_type, item.source_kind.as_deref()) {
+            prompt.push_str(&format!(" source={source}"));
+        }
         if let Some(app) = item.app_label.as_deref().filter(|s| !s.trim().is_empty()) {
             prompt.push_str(&format!(" app={app}"));
         }
@@ -240,7 +337,17 @@ items into Activity episodes by intent shift and return DerivedActivityBatch.\n\
         prompt.push('\n');
         let text = truncate_chars(item.text.trim(), ITEM_TEXT_CHAR_CAP);
         prompt.push_str(&text);
-        prompt.push_str("\n\n");
+        prompt.push('\n');
+        // Anonymous per-speaker turn structure beneath the flat transcript (ADR
+        // 0050). Empty for frames and for audio with no diarized turns. Bounded by
+        // the same ITEM_TEXT_CHAR_CAP as the flat text: the turns re-render the
+        // same transcript, so without this cap one long segment's turns would
+        // defeat the per-item prompt budget the flat-text cap exists to enforce.
+        prompt.push_str(&truncate_chars(
+            &render_speaker_turns(&item.speaker_turns),
+            ITEM_TEXT_CHAR_CAP,
+        ));
+        prompt.push('\n');
     }
 
     prompt
@@ -367,6 +474,15 @@ pub async fn derive_activities(
     for activity in &batch.activities {
         // Resolve evidence refs that are actually present in the window, dedup,
         // and pull each capture time.
+        // The engine-nominated headline tag, kept only if it resolves to one of
+        // this Activity's own evidence tags (else the store falls back to the
+        // earliest frame).
+        let headline_tag = activity
+            .headline_ref
+            .as_deref()
+            .and_then(parse_ref)
+            .map(|(subject_type, subject_id)| item_tag(subject_type, subject_id));
+
         let mut evidence: Vec<NewActivityEvidence> = Vec::new();
         let mut seen: std::collections::HashSet<(String, i64)> = std::collections::HashSet::new();
         let mut captured_at_values: Vec<i64> = Vec::new();
@@ -387,6 +503,7 @@ pub async fn derive_activities(
                 subject_type: subject_type.to_string(),
                 subject_id,
                 captured_at_ms: Some(captured_at),
+                is_headline: headline_tag.as_deref() == Some(tag.as_str()),
             });
         }
 
@@ -450,12 +567,32 @@ pub async fn derive_activities(
 const CONCLUSION_PREAMBLE_BASE: &str = "You read a list of a single user's recent Activity episodes \
 (each with an id, a title, a one or two sentence summary, a capture time, and an optional category) \
 and distill open-ended, plain-language Conclusion statements about the user. A Conclusion is a \
-natural-language belief such as \"Has been increasingly interested in Apple\" or \"Prefers async \
-communication\" — NOT a fixed subject+attribute+value row and NOT a tag. Each Conclusion is ABOUT a \
+natural-language belief such as \"Has been increasingly interested in Apple\", \"Prefers async \
+communication\", or \"Checks Slack first thing in the morning\" (a recurring-habit belief under a \
+naturally-coined subject like \"Morning routine\") — NOT a fixed subject+attribute+value row and NOT \
+a tag. Recurring daily habits and routines are welcome as ordinary Conclusions. For routines about \
+focus or attention, state WHEN focused work tends to happen as a neutral observation of the user's \
+rhythm — never a judgment about productivity, and never praise or criticism. Each Conclusion is ABOUT a \
 Subject: a short grouping handle like \"Apple\" or \"async communication\". Ground every Conclusion \
 in evidence: list the Activity ids that SUPPORT it, and (only when an Activity genuinely cuts \
 against it) the Activity ids that CONTRADICT it. Only reference Activity ids that appear in the \
-input. Prefer a few well-supported Conclusions over many flimsy ones. Return the structured result.";
+input. Prefer a few well-supported Conclusions over many flimsy ones. When a KNOWN SUBJECTS list \
+is provided and a Conclusion is about one of those handles, reuse that handle VERBATIM as its \
+subject so it reinforces the existing subject; only invent a new handle for a genuinely new \
+subject. Split a compound statement into one Conclusion per DISTINCT claim that can independently \
+gain evidence / be confirmed / dismissed / fade — NOT one per proper noun. For example, \"Plays \
+Genshin Impact via a Windows VM and watches Marvel Rivals / OW2 streams\" becomes THREE Conclusions \
+under subject \"Gaming\": one that they play Genshin Impact (on a Windows VM), one that they \
+play/are interested in 007 First Light, and one that they watch gaming streams (Marvel Rivals / \
+OW2) — each carrying only its own supporting Activity ids. When a KNOWN SUBJECTS entry lists an \
+existing conclusion (shown as `id: statement`) that restates the belief you are forming, set that \
+belief's `reinforces_id` to that conclusion's id so it reinforces the existing belief. Otherwise \
+leave `reinforces_id` unset (a genuinely new belief). If an existing conclusion shown in KNOWN \
+SUBJECTS is now WRONG in light of the evidence and this belief replaces it, set that belief's \
+`supersedes_id` to the wrong conclusion's id. `supersedes_id` composes with `reinforces_id` (you \
+may reinforce the correct sibling and supersede the wrong one in the same belief). Cite it ONLY \
+for a genuinely wrong existing belief, never for a merely weaker or older one. Return the \
+structured result.";
 
 /// The full Conclusion-distillation preamble the engine sees: the **soft**
 /// Sensitive Category Guardrail instruction (#96) prepended to
@@ -495,6 +632,15 @@ pub struct DistilledConclusion {
     /// Activity ids that contradict the Conclusion (usually empty).
     #[serde(default)]
     pub contradict_refs: Vec<i64>,
+    /// The `id` of an existing conclusion (from a KNOWN SUBJECTS entry) this belief
+    /// reinforces, when it restates one already listed; unset (None) for a new belief.
+    #[serde(default)]
+    pub reinforces_id: Option<i64>,
+    /// The `id` of an existing conclusion (from a KNOWN SUBJECTS entry) this belief
+    /// SUPERSEDES — a genuinely WRONG existing belief this one replaces (ADR 0046).
+    /// Composes with `reinforces_id`; unset (None) unless replacing a wrong belief.
+    #[serde(default)]
+    pub supersedes_id: Option<i64>,
 }
 
 /// The structured batch the engine returns for one distillation pass.
@@ -522,16 +668,29 @@ pub struct ConclusionDistillationOutcome {
 
 /// Render the distillation prompt: one line per Activity (id, time, category,
 /// title) plus its truncated summary.
-fn build_distillation_prompt(activities: &[capture_types::Activity]) -> String {
+fn build_distillation_prompt(
+    activities: &[capture_types::Activity],
+    local_offset_ms: Option<i64>,
+) -> String {
     let now_ms = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64;
+    // Render every time in the user's local wall clock when the offset is known,
+    // else fall back to UTC (unchanged legacy behavior).
+    let fmt = |ms: i64| match local_offset_ms {
+        Some(offset) => format_local_ms(ms, offset),
+        None => format_utc_ms(ms),
+    };
+    let time_note = match local_offset_ms {
+        Some(offset) => format!("Times are local ({}).", offset_label(offset / 60_000)),
+        None => "All times are UTC.".to_string(),
+    };
     let mut prompt = String::new();
-    prompt.push_str(
+    prompt.push_str(&format!(
         "Below is a list of the user's recent Activity episodes, newest first. Each is tagged with \
-its numeric Activity id and its start time. All times are UTC. Distill open-ended Conclusion \
+its numeric Activity id and its start time. {time_note} Distill open-ended Conclusion \
 statements about the user and reference the Activity ids that are each Conclusion's supporting (and \
 any contradicting) evidence. Return DistilledConclusionBatch.\n\n",
-    );
-    prompt.push_str(&format!("Current time: {}\n", format_utc_ms(now_ms)));
+    ));
+    prompt.push_str(&format!("Current time: {}\n", fmt(now_ms)));
     prompt.push_str(&format!("Activities ({}):\n\n", activities.len()));
 
     for activity in activities {
@@ -542,7 +701,7 @@ any contradicting) evidence. Return DistilledConclusionBatch.\n\n",
         prompt.push_str(&format!(
             "[id={}] t={} category={category} title={}\n",
             activity.id,
-            format_utc_ms(activity.started_at_ms),
+            fmt(activity.started_at_ms),
             activity.title.trim()
         ));
         let summary = truncate_chars(activity.summary.trim(), ACTIVITY_SUMMARY_CHAR_CAP);
@@ -585,6 +744,8 @@ pub(crate) fn category_label(category: ActivityCategory) -> &'static str {
 pub async fn distill_conclusions(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
+    app_handle: &tauri::AppHandle,
+    subject_vectors: &SubjectVectorStore,
 ) -> Result<ConclusionDistillationOutcome, String> {
     let activities = store
         .activities_for_distillation(DISTILLATION_ACTIVITY_LIMIT)
@@ -629,8 +790,12 @@ pub async fn distill_conclusions(
     // Soft guardrail (#96): the engine sees the Sensitive Category Guardrail
     // instruction prepended to the base preamble — it must not form conclusions
     // about health, sexuality, religion, politics, or similar intimate domains.
+    // Local-clock offset (Slice 2/3): read once, thread into the prompt (local
+    // Activity times) and the Recurrence Digest below. None = never stamped → UTC.
+    let offset_min = store.local_offset_minutes().await.map_err(|e| e.to_string())?;
+    let offset_ms = offset_min.map(|m| m * 60_000);
     let preamble = conclusion_preamble();
-    let mut prompt = build_distillation_prompt(&activities);
+    let mut prompt = build_distillation_prompt(&activities, offset_ms);
     // Prepend the USER-AUTHORED CONTEXT block (#107): standing statements the user
     // wrote about themselves, fed as authoritative steering context (distinct from
     // derived Activity evidence). Appended context only — it does not touch the
@@ -642,6 +807,99 @@ pub async fn distill_conclusions(
     // touch the seedQuery / window text. The deterministic resurface gate at the
     // persist site is the hard backstop for when the engine ignores this.
     prompt.push_str(&build_dismissed_conclusions_block(&dismissals));
+    // KNOWN SUBJECTS block (slices 5/6): feed the engine the subject handles the
+    // user already has so it reuses one VERBATIM (which then reinforces the
+    // canonical Subject row via the subject-only upsert) instead of coining a
+    // reworded duplicate. The candidate set is the UNION of three sources, with the
+    // LLM as the matcher over all of them:
+    //   * a recency floor — the newest distinct handles, always included;
+    //   * the LEXICAL leg — existing Subjects whose name/statements share words with
+    //     the recent Activity text (model-free, no embedding-backfill lag); and
+    //   * Mode 1 (semantic) — when a Semantic Search model is installed, the
+    //     window's Activities embedded and KNN'd against the stored Subject Vectors
+    //     for non-lexically-related handles (e.g. "Apple" ↔ "iPhone").
+    // The recency floor + lexical leg are load-bearing: a Subject created by a recent
+    // distillation is not embedded into the Subject Vectors until the backfill worker
+    // runs *after* it, so semantic KNN structurally cannot surface the freshest
+    // Subjects — exactly the ones the next distillation re-derives and duplicates.
+    // The lexical leg catches the common case (a reworded duplicate shares words) with
+    // no model at all, so it works in the default/prod config too. Unioning (not the
+    // old `semantic OR recency` either/or, whose non-empty semantic set suppressed the
+    // fallback and let a fresh Subject get reworded) closes the gap. Appended steering
+    // context (like the authored / dismissed blocks); it does not touch the Activity
+    // list above.
+    let activity_query = activities
+        .iter()
+        .map(|activity| format!("{} {}", activity.title.trim(), activity.summary.trim()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lexical_handles = store
+        .list_subject_handles_by_lexical_overlap(&activity_query, KNOWN_SUBJECTS_LEXICAL_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    let semantic_candidates =
+        super::subject_candidates::select_semantic_subject_candidates(
+            app_handle,
+            subject_vectors,
+            &activities,
+        )
+        .await;
+    let recency_handles = store
+        .list_subject_handles_by_recency(KNOWN_SUBJECTS_FALLBACK_LIMIT)
+        .await
+        .map_err(|error| error.to_string())?;
+    // Related = lexical first (most precise for dedup), then semantic. merge_known_subjects
+    // leads with the recency floor, then these related handles (so an OLD lexical/semantic
+    // duplicate survives the char cap ahead of the older recency tail), then the rest of
+    // recency. Dedup is case-insensitive across all three.
+    let mut related = lexical_handles;
+    related.extend(semantic_candidates);
+    let known_subjects =
+        super::subject_candidates::merge_known_subjects(recency_handles, related);
+    // Per-belief reinforce (ADR 0043): show each candidate subject's existing
+    // conclusions as `id: statement` lines so the engine can cite the exact belief it
+    // reinforces via `reinforces_id`. Tuples arrive confidence-desc within a subject.
+    let subject_conclusions = store
+        .list_conclusions_for_subjects(&known_subjects, KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut conclusions_by_subject: HashMap<String, Vec<(i64, String)>> = HashMap::new();
+    for (subject, id, statement, _confidence) in &subject_conclusions {
+        conclusions_by_subject
+            .entry(subject.clone())
+            .or_default()
+            .push((*id, statement.clone()));
+    }
+    // The ids actually shown to the model — a `reinforces_id` naming anything else was
+    // hallucinated and is dropped to None at the persist site below.
+    let shown_ids: std::collections::HashSet<i64> =
+        subject_conclusions.iter().map(|(_, id, _, _)| *id).collect();
+    prompt.push_str(&build_known_subjects_block(
+        &known_subjects,
+        &conclusions_by_subject,
+    ));
+    // RECURRENCE DIGEST (behavioral routines): a compact, self-filtered summary of
+    // recurring time-of-day patterns over the trailing window, appended as steering
+    // context so the engine can form routine-shaped Conclusions. The digest is empty
+    // (no block) when the window shows no recurrence; counted into input_tokens below.
+    let digest_now = now_ms();
+    let window_start = app_infra::user_context::recurrence_digest_window_start_ms(digest_now);
+    let digest_activities = store
+        .list_activities_in_range(window_start, digest_now)
+        .await
+        .map_err(|e| e.to_string())?;
+    let digest = app_infra::user_context::build_recurrence_digest(
+        &digest_activities,
+        offset_ms.unwrap_or(0),
+        digest_now,
+    );
+    if !digest.is_empty() {
+        let tz_line = match offset_ms {
+            Some(o) => format!("Times below are local ({}).", offset_label(o / 60_000)),
+            None => "Times below are UTC.".to_string(),
+        };
+        prompt.push_str(&format!("\n{tz_line}\n{digest}\n"));
+    }
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
     let batch: DistilledConclusionBatch = ai_engine::extract_with_preamble::<
@@ -722,6 +980,22 @@ pub async fn distill_conclusions(
                 gate_drops.resurface_blocked += 1;
                 continue;
             }
+            // Resurface bar cleared. ADR 0046: for a SUPERSEDE dismissal (a machine
+            // retirement) the old belief was right after all — flip the RETAINED
+            // superseded row back to visible with its history rather than forming a
+            // duplicate. A user Dismiss (source='user') keeps today's behavior: fall
+            // through to form a new row. If no superseded row is actually flipped
+            // (e.g. already cleared), fall through to normal formation too.
+            if dismissal.source == "supersede" {
+                let flipped = store
+                    .resurface_superseded(subject, statement)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if flipped {
+                    upserted += 1;
+                    continue;
+                }
+            }
         }
 
         // started / last_supported = the most recent supporting Activity time
@@ -754,10 +1028,20 @@ pub async fn distill_conclusions(
             });
         }
 
+        // Per-belief reinforce (ADR 0043): forward the cited id only if we actually
+        // showed it to the model — a hallucinated / not-shown id becomes None. The
+        // store re-validates subject/dismissed defensively, so this is just "don't
+        // forward an id we never presented".
+        let reinforces_id = conclusion.reinforces_id.filter(|id| shown_ids.contains(id));
+        // Supersede (ADR 0046): forward the cited id only if we actually showed it
+        // — same drop-hallucinated rule as reinforces_id. The store enforces
+        // same-subject / not-pinned / self-block / retire-only-downward strength.
+        let supersedes_id = conclusion.supersedes_id.filter(|id| shown_ids.contains(id));
+
         // Single transaction: upsert (with the ratcheted confidence) + evidence
         // replacement commit/roll back together, so an error between them can
         // never leave a Conclusion with stale or zero evidence (#14).
-        store
+        let outcome = store
             .upsert_conclusion_with_evidence(
                 NewConclusion {
                     subject: subject.to_string(),
@@ -774,9 +1058,19 @@ pub async fn distill_conclusions(
                 support_refs.len(),
                 contradict_refs.len(),
                 evidence,
+                reinforces_id,
+                supersedes_id,
             )
             .await
             .map_err(|error| error.to_string())?;
+        // Count what the optional supersede did (ADR 0046 observability). These are
+        // OUTCOME counters, not withholdings — the citing belief still persisted.
+        match outcome.supersede {
+            SupersedeOutcome::Retired => gate_drops.superseded += 1,
+            SupersedeOutcome::Degraded => gate_drops.supersede_degraded += 1,
+            SupersedeOutcome::Blocked => gate_drops.supersede_blocked += 1,
+            SupersedeOutcome::None => {}
+        }
         upserted += 1;
     }
 
@@ -854,18 +1148,124 @@ fn build_dismissed_conclusions_block(dismissals: &[DismissalState]) -> String {
     }
     let mut block = String::new();
     block.push_str(
-        "\nDISMISSED CONCLUSIONS — the user already REJECTED each belief below as wrong (a \
-correction they made). Do NOT reconstitute, restate, or paraphrase any of these unless there is \
-substantially MORE and NEWER Activity evidence than before that genuinely rebuilds it; never \
-re-form one from the same evidence that was already rejected. When in doubt, leave a dismissed \
-belief out.\n\n",
+        "\nDISMISSED CONCLUSIONS — each belief below was already removed: either the user REJECTED \
+it as wrong, or a prior pass ALREADY REPLACED it with a correction (marked per row). Do NOT \
+reconstitute, restate, or paraphrase any of these unless there is substantially MORE and NEWER \
+Activity evidence than before that genuinely rebuilds it; never re-form one from the same evidence \
+that was already removed. When in doubt, leave a removed belief out.\n\n",
     );
     for dismissal in dismissals {
+        // ADR 0046: supersede rows are machine corrections — present them as
+        // "already replaced" rather than the user's "rejected".
+        let marker = if dismissal.source == "supersede" {
+            "already replaced"
+        } else {
+            "rejected"
+        };
         block.push_str(&format!(
-            "- subject={} statement={}\n",
+            "- ({marker}) subject={} statement={}\n",
             dismissal.subject.trim(),
             dismissal.statement.trim()
         ));
+    }
+    block
+}
+
+/// How many recency-ordered handles Mode 2 (no Semantic Search model, or an empty
+/// semantic pass) pulls from the store as the fallback candidate set. The real
+/// bound on what reaches the prompt is [`KNOWN_SUBJECTS_CHAR_CAP`]; this just caps
+/// the store read so a user with thousands of Subjects does not over-fetch.
+const KNOWN_SUBJECTS_FALLBACK_LIMIT: i64 = 200;
+
+/// How many lexical-overlap candidate handles the model-free leg contributes to the
+/// KNOWN SUBJECTS union per distillation. The leg ranks ALL existing Subjects by
+/// shared-word relevance to the recent Activity text and keeps this many best; the
+/// real bound on the prompt is [`KNOWN_SUBJECTS_CHAR_CAP`]. Kept modest so a wide,
+/// topically-scattered window cannot flood the block with weak lexical matches.
+const KNOWN_SUBJECTS_LEXICAL_LIMIT: i64 = 20;
+
+/// Total char budget for the KNOWN SUBJECTS block (slices 5/6). Each handle now
+/// carries its existing conclusions as indented `id: statement` lines, so the cap
+/// budgets those lines too (bumped from 4_000 accordingly). Handles are short but
+/// their conclusion lines are not; a big-context cloud LLM effectively sees every
+/// candidate, while a small-context local LLM is recency/relevance-bounded by the cap
+/// (the accepted worst case — the most-recent/most-relevant handles lead). Calibration-
+/// tunable. A subject whose full block (handle + conclusion lines) would overflow
+/// degrades to handle-only.
+const KNOWN_SUBJECTS_CHAR_CAP: usize = 8_000;
+
+/// Per-subject cap on how many existing conclusions are shown under a KNOWN SUBJECTS
+/// handle (confidence-desc). Calibration-tunable, like [`KNOWN_SUBJECTS_CHAR_CAP`].
+const KNOWN_SUBJECTS_CONCLUSIONS_PER_SUBJECT_CAP: i64 = 12;
+
+/// Render the KNOWN SUBJECTS prompt block (slices 5/6): the candidate Subject
+/// handles the user already has, fed to the engine with an instruction to reuse a
+/// handle VERBATIM as a Conclusion's `subject` when the belief is about that
+/// subject (so a reworded distillation reinforces the canonical Subject row via the
+/// subject-only upsert instead of splitting it into a near-duplicate), and to coin
+/// a new handle only for a genuinely new subject. Handles arrive most-relevant /
+/// newest-first and are kept until [`KNOWN_SUBJECTS_CHAR_CAP`] is reached (the rest
+/// dropped). Empty (no trailing block) when there are no candidate handles, so a
+/// fresh dossier's prompt is unchanged — the same convention as the authored /
+/// dismissed blocks.
+fn build_known_subjects_block(
+    handles: &[String],
+    conclusions_by_subject: &std::collections::HashMap<String, Vec<(i64, String)>>,
+) -> String {
+    // Case-insensitive lookup: subjects come from the same store as the handles, but
+    // match defensively so a casing drift never silently hides a subject's conclusions.
+    let lookup = |handle: &str| -> Option<&Vec<(i64, String)>> {
+        conclusions_by_subject
+            .iter()
+            .find(|(subject, _)| subject.eq_ignore_ascii_case(handle))
+            .map(|(_, conclusions)| conclusions)
+    };
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut used = 0usize;
+    for handle in handles {
+        let handle = handle.trim();
+        if handle.is_empty() {
+            continue;
+        }
+        let handle_line = format!("- {handle}\n");
+        // The full block for this subject = handle line + its indented conclusion lines.
+        let conclusion_lines: String = lookup(handle)
+            .map(|conclusions| {
+                conclusions
+                    .iter()
+                    .map(|(id, statement)| format!("    {id}: {}\n", statement.trim()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let full = format!("{handle_line}{conclusion_lines}");
+        if used + full.chars().count() <= KNOWN_SUBJECTS_CHAR_CAP || lines.is_empty() {
+            used += full.chars().count();
+            lines.push(full);
+            continue;
+        }
+        // Full block overflows: degrade to handle-only if that alone still fits, else stop.
+        if used + handle_line.chars().count() <= KNOWN_SUBJECTS_CHAR_CAP {
+            used += handle_line.chars().count();
+            lines.push(handle_line);
+        }
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+
+    let mut block = String::new();
+    block.push_str(
+        "\nKNOWN SUBJECTS — these are subject handles the user already has, each followed by its \
+existing conclusions as indented `id: statement` lines. When a Conclusion you form is about one of \
+these handles, reuse the handle VERBATIM (exactly as written below) as that Conclusion's subject so \
+it reinforces the existing subject rather than creating a reworded duplicate. When one of the listed \
+`id: statement` conclusions restates the belief you are forming, set that belief's `reinforces_id` \
+to that id so it reinforces that exact existing belief. Only coin a NEW handle for a genuinely new \
+subject that is not in this list.\n\n",
+    );
+    for line in lines {
+        block.push_str(&line);
     }
     block
 }
@@ -1049,6 +1449,33 @@ mod tests {
     }
 
     #[test]
+    fn supersedes_id_defaults_to_none_when_absent() {
+        // ADR 0046: a draft with no supersedes_id (the common case) parses to None,
+        // exactly like reinforces_id — the `#[serde(default)]` must hold.
+        let json = r#"{"subject":"Rust","statement":"Rust is compiled","support_refs":[1,2]}"#;
+        let parsed: DistilledConclusion = serde_json::from_str(json).expect("parse");
+        assert_eq!(parsed.supersedes_id, None);
+        assert_eq!(parsed.reinforces_id, None);
+        // And it round-trips when present.
+        let with = r#"{"subject":"Rust","statement":"x","support_refs":[1],"supersedes_id":7}"#;
+        let parsed: DistilledConclusion = serde_json::from_str(with).expect("parse");
+        assert_eq!(parsed.supersedes_id, Some(7));
+    }
+
+    #[test]
+    fn dismissed_block_marks_supersede_rows_as_already_replaced() {
+        // ADR 0046 Slice 3H: user Dismiss rows read as "rejected", machine
+        // supersede rows as "already replaced"; both stay in the block.
+        let mut user = dismissal("Rust", "Rust is interpreted", "1,2", 2);
+        user.source = "user".to_string();
+        let mut sup = dismissal("Go", "Go has classes", "3,4", 2);
+        sup.source = "supersede".to_string();
+        let block = build_dismissed_conclusions_block(&[user, sup]);
+        assert!(block.contains("(rejected) subject=Rust"));
+        assert!(block.contains("(already replaced) subject=Go"));
+    }
+
+    #[test]
     fn filter_known_refs_drops_unknown_and_dedups() {
         let valid: std::collections::HashSet<i64> = [1, 2, 3].into_iter().collect();
         // 9 is not in the set; the second `2` is a duplicate; order preserved.
@@ -1065,6 +1492,7 @@ mod tests {
             evidence_fingerprint: fingerprint.to_string(),
             evidence_activity_count: count,
             dismissed_at_ms: 1_000,
+            source: "user".to_string(),
         }
     }
 
@@ -1150,6 +1578,93 @@ mod tests {
     }
 
     #[test]
+    fn known_subjects_block_is_empty_without_handles() {
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        assert!(build_known_subjects_block(&[], &empty).is_empty());
+        // All-blank handles also yield no block (prompt unchanged).
+        assert!(build_known_subjects_block(&["   ".to_string()], &empty).is_empty());
+    }
+
+    #[test]
+    fn known_subjects_block_renders_handles_and_header() {
+        let handles = vec!["Apple".to_string(), "async communication".to_string()];
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        let block = build_known_subjects_block(&handles, &empty);
+        assert!(block.contains("KNOWN SUBJECTS"));
+        // The reuse-verbatim instruction frames the block.
+        assert!(block.contains("VERBATIM"));
+        assert!(block.contains("reinforces the existing subject"));
+        // One `- {handle}` line per handle, in order.
+        assert!(block.contains("- Apple"));
+        assert!(block.contains("- async communication"));
+    }
+
+    #[test]
+    fn known_subjects_block_nests_conclusions_in_order() {
+        let handles = vec!["Apple".to_string()];
+        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        // Confidence-desc order is the caller's job; the block preserves push order.
+        map.insert(
+            "Apple".to_string(),
+            vec![
+                (7, "Interested in Apple silicon".to_string()),
+                (9, "Follows Apple keynotes".to_string()),
+            ],
+        );
+        let block = build_known_subjects_block(&handles, &map);
+        assert!(block.contains("- Apple\n"));
+        // Indented `id: statement` lines nested under the handle, in order.
+        let first = block.find("    7: Interested in Apple silicon").unwrap();
+        let second = block.find("    9: Follows Apple keynotes").unwrap();
+        assert!(first < second, "conclusion lines keep their given order");
+        // The instruction explains the reinforces-by-id semantics.
+        assert!(block.contains("reinforces_id"));
+    }
+
+    #[test]
+    fn known_subjects_block_degrades_overflowing_subject_to_handle_only() {
+        // Two subjects, each with one very long conclusion line. Sized so the first
+        // subject's full block fits but the second's conclusion line overflows the cap,
+        // forcing the second down to handle-only.
+        let long = "x".repeat(KNOWN_SUBJECTS_CHAR_CAP * 3 / 4);
+        let handles = vec!["First".to_string(), "Second".to_string()];
+        let mut map: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        map.insert("First".to_string(), vec![(1, long.clone())]);
+        map.insert("Second".to_string(), vec![(2, long)]);
+        let block = build_known_subjects_block(&handles, &map);
+        // First subject keeps its conclusion line...
+        assert!(block.contains("    1: xxx"), "first subject's conclusion shown");
+        // ...but the second degrades to handle-only (its `2:` line dropped).
+        assert!(block.contains("- Second\n"), "second handle still present");
+        assert!(
+            !block.contains("    2: "),
+            "overflowing subject degrades to handle-only"
+        );
+    }
+
+    #[test]
+    fn known_subjects_block_respects_char_cap() {
+        // Many handles; the block stays bounded by the cap (plus the header + the
+        // single over-budget line the lines.is_empty() guard allows once).
+        let handles: Vec<String> = (0..2_000).map(|i| format!("subject-{i:05}")).collect();
+        let empty: std::collections::HashMap<String, Vec<(i64, String)>> = HashMap::new();
+        let block = build_known_subjects_block(&handles, &empty);
+        assert!(block.contains("KNOWN SUBJECTS"));
+        assert!(
+            block.chars().count() < KNOWN_SUBJECTS_CHAR_CAP + 700,
+            "block stays bounded by the char cap (+header/one-line slack)"
+        );
+    }
+
+    #[test]
+    fn conclusion_preamble_instructs_reuse_of_known_subject_handles() {
+        let preamble = conclusion_preamble();
+        assert!(preamble.contains("KNOWN SUBJECTS"));
+        assert!(preamble.contains("reuse that handle VERBATIM"));
+        assert!(preamble.contains("genuinely new subject"));
+    }
+
+    #[test]
     fn resurface_gate_drops_same_evidence_and_below_bar() {
         // The fresh fingerprint for the same evidence set matches the dismissal's,
         // so the same-evidence drop fires regardless of count.
@@ -1181,6 +1696,251 @@ mod tests {
         );
         assert!(
             confidence::initial_confidence(3, 1) < confidence::initial_confidence(3, 0)
+        );
+    }
+
+    // === ADR 0050: source-aware, name-blind audio derivation ================
+
+    /// Build a minimal audio [`CaptureWindowItem`] for the prompt-builder tests.
+    fn audio_item(
+        id: i64,
+        t: i64,
+        text: &str,
+        source: &str,
+        turns: Vec<(i64, String)>,
+    ) -> app_infra::CaptureWindowItem {
+        app_infra::CaptureWindowItem {
+            subject_type: "audio_segment".to_string(),
+            subject_id: id,
+            captured_at_ms: t,
+            text: text.to_string(),
+            app_label: None,
+            url: None,
+            source_kind: Some(source.to_string()),
+            speaker_turns: turns,
+        }
+    }
+
+    #[test]
+    fn speaker_turns_map_clusters_to_a_b_deterministically() {
+        // Two distinct cluster ids → Speaker A / Speaker B in first-appearance
+        // order; a repeat of the first cluster reuses "Speaker A".
+        let rendered = render_speaker_turns(&[
+            (42, "hello".to_string()),
+            (7, "hi there".to_string()),
+            (42, "how are you".to_string()),
+        ]);
+        assert_eq!(
+            rendered,
+            "Speaker A: hello\nSpeaker B: hi there\nSpeaker A: how are you\n"
+        );
+        // Empty / whitespace-only turns render nothing.
+        assert!(render_speaker_turns(&[]).is_empty());
+        assert!(render_speaker_turns(&[(1, "   ".to_string())]).is_empty());
+    }
+
+    #[test]
+    fn whitespace_turn_consumes_no_speaker_label() {
+        // Invariant 3 (ADR 0050): a whitespace-only turn is skipped BEFORE the
+        // A/B label index is computed, so it never burns a Speaker slot on a
+        // LATER distinct cluster. Cluster 1 is whitespace → gets NO label; the
+        // first REAL voice (cluster 2) is still Speaker A, not Speaker B.
+        assert_eq!(
+            render_speaker_turns(&[(1, "   ".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hi\n"
+        );
+        // Contrast: a REAL first turn does take Speaker A, pushing the next
+        // distinct cluster to Speaker B — proving the label index tracks the
+        // order of real (non-whitespace) turns.
+        assert_eq!(
+            render_speaker_turns(&[(1, "hey".to_string()), (2, "hi".to_string())]),
+            "Speaker A: hey\nSpeaker B: hi\n"
+        );
+    }
+
+    #[test]
+    fn source_tag_maps_only_known_audio_sources() {
+        assert_eq!(source_tag("audio_segment", Some("microphone")), Some("you"));
+        assert_eq!(
+            source_tag("audio_segment", Some("system_audio")),
+            Some("other-side")
+        );
+        // Unknown / absent source, and any non-audio subject, get no tag.
+        assert_eq!(source_tag("audio_segment", None), None);
+        assert_eq!(source_tag("audio_segment", Some("bogus")), None);
+        assert_eq!(source_tag("frame", Some("microphone")), None);
+    }
+
+    #[test]
+    fn build_prompt_tags_source_and_renders_anonymous_turns() {
+        let window = CaptureWindow {
+            start_ms: 1_000,
+            end_ms: 2_000,
+            items: vec![
+                audio_item(
+                    1,
+                    1_100,
+                    "let me walk you through it",
+                    "microphone",
+                    vec![(10, "let me walk you through it".to_string())],
+                ),
+                audio_item(
+                    2,
+                    1_200,
+                    "sounds good thanks",
+                    "system_audio",
+                    vec![(20, "sounds good".to_string()), (21, "thanks".to_string())],
+                ),
+            ],
+        };
+        let prompt = build_prompt(&window);
+        // The mic item is tagged `you`; the system-audio item `other-side`.
+        assert!(prompt.contains("[a1] t="));
+        assert!(prompt.contains("source=you"));
+        assert!(prompt.contains("[a2] t="));
+        assert!(prompt.contains("source=other-side"));
+        // The two distinct voices in the system-audio segment render as A/B.
+        assert!(prompt.contains("Speaker A: sounds good"));
+        assert!(prompt.contains("Speaker B: thanks"));
+        // The intro explains the attribution rule.
+        assert!(prompt.contains("never render another party's words as the user's own"));
+    }
+
+    #[test]
+    fn build_prompt_separates_items_with_a_blank_line() {
+        // Invariant 4: consecutive items stay separated by a blank line so the
+        // model can tell one item's body from the next's. This guards the
+        // trailing-newline layout: a future edit that drops a per-item newline
+        // must not silently merge two items into one undelimited block.
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![
+                audio_item(1, 1, "alpha", "microphone", vec![]),
+                audio_item(2, 2, "beta", "microphone", vec![]),
+            ],
+        };
+        let prompt = build_prompt(&window);
+        // First item body ends "...alpha"; the second begins "[a2]". Between them
+        // there must be exactly a blank line — a "\n\n" boundary.
+        let first = prompt.find("alpha").expect("first item body present");
+        let second = prompt.find("[a2]").expect("second item header present");
+        assert!(first < second, "items render in order");
+        assert_eq!(
+            &prompt[first + "alpha".len()..second],
+            "\n\n",
+            "items must be separated by exactly a blank line"
+        );
+    }
+
+    #[test]
+    fn speaker_turns_can_never_carry_a_recognized_person_name() {
+        // NAMES-NEVER-TO-CLOUD guard (ADR 0050). The prompt-builder's turn input is
+        // `(cluster_id, text)` — there is NO name field — so a recognized person's
+        // display name is UNREPRESENTABLE by construction: even if, on device, a
+        // cluster maps to person "Jane Doe", only the anonymous label + the
+        // already-redacted transcript text can ever be rendered. Here neither the
+        // text nor the turns contain the sentinel, and the built prompt must not
+        // either.
+        const SENTINEL: &str = "Jane Doe";
+        let turns = vec![(99, "thanks for the update".to_string())];
+        let rendered = render_speaker_turns(&turns);
+        assert!(rendered.contains("Speaker A: thanks for the update"));
+        assert!(!rendered.contains(SENTINEL), "a name leaked into turns: {rendered}");
+
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![audio_item(1, 5, "thanks for the update", "system_audio", turns)],
+        };
+        let prompt = build_prompt(&window);
+        assert!(!prompt.contains(SENTINEL), "a name leaked into the prompt");
+        // The anonymous label is present; the identity is not.
+        assert!(prompt.contains("Speaker A:"));
+    }
+
+    // === Recurrence Digest / local-clock prompt (Slice 3) ===================
+
+    fn distill_activity(id: i64, started_at_ms: i64, cat: Option<ActivityCategory>) -> capture_types::Activity {
+        capture_types::Activity {
+            id,
+            title: format!("activity {id}"),
+            summary: String::new(),
+            category: cat,
+            focus: None,
+            started_at_ms,
+            ended_at_ms: started_at_ms + 60_000,
+            created_at_ms: started_at_ms,
+            evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn offset_label_formats_signed_hh_mm() {
+        assert_eq!(offset_label(330), "UTC+05:30");
+        assert_eq!(offset_label(-480), "UTC-08:00");
+        assert_eq!(offset_label(0), "UTC+00:00");
+    }
+
+    #[test]
+    fn distillation_prompt_labels_times_local_with_offset() {
+        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
+        let prompt = build_distillation_prompt(&acts, Some(330 * 60_000));
+        assert!(prompt.contains("Times are local (UTC+05:30)."), "prompt: {prompt}");
+        // The rendered digits must actually shift, not just the label: the epoch
+        // instant at +05:30 reads 1970-01-01 05:30 local.
+        assert!(
+            prompt.contains("[id=1] t=1970-01-01 05:30 UTC+05:30"),
+            "prompt: {prompt}"
+        );
+        assert!(!prompt.contains("All times are UTC."));
+
+        // A negative offset shifts backward across the day boundary.
+        let prompt = build_distillation_prompt(&acts, Some(-480 * 60_000));
+        assert!(
+            prompt.contains("[id=1] t=1969-12-31 16:00 UTC-08:00"),
+            "prompt: {prompt}"
+        );
+    }
+
+    #[test]
+    fn distillation_prompt_falls_back_to_utc_without_offset() {
+        let acts = vec![distill_activity(1, 0, Some(ActivityCategory::Creating))];
+        let prompt = build_distillation_prompt(&acts, None);
+        assert!(prompt.contains("All times are UTC."), "prompt: {prompt}");
+        assert!(prompt.contains(" UTC\n") || prompt.contains(" UTC"));
+    }
+
+    #[test]
+    fn preamble_carries_the_observation_posture_invariant() {
+        // Regression guard: the neutral-observation wording for focus routines must
+        // survive verbatim (never a productivity judgment).
+        assert!(conclusion_preamble().contains("neutral observation of the user's rhythm"));
+    }
+
+    #[test]
+    fn diarized_turns_cannot_blow_the_per_item_prompt_budget() {
+        // ITEM_TEXT_CHAR_CAP caps the flat transcript "so a single noisy capture
+        // cannot dominate the prompt budget". The diarized turns re-render the SAME
+        // transcript beneath it; if they were uncapped, one long segment would
+        // defeat the cap. A single long single-speaker segment: its flat text
+        // truncates to ITEM_TEXT_CHAR_CAP, so its turn rendering must be bounded by
+        // the same cap — the item's total transcript contribution stays within a
+        // small multiple of the cap.
+        let long = "lorem ipsum ".repeat(2_000); // ~24k chars
+        let window = CaptureWindow {
+            start_ms: 0,
+            end_ms: 10,
+            items: vec![audio_item(1, 5, &long, "system_audio", vec![(1, long.clone())])],
+        };
+        let prompt = build_prompt(&window);
+        // Fixed intro/header + one item whose flat text AND turn rendering are each
+        // capped at ITEM_TEXT_CHAR_CAP → at most a small multiple of the cap.
+        let budget = 4 * ITEM_TEXT_CHAR_CAP;
+        assert!(
+            prompt.chars().count() <= budget,
+            "one audio item produced a {}-char prompt (budget {budget}); diarized turns bypass ITEM_TEXT_CHAR_CAP",
+            prompt.chars().count()
         );
     }
 }

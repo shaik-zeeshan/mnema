@@ -23,10 +23,10 @@
         <span class="welcome__pulse"></span>
         Welcome
       </span>
-      <h2 id="welcome-title" class="welcome__title">
+      <h1 id="welcome-title" class="welcome__title" tabindex="-1" data-ob-phase-heading>
         Your <em>memory</em>,
         <br />on rewind.
-      </h2>
+      </h1>
       <p class="welcome__tag">
         mnema quietly records your screen so you can scrub back to anything you've
         seen — searchable, local, and yours.
@@ -43,43 +43,112 @@
           onclick={() => c.beginSetup()}
           disabled={c.loading}
         >
-          Begin setup
-          <span class="btn__arrow" aria-hidden="true">→</span>
+          {#if c.loading}
+            <span class="cta__spin" aria-hidden="true"></span>
+            Setting up…
+          {:else}
+            Begin setup
+            <span class="btn__arrow" aria-hidden="true">→</span>
+          {/if}
         </button>
-        <span class="welcome__meta">≈ 60 seconds</span>
+        <span class="welcome__meta">About a minute</span>
       </div>
-      <button
-        type="button"
-        class="welcome__accel"
-        onclick={() => c.applyRecommendedSetup()}
-        disabled={c.loading || c.applyingRecommended}
-      >
-        {#if c.applyingRecommended}
-          Applying…
-        {:else}
-          Use recommended setup →
-        {/if}
-      </button>
+      <div class="welcome__accel-wrap">
+        <button
+          type="button"
+          class="ghost welcome__accel"
+          onclick={() => c.applyRecommendedSetup()}
+          disabled={c.loading || c.applyingRecommended}
+        >
+          {#if c.applyingRecommended}
+            Applying…
+          {:else}
+            Use recommended defaults
+          {/if}
+        </button>
+        <!-- One-line note: the recommended path is the lower-friction route, so it
+             shouldn't read heavier than "Begin setup". Spell out only what differs
+             — it presets sensible options — and reassure nothing records yet. -->
+        <p class="welcome__accel-note">
+          Presets capture, text search, and transcription — you still grant
+          permissions and finish before anything records.
+        </p>
+      </div>
       {#if c.errorMessage}
-        <div class="welcome__err" role="alert">{c.errorMessage}</div>
+        <div class="welcome__err" role="alert">
+          <span>{c.errorMessage}</span>
+          <button
+            type="button"
+            class="ghost welcome__retry"
+            onclick={() => c.load()}
+            disabled={c.loading}
+          >
+            {c.loading ? "Retrying…" : "Retry"}
+          </button>
+        </div>
       {/if}
     </div>
   </section>
 </div>
 
 <style>
+  /* Loading affordance for the "Begin setup" CTA — without it the button only
+     dimmed (no label/spinner change) while `c.loading`, reading as dead. A small
+     accent-on-bg spinner + "Setting up…" label confirms work is in flight,
+     matching the accel button's "Applying…" idiom. */
+  .cta__spin {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--app-bg) 35%, transparent);
+    border-top-color: var(--app-bg);
+    animation: welcome-cta-spin 0.7s linear infinite;
+    flex: 0 0 auto;
+  }
+  @keyframes welcome-cta-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .cta__spin {
+      animation: none;
+    }
+  }
+
   /* Surfaces a failed "Use recommended setup" — without it, a failed privacy-app
      exclusion silently leaves the recommended apps un-excluded (a privacy
      regression). Terminal/green danger tokens. */
   .welcome__err {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
     margin: 12px auto 0;
     max-width: 44ch;
     padding: 10px 14px;
-    font-size: 12px;
+    font-size: var(--text-base);
     line-height: 1.5;
     color: var(--app-danger);
     background: var(--app-danger-bg);
     border: 1px solid var(--app-danger-border);
     border-radius: 8px;
+  }
+
+  /* Recovery affordance: the welcome-phase load (`c.load()`) can fail and would
+     otherwise strand a first-run user with no path forward. Retry re-runs the
+     load; it disables + relabels while in flight via `c.loading`. */
+  .welcome__retry {
+    flex: 0 0 auto;
+    padding: 4px 12px;
+    font-size: var(--text-base);
+    border: 1px solid var(--app-danger-border);
+    border-radius: 6px;
+    color: var(--app-danger);
+  }
+  .welcome__retry:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

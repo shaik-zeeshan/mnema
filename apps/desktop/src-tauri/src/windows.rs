@@ -502,8 +502,8 @@ impl AppWindow {
                 label: "quick-recall",
                 path: "quick-recall",
                 title: "mnema · Quick Recall",
-                inner_size: (820.0, 560.0),
-                min_inner_size: (520.0, 160.0),
+                inner_size: (1120.0, 720.0),
+                min_inner_size: (960.0, 600.0),
                 gated_by_dev_options: false,
                 decorations: false,
                 overlay_title_bar: false,
@@ -1535,16 +1535,28 @@ pub(crate) fn request_graceful_restart_after_update(app: &tauri::AppHandle) {
     request_graceful_exit_with_completion(app, true);
 }
 
-fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_update: bool) {
+/// General-purpose **relaunch** for a settings change that only takes effect
+/// after a restart (e.g. a new capture save directory). UNGUARDED by design:
+/// unlike the update restart (`restart_after_app_update`), which REFUSES while a
+/// recording is active, this always proceeds — the graceful path finalizes any
+/// in-flight capture before `app.restart()`, so the recording is saved, never
+/// lost. Keep these paths separate; do NOT route a settings relaunch through the
+/// update guard.
+#[tauri::command]
+pub fn request_app_relaunch(app_handle: tauri::AppHandle) {
+    request_graceful_exit_with_completion(&app_handle, true);
+}
+
+fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_exit: bool) {
     let exit_state = app.state::<AppExitCoordinatorState>();
-    if !exit_state.begin_exit(restart_after_update) {
+    if !exit_state.begin_exit(restart_after_exit) {
         return;
     }
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        crate::native_capture::debug_log::log_info(if restart_after_update {
-            "starting graceful app restart after update; stopping capture and background workers before unloading cached Local Whisper contexts"
+        crate::native_capture::debug_log::log_info(if restart_after_exit {
+            "starting graceful app relaunch; stopping capture and background workers before unloading cached Local Whisper contexts"
         } else {
             "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
         });
@@ -1599,7 +1611,7 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_u
 
 fn complete_graceful_exit(app: &tauri::AppHandle) {
     let exit_state = app.state::<AppExitCoordinatorState>();
-    let restart_after_update = exit_state.should_restart_after_graceful_exit();
+    let restart_requested = exit_state.should_restart_after_graceful_exit();
     exit_state.mark_final_graceful_exit_ready();
 
     // Release the Windows foreground-change listener (WinEvent hook + its thread)
@@ -1608,9 +1620,9 @@ fn complete_graceful_exit(app: &tauri::AppHandle) {
     #[cfg(target_os = "windows")]
     crate::native_capture::foreground_listener::stop_windows_foreground_listener();
 
-    if restart_after_update {
+    if restart_requested {
         crate::native_capture::debug_log::log_info(
-            "completed graceful app exit; restarting to finish update",
+            "completed graceful app exit; relaunching",
         );
         app.restart();
     }
@@ -1848,6 +1860,14 @@ pub fn quick_recall_suppress_blur_dismiss() {
 #[tauri::command]
 pub fn toggle_main_window_visibility_command(app: tauri::AppHandle) {
     toggle_main_window_visibility(&app);
+}
+
+/// Summon (toggle) the Quick Recall panel from in-app UI — the titlebar
+/// "Search / Recall" affordance. Mirrors what the ⌥Space global shortcut does so
+/// the launcher is discoverable by mouse, not only by chord.
+#[tauri::command]
+pub fn summon_quick_recall_window_command(app: tauri::AppHandle) -> Result<(), String> {
+    toggle_quick_recall_window(&app)
 }
 
 #[tauri::command]

@@ -39,11 +39,18 @@
   // description as supplementary text (mirrors Switch.svelte).
   const labelId = `checkbox-label-${Math.random().toString(36).slice(2, 9)}`;
   const descriptionId = `checkbox-desc-${Math.random().toString(36).slice(2, 9)}`;
+  // Forwarded to the bits-ui button (a labelable <button role="checkbox">) so
+  // the visible <label for> is part of the box's hit target: clicking the text
+  // natively activates the button (which clears any mixed state and fires
+  // onIndeterminateChange via the binding). No JS handler, so keyboard/AT stay
+  // on the button — no duplicate tab stop, no double-toggle.
+  const boxId = `checkbox-${Math.random().toString(36).slice(2, 9)}`;
 </script>
 
 <div class="checkbox-wrapper" class:checkbox-wrapper--disabled={disabled}>
   <BitsCheckbox.Root
     bind:checked
+    id={boxId}
     {disabled}
     bind:indeterminate
     {onCheckedChange}
@@ -72,14 +79,14 @@
     {/snippet}
   </BitsCheckbox.Root>
   {#if label || description}
-    <span class="checkbox-text">
+    <label class="checkbox-text" for={boxId}>
       {#if label}
         <span class="checkbox-label" id={labelId}>{label}</span>
       {/if}
       {#if description}
         <span class="checkbox-description" id={descriptionId}>{description}</span>
       {/if}
-    </span>
+    </label>
   {/if}
 </div>
 
@@ -92,7 +99,7 @@
   }
 
   .checkbox-wrapper--disabled {
-    opacity: 0.4;
+    opacity: var(--app-disabled-opacity);
     pointer-events: none;
   }
 
@@ -110,16 +117,21 @@
     padding: 0;
     cursor: pointer;
     outline: none;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
   }
 
-  :global(.checkbox-box:hover) {
+  :global(.checkbox-box:hover:not([data-disabled])) {
     border-color: var(--app-border-hover);
   }
 
   :global(.checkbox-box:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--app-ring);
+  }
+
+  /* Momentary press cue before the state flips. */
+  :global(.checkbox-box:active:not([data-disabled])) {
+    transform: scale(0.92);
   }
 
   :global(.checkbox-box[data-state="checked"]),
@@ -129,8 +141,8 @@
     box-shadow: 0 0 8px var(--app-accent-glow);
   }
 
-  :global(.checkbox-box[data-state="checked"]:hover),
-  :global(.checkbox-box[data-state="indeterminate"]:hover) {
+  :global(.checkbox-box[data-state="checked"]:hover:not([data-disabled])),
+  :global(.checkbox-box[data-state="indeterminate"]:hover:not([data-disabled])) {
     border-color: var(--app-accent);
   }
 
@@ -152,14 +164,44 @@
     background: var(--app-bg);
   }
 
+  /* The box itself transitions, but the glyph is conditionally mounted, so it
+     used to pop in hard. A short scale/opacity pop on mount makes the check
+     read as appearing rather than blinking on. */
+  .checkbox-check,
+  .checkbox-dash {
+    animation: checkbox-glyph-pop 0.12s ease-out;
+  }
+
+  @keyframes checkbox-glyph-pop {
+    from {
+      transform: scale(0.4);
+      opacity: 0;
+    }
+    to {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .checkbox-check,
+    .checkbox-dash {
+      animation: none;
+    }
+    :global(.checkbox-box) {
+      transition: none;
+    }
+  }
+
   .checkbox-text {
     display: flex;
     flex-direction: column;
     gap: 2px;
+    cursor: pointer;
   }
 
   .checkbox-label {
-    font-size: 13px;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;

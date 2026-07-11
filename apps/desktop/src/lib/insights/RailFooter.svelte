@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tip } from "$lib/components/tooltip";
   // RailFooter — the pinned engine-status line at the bottom of the Insights
   // rail (Insights-rail refactor, Slices 2/3). Mirrors the mockup's `.rail-foot`
   // / `.rail-engine` minimal idiom: a single faint, lowercase line carrying the
@@ -27,14 +28,14 @@
       <Skeleton width="92px" height="9px" radius="5px" muted />
     </span>
   {:else if engineOn}
-    <span class="rail-engine" title="Reasoning Engine is on">
+    <span class="rail-engine" use:tip={"Reasoning Engine is on"}>
       <span class="dot" aria-hidden="true"></span>
       engine
       <span class="sep">·</span>
       <span class="model">{modelLabel || "on"}</span>
     </span>
   {:else}
-    <span class="rail-engine rail-engine--off" title="Reasoning Engine is off">
+    <span class="rail-engine rail-engine--off" use:tip={"Reasoning Engine is off"}>
       <span class="dot" aria-hidden="true"></span>
       engine off
       <span class="sep">·</span>
@@ -55,7 +56,9 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 9.5px;
+    /* 9.5px was below the legible floor for this persistent status line; lift it
+       to 11px (the rest of the line/Enable link inherit, so it reads clearly). */
+    font-size: 11px;
     color: var(--app-text-muted);
   }
   .rail-foot-skeleton {
@@ -96,7 +99,7 @@
     background: transparent;
     padding: 0;
     font: inherit;
-    font-size: 9.5px;
+    font-size: 11px;
   }
   .rail-enable:hover {
     color: var(--app-accent);

@@ -118,6 +118,13 @@ pub enum AgentLoopEvent {
         name: String,
         params: serde_json::Value,
     },
+    /// Provider-reported token usage for one completed completion request within
+    /// the loop. The latest event's `input_tokens + output_tokens` approximates
+    /// the conversation's current context-window occupancy.
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+    },
     /// The loop finished (clean completion or cooperative cancellation).
     Done,
 }
@@ -398,9 +405,18 @@ where
             ))) => {
                 on_event(AgentLoopEvent::Reasoning(reasoning.display_text()));
             }
-            // Remaining bookkeeping items (CompletionCall, FinalResponse,
-            // ToolCallDelta, Final, user/tool-result items) are not surfaced to
-            // the caller.
+            Ok(MultiTurnStreamItem::CompletionCall(call)) => {
+                // rig normalizes zero-valued usage to None (missing provider
+                // metrics), so a Usage event always carries a real report.
+                if let Some(usage) = call.usage {
+                    on_event(AgentLoopEvent::Usage {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                    });
+                }
+            }
+            // Remaining bookkeeping items (FinalResponse, ToolCallDelta, Final,
+            // user/tool-result items) are not surfaced to the caller.
             Ok(_) => {}
             Err(err) => {
                 // Hitting the multi-turn bound is the expected effect of the

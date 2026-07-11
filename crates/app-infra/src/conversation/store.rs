@@ -11,10 +11,11 @@
 //! store stays deterministic. `tool_activities` / `sources` are stored verbatim
 //! as JSON text and parsed back into `serde_json::Value` on read.
 
-use sqlx::{sqlite::SqliteRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteRow, Row};
 
 use capture_types::{AnswerBlock, Conversation, ConversationSummary, ConversationTurn};
 
+use crate::db::CaptureDb;
 use crate::Result;
 
 /// Max characters of the first question kept as a history-list preview.
@@ -23,12 +24,12 @@ const PREVIEW_CHAR_CAP: usize = 140;
 /// SQLite-backed storage for persistent conversations.
 #[derive(Clone)]
 pub struct ConversationStore {
-    pool: SqlitePool,
+    db: CaptureDb,
 }
 
 impl ConversationStore {
-    pub(crate) fn new(pool: SqlitePool) -> Self {
-        Self { pool }
+    pub(crate) fn new(db: CaptureDb) -> Self {
+        Self { db }
     }
 
     /// Insert (or refresh) a conversation row, returning its `conversations.id`.
@@ -58,12 +59,12 @@ impl ConversationStore {
         .bind(title)
         .bind(origin)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
 
         let row = sqlx::query("SELECT id FROM conversations WHERE conversation_id = ?1")
             .bind(conversation_id)
-            .fetch_one(&self.pool)
+            .fetch_one(self.db.write())
             .await?;
         Ok(row.get("id"))
     }
@@ -102,7 +103,7 @@ impl ConversationStore {
             None => None,
         };
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin_write().await?;
 
         // Ensure the conversation exists (and bump its activity stamps). Inlined
         // from `upsert_conversation` so it shares this transaction; the conflict
@@ -191,7 +192,7 @@ impl ConversationStore {
         )
         .bind(limit)
         .bind(offset)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
 
         Ok(rows.into_iter().map(map_summary).collect())
@@ -207,7 +208,7 @@ impl ConversationStore {
              FROM conversations WHERE conversation_id = ?1",
         )
         .bind(conversation_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
 
         let Some(row) = row else {
@@ -268,7 +269,7 @@ impl ConversationStore {
         .bind(provider)
         .bind(model)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(())
     }
@@ -285,7 +286,7 @@ impl ConversationStore {
             "SELECT provider, model FROM conversations WHERE conversation_id = ?1",
         )
         .bind(conversation_id)
-        .fetch_optional(&self.pool)
+        .fetch_optional(self.db.read())
         .await?;
         Ok(row.map(|row| (row.get("provider"), row.get("model"))))
     }
@@ -312,7 +313,7 @@ impl ConversationStore {
         .bind(conversation_id)
         .bind(title)
         .bind(now_ms)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -338,7 +339,7 @@ impl ConversationStore {
         )
         .bind(conversation_id)
         .bind(title)
-        .execute(&self.pool)
+        .execute(self.db.write())
         .await?;
         Ok(result.rows_affected() > 0)
     }
@@ -352,7 +353,7 @@ impl ConversationStore {
              ORDER BY turn_index ASC",
         )
         .bind(conversation_row_id)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         Ok(rows.into_iter().map(map_turn).collect())
     }
@@ -391,7 +392,7 @@ impl ConversationStore {
         )
         .bind(pattern)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(self.db.read())
         .await?;
         Ok(rows.into_iter().map(map_summary).collect())
     }
@@ -400,7 +401,7 @@ impl ConversationStore {
     pub async fn delete_conversation(&self, conversation_id: &str) -> Result<()> {
         sqlx::query("DELETE FROM conversations WHERE conversation_id = ?1")
             .bind(conversation_id)
-            .execute(&self.pool)
+            .execute(self.db.write())
             .await?;
         Ok(())
     }
@@ -409,7 +410,7 @@ impl ConversationStore {
     /// delete every turn then every conversation (children first so it is
     /// correct regardless of FK enforcement).
     pub async fn wipe_all(&self) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.db.begin_write().await?;
         sqlx::query("DELETE FROM conversation_turns")
             .execute(&mut *tx)
             .await?;
@@ -592,7 +593,7 @@ mod tests {
                 .await
                 .expect("conversation test table should be created");
         }
-        ConversationStore::new(pool)
+        ConversationStore::new(CaptureDb::single(pool))
     }
 
     #[test]
@@ -733,7 +734,7 @@ mod tests {
             // The raw column is SQL NULL (no JSON written).
             let blocks_col: Option<String> =
                 sqlx::query("SELECT blocks FROM conversation_turns WHERE turn_index = 0")
-                    .fetch_one(&store.pool)
+                    .fetch_one(store.db.read())
                     .await
                     .expect("fetch row")
                     .get("blocks");

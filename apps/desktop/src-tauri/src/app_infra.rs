@@ -45,7 +45,16 @@ const PROCESSING_WORKER_IDLE_POLL_INTERVAL: Duration = Duration::from_millis(500
 const PROCESSING_WORKER_ERROR_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const HIDDEN_SEGMENT_WORKSPACE_REPAIR_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_CLEANUP_RETRY_INTERVAL: Duration = Duration::from_secs(5 * 60);
-const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(15);
+// Grace period for cooperative (non-abortable) workers to observe the shutdown
+// signal and exit at their next between-jobs check. Queue-backed processing
+// workers are aborted immediately (their in-flight job is reclaimed), so this no
+// longer needs to cover a multi-minute transcription. A worker that's idle or
+// between operations responds in well under a second; one blocked inside a long
+// op (e.g. a user-context LLM distillation) never finishes within any practical
+// window, so we give a short grace and then abort rather than stall quit for it.
+// Every cooperative worker is idempotent/resumable and writes transactionally,
+// so an abort here rolls back cleanly and the work re-runs on next launch.
+const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const MNEMA_CLI_COMMAND_NAME: &str = "mnema";
 const MNEMA_CLI_SIDECAR_NAME: &str = "mnema-cli";
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,12 +135,20 @@ struct BackgroundWorkersControlInner {
     retention_schedule_version: AtomicU64,
     retention_schedule_tx: watch::Sender<u64>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    // Workers whose in-flight unit is a queue-backed Processing Job that
+    // **Processing Job Reclamation** requeues on the next launch. At quit there
+    // is nothing to drain cooperatively — letting them finish the current job
+    // only stalls quit by seconds (a multi-minute transcription up to the
+    // shutdown timeout) for work that gets requeued anyway. These are aborted
+    // immediately instead of awaited.
+    abortable_tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BackgroundWorkerShutdownSummary {
     tracked_tasks: usize,
     timed_out_tasks: usize,
+    aborted_immediately_tasks: usize,
 }
 
 impl Default for BackgroundWorkersControl {
@@ -145,6 +162,7 @@ impl Default for BackgroundWorkersControl {
                 retention_schedule_version: AtomicU64::new(0),
                 retention_schedule_tx,
                 tasks: Mutex::new(Vec::new()),
+                abortable_tasks: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -182,6 +200,24 @@ impl BackgroundWorkersControl {
         tasks.push(handle);
     }
 
+    /// Track a worker whose in-flight unit is a queue-backed Processing Job. At
+    /// graceful shutdown these are aborted immediately rather than awaited,
+    /// since whatever they were mid-flight on is requeued by **Processing Job
+    /// Reclamation** on the next launch. See `abortable_tasks`.
+    pub(crate) fn track_abortable(&self, handle: JoinHandle<()>) {
+        if self.inner.shutdown_requested.load(Ordering::SeqCst) {
+            handle.abort();
+            return;
+        }
+
+        let mut tasks = self
+            .inner
+            .abortable_tasks
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        tasks.push(handle);
+    }
+
     fn begin_shutdown(&self) {
         if self.inner.shutdown_requested.swap(true, Ordering::SeqCst) {
             return;
@@ -192,6 +228,25 @@ impl BackgroundWorkersControl {
 
     async fn shutdown(&self, timeout: Duration) -> BackgroundWorkerShutdownSummary {
         self.begin_shutdown();
+
+        // Abort queue-backed processing workers up front: their current job is
+        // requeued by reclamation, so there is nothing to drain — awaiting them
+        // only stalls quit while a job (up to a multi-minute transcription)
+        // finishes. abort() cancels at the next await point; we still await the
+        // join so nothing is executing when reclamation runs afterward.
+        let mut abortable_tasks = {
+            let mut tasks = self
+                .inner
+                .abortable_tasks
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            std::mem::take(&mut *tasks)
+        };
+        let aborted_immediately_tasks = abortable_tasks.len();
+        for handle in abortable_tasks.drain(..) {
+            handle.abort();
+            let _ = handle.await;
+        }
 
         let mut tasks = {
             let mut tasks = self
@@ -227,6 +282,7 @@ impl BackgroundWorkersControl {
         BackgroundWorkerShutdownSummary {
             tracked_tasks,
             timed_out_tasks,
+            aborted_immediately_tasks,
         }
     }
 }
@@ -1548,6 +1604,7 @@ impl Drop for AppInfraDirectoryLock {
 
 fn desktop_processing_registry(
     app_handle: &tauri::AppHandle,
+    deepgram_auth_status: audio_transcription::providers::DeepgramAuthStatus,
 ) -> Result<
     (
         ::app_infra::ProcessorRegistry,
@@ -1595,6 +1652,16 @@ fn desktop_processing_registry(
                 Arc::new(
                     audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
                 ),
+                Arc::new(audio_transcription::providers::DeepgramProvider::new(
+                    Arc::new(|| {
+                        ::app_infra::load_ai_provider_key(
+                            crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT,
+                        )
+                        .ok()
+                        .flatten()
+                    }),
+                    deepgram_auth_status.clone(),
+                )) as Arc<dyn audio_transcription::TranscriptionProvider>,
             ]),
         )
         .register(::app_infra::SpeakerAnalysisProcessorBackend::from_provider_arcs([
@@ -1639,8 +1706,11 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
             }
         })?;
 
+    let deepgram_auth_status: audio_transcription::providers::DeepgramAuthStatus =
+        Arc::new(Mutex::new(None));
     let (processing_registry, gpu_state) =
-        desktop_processing_registry(&app_handle).map_err(AppInfraInitializeError::Other)?;
+        desktop_processing_registry(&app_handle, deepgram_auth_status.clone())
+            .map_err(AppInfraInitializeError::Other)?;
     let infra = tauri::async_runtime::block_on(
         ::app_infra::AppInfra::initialize_fast_with_processing_registry(
             &resolved_base_dir.base_dir,
@@ -1712,6 +1782,17 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "GPU acceleration state was already initialized".to_string(),
+        ));
+    }
+
+    if !app.manage(crate::transcription_deepgram::DeepgramAuthStatusState(
+        deepgram_auth_status,
+    )) {
+        crate::native_capture::debug_log::log_error(
+            "deepgram auth status state was already initialized; refusing duplicate setup",
+        );
+        return Err(AppInfraInitializeError::Other(
+            "deepgram auth status state was already initialized".to_string(),
         ));
     }
 
@@ -1891,6 +1972,19 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Subject Vector Backfill sweep-loop (slice 4): embeds every distinct,
+    // non-dismissed User-Context Subject into the `user_context_subject_vectors`
+    // table so slice 5's pre-retrieval candidate selection has vectors to KNN
+    // against. Shares the one installed Semantic Search Model with the search
+    // backfill above; inert (silent idle-poll) until a model is installed, then
+    // self-starts retroactively. Spawned here on the deferred-startup seam, never
+    // on the capture hot path.
+    crate::user_context::subject_vector_worker::spawn_user_context_subject_vector_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 
@@ -1913,8 +2007,8 @@ pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri:
         .await;
 
     crate::native_capture::debug_log::log_info(format!(
-        "app infrastructure background worker shutdown completed (tracked_tasks={}, timed_out_tasks={})",
-        summary.tracked_tasks, summary.timed_out_tasks
+        "app infrastructure background worker shutdown completed (tracked_tasks={}, timed_out_tasks={}, aborted_immediately_tasks={})",
+        summary.tracked_tasks, summary.timed_out_tasks, summary.aborted_immediately_tasks
     ));
 
     // Workers are now aborted and awaited, so nothing is executing: reclaim any job a worker was
@@ -2553,7 +2647,10 @@ fn spawn_processing_worker_loop(
             base_dir_display
         ));
     });
-    background_workers.track(handle);
+    // Processing workers pull from the queue-backed Processing Job table, so an
+    // aborted in-flight job is reclaimed (requeued) on next launch. Track them
+    // as abortable so quit doesn't block on the current job finishing.
+    background_workers.track_abortable(handle);
 }
 
 fn spawn_hidden_segment_workspace_repair_worker(
@@ -3684,9 +3781,11 @@ async fn delete_recent_capture_rows(
     started_at: &str,
     ended_at: &str,
 ) -> Result<DeleteRecentCaptureDeletion, String> {
+    // Read-modify-write on the multi-connection Writer Pool: begin with
+    // `BEGIN IMMEDIATE` (via `begin_write`) so the read→write upgrade can't
+    // deadlock two writers, the pattern ADR 0041 standardized everywhere else.
     let mut tx = infra
-        .pool()
-        .begin()
+        .begin_write()
         .await
         .map_err(|error| format!("failed to begin delete transaction: {error}"))?;
 
@@ -5187,7 +5286,7 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
             Arc,
         },
         thread,
@@ -5202,6 +5301,56 @@ mod tests {
     // captured `javascript:`/`file:`/`data:`/`mnema:` URL (or an unparseable
     // string) must be rejected so it can never reach the opener. Pinning the pure
     // gate guards that boundary without a live Tauri opener.
+    // Quit must not stall while a processing worker finishes its current job.
+    // An abortable (queue-backed) worker stuck in a long unit of work has to be
+    // aborted immediately — its in-flight job is reclaimed on next launch — while
+    // a cooperative worker that watches the shutdown signal still drains cleanly.
+    #[test]
+    fn shutdown_aborts_abortable_workers_without_awaiting_their_current_job() {
+        tauri::async_runtime::block_on(async {
+            let control = BackgroundWorkersControl::default();
+
+            // Cooperative worker: observes the shutdown signal and exits promptly.
+            let mut rx = control.subscribe();
+            let cooperative_exited = Arc::new(AtomicBool::new(false));
+            let cooperative_flag = cooperative_exited.clone();
+            control.track(tauri::async_runtime::spawn(async move {
+                let _ = rx.changed().await;
+                cooperative_flag.store(true, Ordering::SeqCst);
+            }));
+
+            // Abortable worker: models a processing worker stuck inside a long
+            // `process_once` that never reaches the top-of-loop shutdown check.
+            // Only abort() ends it.
+            let abortable_finished = Arc::new(AtomicBool::new(false));
+            let abortable_flag = abortable_finished.clone();
+            control.track_abortable(tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                abortable_flag.store(true, Ordering::SeqCst);
+            }));
+
+            let started = Instant::now();
+            let summary = control.shutdown(Duration::from_secs(15)).await;
+            let elapsed = started.elapsed();
+
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "shutdown must not block on the abortable worker's current job: took {elapsed:?}"
+            );
+            assert_eq!(summary.aborted_immediately_tasks, 1);
+            assert_eq!(summary.tracked_tasks, 1);
+            assert_eq!(summary.timed_out_tasks, 0);
+            assert!(
+                !abortable_finished.load(Ordering::SeqCst),
+                "abortable worker must be cancelled mid-job, not run to completion"
+            );
+            assert!(
+                cooperative_exited.load(Ordering::SeqCst),
+                "cooperative worker should observe the shutdown signal and exit"
+            );
+        });
+    }
+
     #[test]
     fn captured_url_open_gate_admits_only_http_and_https() {
         assert!(captured_url_is_openable("https://example.com/x"));

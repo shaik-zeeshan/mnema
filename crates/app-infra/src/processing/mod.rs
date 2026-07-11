@@ -25,6 +25,7 @@ pub use speaker_analysis::{
     SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend, HELPER_TIMEOUT_SECONDS_OPTION,
 };
 pub(crate) use store::map_frame_for_search;
+pub(crate) use store::structured_payload_json_from_row;
 pub(crate) use store::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS;
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,

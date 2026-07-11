@@ -2,18 +2,16 @@
   // SubjectDetail — the drill-in detail surface for a single Subject (#106).
   //
   // A Subject shows its INDIVIDUAL Conclusions — each scored on its OWN
-  // confidence, NOT a single rolled-up sentiment score. Layout:
-  //   1. Subject hero (title + meta pills).
-  //   2. Ranked confidence bars — one compact row per Conclusion (statement +
-  //      a bar filled to its confidence %, bold percentage, trend glyph),
-  //      coloured by cycling the category palette and sorted by confidence;
-  //      faded conclusions (below the display floor) render dimmed. Clicking a
-  //      row selects that Conclusion and drives the inspector.
-  //   3. Master-detail grid: left = conclusions list (statement, ConfidenceBar
-  //      with trend, Pin/Dismiss, "view evidence"); right = sticky Evidence
-  //      Inspector for the selected conclusion (evidence rows + Confidence
-  //      History list, which carries the over-time detail). Faded conclusions
-  //      stay listed with their historical arc.
+  // confidence, NOT a single rolled-up sentiment score. Composition:
+  //   1. Subject hero (title + meta pills + "Ask AI" hand-off).
+  //   2. ConclusionStrip — horizontally-scrollable, self-sorting strip of
+  //      conclusion cards; selecting one drives the timeline below.
+  //   3. ConclusionTimeline — the selected conclusion's header + unified
+  //      vertical timeline of evidence, confidence markers, and its origin.
+  //
+  // This shell owns state/fetch, the realtime refresh, selection preservation,
+  // pin/dismiss commands, thumbnail loading, and the Timeline hand-off; the two
+  // child components only render + call back.
   //
   // The breadcrumb back affordance is rendered by the Insights workspace shell
   // (insights/+page.svelte), so we do NOT duplicate it here. `onBack` is exposed
@@ -26,17 +24,25 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+  import { message } from "@tauri-apps/plugin-dialog";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
     SubjectView,
     SubjectTrajectory,
-    ConclusionEvidenceRef,
     Activity,
+    ActivityEvidenceRef,
   } from "$lib/types/recording";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
+  import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
+  import ConclusionStrip from "$lib/insights/ConclusionStrip.svelte";
+  import ConclusionTimeline from "$lib/insights/ConclusionTimeline.svelte";
+  import { buildTimeline } from "$lib/insights/subjectTimeline";
+  import { debounce } from "$lib/insights/subjectsTiers";
+  import { humanizeError } from "$lib/format-error";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
 
   interface Props {
     subject: string;
@@ -50,50 +56,22 @@
   const _interface = () => onBack;
   void _interface;
 
-  const CAT_PALETTE = [
-    "--cat-creating",
-    "--cat-communication",
-    "--cat-meetings",
-    "--cat-research",
-    "--cat-learning",
-    "--cat-organizing",
-    "--cat-personal",
-    "--cat-entertainment",
-  ] as const;
-
-  type Trend = "up" | "steady" | "down" | "faded";
-
   let view = $state<SubjectView | null>(null);
   let loadError = $state<string | null>(null);
   let loading = $state(true);
   let selectedId = $state<number | null>(null);
+  // In-flight Pin/Dismiss guard. `actionKind` records WHICH action is running so
+  // only that button shows its busy affordance (the sibling stays disabled).
   let actionId = $state<number | null>(null);
+  let actionKind = $state<"pin" | "dismiss" | null>(null);
 
-  // Activities resolved lazily for richer evidence rows + Timeline handoff. Maps
-  // activityId → Activity (title/time/category + raw evidence refs).
+  // Activities resolved lazily for richer timeline events + Timeline handoff.
+  // Maps activityId → Activity (title/time/category + raw evidence refs).
   let activities = $state<Map<number, Activity>>(new Map());
 
-  // Frame previews for screen-sourced evidence rows. Maps frameId → asset URL.
-  // Best-effort; rows without a resolved preview keep the colored placeholder.
+  // Frame previews for screen-sourced timeline events. Maps frameId → asset URL.
+  // Best-effort; events without a resolved preview keep the colored placeholder.
   let thumbnailCache = $state<Map<number, string>>(new Map());
-
-  function colorVarFor(index: number): string {
-    return CAT_PALETTE[index % CAT_PALETTE.length];
-  }
-
-  // Stable display order: conclusions sorted by confidence desc. Index in this
-  // ordering drives the colour assignment (so the chart line, legend swatch,
-  // and inspector dot all agree).
-  const orderedConclusions = $derived.by<Conclusion[]>(() => {
-    if (!view) return [];
-    return [...view.conclusions].sort((a, b) => b.confidence - a.confidence);
-  });
-
-  const colorById = $derived.by<Map<number, string>>(() => {
-    const m = new Map<number, string>();
-    orderedConclusions.forEach((c, i) => m.set(c.id, colorVarFor(i)));
-    return m;
-  });
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
     const m = new Map<number, SubjectTrajectory>();
@@ -101,40 +79,22 @@
     return m;
   });
 
-  // Trend for a conclusion: faded conclusions are always 'faded'; otherwise
-  // derive from its real trajectory (first vs last), else steady.
-  function trendFor(c: Conclusion): Trend {
-    if (c.status === "faded") return "faded";
-    const t = trajectoryById.get(c.id);
-    if (t && t.history.length >= 2) {
-      const delta =
-        t.history[t.history.length - 1].confidence - t.history[0].confidence;
-      if (delta > 0.04) return "up";
-      if (delta < -0.04) return "down";
-      return "steady";
-    }
-    return "steady";
-  }
-
-  function trendLabel(t: Trend): string {
-    return t === "up"
-      ? "▲ rising"
-      : t === "down"
-        ? "▼ cooling"
-        : t === "faded"
-          ? "⊘ faded"
-          : "– steady";
-  }
-
   const selectedConclusion = $derived.by<Conclusion | null>(() => {
     if (!view || selectedId === null) return null;
     return view.conclusions.find((c) => c.id === selectedId) ?? null;
   });
 
-  const selectedTrajectory = $derived.by<SubjectTrajectory | null>(() => {
-    if (selectedId === null) return null;
-    return trajectoryById.get(selectedId) ?? null;
-  });
+  const selectedTrajectory = $derived(
+    selectedId === null ? undefined : trajectoryById.get(selectedId),
+  );
+
+  // The selected conclusion's merged, newest-first event stream. Empty when
+  // nothing is selected. buildTimeline is pure + tested (subjectTimeline.ts).
+  const timelineEvents = $derived(
+    selectedConclusion
+      ? buildTimeline(selectedConclusion, selectedTrajectory, activities)
+      : [],
+  );
 
   // ---- Hero meta ----
   const conclusionCount = $derived(view?.conclusions.length ?? 0);
@@ -179,66 +139,21 @@
     return `${yr}y ago`;
   }
 
-  function fmtMonth(ms: number): string {
-    if (!Number.isFinite(ms) || ms <= 0) return "";
-    return new Date(ms).toLocaleDateString(undefined, { month: "short" });
-  }
-
-  function pct(confidence: number): number {
-    return Math.round(Math.max(0, Math.min(1, confidence)) * 100);
-  }
-
-  // Evidence rows for the selected conclusion. Cross-reference each ref's
-  // activityId against the resolved Activity for richer title/time/category +
-  // a source-type hint from the Activity's first raw evidence ref.
-  interface EvidenceRow {
-    activityId: number;
-    stance: "support" | "contradict";
-    title: string;
-    atMs: number | null;
-    category: string | null;
-    sourceType: "screen" | "audio" | null;
-    // Raw frame id backing a screen-sourced row, used to load a thumbnail. Null
-    // for audio rows or rows whose Activity hasn't resolved yet.
-    frameId: number | null;
-  }
-
-  const evidenceRows = $derived.by<EvidenceRow[]>(() => {
-    const c = selectedConclusion;
-    if (!c) return [];
-    return c.evidence.map((e: ConclusionEvidenceRef) => {
-      const activity = activities.get(e.activityId);
-      const firstRef = activity?.evidence?.[0];
-      const sourceType: "screen" | "audio" | null = firstRef
-        ? firstRef.subjectType === "audio_segment"
-          ? "audio"
-          : "screen"
-        : null;
-      const frameId =
-        firstRef && firstRef.subjectType === "frame" ? firstRef.subjectId : null;
-      return {
-        activityId: e.activityId,
-        stance: e.stance,
-        title: activity?.title ?? e.activityTitle ?? `Activity #${e.activityId}`,
-        atMs: activity?.startedAtMs ?? e.activityStartedAtMs ?? null,
-        category: activity?.category ?? null,
-        sourceType,
-        frameId,
-      };
-    });
-  });
-
-  // Load frame previews for the visible screen evidence rows. Best-effort and
+  // Load frame previews for the visible screen timeline events. Best-effort and
   // batched; mirrors Chat.svelte's source-thumbnail loader. Skips ids already
   // cached so re-selecting a conclusion is free.
-  async function loadEvidenceThumbnails(rows: EvidenceRow[]): Promise<void> {
+  async function loadTimelineThumbnails(): Promise<void> {
     // Read the cache untracked: this loader runs synchronously inside a $effect
-    // keyed on evidenceRows, so a tracked thumbnailCache.has() read before the
+    // keyed on timelineEvents, so a tracked thumbnailCache.has() read before the
     // first await would make the cache a dependency — and the `thumbnailCache =
     // next` write below would then re-run the effect for one wasted pass.
     const cache = untrack(() => thumbnailCache);
-    const wanted = rows
-      .map((r) => r.frameId)
+    const wanted = timelineEvents
+      .map((ev) =>
+        ev.kind === "evidence" && ev.sourceType === "screen"
+          ? ev.frameId
+          : null,
+      )
       .filter((id): id is number => id != null && !cache.has(id));
     const uniqueIds = Array.from(new Set(wanted));
     if (uniqueIds.length === 0) return;
@@ -255,13 +170,13 @@
       }
       thumbnailCache = next;
     } catch {
-      // Thumbnails are best-effort; rows fall back to the colored placeholder.
+      // Thumbnails are best-effort; events fall back to the colored placeholder.
     }
   }
 
   $effect(() => {
-    // Re-run whenever the selected conclusion's evidence rows change.
-    void loadEvidenceThumbnails(evidenceRows);
+    // Re-run whenever the selected conclusion's timeline events change.
+    void loadTimelineThumbnails();
   });
 
   async function loadSubject(): Promise<void> {
@@ -284,16 +199,16 @@
       }
       void loadActivities(next);
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      loadError = humanizeError(error);
     } finally {
       loading = false;
     }
   }
 
-  // Resolve the Activities this Subject's conclusions cite so evidence rows show
-  // real titles/times/source type and so "view in Timeline" can hand off to a
-  // raw frame/audio segment. Best-effort: paged scan of recent Activities; rows
-  // without a resolved Activity fall back to the conclusion's stored ref data.
+  // Resolve the Activities this Subject's conclusions cite so timeline events
+  // show real titles/times/source type and so "view in Timeline" can hand off to
+  // a raw frame/audio segment. Best-effort: paged scan of recent Activities;
+  // events without a resolved Activity fall back to the conclusion's stored ref.
   async function loadActivities(v: SubjectView): Promise<void> {
     const wanted = new Set<number>();
     for (const c of v.conclusions) for (const e of c.evidence) wanted.add(e.activityId);
@@ -321,43 +236,89 @@
     activities = resolved;
   }
 
-  function selectConclusion(id: number): void {
-    selectedId = id;
+  // Subject → Chat hand-off (#106 / fix #5). Open a fresh Chat thread with the
+  // composer prefilled to ask about THIS subject. The hand-off routes through
+  // the shared store's selection bus (the Insights shell watches the same bus
+  // and switches to the Chat sub-surface); the prompt is seeded, not auto-sent,
+  // so the user can review/edit before pressing Enter. The engine recalls what
+  // it knows about the subject through its brokered tools when answering.
+  function askAboutSubject(): void {
+    conversationStore.requestNewChat(
+      `Tell me what you know about ${subject} and what I've been doing related to it.`,
+    );
   }
 
-  async function togglePinned(c: Conclusion): Promise<void> {
+  async function togglePin(id: number, pinned: boolean): Promise<void> {
     if (actionId !== null) return;
-    actionId = c.id;
+    actionId = id;
+    actionKind = "pin";
     try {
-      await invoke("user_context_set_pinned", { id: c.id, pinned: !c.pinned });
+      await invoke("user_context_set_pinned", { id, pinned });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the surface — surface it in a dialog and
+      // leave the loaded subject intact. `pinned` is the DESIRED new state.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: pinned ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
-  async function dismiss(c: Conclusion): Promise<void> {
+  async function dismissConclusion(id: number): Promise<void> {
     if (actionId !== null) return;
-    actionId = c.id;
+    actionId = id;
+    actionKind = "dismiss";
     try {
-      await invoke("user_context_dismiss_conclusion", { id: c.id });
+      await invoke("user_context_dismiss_conclusion", { id });
       await loadSubject();
     } catch (error) {
-      loadError = error instanceof Error ? error.message : String(error);
+      // A write failure must NOT blank the surface — surface it in a dialog and
+      // leave the loaded subject intact.
+      const detail = humanizeError(error);
+      await message(detail, {
+        title: "Couldn't dismiss conclusion",
+        kind: "error",
+      });
     } finally {
       actionId = null;
+      actionKind = null;
     }
   }
 
-  // "view in Timeline" — best-effort Activity-span handoff to the raw Timeline.
-  // We resolve the Activity's first raw evidence ref (frame/audio segment) and
-  // ask the main window to land there. If no raw ref is resolvable, fall back to
-  // navigating to the Timeline surface so the action never dead-ends.
-  async function viewInTimeline(row: EvidenceRow): Promise<void> {
-    const activity = activities.get(row.activityId);
+  // In-place frame peek (FrameDetailModal). A frame evidence ref opens the modal
+  // instead of hopping to the raw Timeline window; the old hand-off survives only
+  // as the modal's escape hatch and as the audio/no-ref fallback. ConclusionTimeline
+  // intercepts evidence-row frames itself, so this catches the remaining
+  // frame case (e.g. a contradict row whose activity resolves to a frame).
+  let frameModalOpen = $state(false);
+  let frameModalId = $state<number | null>(null);
+  let frameModalOpenInTimeline = $state<(() => void) | null>(null);
+
+  // "view frame" — resolve the Activity's first raw evidence ref. A frame ref
+  // peeks in place; an audio ref (or no ref) keeps the old raw-Timeline hand-off /
+  // plain Timeline navigation.
+  async function onViewInTimeline(activityId: number): Promise<void> {
+    const activity = activities.get(activityId);
     const ref = activity?.evidence?.[0];
+    if (ref && ref.subjectType === "frame") {
+      frameModalId = ref.subjectId;
+      frameModalOpenInTimeline = () => void openRefInTimeline(ref);
+      frameModalOpen = true;
+      return;
+    }
+    await openRefInTimeline(ref);
+  }
+
+  // The legacy best-effort Activity-span hand-off to the raw Timeline — now the
+  // modal's escape hatch + the audio/no-ref fallback.
+  async function openRefInTimeline(
+    ref: ActivityEvidenceRef | undefined,
+  ): Promise<void> {
     try {
       if (ref && ref.subjectType === "audio_segment") {
         await invoke("open_capture_result_in_main_window", {
@@ -380,7 +341,13 @@
     } catch {
       // fall through to a plain Timeline navigation
     }
-    // Graceful fallback: open the Timeline surface.
+    // No precise frame/audio span was resolvable (or the handoff threw) — tell
+    // the user before the graceful fallback so jumping to the Timeline top isn't
+    // a silent surprise that looks like the wrong moment opened.
+    await message("Couldn't pinpoint the exact moment — opening the Timeline.", {
+      title: "Opening Timeline",
+      kind: "info",
+    });
     void goto("/");
   }
 
@@ -390,10 +357,15 @@
     subject;
     void loadSubject();
 
+    // `user_context_changed` fires per derivation pass (~every 5s during a
+    // backlog drain); coalesce bursts into one trailing reload, matching the
+    // treatment Subjects.svelte gives the same event.
+    const debouncedReload = debounce(() => void loadSubject(), 500);
+
     let unlisten: UnlistenFn | undefined;
     let disposed = false;
     void listen("user_context_changed", () => {
-      void loadSubject();
+      debouncedReload();
     }).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
@@ -402,20 +374,30 @@
     return () => {
       disposed = true;
       unlisten?.();
+      debouncedReload.cancel();
     };
   });
 </script>
 
 <section class="subject-detail" aria-label={`Subject — ${subject}`}>
-  {#if loadError}
+  {#if loadError && !view}
     <div class="state state--error">
       <p class="state-title">Couldn't load this subject.</p>
       <p class="state-detail">{loadError}</p>
+      <button
+        type="button"
+        class="state-retry"
+        onclick={() => void loadSubject()}
+        disabled={loading}
+      >
+        <span class="state-retry-ico" aria-hidden="true">↻</span>
+        Try again
+      </button>
     </div>
   {:else if loading && !view}
-    <!-- Loading skeleton — hero + overlay chart + master/detail, matching the
-         real layout so the swap to loaded content causes no layout shift. The
-         "nothing concluded" empty state only renders once loaded. -->
+    <!-- Loading skeleton — hero + conclusion strip, matching the real layout so
+         the swap to loaded content causes no layout shift. The "nothing
+         concluded" empty state only renders once loaded. -->
     <div aria-label={`Loading ${subject}`} aria-busy="true">
       <div class="subj-hero">
         <div class="subj-hero-main">
@@ -430,39 +412,15 @@
         </div>
       </div>
 
-      <div class="md-grid">
-        <div class="card rank-card">
-          <div class="rank-head">
-            <Skeleton variant="text" width="170px" height="13px" />
-            <Skeleton variant="text" width="120px" height="11px" />
+      <div class="sk-strip">
+        {#each Array.from({ length: 3 }) as _, i (i)}
+          <div class="sk-card">
+            <Skeleton variant="text" width="42px" height="11px" />
+            <Skeleton variant="text" width="90%" height="13px" />
+            <Skeleton variant="text" width="70%" height="13px" />
+            <Skeleton width="100%" height="6px" radius="999px" />
           </div>
-          <div class="sk-rank-list">
-            {#each Array.from({ length: 5 }) as _, i (i)}
-              <div class="sk-rank-row">
-                <Skeleton variant="text" width="62%" height="13px" />
-                <Skeleton width="150px" height="7px" radius="999px" />
-              </div>
-            {/each}
-          </div>
-        </div>
-
-        <aside class="card inspector inspector--skeleton">
-          <div class="insp-head">
-            <Skeleton variant="text" width="70px" height="11px" />
-            <Skeleton variant="text" width="96px" height="11px" />
-          </div>
-          <div class="sk-insp-body">
-            {#each Array.from({ length: 3 }) as _, i (i)}
-              <div class="sk-ev-item">
-                <Skeleton width="44px" height="32px" radius="4px" />
-                <div class="sk-ev-body">
-                  <Skeleton variant="text" width="88%" height="11px" />
-                  <Skeleton variant="text" width="54%" height="10px" />
-                </div>
-              </div>
-            {/each}
-          </div>
-        </aside>
+        {/each}
       </div>
     </div>
   {:else if view && conclusionCount === 0}
@@ -483,6 +441,9 @@
             {conclusionCount}
             {conclusionCount === 1 ? "conclusion" : "conclusions"}
           </span>
+          {#if fadedCount > 0}
+            <span class="pill">{fadedCount} below floor</span>
+          {/if}
           <span class="pill">first seen {relativeTime(firstSeenMs)}</span>
           <span class="pill">last evidence {relativeTime(lastEvidenceMs)}</span>
           {#if linkedActivityCount > 0}
@@ -490,203 +451,55 @@
           {/if}
         </div>
       </div>
+      <!-- Subject → Chat hand-off: open a fresh chat prefilled to ask the engine
+           about this subject (the prompt is seeded for review/edit, not sent). -->
+      <button type="button" class="ask-subject" onclick={askAboutSubject}>
+        <span class="ask-subject-glyph" aria-hidden="true">✦</span>
+        Ask AI about {subject}
+      </button>
     </div>
 
-    <!-- Master-detail: ranked conclusions (master) + evidence inspector -->
-    <div class="md-grid">
-      <!-- LEFT: ranked conclusions, sorted by confidence. Selecting a row
-           drives the inspector + its actions on the right. -->
-      <div class="card rank-card">
-        <div class="rank-head">
-          <div class="section-title">Conclusion confidence</div>
-          <span class="rank-head-note">
-            {conclusionCount} ranked{#if fadedCount > 0} · {fadedCount} below floor{/if}
-          </span>
-        </div>
+    <!-- Conclusion strip (master). Passes ALL conclusions incl. faded — the strip
+         de-emphasizes faded cards but keeps them selectable. -->
+    <ConclusionStrip
+      conclusions={view.conclusions}
+      trajectories={trajectoryById}
+      {selectedId}
+      onSelect={(id) => (selectedId = id)}
+      onTogglePin={togglePin}
+      {actionId}
+    />
 
-        {#if orderedConclusions.length > 0}
-          <ul class="rank-list">
-            {#each orderedConclusions as c (c.id)}
-              {@const t = trendFor(c)}
-              <li>
-                <button
-                  type="button"
-                  class="rank-row"
-                  class:is-selected={selectedId === c.id}
-                  class:rank-row--faded={c.status === "faded"}
-                  title={c.statement}
-                  onclick={() => selectConclusion(c.id)}
-                >
-                  <span class="rank-statement">
-                    {#if c.pinned}<span class="rank-pin" aria-hidden="true">★</span
-                      >{/if}{c.statement}
-                  </span>
-                  <span class="rank-meter">
-                    <span class="rank-track">
-                      <span
-                        class="rank-fill"
-                        class:rank-fill--faded={c.status === "faded"}
-                        style="width:{pct(c.confidence)}%; background:var({colorById.get(c.id)});"
-                      ></span>
-                    </span>
-                    <span class="rank-pct">{pct(c.confidence)}%</span>
-                    <span class="rank-trend rank-trend--{t}" aria-hidden="true">
-                      {trendLabel(t).split(" ")[0]}
-                    </span>
-                  </span>
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="rank-empty">No conclusions recorded yet.</p>
-        {/if}
-      </div>
-
-      <!-- RIGHT: evidence inspector (sticky) -->
-      <aside class="card inspector">
-        {#if selectedConclusion}
-          <div class="insp-head">
-            <span class="ih-title">Evidence</span>
-            <span class="ih-count">
-              {selectedConclusion.evidence.length}
-              {selectedConclusion.evidence.length === 1
-                ? "linked activity"
-                : "linked activities"}
-            </span>
-          </div>
-          <div class="insp-conclusion">
-            <span
-              class="ic-dot"
-              style="background: var({colorById.get(selectedConclusion.id)});"
-            ></span>
-            {selectedConclusion.statement}
-            <span class="insp-conf">
-              · {pct(selectedConclusion.confidence)}%
-              {trendLabel(trendFor(selectedConclusion)).split(" ")[0]}
-            </span>
-          </div>
-
-          <div class="insp-actions">
-            {#if selectedConclusion.status === "faded"}
-              <div class="floor-note">
-                <span class="glyph" aria-hidden="true">⊘</span>
-                Below display floor — kept for history.
-              </div>
-            {/if}
-            <div class="insp-action-row">
-              <button
-                type="button"
-                class="btn"
-                class:btn--accent={selectedConclusion.pinned}
-                disabled={actionId !== null}
-                onclick={() => void togglePinned(selectedConclusion)}
-              >
-                {selectedConclusion.pinned ? "★ Pinned" : "Pin"}
-              </button>
-              <button
-                type="button"
-                class="btn"
-                disabled={actionId !== null}
-                onclick={() => void dismiss(selectedConclusion)}
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-
-          <div class="ev-list">
-            {#if evidenceRows.length === 0}
-              <p class="ev-empty">No grounding evidence linked.</p>
-            {:else}
-              {#each evidenceRows as ev (ev.activityId)}
-                {@const thumbUrl =
-                  ev.frameId != null
-                    ? (thumbnailCache.get(ev.frameId) ?? null)
-                    : null}
-                <div class="ev-item">
-                  <div
-                    class="ev-thumb"
-                    class:is-screen={ev.sourceType !== "audio"}
-                    class:is-audio={ev.sourceType === "audio"}
-                  >
-                    {#if thumbUrl}
-                      <img class="ev-thumb-img" src={thumbUrl} alt="" />
-                    {/if}
-                    <span
-                      class="ev-src-tag"
-                      class:is-screen={ev.sourceType !== "audio"}
-                      class:is-audio={ev.sourceType === "audio"}
-                    >
-                      {ev.sourceType === "audio" ? "mic" : "scr"}
-                    </span>
-                  </div>
-                  <div class="ev-body">
-                    <div class="ev-title">{ev.title}</div>
-                    <div class="ev-meta">
-                      {#if ev.category}
-                        <span class="ev-app">{ev.category}</span>
-                        <span>·</span>
-                      {/if}
-                      {#if ev.stance === "contradict"}
-                        <span class="ev-stance">contradicts</span>
-                        <span>·</span>
-                      {/if}
-                      <span>{ev.atMs ? relativeTime(ev.atMs) : "—"}</span>
-                    </div>
-                    <button
-                      type="button"
-                      class="ev-link"
-                      onclick={() => viewInTimeline(ev)}
-                    >
-                      view in Timeline →
-                    </button>
-                  </div>
-                </div>
-              {/each}
-            {/if}
-          </div>
-
-          <div class="insp-subhead">Confidence history</div>
-          <div class="conf-hist">
-            {#if selectedTrajectory && selectedTrajectory.history.length > 0}
-              {#each selectedTrajectory.history as h, i (i)}
-                <div class="ch-row">
-                  <span class="ch-date">{fmtMonth(h.snapshotAtMs)}</span>
-                  <div class="ch-track">
-                    <div class="ch-fill" style="width:{pct(h.confidence)}%;"></div>
-                  </div>
-                  <span class="ch-val">{pct(h.confidence)}</span>
-                </div>
-              {/each}
-            {:else}
-              <p class="ev-empty">No history snapshots yet.</p>
-            {/if}
-          </div>
-        {:else}
-          <div class="insp-head">
-            <span class="ih-title">Evidence</span>
-          </div>
-          <p class="ev-empty" style="padding: 14px 13px;">
-            Select a conclusion to inspect its evidence.
-          </p>
-        {/if}
-      </aside>
-    </div>
+    <!-- Selected conclusion's timeline (detail). -->
+    {#if selectedConclusion}
+      <ConclusionTimeline
+        events={timelineEvents}
+        conclusion={selectedConclusion}
+        trajectory={selectedTrajectory}
+        thumbnails={thumbnailCache}
+        {actionId}
+        {actionKind}
+        onTogglePin={togglePin}
+        onDismiss={dismissConclusion}
+        {onViewInTimeline}
+      />
+    {/if}
   {/if}
 </section>
+
+<!-- In-place frame peek for a conclusion's evidence. Its "open full timeline →"
+     escape hatch replays the old raw-Timeline hand-off. -->
+<FrameDetailModal
+  open={frameModalOpen}
+  frameId={frameModalId}
+  onClose={() => (frameModalOpen = false)}
+  onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
+/>
 
 <style>
   .subject-detail {
     display: flex;
     flex-direction: column;
-  }
-
-  .card {
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    padding: 14px;
   }
 
   /* ---- Hero ---- */
@@ -701,7 +514,7 @@
     min-width: 0;
   }
   .subj-title {
-    font-size: 25px;
+    font-size: 24px;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -722,426 +535,59 @@
     white-space: nowrap;
   }
 
-  .section-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--app-text-strong);
-    letter-spacing: -0.01em;
-  }
-
-  /* ---- Ranked confidence bars (master column) ---- */
-  .rank-card {
-    min-width: 0; /* grid cell — allow rank rows to truncate */
-  }
-  .rank-head {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 10px;
-  }
-  .rank-head-note {
-    font-size: 11px;
-    color: var(--app-text-muted);
-  }
-  .rank-list {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-  .rank-row {
-    width: 100%;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-    gap: 16px;
-    font: inherit;
-    text-align: left;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    padding: 7px 9px;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .rank-row:hover {
-    background: var(--app-surface-hover);
-  }
-  .rank-row.is-selected {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-  }
-  .rank-row--faded {
-    opacity: 0.55;
-  }
-  .rank-statement {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-size: 12.5px;
-    color: var(--app-text);
-  }
-  .rank-pin {
-    color: var(--app-accent-strong);
-    margin-right: 5px;
-    font-size: 11px;
-  }
-  .rank-meter {
+  /* Subject → Chat hand-off button (top-right of the hero). The primary outbound
+     action from a subject, so it carries the accent treatment. */
+  .ask-subject {
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    flex: 0 0 auto;
-  }
-  .rank-track {
-    position: relative;
-    width: 150px;
-    height: 7px;
-    border-radius: 999px;
-    background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
-    overflow: hidden;
-  }
-  .rank-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    height: 100%;
-    min-width: 3px;
-    border-radius: 999px;
-  }
-  .rank-fill--faded {
-    opacity: 0.5;
-  }
-  .rank-pct {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--app-text-strong);
-    font-variant-numeric: tabular-nums;
-    min-width: 34px;
-    text-align: right;
-  }
-  .rank-trend {
-    font-size: 9px;
-    width: 11px;
-    text-align: center;
-    line-height: 1;
-  }
-  .rank-trend--up {
-    color: var(--app-accent);
-  }
-  .rank-trend--down {
-    color: var(--app-danger);
-  }
-  .rank-trend--steady {
-    color: var(--app-text-subtle);
-  }
-  .rank-trend--faded {
-    color: var(--app-text-faint);
-  }
-  .rank-empty {
-    font-size: 11.5px;
-    color: var(--app-text-muted);
-    margin: 8px 0 0;
-  }
-
-  /* ---- Master-detail ---- */
-  .md-grid {
-    display: grid;
-    grid-template-columns: 1.6fr 1fr;
-    gap: 16px;
-    align-items: start;
-  }
-
-  .floor-note {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin: 0 0 10px;
-    padding: 6px 9px;
-    border: 1px dashed var(--app-border-strong);
-    border-radius: 6px;
-    font-size: 11px;
-    color: var(--app-text-muted);
-  }
-  .floor-note .glyph {
-    color: var(--app-text-faint);
-  }
-
-  .btn {
+    gap: 6px;
     font: inherit;
     font-size: 11.5px;
-    padding: 3px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn--accent {
-    border-color: var(--app-accent-border);
+    padding: 6px 12px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 7px;
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
-  }
-
-  /* RIGHT: evidence inspector (sticky) */
-  .inspector {
-    position: sticky;
-    top: 0;
-    padding: 0;
-    overflow: hidden;
-  }
-  .insp-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 11px 13px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-  .ih-title {
-    font-size: 10px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-  .ih-count {
-    font-size: 10px;
-    color: var(--app-text-subtle);
-  }
-  .insp-conclusion {
-    padding: 10px 13px;
-    border-bottom: 1px solid var(--app-border);
-    font-size: 12px;
-    line-height: 1.45;
-    color: var(--app-text);
-  }
-  .ic-dot {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    margin-right: 6px;
-    vertical-align: middle;
-  }
-  .insp-conf {
-    color: var(--app-text-muted);
-    font-size: 10.5px;
-  }
-  .insp-actions {
-    display: flex;
-    flex-direction: column;
-    gap: 9px;
-    padding: 11px 13px;
-    border-bottom: 1px solid var(--app-border);
-  }
-  .insp-actions .floor-note {
-    margin: 0;
-  }
-  .insp-action-row {
-    display: flex;
-    gap: 6px;
-  }
-
-  .ev-list {
-    padding: 6px 9px 10px;
-  }
-  .ev-empty {
-    font-size: 11px;
-    color: var(--app-text-muted);
-    margin: 6px 4px;
-  }
-  .ev-item {
-    display: grid;
-    grid-template-columns: 44px 1fr;
-    gap: 9px;
-    padding: 9px 8px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease;
-  }
-  .ev-item:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border);
-  }
-  .ev-thumb {
-    width: 44px;
-    height: 32px;
-    border-radius: 4px;
-    border: 1px solid var(--app-border);
-    overflow: hidden;
-    position: relative;
-    flex: 0 0 auto;
-  }
-  .ev-thumb.is-screen {
-    background: var(--app-source-screen-bg);
-  }
-  .ev-thumb.is-audio {
-    background: var(--app-source-mic-bg);
-  }
-  .ev-thumb-img {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-  }
-  .ev-src-tag {
-    position: absolute;
-    left: 2px;
-    bottom: 2px;
-    font-size: 7px;
-    letter-spacing: 0.04em;
-    padding: 0 3px;
-    border-radius: 3px;
-    text-transform: uppercase;
-  }
-  .ev-src-tag.is-screen {
-    color: var(--app-source-screen);
-    background: var(--app-bg);
-  }
-  .ev-src-tag.is-audio {
-    color: var(--app-source-mic);
-    background: var(--app-bg);
-  }
-  .ev-body {
-    min-width: 0;
-  }
-  .ev-title {
-    font-size: 11.5px;
-    line-height: 1.4;
-    color: var(--app-text);
-    margin-bottom: 3px;
-  }
-  .ev-meta {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 10px;
-    color: var(--app-text-subtle);
-    margin-bottom: 4px;
-    flex-wrap: wrap;
-  }
-  .ev-app {
-    color: var(--app-text-muted);
-    text-transform: capitalize;
-  }
-  .ev-stance {
-    color: var(--app-danger);
-  }
-  .ev-link {
-    font: inherit;
-    font-size: 10.5px;
-    padding: 0;
-    border: none;
-    background: transparent;
-    color: var(--app-accent-strong);
-    border-bottom: 1px dotted var(--app-accent-border);
     cursor: pointer;
-    transition: color 0.12s ease;
+    white-space: nowrap;
+    transition:
+      border-color 0.12s ease,
+      box-shadow 0.12s ease;
   }
-  .ev-link:hover {
-    color: var(--app-accent);
+  .ask-subject:hover {
+    border-color: var(--app-accent);
   }
-
-  .insp-subhead {
-    padding: 9px 13px 5px;
-    font-size: 9.5px;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    border-top: 1px solid var(--app-border);
+  .ask-subject:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
-  .conf-hist {
-    padding: 2px 13px 14px;
+  .ask-subject:not(:disabled):active {
+    transform: translateY(1px);
   }
-  .ch-row {
-    display: grid;
-    grid-template-columns: 30px 1fr 30px;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 0;
-    font-size: 10.5px;
-    color: var(--app-text-muted);
-  }
-  .ch-date {
-    color: var(--app-text-subtle);
-  }
-  .ch-track {
-    height: 5px;
-    border-radius: 999px;
-    background: var(--app-surface-hover);
-    overflow: hidden;
-    border: 1px solid var(--app-border);
-  }
-  .ch-fill {
-    height: 100%;
-    background: var(--app-accent);
-    border-radius: 999px;
-  }
-  .ch-val {
-    text-align: right;
-    color: var(--app-text);
-    font-variant-numeric: tabular-nums;
+  .ask-subject-glyph {
+    font-size: 11px;
+    line-height: 1;
   }
 
   /* ---- Loading skeleton helpers ---- */
   .sk-hero-title {
     margin: 0 0 10px;
   }
-  .sk-rank-list {
+  .sk-strip {
+    display: flex;
+    gap: 10px;
+  }
+  .sk-card {
+    flex: 0 0 auto;
+    width: 240px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 4px;
-  }
-  .sk-rank-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 150px;
-    align-items: center;
-    gap: 16px;
-    padding: 4px 9px;
-  }
-  .inspector--skeleton {
-    padding: 0;
-  }
-  .sk-insp-body {
-    display: flex;
-    flex-direction: column;
-    gap: 11px;
-    padding: 11px 13px 14px;
-  }
-  .sk-ev-item {
-    display: grid;
-    grid-template-columns: 44px 1fr;
-    gap: 9px;
-    align-items: center;
-  }
-  .sk-ev-body {
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface);
   }
 
   /* ---- States ---- */
@@ -1169,22 +615,54 @@
     color: var(--app-text-muted);
     line-height: 1.6;
   }
-
-  @media (max-width: 900px) {
-    .md-grid {
-      grid-template-columns: 1fr;
-    }
-    .inspector {
-      position: static;
-    }
+  /* Retry affordance — mirrors the Overview lede's "↻ re-read" pill. */
+  .state-retry {
+    align-self: flex-start;
+    margin-top: 4px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 7px;
+    border: 1px solid var(--app-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition:
+      color 0.12s ease,
+      border-color 0.12s ease,
+      background 0.12s ease;
+  }
+  .state-retry:hover:not(:disabled) {
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+    background: var(--app-accent-bg);
+  }
+  .state-retry:not(:disabled):active {
+    transform: translateY(1px);
+  }
+  .state-retry:disabled {
+    cursor: default;
+    opacity: 0.6;
+  }
+  .state-retry-ico {
+    font-size: 12px;
+    line-height: 1;
+    letter-spacing: 0;
   }
 
-  @media (max-width: 560px) {
-    .rank-track {
-      width: 96px;
+  @media (prefers-reduced-motion: reduce) {
+    .ask-subject,
+    .state-retry {
+      transition: none;
     }
-    .sk-rank-row {
-      grid-template-columns: minmax(0, 1fr) 96px;
+    .ask-subject:not(:disabled):active,
+    .state-retry:not(:disabled):active {
+      transform: none;
     }
   }
 </style>

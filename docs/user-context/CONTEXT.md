@@ -41,10 +41,21 @@ _Avoid_: capture session, recording, timeline row, raw frame, per-app slice, app
 An open-ended, plain-language statement about the user (for example "Has been increasingly
 interested in Apple", "Prefers async communication", "Is in a Rust learning phase"). Each
 **Conclusion** carries a **Subject** it is about, a **Confidence** that rises and falls over time,
-and links to the **Activity** values that are its evidence. Open-ended rather than a fixed
+and links to the **Activity** values that are its evidence. A **Conclusion** is **one atomic
+belief** — a single claim that can independently gain evidence, be confirmed, dismissed, or fade —
+so a **Subject** holds **as many Conclusion values as the user has distinct beliefs about it**
+(Gaming holds "plays Genshin", "plays 007 First Light", and "watches gaming streams" as separate
+Conclusion values, each with its own evidence and **Confidence** trajectory), not one compound
+sentence bundling several claims. Open-ended rather than a fixed
 `subject+attribute+value` schema, because the set of things worth noticing about a person is
-unbounded.
-_Avoid_: tag, sentiment score, structured fact, static profile attribute, personality trait
+unbounded. **Behavioral Routines are in scope** (decided Jul 2026): observable, evidenced habits of
+what the user does and when — "checks Slack first thing in the morning", "most focused work lands
+in afternoons" — are Conclusion-shaped (they gain evidence daily, fade when the habit breaks, and
+are dismissible). Personality/character judgments ("is impatient", "is an introvert") remain
+out of scope: uncorrectable by evidence and too close to the **Sensitive Category Guardrail**
+trust line.
+_Avoid_: tag, sentiment score, structured fact, static profile attribute, personality trait,
+compound multi-claim statement, one canonical belief per subject
 
 **Reasoning Engine**:
 The user-selected model that derives both **Activity** and **Conclusion** values. It may be a
@@ -65,7 +76,11 @@ own view on the **Insights** surface that shows every **Conclusion** about it, e
 **confidence-over-time line** — the literal picture of warming up to a thing and then cooling off
 (the founding "likes Apple, then cools" example). The Subject page shows the *individual* Conclusions
 and their trajectories, NOT a single rolled-up "sentiment score" (that would resurrect the structured
-sentiment model rejected in the **Conclusion** definition).
+sentiment model rejected in the **Conclusion** definition). A **Subject** **groups** its **Conclusion** values but is **not itself the reinforcement
+identity**: recurring evidence reinforces the **specific matching Conclusion within the subject**
+(identity is **per-belief**), not one rolled-up canonical row — the distiller is shown the subject's
+existing **Conclusion** values and decides which a fresh belief reinforces, coining a new one only
+for a genuinely new belief (see the per-belief reinforcement Relationships below).
 _Avoid_: knowledge-graph node, single net sentiment score, rolled-up stance scalar, search-filter-only
 
 **Confidence History**:
@@ -73,7 +88,12 @@ A stored time-series of a **Conclusion**'s **Confidence** — periodic snapshots
 value — that powers the **Subject** trajectory line. Tiny (a few floats per snapshot interval) and
 aggressively prunable, since recency-weighting means old snapshots stop mattering. It exists because
 the trajectory is the headline view; without it Mnema would know a stance moved but could never show it.
-_Avoid_: current-value-only, full audit log, per-frame confidence trace
+Both directions are recorded: the slow decay beat snapshots the **down** steps, and reinforcement
+snapshots the **up** step when **Confidence** ratchets higher (plus one seed point on formation), so a
+positive slope — what the **Subject** view's "warming" tier detects — is now reachable. (Originally
+only the decay beat wrote points, so trajectories were monotonically non-increasing and "warming"
+could never appear.)
+_Avoid_: current-value-only, decay-only snapshots, full audit log, per-frame confidence trace
 
 **Confidence**:
 A strength value on a **Conclusion** that is **recency-weighted evidence**: recent supporting
@@ -82,6 +102,16 @@ A strength value on a **Conclusion** that is **recency-weighted evidence**: rece
 values push it down faster. One rule yields both the quiet fade and the active reversal, and it
 falls out of the grounding — the evidence links' recency *is* the confidence.
 _Avoid_: static score, relevance rank, probability, contradiction-only revision
+
+**Recurrence Digest**:
+A compact, deterministic aggregate block in the **Conclusion**-distillation prompt that gives the
+**Reasoning Engine** the multi-week horizon a **Behavioral Routine** needs: plain counting over the
+stored **Activity** record (per-hour-of-day category/app histograms, first-activity-of-day
+patterns, focus-by-hour) — no LLM, negligible tokens, the **Usage Charts** counting shape. It is
+derivation *input only*, never stored evidence: routine Conclusions cite recent in-window exemplar
+Activities as their evidence links.
+_Avoid_: wider raw Activity window, separate routine-detection pass, aggregate-as-evidence,
+stored statistics table
 
 **History Backfill**:
 What the **Reasoning Engine** does to existing retained captures when first enabled. It is **paced
@@ -160,16 +190,67 @@ _Avoid_: tab, page, dashboard view
 
 **Timeline** (surface):
 The existing capture-timeline view (the older "dashboard timeline"), one of the two **Main**
-surfaces. Owns capture inspection: **Scrub Preview** navigation, exact **Captured Frame** preview,
-OCR copy/download, audio playback.
+surfaces. Owns **unbounded** capture inspection: **Scrub Preview** navigation, exact **Captured
+Frame** preview, OCR copy/download, and continuous audio playback across the whole record. (The
+**Receipt** plays *bounded* cited audio clips scoped to one **Activity**; Timeline is where audio
+scrubbing without those bounds lives.)
 _Avoid_: dashboard, dashboard timeline, main view
 
 **Insights** (surface):
 The other **Main** surface: the AI **workspace** for understanding yourself. A container hosting
-**sub-surfaces**, not a single view. v1 sub-surfaces are **Overview**, **Chat**, and **Context**;
-**Plugins**, **Automations**, and **Project** are deferred (the shell can grow into them, but they
-are not v1). Capture *inspection* still belongs to **Timeline**; **Insights** is read/understand/ask.
-_Avoid_: analytics dashboard, stats page, single informative view, profile page
+**sub-surfaces**, not a single view. v1 shipped **Overview**, **Chat**, and **Context**; the shell
+has since grown **Subjects** and (decided Jul 2026) **Journal** — new derived-understanding views
+join Insights as sub-surfaces rather than becoming top-level **Main** surfaces. **Plugins**,
+**Automations**, and **Project** remain deferred. Capture *inspection* still belongs to
+**Timeline**; **Insights** is read/understand/ask.
+_Avoid_: analytics dashboard, stats page, single informative view, profile page, third top-level surface
+
+**Journal** (sub-surface):
+The chronological river sub-surface of **Insights**: one local-midnight day of **Activity** values
+rendered as cards on a time spine (title, summary, **Activity Category** color, **Focus
+Classification**, apps touched), led by that day's digest as the lede. Days follow the same
+frontend local-midnight convention as the digest cache — there is no separate "logical day". A
+card's one click action opens its **Receipt**; capture inspection still hands off to **Timeline**.
+The Journal renders as **Cards** only. A **Blocks** alternate (Dayflow's proportional-height
+calendar view) and its Cards⇄Blocks toggle were considered and **dropped** (Jul 2026): proportional
+block heights crush short, fragmented activities into unreadable slivers exactly when the journal
+matters most, and the "shape of the day" glance Blocks offered is already carried by **Overview**'s
+focus heatmap and the Journal's away-gaps. Cards degrades gracefully to a longer scroll where Blocks
+degrades to mush, so it is the sole reading layout and the toggle is not rendered.
+_Avoid_: timeline replacement, per-app usage log, second capture surface, 4am logical day,
+proportional-block calendar view, Cards⇄Blocks toggle
+
+**Receipt**:
+Bounded **evidence playback and inspection** for one **Activity**: a modal that scrubs the
+**Captured Frame** pixels behind the Activity's span (engine-cited frames marked on the track, the
+headline frame as poster, a wall-clock playhead) **and** surfaces the Activity's speech as a
+**Speaker-Turn Lane** + **synced transcript reader** over **every diarized turn within the span**
+(cited turns marked, the headline turn ringed — proof stays legible amid context). Selecting any
+turn plays *that segment's* real audio at 1× while the frame viewer runs over the same window,
+clocked by the audio (`get_audio_segment_media` per segment) — a **bounded, synchronized
+audio-plus-screen** relive that stops at the segment end (no cross-segment stitching). A Receipt is
+**both proof and inspection of one Activity**: the founding promise that every AI-written sentence is
+one interaction from its evidence, extended from "see the cited pixel" to "hear the cited moment."
+The line it holds is **bounded, not silent** — every affordance stays inside the Activity's own span
+(the transcript reader shows all *in-span* turns, still bounded; turns past the span and
+cross-Activity transcript are **Timeline**'s); the fast frame **timelapse** (2×/8×/16× silent scan)
+and a slow real-time per-turn **audio relive** (1× only) are two speeds of the same bounded surface. **Unbounded** inspection — continuous cross-Activity audio scrubbing, OCR text
+copy/download, frame/audio export, navigation past the span — still belongs to **Timeline**, and
+"Open in Timeline" is the handoff for anything wider than this Activity. Because **Retention
+Policy** ages out raw frames and audio but never the **Activity**
+([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)), a Receipt
+whose media has aged out (summary + evidence list retained, pixels/audio gone) is a guaranteed
+long-term state, not an edge case — and an Activity **grounded only in audio** that never had
+frames renders as audio evidence, never a false "footage expired". A Journal card's frame count
+means **frames still on disk now**, an honest promise of what the Receipt will play. On a cited
+spoken moment the Receipt also shows **read-only speaker attribution** — *you* (`microphone`) vs
+*the other side* (`system_audio`), plus a recognized name when known — **late-bound by id** so a
+voice named later resolves to its real name rather than a frozen "Speaker 2"; it is
+**surface-and-handoff** (correcting who a voice is stays **Timeline**, never a labeling tool in the
+modal). See [ADR 0049](../adr/0049-receipt-plays-cited-audio-as-bounded-synced-clips.md).
+_Avoid_: second timeline, unbounded audio scrub, cross-activity navigation, in-modal OCR
+copy/download, frame/audio export, silent-only proof, false "footage expired" for audio-grounded
+activities, frame-count-at-derivation-time
 
 **Overview** (sub-surface):
 The charts-and-dossier sub-surface of **Insights** (renamed from the earlier "informative view" to
@@ -180,7 +261,10 @@ Engine** opt-in — is the *color*: the categorized/focus charts (driven by **Ac
 story). The engine "lights up" **Overview**; without it, it still works, just grayscale.
 The layout is **narrative-first** (a "Briefing"): one full-width column led by **"The read"** —
 the engine's synthesis of the range, and the single home for the headline numbers (tracked /
-daily avg / deep-focus % / top category / sparkbar) — with the metric charts **demoted** to a
+daily avg / deep-focus % / top category / sparkbar) *within Overview* — the rule bans a second
+stat tile on the same page (the killed bento band), not other sub-surfaces: the **Journal** lede
+deliberately reuses the same cached digest row plus its day-scoped numbers — with the metric
+charts **demoted** to a
 quieter **"Exhibits"** strip (Time / Categories / Focus) that supports the narrative, then the
 actionable tail (What changed / Needs attention) and a docked Ask bar. FREE swaps the AI hero for
 a deterministic factual read plus an enable-engine invite. This replaced the originally-approved
@@ -278,9 +362,31 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   (**Dismiss**/edit feeds back), and the category taxonomy is fixed in v1 rather than user-defined.
 - The **app-interaction graph** and **time per app/site** are pure counting and stay in the free tier;
   only the *category* and *focus* axes require the engine.
-- Capture *inspection* (exact frame, OCR copy/download, audio playback) stays on the **Timeline**
-  surface; **Insights** is a read/understand surface, and an **Activity** or **Answer Source** hands
-  off to **Timeline** for inspection rather than inspecting in place.
+- Capture *inspection* stays on the **Timeline** surface **for anything unbounded** — continuous
+  cross-Activity audio scrubbing, OCR text copy/download, frame/audio export, unbounded frame
+  navigation; **Insights** is a read/understand surface, and an **Activity** or **Answer Source**
+  hands off to **Timeline** for those rather than inspecting in place. The one carved exception is
+  the **Receipt**, which does **bounded inspection of a single Activity**: it scrubs that Activity's
+  frames *and* plays its engine-cited **Audio Transcription Span** moments as bounded, synchronized
+  audio-plus-screen clips, because that is proof of a derived card scoped to its own span, not a
+  second capture surface. The line is **bounded, not silent** — the moment a Receipt would need OCR
+  copy, audio *past this Activity's cited moments*, export, or navigation past the span, the answer
+  is its "Open in Timeline" handoff, never growing the modal
+  ([ADR 0049](../adr/0049-receipt-plays-cited-audio-as-bounded-synced-clips.md)).
+- Cross-surface numbers follow **"same label ⇒ same computation"**: a metric shown in more than one
+  Insights sub-surface must come from one shared computation, never re-derived per tab. "Tracked"
+  is **Usage Charts** app-active time everywhere (capture time — it deliberately does *not* equal
+  the sum of a day's **Activity** durations; gaps and the pending region account for the
+  difference); category % and focus % are **Activity**-based everywhere; capture-density strips are
+  frame coverage, a coverage signal never labeled as time.
+- **Focus Classification** display labels soften the stored values: the stored `distracted` level
+  renders as **"Scattered"** in the UI (deliberate — observation, not scolding, per the
+  conservative posture). The stored enum is unchanged.
+- The **Journal** live edge is explicit, never silent: capture newer than the derivation worker's
+  covered watermark ("summarized up to X", exposed through the User Context status surface) renders
+  as a visible pending region — "Summarizing this window…" while the engine is healthy, the *reason*
+  when it is not (engine off, no key, budget exhausted) — so un-summarized capture is never mistaken
+  for lost data. Windows with no capture at all render as away-time gaps instead.
 - An **Activity** is a handoff anchor, not a Timeline overlay: selecting one in **Insights** lands the
   **Timeline** at the Activity's *span* (start + highlighted range, a small extension to the existing
   **Search Result Anchor** navigation), and the **Timeline stays raw**. v1 does NOT paint a semantic
@@ -327,6 +433,109 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
   between doing something and its appearing as an **Activity** is accepted.
 - A **Conclusion** is open-ended natural language, not a structured `subject+attribute+value`
   row; its **Subject** is a grouping handle, not a rigid schema slot.
+- **Conclusion identity is per-belief within a Subject, so recurring evidence reinforces the matching
+  belief rather than duplicating it or collapsing a subject's distinct beliefs into one row.** A
+  **Subject** holds multiple atomic **Conclusion** values; a fresh belief reinforces the **specific
+  existing Conclusion it restates** (the distiller decides the match and cites that Conclusion's `id`,
+  below), and a new row is inserted for a genuinely new belief — including a new belief about an
+  *existing* subject, the case the old subject-only match wrongly reinforced. The store **trusts the
+  cited `id`**: an absent, stale, foreign-subject, or dismissed id degrades to a fresh row and never
+  writes the wrong belief. On reinforce it bumps **Confidence**, replaces **that belief's** evidence
+  with the fresh supporting **Activity** values, snapshots the up-step into **Confidence History**, and
+  **freezes the statement text** — under per-belief identity the freeze is no longer a compromise: the
+  frozen wording is that belief's own and its evidence is that belief's own, so the two cannot drift
+  (the drift bug was the subject-only collapse overwriting one frozen row's evidence with whatever
+  recent **Activity** reinforced the *subject*). `UNIQUE(subject, statement)` stays as the exact-repeat
+  net; a new statement under an existing subject inserts cleanly. This **supersedes the subject-centric
+  / one-canonical-row write rule of [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md)**
+  (which fixed duplicate *subjects* + warming but collapsed a subject's distinct beliefs) while keeping
+  0042's candidate-recall legs and Subject-vector machinery. Warming stays reachable — the up-step
+  snapshot is per-belief and the **Subject** view already aggregates trend across a subject's
+  conclusions. **Forward-only, no migration** (the cited `id` is transient; nothing new is stored):
+  legacy collapsed/compound rows self-fade under decay, and **Wipe User Context** is the opt-in clean
+  rebuild. See [ADR 0043](../adr/0043-conclusion-identity-is-per-belief-within-a-subject.md).
+- **The distillation Reasoning Engine is the matcher; it is shown the beliefs it already holds.**
+  The distillation prompt carries a **"KNOWN SUBJECTS"** block (alongside the
+  user-authored and dismissed blocks) and a preamble instruction to reuse a handle verbatim when a
+  belief is about an existing subject and coin a new one only for a genuinely new subject. **Each
+  candidate subject in the block also lists its existing Conclusion values (`id: statement`,
+  confidence-ordered, char-budgeted), and the preamble tells the model to reinforce one — citing its
+  `id` — when a fresh atomic belief restates it, emitting a new belief (no id) otherwise; the store
+  then reinforces exactly the cited Conclusion (per-belief identity,
+  [ADR 0043](../adr/0043-conclusion-identity-is-per-belief-within-a-subject.md)) instead of guessing by
+  subject.** The recall legs below therefore select not just which *handles* to show but whose
+  *conclusions* ride along — the belief-level match is the same LLM-as-matcher pattern, one level
+  deeper. Lexical
+  *matching* (as the identity decider) was rejected at the source (measured rephrasing overlap ~31%, too
+  low to decide identity) — but lexical overlap is a fine *recall* signal, so the candidate handles are
+  the **union of three recall legs**, deduped case-insensitively with the **recency floor first** so the
+  freshest (most duplication-prone) handles always survive the `KNOWN_SUBJECTS_CHAR_CAP=4000`-char cap:
+  - **Recency floor:** the newest `KNOWN_SUBJECTS_RECENCY_FLOOR=30` distinct non-dismissed handles
+    (`list_subject_handles_by_recency`, newest-supported-first). Always present, model or not.
+  - **Lexical leg (model-free):** `list_subject_handles_by_lexical_overlap` ranks ALL non-dismissed
+    subjects by whole-word IDF overlap (name-boosted) of name/statements against the recent Activity
+    text, keeping the best `KNOWN_SUBJECTS_LEXICAL_LIMIT=20`. Reuses the `recall_*` tokenizer/stemmer
+    (the `recall_context` broker tool's) lifted into a shared `crate::lexical` module — the Rust twin of
+    the frontend `subjectSearch.ts`. **No embedding, no backfill lag**, so it catches the common case (a
+    reworded duplicate shares words) even in the no-model config.
+  - **Semantic leg — Mode 1 (embedding model installed):** per-activity embed the distillation window
+    (`EmbedKind::Query`), KNN top-`K_PER_ACTIVITY=5` against the subject vectors, union+dedup
+    case-insensitively (keep max similarity), drop below cosine floor `SUBJECT_CANDIDATE_COSINE_FLOOR=0.3`,
+    cap at `SUBJECT_CANDIDATE_CAP=40` handles. Catches *non-lexical* relatedness ("Apple" ↔ "iPhone");
+    empty no-op when no model is installed.
+
+  This union replaced an earlier `semantic OR recency` **either/or** that was a live duplication bug: the
+  embedding backfill embeds a new subject's vector only *after* the distillation that creates it, so the
+  freshest subjects were invisible to semantic KNN, and a non-empty semantic set suppressed the recency
+  fallback — letting "Marvel Rivals / gaming" get reworded into "Marvel Rivals gaming videos". The recency
+  floor and lag-free lexical leg both close that gap. **Graceful degradation is load-bearing** (prod
+  ships zero embedding model today): with no model the recency + lexical legs still run. Gated on
+  `default_semantic_search_enabled()`, default model `nomic-embed-text-v1.5`, **not bundled** (opt-in
+  download). The semantic floor/`K`/cap are **starting points pending calibration against real subject
+  clusters** once a model runs on real data. See [ADR 0042](../adr/0042-subject-centric-conclusion-identity-and-pre-retrieval-candidate-selection.md).
+- **Subject vectors live in their own plain table, embedded by a desktop backfill worker.** Migration
+  `0043` adds `user_context_subject_vectors(subject TEXT PRIMARY KEY COLLATE NOCASE, embedding BLOB,
+  embedded_at_ms INTEGER)` and migration `0044` adds `embedded_model TEXT` — **not `vec0`**: at ~2k
+  subjects, loading BLOBs and brute-force f32 cosine in
+  Rust is microseconds. `SubjectVectorStore` (in `crates/app-infra/src/user_context/subject_vectors.rs`)
+  does upsert/get/mark-stale/needs-embedding/cosine-KNN, and **app-infra stays embedding-free** — it
+  stores BLOBs and computes cosine, never holds an embedder (the same boundary that keeps `ai-runtime`
+  out of it). The desktop backfill worker (`subject_vector_worker.rs`, spawned on the deferred-startup
+  seam) embeds distinct subjects via the shared **Semantic Search** embedder, embedding text
+  `"{subject}: {canonical_statement}"` (statement enrichment so terse handles carry context). It is an
+  **idle no-op when no model is installed** (self-runs the day one is), and **Dismiss** marks the
+  affected subject's vector stale for lazy re-embed. **Vectors are model-identity aware:** each row
+  records the `provider/model_id` it was embedded under; the worker's "needs embedding" query treats a
+  vector embedded under a *different* model as stale (so the worker continuously re-embeds the whole
+  dossier after a model switch — no separate reconciliation pass), and KNN ranks only vectors under the
+  active model (so a stale cross-model vector never produces a garbage cosine while it waits to be
+  re-embedded). This is stricter than the **Semantic Search** index, whose dimension-only `vec0` rebuild
+  is forced by the fixed-dimension table rather than chosen — the plain subject table has no such
+  constraint, so it keys off model identity directly. The subject vectors are derived **User Context**:
+  cleared by **Wipe User Context**, never cascaded by **Retention Policy**
+  ([ADR 0029](../adr/0029-user-context-outlives-raw-retention-privacy-delete-cascades.md)). The embedder
+  reuses the **Semantic Search** machinery ([ADR 0036](../adr/0036-semantic-search-v1-hybrid-fastembed-vectors-with-fts5.md) /
+  [ADR 0037](../adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md)).
+- **Behavioral Routines are distilled from a Recurrence Digest, not a wider raw window** (decided
+  Jul 2026). The distillation pass stays at its bounded recent-Activity window, but the prompt gains
+  a compact deterministic **Recurrence Digest** block: plain counting over the stored **Activity**
+  record for the last few weeks (per-hour-of-day category/app histograms, first-activity-of-day
+  patterns, focus-by-hour) — no LLM, no meaningful token cost, the same counting shape as **Usage
+  Charts**. Distillation timestamps switch from labeled UTC to **local time** (the Digest's offset
+  approach) so "morning" is representable at all, and the preamble's exemplars include
+  routine-shaped beliefs. The aggregate is derivation *input*, never stored evidence: a routine
+  **Conclusion** cites the recent in-window exemplar Activities as its evidence links, so the
+  grounded-Conclusion invariant holds; its clickable proof is a handful of recent exemplars, with
+  the recurrence claim justified by the aggregate (accepted trade). A wider raw Activity window
+  (token blowup for a slow-moving signal) and a separate routine-detection worker beat (machinery
+  before need) were rejected. Focus-shaped routines follow the **observation posture** (the
+  **Focus Classification** "Scattered" softening, extended): the engine states *when focused work
+  happens* ("Deep-focus work tends to land in the afternoons"), never a productivity verdict
+  ("most productive in the afternoon") — same retrievable knowledge, no grade of the user stored
+  as a standing belief. Routines get **no reserved subject taxonomy**: the engine coins subjects
+  naturally (a routine about a thing files under the thing's existing subject — "watches gaming
+  streams every evening" lands under Gaming), and near-duplicate routine handles are the existing
+  recall legs' problem to catch, calibration — not a taxonomy — being the fix if they miss.
 - Derivation runs on **two cadences**: **Activity** derivation is opportunistic and frequent
   (batched, preferring idle time or just-after-recording, the **OCR Catch-Up** pattern, off the hot
   path), while **Conclusion** re-distillation runs on a slower beat over accumulated Activities, plus
@@ -341,6 +550,17 @@ _Avoid_: productivity score, discipline grade, hard distraction blocklist, judgm
 - When the selected **Reasoning Engine** is a cloud model, only redacted text (recognized screen
   text and transcripts, through the existing broker redaction) crosses the wire — never raw frame
   images or audio; when it is a local model, nothing leaves the device.
+- **Derivation is speaker- and source-blind today** (the audio window feeds only transcript
+  `result_text`, no `source_kind`, no speaker turns), so the engine can **misattribute** — rendering
+  words spoken *to* the user as words the user said. The **Receipt** exposes this by displaying
+  read-only speaker attribution on cited segments; the **root fix** is to make derivation
+  **source-aware** — tag each `a<id>` as *you* (`microphone`) vs *other side* (`system_audio`), with
+  anonymous "Speaker A/B" turns as an optional next layer — so it stops misattributing at the source
+  and a later speaker correction **propagates** on re-derivation. **Recognized names never cross to a
+  cloud engine** (a new egress of third-party identity past the redacted-text line); speaker identity
+  travels **by id**, resolved to a display name **on-device at read time**, never frozen into derived
+  data. This is a **separate follow-up** from the Receipt's audio playback. See
+  [ADR 0050](../adr/0050-derivation-is-source-aware-names-resolve-on-device.md).
 - The assembled dossier (the set of **Conclusion** values) is stored only on-device regardless of
   engine; a cloud **Reasoning Engine** is stateless reasoning that sees redacted summaries passing
   through and never holds the assembled profile.
