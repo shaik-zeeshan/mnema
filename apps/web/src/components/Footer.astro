@@ -16,13 +16,7 @@ import { DOWNLOAD_URL, GITHUB_URL } from "../config";
           />
           <span class="footer-name">mnema</span>
         </a>
-        <a
-          href={DOWNLOAD_URL}
-          class="footer-version"
-          data-latest-release-version
-          target="_blank"
-          rel="noopener noreferrer">latest</a
-        >
+        <span class="footer-version" data-latest-release-version>latest</span>
       </div>
 
       <nav class="footer-links" aria-label="Footer">
@@ -102,19 +96,9 @@ import { DOWNLOAD_URL, GITHUB_URL } from "../config";
     font-family: var(--font-mono);
     font-size: 0.65rem;
     color: var(--fg-muted);
-    text-decoration: none;
     padding: 0.15rem 0.45rem;
     border: 1px solid var(--border);
     border-radius: var(--radius-sm);
-    transition:
-      color 0.2s var(--ease-out-quart),
-      border-color 0.2s var(--ease-out-quart);
-  }
-
-  .footer-version:hover {
-    color: var(--fg);
-    border-color: var(--border-strong);
-    text-decoration: none;
   }
 
   .footer-links {

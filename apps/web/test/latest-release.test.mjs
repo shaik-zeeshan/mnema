@@ -64,3 +64,10 @@ test("keeps the static fallback on a malformed feed", async () => {
   const r = await resolve({ response: { ok: true, json: async () => ({ version: 42 }) } });
   assert.equal(r.version, "latest");
 });
+
+test("keeps the static fallback on an empty-string version", async () => {
+  // A string, but falsy — exercises the `!feed.version` arm of the guard;
+  // without it the chip would render as a bare "v".
+  const r = await resolve({ response: { ok: true, json: async () => ({ version: "" }) } });
+  assert.equal(r.version, "latest");
+});
