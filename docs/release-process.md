@@ -6,7 +6,7 @@ The first update-capable build must still be installed manually by existing user
 
 ## Distribution Bucket
 
-Public distribution lives on Cloudflare R2 behind `https://release.mnema.day` (bucket `mnema-releases`), never on GitHub, so downloads and update feeds keep working if the source repository goes private. GitHub Releases remain as an internal build-staging area and record. Bucket layout:
+Public distribution lives on Cloudflare R2 behind `https://release.mnema.day` (bucket `mnema-release`), never on GitHub, so downloads and update feeds keep working if the source repository goes private. GitHub Releases remain as an internal build-staging area and record. Bucket layout:
 
 - `releases/v{version}/` — immutable artifacts (DMG, `.app.tar.gz`, `.app.tar.gz.sig`).
 - `stable/latest.json` and `preview/latest.json` — the per-channel updater feeds, with URLs rewritten to the R2 artifacts.

@@ -26,7 +26,7 @@ permissions:
 #   stable/Mnema.dmg      fixed download URL used by the website
 env:
   RELEASES_BASE_URL: https://release.mnema.day
-  R2_BUCKET: mnema-releases
+  R2_BUCKET: mnema-release
   AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
   AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
   AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
