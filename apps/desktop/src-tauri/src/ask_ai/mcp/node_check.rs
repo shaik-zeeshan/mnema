@@ -38,17 +38,18 @@ pub async fn mcp_check_node() -> Option<String> {
         .flatten()
 }
 
-#[cfg(test)]
+// macOS-only: both tests assert the Unix login-shell PATH mechanism —
+// resolution via the child's `PATH` env — which SUPPORTS.md marks Windows
+// unaddressed. On Windows, CreateProcess resolves `node` through the parent's
+// search path regardless of the child PATH override, so the bogus-PATH test
+// finds an installed Node and fails.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
     /// On a dev box, Node is on the login-shell PATH and reports a `vX.Y.Z`
     /// version. If this fails, either the box has no Node or the login-shell
     /// PATH resolution regressed (see transport.rs `login_shell_path_resolves`).
-    ///
-    /// macOS-only: the login-shell PATH mechanism is Unix (`$SHELL -l -c`) and
-    /// SUPPORTS.md marks Windows unaddressed for it.
-    #[cfg(target_os = "macos")]
     #[test]
     fn detect_node_finds_node_on_the_login_shell_path() {
         let path = crate::ask_ai::mcp::transport::login_shell_path();
