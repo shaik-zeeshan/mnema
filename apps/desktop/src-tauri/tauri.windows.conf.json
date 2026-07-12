@@ -7,6 +7,19 @@
       "resources/ort/onnxruntime.dll": "onnxruntime.dll",
       "resources/ort/onnxruntime_providers_shared.dll": "onnxruntime_providers_shared.dll",
       "resources/ort/onnxruntime_providers_cuda.dll": "onnxruntime_providers_cuda.dll"
+    },
+    "windows": {
+      "signCommand": {
+        "cmd": "powershell",
+        "args": [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "../../../scripts/windows-sign.ps1",
+          "%1"
+        ]
+      }
     }
   }
 }

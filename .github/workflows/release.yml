@@ -246,30 +246,58 @@ jobs:
       # prepare-ort-dylibs.mjs (stages the 3 declared ONNX Runtime DLLs) and the
       # frontend build. The signing keys make it emit the `-setup.exe.sig`
       # updater signature. Release creation happens in the `assemble` job.
+      #
+      # Authenticode: `bundle.windows.signCommand` (tauri.windows.conf.json)
+      # runs scripts/windows-sign.ps1 on every produced binary DURING bundling,
+      # so Azure Artifact Signing happens BEFORE the minisign `-setup.exe.sig`
+      # is generated and the updater signature covers the signed bytes.
+      # AZURE_SIGNING_ENABLED derives from the AZURE_TENANT_ID secret: with no
+      # Azure account provisioned the script is a clean no-op (unsigned
+      # preview); once the secrets below are set, signing turns on with no
+      # workflow change.
       - name: Build Windows bundle (no release)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_SIGNING_ENABLED: ${{ secrets.AZURE_TENANT_ID != '' }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
           CI: true
         with:
           projectPath: apps/desktop
           args: --target x86_64-pc-windows-msvc
 
-      - name: Authenticode sign NSIS installer (optional, secret-gated)
-        shell: bash
+      # Signing itself already ran inside the bundle step (signCommand). This
+      # step only asserts the outcome: signed when secrets are present,
+      # explicit unsigned-preview notice when they are not.
+      - name: Verify Authenticode signature (secret-gated)
+        shell: pwsh
         env:
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          AZURE_SIGNING_ENABLED: ${{ secrets.AZURE_TENANT_ID != '' }}
         run: |
-          set -euo pipefail
-          if [ -z "${WINDOWS_CERTIFICATE:-}" ]; then
-            echo "::notice::No Windows signing cert secret present -> shipping UNSIGNED installer."
-            echo "SmartScreen 'unknown publisher' friction is expected on install AND auto-update (the updater runs the downloaded .exe). Acceptable for preview/smoke only. Intended provider when adopted: Azure Trusted Signing."
+          $installer = Get-ChildItem "target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe" |
+            Select-Object -First 1
+          if (-not $installer) {
+            Write-Output "::error::NSIS installer not found for signature verification."
+            exit 1
+          }
+          if ($env:AZURE_SIGNING_ENABLED -ne 'true') {
+            Write-Output "::notice::No Azure Artifact Signing secrets present -> shipping UNSIGNED installer."
+            Write-Output "SmartScreen 'unknown publisher' friction is expected on install AND auto-update (the updater runs the downloaded .exe). Acceptable for preview/smoke only. Provider when adopted: Azure Artifact Signing (set the AZURE_* secrets to enable)."
             exit 0
-          fi
-          echo "Windows signing cert present -> Authenticode signing would run here (Azure Trusted Signing)."
-          echo "::warning::Signing adoption TODO: real signing MUST run BEFORE tauri generates the updater .exe.sig (minisign), else the update signature won't match the signed bytes. This stub currently runs post-build and does not yet re-sign."
+          }
+          $sig = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($sig.Status -ne 'Valid') {
+            Write-Output "::error::Signing was enabled but $($installer.Name) is not validly Authenticode-signed (status: $($sig.Status) - $($sig.StatusMessage))."
+            exit 1
+          }
+          Write-Output "Authenticode signature OK on $($installer.Name): $($sig.SignerCertificate.Subject)"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
