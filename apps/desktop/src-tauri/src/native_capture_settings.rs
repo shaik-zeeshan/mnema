@@ -36,6 +36,11 @@ const MIN_AUDIO_ACTIVITY_SENSITIVITY: u8 = 0;
 const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
 const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const MAX_SEGMENT_DURATION_SECONDS: u64 = 300;
+// One snapshot per minute. Matches the frontend capture-rate ladder floor
+// (lib/components/capture-rate.ts); JS `1/60` and Rust `1.0/60.0` produce the
+// same f64, so the boundary value round-trips the wire exactly.
+const MIN_SCREEN_FRAME_RATE: f64 = 1.0 / 60.0;
+const MAX_SCREEN_FRAME_RATE: f64 = 10.0;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
@@ -682,10 +687,11 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if !(0.5..=10.0).contains(&request.screen_frame_rate) {
+    if !(MIN_SCREEN_FRAME_RATE..=MAX_SCREEN_FRAME_RATE).contains(&request.screen_frame_rate) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
-            message: "screenFrameRate must be between 0.5 and 10".to_string(),
+            message: "screenFrameRate must be between 1/60 (one snapshot per minute) and 10"
+                .to_string(),
         });
     }
 
