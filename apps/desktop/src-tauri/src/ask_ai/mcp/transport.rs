@@ -19,12 +19,13 @@ use super::OAuthCredentialStore;
 
 /// A connected, initialized MCP client for one server. The client is an
 /// `RunningService`: dropping it cancels the service loop, which closes the
-/// transport. For stdio that KILLS the whole process GROUP
-/// (`rmcp::transport::child_process::ChildWithCleanup::drop` → `kill()` →
-/// `killpg`): the child is spawned as a process-group leader on Unix, so a
-/// launcher's grandchildren (e.g. the real server behind `npx`) die with it.
-/// The manager needs no explicit child teardown — dropping a cached handle is
-/// enough. (Unix-only group semantics; macOS exercised — SUPPORTS.md.)
+/// transport. For stdio that KILLS the whole process TREE
+/// (`rmcp::transport::child_process::ChildWithCleanup::drop` → `kill()`): the
+/// child is spawned as a process-group leader on Unix (`killpg`) and into a
+/// kill-on-close Job Object on Windows (`TerminateJobObject`), so a launcher's
+/// grandchildren (e.g. the real server behind `npx`) die with it. The manager
+/// needs no explicit child teardown — dropping a cached handle is enough.
+/// (macOS + Windows exercised — SUPPORTS.md.)
 pub(crate) type McpClient = RunningService<RoleClient, ()>;
 
 /// A stable fingerprint of the CONNECT-relevant config fields only. When it
@@ -114,13 +115,21 @@ async fn connect_stdio(cfg: &McpServerConfig, secret: Option<String>) -> Result<
         command_builder.env(name, secret);
     }
 
-    // Spawn as a process-group leader so rmcp's drop-kill (`killpg`) takes out
-    // the whole group — the launcher (`npx`) AND its server grandchildren — not
-    // just the launcher. Unix-only (process-wrap's `JobObject` is the Windows
-    // sibling when that platform is addressed; SUPPORTS.md).
+    // Spawn into a kill-together unit so rmcp's drop-kill takes out the whole
+    // tree — the launcher (`npx`) AND its server grandchildren — not just the
+    // launcher: a process group on Unix (`killpg`), a Job Object on Windows
+    // (`TerminateJobObject`). The Windows `KillOnDrop` wrap additionally opts
+    // the job into KILL_ON_JOB_CLOSE, so the tree still dies with the job
+    // handle even when rmcp's spawned kill task never gets to run (runtime
+    // teardown). SUPPORTS.md tracks per-platform exercise.
     let mut command_wrap = process_wrap::tokio::CommandWrap::from(command_builder);
     #[cfg(unix)]
     command_wrap.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    {
+        command_wrap.wrap(process_wrap::tokio::JobObject);
+        command_wrap.wrap(process_wrap::tokio::KillOnDrop);
+    }
 
     let transport = TokioChildProcess::new(command_wrap)
         .map_err(|error| format!("failed to spawn \"{}\": {error}", cfg.label))?;
@@ -412,6 +421,94 @@ mod tests {
                 std::time::Instant::now() < deadline,
                 "grandchild sleep (pid {grandchild_pid}) survived the transport drop — \
                  process-group kill did not reach it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Windows sibling of the Unix group-kill test: dropping the stdio transport
+    /// must terminate the whole Job Object, not just the launcher. A PowerShell
+    /// launcher `Start-Process`es a hidden `powershell Start-Sleep 300`
+    /// grandchild (pid written to a pidfile), then sleeps without ever speaking
+    /// MCP. The `connect` handshake therefore hangs; abandoning it drops the
+    /// transport → rmcp drop-kill → `TerminateJobObject`. Without the
+    /// `JobObject` wrap only the launcher dies and the grandchild survives this
+    /// test's liveness poll.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn dropping_a_stdio_transport_kills_the_grandchild_too() {
+        let pidfile = std::env::temp_dir().join(format!(
+            "mnema-mcp-job-kill-{}-{:?}.pid",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&pidfile);
+
+        let mut cfg = stdio_cfg();
+        cfg.id = "job-kill-test".to_string();
+        cfg.secret_env_name = None;
+        cfg.command = Some("powershell".to_string());
+        cfg.args = vec![
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            format!(
+                "$p = Start-Process powershell -ArgumentList '-NoProfile','-Command','Start-Sleep 300' \
+                 -WindowStyle Hidden -PassThru; Set-Content -LiteralPath '{}' -Value $p.Id; Start-Sleep 60",
+                pidfile.display()
+            ),
+        ];
+
+        // The handshake never completes (the launcher speaks no MCP). Hold the
+        // pending connect until the launcher has written the grandchild pidfile
+        // (PowerShell startup latency varies too much for a fixed sleep), then
+        // abandon it: dropping the connect future drops the transport, which
+        // must job-kill launcher + grandchild. The poll requires a non-empty
+        // all-digit payload so a created-but-not-yet-written file doesn't pass.
+        let pidfile_written = async {
+            loop {
+                if let Ok(contents) = std::fs::read_to_string(&pidfile) {
+                    let pid = contents.trim();
+                    if !pid.is_empty() && pid.chars().all(|c| c.is_ascii_digit()) {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        };
+        tokio::select! {
+            outcome = tokio::time::timeout(std::time::Duration::from_secs(30), pidfile_written) => {
+                outcome.expect("launcher should write the grandchild pidfile within 30s");
+            }
+            _ = connect(&cfg) => {} // an early return means the spawn/handshake failed
+        }
+
+        let grandchild_pid = std::fs::read_to_string(&pidfile)
+            .expect("launcher should have written the grandchild pidfile")
+            .trim()
+            .to_string();
+        let _ = std::fs::remove_file(&pidfile);
+        assert!(
+            grandchild_pid.chars().all(|c| c.is_ascii_digit()) && !grandchild_pid.is_empty(),
+            "pidfile should hold a bare pid, got: {grandchild_pid:?}"
+        );
+
+        // Poll tasklist until the grandchild is gone (drop-kill runs on a spawned
+        // task, so allow it a bounded moment). The `PID eq` filter returns only
+        // that process, so any digits in the output mean it is still alive.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let output = std::process::Command::new("tasklist")
+                .args(["/FI", &format!("PID eq {grandchild_pid}"), "/NH"])
+                .output()
+                .expect("tasklist should run");
+            let alive = String::from_utf8_lossy(&output.stdout).contains(&grandchild_pid);
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "grandchild powershell (pid {grandchild_pid}) survived the transport drop — \
+                 job-object kill did not reach it"
             );
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }

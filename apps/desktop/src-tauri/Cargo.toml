@@ -125,9 +125,11 @@ rmcp = { version = "2.1.0", default-features = false, features = ["client", "mac
 # us native-tls-free (ADR 0037), matching the workspace's rustls alignment.
 reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["rustls"] }
 # Same semver line as rmcp's internal process-wrap dep (versions unify in Cargo.lock);
-# used to spawn stdio MCP servers as a process-group leader so drop-kill takes the
-# whole group (launcher + grandchildren), not just the launcher.
-process-wrap = { version = "9.0", features = ["tokio1", "process-group"] }
+# used to spawn stdio MCP servers as a process-group leader (Unix) / into a Job
+# Object (Windows) so drop-kill takes the whole tree (launcher + grandchildren),
+# not just the launcher. `kill-on-drop` gates the job's KILL_ON_JOB_CLOSE flag —
+# without it a closed job handle leaves the tree running.
+process-wrap = { version = "9.0", features = ["tokio1", "process-group", "job-object", "kill-on-drop"] }
 
 [target.'cfg(windows)'.dependencies]
 # Enable the speakrs on-device diarization engine on Windows (CPU backend via
