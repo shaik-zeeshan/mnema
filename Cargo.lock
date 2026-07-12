@@ -7511,11 +7511,13 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "capture-types",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokenizers",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
