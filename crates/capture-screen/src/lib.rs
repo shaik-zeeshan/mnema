@@ -4843,6 +4843,13 @@ mod tests {
                 .minimum_frame_interval();
         assert_eq!(interval.value, 60_000);
         assert_eq!(interval.scale, 1000);
+
+        // A rate whose ms-per-frame is fractional (3 fps → 333.33ms) must round,
+        // not truncate — exercises the `.round()` the ladder stops don't hit.
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 3.0, &sources)
+            .minimum_frame_interval();
+        assert_eq!(interval.value, 333);
+        assert_eq!(interval.scale, 1000);
     }
 
     // --- output_files_for_session path-layout regression ---

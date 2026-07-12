@@ -37,7 +37,7 @@ const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
 const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const MAX_SEGMENT_DURATION_SECONDS: u64 = 300;
 // One snapshot per minute. Matches the frontend capture-rate ladder floor
-// (lib/settings/capture-rate.ts); JS `1/60` and Rust `1.0/60.0` produce the
+// (lib/components/capture-rate.ts); JS `1/60` and Rust `1.0/60.0` produce the
 // same f64, so the boundary value round-trips the wire exactly.
 const MIN_SCREEN_FRAME_RATE: f64 = 1.0 / 60.0;
 const MAX_SCREEN_FRAME_RATE: f64 = 10.0;

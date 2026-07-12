@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
+  import { timelineGapMs } from "$lib/components/capture-rate";
   import { tick } from "svelte";
   import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -135,11 +136,9 @@
   // skip) splits an app run in two. Derived from the live recording settings;
   // the 10s floor preserves the old behaviour for fast rates and for history
   // captured before a rate change.
-  const timelineAppGroupMaxGapMs = $derived.by(() => {
-    const fps = captureControls.recordingSettings?.screenFrameRate;
-    const intervalMs = fps && fps > 0 ? 1000 / fps : 2000;
-    return Math.max(10_000, 3 * intervalMs);
-  });
+  const timelineAppGroupMaxGapMs = $derived(
+    timelineGapMs(captureControls.recordingSettings?.screenFrameRate),
+  );
   const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a

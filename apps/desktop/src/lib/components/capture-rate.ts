@@ -58,3 +58,13 @@ export function relativeStorageLabel(intervalS: number): string {
 	if (ratio >= 1) return `${Math.round(ratio * 10) / 10}×`;
 	return `1/${Math.round(1 / ratio)}×`;
 }
+
+// Timeline app-run split threshold. Frames land one capture interval apart, so
+// the gap must comfortably exceed one interval or a single skipped frame splits
+// a run. Derived from the live rate; the 10s floor preserves the old behaviour
+// for fast rates and for history captured before a rate change. Unset/zero fps
+// falls back to the 2s default interval.
+export function timelineGapMs(fps: number | undefined): number {
+	const intervalMs = fps && fps > 0 ? 1000 / fps : DEFAULT_CAPTURE_INTERVAL_S * 1000;
+	return Math.max(10_000, 3 * intervalMs);
+}
