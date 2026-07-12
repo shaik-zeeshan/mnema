@@ -129,10 +129,17 @@
   // on any browser-specific RTL `scrollLeft` convention.
 
   const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
-  // At the default 0.5 fps capture rate frames land ~2s apart, so this must
-  // comfortably exceed one frame interval or a single skipped frame (privacy
-  // exclusion, self-capture skip) splits an app run in two.
-  const TIMELINE_APP_GROUP_MAX_GAP_MS = 10_000;
+  // Frames land one capture interval apart (2s at the default rate, up to 60s
+  // at once-per-minute), so the app-run split threshold must comfortably exceed
+  // one interval or a single skipped frame (privacy exclusion, self-capture
+  // skip) splits an app run in two. Derived from the live recording settings;
+  // the 10s floor preserves the old behaviour for fast rates and for history
+  // captured before a rate change.
+  const timelineAppGroupMaxGapMs = $derived.by(() => {
+    const fps = captureControls.recordingSettings?.screenFrameRate;
+    const intervalMs = fps && fps > 0 ? 1000 / fps : 2000;
+    return Math.max(10_000, 3 * intervalMs);
+  });
   const TIMELINE_PAGE_SIZE = 200;
   // Distance (in frames) from the loaded tail at which we trigger the next
   // `beforeId` page. Sized generously relative to `TIMELINE_PAGE_SIZE` so a
@@ -2976,7 +2983,7 @@
       if (identity === runIdentity) {
         const shouldSplitForTimeGap = runLastCapturedAtMs != null &&
           validCapturedAtMs != null &&
-          Math.abs(runLastCapturedAtMs - validCapturedAtMs) > TIMELINE_APP_GROUP_MAX_GAP_MS;
+          Math.abs(runLastCapturedAtMs - validCapturedAtMs) > timelineAppGroupMaxGapMs;
         if (shouldSplitForTimeGap) {
           flushRun(i);
           runIdentity = identity;
