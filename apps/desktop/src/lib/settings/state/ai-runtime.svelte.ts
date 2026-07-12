@@ -203,7 +203,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     aiProviderKeyInFlight.add(provider);
     try {
       const confirmed = await confirm(
-        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the macOS keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
+        `Deleting the API key for “${deps.labelForProvider(provider)}” removes it from the system keychain right away. Any AI feature using this provider will stop working until you enter a new key.`,
         {
           title: "Delete this API key?",
           kind: "warning",
@@ -342,7 +342,7 @@ export function createAiRuntimeStore(deps: AiRuntimeStoreDeps) {
     mcpSecretInFlight.add(id);
     try {
       const confirmed = await confirm(
-        `Deleting the saved secret for this connector removes it from the macOS keychain right away. The connector will stop authenticating until you enter a new secret.`,
+        `Deleting the saved secret for this connector removes it from the system keychain right away. The connector will stop authenticating until you enter a new secret.`,
         {
           title: "Delete this secret?",
           kind: "warning",

@@ -273,7 +273,7 @@
             {/if}
           </div>
           {#if deepgramKeyPresent}
-            <p class="group-hint">Key saved to the macOS keychain.</p>
+            <p class="group-hint">Key saved to the system keychain.</p>
           {/if}
           {#if deepgramSaveError}
             <p class="group-hint group-hint--warn" role="alert">Couldn’t save key: {deepgramSaveError}</p>

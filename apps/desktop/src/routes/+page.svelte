@@ -3891,8 +3891,8 @@
     if (/failed to join video preview extraction task/i.test(message)) {
       return "Frame preview generation stopped unexpectedly.";
     }
-    if (/only supported on macOS/i.test(message)) {
-      return "Video fallback previews are only supported on macOS.";
+    if (/only supported on macOS and Windows/i.test(message)) {
+      return "Video fallback previews are only supported on macOS and Windows.";
     }
     if (/not found/i.test(message)) {
       return "This frame preview is no longer available.";

@@ -297,7 +297,7 @@ export class SettingsController {
     if (removed && this.isCloudAiProviderKind(removed.kind)) {
       const label = this.aiProviderInstanceLabel(removed);
       const confirmed = await confirm(
-        `Removing “${label}” deletes its API key from the macOS keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
+        `Removing “${label}” deletes its API key from the system keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
         {
           title: "Remove this provider?",
           kind: "warning",

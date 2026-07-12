@@ -1668,7 +1668,7 @@ pub fn rebuild_screen_segment_frame_index_from_video(
     _entries: &[ScreenSegmentFrameIndexEntry],
 ) -> Result<ScreenSegmentFrameIndex, String> {
     Err(format!(
-        "rebuilding screen segment frame index from {} is only supported on macOS",
+        "rebuilding screen segment frame index from {} is not supported on this platform",
         video_path.display()
     ))
 }
@@ -4168,7 +4168,7 @@ fn downcast_macos_capture_session(
         .and_then(|session| session.as_any_mut().downcast_mut::<ActiveCaptureSession>())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
 pub fn update_active_privacy_filter(
     _active_session: &mut Option<Box<dyn ScreenCaptureSession>>,
     _filter: PrivacyContentFilter,
