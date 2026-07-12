@@ -23,6 +23,8 @@ mod semantic_search;
 pub mod status;
 pub mod usage_charts;
 pub mod user_context;
+#[cfg(target_os = "windows")]
+mod windows_credential_store;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::BTreeSet, path::Path, sync::Arc};

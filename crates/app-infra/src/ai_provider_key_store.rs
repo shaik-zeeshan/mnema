@@ -199,21 +199,55 @@ fn delete_platform_key(provider: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows Credential Manager backend, sharing the generic-credential helpers
+// with `mcp_server_secret_store` (same "{service}:{account}" target-name and
+// app-id user-name conventions as `capture_index_key_store`).
+#[cfg(target_os = "windows")]
+fn load_platform_key(provider: &str) -> Result<Option<String>> {
+    crate::windows_credential_store::load_credential(
+        KEYCHAIN_SERVICE,
+        provider,
+        "ai provider key",
+        AppInfraError::AiProviderKeyStore,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn store_platform_key(provider: &str, key: &str) -> Result<()> {
+    crate::windows_credential_store::store_credential(
+        KEYCHAIN_SERVICE,
+        provider,
+        key,
+        "ai provider key",
+        AppInfraError::AiProviderKeyStore,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn delete_platform_key(provider: &str) -> Result<()> {
+    crate::windows_credential_store::delete_credential(
+        KEYCHAIN_SERVICE,
+        provider,
+        "ai provider key",
+        AppInfraError::AiProviderKeyStore,
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn load_platform_key(_provider: &str) -> Result<Option<String>> {
     Err(AppInfraError::AiProviderKeyStore(
         "ai provider key store is unsupported on this platform".to_string(),
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn store_platform_key(_provider: &str, _key: &str) -> Result<()> {
     Err(AppInfraError::AiProviderKeyStore(
         "ai provider key store is unsupported on this platform".to_string(),
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn delete_platform_key(_provider: &str) -> Result<()> {
     Err(AppInfraError::AiProviderKeyStore(
         "ai provider key store is unsupported on this platform".to_string(),
