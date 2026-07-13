@@ -4633,6 +4633,7 @@ dependencies = [
  "async-trait",
  "audio-transcription",
  "base64 0.22.1",
+ "block",
  "bzip2 0.6.1",
  "capture-metadata",
  "capture-microphone",
@@ -7511,11 +7512,13 @@ dependencies = [
  "candle-nn",
  "candle-transformers",
  "capture-types",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokenizers",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -110,8 +110,9 @@ Pushing a `v*` tag (or dispatching **Release**) runs three jobs:
 1. `build-macos` (macos-15, `aarch64-apple-darwin`) builds the DMG,
    `.app.tar.gz`, and `.sig` — build-only, uploaded as artifacts, no release.
 2. `build-windows` (windows-latest, `x86_64-pc-windows-msvc`) builds the NSIS
-   `-setup.exe` and its `.exe.sig` — build-only, under `msvc-dev-cmd`, with a
-   secret-gated Authenticode signing stub.
+   `-setup.exe` and its `.exe.sig` — build-only, under `msvc-dev-cmd`, with
+   secret-gated Authenticode signing wired through Tauri's
+   `bundle.windows.signCommand` (a clean no-op until the Azure secrets exist).
 3. `assemble` (ubuntu, `needs` both) hand-builds ONE two-platform `latest.json`
    (`darwin-aarch64` + `windows-x86_64`) via
    `scripts/assemble-release-manifest.mjs`, checksums every asset into
@@ -139,15 +140,45 @@ deploy that release's `latest.json` to GitHub Pages `updates/preview/latest.json
 - Updater minisign signing works on Windows through the shared
   `TAURI_SIGNING_PRIVATE_KEY`, exactly as on macOS.
 
+### Authenticode signing seam (Windows)
+
+Signing is wired but dormant: `bundle.windows.signCommand` in
+`apps/desktop/src-tauri/tauri.windows.conf.json` makes the Tauri bundler run
+`scripts/windows-sign.ps1` on every binary it produces (app exe, sidecar exe,
+NSIS `-setup.exe`) **during** bundling — i.e. before tauri emits the minisign
+updater signature, so the `-setup.exe.sig` covers the signed installer bytes
+(the old post-build stub's ordering flaw is fixed).
+
+The script's gate is `AZURE_SIGNING_ENABLED == "true"`, which the workflow
+derives from the presence of the `AZURE_TENANT_ID` secret:
+
+- Secrets absent → the script prints an unsigned-preview notice and exits 0;
+  the post-build workflow step emits the `::notice::` and the release ships
+  unsigned. Nothing touches the network or the PSGallery.
+- Secrets present → the script installs the `TrustedSigning` PowerShell module
+  if needed and signs via **Azure Artifact Signing** (renamed from Azure
+  Trusted Signing, Jan 2026), authenticating with a service principal through
+  `AZURE_TENANT_ID` / `AZURE_CLIENT_ID` / `AZURE_CLIENT_SECRET`. Any failure is
+  fatal — a build that asked to be signed can never ship unsigned. The
+  post-build step then asserts the installer's Authenticode status is `Valid`.
+
+To enable signing, provision an Azure Artifact Signing account (individual
+accounts are currently US/Canada-only; organizations need 3+ years of
+verifiable business history), create a public-trust certificate profile plus a
+service principal with the Artifact Signing Certificate Profile Signer role,
+and set six secrets in the `macos-release` environment: `AZURE_TENANT_ID`,
+`AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_SIGNING_ENDPOINT` (region
+endpoint, e.g. `https://eus.codesigning.azure.net`), `AZURE_SIGNING_ACCOUNT`,
+and `AZURE_SIGNING_PROFILE`. No workflow or config change is needed.
+
 ### Unsigned-preview posture (Windows)
 
-There is no Authenticode certificate yet, so the `build-windows` signing step is
-a **no-op stub** whenever the cert secret is absent. Consequences:
+Until those secrets exist, builds remain unsigned. Consequences:
 
 - Windows SmartScreen shows an "unknown publisher" warning on both first install
-  and on each auto-update.
+  and on each auto-update — unchanged until signing is enabled.
 - This is acceptable for preview / smoke builds only.
-- Treat code signing (intended: **Azure Trusted Signing**) as a gate before
+- Treat code signing (**Azure Artifact Signing**) as a gate before
   inviting non-technical users onto the stable channel.
 
 ### Windows on-device smoke checklist
@@ -177,9 +208,12 @@ These are the manual gate steps that cannot be run from CI:
    old `macos-release.yml` produced.
 3. Only after both pass: delete `macos-release.yml` (and optionally
    `macos-release-promote.yml`). Its `v*` trigger is already disabled.
-4. The Authenticode signing step is asserted to be a no-op while no cert secret
-   is set; do not test real signing until a certificate (Azure Trusted Signing)
-   is provisioned.
+4. Authenticode signing runs inside the bundle step via
+   `bundle.windows.signCommand` (`scripts/windows-sign.ps1`) and is a clean
+   no-op while the `AZURE_*` secrets are unset; do not test real signing until
+   an Azure Artifact Signing account is provisioned. Once the six secrets are
+   set (see "Authenticode signing seam"), the first tag build signs
+   automatically and the post-build step asserts the signature.
 
 ## Future Developer ID Release
 

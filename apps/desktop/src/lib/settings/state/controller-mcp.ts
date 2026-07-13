@@ -53,7 +53,7 @@ export function createMcpConnectorActions(deps: McpConnectorActionDeps) {
     if (opts?.confirm !== false) {
       const label = removed.label.trim() || id;
       const confirmed = await confirm(
-        `Removing “${label}” deletes its saved secret from the macOS keychain right away and stops offering its tools to chat.`,
+        `Removing “${label}” deletes its saved secret from the system keychain right away and stops offering its tools to chat.`,
         {
           title: "Remove this connector?",
           kind: "warning",

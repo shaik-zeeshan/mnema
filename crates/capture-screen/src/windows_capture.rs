@@ -1983,10 +1983,17 @@ fn sanitized_frame_rate(frame_rate: f64) -> f64 {
 }
 
 /// The MF frame-rate ratio (numerator, denominator) for a (possibly fractional)
-/// frames-per-second value: `rate * 1000 / 1000`, so `0.5` fps → `500/1000`.
+/// frames-per-second value, expressed as `1000 / (ms-per-frame)`. Encoding the
+/// rate on the DENOMINATOR (ms-per-frame) side keeps LONG intervals exact — the
+/// old numerator-side `(rate * 1000).round() / 1000` truncated 1/60 fps to
+/// `17/1000` (0.017 fps, a ~2% error) instead of the exact `1000/60000`. This
+/// mirrors the macOS ScreenCaptureKit fix that moved ms-per-frame to the CMTime
+/// value side so once-per-minute snapshots stay precise (see
+/// `configured_screen_capture_kit_stream_cfg`). Ladder stops land exactly:
+/// `1/60`→`1000/60000`, `0.5`→`1000/2000`, `1`→`1000/1000`, `10`→`1000/100`.
 fn frame_rate_ratio(frame_rate: f64) -> (u32, u32) {
-    let numerator = (sanitized_frame_rate(frame_rate) * 1000.0).round();
-    (numerator.clamp(1.0, u32::MAX as f64) as u32, 1000)
+    let ms_per_frame = (1000.0 / sanitized_frame_rate(frame_rate)).round();
+    (1000, ms_per_frame.clamp(1.0, u32::MAX as f64) as u32)
 }
 
 fn frame_duration_ticks(frame_rate: f64) -> i64 {
@@ -2180,6 +2187,23 @@ mod tests {
 
     fn y_from_bgr(b: u8, g: u8, r: u8) -> u8 {
         clamp_u8((77 * r as i32 + 150 * g as i32 + 29 * b as i32) >> 8)
+    }
+
+    #[test]
+    fn frame_rate_ratio_keeps_long_intervals_exact() {
+        // The MF frame-rate ratio is `numerator / denominator` fps. Encoding the
+        // rate on the denominator (ms-per-frame) side keeps the full 1/60–10 fps
+        // ladder exact — critically, once-per-minute snapshots must NOT truncate
+        // the way the old numerator-side `(rate * 1000).round()` did (1/60 →
+        // 17/1000 = 0.017 fps, a ~2% error). This parallels the macOS CMTime fix.
+        assert_eq!(frame_rate_ratio(1.0 / 60.0), (1000, 60_000));
+        assert_eq!(frame_rate_ratio(0.5), (1000, 2_000));
+        assert_eq!(frame_rate_ratio(1.0), (1000, 1_000));
+        assert_eq!(frame_rate_ratio(10.0), (1000, 100));
+        // Degenerate rates fall back to 30 fps (33.33ms per frame, rounded).
+        assert_eq!(frame_rate_ratio(0.0), (1000, 33));
+        assert_eq!(frame_rate_ratio(-1.0), (1000, 33));
+        assert_eq!(frame_rate_ratio(f64::NAN), (1000, 33));
     }
 
     #[test]

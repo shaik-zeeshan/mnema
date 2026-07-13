@@ -38,7 +38,7 @@
       </button>
       <p class="oauth__reassure">
         Opens your browser to approve. Nothing is pasted here — only the returned token lands in your
-        macOS keychain.
+        system keychain.
       </p>
     </div>
   {:else if stage === "authorizing"}

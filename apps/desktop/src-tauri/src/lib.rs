@@ -28,6 +28,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod webview_cache;
 mod windows;
 
 // Re-exported for the bin entry (`main.rs`) so `ORT_DYLIB_PATH` can be pinned as
