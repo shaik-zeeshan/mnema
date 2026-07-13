@@ -4576,6 +4576,7 @@ dependencies = [
  "async-trait",
  "audio-transcription",
  "base64 0.22.1",
+ "block",
  "bzip2 0.6.1",
  "capture-metadata",
  "capture-microphone",

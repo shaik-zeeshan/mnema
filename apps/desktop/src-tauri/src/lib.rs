@@ -25,6 +25,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod webview_cache;
 mod windows;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
