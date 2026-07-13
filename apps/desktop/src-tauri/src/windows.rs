@@ -1423,9 +1423,32 @@ pub(crate) fn toggle_quick_recall_window(app: &tauri::AppHandle) -> Result<(), S
         }
         return Ok(());
     }
-    let window = build_quick_recall_window(app)?;
-    summon_quick_recall_window(&window);
-    Ok(())
+    // On Windows, `WebviewWindowBuilder::build()` deadlocks when it runs inside a
+    // synchronous command or an event-loop callback (see `open_new_app_window`):
+    // this path is reached from both `summon_quick_recall_window_command` (a sync
+    // command) and `handle_global_shortcut` (an event-loop callback). Build off the
+    // main loop so WebView2 controller creation can finish, mirroring
+    // `open_new_app_window`. Other platforms build inline — and macOS must run its
+    // Cocoa panel configuration (in `build_quick_recall_window`) on the calling
+    // main thread.
+    #[cfg(target_os = "windows")]
+    {
+        let app = app.clone();
+        std::thread::spawn(move || match build_quick_recall_window(&app) {
+            Ok(window) => summon_quick_recall_window(&window),
+            Err(err) => crate::native_capture::debug_log::log_error(format!(
+                "failed to open quick recall window: {err}"
+            )),
+        });
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let window = build_quick_recall_window(app)?;
+        summon_quick_recall_window(&window);
+        Ok(())
+    }
 }
 
 fn focus_main_window_if_visible(app: &tauri::AppHandle) {
