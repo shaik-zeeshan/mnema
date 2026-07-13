@@ -435,7 +435,6 @@ struct AppWindowConfig {
     min_inner_size: (f64, f64),
     gated_by_dev_options: bool,
     decorations: bool,
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     overlay_title_bar: bool,
     transparent: bool,
     shadow: bool,
@@ -859,11 +858,22 @@ fn build_app_window(
     let config = window.config();
     let mut builder =
         WebviewWindowBuilder::new(app, config.label, WebviewUrl::App(url_path.into()));
+
+    // macOS draws the overlay title bar over the webview (native traffic lights
+    // stay), so an overlay window keeps its native decorations. Windows/Linux
+    // have no overlay equivalent — an overlay window is made frameless and the
+    // frontend draws the whole title bar, including its own minimize / maximize
+    // / close caption controls (see `WindowsCaptionControls.svelte`).
+    #[cfg(target_os = "macos")]
+    let decorations = config.decorations;
+    #[cfg(not(target_os = "macos"))]
+    let decorations = config.decorations && !config.overlay_title_bar;
+
     builder = builder
         .title(config.title)
         .inner_size(config.inner_size.0, config.inner_size.1)
         .min_inner_size(config.min_inner_size.0, config.min_inner_size.1)
-        .decorations(config.decorations)
+        .decorations(decorations)
         .transparent(config.transparent)
         .shadow(config.shadow);
 
