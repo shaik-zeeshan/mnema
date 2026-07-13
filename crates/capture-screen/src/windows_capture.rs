@@ -708,9 +708,32 @@ impl WindowsFrameExportRuntime {
     }
 }
 
+/// The effective frame-export (snapshot) interval for the Windows backend.
+///
+/// WGC delivers frames at the display's change-driven rate (up to the refresh
+/// rate), so — unlike macOS, where ScreenCaptureKit is configured to deliver
+/// samples at `screen_frame_rate` and the export throttle is only the 1s floor
+/// on top of that stream — the Windows export throttle must itself encode the
+/// capture rate. Without this, lowering the capture rate to e.g. one frame every
+/// 3s still yields a snapshot every second (the bare `minimum_interval` floor),
+/// because the raw WGC frame arrivals — not the rate-capped encode stream —
+/// drive the export decision.
+///
+/// The effective interval is the larger of the configured floor and the
+/// capture-rate interval (`1 / screen_frame_rate`), matching the macOS
+/// `max(capture_interval, 1s floor)` snapshot cadence. A non-positive /
+/// non-finite frame rate means "no cap", so the floor is used unchanged.
+fn effective_frame_export_interval(floor: Duration, frame_rate: f64) -> Duration {
+    if !frame_rate.is_finite() || frame_rate <= 0.0 {
+        return floor;
+    }
+    floor.max(Duration::from_secs_f64(1.0 / frame_rate))
+}
+
 fn windows_frame_export_runtime(
     segment_dir: &Path,
     config: Option<ScreenFrameExportConfig>,
+    frame_rate: f64,
     width: u32,
     height: u32,
 ) -> Result<Option<WindowsFrameExportRuntime>, CaptureErrorResponse> {
@@ -722,7 +745,7 @@ fn windows_frame_export_runtime(
     Ok(Some(WindowsFrameExportRuntime {
         artifact_dir,
         on_frame_exported: config.on_frame_exported,
-        minimum_interval: config.minimum_interval,
+        minimum_interval: effective_frame_export_interval(config.minimum_interval, frame_rate),
         last_exported_at: None,
         next_frame_index: 0,
         staging: None,
@@ -855,6 +878,7 @@ impl CaptureEngine {
                 frame_export: windows_frame_export_runtime(
                     &config.segment_dir,
                     config.frame_export.clone(),
+                    config.frame_rate,
                     width,
                     height,
                 )?,
@@ -2204,6 +2228,34 @@ mod tests {
         assert_eq!(frame_rate_ratio(0.0), (1000, 33));
         assert_eq!(frame_rate_ratio(-1.0), (1000, 33));
         assert_eq!(frame_rate_ratio(f64::NAN), (1000, 33));
+    }
+
+    #[test]
+    fn frame_export_interval_honors_capture_rate() {
+        let floor = crate::DEFAULT_SCREEN_FRAME_EXPORT_INTERVAL; // 1s
+        // Capture rates at or above 1 fps stay clamped to the 1s floor, matching
+        // the macOS snapshot cadence (never faster than one snapshot per second).
+        assert_eq!(effective_frame_export_interval(floor, 10.0), floor);
+        assert_eq!(effective_frame_export_interval(floor, 1.0), floor);
+        // Sub-1 fps capture rates stretch the export interval to the capture-rate
+        // interval so snapshots follow the user's setting instead of the 1s floor.
+        assert_eq!(
+            effective_frame_export_interval(floor, 0.5),
+            Duration::from_secs(2)
+        );
+        assert_eq!(
+            effective_frame_export_interval(floor, 1.0 / 3.0),
+            Duration::from_secs(3)
+        );
+        assert_eq!(
+            effective_frame_export_interval(floor, 1.0 / 60.0),
+            Duration::from_secs(60)
+        );
+        // Degenerate rates ("no cap") leave the floor untouched.
+        assert_eq!(effective_frame_export_interval(floor, 0.0), floor);
+        assert_eq!(effective_frame_export_interval(floor, -1.0), floor);
+        assert_eq!(effective_frame_export_interval(floor, f64::NAN), floor);
+        assert_eq!(effective_frame_export_interval(floor, f64::INFINITY), floor);
     }
 
     #[test]
