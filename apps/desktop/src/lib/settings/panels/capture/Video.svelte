@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import Slider from "$lib/components/Slider.svelte";
+  import CaptureRateControl from "$lib/components/CaptureRateControl.svelte";
+  import { captureRateShortLabel } from "$lib/components/capture-rate";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -26,19 +27,12 @@
 
 <SettingGroup id="settings-section-video" title="Video Output">
   <SettingRow
-    label="Screen Frame Rate"
-    description="Higher frame rates produce larger files."
+    label="Screen Capture Rate"
+    description="How often a snapshot of your screen is captured. More frequent snapshots produce larger files."
     full
   >
     {#snippet control()}
-      <Slider
-        bind:value={rec.draftFrameRate}
-        min={0.5}
-        max={10}
-        step={0.5}
-        label="Frame rate"
-        unit=" fps"
-      />
+      <CaptureRateControl bind:value={rec.draftFrameRate} />
     {/snippet}
   </SettingRow>
 
@@ -145,7 +139,7 @@
               larger files. Ideal for high-motion content or final delivery.
             {/if}
             {#if rec.draftFrameRate && rec.draftResolutionMode !== "custom"}
-              {' '}At {rec.draftFrameRate} fps{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
+              {' '}At {captureRateShortLabel(rec.draftFrameRate)}{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
             {/if}
           </p>
         {/if}
@@ -163,7 +157,7 @@
               Very high bitrate — expect large output files.
             {/if}
             {#if rec.draftFrameRate && rec.draftResolutionMode !== "custom"}
-              At {rec.draftFrameRate} fps{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
+              At {captureRateShortLabel(rec.draftFrameRate)}{rec.draftResolutionMode === "preset" ? ` / ${rec.draftResolutionPreset}` : rec.draftResolutionMode === "original" ? " / original resolution" : ""}.
             {/if}
           </p>
         {/if}

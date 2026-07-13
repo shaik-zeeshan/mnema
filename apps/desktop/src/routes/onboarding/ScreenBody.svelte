@@ -2,6 +2,7 @@
   import type { OnboardingController } from "./onboarding.svelte";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import CaptureRateControl from "$lib/components/CaptureRateControl.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import Switch from "$lib/components/Switch.svelte";
 
@@ -48,14 +49,7 @@
   <div class="group-title">Timing</div>
 
   <div class="slider-block">
-    <Slider
-      bind:value={controller.draftFrameRate}
-      min={0.5}
-      max={10}
-      step={0.5}
-      label="Frame rate"
-      unit=" fps"
-    />
+    <CaptureRateControl bind:value={controller.draftFrameRate} />
   </div>
 
   <div class="slider-block">

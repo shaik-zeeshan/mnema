@@ -163,6 +163,9 @@ ocr = { path = "../../../crates/ocr", features = ["paddle-rs", "tesseract-embedd
 # OpenBLAS, Apple Silicon). Cargo unions this `speakrs` feature with the base
 # (default-features = false) entry above, so non-macOS builds never pull speakrs.
 speaker-analysis = { path = "../../../crates/speaker-analysis", features = ["speakrs"] }
+# Already in the tree via cocoa; needed directly for the non-nil completion
+# handler WKWebsiteDataStore requires (webview_cache.rs).
+block = "0.1"
 cocoa = "0.26"
 core-graphics = "0.25"
 core-foundation = "0.10"

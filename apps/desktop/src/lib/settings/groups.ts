@@ -145,7 +145,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "video",
         anchor: "settings-section-video",
         label: "Video",
-        keywords: ["bitrate", "resolution", "frame rate", "fps"],
+        keywords: ["bitrate", "resolution", "frame rate", "fps", "capture rate", "snapshot", "interval"],
       },
       {
         id: "audio",

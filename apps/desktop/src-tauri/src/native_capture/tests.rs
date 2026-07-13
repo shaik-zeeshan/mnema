@@ -1669,7 +1669,8 @@ fn validate_recording_settings_rejects_audio_activity_sensitivity_above_max() {
 
 #[test]
 fn validate_recording_settings_accepts_frame_rate_bounds() {
-    for rate in [0.5, 10.0] {
+    // 1/60 fps = one snapshot per minute, the new floor.
+    for rate in [1.0 / 60.0, 0.5, 10.0] {
         validate_recording_settings(UpdateRecordingSettingsRequest {
             screen_frame_rate: rate,
             ..update_recording_settings_request_fixture()
@@ -1680,7 +1681,7 @@ fn validate_recording_settings_accepts_frame_rate_bounds() {
 
 #[test]
 fn validate_recording_settings_rejects_out_of_range_frame_rates() {
-    for rate in [0.4, 10.1, 0.0, -1.0, 30.0, 120.0, f64::NAN] {
+    for rate in [1.0 / 61.0, 10.1, 0.0, -1.0, 30.0, 120.0, f64::NAN] {
         let error = validate_recording_settings(UpdateRecordingSettingsRequest {
             screen_frame_rate: rate,
             ..update_recording_settings_request_fixture()
@@ -1688,7 +1689,10 @@ fn validate_recording_settings_rejects_out_of_range_frame_rates() {
         .expect_err(&format!("frame rate {rate} must be rejected"));
 
         assert_eq!(error.code, "invalid_recording_settings");
-        assert_eq!(error.message, "screenFrameRate must be between 0.5 and 10");
+        assert_eq!(
+            error.message,
+            "screenFrameRate must be between 1/60 (one snapshot per minute) and 10"
+        );
     }
 }
 

@@ -9,6 +9,7 @@
   // `c.skipDisabled` (serializable config only) so a mid-download/un-ready model
   // never dead-ends the user out of onboarding.
   import type { OnboardingController } from "./onboarding.svelte";
+  import { captureRateShortLabel } from "$lib/components/capture-rate";
 
   let { controller }: { controller: OnboardingController } = $props();
   // `controller` is a stable instance; alias via $derived so template reads of
@@ -45,7 +46,7 @@
       </span>
       <h1 id="finale-title" class="finale__title" tabindex="-1" data-ob-phase-heading>Press record.</h1>
       <p class="finale__tag">
-        Setup is complete. {sourceSummary} · {c.draftFrameRate} fps · {formatDuration(c.draftSegmentDuration)}
+        Setup is complete. {sourceSummary} · {captureRateShortLabel(c.draftFrameRate)} · {formatDuration(c.draftSegmentDuration)}
         segments{c.draftPauseCaptureOnInactivity
           ? ` · idle pause @ ${formatDuration(c.draftIdleTimeoutSeconds)}`
           : ""}.
