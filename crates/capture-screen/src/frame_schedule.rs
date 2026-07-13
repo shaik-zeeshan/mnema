@@ -135,6 +135,10 @@ mod tests {
         // The 0.5 fps default keeps one frame every 2 seconds.
         assert_eq!(frame_cap_min_interval_ticks(0.5), 20_000_000);
         assert_eq!(frame_cap_min_interval_ticks(0.25), 40_000_000);
+        // The 1/60 fps floor (one snapshot per minute) is exact: 60s = 600M ticks.
+        // Pure f64 division never truncates the long interval the way an integer
+        // rate-times-scale encoding would (mirrors the macOS CMTime precision fix).
+        assert_eq!(frame_cap_min_interval_ticks(1.0 / 60.0), 600_000_000);
         // Degenerate rates disable the cap instead of overflowing.
         assert_eq!(frame_cap_min_interval_ticks(-1.0), 0);
         assert_eq!(frame_cap_min_interval_ticks(f64::NAN), 0);
