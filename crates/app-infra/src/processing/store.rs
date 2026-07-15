@@ -129,6 +129,36 @@ pub struct SegmentWorkspaceOcrReference {
     pub status: ProcessingJobStatus,
 }
 
+/// One processor's lane in the processing pipeline, as the debug page reads it: per-status job
+/// counts plus the three "is this lane healthy right now" signals — the newest recorded error,
+/// how many jobs failed in the last 24h, and how long a completed job took on average over that
+/// same window. Only processors that have at least one row appear; a caller that wants a fixed
+/// set of lanes defaults the missing ones to zero.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessorPipelineStatus {
+    pub processor: String,
+    pub queued: i64,
+    pub running: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub failed_last_24h: i64,
+    /// `NULL` when no job completed in the window (nothing to average).
+    pub average_completed_seconds_last_24h: Option<f64>,
+    pub last_error: Option<String>,
+}
+
+/// A processing job as the debug page lists it: the standard job fields plus `next_attempt_at`,
+/// the retry-backoff deadline. That column is not on [`ProcessingJob`] because only this debug
+/// read needs it; flattening keeps the wire shape a single flat object.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessingJobListing {
+    #[serde(flatten)]
+    pub job: ProcessingJob,
+    pub next_attempt_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeakerTurnView {
@@ -921,6 +951,102 @@ impl ProcessingStore {
         .await?;
 
         Ok(count)
+    }
+
+    /// Per-processor pipeline health for the debug page. Two reads: one grouped
+    /// count/aggregate pass, and one newest-error-per-processor pass (SQLite's bare-column
+    /// min/max rule makes the returned `last_error` the one from the `MAX(updated_at)` row).
+    /// Timestamps are UTC `CURRENT_TIMESTAMP` text, so they compare against `datetime('now')`.
+    pub async fn pipeline_status(&self) -> Result<Vec<ProcessorPipelineStatus>> {
+        let rows = sqlx::query(
+            "SELECT processor, \
+                    SUM(status = 'queued') AS queued, \
+                    SUM(status = 'running') AS running, \
+                    SUM(status = 'completed') AS completed, \
+                    SUM(status = 'failed') AS failed, \
+                    SUM(CASE WHEN status = 'failed' \
+                              AND finished_at >= datetime('now', '-24 hours') \
+                             THEN 1 ELSE 0 END) AS failed_last_24h, \
+                    AVG(CASE WHEN status = 'completed' \
+                              AND started_at IS NOT NULL \
+                              AND finished_at >= datetime('now', '-24 hours') \
+                             THEN (julianday(finished_at) - julianday(started_at)) * 86400.0 END) \
+                        AS average_completed_seconds_last_24h \
+             FROM processing_jobs \
+             GROUP BY processor \
+             ORDER BY processor ASC",
+        )
+        .fetch_all(self.db.read())
+        .await?;
+
+        let error_rows = sqlx::query(
+            "SELECT processor, last_error, MAX(updated_at) \
+             FROM processing_jobs \
+             WHERE last_error IS NOT NULL \
+             GROUP BY processor",
+        )
+        .fetch_all(self.db.read())
+        .await?;
+        let mut last_errors: std::collections::HashMap<String, String> = error_rows
+            .into_iter()
+            .map(|row| (row.get("processor"), row.get("last_error")))
+            .collect();
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let processor: String = row.get("processor");
+                ProcessorPipelineStatus {
+                    queued: row.get("queued"),
+                    running: row.get("running"),
+                    completed: row.get("completed"),
+                    failed: row.get("failed"),
+                    failed_last_24h: row.get("failed_last_24h"),
+                    average_completed_seconds_last_24h: row
+                        .get("average_completed_seconds_last_24h"),
+                    last_error: last_errors.remove(&processor),
+                    processor,
+                }
+            })
+            .collect())
+    }
+
+    /// Processor-filtered job listing for the debug page, newest first, optionally narrowed to
+    /// one status and paged by the caller.
+    pub async fn list_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ProcessingJobListing>> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT \
+                id, subject_type, subject_id, processor, status, attempt_count, failure_count, payload_json, last_error, \
+                created_at, queued_at, updated_at, started_at, finished_at, next_attempt_at \
+             FROM processing_jobs \
+             WHERE processor = ",
+        );
+        query.push_bind(processor);
+        if let Some(status) = status {
+            query.push(" AND status = ");
+            query.push_bind(status.as_str());
+        }
+        query.push(" ORDER BY id DESC LIMIT ");
+        query.push_bind(limit);
+        query.push(" OFFSET ");
+        query.push_bind(offset);
+
+        let rows = query.build().fetch_all(self.db.read()).await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(ProcessingJobListing {
+                    next_attempt_at: row.try_get("next_attempt_at")?,
+                    job: map_processing_job(row)?,
+                })
+            })
+            .collect()
     }
 
     pub async fn latest_frame_context_differs(
@@ -3263,6 +3389,11 @@ mod tests {
         // The migrate! macro resolves its path against CARGO_MANIFEST_DIR, so the
         // crate's `./migrations` chain applies the same here as it does at startup.
         static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
+        // Migration 0039 creates a `vec0` virtual table, so the auto-extension must be
+        // registered before this pool's first connection opens — otherwise the chain fails with
+        // "no such module: vec0" unless some other test in the process happened to register it
+        // first. Registration is process-global and idempotent.
+        crate::db::register_vec0_auto_extension();
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -3270,6 +3401,400 @@ mod tests {
             .expect("in-memory db should open");
         MIGRATOR.run(&pool).await.expect("migrations should apply");
         ProcessingStore::new(CaptureDb::single(pool))
+    }
+
+    /// Seeds one `processing_jobs` row directly, because the pipeline-status window math reads
+    /// timestamps the public enqueue/claim/fail path always stamps as `now`. Offsets are SQLite
+    /// datetime modifiers (e.g. `"-2 hours"`) relative to now; `None` leaves the column NULL
+    /// (`datetime('now', NULL)` is NULL).
+    async fn seed_job(
+        store: &ProcessingStore,
+        processor: &str,
+        status: ProcessingJobStatus,
+        last_error: Option<&str>,
+        started_offset: Option<&str>,
+        finished_offset: Option<&str>,
+    ) {
+        sqlx::query(
+            "INSERT INTO processing_jobs \
+                (subject_type, subject_id, processor, status, attempt_count, failure_count, \
+                 last_error, queued_at, started_at, finished_at, updated_at) \
+             VALUES ('frame', 1, ?1, ?2, 1, 0, ?3, CURRENT_TIMESTAMP, \
+                     datetime('now', ?4), datetime('now', ?5), \
+                     COALESCE(datetime('now', ?5), CURRENT_TIMESTAMP))",
+        )
+        .bind(processor)
+        .bind(status.as_str())
+        .bind(last_error)
+        .bind(started_offset)
+        .bind(finished_offset)
+        .execute(store.db.write())
+        .await
+        .expect("seeded processing job should insert");
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+    }
+
+    fn status_for<'a>(
+        statuses: &'a [ProcessorPipelineStatus],
+        processor: &str,
+    ) -> &'a ProcessorPipelineStatus {
+        statuses
+            .iter()
+            .find(|status| status.processor == processor)
+            .unwrap_or_else(|| panic!("pipeline status should include {processor}"))
+    }
+
+    /// The grouped counts must be per processor AND per status — a lane's numbers must not bleed
+    /// into another lane's, and a processor with no rows must simply be absent.
+    #[test]
+    fn pipeline_status_counts_jobs_per_processor_and_status() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
+            seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Running,
+                None,
+                Some("-1 minutes"),
+                None,
+            )
+            .await;
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("ocr blew up"),
+                Some("-10 minutes"),
+                Some("-9 minutes"),
+            )
+            .await;
+            seed_job(
+                &store,
+                AUDIO_TRANSCRIPTION_PROCESSOR,
+                ProcessingJobStatus::Completed,
+                None,
+                Some("-10 minutes"),
+                Some("-9 minutes"),
+            )
+            .await;
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+
+            let ocr = status_for(&statuses, OCR_PROCESSOR);
+            assert_eq!(ocr.queued, 2);
+            assert_eq!(ocr.running, 1);
+            assert_eq!(ocr.completed, 0);
+            assert_eq!(ocr.failed, 1);
+            assert_eq!(ocr.last_error.as_deref(), Some("ocr blew up"));
+
+            let transcription = status_for(&statuses, AUDIO_TRANSCRIPTION_PROCESSOR);
+            assert_eq!(transcription.completed, 1);
+            assert_eq!(transcription.queued, 0);
+            assert_eq!(transcription.failed, 0);
+            assert_eq!(transcription.last_error, None);
+
+            assert!(
+                !statuses
+                    .iter()
+                    .any(|status| status.processor == SPEAKER_ANALYSIS_PROCESSOR),
+                "a processor with no jobs must be absent, not a zero row"
+            );
+        });
+    }
+
+    /// The failed-in-24h signal is a *window*: an older failure still counts toward the lifetime
+    /// `failed` total but must not inflate the recent-failure number the debug page reads as
+    /// "this lane is broken right now".
+    #[test]
+    fn pipeline_status_counts_only_failures_inside_the_24h_window() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("recent"),
+                Some("-2 hours"),
+                Some("-2 hours"),
+            )
+            .await;
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("ancient"),
+                Some("-30 hours"),
+                Some("-30 hours"),
+            )
+            .await;
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+            let ocr = status_for(&statuses, OCR_PROCESSOR);
+
+            assert_eq!(ocr.failed, 2, "both failures are lifetime failures");
+            assert_eq!(
+                ocr.failed_last_24h, 1,
+                "only the failure inside the window counts as recent"
+            );
+            assert_eq!(
+                ocr.last_error.as_deref(),
+                Some("recent"),
+                "the newest error wins"
+            );
+        });
+    }
+
+    /// Average duration is over jobs *completed* in the window: an out-of-window completion must
+    /// not drag the average, and a failed job's duration must not be averaged in at all.
+    #[test]
+    fn pipeline_status_averages_duration_of_jobs_completed_in_the_24h_window() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            // 60s and 120s inside the window → 90s average.
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Completed,
+                None,
+                Some("-61 minutes"),
+                Some("-60 minutes"),
+            )
+            .await;
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Completed,
+                None,
+                Some("-32 minutes"),
+                Some("-30 minutes"),
+            )
+            .await;
+            // A one-hour completion 30 hours ago: outside the window, must not count.
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Completed,
+                None,
+                Some("-31 hours"),
+                Some("-30 hours"),
+            )
+            .await;
+            // A 10-minute failure inside the window: not a completion, must not count.
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("boom"),
+                Some("-20 minutes"),
+                Some("-10 minutes"),
+            )
+            .await;
+            // Another lane's queued job has no duration at all.
+            seed_job(
+                &store,
+                AUDIO_TRANSCRIPTION_PROCESSOR,
+                ProcessingJobStatus::Queued,
+                None,
+                None,
+                None,
+            )
+            .await;
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+
+            let average = status_for(&statuses, OCR_PROCESSOR)
+                .average_completed_seconds_last_24h
+                .expect("completions inside the window should average");
+            assert!(
+                (average - 90.0).abs() < 1.0,
+                "expected ~90s average, got {average}"
+            );
+
+            assert_eq!(
+                status_for(&statuses, AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .average_completed_seconds_last_24h,
+                None,
+                "a lane with no completions has no average"
+            );
+        });
+    }
+
+    /// The listing is the debug page's drill-in: it must stay inside one processor, honour the
+    /// status filter, and page without overlapping or skipping rows.
+    #[test]
+    fn list_jobs_by_processor_filters_by_status_and_pages() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            for _ in 0..3 {
+                seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None)
+                    .await;
+            }
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("boom"),
+                Some("-2 minutes"),
+                Some("-1 minutes"),
+            )
+            .await;
+            seed_job(
+                &store,
+                AUDIO_TRANSCRIPTION_PROCESSOR,
+                ProcessingJobStatus::Queued,
+                None,
+                None,
+                None,
+            )
+            .await;
+
+            let all = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, 50, 0)
+                .await
+                .expect("listing should read");
+            assert_eq!(all.len(), 4, "the other lane's job must not be listed");
+            assert!(all
+                .iter()
+                .all(|listing| listing.job.processor == OCR_PROCESSOR));
+            assert!(
+                all[0].job.id > all[3].job.id,
+                "listing is newest-first by id"
+            );
+
+            let failed = store
+                .list_jobs_by_processor(OCR_PROCESSOR, Some(ProcessingJobStatus::Failed), 50, 0)
+                .await
+                .expect("filtered listing should read");
+            assert_eq!(failed.len(), 1);
+            assert_eq!(failed[0].job.last_error.as_deref(), Some("boom"));
+            assert_eq!(failed[0].next_attempt_at, None);
+
+            let first_page = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, 2, 0)
+                .await
+                .expect("first page should read");
+            let second_page = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, 2, 2)
+                .await
+                .expect("second page should read");
+            assert_eq!(first_page.len(), 2);
+            assert_eq!(second_page.len(), 2);
+            let paged_ids: Vec<i64> = first_page
+                .iter()
+                .chain(second_page.iter())
+                .map(|listing| listing.job.id)
+                .collect();
+            let all_ids: Vec<i64> = all.iter().map(|listing| listing.job.id).collect();
+            assert_eq!(paged_ids, all_ids, "pages must tile the full listing");
+        });
+    }
+
+    /// `next_attempt_at` is the reason this listing exists as its own DTO rather than reusing
+    /// `ProcessingJob`: a backed-off retry must surface its deadline to the debug page.
+    #[test]
+    fn list_jobs_by_processor_surfaces_next_attempt_at() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            let job = store
+                .enqueue_job(&ProcessingJobDraft::for_frame_ocr(1))
+                .await
+                .expect("ocr job should enqueue");
+            store
+                .claim_queued_job(job.id)
+                .await
+                .expect("job claim should succeed")
+                .expect("job should claim");
+            store
+                .mark_job_failed(job.id, Some("boom"))
+                .await
+                .expect("job should fail");
+            store
+                .requeue_failed_job_within_attempt_cap(job.id)
+                .await
+                .expect("retry should schedule")
+                .expect("a first failure is within the cap");
+
+            let listing = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, 50, 0)
+                .await
+                .expect("listing should read");
+
+            assert_eq!(listing.len(), 1);
+            assert_eq!(listing[0].job.status, ProcessingJobStatus::Queued);
+            assert!(
+                listing[0].next_attempt_at.is_some(),
+                "a backed-off retry must expose its next-attempt deadline"
+            );
+        });
+    }
+
+    /// The debug page hand-mirrors these DTOs in TypeScript, so pin the wire shape: the
+    /// flattened listing must be ONE flat camelCase object (not a nested `job`), and the
+    /// pipeline status must keep its camelCase keys.
+    #[test]
+    fn debug_pipeline_dtos_serialize_flat_camel_case() {
+        test_runtime().block_on(async {
+            let store = migrated_store().await;
+            seed_job(
+                &store,
+                OCR_PROCESSOR,
+                ProcessingJobStatus::Failed,
+                Some("boom"),
+                Some("-2 minutes"),
+                Some("-1 minutes"),
+            )
+            .await;
+
+            let listing = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, 1, 0)
+                .await
+                .expect("listing should read");
+            let json = serde_json::to_value(&listing[0]).expect("listing should serialize");
+            assert!(json.get("job").is_none(), "the job must be flattened, not nested");
+            assert_eq!(json["processor"], serde_json::json!(OCR_PROCESSOR));
+            assert_eq!(json["status"], serde_json::json!("failed"));
+            assert_eq!(json["lastError"], serde_json::json!("boom"));
+            assert_eq!(json["attemptCount"], serde_json::json!(1));
+            assert_eq!(json["nextAttemptAt"], serde_json::Value::Null);
+            assert_eq!(
+                serde_json::from_value::<ProcessingJobListing>(json).expect("round-trip"),
+                listing[0]
+            );
+
+            let statuses = store
+                .pipeline_status()
+                .await
+                .expect("pipeline status should read");
+            let json = serde_json::to_value(&statuses[0]).expect("status should serialize");
+            assert_eq!(json["failedLast24h"], serde_json::json!(1));
+            assert_eq!(json["lastError"], serde_json::json!("boom"));
+            assert_eq!(
+                json["averageCompletedSecondsLast24h"],
+                serde_json::Value::Null
+            );
+        });
     }
 
     /// FIX 3 (SQL claim path): the SQL-atomic claim in

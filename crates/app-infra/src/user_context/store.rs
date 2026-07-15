@@ -124,6 +124,42 @@ impl DistillationGateDrops {
     }
 }
 
+/// One `user_context_derivation_runs` ledger row as read back for the debug
+/// surface: what ran, over which window, with what outcome, token cost, and
+/// per-gate withheld counts.
+///
+/// Flat (gate counters inlined rather than nested in [`DistillationGateDrops`])
+/// and `Serialize` so the Tauri read command can return it straight to the
+/// frontend, matching how `FrameBatch` / `AppInfraStatus` already cross that
+/// boundary. It is a read-only projection — the write path still takes the
+/// structured [`NewDerivationRun`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivationRun {
+    pub id: i64,
+    /// `'activity'` | `'conclusion'` | `'confidence'` | `'backfill'`.
+    pub kind: String,
+    pub window_start_ms: Option<i64>,
+    pub window_end_ms: Option<i64>,
+    /// `'running'` | `'completed'` | `'failed'` | `'skipped'`.
+    pub status: String,
+    pub activities_derived: i64,
+    pub conclusions_derived: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub error: Option<String>,
+    pub ungrounded: i64,
+    pub guardrail_suppressed: i64,
+    pub below_formation_bar: i64,
+    pub resurface_blocked: i64,
+    pub superseded: i64,
+    pub supersede_degraded: i64,
+    pub supersede_blocked: i64,
+    pub created_at_ms: i64,
+}
+
 /// A new derivation-run ledger row. Records which window a derivation pass
 /// covered (newest-first / skip-already-derived), its outcome, and its
 /// (estimated) token usage.
@@ -701,6 +737,49 @@ impl UserContextStore {
                 },
             )
         }))
+    }
+
+    /// The most recent `limit` derivation runs of any kind, newest first — the
+    /// debug surface's ledger tail ("what has the distiller been doing?").
+    pub async fn list_derivation_runs(&self, limit: i64) -> Result<Vec<DerivationRun>> {
+        let rows = sqlx::query(
+            "SELECT id, kind, window_start_ms, window_end_ms, status, activities_derived, \
+                    conclusions_derived, input_tokens, output_tokens, provider, model, error, \
+                    ungrounded, guardrail_suppressed, below_formation_bar, resurface_blocked, \
+                    superseded, supersede_degraded, supersede_blocked, created_at_ms \
+             FROM user_context_derivation_runs \
+             ORDER BY created_at_ms DESC, id DESC \
+             LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.db.read())
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| DerivationRun {
+                id: row.get("id"),
+                kind: row.get("kind"),
+                window_start_ms: row.get("window_start_ms"),
+                window_end_ms: row.get("window_end_ms"),
+                status: row.get("status"),
+                activities_derived: row.get("activities_derived"),
+                conclusions_derived: row.get("conclusions_derived"),
+                input_tokens: row.get("input_tokens"),
+                output_tokens: row.get("output_tokens"),
+                provider: row.get("provider"),
+                model: row.get("model"),
+                error: row.get("error"),
+                ungrounded: row.get("ungrounded"),
+                guardrail_suppressed: row.get("guardrail_suppressed"),
+                below_formation_bar: row.get("below_formation_bar"),
+                resurface_blocked: row.get("resurface_blocked"),
+                superseded: row.get("superseded"),
+                supersede_degraded: row.get("supersede_degraded"),
+                supersede_blocked: row.get("supersede_blocked"),
+                created_at_ms: row.get("created_at_ms"),
+            })
+            .collect())
     }
 
     /// Records the (estimated) token usage on an existing derivation run, e.g.
@@ -5057,6 +5136,103 @@ mod tests {
                 "the newest hole retries first"
             );
             assert_eq!(eligible[0].kind, "activity");
+        });
+    }
+
+    /// The debug ledger tail: newest first, every kind and status, bounded by
+    /// `limit`, with the gate-drop columns (migration 0032/0045) read back flat.
+    #[test]
+    fn list_derivation_runs_returns_the_newest_runs_of_every_kind() {
+        block_on(async {
+            let store = test_store().await;
+            assert!(
+                store
+                    .list_derivation_runs(10)
+                    .await
+                    .expect("empty ledger should list")
+                    .is_empty(),
+                "no runs yet => empty"
+            );
+
+            let first = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "activity".to_string(),
+                    window_start_ms: Some(100),
+                    window_end_ms: Some(200),
+                    status: "completed".to_string(),
+                    activities_derived: 3,
+                    conclusions_derived: 0,
+                    input_tokens: 11,
+                    output_tokens: 22,
+                    provider: Some("anthropic".to_string()),
+                    model: Some("claude".to_string()),
+                    error: None,
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await
+                .expect("activity run");
+            let second = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "conclusion".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: None,
+                    model: None,
+                    error: Some("engine timed out".to_string()),
+                    gate_drops: DistillationGateDrops {
+                        ungrounded: 1,
+                        guardrail_suppressed: 2,
+                        below_formation_bar: 3,
+                        resurface_blocked: 4,
+                        superseded: 5,
+                        supersede_degraded: 6,
+                        supersede_blocked: 7,
+                    },
+                })
+                .await
+                .expect("conclusion run");
+
+            let runs = store.list_derivation_runs(10).await.expect("runs should list");
+            assert_eq!(
+                runs.iter().map(|run| run.id).collect::<Vec<_>>(),
+                vec![second, first],
+                "newest first, failed runs included"
+            );
+
+            let newest = &runs[0];
+            assert_eq!(newest.kind, "conclusion");
+            assert_eq!(newest.status, "failed");
+            assert_eq!(newest.error.as_deref(), Some("engine timed out"));
+            assert_eq!(newest.window_start_ms, None);
+            // Every gate-drop column round-trips flat onto the DTO.
+            assert_eq!(newest.ungrounded, 1);
+            assert_eq!(newest.guardrail_suppressed, 2);
+            assert_eq!(newest.below_formation_bar, 3);
+            assert_eq!(newest.resurface_blocked, 4);
+            assert_eq!(newest.superseded, 5);
+            assert_eq!(newest.supersede_degraded, 6);
+            assert_eq!(newest.supersede_blocked, 7);
+            assert!(newest.created_at_ms > 0);
+
+            let oldest = &runs[1];
+            assert_eq!(oldest.kind, "activity");
+            assert_eq!(oldest.window_start_ms, Some(100));
+            assert_eq!(oldest.window_end_ms, Some(200));
+            assert_eq!(oldest.activities_derived, 3);
+            assert_eq!(oldest.input_tokens, 11);
+            assert_eq!(oldest.output_tokens, 22);
+            assert_eq!(oldest.provider.as_deref(), Some("anthropic"));
+            assert_eq!(oldest.model.as_deref(), Some("claude"));
+
+            // `limit` bounds the tail from the newest end.
+            let limited = store.list_derivation_runs(1).await.expect("limited listing");
+            assert_eq!(limited.len(), 1);
+            assert_eq!(limited[0].id, second);
         });
     }
 

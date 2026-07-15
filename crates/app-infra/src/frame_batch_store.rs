@@ -355,6 +355,29 @@ impl FrameBatchStore {
         rows.into_iter().map(map_frame_batch).collect()
     }
 
+    /// Batches that have not reached `completed`, newest first — the debug
+    /// surface's "what is still in flight or stuck" list.
+    ///
+    /// `failed` is deliberately included: `last_error` is only ever written by
+    /// [`Self::mark_batch_failed`], so excluding failed rows would leave the
+    /// error column never read. Bounded by `limit` because this is polled.
+    pub async fn list_unfinished_batches(&self, limit: i64) -> Result<Vec<FrameBatch>> {
+        let rows = sqlx::query(
+            "SELECT id, session_id, batch_key, batch_started_at, batch_ended_at, status, frame_count, \
+                first_frame_at, last_frame_at, finalize_job_id, finalized_output_path, created_at, \
+                updated_at, closed_at, completed_at, failed_at, last_error \
+             FROM frame_batches \
+             WHERE status != 'completed' \
+             ORDER BY id DESC \
+             LIMIT ?1",
+        )
+        .bind(limit)
+        .fetch_all(self.db.read())
+        .await?;
+
+        rows.into_iter().map(map_frame_batch).collect()
+    }
+
     pub async fn list_frames_for_batch(&self, batch_id: i64) -> Result<Vec<Frame>> {
         let rows = sqlx::query(
             "SELECT id, session_id, file_path, captured_at, width, height, \
@@ -1083,6 +1106,70 @@ mod tests {
         let window = frame_batch_window("2026-04-12T10:07:30Z").expect("window should build");
         assert_eq!(window.started_at, "2026-04-12T10:00:00Z");
         assert_eq!(window.ended_at, "2026-04-12T10:10:00Z");
+    }
+
+    #[test]
+    fn list_unfinished_batches_skips_completed_and_keeps_failures_with_their_error() {
+        run_async_test(async {
+            let dir = TestDir::new("list-unfinished");
+            let database = Database::initialize(dir.path())
+                .await
+                .expect("database should initialize");
+            let store = FrameBatchStore::new(CaptureDb::single(database.pool().clone()));
+
+            let open = store
+                .upsert_open_batch_for_frame("session-x", "2026-04-12T10:01:00Z")
+                .await
+                .expect("open batch should exist");
+            let done = store
+                .upsert_open_batch_for_frame("session-x", "2026-04-12T10:11:00Z")
+                .await
+                .expect("second batch should exist");
+            let broken = store
+                .upsert_open_batch_for_frame("session-x", "2026-04-12T10:21:00Z")
+                .await
+                .expect("third batch should exist");
+
+            // Close everything except `open`, so `done` can walk the real
+            // closed → processing → completed transition.
+            store
+                .close_completed_batches_for_session("session-x", Some(open.id))
+                .await
+                .expect("finished batches should close");
+            store
+                .mark_batch_processing(done.id)
+                .await
+                .expect("batch should move to processing");
+            store
+                .mark_batch_completed(done.id, Some("/tmp/done.mov"))
+                .await
+                .expect("batch should complete");
+            store
+                .mark_batch_failed(broken.id, "finalize blew up")
+                .await
+                .expect("batch should fail");
+
+            let listed = store
+                .list_unfinished_batches(50)
+                .await
+                .expect("unfinished batches should list");
+
+            // Newest first, completed excluded, failed retained with its error.
+            let ids: Vec<i64> = listed.iter().map(|batch| batch.id).collect();
+            assert_eq!(ids, vec![broken.id, open.id]);
+            assert_eq!(listed[0].status, FrameBatchStatus::Failed);
+            assert_eq!(listed[0].last_error.as_deref(), Some("finalize blew up"));
+            assert_eq!(listed[1].status, FrameBatchStatus::Open);
+            assert!(listed[1].last_error.is_none());
+
+            // The limit is a real bound, applied newest-first.
+            let limited = store
+                .list_unfinished_batches(1)
+                .await
+                .expect("limited listing should read");
+            assert_eq!(limited.len(), 1);
+            assert_eq!(limited[0].id, broken.id);
+        });
     }
 
     #[test]
