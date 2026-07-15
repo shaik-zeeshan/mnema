@@ -282,21 +282,29 @@ fn load_platform_key(index_id: &str) -> Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
-    let add = Command::new("security")
-        .args([
-            "add-generic-password",
-            "-U",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            index_id,
-            "-w",
-            key,
-        ])
-        .output()?;
-    if !add.status.success() {
+    use std::io::Write as _;
+    use std::process::Stdio;
+
+    // The command goes through `security -i` (stdin) instead of argv so the key is
+    // never visible to other processes via `ps`. All three values are hex or
+    // reverse-DNS strings (no spaces/quotes), so plain double-quoting is safe for
+    // security's stdin tokenizer.
+    let mut add = Command::new("/usr/bin/security")
+        .arg("-i")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let command =
+        format!("add-generic-password -U -s \"{KEYCHAIN_SERVICE}\" -a \"{index_id}\" -w \"{key}\"\n");
+    add.stdin
+        .take()
+        .expect("child stdin is piped")
+        .write_all(command.as_bytes())?;
+    let output = add.wait_with_output()?;
+    if !output.status.success() {
         return Err(AppInfraError::CaptureIndexEncryption(
-            String::from_utf8_lossy(&add.stderr).trim().to_string(),
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ));
     }
     Ok(())
