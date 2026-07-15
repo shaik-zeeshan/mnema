@@ -46,6 +46,7 @@ function emptyLane(processor: string): ProcessorPipelineStatus {
 	return {
 		processor,
 		queued: 0,
+		retrying: 0,
 		running: 0,
 		completed: 0,
 		failed: 0,

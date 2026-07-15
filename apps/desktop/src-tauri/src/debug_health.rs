@@ -419,6 +419,7 @@ mod tests {
         ::app_infra::ProcessorPipelineStatus {
             processor: processor.to_string(),
             queued: 0,
+            retrying: 0,
             running: 0,
             completed: 5,
             failed: 0,

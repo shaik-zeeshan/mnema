@@ -175,6 +175,14 @@ fn ask_ai_live_turns() -> &'static Mutex<HashMap<String, LiveTurn>> {
 pub struct AskAiTokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// When the turn's agent loop started (unix ms) — the debug row's clock.
+    pub started_at_ms: i64,
+    /// Visible tool calls this turn (excludes the `reference_captures`
+    /// presentation signal, matching the activity rail).
+    pub tool_calls: u64,
+    /// Elapsed ms from loop start to the usage report. Usage arrives at the end
+    /// of the final completion, so this is within a stream-tail of the full turn.
+    pub duration_ms: i64,
 }
 
 static ASK_AI_LAST_USAGE: OnceLock<Mutex<Option<AskAiTokenUsage>>> = OnceLock::new();
@@ -1965,9 +1973,13 @@ async fn run_ask_ai_turn(
             .into_iter()
             .map(|server| (server.id, server.label))
             .collect();
+    // Turn timing + visible-tool-call count for the debug page's last-turn row.
+    let turn_started_at_ms = now_ms();
+    let turn_tool_calls = Arc::new(AtomicU64::new(0));
     let on_event = {
         let app_handle = app_handle.clone();
         let conversation_id = conversation_id.clone();
+        let turn_tool_calls = Arc::clone(&turn_tool_calls);
         let infra = Arc::clone(&infra);
         let conversation_announced = Arc::clone(&conversation_announced);
         let answer = Arc::clone(&answer);
@@ -2119,6 +2131,7 @@ async fn run_ask_ai_turn(
                 if name == "reference_captures" {
                     return;
                 }
+                turn_tool_calls.fetch_add(1, Ordering::SeqCst);
                 // Build the render-ready entry SYNCHRONOUSLY (this
                 // callback is sync) without the icon, record it in the rail, and
                 // set it as the live activity line. Icon resolution is async, so it
@@ -2183,6 +2196,9 @@ async fn run_ask_ai_turn(
                 record_last_turn_usage(AskAiTokenUsage {
                     input_tokens,
                     output_tokens,
+                    started_at_ms: turn_started_at_ms,
+                    tool_calls: turn_tool_calls.load(Ordering::SeqCst),
+                    duration_ms: (now_ms() - turn_started_at_ms).max(0),
                 });
                 // The latest completion request's input+output is the turn's
                 // current context-window occupancy (input already includes the

@@ -137,16 +137,18 @@
 
   const laneTotals = $derived.by(() => {
     let queued = 0;
+    let retrying = 0;
     let running = 0;
     let failed24h = 0;
     const failedBy: string[] = [];
     for (const lane of features.lanes) {
       queued += lane.queued;
+      retrying += lane.retrying;
       running += lane.running;
       failed24h += lane.failedLast24h;
       if (lane.failedLast24h > 0) failedBy.push(`${lane.failedLast24h} ${lane.processor.replace(/_/g, " ")}`);
     }
-    return { queued, running, failed24h, failedBy };
+    return { queued, retrying, running, failed24h, failedBy };
   });
 
   /** The earliest source-session start — "recording since". */
@@ -188,7 +190,7 @@
       key: "queue",
       label: "Pipeline queue",
       value: formatCount(laneTotals.queued),
-      sub: `${laneTotals.running} running`,
+      sub: `${laneTotals.running} running · ${laneTotals.retrying} retrying`,
       tone: laneTotals.queued > 0 ? "warn" : undefined,
     },
     {

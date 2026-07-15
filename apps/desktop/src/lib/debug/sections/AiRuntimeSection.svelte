@@ -14,7 +14,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import { anchor } from "../sections";
   import { getDebugController } from "../state/controller.svelte";
-  import { formatCount, severityBadgeClass, severityCardClass, severityLabel } from "../format";
+  import { formatCount, formatTimestamp, severityBadgeClass, severityCardClass, severityLabel } from "../format";
 
   const { capture, features, health } = getDebugController();
 
@@ -111,7 +111,13 @@
          clears it. Not persisted (PLAN: no conversation migration). -->
     <div class="row__main">
       <div class="row__label">Last Ask AI turn <span class="new-chip">new</span></div>
-      <div class="row__desc">token usage of the most recent turn, since app start</div>
+      <div class="row__desc">
+        {#if usage}
+          {formatTimestamp(usage.startedAtMs)} · {usage.toolCalls} tool call{usage.toolCalls === 1 ? "" : "s"} · {(usage.durationMs / 1000).toFixed(1)}s
+        {:else}
+          token usage of the most recent turn, since app start
+        {/if}
+      </div>
     </div>
     <div class="row__value">
       {#if usage}

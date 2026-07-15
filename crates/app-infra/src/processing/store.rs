@@ -139,6 +139,9 @@ pub struct SegmentWorkspaceOcrReference {
 pub struct ProcessorPipelineStatus {
     pub processor: String,
     pub queued: i64,
+    /// The subset of `queued` serving a retry backoff (`next_attempt_at` in the
+    /// future) — the same derived "retrying" the debug jobs table shows.
+    pub retrying: i64,
     pub running: i64,
     pub completed: i64,
     pub failed: i64,
@@ -961,6 +964,9 @@ impl ProcessingStore {
         let rows = sqlx::query(
             "SELECT processor, \
                     SUM(status = 'queued') AS queued, \
+                    SUM(CASE WHEN status = 'queued' \
+                              AND next_attempt_at > datetime('now') \
+                             THEN 1 ELSE 0 END) AS retrying, \
                     SUM(status = 'running') AS running, \
                     SUM(status = 'completed') AS completed, \
                     SUM(status = 'failed') AS failed, \
@@ -998,6 +1004,7 @@ impl ProcessingStore {
                 let processor: String = row.get("processor");
                 ProcessorPipelineStatus {
                     queued: row.get("queued"),
+                    retrying: row.get("retrying"),
                     running: row.get("running"),
                     completed: row.get("completed"),
                     failed: row.get("failed"),
@@ -3459,6 +3466,18 @@ mod tests {
 
             seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
             seed_job(&store, OCR_PROCESSOR, ProcessingJobStatus::Queued, None, None, None).await;
+            // A queued job serving a retry backoff — must count as both queued AND retrying.
+            sqlx::query(
+                "INSERT INTO processing_jobs \
+                    (subject_type, subject_id, processor, status, attempt_count, failure_count, \
+                     queued_at, next_attempt_at, updated_at) \
+                 VALUES ('frame', 1, ?1, 'queued', 1, 1, CURRENT_TIMESTAMP, \
+                         datetime('now', '+5 minutes'), CURRENT_TIMESTAMP)",
+            )
+            .bind(OCR_PROCESSOR)
+            .execute(store.db.write())
+            .await
+            .expect("seeded retrying job should insert");
             seed_job(
                 &store,
                 OCR_PROCESSOR,
@@ -3493,7 +3512,8 @@ mod tests {
                 .expect("pipeline status should read");
 
             let ocr = status_for(&statuses, OCR_PROCESSOR);
-            assert_eq!(ocr.queued, 2);
+            assert_eq!(ocr.queued, 3);
+            assert_eq!(ocr.retrying, 1, "only the future-backoff queued job is retrying");
             assert_eq!(ocr.running, 1);
             assert_eq!(ocr.completed, 0);
             assert_eq!(ocr.failed, 1);

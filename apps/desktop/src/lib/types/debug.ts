@@ -170,6 +170,11 @@ export interface ProcessorPipelineStatus {
 	/** `ocr` | `audio_transcription` | `speaker_analysis` | `system_audio_speech_activity`. */
 	processor: string;
 	queued: number;
+	/**
+	 * The subset of `queued` serving a retry backoff (`nextAttemptAt` in the
+	 * future) — the same derived "retrying" as `lib/debug/detail/jobs.ts`.
+	 */
+	retrying: number;
 	running: number;
 	completed: number;
 	failed: number;
@@ -262,4 +267,10 @@ export interface DerivationRun {
 export interface AskAiTokenUsage {
 	inputTokens: number;
 	outputTokens: number;
+	/** When the turn's agent loop started (unix ms). */
+	startedAtMs: number;
+	/** Visible tool calls this turn (excludes the `reference_captures` signal). */
+	toolCalls: number;
+	/** Loop start → usage report, ms (within a stream-tail of the full turn). */
+	durationMs: number;
 }
