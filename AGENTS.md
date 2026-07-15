@@ -21,7 +21,7 @@
 - **`crates/capture-types`**: serde types shared across frontend, Tauri, and native layers.
 - **`crates/capture-screen/microphone/writers`**: capture primitives and media output.
 - **`crates/ai-runtime`**: the Reasoning Engine — provider-agnostic `rig-core` wrapper (cloud Anthropic/OpenAI, local Ollama/Llamafile). Imported as `ai_engine` alias in `apps/desktop/src-tauri/Cargo.toml` to avoid name collision. See [ADR 0028](docs/adr/0028-reasoning-engine.md).
-- **Keychain**: provider API keys stored ONLY in OS keychain via `crates/app-infra/src/ai_provider_key_store.rs` — never in config files.
+- **Secret vault**: app secrets (AI provider keys, Deepgram, MCP) live in an app-managed AEAD-encrypted vault file unlocked by ONE keychain master item (`com.shaikzeeshan.mnema.vault`, `crates/app-infra/src/secret_vault.rs`) — never in config files. The DB key stays on its separate silent `/usr/bin/security` mechanism. Keychain-prompt testing needs a signed build (`scripts/build-macos-local-sign.sh`) — never `tauri dev` (ad-hoc signature changes every rebuild → unavoidable prompts). Dev knob `MNEMA_DEV_MASTER_KEY_FILE` reads/writes the master key from a file instead of the keychain; any new `MNEMA_*` env var must also be added to `turbo.json` `passThroughEnv` or turbo silently strips it.
 
 ## AI Features
 
