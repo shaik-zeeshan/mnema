@@ -25,7 +25,7 @@ pub use recurrence::{
 pub use subject_vectors::SubjectVectorStore;
 pub use store::{
     cascade_derived_for_deleted_subjects_in, digest_input_fingerprint, evidence_fingerprint,
-    ActivityCorrection, DistillationGateDrops, FailedDerivationWindow, NewActivity,
+    ActivityCorrection, DerivationRun, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
     SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };
