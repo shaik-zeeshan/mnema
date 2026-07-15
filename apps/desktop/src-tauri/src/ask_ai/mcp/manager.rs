@@ -684,7 +684,11 @@ mod tests {
     use capture_types::McpTransport;
 
     /// A stdio server config for tests: enabled, no env/secret/curation.
+    /// Dialing it reads the connector secret through the process vault, so pin
+    /// the shared test vault (idempotent) — the read must be Ok(None), never a
+    /// keychain touch or a "vault not initialized" error.
     fn stdio_cfg(id: &str, label: &str, command: &str, args: Vec<String>) -> McpServerConfig {
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
         McpServerConfig {
             id: id.to_string(),
             label: label.to_string(),

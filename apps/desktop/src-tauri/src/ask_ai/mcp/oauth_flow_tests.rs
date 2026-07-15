@@ -9,8 +9,7 @@ use super::*;
 /// (even client_id-only) still reads authorized.
 #[test]
 fn a_stale_bearer_secret_never_reads_as_oauth_authorized() {
-    let dir = fixture_dir("mnema-mcp-oauth-flip");
-    std::env::set_var("MNEMA_MCP_SERVER_SECRET_DIR", &dir);
+    crate::secret_vault_test_support::install_shared_test_secret_vault();
 
     let id = "flip-bearer-to-oauth";
     // What the bearer path wrote: an opaque `Authorization: Bearer` token --
@@ -43,8 +42,6 @@ fn a_stale_bearer_secret_never_reads_as_oauth_authorized() {
     assert!(oauth_token_present(id), "a real Token Set must read as authorized");
 
     let _ = app_infra::delete_mcp_server_secret(id);
-    std::env::remove_var("MNEMA_MCP_SERVER_SECRET_DIR");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The pending-OAuth map: two flows key off distinct CSRF `state` strings with
@@ -80,8 +77,7 @@ fn pending_oauth_evicts_only_the_stale_flow_and_keys_by_state() {
 /// never depend on the server being reachable.
 #[tokio::test]
 async fn disconnect_local_drop_forgets_the_token_unconditionally() {
-    let dir = fixture_dir("mnema-mcp-oauth-drop");
-    std::env::set_var("MNEMA_MCP_SERVER_SECRET_DIR", &dir);
+    crate::secret_vault_test_support::install_shared_test_secret_vault();
 
     let id = "oauth-disconnect-test";
     app_infra::store_mcp_server_secret(id, "{\"client_id\":\"x\"}")
@@ -111,9 +107,6 @@ async fn disconnect_local_drop_forgets_the_token_unconditionally() {
         !lock_recover(&inner.oauth_reconnect_needed).contains(id),
         "local drop must clear the reconnect flag"
     );
-
-    std::env::remove_var("MNEMA_MCP_SERVER_SECRET_DIR");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Disconnect's best-effort revoke must NEVER stall local teardown. The comment
@@ -346,17 +339,6 @@ async fn an_expired_abandoned_flow_no_longer_reads_as_authorizing() {
         !connector_is_authorizing(&map, "gh", later, OAUTH_PENDING_TTL),
         "an abandoned flow past its TTL must not pin the status to Authorizing"
     );
-}
-
-/// A unique scratch dir for one test's fixture signal files.
-fn fixture_dir(prefix: &str) -> std::path::PathBuf {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create fixture dir");
-    dir
 }
 
 /// The warm-on-open reconnect-flag WRITE decision — the counterpart of the

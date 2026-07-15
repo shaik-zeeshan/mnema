@@ -8,12 +8,14 @@ set -euo pipefail
 #   - Separate data root:   ~/.mnema-dev            (DB, recordings, OCR models)
 #   - Separate config root: ~/Library/Application Support/com.shaikzeeshan.mnema.dev
 #   - Separate deep-link scheme: mnema-dev://
-#   - API keys are intentionally shared with prod via the OS keychain.
+#   - Separate secret vault (secrets.vault lives in the dev save dir), with a
+#     file-based master key so ad-hoc dev builds never hit the keychain.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 export MNEMA_SAVE_DIRECTORY="${HOME}/.mnema-dev"
 export MNEMA_APP_CONFIG_DIR="${HOME}/Library/Application Support/com.shaikzeeshan.mnema.dev"
+export MNEMA_DEV_MASTER_KEY_FILE="${MNEMA_SAVE_DIRECTORY}/dev-master-key"
 
 mkdir -p "${MNEMA_SAVE_DIRECTORY}" "${MNEMA_APP_CONFIG_DIR}"
 
