@@ -265,6 +265,30 @@ mod tests {
         }
     }
 
+    /// Master-key source that counts loads/stores and keeps the minted key in
+    /// memory, so tests can assert the unlock (and mint) happened exactly once.
+    #[derive(Default)]
+    struct CountingSource {
+        loads: std::sync::atomic::AtomicUsize,
+        stores: std::sync::atomic::AtomicUsize,
+        key: Mutex<Option<[u8; 32]>>,
+    }
+
+    impl MasterKeySource for CountingSource {
+        fn load(&self) -> Result<Option<[u8; 32]>> {
+            self.loads
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(*self.key.lock().unwrap())
+        }
+
+        fn store(&self, key: &[u8; 32]) -> Result<()> {
+            self.stores
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            *self.key.lock().unwrap() = Some(*key);
+            Ok(())
+        }
+    }
+
     fn file_handle(dir: &TestDir) -> SecretVaultHandle {
         SecretVaultHandle::with_source(
             dir.path(),
@@ -306,6 +330,102 @@ mod tests {
         // was created, and no retry happened per call (behavioral: the calls
         // above would each error identically regardless).
         assert!(!dir.path().join(crate::SECRET_VAULT_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn concurrent_first_access_mints_exactly_once() {
+        let dir = TestDir::new("concurrent-mint");
+        let source = Arc::new(CountingSource::default());
+        let handle = SecretVaultHandle::with_source(dir.path(), source.clone());
+
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let threads: Vec<_> = (0..16)
+            .map(|_| {
+                let handle = handle.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    handle.get("acct").expect("get on a fresh vault")
+                })
+            })
+            .collect();
+        for thread in threads {
+            assert_eq!(thread.join().expect("thread should not panic"), None);
+        }
+
+        assert_eq!(
+            source.stores.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "16 racing first accesses must mint and store exactly one master key"
+        );
+        assert_eq!(handle.get("acct").expect("get after the race"), None);
+    }
+
+    #[test]
+    fn concurrent_sets_on_distinct_accounts_lose_no_updates() {
+        let dir = TestDir::new("concurrent-sets");
+        let handle = file_handle(&dir);
+        handle.unlock_now().expect("unlock");
+
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let threads: Vec<_> = (0..16)
+            .map(|i| {
+                let handle = handle.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    handle
+                        .set(&format!("acct-{i}"), &format!("secret-{i}"))
+                        .expect("set should succeed");
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("thread should not panic");
+        }
+
+        // A FRESH handle over the same dir + key proves every update reached
+        // disk, not just the shared in-memory map.
+        let reopened = file_handle(&dir);
+        for i in 0..16 {
+            assert_eq!(
+                reopened.get(&format!("acct-{i}")).expect("get"),
+                Some(format!("secret-{i}")),
+                "acct-{i} must survive a reopen from disk"
+            );
+        }
+    }
+
+    #[test]
+    fn corrupt_vault_file_degrades_to_cached_denied_at_the_handle() {
+        let dir = TestDir::new("corrupt-cached");
+        let source = Arc::new(CountingSource::default());
+        // Mint a key + valid vault, then corrupt the vault file on disk.
+        SecretVaultHandle::with_source(dir.path(), source.clone())
+            .set("acct", "secret")
+            .expect("seed vault");
+        let vault_path = dir.path().join(crate::SECRET_VAULT_FILE_NAME);
+        let mut bytes = std::fs::read(&vault_path).expect("vault file should exist");
+        for byte in bytes.iter_mut().skip(1) {
+            *byte ^= 0xff;
+        }
+        std::fs::write(&vault_path, &bytes).expect("corrupted vault should be written");
+
+        let handle = SecretVaultHandle::with_source(dir.path(), source.clone());
+        assert!(matches!(
+            handle.get("acct").expect_err("corrupt vault must deny"),
+            AppInfraError::SecretVaultDenied(_)
+        ));
+        let loads_after_first = source.loads.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            handle.get("acct").expect_err("denial must be cached"),
+            AppInfraError::SecretVaultDenied(_)
+        ));
+        assert_eq!(
+            source.loads.load(std::sync::atomic::Ordering::SeqCst),
+            loads_after_first,
+            "a cached denial must not re-consult the master-key source"
+        );
     }
 
     #[test]

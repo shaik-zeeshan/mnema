@@ -425,22 +425,44 @@ pub(crate) fn selected_audio_transcription_model_available(
     if descriptor.provider == audio_transcription::DEEPGRAM_PROVIDER_ID {
         // ADR 0047: Deepgram availability = an API key is present (the manifest
         // entry is OsManaged, so `detect_model_status` reports it always installed).
-        return Ok(
-            match app_infra::has_ai_provider_key(
-                crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT,
-            ) {
-                Ok(present) => present,
-                // ADR 0048 amendment: a vault-denied read is NOT "no key". Report
-                // available so segments still enqueue transcription jobs; each job
-                // then parks as transient liveness at transcribe time and recovers
-                // on a later launch, instead of silently skipping transcription.
-                Err(app_infra::AppInfraError::SecretVaultDenied(_)) => true,
-                Err(_) => false,
-            },
-        );
+        return Ok(deepgram_available_for_enqueue(
+            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
+        ));
     }
 
     Ok(true)
+}
+
+/// Deepgram enqueue-time availability from a vault key-presence read.
+///
+/// ADR 0048 amendment: a vault-denied read is NOT "no key". Report available so
+/// segments still enqueue transcription jobs; each job then parks as transient
+/// liveness at transcribe time and recovers on a later launch, instead of
+/// silently skipping transcription.
+fn deepgram_available_for_enqueue(
+    key_presence: Result<bool, app_infra::AppInfraError>,
+) -> bool {
+    match key_presence {
+        Ok(present) => present,
+        Err(app_infra::AppInfraError::SecretVaultDenied(_)) => true,
+        Err(_) => false,
+    }
+}
+
+/// Deepgram status-DTO availability + failure message from a vault key-presence
+/// read. Denied ≠ missing (ADR 0048 amendment): show the vault error itself,
+/// never the misleading "add a key" prompt.
+fn deepgram_status_fields(
+    key_presence: Result<bool, app_infra::AppInfraError>,
+) -> (bool, Option<String>) {
+    match key_presence {
+        Ok(true) => (true, None),
+        Ok(false) => (
+            false,
+            Some("Add a Deepgram API key in Settings to enable cloud transcription.".to_string()),
+        ),
+        Err(error) => (false, Some(error.to_string())),
+    }
 }
 
 fn claim_model_download(
@@ -1111,24 +1133,12 @@ fn model_status_dto(
     if descriptor.provider == audio_transcription::DEEPGRAM_PROVIDER_ID {
         // ADR 0047: availability = API key present. The OsManaged entry reports
         // always-installed, so key presence is the real gate.
-        match app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT) {
-            Ok(present) => {
-                available = present;
-                if !available && failure_message.is_none() {
-                    failure_message = Some(
-                        "Add a Deepgram API key in Settings to enable cloud transcription."
-                            .to_string(),
-                    );
-                }
-            }
-            // Denied ≠ missing (ADR 0048 amendment): show the vault error itself,
-            // never the misleading "add a key" prompt.
-            Err(error) => {
-                available = false;
-                if failure_message.is_none() {
-                    failure_message = Some(error.to_string());
-                }
-            }
+        let (deepgram_available, deepgram_failure) = deepgram_status_fields(
+            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
+        );
+        available = deepgram_available;
+        if failure_message.is_none() {
+            failure_message = deepgram_failure;
         }
     }
 
@@ -1312,6 +1322,51 @@ mod tests {
             )
             .available
         );
+    }
+
+    // Denied ≠ missing (ADR 0048 amendment). These test the extracted pure
+    // helpers rather than the full functions: the Deepgram branch reads keys
+    // via the process-global vault slot, which is shared with other parallel
+    // tests (transcription_deepgram, mcp), so installing a denying handle in
+    // that slot would flake them.
+    #[test]
+    fn deepgram_denied_vault_read_keeps_enqueue_available() {
+        assert!(deepgram_available_for_enqueue(Err(
+            app_infra::AppInfraError::SecretVaultDenied("user denied keychain access".to_string())
+        )));
+        assert!(deepgram_available_for_enqueue(Ok(true)));
+        assert!(!deepgram_available_for_enqueue(Ok(false)));
+        assert!(!deepgram_available_for_enqueue(Err(
+            app_infra::AppInfraError::SecretVault("vault file unreadable".to_string())
+        )));
+    }
+
+    #[test]
+    fn deepgram_status_reports_denial_message_not_missing_key_copy() {
+        let (available, message) = deepgram_status_fields(Err(
+            app_infra::AppInfraError::SecretVaultDenied("user denied keychain access".to_string()),
+        ));
+        assert!(!available);
+        let message = message.expect("denied read must carry a failure message");
+        assert!(
+            message.contains("user denied keychain access"),
+            "expected the vault denial reason, got: {message}"
+        );
+        assert!(
+            !message.contains("Add a Deepgram API key"),
+            "denied must not render the missing-key copy, got: {message}"
+        );
+
+        let (available, message) = deepgram_status_fields(Ok(false));
+        assert!(!available);
+        assert_eq!(
+            message.as_deref(),
+            Some("Add a Deepgram API key in Settings to enable cloud transcription.")
+        );
+
+        let (available, message) = deepgram_status_fields(Ok(true));
+        assert!(available);
+        assert_eq!(message, None);
     }
 
     #[test]

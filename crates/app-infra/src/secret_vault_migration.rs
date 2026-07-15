@@ -252,6 +252,9 @@ mod tests {
     struct FakeLegacyKeychain {
         items: RefCell<BTreeMap<(String, String), String>>,
         denied_reads: Vec<(String, String)>,
+        /// Services whose `list_accounts` fails outright (e.g. a keychain
+        /// search error), as opposed to per-item denied reads.
+        failing_lists: Vec<String>,
     }
 
     impl FakeLegacyKeychain {
@@ -269,12 +272,18 @@ mod tests {
                         .collect(),
                 ),
                 denied_reads: Vec::new(),
+                failing_lists: Vec::new(),
             }
         }
 
         fn deny_read(mut self, service: &str, account: &str) -> Self {
             self.denied_reads
                 .push((service.to_string(), account.to_string()));
+            self
+        }
+
+        fn fail_list(mut self, service: &str) -> Self {
+            self.failing_lists.push(service.to_string());
             self
         }
 
@@ -291,6 +300,11 @@ mod tests {
 
     impl LegacyKeychain for FakeLegacyKeychain {
         fn list_accounts(&self, service: &str) -> Result<Vec<String>> {
+            if self.failing_lists.contains(&service.to_string()) {
+                return Err(AppInfraError::SecretVault(format!(
+                    "keychain search under {service} failed"
+                )));
+            }
             Ok(self
                 .items
                 .borrow()
@@ -384,6 +398,33 @@ mod tests {
         // The denial did not block the sibling item.
         assert_eq!(vault.get("ai-runtime/openai"), Some("sk-oai-legacy"));
         assert!(!legacy.contains(AI_SERVICE, "openai"));
+    }
+
+    #[test]
+    fn failing_list_for_one_service_skips_it_and_still_migrates_the_other() {
+        let dir = TestDir::new("failing-list");
+        let mut vault = open_vault(&dir);
+        let legacy = FakeLegacyKeychain::new(&[
+            (AI_SERVICE, "anthropic", "sk-ant-legacy"),
+            (MCP_SERVICE, "github", "ghp-legacy"),
+        ])
+        .fail_list(AI_SERVICE);
+
+        migrate_legacy_secrets(&mut vault, &legacy);
+
+        // The failing service is skipped entirely: nothing migrated, its
+        // legacy item untouched, retried next launch.
+        assert_eq!(vault.get("ai-runtime/anthropic"), None);
+        assert!(
+            legacy.contains(AI_SERVICE, "anthropic"),
+            "a failing list_accounts must leave that service's items in place"
+        );
+        // The sibling service still migrates fully.
+        assert_eq!(vault.get("mcp-connectors/github"), Some("ghp-legacy"));
+        assert!(
+            !legacy.contains(MCP_SERVICE, "github"),
+            "the healthy service's item should be migrated and deleted"
+        );
     }
 
     #[test]

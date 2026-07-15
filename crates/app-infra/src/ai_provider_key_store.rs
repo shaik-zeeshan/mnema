@@ -141,22 +141,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_presence_via_in_memory_lookup() {
-        let dir = TestDir::new("has");
-        let vault = vault(&dir);
-
-        assert!(load_ai_provider_key_in(&vault, "openai")
-            .expect("load should succeed")
-            .is_none());
-
-        store_ai_provider_key_in(&vault, "openai", "sk-openai").expect("store should succeed");
-
-        assert!(load_ai_provider_key_in(&vault, "openai")
-            .expect("load should succeed")
-            .is_some());
-    }
-
-    #[test]
     fn treats_stored_whitespace_key_as_absent() {
         let dir = TestDir::new("empty");
         let vault = vault(&dir);

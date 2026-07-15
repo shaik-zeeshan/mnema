@@ -515,6 +515,31 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_format_version_is_an_error_not_a_reset() {
+        let dir = TestDir::new("version");
+        let source = key_source(&dir);
+        let mut vault = unlocked(
+            unlock_secret_vault_with_source(dir.path(), &source).expect("unlock should succeed"),
+        );
+        vault
+            .set("anthropic", "sk-ant-secret")
+            .expect("set should succeed");
+
+        let mut bytes = fs::read(vault_path(&dir)).expect("vault file should exist");
+        bytes[0] = VAULT_FORMAT_VERSION + 1;
+        fs::write(vault_path(&dir), &bytes).expect("reversioned file should be written");
+
+        let error = unlock_secret_vault_with_source(dir.path(), &source)
+            .expect_err("unsupported format version should error");
+        assert!(error.to_string().contains("unsupported format version"));
+        assert_eq!(
+            fs::read(vault_path(&dir)).expect("vault file should still exist"),
+            bytes,
+            "a vault with an unknown format version must never be rewritten"
+        );
+    }
+
+    #[test]
     fn truncated_vault_file_is_an_error_not_a_reset() {
         let dir = TestDir::new("truncated");
         let source = key_source(&dir);

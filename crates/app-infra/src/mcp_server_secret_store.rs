@@ -145,22 +145,6 @@ mod tests {
     }
 
     #[test]
-    fn reports_presence_via_in_memory_lookup() {
-        let dir = TestDir::new("has");
-        let vault = vault(&dir);
-
-        assert!(load_mcp_server_secret_in(&vault, "linear")
-            .expect("load should succeed")
-            .is_none());
-
-        store_mcp_server_secret_in(&vault, "linear", "lin_secret").expect("store should succeed");
-
-        assert!(load_mcp_server_secret_in(&vault, "linear")
-            .expect("load should succeed")
-            .is_some());
-    }
-
-    #[test]
     fn treats_stored_whitespace_secret_as_absent() {
         let dir = TestDir::new("empty");
         let vault = vault(&dir);

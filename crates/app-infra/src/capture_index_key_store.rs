@@ -280,23 +280,37 @@ fn load_platform_key(index_id: &str) -> Result<Option<String>> {
     Ok(Some(key))
 }
 
+// The interpolated values are wrapped in plain double quotes for security's stdin
+// tokenizer, which is only safe while they contain no quote, backslash, or newline.
+// Production inputs are hex or reverse-DNS constants, so rejection never fires.
+#[cfg(any(target_os = "macos", test))]
+fn security_add_command(service: &str, account: &str, key: &str) -> Result<String> {
+    for value in [service, account, key] {
+        if value.contains(['"', '\\', '\n', '\r']) {
+            return Err(AppInfraError::CaptureIndexEncryption(
+                "keychain command value contains characters unsafe for double-quoting".to_string(),
+            ));
+        }
+    }
+    Ok(format!(
+        "add-generic-password -U -s \"{service}\" -a \"{account}\" -w \"{key}\"\n"
+    ))
+}
+
 #[cfg(target_os = "macos")]
 fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
     use std::io::Write as _;
     use std::process::Stdio;
 
     // The command goes through `security -i` (stdin) instead of argv so the key is
-    // never visible to other processes via `ps`. All three values are hex or
-    // reverse-DNS strings (no spaces/quotes), so plain double-quoting is safe for
-    // security's stdin tokenizer.
+    // never visible to other processes via `ps`.
+    let command = security_add_command(KEYCHAIN_SERVICE, index_id, key)?;
     let mut add = Command::new("/usr/bin/security")
         .arg("-i")
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?;
-    let command =
-        format!("add-generic-password -U -s \"{KEYCHAIN_SERVICE}\" -a \"{index_id}\" -w \"{key}\"\n");
     add.stdin
         .take()
         .expect("child stdin is piped")
@@ -505,6 +519,37 @@ mod tests {
         assert!(error
             .to_string()
             .contains("plaintext capture index database exists for an encrypted identity"));
+    }
+
+    #[test]
+    fn security_add_command_builds_exact_command_for_hex_values() {
+        let command = security_add_command(
+            KEYCHAIN_SERVICE,
+            "mnema-index-0123456789abcdef",
+            "deadbeefdeadbeefdeadbeefdeadbeef",
+        )
+        .expect("hex/reverse-DNS values should build a command");
+
+        assert_eq!(
+            command,
+            "add-generic-password -U -s \"com.shaikzeeshan.mnema.capture-index\" -a \"mnema-index-0123456789abcdef\" -w \"deadbeefdeadbeefdeadbeefdeadbeef\"\n"
+        );
+    }
+
+    #[test]
+    fn security_add_command_rejects_values_unsafe_for_double_quoting() {
+        for unsafe_value in ["with\"quote", "back\\slash", "new\nline", "carriage\rreturn"] {
+            let error = security_add_command(KEYCHAIN_SERVICE, "mnema-index-x", unsafe_value)
+                .expect_err("unsafe key should be rejected");
+            assert!(error
+                .to_string()
+                .contains("unsafe for double-quoting"));
+
+            security_add_command(KEYCHAIN_SERVICE, unsafe_value, "deadbeef")
+                .expect_err("unsafe account should be rejected");
+            security_add_command(unsafe_value, "mnema-index-x", "deadbeef")
+                .expect_err("unsafe service should be rejected");
+        }
     }
 
     #[test]
