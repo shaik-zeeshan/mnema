@@ -192,12 +192,30 @@
   border-bottom: 1px solid var(--app-border);
 }
 
-.debug-shell .debug-detail__filters-note {
+/* The mockup's "segment id…" search, right-aligned in the filter bar. */
+.debug-shell .debug-detail__search {
   margin-left: auto;
-  font-size: 10px;
-  letter-spacing: 0.06em;
+}
+
+.debug-shell .debug-detail__search input {
+  width: 180px;
+  padding: 4px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--app-text);
+  outline: none;
+}
+
+.debug-shell .debug-detail__search input::placeholder {
   color: var(--app-text-subtle);
-  cursor: help;
+}
+
+.debug-shell .debug-detail__search input:focus-visible {
+  border-color: var(--app-border-hover);
+  box-shadow: var(--app-ring);
 }
 
 .debug-shell .debug-detail__empty {

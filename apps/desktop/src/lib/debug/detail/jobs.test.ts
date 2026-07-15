@@ -2,7 +2,7 @@
 // svelte-check tsconfig, so skip static checking here (log-filter.test.ts
 // precedent).
 import { describe, expect, it } from "bun:test";
-import { hasNextPage, jobState, nextAttemptLabel, pageRangeLabel } from "./jobs";
+import { hasNextPage, jobProvider, jobState, nextAttemptLabel, pageCount, pageTotalsLabel } from "./jobs";
 
 // SQLite's naive-UTC shape, exactly as `next_attempt_at` is written
 // (`datetime(CURRENT_TIMESTAMP, '+300 seconds')`).
@@ -46,17 +46,38 @@ describe("nextAttemptLabel", () => {
 	});
 });
 
-describe("pagination without a total", () => {
-	it("offers next only on a full page — a short page is the end", () => {
-		expect(hasNextPage(25, 25)).toBe(true);
-		expect(hasNextPage(24, 25)).toBe(false);
-		expect(hasNextPage(0, 25)).toBe(false);
+describe("pagination against the wire total", () => {
+	it("counts pages, never fewer than one", () => {
+		expect(pageCount(0, 25)).toBe(1);
+		expect(pageCount(25, 25)).toBe(1);
+		expect(pageCount(26, 25)).toBe(2);
 	});
 
-	it("labels the range it can source, never a total", () => {
-		expect(pageRangeLabel(0, 25, 25)).toBe("jobs 1–25");
-		expect(pageRangeLabel(1, 4, 25)).toBe("jobs 26–29");
-		expect(pageRangeLabel(0, 0, 25)).toBe("no jobs");
-		expect(pageRangeLabel(2, 0, 25)).toBe("no more jobs");
+	it("offers next exactly while pages remain", () => {
+		expect(hasNextPage(0, 26, 25)).toBe(true);
+		expect(hasNextPage(1, 26, 25)).toBe(false);
+		expect(hasNextPage(0, 25, 25)).toBe(false);
+		expect(hasNextPage(0, 0, 25)).toBe(false);
+	});
+
+	it("labels this page's rows against the filter's total", () => {
+		expect(pageTotalsLabel(6, 12)).toBe("6 of 12 jobs");
+		expect(pageTotalsLabel(1, 1)).toBe("1 of 1 job");
+		expect(pageTotalsLabel(0, 0)).toBe("no jobs");
+	});
+});
+
+describe("jobProvider", () => {
+	it("reads the provider out of the payload", () => {
+		expect(jobProvider('{"provider":"deepgram","modelId":"nova-3"}')).toBe("deepgram");
+	});
+
+	it("is null for absent/empty/invalid payloads — absence, not error", () => {
+		expect(jobProvider(null)).toBeNull();
+		expect(jobProvider("")).toBeNull();
+		expect(jobProvider("{}")).toBeNull();
+		expect(jobProvider('{"provider":""}')).toBeNull();
+		expect(jobProvider('{"provider":42}')).toBeNull();
+		expect(jobProvider("not json")).toBeNull();
 	});
 });

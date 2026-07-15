@@ -25,6 +25,7 @@ import { DETAIL_SPECS, type DetailFeatureId } from "../detail/specs";
 import type {
 	ListProcessingJobsRequest,
 	ProcessingJobListing,
+	ProcessingJobPage,
 	ProcessingJobStatus,
 	ProcessorPipelineStatus,
 	SemanticIndexStatusDto,
@@ -43,9 +44,15 @@ export function createDetailStore() {
 
 	/** `null` = the "all" chip. Filtering is server-side, so it repages. */
 	let statusFilter = $state<ProcessingJobStatus | null>(null);
+	/** Digits-only subject-id search ("segment id…"). Empty = no filter. */
+	let search = $state("");
 	let page = $state(0);
 	let jobs = $state<ProcessingJobListing[]>([]);
+	/** Total rows behind the current filter — the pager's "of N". */
+	let total = $state(0);
 	let selectedJobId = $state<number | null>(null);
+	/** Free-text needle the "filter log to this job" action seeds the log tab with. */
+	let logNeedle = $state<string | null>(null);
 
 	let lane = $state<ProcessorPipelineStatus | null>(null);
 	let semanticIndex = $state<SemanticIndexStatusDto | null>(null);
@@ -61,9 +68,12 @@ export function createDetailStore() {
 		feature = next;
 		tab = "overview";
 		statusFilter = null;
+		search = "";
 		page = 0;
 		jobs = [];
+		total = 0;
 		selectedJobId = null;
+		logNeedle = null;
 		lane = null;
 		semanticIndex = null;
 		error = null;
@@ -84,23 +94,33 @@ export function createDetailStore() {
 		const spec = DETAIL_SPECS[current];
 		const requestedPage = page;
 		const requestedStatus = statusFilter;
+		const requestedSearch = search;
 		try {
 			if (spec.processor) {
 				const request: ListProcessingJobsRequest = {
 					processor: spec.processor,
 					status: requestedStatus,
+					subjectId: requestedSearch === "" ? null : Number(requestedSearch),
 					limit: JOBS_PAGE_SIZE,
 					offset: requestedPage * JOBS_PAGE_SIZE,
 				};
 				const [lanes, listing] = await Promise.all([
 					invoke<ProcessorPipelineStatus[]>("get_processing_pipeline_status"),
-					invoke<ProcessingJobListing[]>("list_processing_jobs_by_processor", { request }),
+					invoke<ProcessingJobPage>("list_processing_jobs_by_processor", { request }),
 				]);
-				// Drilled elsewhere / repaged while this was in flight — that request
-				// owns the view now, so drop this one rather than paint a stale page.
-				if (feature !== current || page !== requestedPage || statusFilter !== requestedStatus) return;
+				// Drilled elsewhere / repaged / refiltered while this was in flight —
+				// that request owns the view now, so drop this one rather than paint a
+				// stale page.
+				if (
+					feature !== current ||
+					page !== requestedPage ||
+					statusFilter !== requestedStatus ||
+					search !== requestedSearch
+				)
+					return;
 				lane = laneFor(lanes, spec.processor);
-				jobs = listing;
+				jobs = listing.jobs;
+				total = listing.total;
 			} else {
 				const index = await invoke<SemanticIndexStatusDto>("get_semantic_index_status");
 				if (feature !== current) return;
@@ -170,6 +190,17 @@ export function createDetailStore() {
 			void poll();
 		},
 
+		get search() { return search; },
+		set search(next: string) {
+			// Subject ids are integers — keep the input digits-only ("#8226" → "8226")
+			// so an unparseable search can never silently mean "no filter".
+			const digits = next.replace(/\D/g, "");
+			if (digits === search) return;
+			search = digits;
+			page = 0;
+			void poll();
+		},
+
 		get page() { return page; },
 		set page(next: number) {
 			const clamped = Math.max(0, next);
@@ -179,9 +210,13 @@ export function createDetailStore() {
 		},
 
 		get jobs() { return jobs; },
+		get total() { return total; },
 		get selectedJobId() { return selectedJobId; },
 		set selectedJobId(next: number | null) { selectedJobId = next; },
 		get selectedJob() { return selectedJob; },
+
+		get logNeedle() { return logNeedle; },
+		set logNeedle(next: string | null) { logNeedle = next; },
 
 		get lane() { return lane; },
 		get semanticIndex() { return semanticIndex; },

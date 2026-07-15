@@ -78,6 +78,30 @@
   border-color: var(--app-accent-border);
 }
 
+/* Free-text needle over the tailed lines — sits at the right end of the chip
+   row; the detail inspector's "filter log to this job" seeds it. */
+.debug-shell .log-needle {
+  margin-left: auto;
+  width: 140px;
+  padding: 3px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  color: var(--app-text);
+  outline: none;
+}
+
+.debug-shell .log-needle::placeholder {
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .log-needle:focus-visible {
+  border-color: var(--app-border-hover);
+  box-shadow: var(--app-ring);
+}
+
 /* ── Meta line (path + counts) ──────────────────────────────────────── */
 .debug-shell .log-meta {
   display: flex;

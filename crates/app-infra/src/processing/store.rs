@@ -1019,11 +1019,12 @@ impl ProcessingStore {
     }
 
     /// Processor-filtered job listing for the debug page, newest first, optionally narrowed to
-    /// one status and paged by the caller.
+    /// one status and/or one subject id, and paged by the caller.
     pub async fn list_jobs_by_processor(
         &self,
         processor: &str,
         status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ProcessingJobListing>> {
@@ -1038,6 +1039,10 @@ impl ProcessingStore {
         if let Some(status) = status {
             query.push(" AND status = ");
             query.push_bind(status.as_str());
+        }
+        if let Some(subject_id) = subject_id {
+            query.push(" AND subject_id = ");
+            query.push_bind(subject_id);
         }
         query.push(" ORDER BY id DESC LIMIT ");
         query.push_bind(limit);
@@ -1054,6 +1059,29 @@ impl ProcessingStore {
                 })
             })
             .collect()
+    }
+
+    /// Total rows behind one [`Self::list_jobs_by_processor`] filter — the debug pager's "of N".
+    pub async fn count_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+    ) -> Result<i64> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT COUNT(*) AS total FROM processing_jobs WHERE processor = ",
+        );
+        query.push_bind(processor);
+        if let Some(status) = status {
+            query.push(" AND status = ");
+            query.push_bind(status.as_str());
+        }
+        if let Some(subject_id) = subject_id {
+            query.push(" AND subject_id = ");
+            query.push_bind(subject_id);
+        }
+        let row = query.build().fetch_one(self.db.read()).await?;
+        Ok(row.get("total"))
     }
 
     pub async fn latest_frame_context_differs(
@@ -3690,7 +3718,7 @@ mod tests {
             .await;
 
             let all = store
-                .list_jobs_by_processor(OCR_PROCESSOR, None, 50, 0)
+                .list_jobs_by_processor(OCR_PROCESSOR, None, None, 50, 0)
                 .await
                 .expect("listing should read");
             assert_eq!(all.len(), 4, "the other lane's job must not be listed");
@@ -3703,7 +3731,7 @@ mod tests {
             );
 
             let failed = store
-                .list_jobs_by_processor(OCR_PROCESSOR, Some(ProcessingJobStatus::Failed), 50, 0)
+                .list_jobs_by_processor(OCR_PROCESSOR, Some(ProcessingJobStatus::Failed), None, 50, 0)
                 .await
                 .expect("filtered listing should read");
             assert_eq!(failed.len(), 1);
@@ -3711,11 +3739,11 @@ mod tests {
             assert_eq!(failed[0].next_attempt_at, None);
 
             let first_page = store
-                .list_jobs_by_processor(OCR_PROCESSOR, None, 2, 0)
+                .list_jobs_by_processor(OCR_PROCESSOR, None, None, 2, 0)
                 .await
                 .expect("first page should read");
             let second_page = store
-                .list_jobs_by_processor(OCR_PROCESSOR, None, 2, 2)
+                .list_jobs_by_processor(OCR_PROCESSOR, None, None, 2, 2)
                 .await
                 .expect("second page should read");
             assert_eq!(first_page.len(), 2);
@@ -3727,6 +3755,38 @@ mod tests {
                 .collect();
             let all_ids: Vec<i64> = all.iter().map(|listing| listing.job.id).collect();
             assert_eq!(paged_ids, all_ids, "pages must tile the full listing");
+
+            // The subject filter and the count share the WHERE clause, so the
+            // pager's "of N" can never disagree with what the pages tile out to.
+            let subject_id = all[0].job.subject_id;
+            let by_subject = store
+                .list_jobs_by_processor(OCR_PROCESSOR, None, Some(subject_id), 50, 0)
+                .await
+                .expect("subject-filtered listing should read");
+            assert!(by_subject
+                .iter()
+                .all(|listing| listing.job.subject_id == subject_id));
+            assert_eq!(
+                store
+                    .count_jobs_by_processor(OCR_PROCESSOR, None, Some(subject_id))
+                    .await
+                    .expect("subject count should read"),
+                by_subject.len() as i64
+            );
+            assert_eq!(
+                store
+                    .count_jobs_by_processor(OCR_PROCESSOR, None, None)
+                    .await
+                    .expect("lane count should read"),
+                4
+            );
+            assert_eq!(
+                store
+                    .count_jobs_by_processor(OCR_PROCESSOR, Some(ProcessingJobStatus::Failed), None)
+                    .await
+                    .expect("status count should read"),
+                1
+            );
         });
     }
 
@@ -3757,7 +3817,7 @@ mod tests {
                 .expect("a first failure is within the cap");
 
             let listing = store
-                .list_jobs_by_processor(OCR_PROCESSOR, None, 50, 0)
+                .list_jobs_by_processor(OCR_PROCESSOR, None, None, 50, 0)
                 .await
                 .expect("listing should read");
 
@@ -3788,7 +3848,7 @@ mod tests {
             .await;
 
             let listing = store
-                .list_jobs_by_processor(OCR_PROCESSOR, None, 1, 0)
+                .list_jobs_by_processor(OCR_PROCESSOR, None, None, 1, 0)
                 .await
                 .expect("listing should read");
             let json = serde_json::to_value(&listing[0]).expect("listing should serialize");

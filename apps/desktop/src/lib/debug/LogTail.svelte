@@ -22,14 +22,16 @@
     file?: AppLogFile;
     /** Feature filter to open on; `null` (default) is the "all" chip. */
     feature?: DebugFeature | null;
+    /** Text filter to open on (e.g. a job id) — the input can still change it. */
+    needle?: string;
   }
 
-  let { file = "rust", feature = null }: Props = $props();
+  let { file = "rust", feature = null, needle = "" }: Props = $props();
 
-  // Seed values only — the store owns file/feature from here on, so a later
-  // prop change must NOT stomp what the user picked. `untrack` says that to the
-  // compiler as much as to the reader.
-  const logs = createLogTailStore(untrack(() => ({ file, feature })));
+  // Seed values only — the store owns file/feature/needle from here on, so a
+  // later prop change must NOT stomp what the user picked. `untrack` says that
+  // to the compiler as much as to the reader.
+  const logs = createLogTailStore(untrack(() => ({ file, feature, needle })));
 
   // The 9 features that have a chip, with their real section labels — the
   // section registry is already the source of truth for that list.
@@ -101,6 +103,16 @@
         {section.label}
       </button>
     {/each}
+    <!-- Free-text needle over the tailed lines — client-side, like the chips.
+         The inspector's "filter log to this job" seeds it with a job id. -->
+    <input
+      class="log-needle"
+      type="search"
+      placeholder="filter…"
+      aria-label="Filter log lines by text"
+      value={logs.needle}
+      oninput={(event) => (logs.needle = event.currentTarget.value)}
+    />
   </div>
 
   {#if logs.error}
@@ -110,7 +122,7 @@
   <div class="log-meta">
     <span class="log-meta__path" use:tip={logs.tail?.path ?? ""}>{logs.tail?.path ?? "…"}</span>
     <span class="log-meta__count">
-      {#if logs.feature != null}
+      {#if logs.feature != null || logs.needle.trim() !== ""}
         {logs.lines.length} of {logs.totalLines} lines
       {:else}
         {logs.totalLines} lines

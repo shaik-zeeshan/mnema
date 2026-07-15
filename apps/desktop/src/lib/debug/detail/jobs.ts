@@ -58,17 +58,33 @@ export function nextAttemptLabel(
 }
 
 /**
- * **The command returns a page, not a count** — there is no total anywhere in
- * the wire, so this never invents one. A short page is the end of the list; a
- * full page means "maybe more", which is all `next` can honestly promise.
+ * The `provider` a job was enqueued for, read out of its payload JSON. Only
+ * some processors stamp one (transcription does; OCR payloads may not) — `null`
+ * renders as "—", meaning "this job carries no provider", never an error.
  */
-export function hasNextPage(rows: number, limit: number): boolean {
-	return rows >= limit;
+export function jobProvider(payloadJson: string | null | undefined): string | null {
+	if (!payloadJson) return null;
+	try {
+		const payload = JSON.parse(payloadJson);
+		const provider = payload?.provider;
+		return typeof provider === "string" && provider !== "" ? provider : null;
+	} catch {
+		return null;
+	}
 }
 
-/** `jobs 26–50` — the range this page covers. No "of N": there is no N. */
-export function pageRangeLabel(page: number, rows: number, limit: number): string {
-	if (rows === 0) return page === 0 ? "no jobs" : "no more jobs";
-	const first = page * limit + 1;
-	return `jobs ${first}–${first + rows - 1}`;
+/** Total pages behind the filter. Never 0: an empty list is still "page 1/1". */
+export function pageCount(total: number, limit: number): number {
+	return Math.max(1, Math.ceil(total / limit));
+}
+
+/** The wire now carries the filter's total, so `next` is exact — no guessing. */
+export function hasNextPage(page: number, total: number, limit: number): boolean {
+	return page + 1 < pageCount(total, limit);
+}
+
+/** `6 of 12 jobs` — this page's rows against the filter's total. */
+export function pageTotalsLabel(rows: number, total: number): string {
+	if (total === 0) return "no jobs";
+	return `${rows} of ${total} job${total === 1 ? "" : "s"}`;
 }

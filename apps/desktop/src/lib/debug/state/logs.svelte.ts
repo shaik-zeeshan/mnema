@@ -36,10 +36,12 @@ export const LOG_FILE_OPTIONS: { value: AppLogFile; label: string }[] = [
 ];
 
 export function createLogTailStore(
-	init: { file?: AppLogFile; feature?: DebugFeature | null } = {},
+	init: { file?: AppLogFile; feature?: DebugFeature | null; needle?: string } = {},
 ) {
 	let file = $state<AppLogFile>(init.file ?? "rust");
 	let feature = $state<DebugFeature | null>(init.feature ?? null);
+	/** Free-text substring filter (case-insensitive) — e.g. a job id to grep for. */
+	let needle = $state(init.needle ?? "");
 	/** Pin the view to the newest line. The user disengages by scrolling up. */
 	let follow = $state(true);
 	let tail = $state<AppLogTailDto | null>(null);
@@ -84,7 +86,12 @@ export function createLogTailStore(
 	// The rendered rows. One filter pass over ≤LOG_TAIL_LINES strings per change
 	// — no memo cache, so nothing to keep in a WeakMap and nothing the template
 	// can write back into.
-	const lines = $derived(filterLogLines(tail?.lines ?? [], feature));
+	const lines = $derived.by(() => {
+		const byFeature = filterLogLines(tail?.lines ?? [], feature);
+		const query = needle.trim().toLowerCase();
+		if (!query) return byFeature;
+		return byFeature.filter((line) => line.toLowerCase().includes(query));
+	});
 
 	return {
 		get file() { return file; },
@@ -100,6 +107,9 @@ export function createLogTailStore(
 
 		get feature() { return feature; },
 		set feature(next: DebugFeature | null) { feature = next; },
+
+		get needle() { return needle; },
+		set needle(next: string) { needle = next; },
 
 		get follow() { return follow; },
 		set follow(next: boolean) { follow = next; },

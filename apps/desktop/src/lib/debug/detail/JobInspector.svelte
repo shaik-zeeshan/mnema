@@ -12,11 +12,15 @@
   // on each mark_job_failed / claim, then listed by a new command — at which
   // point it renders in the gap this comment sits in.
 
+  import { invoke } from "@tauri-apps/api/core";
+  import { message } from "@tauri-apps/plugin-dialog";
+  import { goto } from "$app/navigation";
   import { tip } from "$lib/components/tooltip";
+  import { humanizeError } from "$lib/format-error";
   import { getDebugController } from "../state/controller.svelte";
   import { formatJobTs } from "../format";
   import { DETAIL_SPECS, type DetailFeatureId } from "./specs";
-  import { jobState, jobStateBadgeClass, nextAttemptLabel } from "./jobs";
+  import { jobProvider, jobState, jobStateBadgeClass, nextAttemptLabel } from "./jobs";
 
   interface Props {
     feature: DetailFeatureId;
@@ -30,11 +34,51 @@
   const job = $derived(detail.selectedJob);
   const state = $derived(job ? jobState(job, detail.now) : null);
   const nextAttempt = $derived(job ? nextAttemptLabel(job.nextAttemptAt, detail.now) : null);
+  const provider = $derived(job ? jobProvider(job.payloadJson) : null);
+
+  /** "segment" for an audio_segment, "frame" for a frame — the mockup's noun. */
+  const subjectNoun = $derived(job?.subjectType === "frame" ? "frame" : "segment");
 
   /** Only offer a requeue the backend can actually take for this subject. */
   const canReprocess = $derived(
     job != null && spec.reprocess != null && job.subjectType === spec.subjectType,
   );
+
+  // "Retry now" (immediate requeue of a failed/retrying job, distinct from a
+  // full reprocess) is deliberately absent: the requeue paths in
+  // app-infra/processing/store.rs are pub(crate) internals of the retry lane —
+  // there is no command, and the debug page doesn't grow one a worker could
+  // race (same call as "Reprocess all failed").
+
+  /**
+   * Hand the job's subject to the main timeline via the same door Quick Recall
+   * and Chat use: `open_capture_result_in_main_window` queues the handoff, and
+   * the timeline route drains it on mount — so navigate there after queueing.
+   */
+  async function openInTimeline(): Promise<void> {
+    const target = job;
+    if (!target) return;
+    const kind = target.subjectType === "frame" ? "frame" : "audio";
+    try {
+      await invoke("open_capture_result_in_main_window", {
+        kind,
+        frameId: kind === "frame" ? target.subjectId : null,
+        audioSegmentId: kind === "audio" ? target.subjectId : null,
+        spanStartMs: null,
+        alignedFrameId: null,
+      });
+      await goto("/");
+    } catch (error) {
+      await message(humanizeError(error), { title: "Couldn't open in timeline", kind: "error" });
+    }
+  }
+
+  /** Jump to the Log tail sub-tab with this job's id pre-seeded as the needle. */
+  function filterLogToJob(): void {
+    if (!job) return;
+    detail.logNeedle = String(job.id);
+    detail.tab = "log";
+  }
 
   /** Pretty-print the payload when it is JSON; show it raw when it isn't. */
   const payload = $derived.by(() => {
@@ -65,7 +109,7 @@
       </li>
       <li>
         <span class="kv-key kv-key--wide">processor</span>
-        <span class="kv-val kv-val--mono">{job.processor}</span>
+        <span class="kv-val kv-val--mono">{job.processor}{provider ? ` · provider ${provider}` : ""}</span>
       </li>
       <li>
         <span
@@ -120,7 +164,21 @@
           ? `Requeue this ${job.subjectType} through ${spec.reprocess?.command}`
           : "No reprocess command exists for this subject"}
       >
-        {detail.acting ? "requeueing…" : "reprocess subject"}
+        {detail.acting ? "requeueing…" : `reprocess ${subjectNoun}`}
+      </button>
+      <button
+        class="btn btn--ghost btn--sm"
+        onclick={openInTimeline}
+        use:tip={`Show this ${subjectNoun} in the main timeline`}
+      >
+        open {subjectNoun} in timeline
+      </button>
+      <button
+        class="btn btn--ghost btn--sm"
+        onclick={filterLogToJob}
+        use:tip={"Open the Log tail sub-tab filtered to this job's id"}
+      >
+        filter log to this job
       </button>
       <button
         class="btn btn--ghost btn--sm"

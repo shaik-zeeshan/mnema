@@ -212,8 +212,20 @@ export interface ListProcessingJobsRequest {
 	processor: string;
 	/** `null`/omitted lists every status. */
 	status?: ProcessingJobStatus | null;
+	/** `null`/omitted lists every subject — the jobs table's "segment id…" search. */
+	subjectId?: number | null;
 	limit?: number | null;
 	offset?: number | null;
+}
+
+/**
+ * What `list_processing_jobs_by_processor` returns: one page plus the total
+ * behind the same filter (processor + status + subject), so the pager can say
+ * "6 of 12 jobs · page 1/2" honestly.
+ */
+export interface ProcessingJobPage {
+	jobs: ProcessingJobListing[];
+	total: number;
 }
 
 // ─── Semantic index (get_semantic_index_status) ────────────────────────────

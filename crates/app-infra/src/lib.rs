@@ -1782,11 +1782,24 @@ impl AppInfra {
         &self,
         processor: &str,
         status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ProcessingJobListing>> {
         self.processing
-            .list_jobs_by_processor(processor, status, limit, offset)
+            .list_jobs_by_processor(processor, status, subject_id, limit, offset)
+            .await
+    }
+
+    /// Total rows behind one `list_processing_jobs_by_processor` filter (the debug pager's "of N").
+    pub async fn count_processing_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+    ) -> Result<i64> {
+        self.processing
+            .count_jobs_by_processor(processor, status, subject_id)
             .await
     }
 

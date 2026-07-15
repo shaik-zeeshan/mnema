@@ -12,7 +12,7 @@
   import { getDebugController } from "../state/controller.svelte";
   import { JOBS_PAGE_SIZE } from "../state/detail.svelte";
   import { formatJobTs, truncateDebugText } from "../format";
-  import { hasNextPage, jobState, jobStateBadgeClass, nextAttemptLabel, pageRangeLabel } from "./jobs";
+  import { hasNextPage, jobProvider, jobState, jobStateBadgeClass, nextAttemptLabel, pageCount, pageTotalsLabel } from "./jobs";
   import type { ProcessingJobStatus } from "$lib/types";
 
   const { detail } = getDebugController();
@@ -46,14 +46,28 @@
         {chip.label}
       </button>
     {/each}
-    <span class="debug-detail__filters-note" use:tip={"“retrying” is a queued job serving its backoff — a derived state, so it can't be filtered server-side."}>
-      status filter · server-side
-    </span>
+    <!-- Mockup's "segment id…" search — a server-side subject-id filter (the
+         store keeps it digits-only), so it filters the whole lane, not the page
+         in hand. Chips + search both repage to page 1. -->
+    <div class="debug-detail__search">
+      <input
+        type="search"
+        inputmode="numeric"
+        placeholder="segment id…"
+        aria-label="Filter jobs by segment id"
+        value={detail.search}
+        oninput={(event) => (detail.search = event.currentTarget.value)}
+      />
+    </div>
   </div>
 
   {#if rows.length === 0}
     <p class="empty debug-detail__empty">
-      {detail.statusFilter ? `no ${detail.statusFilter} jobs on this page` : "no jobs for this processor"}
+      {detail.search
+        ? `no jobs for segment #${detail.search}`
+        : detail.statusFilter
+          ? `no ${detail.statusFilter} jobs on this page`
+          : "no jobs for this processor"}
     </p>
   {:else}
     <div class="debug-table-wrap">
@@ -64,6 +78,7 @@
             <th>subject</th>
             <th>status</th>
             <th class="cell-num" use:tip={"attempts / genuine failures — an abandoned or transient attempt does not count as a failure"}>att / fail</th>
+            <th use:tip={"the provider stamped into the job's payload when it was enqueued — “—” when the payload carries none"}>provider</th>
             <th>updated</th>
             <th>last error</th>
           </tr>
@@ -94,6 +109,7 @@
                 <span class={jobStateBadgeClass(state)}>{state}</span>
               </td>
               <td class="cell-num">{job.attemptCount} / {job.failureCount}</td>
+              <td class="mono-cell">{jobProvider(job.payloadJson) ?? "—"}</td>
               <td>{formatJobTs(job.updatedAt)}</td>
               <td class="debug-detail__err-cell" use:tip={job.lastError ?? ""}>
                 {#if state === "retrying"}
@@ -108,17 +124,19 @@
     </div>
   {/if}
 
-  <!-- No page count and no "of N": `list_processing_jobs_by_processor` returns a
-       page, not a total, so prev/next + "a short page is the end" is the whole
-       of what can be sourced honestly. -->
+  <!-- `list_processing_jobs_by_processor` returns the filter's total alongside
+       the page, so both mockup readouts are sourced, not guessed: "6 of 12
+       jobs" and "page 1/2". -->
   <div class="job-pager">
+    <span class="job-pager__info">{pageTotalsLabel(rows.length, detail.total)}</span>
+    <span class="debug-detail__spacer"></span>
     <button class="btn btn--ghost btn--sm" onclick={() => (detail.page -= 1)} disabled={detail.page === 0}>‹ prev</button>
-    <span class="job-pager__info">{pageRangeLabel(detail.page, rows.length, JOBS_PAGE_SIZE)}</span>
+    <span class="job-pager__info">page {detail.page + 1}/{pageCount(detail.total, JOBS_PAGE_SIZE)}</span>
     <button
       class="btn btn--ghost btn--sm"
       onclick={() => (detail.page += 1)}
-      disabled={!hasNextPage(rows.length, JOBS_PAGE_SIZE)}
-      use:tip={hasNextPage(rows.length, JOBS_PAGE_SIZE) ? "" : "no more results"}
+      disabled={!hasNextPage(detail.page, detail.total, JOBS_PAGE_SIZE)}
+      use:tip={hasNextPage(detail.page, detail.total, JOBS_PAGE_SIZE) ? "" : "no more results"}
     >
       next ›
     </button>

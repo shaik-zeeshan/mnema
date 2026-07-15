@@ -211,8 +211,9 @@
     </div>
   {:else if detail.tab === "log"}
     <div class="debug-detail__card debug-detail__pane">
-      <!-- Slice 8's viewer, seeded to this feature's chip. -->
-      <LogTail {feature} />
+      <!-- Slice 8's viewer, seeded to this feature's chip — and, when the
+           inspector's "filter log to this job" routed here, to that job id. -->
+      <LogTail {feature} needle={detail.logNeedle ?? ""} />
     </div>
   {/if}
 </div>
