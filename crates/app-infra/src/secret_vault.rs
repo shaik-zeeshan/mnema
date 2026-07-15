@@ -117,6 +117,21 @@ impl MasterKeySource for FileMasterKeySource {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
+        // The master key is plaintext at rest here: create the file owner-only
+        // (0600) BEFORE any key bytes touch disk, so another local user can
+        // never read it. On non-unix, fall back to a plain write.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&self.path)?;
+            file.write_all(encode_hex(key).as_bytes())?;
+        }
+        #[cfg(not(unix))]
         fs::write(&self.path, encode_hex(key))?;
         Ok(())
     }
@@ -186,16 +201,34 @@ impl SecretVault {
     }
 
     pub fn set(&mut self, account: &str, secret: &str) -> Result<()> {
-        self.secrets.insert(account.to_string(), secret.to_string());
-        self.persist()
+        let previous = self.secrets.insert(account.to_string(), secret.to_string());
+        if let Err(error) = self.persist() {
+            // Roll back: the in-memory map is cached process-wide via the
+            // vault handle, so it must never report a value the disk never
+            // durably received (else the app believes the secret is saved
+            // this session and it vanishes on relaunch).
+            match previous {
+                Some(old) => self.secrets.insert(account.to_string(), old),
+                None => self.secrets.remove(account),
+            };
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Delete a secret. Deleting an absent account is a no-op.
     pub fn delete(&mut self, account: &str) -> Result<()> {
-        if self.secrets.remove(account).is_none() {
+        let Some(previous) = self.secrets.remove(account) else {
             return Ok(());
+        };
+        if let Err(error) = self.persist() {
+            // Roll back so a failed delete does not leave the cache reporting
+            // the secret gone while it still lives on disk: a retried delete
+            // would then no-op "success" and the secret resurrects on relaunch.
+            self.secrets.insert(account.to_string(), previous);
+            return Err(error);
         }
-        self.persist()
+        Ok(())
     }
 
     pub fn accounts(&self) -> Vec<&str> {
@@ -614,6 +647,79 @@ mod tests {
         assert!(
             !vault_path(&dir).exists(),
             "a denied unlock must not create a vault"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_persist_rolls_back_the_in_memory_view() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new("persist-fail-rollback");
+        let source = key_source(&dir);
+        let mut vault = unlocked(
+            unlock_secret_vault_with_source(dir.path(), &source).expect("unlock should succeed"),
+        );
+        vault.set("keep", "v-keep").expect("first set persists");
+
+        // Read-only save dir => the next atomic temp+rename persist fails
+        // deterministically without needing a full disk.
+        let original = fs::metadata(dir.path()).expect("metadata").permissions();
+        let mut readonly = original.clone();
+        readonly.set_mode(0o500);
+        fs::set_permissions(dir.path(), readonly).expect("chmod read-only");
+
+        let set_result = vault.set("added", "v-added");
+        let delete_result = vault.delete("keep");
+
+        // Restore write access before any assertion can unwind the test.
+        fs::set_permissions(dir.path(), original).expect("chmod restore");
+
+        assert!(set_result.is_err(), "a set whose persist fails must error");
+        assert!(
+            delete_result.is_err(),
+            "a delete whose persist fails must error"
+        );
+        // The in-memory cache (shared process-wide via the handle) must match
+        // disk: the failed insert must not linger, the failed delete must not
+        // drop the still-durable secret.
+        assert_eq!(
+            vault.get("added"),
+            None,
+            "a key whose persist failed must not read back as saved"
+        );
+        assert_eq!(
+            vault.get("keep"),
+            Some("v-keep"),
+            "a delete whose persist failed must not drop the still-durable secret"
+        );
+        // And a fresh reopen from disk agrees with the rolled-back view.
+        let reopened = unlocked(
+            unlock_secret_vault_with_source(dir.path(), &source).expect("reopen should succeed"),
+        );
+        assert_eq!(reopened.get("added"), None);
+        assert_eq!(reopened.get("keep"), Some("v-keep"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dev_master_key_file_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TestDir::new("key-perms");
+        let source = key_source(&dir);
+        source
+            .store(&mint_master_key())
+            .expect("store should succeed");
+
+        let mode = fs::metadata(dir.path().join("master.key"))
+            .expect("key file should exist")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the plaintext dev master key must be readable only by its owner, got {mode:o}"
         );
     }
 
