@@ -21,6 +21,8 @@ mod semantic_search_models;
 mod semantic_search_query;
 mod semantic_search_worker;
 mod sensitive_capture_recommendations;
+#[cfg(test)]
+mod secret_vault_test_support;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;

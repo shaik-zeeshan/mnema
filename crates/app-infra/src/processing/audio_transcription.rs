@@ -148,10 +148,11 @@ impl super::ProcessorBackend for AudioTranscriptionProcessorBackend {
 fn map_provider_result<T>(result: ProviderResult<T>) -> Result<T> {
     use audio_transcription::TranscriptionError;
     result.map_err(|error| match error {
-        // ADR 0048: liveness/availability gaps requeue without spending a failure attempt.
-        // `TransientLiveness` covers offline/timeout/429/5xx and a rejected key (401/403).
-        // `ProviderUnavailable` ("no key configured", a keychain read that collapsed to `None`,
-        // or a not-yet-available local model) is likewise an availability condition — NOT a
+        // ADR 0048 (+ amendment): liveness/availability gaps requeue without spending a failure
+        // attempt. `TransientLiveness` covers offline/timeout/429/5xx, a rejected key (401/403),
+        // and a key store that could not be read at all (denied secret vault — parked with the
+        // denial as its distinct reason). `ProviderUnavailable` ("no key configured", or a
+        // not-yet-available local model) is likewise an availability condition — NOT a
         // per-segment defect (the type contract reserves that for `Transcription`/`InvalidRequest`)
         // — so it must not burn a segment's retry cap and lose its transcript permanently.
         TranscriptionError::TransientLiveness(message)
@@ -333,14 +334,13 @@ mod tests {
         });
     }
 
-    /// ADR 0048 (INV-nokey-burn): a Deepgram job that runs while the key is absent or unreadable
-    /// (the user removed it, or a transient keychain read collapsed to `None` via `.ok().flatten()`)
-    /// surfaces as `TranscriptionError::ProviderUnavailable`. That is an availability/liveness gap —
-    /// the type contract reserves the genuine per-segment failure lane for `Transcription`/
-    /// `InvalidRequest` — so it must requeue WITHOUT spending a failure attempt, exactly like a
-    /// rejected key (401) or a segment waiting for a model. Routing it onto the genuine-failure lane
-    /// burns the bounded retry cap and permanently loses the segment's transcript even after the key
-    /// is re-added.
+    /// ADR 0048 (INV-nokey-burn): a Deepgram job that runs while the key is absent (the user
+    /// removed it) surfaces as `TranscriptionError::ProviderUnavailable`. That is an
+    /// availability/liveness gap — the type contract reserves the genuine per-segment failure
+    /// lane for `Transcription`/`InvalidRequest` — so it must requeue WITHOUT spending a failure
+    /// attempt, exactly like a rejected key (401) or a segment waiting for a model. Routing it
+    /// onto the genuine-failure lane burns the bounded retry cap and permanently loses the
+    /// segment's transcript even after the key is re-added.
     #[test]
     fn zz_dataintegrity_provider_unavailable_is_transient_liveness_not_a_burned_attempt() {
         let mapped = map_provider_result::<()>(Err(
@@ -353,6 +353,27 @@ mod tests {
             error.is_transient_liveness(),
             "a missing/unreadable provider key is an availability gap that must requeue \
              without burning a failure attempt, got {error:?}"
+        );
+    }
+
+    /// ADR 0048 amendment: a key store that could not be read at all (denied secret vault)
+    /// arrives as `TransientLiveness` carrying the denial as its distinct park reason. It must
+    /// requeue without burning an attempt — parked until access is granted on a later launch —
+    /// never a terminal failure and never mistaken for "no key configured".
+    #[test]
+    fn zz_dataintegrity_denied_key_store_parks_as_transient_liveness_with_its_reason() {
+        let denied = "Mnema couldn't read your saved keys from the keychain (access denied)";
+        let mapped = map_provider_result::<()>(Err(
+            audio_transcription::TranscriptionError::TransientLiveness(denied.to_string()),
+        ));
+        let error = mapped.expect_err("denied input must map to an error");
+        assert!(
+            error.is_transient_liveness(),
+            "a denied key store must park (requeue without burning an attempt), got {error:?}"
+        );
+        assert!(
+            error.to_string().contains("access denied"),
+            "the park reason must carry the denial, got: {error}"
         );
     }
 }

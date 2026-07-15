@@ -368,6 +368,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn dropping_a_stdio_transport_kills_the_grandchild_too() {
+        // `connect` reads the connector secret through the process vault; pin
+        // it to the shared test vault so the read is Ok(None), never keychain.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
         let pidfile = std::env::temp_dir().join(format!(
             "mnema-mcp-group-kill-{}-{:?}.pid",
             std::process::id(),

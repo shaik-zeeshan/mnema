@@ -70,8 +70,14 @@
   let deepgramCheckResult = $state<{ ok: boolean; message: string } | null>(null);
 
   async function loadDeepgramKeyState() {
-    deepgramKeyPresent = await invoke<boolean>("transcription_has_deepgram_key");
-    deepgramAuthStatus = await invoke<string | null>("transcription_deepgram_auth_status");
+    try {
+      deepgramKeyPresent = await invoke<boolean>("transcription_has_deepgram_key");
+      deepgramAuthStatus = await invoke<string | null>("transcription_deepgram_auth_status");
+    } catch (e) {
+      // Denied ≠ missing (ADR 0048 amendment): a keychain/vault read error must not
+      // render as "no key saved" — surface it on the existing warn line instead.
+      deepgramAuthStatus = String(e);
+    }
   }
 
   // Validate the key against Deepgram (GET /v1/auth/token — no audio). Mirrors the AI runtime's

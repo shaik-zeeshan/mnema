@@ -15,9 +15,12 @@ use crate::{
     TranscriptionRequest, TranscriptionResult, TranscriptionSegment, DEEPGRAM_PROVIDER_ID,
 };
 
-/// Loads the Deepgram API key at call time (from the OS keychain, at the desktop wiring site).
-/// Returns None when no key is configured.
-pub type DeepgramKeyLoader = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+/// Loads the Deepgram API key at call time (from the secret vault, at the desktop wiring site).
+/// `Ok(None)` = no key is configured. `Err(message)` = the key store could not be read at all
+/// (ADR 0048 amendment: a denied secret vault) — a *distinct* transient-liveness condition, never
+/// to be collapsed into "no key configured". The message is user-readable and becomes the park
+/// reason on the job.
+pub type DeepgramKeyLoader = Arc<dyn Fn() -> Result<Option<String>, String> + Send + Sync>;
 
 /// Shared cell holding the last API-key rejection message (or None). The provider SETS it on a
 /// 401/403 rejection and CLEARS it on a successful transcription; the desktop layer reads it for
@@ -79,9 +82,7 @@ impl TranscriptionProvider for DeepgramProvider {
         &self,
         request: TranscriptionRequest,
     ) -> TranscriptionResult<TranscriptionOutput> {
-        let key = (self.key_loader)().ok_or_else(|| {
-            TranscriptionError::ProviderUnavailable("no Deepgram API key is configured".into())
-        })?;
+        let key = load_key(&self.key_loader)?;
 
         let bytes = std::fs::read(&request.audio_path).map_err(|error| {
             TranscriptionError::InvalidRequest(format!(
@@ -134,9 +135,7 @@ impl DeepgramProvider {
     /// "rejected your API key" status the Settings line reads, and a success clears it. nova-3/nova-2
     /// are always available to any account, so a valid key is the whole availability gate.
     pub async fn check_health(&self) -> TranscriptionResult<()> {
-        let key = (self.key_loader)().ok_or_else(|| {
-            TranscriptionError::ProviderUnavailable("no Deepgram API key is configured".into())
-        })?;
+        let key = load_key(&self.key_loader)?;
 
         let response = self
             .client
@@ -163,6 +162,20 @@ impl DeepgramProvider {
         }
         Ok(())
     }
+}
+
+/// Resolve the API key through the injected loader, classifying the two non-key outcomes
+/// (ADR 0048 + amendment):
+/// - `Ok(None)` (no key configured) → `ProviderUnavailable` — the familiar "add a key" state.
+/// - `Err(message)` (key store unreadable, e.g. a denied secret vault) → `TransientLiveness`
+///   with the loader's user-readable message as the distinct park reason. The job requeues
+///   without burning a retry attempt and recovers on a later launch once access is granted.
+fn load_key(loader: &DeepgramKeyLoader) -> TranscriptionResult<String> {
+    loader()
+        .map_err(TranscriptionError::TransientLiveness)?
+        .ok_or_else(|| {
+            TranscriptionError::ProviderUnavailable("no Deepgram API key is configured".into())
+        })
 }
 
 /// Deepgram query params: always smart_format=true & utterances=true, plus language handling:
@@ -462,7 +475,7 @@ mod tests {
     #[test]
     fn no_key_is_provider_unavailable() {
         let provider = DeepgramProvider::new(
-            Arc::new(|| Option::<String>::None),
+            Arc::new(|| Ok(Option::<String>::None)),
             DeepgramAuthStatus::default(),
         );
         block_on(async {
@@ -486,10 +499,38 @@ mod tests {
         });
     }
 
+    /// ADR 0048 amendment: a key store that could not be read at all (denied secret vault)
+    /// is a THIRD state — transient liveness with the loader's message as the park reason —
+    /// never `ProviderUnavailable` ("no key configured"). Denied ≠ missing.
+    #[test]
+    fn denied_key_loader_is_transient_liveness_not_missing_key() {
+        let provider = DeepgramProvider::new(
+            Arc::new(|| Err("keychain access denied".to_string())),
+            DeepgramAuthStatus::default(),
+        );
+        block_on(async {
+            for error in [
+                provider
+                    .transcribe(request())
+                    .await
+                    .expect_err("denied loader should error"),
+                provider
+                    .check_health()
+                    .await
+                    .expect_err("denied loader should error"),
+            ] {
+                let TranscriptionError::TransientLiveness(message) = error else {
+                    panic!("a denied key store must park as transient liveness, got {error:?}");
+                };
+                assert_eq!(message, "keychain access denied");
+            }
+        });
+    }
+
     #[test]
     fn unreadable_audio_is_invalid_request() {
         let provider = DeepgramProvider::new(
-            Arc::new(|| Some("k".to_string())),
+            Arc::new(|| Ok(Some("k".to_string()))),
             DeepgramAuthStatus::default(),
         );
         let missing = std::env::temp_dir().join("mnema-deepgram-nonexistent-audio.m4a");
@@ -592,7 +633,7 @@ mod tests {
             let auth = DeepgramAuthStatus::default();
             *auth.lock().expect("lock") = Some("stale".to_string());
             let provider = DeepgramProvider::with_endpoint(
-                Arc::new(|| Some("k".to_string())),
+                Arc::new(|| Ok(Some("k".to_string()))),
                 auth.clone(),
                 format!("{base}/v1/listen"),
             );
@@ -626,7 +667,7 @@ mod tests {
 
             let auth = DeepgramAuthStatus::default();
             let provider = DeepgramProvider::with_endpoint(
-                Arc::new(|| Some("k".to_string())),
+                Arc::new(|| Ok(Some("k".to_string()))),
                 auth.clone(),
                 format!("{base}/v1/listen"),
             );
@@ -660,7 +701,7 @@ mod tests {
             let auth = DeepgramAuthStatus::default();
             *auth.lock().expect("lock") = Some("stale".to_string());
             let provider = DeepgramProvider::with_endpoint(
-                Arc::new(|| Some("k".to_string())),
+                Arc::new(|| Ok(Some("k".to_string()))),
                 auth.clone(),
                 format!("{base}/v1/auth/token"),
             );
@@ -681,15 +722,12 @@ mod tests {
 
             let auth = DeepgramAuthStatus::default();
             let provider = DeepgramProvider::with_endpoint(
-                Arc::new(|| Some("k".to_string())),
+                Arc::new(|| Ok(Some("k".to_string()))),
                 auth.clone(),
                 format!("{base}/v1/auth/token"),
             );
 
-            let error = provider
-                .check_health()
-                .await
-                .expect_err("401 should error");
+            let error = provider.check_health().await.expect_err("401 should error");
             let _ = handle.await;
 
             assert!(matches!(error, TranscriptionError::TransientLiveness(_)));

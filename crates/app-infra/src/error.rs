@@ -89,6 +89,16 @@ pub enum AppInfraError {
     AiProviderKeyStore(String),
     #[error("mcp server secret store error: {0}")]
     McpServerSecretStore(String),
+    #[error("secret vault error: {0}")]
+    SecretVault(String),
+    /// The secret vault is present but unreadable this process lifetime (denied
+    /// keychain prompt, locked keychain, missing master key over an existing
+    /// vault, or an undecryptable vault file). Distinct from "no secret stored"
+    /// (`Ok(None)`) so consumers never conflate a Deny with an unconfigured key.
+    // Display is user-worthy on purpose: this string rides existing error paths
+    // straight to Settings/Ask AI, so it must never read like "no key configured".
+    #[error("Mnema couldn't read your saved keys from the keychain (access denied: {0}). Grant keychain access and relaunch, or re-enter your key in Settings.")]
+    SecretVaultDenied(String),
     #[error("frame batch {batch_id} is not ready because OCR is still pending")]
     FrameBatchOcrPending { batch_id: i64 },
     #[error("frame batch {batch_id} has no frames to finalize")]
