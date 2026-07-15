@@ -663,13 +663,6 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "System audio capture requires screen capture".to_string(),
-        });
-    }
-
     let save_directory = request.save_directory.trim().to_string();
     if save_directory.is_empty() {
         return Err(CaptureErrorResponse {
@@ -2164,8 +2157,8 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_rejects_system_audio_without_screen() {
-        let error = apply_domain_patch_for_test(
+    fn capture_sources_domain_allows_system_audio_without_screen() {
+        let settings = apply_domain_patch_for_test(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
                 capture_screen: Some(false),
@@ -2173,13 +2166,10 @@ mod tests {
                 capture_system_audio: Some(true),
             }),
         )
-        .expect_err("system audio without screen should be rejected");
+        .expect("system audio runs on its own tap, so it needs no screen capture");
 
-        assert_eq!(error.code, "invalid_recording_settings");
-        assert_eq!(
-            error.message,
-            "System audio capture requires screen capture"
-        );
+        assert!(!settings.capture_screen);
+        assert!(settings.capture_system_audio);
     }
 
     #[test]

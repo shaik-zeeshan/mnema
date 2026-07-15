@@ -38,6 +38,13 @@ impl InitialPrivacyFilter {
         self.filter.clone()
     }
 
+    /// The same excluded apps the screen filter hides, for the system-audio tap's
+    /// exclude list. Parity, not a feature: ScreenCaptureKit's content filter
+    /// already silenced these apps' audio (ADR 0052).
+    pub(super) fn excluded_bundle_ids(&self) -> Vec<String> {
+        self.decision.excluded_bundle_ids.clone()
+    }
+
     pub(super) fn mark_applied(self, app_handle: &tauri::AppHandle) {
         mark_privacy_decision_applied(app_handle, self.decision);
     }
@@ -48,6 +55,14 @@ impl InitialPrivacyFilter {
 pub(super) struct PrivacyFilterUpdate {
     decision: capture_metadata::PrivacyFilterDecision,
     filter: Option<capture_screen::PrivacyContentFilter>,
+}
+
+#[cfg(target_os = "macos")]
+impl PrivacyFilterUpdate {
+    /// The apps this update excludes, for the system-audio tap's exclude list.
+    pub(super) fn excluded_bundle_ids(&self) -> &[String] {
+        &self.decision.excluded_bundle_ids
+    }
 }
 
 #[cfg(target_os = "macos")]

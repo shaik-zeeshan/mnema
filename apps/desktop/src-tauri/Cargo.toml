@@ -75,6 +75,7 @@ capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }
+capture-system-audio = { path = "../../../crates/capture-system-audio" }
 capture-vad = { path = "../../../crates/capture-vad" }
 capture-writers = { path = "../../../crates/capture-writers" }
 tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }

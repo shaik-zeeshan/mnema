@@ -410,17 +410,6 @@ pub(crate) fn finalize_capture_outputs(
         }
     }
 
-    if has_screen_output && requested_sources.is_some_and(|sources| sources.system_audio) {
-        if let Some(recording_file) = recording_file {
-            if let Err(error) = capture_screen::strip_audio_from_recording_file(recording_file) {
-                audio_failures.push(format!(
-                    "screen output video-only conversion failed: {}",
-                    error.message
-                ));
-            }
-        }
-    }
-
     sync_finalized_microphone_output_files(
         output_files,
         &unusable_audio_files,

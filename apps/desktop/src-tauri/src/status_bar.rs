@@ -103,22 +103,17 @@ fn supported_sources_only(sources: &CaptureSources, support: &CaptureSources) ->
     }
 }
 
+// System audio is an independent capture family on a Core Audio process tap
+// (ADR 0052), so none of the three sources gates another here: turning the
+// screen off leaves audio recording, and system audio toggles on its own. The
+// only rule left is the one that always applied — a session needs at least one
+// source.
 fn computed_toggle_sources(current: CaptureSources, source_id: &str) -> Option<CaptureSources> {
     let mut next = current;
     match source_id {
-        SOURCE_SCREEN_ID => {
-            next.screen = !next.screen;
-            if !next.screen {
-                next.system_audio = false;
-            }
-        }
+        SOURCE_SCREEN_ID => next.screen = !next.screen,
         SOURCE_MICROPHONE_ID => next.microphone = !next.microphone,
-        SOURCE_SYSTEM_AUDIO_ID => {
-            if !next.screen {
-                return None;
-            }
-            next.system_audio = !next.system_audio;
-        }
+        SOURCE_SYSTEM_AUDIO_ID => next.system_audio = !next.system_audio,
         _ => return None,
     }
 
@@ -144,9 +139,6 @@ fn source_item_enabled(
         _ => false,
     };
     if !supported {
-        return false;
-    }
-    if source_id == SOURCE_SYSTEM_AUDIO_ID && !current.screen {
         return false;
     }
     if checked {
@@ -798,8 +790,11 @@ mod tests {
         assert!(!microphone.source_items[1].enabled);
     }
 
+    // System audio is its own capture family now (ADR 0052), so the tray must
+    // let the screen go while audio keeps recording — the tray was the last
+    // surface enforcing the coupling the ADR severed.
     #[test]
-    fn screen_with_only_system_audio_cannot_be_unchecked() {
+    fn screen_can_be_unchecked_while_system_audio_records_alone() {
         let model = build_menu_model(
             true,
             false,
@@ -809,30 +804,30 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        assert!(!model.source_items[0].enabled);
+        assert!(model.source_items[0].enabled);
     }
 
     #[test]
-    fn unchecking_screen_clears_system_audio() {
+    fn unchecking_screen_leaves_system_audio_recording() {
         assert_eq!(
             computed_toggle_sources(
                 CaptureSources {
                     screen: true,
-                    microphone: true,
+                    microphone: false,
                     system_audio: true,
                 },
                 SOURCE_SCREEN_ID,
             ),
             Some(CaptureSources {
                 screen: false,
-                microphone: true,
-                system_audio: false,
+                microphone: false,
+                system_audio: true,
             })
         );
     }
 
     #[test]
-    fn system_audio_is_disabled_when_screen_is_unchecked() {
+    fn system_audio_is_toggleable_with_the_screen_off() {
         let model = build_menu_model(
             true,
             false,
@@ -842,7 +837,25 @@ mod tests {
             &support_all(),
             StatusBarOperation::Idle,
         );
-        assert!(!model.source_items[2].enabled);
+        assert!(model.source_items[2].enabled);
+    }
+
+    // The one rule that survives: a session needs a source. An audio-only
+    // session is a real session now, so system audio is subject to that rule
+    // like any other source — unchecking it when it stands alone is refused.
+    #[test]
+    fn system_audio_alone_is_a_session_and_cannot_be_unchecked() {
+        assert_eq!(
+            computed_toggle_sources(
+                CaptureSources {
+                    screen: false,
+                    microphone: false,
+                    system_audio: true,
+                },
+                SOURCE_SYSTEM_AUDIO_ID,
+            ),
+            None
+        );
     }
 
     #[test]

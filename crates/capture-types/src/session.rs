@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CapturePermissionState {
     Granted,
@@ -8,6 +8,16 @@ pub enum CapturePermissionState {
     NotDetermined,
     Unsupported,
     Unknown,
+    /// System audio only (ADR 0052). Core Audio process taps have their own TCC
+    /// category and **no authorization query at all**, so the two states below
+    /// are inferred from what the tap delivered, never read from the OS.
+    ///
+    /// A tap has delivered sound, which only a granted tap can do.
+    AssumedWorking,
+    /// A tap has run and never delivered a sound. Denial looks exactly like a
+    /// quiet Mac, so this is a suspicion, not a verdict — the surfaces that
+    /// render it say "may be blocked" and let the user dismiss it.
+    PossiblyBlocked,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -91,4 +101,49 @@ pub struct StartNativeCaptureRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NativeCaptureSessionResponse {
     pub session: NativeCaptureSession,
+}
+
+// There is no codegen between these types and their hand-written TypeScript
+// mirror, so the wire strings are pinned here: `PermissionStatus` in
+// `apps/desktop/src/lib/types/session.ts` has to spell them the same way.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_states_round_trip_their_wire_strings() {
+        for (state, wire) in [
+            (CapturePermissionState::Granted, "granted"),
+            (CapturePermissionState::Denied, "denied"),
+            (CapturePermissionState::NotDetermined, "not_determined"),
+            (CapturePermissionState::Unsupported, "unsupported"),
+            (CapturePermissionState::Unknown, "unknown"),
+            (CapturePermissionState::AssumedWorking, "assumed_working"),
+            (CapturePermissionState::PossiblyBlocked, "possibly_blocked"),
+        ] {
+            assert_eq!(serde_json::to_value(state).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<CapturePermissionState>(wire.into()).unwrap(),
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn permissions_serialize_the_inferred_system_audio_states() {
+        let permissions = CapturePermissions {
+            screen: CapturePermissionState::Granted,
+            microphone: CapturePermissionState::Denied,
+            system_audio: CapturePermissionState::PossiblyBlocked,
+        };
+
+        assert_eq!(
+            serde_json::to_value(&permissions).unwrap(),
+            serde_json::json!({
+                "screen": "granted",
+                "microphone": "denied",
+                "systemAudio": "possibly_blocked",
+            })
+        );
+    }
 }
