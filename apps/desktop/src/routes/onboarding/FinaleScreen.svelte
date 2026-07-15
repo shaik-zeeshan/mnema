@@ -59,7 +59,7 @@
       <div class="finale__chips">
         <span class="chip" data-on={c.draftCaptureScreen}>Screen</span>
         <span class="chip" data-on={c.draftCaptureMicrophone}>Mic</span>
-        <span class="chip" data-on={c.draftCaptureSystemAudio && c.draftCaptureScreen}>Sys audio</span>
+        <span class="chip" data-on={c.draftCaptureSystemAudio}>Sys audio</span>
         <span class="chip" data-on={c.draftOcrEnabled}>OCR</span>
         <span class="chip" data-on={c.draftTranscriptionEnabled}>Transcript</span>
       </div>

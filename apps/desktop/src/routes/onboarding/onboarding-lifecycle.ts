@@ -146,17 +146,15 @@ export async function finishOnboarding(
     if (startRecording) {
       // Defense-in-depth: never request a source whose OS permission isn't
       // granted, independent of the attention gate. Capture must not outrun
-      // authorization even if the gating logic ever changes. (System audio
-      // uses the `systemAudio` PermissionKey; screen is required-on and
-      // already gates system audio.)
+      // authorization even if the gating logic ever changes. System audio is
+      // exempt and takes its draft flag straight through: its grant is
+      // unreadable (ADR 0052), the prompt fires when the tap is first read, and
+      // it has no screen dependency — gating it here would never let it start.
       await invoke("start_native_capture", {
         request: {
           captureScreen: target.draftCaptureScreen,
           captureMicrophone: target.draftCaptureMicrophone && target.permissions?.microphone === "granted",
-          captureSystemAudio:
-            target.draftCaptureScreen
-            && target.draftCaptureSystemAudio
-            && target.permissions?.systemAudio === "granted",
+          captureSystemAudio: target.draftCaptureSystemAudio,
         },
       });
     }

@@ -40,6 +40,7 @@ import {
 } from "./recording-validation";
 import { createCliAccessStore } from "./cli-access.svelte";
 import { createGeckoUrlAccessStore } from "./gecko-url-access.svelte";
+import { createSystemAudioAccessStore } from "./system-audio-access.svelte";
 import { createLogsStore } from "./logs.svelte";
 import { createAskAiStore, askAiReasonLabel as askAiReasonLabelCore } from "./ask-ai.svelte";
 import { createAboutStore } from "./about.svelte";
@@ -116,6 +117,10 @@ export class SettingsController {
   // Optional Gecko (Firefox/Zen) browser-URL access — surfaced in the capture
   // Privacy panel, loaded on mount and re-polled on window focus.
   geckoUrlAccess = createGeckoUrlAccessStore();
+  // The inferred "system audio may be blocked" hint (ADR 0052) — surfaced in the
+  // capture panel, loaded on mount and re-polled on window focus (the evidence
+  // only moves while a recording is running).
+  systemAudioAccess = createSystemAudioAccessStore();
   logs = createLogsStore();
   askAi = createAskAiStore();
   about = createAboutStore();

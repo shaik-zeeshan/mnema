@@ -38,11 +38,14 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
   let requestingGeckoAccess = $state(false);
   let recheckingGeckoAccess = $state(false);
 
+  // "assumed_working" is system audio's granted (ADR 0052): a tap that has
+  // delivered sound is as good as a read grant, and it is the strongest answer
+  // that permission can ever give.
   const grantedCount = $derived(
     permissions === null
       ? 0
       : (["screen", "microphone", "systemAudio"] as const).filter(
-          (k) => permissions?.[k] === "granted",
+          (k) => permissions?.[k] === "granted" || permissions?.[k] === "assumed_working",
         ).length,
   );
   const geckoInstalled = $derived(

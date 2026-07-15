@@ -15,24 +15,35 @@
     return "Very low — only very loud system audio triggers activity.";
   };
 
-  // Hoist the unmet-prerequisite callout OUT of FeatureRow's inert `.body-inner`
-  // — otherwise its "Grant System audio access" button renders but is inert.
+  // Hoist the callout OUT of FeatureRow's inert `.body-inner` — otherwise its
+  // "Grant System audio access" button renders but is inert.
+  //
+  // Driven by the permission itself rather than `featureLockReason`, which is
+  // null for sysaudio and must stay so: a tap's grant is unreadable and its
+  // prompt only fires on a real recording, so this is an early offer, not an
+  // unmet prerequisite (ADR 0052). Unlike MicBody's, it is therefore shown only
+  // while the feature is ON — with no lock to open, a Grant button on a switched
+  // off feature is just noise. It clears once a tap has proved the grant by
+  // delivering sound ("assumed_working" → no action).
   const setLockCallout = useLockCalloutSlot();
-  const lockReason = $derived(controller.featureLockReason("sysaudio"));
+  const sysAction = $derived(controller.permissionAction(controller.permissions?.systemAudio));
+  const showGrant = $derived(controller.draftCaptureSystemAudio && sysAction !== null);
   $effect(() => {
-    setLockCallout(lockReason ? lockCallout : null);
+    setLockCallout(showGrant ? lockCallout : null);
     return () => setLockCallout(null);
   });
 </script>
 
 {#snippet lockCallout()}
-  <!-- Once system-audio access is denied macOS won't re-prompt, so
-       `requestPermission` deep-links to System Settings — mirror PermissionsBody
-       and relabel ("Open Settings"/"Opening…") rather than promising a prompt. -->
-  {@const sysAction = controller.permissionAction(controller.permissions?.systemAudio)}
   <div class="lock-callout">
     <div class="lock-callout-text">
-      System audio access is required before you can capture system sound.
+      {#if controller.permissions?.systemAudio === "possibly_blocked"}
+        System audio hasn't recorded any sound yet. If you denied the prompt,
+        allow Mnema under Privacy &amp; Security → Screen &amp; System Audio Recording.
+      {:else}
+        macOS asks for system audio access the first time a recording captures
+        sound. Grant it now to get the prompt out of the way.
+      {/if}
     </div>
     <button
       type="button"
@@ -50,11 +61,6 @@
 {/snippet}
 
 <div class="group">
-  <div class="note muted">
-    System audio requires <b>Screen capture</b> (always on) and the macOS audio
-    entitlement granted in Permissions.
-  </div>
-
   <div class="ctl">
     <div class="ctl-label">
       <div class="name">Transcribe system audio</div>

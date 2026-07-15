@@ -1,4 +1,18 @@
-export type PermissionStatus = "granted" | "denied" | "not_determined" | "restricted" | "unsupported" | "unknown";
+// Hand-mirrored from `capture-types/src/session.rs` (no codegen — the serde
+// wire-pin test there is what keeps these spellings honest).
+//
+// `assumed_working` / `possibly_blocked` are system audio's, and only system
+// audio's: a Core Audio process tap has no authorization query, so its state is
+// inferred from whether a tap has ever delivered sound, never read (ADR 0052).
+export type PermissionStatus =
+	| "granted"
+	| "denied"
+	| "not_determined"
+	| "restricted"
+	| "unsupported"
+	| "unknown"
+	| "assumed_working"
+	| "possibly_blocked";
 
 export interface SupportedSources {
 	screen: boolean;

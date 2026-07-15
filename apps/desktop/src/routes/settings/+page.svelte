@@ -454,6 +454,7 @@
       void c.appPrivacyExclusion.loadPrivacyAppCandidates();
       void c.appPrivacyExclusion.loadSensitiveCaptureRecommendations();
       void c.geckoUrlAccess.load();
+      void c.systemAudioAccess.load();
       loadBrokerGrants();
       loadMnemaCliStatus();
       void loadAskAiAvailability();
@@ -479,8 +480,11 @@
     // optional Gecko browser-URL access on window focus to pick up a grant without
     // making the user click Recheck. Skip once trusted; the store's in-flight latch
     // keeps refocus storms from double-firing.
+    // System audio's evidence only moves while a recording runs, so re-poll it
+    // on focus too — that is when a user who just recorded comes back to look.
     const onWindowFocus = () => {
       if (!c.geckoUrlAccess.trusted) void c.geckoUrlAccess.recheck();
+      void c.systemAudioAccess.load();
     };
     const hasWindow = typeof window !== "undefined";
     if (hasWindow) window.addEventListener("focus", onWindowFocus);
