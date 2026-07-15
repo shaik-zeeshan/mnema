@@ -3671,9 +3671,14 @@ fn configured_screen_capture_kit_stream_cfg(
     let mut screen_stream_cfg = sc::StreamCfg::new();
     screen_stream_cfg.set_width(stream_resolution.width as usize);
     screen_stream_cfg.set_height(stream_resolution.height as usize);
-    // Fractional rates (e.g. 0.5 fps) need a sub-1Hz interval, so express it in ms.
-    screen_stream_cfg
-        .set_minimum_frame_interval(cm::Time::new(1000, (screen_frame_rate * 1000.0) as i32));
+    // Fractional rates need a sub-1Hz interval, so express it as milliseconds
+    // per frame (value=ms, timescale=1000). Putting the rate on the value side
+    // keeps long intervals exact — the old timescale-side `(rate * 1000) as i32`
+    // truncated 1/60 fps to a 62.5s interval instead of 60s.
+    screen_stream_cfg.set_minimum_frame_interval(cm::Time::new(
+        (1000.0 / screen_frame_rate).round() as i64,
+        1000,
+    ));
     // Request a packed 32-bit buffer so live captured-frame equivalence can read
     // interleaved pixels directly instead of falling back to the exported JPEG.
     screen_stream_cfg.set_pixel_format(cidre::cv::PixelFormat::_32_BGRA);
@@ -4823,13 +4828,28 @@ mod tests {
 
         let interval = configured_screen_capture_kit_stream_cfg(&resolution, 0.5, &sources)
             .minimum_frame_interval();
-        assert_eq!(interval.value, 1000);
-        assert_eq!(interval.scale, 500);
+        assert_eq!(interval.value, 2000);
+        assert_eq!(interval.scale, 1000);
 
         let interval = configured_screen_capture_kit_stream_cfg(&resolution, 10.0, &sources)
             .minimum_frame_interval();
-        assert_eq!(interval.value, 1000);
-        assert_eq!(interval.scale, 10000);
+        assert_eq!(interval.value, 100);
+        assert_eq!(interval.scale, 1000);
+
+        // Once per minute must be exact — the previous timescale-side encoding
+        // truncated this to 62.5s.
+        let interval =
+            configured_screen_capture_kit_stream_cfg(&resolution, 1.0 / 60.0, &sources)
+                .minimum_frame_interval();
+        assert_eq!(interval.value, 60_000);
+        assert_eq!(interval.scale, 1000);
+
+        // A rate whose ms-per-frame is fractional (3 fps → 333.33ms) must round,
+        // not truncate — exercises the `.round()` the ladder stops don't hit.
+        let interval = configured_screen_capture_kit_stream_cfg(&resolution, 3.0, &sources)
+            .minimum_frame_interval();
+        assert_eq!(interval.value, 333);
+        assert_eq!(interval.scale, 1000);
     }
 
     // --- output_files_for_session path-layout regression ---

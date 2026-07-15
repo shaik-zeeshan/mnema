@@ -72,6 +72,27 @@ pub async fn get_user_context_status(
     let store = infra.user_context();
     let activity_count = store.count_activities().await.map_err(|e| e.to_string())?;
     let conclusion_count = store.count_conclusions().await.map_err(|e| e.to_string())?;
+    let subject_count = store.count_subjects().await.map_err(|e| e.to_string())?;
+    let dismissed_count = store.count_dismissed().await.map_err(|e| e.to_string())?;
+    // Low-signal windows the derivation scheduler skipped before any LLM call,
+    // over the last 24h (the debug surface's "distillation gate" readout).
+    let skipped_windows_24h = store
+        .count_skipped_runs_since(now_ms() - 24 * 60 * 60 * 1000)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Daily-digest freshness readout. Both best-effort — a read error degrades
+    // to "unknown" rather than failing the whole status.
+    let local_offset_minutes = store.local_offset_minutes().await.ok().flatten();
+    let last_day_digest = store.latest_day_digest().await.ok().flatten().map(|digest| {
+        UserContextDigest {
+            range_kind: digest.range_kind,
+            range_start_ms: digest.range_start_ms,
+            range_end_ms: digest.range_end_ms,
+            narrative: digest.narrative,
+            headline: digest.headline,
+            generated_at_ms: digest.generated_at_ms,
+        }
+    });
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
     // Summarized-up-to watermark: the end edge of the most-recently-COVERED
     // window (failed runs advanced the scheduler cursor but summarized nothing,
@@ -156,6 +177,11 @@ pub async fn get_user_context_status(
         token_usage,
         budget_tier: user_context.derivation_budget_tier,
         last_distillation,
+        subject_count,
+        dismissed_count,
+        skipped_windows_24h,
+        local_offset_minutes,
+        last_day_digest,
     })
 }
 

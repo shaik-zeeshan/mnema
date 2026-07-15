@@ -28,7 +28,7 @@ const DATABASE_FILE_NAME: &str = "app.sqlite3";
 /// auto-extension switch — it does not pull in a second SQLite. Registration is
 /// process-global and idempotent via `Once`; it must happen before the first
 /// connection opens or that connection will not see `vec0`.
-fn register_vec0_auto_extension() {
+pub(crate) fn register_vec0_auto_extension() {
     static REGISTER: std::sync::Once = std::sync::Once::new();
     REGISTER.call_once(|| {
         // SAFETY: `sqlite3_vec_init` is the sqlite-vec entrypoint; SQLite calls

@@ -69,8 +69,8 @@ pub use brokered_access::guard_url as guard_browser_url;
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
-    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
-    FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
+    FrameBatch, FrameBatchCounts, FrameBatchFinalizePayload, FrameBatchFinalizeResult,
+    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
     FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use hidden_segment_workspace::{
@@ -94,10 +94,11 @@ pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
     FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobReclamationSummary, ProcessingJobRunOutcome, ProcessingJobStatus,
-    ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend,
+    ProcessingJobListing, ProcessingJobReclamationSummary, ProcessingJobRunOutcome,
+    ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft,
+    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorPipelineStatus,
+    ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
+    SpeakerAnalysisProcessorBackend,
     SpeakerClusterView, SpeakerTurnView, SystemAudioSpeechActivityJobPayload,
     SystemAudioSpeechActivityProcessorBackend, SystemAudioSpeechActivityResult,
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
@@ -115,7 +116,7 @@ pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::{
     digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
-    CaptureWindowItem, DistillationGateDrops, FailedDerivationWindow, NewActivity,
+    CaptureWindowItem, DerivationRun, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
     SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };
@@ -728,6 +729,11 @@ impl AppInfra {
 
     pub async fn list_frame_batches(&self, session_id: Option<&str>) -> Result<Vec<FrameBatch>> {
         self.frame_batches.list_batches(session_id).await
+    }
+
+    /// See [`FrameBatchStore::list_unfinished_batches`].
+    pub async fn list_unfinished_frame_batches(&self, limit: i64) -> Result<Vec<FrameBatch>> {
+        self.frame_batches.list_unfinished_batches(limit).await
     }
 
     pub async fn get_frame_batch(&self, batch_id: i64) -> Result<Option<FrameBatch>> {
@@ -1796,6 +1802,35 @@ impl AppInfra {
             .await
     }
 
+    pub async fn processing_pipeline_status(&self) -> Result<Vec<ProcessorPipelineStatus>> {
+        self.processing.pipeline_status().await
+    }
+
+    pub async fn list_processing_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ProcessingJobListing>> {
+        self.processing
+            .list_jobs_by_processor(processor, status, subject_id, limit, offset)
+            .await
+    }
+
+    /// Total rows behind one `list_processing_jobs_by_processor` filter (the debug pager's "of N").
+    pub async fn count_processing_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+    ) -> Result<i64> {
+        self.processing
+            .count_jobs_by_processor(processor, status, subject_id)
+            .await
+    }
+
     pub async fn count_queued_or_running_processing_jobs_for_processor(
         &self,
         processor: &str,
@@ -1854,11 +1889,20 @@ impl AppInfra {
     }
 
     pub async fn status(&self) -> Result<AppInfraStatus> {
+        let database_path = self.database.database_path();
         Ok(AppInfraStatus {
-            database_path: self.database.database_path().display().to_string(),
+            database_size_bytes: std::fs::metadata(database_path).ok().map(|meta| meta.len()),
+            database_path: database_path.display().to_string(),
             migrations_ran: self.database.migrations_ran(),
+            applied_migration_count: sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations",
+            )
+            .fetch_one(self.database.read_pool())
+            .await
+            .ok(),
             worker_thread_count: self.runtime.worker_thread_count(),
             job_counts: self.jobs.counts().await?,
+            frame_batch_counts: self.frame_batches.counts().await?,
         })
     }
 }

@@ -6,6 +6,9 @@ mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
 mod conversation;
+mod debug_health;
+mod debug_pipeline;
+mod debug_status;
 mod general_app_log;
 mod keyboard_bindings;
 mod managed_storage_layout;
@@ -27,6 +30,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod webview_cache;
 mod windows;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
@@ -410,6 +414,10 @@ pub fn run() {
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
+        // The Semantic Index Backfill worker's health, published each sweep pass and
+        // read by the debug surface's `get_semantic_index_status`. Registered here
+        // (not in the worker) so the state exists before deferred startup spawns it.
+        .manage(debug_status::SemanticWorkerHealthState::default())
         // MCP tool connectors (Workstream C, ADR 0048): persistent connection
         // manager. Lazy — nothing connects here at launch; it dials on first use.
         .manage(ask_ai::mcp::McpManager::default())
@@ -470,7 +478,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            debug_pipeline::get_processing_pipeline_status,
+            debug_pipeline::list_processing_jobs_by_processor,
+            debug_health::get_debug_health,
+            ask_ai::get_ask_ai_last_turn_usage,
             app_infra::get_storage_location,
+            debug_status::get_semantic_index_status,
+            debug_status::list_frame_batches,
+            debug_status::list_user_context_derivation_runs,
+            debug_status::tail_app_log,
             app_updates::get_app_update_status,
             app_updates::check_for_app_update,
             app_updates::set_app_update_channel,

@@ -45,6 +45,7 @@ use tauri::{Emitter, Manager};
 use tokio::sync::watch;
 
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
+use crate::debug_status::SemanticWorkerHealth;
 use crate::semantic_search_models::{
     SemanticSearchModelDownloadProgressDto, SemanticSearchModelDownloadStatusDto,
     SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
@@ -195,6 +196,10 @@ struct SweepState {
     /// At [`MAX_CONSECUTIVE_LOAD_FAILURES`] the model is treated as corrupt: the
     /// worker surfaces a reinstall signal once and idles instead of load-looping.
     consecutive_load_failures: u32,
+    /// Why the last embedder LOAD failed, kept only so the debug surface can show
+    /// WHY the model will not load (before this it was logged and dropped). Never
+    /// read by the sweep itself; cleared alongside `consecutive_load_failures`.
+    last_load_error: Option<String>,
     /// The `(provider, model_id)` a corrupt-model signal was surfaced for, if any,
     /// so the worker idles quietly for THAT selection rather than re-emitting every
     /// tick. Keyed by the signalled model identity — `None` until a model is
@@ -242,6 +247,7 @@ impl SweepState {
             logged_no_model: false,
             anchor_failures: HashMap::new(),
             consecutive_load_failures: 0,
+            last_load_error: None,
             corrupt_model_signalled: None,
             consecutive_idles: 0,
             transient_stuck: None,
@@ -274,6 +280,43 @@ impl SweepState {
     /// deleted/reprocessed so its id is retired).
     fn clear_anchor_failures(&mut self, anchor_id: i64) {
         self.anchor_failures.remove(&anchor_id);
+    }
+
+    /// Record one embedder LOAD failure (CT3): bump the consecutive-load-failure
+    /// streak and keep `error` so the debug surface can show why the model will not
+    /// load. Returns the new streak (the caller logs it and compares it against
+    /// [`MAX_CONSECUTIVE_LOAD_FAILURES`]).
+    fn record_load_failure(&mut self, error: &str) -> u32 {
+        self.consecutive_load_failures = self.consecutive_load_failures.saturating_add(1);
+        self.last_load_error = Some(error.to_string());
+        self.consecutive_load_failures
+    }
+
+    /// Forget every load-failure record: the streak, the CT3 corrupt-model latch,
+    /// and the last load error. Called when the model loaded (or the cached embedder
+    /// proved the weights are fine), when the selection goes unavailable, and on a
+    /// model switch — in each case the recorded failures belong to a past attempt on
+    /// a model that is no longer the one being retried.
+    fn clear_load_failures(&mut self) {
+        self.consecutive_load_failures = 0;
+        self.corrupt_model_signalled = None;
+        self.last_load_error = None;
+    }
+
+    /// The debug-surface snapshot of this worker's health, published after every
+    /// sweep pass. A pure read of the state above — `quarantined_count` is derived
+    /// (the map also holds sub-cap streaks, which are not quarantines).
+    fn health_snapshot(&self) -> SemanticWorkerHealth {
+        SemanticWorkerHealth {
+            model_loaded: self.embedder.is_some(),
+            consecutive_load_failures: self.consecutive_load_failures,
+            quarantined_count: self
+                .anchor_failures
+                .values()
+                .filter(|&&failures| failures >= MAX_CONSECUTIVE_ANCHOR_FAILURES)
+                .count(),
+            last_load_error: self.last_load_error.clone(),
+        }
     }
 
     /// Whether the currently-selected `(provider, model_id)` has already been
@@ -329,8 +372,7 @@ impl SweepState {
         }
         // A genuine model switch: every piece of model-keyed state belongs to the old
         // model and must not bleed into the new one.
-        self.corrupt_model_signalled = None;
-        self.consecutive_load_failures = 0;
+        self.clear_load_failures();
         self.embedder = None;
         self.anchor_failures.clear();
         self.transient_stuck = None;
@@ -424,6 +466,13 @@ pub fn spawn_semantic_index_backfill_worker(
         ERROR_RETRY_INTERVAL.as_millis(),
     ));
 
+    // The debug surface's window onto this worker (`get_semantic_index_status`):
+    // the sweep publishes a snapshot of its otherwise task-local health here after
+    // every pass. Write-only from the worker's side — nothing here feeds back into
+    // the sweep.
+    let health: crate::debug_status::SemanticWorkerHealthState =
+        app_handle.state::<crate::debug_status::SemanticWorkerHealthState>().inner().clone();
+
     let handle = tauri::async_runtime::spawn(async move {
         let infra = Arc::clone(&infra);
         // In-memory worker state reused across passes: the loaded embedder plus the
@@ -473,6 +522,11 @@ pub fn spawn_semantic_index_backfill_worker(
                 }
                 SweepPass::Shutdown => break,
             };
+
+            // Publish this pass's health for the debug surface. After the arms above,
+            // so `model_loaded` reflects an idle-decay drop rather than lagging a pass.
+            // The guard is dropped before the sleep below (never held across an await).
+            *health.lock().unwrap_or_else(|poison| poison.into_inner()) = state.health_snapshot();
 
             if shutdown_aware_sleep(&mut shutdown_rx, sleep).await {
                 break;
@@ -545,8 +599,7 @@ async fn run_sweep_pass(
         // reloads cleanly. Reset the CT3 corrupt-model latch and load counter so a
         // fresh (re)install gets a clean set of load attempts.
         state.embedder = None;
-        state.consecutive_load_failures = 0;
-        state.corrupt_model_signalled = None;
+        state.clear_load_failures();
         if !state.logged_no_model {
             crate::native_capture::debug_log::log_info(
                 "semantic index backfill skipped: no Semantic Search Model installed (silent no-op)",
@@ -788,8 +841,7 @@ async fn run_sweep_pass(
         Ok(pair) => {
             // A successful load (or a reuse of the cached embedder, which also proves
             // the weights are fine) resets CT3.
-            state.consecutive_load_failures = 0;
-            state.corrupt_model_signalled = None;
+            state.clear_load_failures();
             pair
         }
         Err(LoadError { error }) => {
@@ -801,12 +853,14 @@ async fn run_sweep_pass(
             // load now runs on the blocking thread (M1), so this accounting happens
             // after the task returns rather than inline on the reactor — the branching
             // is otherwise identical.
-            state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
+            // The error string is also RETAINED on the state (not just logged) so the
+            // debug surface can show why the model will not load.
+            let load_failures = state.record_load_failure(&error);
             crate::native_capture::debug_log::log_error(format!(
-                "semantic index backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
-                descriptor.provider, descriptor.model_id, state.consecutive_load_failures
+                "semantic index backfill failed to load model '{}/{}' (consecutive load failures: {load_failures}): {error}",
+                descriptor.provider, descriptor.model_id
             ));
-            if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
+            if load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
                 signal_model_appears_corrupt(app_handle, &descriptor, &error);
                 // Latch the corrupt signal to THIS selection's identity so a later
                 // switch to a different (valid) model is not short-circuited by it.
@@ -1466,6 +1520,64 @@ mod tests {
             !state.is_anchor_quarantined(new_id),
             "the reprocessed id is not quarantined and is retried"
         );
+    }
+
+    #[test]
+    fn health_snapshot_records_a_load_failure_and_clears_it_on_a_successful_pass() {
+        // The debug surface's whole view of this worker is this snapshot, so the two
+        // transitions it must survive are: a load failure (streak + the error string
+        // that used to be logged and dropped) and the recovery that clears them.
+        let mut state = SweepState::new();
+
+        // Nothing has happened yet: no model held, nothing failed, nothing quarantined.
+        let fresh = state.health_snapshot();
+        assert!(!fresh.model_loaded);
+        assert_eq!(fresh.consecutive_load_failures, 0);
+        assert_eq!(fresh.quarantined_count, 0);
+        assert_eq!(fresh.last_load_error, None);
+
+        // Two consecutive load failures: the streak climbs and the LATEST error is the
+        // one surfaced.
+        assert_eq!(state.record_load_failure("weights are truncated"), 1);
+        assert_eq!(state.record_load_failure("device init failed"), 2);
+        let failed = state.health_snapshot();
+        assert_eq!(failed.consecutive_load_failures, 2);
+        assert_eq!(failed.last_load_error.as_deref(), Some("device init failed"));
+        assert!(!failed.model_loaded, "a failed load holds no embedder");
+
+        // A successful pass (the `Ok(pair)` arm) clears the streak AND the stale error,
+        // so the debug page stops showing a load error the worker has recovered from.
+        state.clear_load_failures();
+        let recovered = state.health_snapshot();
+        assert_eq!(recovered.consecutive_load_failures, 0);
+        assert_eq!(recovered.last_load_error, None);
+        assert_eq!(state.corrupt_model_signalled, None, "the CT3 latch clears too");
+    }
+
+    #[test]
+    fn health_snapshot_counts_only_quarantined_anchors_not_sub_cap_streaks() {
+        // `anchor_failures` holds every failing anchor's streak, but only those AT the
+        // cap are actually excluded from the sweep — the snapshot must report the
+        // quarantine, not the raw map size, or the debug page overstates the damage.
+        let mut state = SweepState::new();
+
+        // One anchor short of the cap: failing, but still being retried.
+        state.record_anchor_embed_failure(1);
+        assert_eq!(
+            state.health_snapshot().quarantined_count,
+            0,
+            "a sub-cap failure streak is not a quarantine"
+        );
+
+        // A second anchor all the way to the cap: quarantined.
+        for _ in 0..MAX_CONSECUTIVE_ANCHOR_FAILURES {
+            state.record_anchor_embed_failure(2);
+        }
+        assert_eq!(state.health_snapshot().quarantined_count, 1);
+
+        // A clean store on the quarantined id releases it from the count.
+        state.clear_anchor_failures(2);
+        assert_eq!(state.health_snapshot().quarantined_count, 0);
     }
 
     #[test]

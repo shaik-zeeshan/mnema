@@ -4,4 +4,5 @@ export * from "./types/inactivity";
 export * from "./types/microphone";
 export * from "./types/logs";
 export * from "./types/app-infra";
+export * from "./types/debug";
 export * from "./types/app-updates";

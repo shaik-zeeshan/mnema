@@ -1,6 +1,6 @@
 [package]
 name = "mnema"
-version = "0.1.12"
+version = "0.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -105,6 +105,9 @@ reqwest13 = { package = "reqwest", version = "0.13", default-features = false, f
 process-wrap = { version = "9.0", features = ["tokio1", "process-group"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree via cocoa; needed directly for the non-nil completion
+# handler WKWebsiteDataStore requires (webview_cache.rs).
+block = "0.1"
 cocoa = "0.26"
 core-graphics = "0.25"
 core-foundation = "0.10"

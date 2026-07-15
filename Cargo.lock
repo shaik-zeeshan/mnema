@@ -4606,13 +4606,14 @@ dependencies = [
 
 [[package]]
 name = "mnema"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "ai-runtime",
  "app-infra",
  "async-trait",
  "audio-transcription",
  "base64 0.22.1",
+ "block",
  "bzip2 0.6.1",
  "capture-metadata",
  "capture-microphone",

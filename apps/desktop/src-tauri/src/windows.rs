@@ -1170,6 +1170,7 @@ pub fn handle_window_event(
     window: Option<&WebviewWindow>,
 ) {
     if let WindowEvent::Focused(false) = event {
+        crate::webview_cache::purge_webview_memory_cache_on_blur(app);
         if AppWindow::from_label(label) == Some(AppWindow::QuickRecall) {
             if let Some(window) = window {
                 if should_dismiss_quick_recall_on_blur() {
