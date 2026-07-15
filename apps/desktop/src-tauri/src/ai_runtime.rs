@@ -96,6 +96,10 @@ fn describe_error(error: &dyn std::error::Error) -> String {
 fn classify_listing_failure(error: &str) -> String {
     if error.starts_with("no_provider_key") {
         "missing API key".to_string()
+    } else if error.contains("keychain") && error.contains("denied") {
+        // AppInfraError::SecretVaultDenied Display — a denied key store, NOT a
+        // missing key (denied ≠ missing, ADR 0048 amendment).
+        "keychain access denied".to_string()
     } else if error.starts_with("no_base_url") {
         "no base URL set".to_string()
     } else if error.starts_with("invalid_base_url") || error.starts_with("base_url_host_mismatch")
@@ -517,9 +521,10 @@ pub(crate) async fn engine_configured_prerequisite(
     Ok(())
 }
 
-// Keychain access shells out to `security`, which can block on a macOS
-// authorization dialog. These run `async` + `spawn_blocking` so the blocking
-// subprocess never freezes the Tauri main thread (sync commands run there).
+// Secret access goes through the in-memory secret vault, but the first access
+// in a process performs the vault unlock, which can block on a macOS keychain
+// prompt. These run `async` + `spawn_blocking` so that blocking call never
+// freezes the Tauri main thread (sync commands run there).
 #[tauri::command]
 pub async fn ai_runtime_set_provider_key(
     request: AiRuntimeProviderKeyRequest,
@@ -1331,6 +1336,15 @@ mod tests {
             "missing API key"
         );
         assert_eq!(classify_listing_failure("no_base_url"), "no base URL set");
+        // Denied ≠ missing: the SecretVaultDenied Display must classify as a
+        // keychain denial, never as "missing API key".
+        assert_eq!(
+            classify_listing_failure(
+                &app_infra::AppInfraError::SecretVaultDenied("user denied prompt".to_string())
+                    .to_string()
+            ),
+            "keychain access denied"
+        );
         assert_eq!(
             classify_listing_failure("error sending request for url (http://192.168.0.9:8080/v1/models)"),
             "unreachable"

@@ -426,8 +426,17 @@ pub(crate) fn selected_audio_transcription_model_available(
         // ADR 0047: Deepgram availability = an API key is present (the manifest
         // entry is OsManaged, so `detect_model_status` reports it always installed).
         return Ok(
-            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT)
-                .unwrap_or(false),
+            match app_infra::has_ai_provider_key(
+                crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT,
+            ) {
+                Ok(present) => present,
+                // ADR 0048 amendment: a vault-denied read is NOT "no key". Report
+                // available so segments still enqueue transcription jobs; each job
+                // then parks as transient liveness at transcribe time and recovers
+                // on a later launch, instead of silently skipping transcription.
+                Err(app_infra::AppInfraError::SecretVaultDenied(_)) => true,
+                Err(_) => false,
+            },
         );
     }
 
@@ -1102,11 +1111,24 @@ fn model_status_dto(
     if descriptor.provider == audio_transcription::DEEPGRAM_PROVIDER_ID {
         // ADR 0047: availability = API key present. The OsManaged entry reports
         // always-installed, so key presence is the real gate.
-        available = app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT)
-            .unwrap_or(false);
-        if !available && failure_message.is_none() {
-            failure_message =
-                Some("Add a Deepgram API key in Settings to enable cloud transcription.".to_string());
+        match app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT) {
+            Ok(present) => {
+                available = present;
+                if !available && failure_message.is_none() {
+                    failure_message = Some(
+                        "Add a Deepgram API key in Settings to enable cloud transcription."
+                            .to_string(),
+                    );
+                }
+            }
+            // Denied ≠ missing (ADR 0048 amendment): show the vault error itself,
+            // never the misleading "add a key" prompt.
+            Err(error) => {
+                available = false;
+                if failure_message.is_none() {
+                    failure_message = Some(error.to_string());
+                }
+            }
         }
     }
 
