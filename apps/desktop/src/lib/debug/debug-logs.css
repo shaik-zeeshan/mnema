@@ -1,0 +1,149 @@
+/* Debug logs — the log-tail viewer (`lib/debug/LogTail.svelte`): toolbar,
+ * feature filter chips, meta line, and the scrollback viewport.
+ *
+ * Fourth part of the shared Debug stylesheet (map + import order:
+ * debug-layout.css). A new part rather than more of debug-capture.css, which is
+ * both a different concern and already near the repo's 800-line ceiling.
+ *
+ * Everything is namespaced under `.debug-shell` like the other parts, so these
+ * rules can never leak into Settings/Insights. The file switch, the follow
+ * toggle and the tooltips are the real shared components (Segmented, Switch,
+ * `tip`) — the only rules here that touch them re-scope their sizing for a
+ * toolbar. */
+
+.debug-shell .log-tail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ── Toolbar (file switch + follow) ─────────────────────────────────── */
+.debug-shell .log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* Switch's wrapper is `width: 100%` (it is built for a full-width SettingRow);
+   box it so the label + track sit as one toolbar-sized item instead of blowing
+   the follow toggle across the row. */
+.debug-shell .log-toolbar__follow {
+  flex: 0 0 auto;
+  width: 92px;
+  margin-left: auto;
+}
+
+.debug-shell .log-toolbar__follow .switch-label {
+  font-size: 11px;
+  color: var(--app-text-muted);
+  letter-spacing: 0.06em;
+}
+
+/* ── Feature filter chips ───────────────────────────────────────────── */
+.debug-shell .log-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.debug-shell .log-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 999px;
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.debug-shell .log-chip:hover {
+  color: var(--app-text);
+  background: var(--app-surface-hover);
+  border-color: var(--app-border-hover);
+}
+
+.debug-shell .log-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
+
+.debug-shell .log-chip--active {
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+  border-color: var(--app-accent-border);
+}
+
+/* ── Meta line (path + counts) ──────────────────────────────────────── */
+.debug-shell .log-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 10px;
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .log-meta__path {
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* keep the filename visible when the path is truncated */
+  text-align: left;
+}
+
+.debug-shell .log-meta__count {
+  flex: 0 0 auto;
+  letter-spacing: 0.06em;
+}
+
+/* ── Scrollback viewport ────────────────────────────────────────────── */
+.debug-shell .log-view {
+  height: 340px;
+  overflow: auto;
+  padding: 8px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  /* The rows are pre-wrapped `nowrap` lines; let long ones scroll sideways
+     rather than reflow the whole tail on every poll. */
+  overscroll-behavior: contain;
+}
+
+.debug-shell .log-view:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
+
+.debug-shell .log-line {
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.65;
+  color: var(--app-text-muted);
+  white-space: pre;
+}
+
+.debug-shell .log-line--warn {
+  color: var(--app-warn);
+}
+
+.debug-shell .log-line--err {
+  color: var(--app-danger);
+}
+
+.debug-shell .log-empty__glyph {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-right: 4px;
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .log-empty__glyph svg {
+  width: 12px;
+  height: 12px;
+}
