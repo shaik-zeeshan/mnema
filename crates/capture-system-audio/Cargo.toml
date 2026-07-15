@@ -1,0 +1,15 @@
+[package]
+name = "capture-system-audio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+capture-runtime = { path = "../capture-runtime" }
+capture-types = { path = "../capture-types" }
+capture-writers = { path = "../capture-writers" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# `core_audio` is the feature this crate is here for; the rest is the sibling
+# capture crates' set, which `core_audio` needs but does not declare (it reaches
+# for `at`, which reaches for `av`, which reaches for `cm`).
+cidre = { version = "0.15", default-features = false, features = ["av", "async", "blocks", "cat", "cm", "core_audio", "dispatch", "macos_15_0"] }
