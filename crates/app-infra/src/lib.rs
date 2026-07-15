@@ -58,8 +58,8 @@ pub use brokered_access::guard_url as guard_browser_url;
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
-    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
-    FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
+    FrameBatch, FrameBatchCounts, FrameBatchFinalizePayload, FrameBatchFinalizeResult,
+    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
     FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use hidden_segment_workspace::{
@@ -1853,8 +1853,15 @@ impl AppInfra {
             database_size_bytes: std::fs::metadata(database_path).ok().map(|meta| meta.len()),
             database_path: database_path.display().to_string(),
             migrations_ran: self.database.migrations_ran(),
+            applied_migration_count: sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations",
+            )
+            .fetch_one(self.database.read_pool())
+            .await
+            .ok(),
             worker_thread_count: self.runtime.worker_thread_count(),
             job_counts: self.jobs.counts().await?,
+            frame_batch_counts: self.frame_batches.counts().await?,
         })
     }
 }

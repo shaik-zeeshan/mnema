@@ -13,6 +13,7 @@
     batchStatusBadgeClass,
     dispositionBadgeClass,
     dispositionLabel,
+    formatBytes,
     formatCount,
     formatJobTs,
     jobStatusBadgeClass,
@@ -77,11 +78,12 @@
     <div class="row__main">
       <div class="row__label">Database</div>
       <div class="row__desc row__desc--mono" use:tip={infra?.databasePath ?? ""}>
-        {infra ? shortenPath(infra.databasePath, 56) : "not loaded"} · SQLCipher
+        {infra ? shortenPath(infra.databasePath, 56) : "not loaded"} · SQLCipher{#if infra?.appliedMigrationCount != null}&nbsp;· {infra.appliedMigrationCount} migrations{/if}
       </div>
     </div>
     <div class="row__value">
       {#if infra}
+        {#if infra.databaseSizeBytes != null}{formatBytes(infra.databaseSizeBytes)}&nbsp;{/if}
         <!-- `migrationsRan` says whether THIS startup applied anything, not
              whether the schema is current — a healthy up-to-date DB reports
              `false`, so neither value is a fault. -->
@@ -89,6 +91,16 @@
           {infra.migrationsRan ? "migrations applied" : "up to date"}
         </span>
       {/if}
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="row__main">
+      <div class="row__label">Frame batches <span class="new-chip">new</span></div>
+      <div class="row__desc">video combine pipeline</div>
+    </div>
+    <div class="row__value">
+      {infra ? `${formatCount(infra.frameBatchCounts.open)} open · ${formatCount(infra.frameBatchCounts.failed)} failed` : "—"}
     </div>
   </div>
 

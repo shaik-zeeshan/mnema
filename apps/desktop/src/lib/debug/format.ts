@@ -254,6 +254,20 @@ export function formatWindow(startMs: number | null, endMs: number | null): stri
 	return `${new Date(startMs).toLocaleTimeString()}–${new Date(endMs).toLocaleTimeString()}`;
 }
 
+/** Human-readable byte size (`4.2 GB`), or an em-dash when absent. */
+export function formatBytes(bytes: number | null | undefined): string {
+	if (bytes == null) return "—";
+	if (bytes < 1024) return `${bytes} B`;
+	const units = ["KB", "MB", "GB", "TB"];
+	let value = bytes;
+	let unit = 0;
+	do {
+		value /= 1024;
+		unit += 1;
+	} while (value >= 1024 && unit < units.length);
+	return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit - 1]}`;
+}
+
 /** Thousands-separated count — job/vector counts get long enough to need it. */
 export function formatCount(n: number | null | undefined): string {
 	return n == null ? "—" : n.toLocaleString();

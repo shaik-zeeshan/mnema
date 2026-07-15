@@ -110,6 +110,14 @@ pub struct SegmentWorkspaceBatchReference {
     pub status: FrameBatchStatus,
 }
 
+/// Open/failed rollup for the debug page's Jobs & Storage card.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameBatchCounts {
+    pub open: i64,
+    pub failed: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SegmentWorkspaceFrameBatchReferences {
     pub frame_count: i64,
@@ -316,6 +324,23 @@ impl FrameBatchStore {
 
     pub async fn get(&self, batch_id: i64) -> Result<Option<FrameBatch>> {
         get_frame_batch_optional(self.db.read(), batch_id).await
+    }
+
+    /// Open/failed rollup for the debug page's Jobs & Storage card.
+    pub async fn counts(&self) -> Result<FrameBatchCounts> {
+        let row = sqlx::query(
+            "SELECT \
+                COALESCE(SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END), 0) AS open_count, \
+                COALESCE(SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END), 0) AS failed_count \
+            FROM frame_batches",
+        )
+        .fetch_one(self.db.read())
+        .await?;
+
+        Ok(FrameBatchCounts {
+            open: row.get("open_count"),
+            failed: row.get("failed_count"),
+        })
     }
 
     pub async fn get_required(&self, batch_id: i64) -> Result<FrameBatch> {
