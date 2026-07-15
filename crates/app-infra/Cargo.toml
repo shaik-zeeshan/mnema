@@ -19,6 +19,7 @@ capture-types = { path = "../capture-types" }
 capture-vad = { path = "../capture-vad", default-features = false }
 capture-writers = { path = "../capture-writers" }
 secret-redaction = { path = "../secret-redaction" }
+chacha20poly1305 = "0.10"
 chrono = "0.4"
 dirs = "6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

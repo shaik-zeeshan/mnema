@@ -19,6 +19,9 @@ mod ocr_budget;
 pub mod processing;
 pub mod retry_policy;
 mod search;
+mod secret_vault;
+mod secret_vault_handle;
+mod secret_vault_migration;
 mod semantic_search;
 pub mod status;
 pub mod usage_charts;
@@ -30,11 +33,19 @@ use std::{collections::BTreeSet, path::Path, sync::Arc};
 use sqlx::SqlitePool;
 
 pub use ai_provider_key_store::{
-    delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key, store_ai_provider_key,
+    ai_provider_vault_account, delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key,
+    store_ai_provider_key,
 };
 pub use mcp_server_secret_store::{
-    delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret, store_mcp_server_secret,
+    delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret,
+    mcp_server_vault_account, store_mcp_server_secret,
 };
+pub use secret_vault::{
+    unlock_secret_vault, unlock_secret_vault_with_source, FileMasterKeySource,
+    KeychainMasterKeySource, MasterKeySource, SecretVault, SecretVaultUnlock,
+    SECRET_VAULT_FILE_NAME,
+};
+pub use secret_vault_handle::{install_process_secret_vault, SecretVaultHandle};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
@@ -295,6 +306,7 @@ pub struct AppInfra {
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
+    secret_vault: SecretVaultHandle,
 }
 
 impl AppInfra {
@@ -376,6 +388,14 @@ impl AppInfra {
         let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
         let processing_runtime = ProcessingRuntime::new(processing.clone(), processing_registry);
+        // Construction is cheap and touches no keychain: the vault unlocks at
+        // most once per process, on the desktop app's explicit `unlock_now` at
+        // startup or lazily on the first secret access (never on the Brokered
+        // Reader path — the CLI reads no AI/MCP secrets). The free-function
+        // store APIs route through the process slot; the first AppInfra wins
+        // (a test-installed handle is never clobbered).
+        let secret_vault = SecretVaultHandle::new(database.base_dir());
+        secret_vault_handle::install_process_secret_vault_if_absent(&secret_vault);
 
         Ok(Self {
             database,
@@ -395,7 +415,15 @@ impl AppInfra {
             runtime,
             frame_batch_runtime,
             processing_runtime,
+            secret_vault,
         })
+    }
+
+    /// The vault handle behind the AI-provider-key and MCP-connector-secret
+    /// stores. Unlocked at most once per process; a denied unlock is cached and
+    /// surfaces as [`AppInfraError::SecretVaultDenied`] on every access.
+    pub fn secret_vault(&self) -> &SecretVaultHandle {
+        &self.secret_vault
     }
 
     /// Runs the one-time startup maintenance passes that repair/reconcile the
