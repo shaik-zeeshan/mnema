@@ -163,6 +163,39 @@ fn ask_ai_live_turns() -> &'static Mutex<HashMap<String, LiveTurn>> {
     ASK_AI_LIVE_TURNS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// The most recent completion request's token usage, for the debug page's
+/// "last turn" stat.
+///
+/// ponytail: in-memory only and last-turn only — persisting usage per turn needs
+/// a conversation migration, which is explicitly out of scope. It is therefore
+/// empty after a restart and does not attribute usage to a conversation. Add the
+/// migration if history or per-conversation totals are ever wanted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAiTokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+static ASK_AI_LAST_USAGE: OnceLock<Mutex<Option<AskAiTokenUsage>>> = OnceLock::new();
+
+fn ask_ai_last_usage() -> &'static Mutex<Option<AskAiTokenUsage>> {
+    ASK_AI_LAST_USAGE.get_or_init(|| Mutex::new(None))
+}
+
+fn record_last_turn_usage(usage: AskAiTokenUsage) {
+    if let Ok(mut cell) = ask_ai_last_usage().lock() {
+        *cell = Some(usage);
+    }
+}
+
+/// The last completion request's `{input, output}` tokens, or `None` when no
+/// turn has run since the app started.
+#[tauri::command]
+pub fn get_ask_ai_last_turn_usage() -> Option<AskAiTokenUsage> {
+    ask_ai_last_usage().lock().ok().and_then(|cell| *cell)
+}
+
 /// Process-global monotonic counter minting a unique `turn_token` per turn.
 static ASK_AI_TURN_TOKEN: AtomicU64 = AtomicU64::new(1);
 
@@ -2147,6 +2180,10 @@ async fn run_ask_ai_turn(
                 input_tokens,
                 output_tokens,
             } => {
+                record_last_turn_usage(AskAiTokenUsage {
+                    input_tokens,
+                    output_tokens,
+                });
                 // The latest completion request's input+output is the turn's
                 // current context-window occupancy (input already includes the
                 // system prompt, history, and tool results).
