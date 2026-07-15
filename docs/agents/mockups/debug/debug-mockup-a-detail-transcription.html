@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema Debug — Feature Detail: Transcription</title>
+<style>
+:root {
+  --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
+  --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-fg:#e2e2e8; --app-text-strong:#e2e2e8; --app-text:#c0c0d0;
+  --app-text-muted:#9696ae; --app-text-subtle:#7e7e98;
+  --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+  --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,0.18);
+  --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+  --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+  --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+  --app-neutral-bg:#1a1a2a; --app-neutral-border:#2a2a3a; --app-neutral-text:#7070a0;
+  --app-font-mono:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px;
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  background:var(--app-bg); color:var(--app-fg);
+  font-family:var(--app-font-mono); font-size:var(--text-md); line-height:1.6;
+  -webkit-font-smoothing:antialiased; height:100vh; overflow:hidden;
+}
+
+/* ---------- floating icon dock (same as summary) ---------- */
+.dock {
+  position:fixed; left:14px; top:50%; transform:translateY(-50%); z-index:10;
+  display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 6px;
+  background:color-mix(in srgb, var(--app-surface-raised) 88%, transparent);
+  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
+  border:1px solid var(--app-border-strong); border-radius:14px;
+  box-shadow:0 8px 24px rgba(0,0,0,0.35);
+}
+.dock::before {
+  content:""; position:absolute; top:0; left:12px; right:12px; height:1px;
+  background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-accent) 14%, transparent) 25%, color-mix(in srgb, var(--app-accent) 14%, transparent) 75%, transparent);
+}
+.dock-sep { width:22px; height:1px; margin:4px 0; background:var(--app-border-strong); }
+.dock-item {
+  position:relative; width:34px; height:34px; flex:0 0 auto;
+  display:flex; align-items:center; justify-content:center;
+  border:0; border-radius:8px; background:transparent; color:var(--app-text-muted); cursor:pointer;
+}
+.dock-item svg { width:16px; height:16px; stroke:currentColor; stroke-width:1.7; fill:none; stroke-linecap:round; stroke-linejoin:round; }
+.dock-item:hover { background:var(--app-surface-hover); color:var(--app-text-strong); }
+.dock-item--active {
+  background:color-mix(in srgb, var(--app-accent) 10%, transparent); color:var(--app-accent);
+  box-shadow:inset 0 0 0 1px var(--app-accent-border), 0 0 10px var(--app-accent-glow);
+}
+.health-dot { position:absolute; top:5px; right:5px; width:5px; height:5px; border-radius:50%; border:1.5px solid var(--app-surface-raised); box-sizing:content-box; }
+.health-dot--ok { background:var(--app-accent); }
+.health-dot--warn { background:var(--app-warn); box-shadow:0 0 5px rgba(214,161,74,.5); }
+.health-dot--err { background:var(--app-danger); box-shadow:0 0 6px rgba(255,107,122,.6); animation:pulse 1.4s ease-in-out infinite; }
+.health-dot--idle { background:var(--app-border-hover); }
+.dock-live { width:34px; height:20px; display:flex; align-items:center; justify-content:center; }
+.dock-live__dot { width:6px; height:6px; border-radius:50%; background:var(--app-accent); animation:pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:.35;transform:scale(.85);} 50%{opacity:1;transform:scale(1.1);} }
+
+/* ---------- content ---------- */
+.scroll { height:100vh; overflow-y:auto; padding:16px 24px 48px 88px; }
+.panel { max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:16px; }
+
+/* breadcrumb + hero */
+.crumb { display:flex; align-items:center; gap:8px; padding:2px 4px 0; font-size:var(--text-base); }
+.crumb a { color:var(--app-text-subtle); text-decoration:none; display:inline-flex; align-items:center; gap:6px; cursor:pointer; }
+.crumb a:hover { color:var(--app-accent); }
+.crumb .sep { color:var(--app-text-subtle); }
+.crumb b { color:var(--app-text-strong); font-weight:600; letter-spacing:0.06em; text-transform:uppercase; font-size:var(--text-base); }
+.crumb .esc { margin-left:auto; font-size:var(--text-xs); color:var(--app-text-subtle); border:1px solid var(--app-border-strong); border-radius:4px; padding:1px 6px; }
+
+.hero {
+  position:relative; background:var(--app-surface-raised);
+  border:1px solid var(--app-warn-border); border-radius:12px; overflow:hidden;
+}
+.hero::before {
+  content:""; position:absolute; top:0; left:14px; right:14px; height:1px;
+  background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-warn) 25%, transparent) 22%, color-mix(in srgb, var(--app-warn) 25%, transparent) 78%, transparent);
+}
+.hero__top { display:flex; align-items:center; gap:12px; padding:16px 20px 12px; }
+.hero__title { font-size:var(--text-lg); font-weight:700; letter-spacing:0.08em; text-transform:uppercase; }
+.hero__desc { font-size:var(--text-sm); color:var(--app-text-muted); padding:0 20px 12px; max-width:560px; }
+.badge {
+  display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px;
+  border:1px solid var(--app-border-strong); background:var(--app-surface);
+  color:var(--app-text-muted); font-size:var(--text-xs); font-weight:600; letter-spacing:0.08em; text-transform:uppercase; white-space:nowrap;
+}
+.badge--ok { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+.badge--warn { background:var(--app-warn-bg); color:var(--app-warn); border-color:var(--app-warn-border); }
+.badge--danger { background:var(--app-danger-bg); color:var(--app-danger); border-color:var(--app-danger-border); }
+.badge--info { background:var(--app-info-bg); color:var(--app-info); border-color:var(--app-info-border); }
+.badge--neutral { background:var(--app-neutral-bg); color:var(--app-neutral-text); border-color:var(--app-neutral-border); }
+.badge .b-dot { width:5px; height:5px; border-radius:50%; background:currentColor; }
+.hero__stats { display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--app-border); border-top:1px solid var(--app-border); }
+.stat { background:var(--app-surface-raised); padding:10px 16px; }
+.stat__k { font-size:var(--text-xs); letter-spacing:0.1em; text-transform:uppercase; color:var(--app-text-subtle); font-weight:600; }
+.stat__v { font-size:var(--text-lg); font-weight:600; color:var(--app-text-strong); }
+.stat__v small { font-size:var(--text-sm); font-weight:500; color:var(--app-text-muted); }
+.stat__v--warn { color:var(--app-warn); }
+.stat__v--err { color:var(--app-danger); }
+.stat__sub { font-size:var(--text-xs); color:var(--app-text-subtle); }
+
+/* sub-tabs (segmented) */
+.tabsrow { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.segmented { display:inline-flex; gap:2px; padding:2px; border:1px solid var(--app-border-strong); border-radius:8px; background:var(--app-surface); }
+.seg { padding:5px 14px; border:0; border-radius:6px; background:transparent; color:var(--app-text-muted); font-family:inherit; font-size:var(--text-base); font-weight:540; cursor:pointer; }
+.seg:hover:not(.seg--active) { color:var(--app-text); background:var(--app-surface-hover); }
+.seg--active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+.seg .cnt { color:var(--app-text-subtle); font-size:var(--text-xs); margin-left:5px; }
+.seg--active .cnt { color:color-mix(in srgb, var(--app-accent) 60%, transparent); }
+
+.btn {
+  display:inline-flex; align-items:center; gap:8px; padding:6px 12px; border-radius:8px;
+  font-family:inherit; font-size:var(--text-xs); font-weight:600; letter-spacing:0.1em;
+  text-transform:uppercase; border:1px solid var(--app-border-strong);
+  background:transparent; color:var(--app-text-muted); cursor:pointer;
+}
+.btn:hover { color:var(--app-text-strong); border-color:var(--app-border-hover); }
+.btn--primary { background:var(--app-accent-bg); color:var(--app-accent); border-color:var(--app-accent-border); }
+.btn--primary:hover { border-color:var(--app-accent); box-shadow:0 0 14px var(--app-accent-glow); }
+
+/* card */
+.card {
+  position:relative; background:var(--app-surface-raised);
+  border:1px solid var(--app-border); border-radius:12px; overflow:hidden;
+}
+.card::before {
+  content:""; position:absolute; top:0; left:14px; right:14px; height:1px; z-index:1;
+  background:linear-gradient(90deg, transparent, color-mix(in srgb, var(--app-accent) 12%, transparent) 22%, color-mix(in srgb, var(--app-accent) 12%, transparent) 78%, transparent);
+}
+
+/* jobs table with filter bar */
+.filterbar { display:flex; align-items:center; gap:2px; padding:10px 14px; border-bottom:1px solid var(--app-border); flex-wrap:wrap; }
+.chip {
+  padding:3px 10px; border-radius:6px; border:0; background:transparent;
+  font-family:inherit; font-size:var(--text-xs); font-weight:600; letter-spacing:0.06em;
+  color:var(--app-text-muted); cursor:pointer; text-transform:uppercase;
+}
+.chip--active { color:var(--app-accent); background:var(--app-accent-bg); box-shadow:inset 0 0 0 1px var(--app-accent-border); }
+.chip:hover:not(.chip--active) { color:var(--app-text); background:var(--app-surface-hover); }
+.filterbar .search { margin-left:auto; }
+.filterbar .search input {
+  background:var(--app-surface); border:1px solid var(--app-border); border-radius:6px;
+  padding:4px 10px; font-family:inherit; font-size:var(--text-sm); color:var(--app-text); outline:none; width:180px;
+}
+table.jobs { width:100%; border-collapse:collapse; font-size:var(--text-sm); }
+.jobs th { text-align:left; font-size:var(--text-xs); font-weight:600; letter-spacing:0.1em; text-transform:uppercase; color:var(--app-text-subtle); padding:8px 10px; border-bottom:1px solid var(--app-border); background:var(--app-surface-subtle); }
+.jobs td { padding:8px 10px; color:var(--app-text); border-bottom:1px solid var(--app-border); vertical-align:top; }
+.jobs tr { cursor:pointer; }
+.jobs tbody tr:hover { background:var(--app-surface-hover); }
+.jobs tr.sel { background:color-mix(in srgb, var(--app-accent) 6%, transparent); box-shadow:inset 2px 0 0 var(--app-accent); }
+.jobs tr:last-child td { border-bottom:none; }
+.jobs td.err { color:#ff8090; max-width:230px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.dim { color:var(--app-text-subtle); }
+.pager { display:flex; align-items:center; gap:10px; padding:8px 14px; border-top:1px solid var(--app-border); font-size:var(--text-xs); color:var(--app-text-subtle); }
+.pager .spacer { flex:1; }
+
+/* job inspector */
+.insp__head { display:flex; align-items:center; gap:10px; padding:14px 18px 8px; }
+.insp__title { font-size:var(--text-md); font-weight:700; letter-spacing:0.04em; }
+.kv { display:grid; grid-template-columns:170px 1fr; gap:3px 14px; padding:4px 18px 12px; font-size:var(--text-base); }
+.kv dt { color:var(--app-text-subtle); }
+.kv dd { color:var(--app-text); }
+.kv dd b { color:var(--app-text-strong); font-weight:600; }
+.errline {
+  margin:2px 18px 12px; padding:8px 11px; border-radius:6px;
+  background:var(--app-danger-bg); border:1px solid var(--app-danger-border);
+  font-size:var(--text-sm); color:#ff8090; line-height:1.5;
+}
+.attempts { padding:0 18px 12px; }
+.attempts .alabel { font-size:var(--text-xs); font-weight:700; letter-spacing:0.12em; text-transform:uppercase; color:var(--app-text-subtle); padding-bottom:6px; }
+.attempt { display:flex; gap:10px; align-items:baseline; font-size:var(--text-sm); padding:3px 0; }
+.attempt .t { color:var(--app-text-subtle); flex:0 0 66px; }
+.attempt .what { color:var(--app-text); }
+.attempt .what.bad { color:#ff8090; }
+.insp__actions { display:flex; gap:8px; padding:2px 18px 16px; }
+.payload {
+  margin:0 18px 14px; padding:10px 12px; border-radius:6px;
+  background:var(--app-surface-subtle); border:1px solid var(--app-border);
+  font-size:var(--text-sm); color:var(--app-text-muted); white-space:pre; overflow-x:auto; line-height:1.5;
+}
+.new-chip { font-size:9px; font-weight:700; letter-spacing:0.1em; padding:0 5px; border-radius:4px; background:var(--app-info-bg); color:var(--app-info); border:1px solid var(--app-info-border); text-transform:uppercase; vertical-align:2px; }
+</style>
+</head>
+<body>
+
+  <!-- dock: same as summary page, Transcription active -->
+  <nav class="dock">
+    <button class="dock-item" data-tip="Health"><svg viewBox="0 0 16 16"><path d="M1.5 8h3l2-5 3 10 2-5h3"/></svg><span class="health-dot health-dot--warn"></span></button>
+    <div class="dock-sep"></div>
+    <button class="dock-item" data-tip="Capture Sources"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="8.5" rx="1.5"/><path d="M5.5 14h5M8 11v3"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <button class="dock-item" data-tip="Privacy"><svg viewBox="0 0 16 16"><path d="M8 1.5l5 1.8v4.2c0 3-2.1 5.4-5 6.7-2.9-1.3-5-3.7-5-6.7V3.3z"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <div class="dock-sep"></div>
+    <button class="dock-item" data-tip="OCR"><svg viewBox="0 0 16 16"><path d="M2 5V3.5A1.5 1.5 0 013.5 2H5M11 2h1.5A1.5 1.5 0 0114 3.5V5M14 11v1.5a1.5 1.5 0 01-1.5 1.5H11M5 14H3.5A1.5 1.5 0 012 12.5V11M5 8h6"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <button class="dock-item dock-item--active" data-tip="Transcription"><svg viewBox="0 0 16 16"><rect x="6.25" y="1.5" width="3.5" height="7" rx="1.75"/><path d="M3.5 7a4.5 4.5 0 009 0M8 11.5V14"/></svg><span class="health-dot health-dot--warn"></span></button>
+    <button class="dock-item" data-tip="Diarization"><svg viewBox="0 0 16 16"><circle cx="5.75" cy="5" r="2.4"/><path d="M1.5 13.5c.4-2.6 2.1-4 4.25-4s3.85 1.4 4.25 4M11.5 3a2.4 2.4 0 010 4.4M11 9.6c1.9.3 3.2 1.6 3.5 3.9"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <button class="dock-item" data-tip="Embeddings"><svg viewBox="0 0 16 16"><circle cx="3" cy="3" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="3" r="1" fill="currentColor" stroke="none"/><circle cx="13" cy="3" r="1" fill="currentColor" stroke="none"/><circle cx="3" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="13" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="3" cy="13" r="1" fill="currentColor" stroke="none"/><circle cx="8" cy="13" r="1" fill="currentColor" stroke="none"/><circle cx="13" cy="13" r="1" fill="currentColor" stroke="none"/></svg><span class="health-dot health-dot--err"></span></button>
+    <div class="dock-sep"></div>
+    <button class="dock-item" data-tip="AI Runtime"><svg viewBox="0 0 16 16"><path d="M8 1.5l1.6 4.9 4.9 1.6-4.9 1.6L8 14.5 6.4 9.6 1.5 8l4.9-1.6z"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <button class="dock-item" data-tip="User Context"><svg viewBox="0 0 16 16"><circle cx="8" cy="5" r="2.7"/><path d="M2.5 14c.6-3 2.8-4.5 5.5-4.5s4.9 1.5 5.5 4.5"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <div class="dock-sep"></div>
+    <button class="dock-item" data-tip="Jobs &amp; Storage"><svg viewBox="0 0 16 16"><ellipse cx="8" cy="3.5" rx="5.5" ry="2"/><path d="M2.5 3.5v9c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2v-9M2.5 8c0 1.1 2.5 2 5.5 2s5.5-.9 5.5-2"/></svg><span class="health-dot health-dot--ok"></span></button>
+    <button class="dock-item" data-tip="Logs"><svg viewBox="0 0 16 16"><path d="M4 1.5h5L12.5 5v9.5H4z"/><path d="M9 1.5V5h3.5M6 8.5h4M6 11h4"/></svg><span class="health-dot health-dot--idle"></span></button>
+    <div class="dock-sep"></div>
+    <div class="dock-live"><span class="dock-live__dot"></span></div>
+  </nav>
+
+  <main class="scroll">
+  <div class="panel">
+
+    <!-- breadcrumb -->
+    <div class="crumb">
+      <a>← Debug</a><span class="sep">/</span><b>Transcription</b>
+      <span class="esc">esc to go back</span>
+    </div>
+
+    <!-- hero -->
+    <div class="hero">
+      <div class="hero__top">
+        <span class="hero__title">Transcription</span>
+        <span class="badge badge--warn"><span class="b-dot"></span>Retrying</span>
+        <span style="flex:1"></span>
+        <span class="badge badge--info">Deepgram · Cloud</span>
+        <button class="btn">Test connection</button>
+      </div>
+      <div class="hero__desc">Deepgram reachable at 14:20, but the last 3 requests timed out. Timeouts are treated as transient — jobs requeue without burning a retry attempt. Next attempt 14:36:12.</div>
+      <div class="hero__stats">
+        <div class="stat"><div class="stat__k">Queued</div><div class="stat__v">4</div></div>
+        <div class="stat"><div class="stat__k">Running</div><div class="stat__v">1</div><div class="stat__sub">seg #8231</div></div>
+        <div class="stat"><div class="stat__k">Retrying</div><div class="stat__v stat__v--warn">2</div><div class="stat__sub">next 14:36</div></div>
+        <div class="stat"><div class="stat__k">Failed 24h</div><div class="stat__v stat__v--err">5</div><div class="stat__sub">cap 3 attempts</div></div>
+        <div class="stat"><div class="stat__k">Done 24h</div><div class="stat__v">312</div><div class="stat__sub">avg 6.4s</div></div>
+      </div>
+    </div>
+
+    <!-- sub-tabs -->
+    <div class="tabsrow">
+      <div class="segmented">
+        <button class="seg">Overview</button>
+        <button class="seg seg--active">Jobs<span class="cnt">12</span></button>
+        <button class="seg">Config</button>
+        <button class="seg">Log<span class="cnt">tail</span></button>
+      </div>
+      <button class="btn btn--primary">Reprocess all failed</button>
+    </div>
+
+    <!-- jobs table -->
+    <div class="card">
+      <div class="filterbar">
+        <button class="chip chip--active">All <span class="dim">12</span></button>
+        <button class="chip">Queued 4</button>
+        <button class="chip">Running 1</button>
+        <button class="chip">Retrying 2</button>
+        <button class="chip">Failed 5</button>
+        <div class="search"><input placeholder="segment id…"></div>
+      </div>
+      <table class="jobs">
+        <thead>
+          <tr><th>Segment</th><th>Status</th><th>Attempts</th><th>Provider</th><th>Updated</th><th>Last error</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>#8231</td><td><span class="badge badge--info">running</span></td><td>1</td><td>deepgram</td><td class="dim">14:32:18</td><td class="dim">—</td></tr>
+          <tr class="sel"><td>#8226</td><td><span class="badge badge--warn">retrying</span></td><td>2 <span class="dim">(1 fail)</span></td><td>deepgram</td><td class="dim">14:31:12</td><td class="err">connect timeout api.deepgram.com:443</td></tr>
+          <tr><td>#8225</td><td><span class="badge badge--warn">retrying</span></td><td>2 <span class="dim">(1 fail)</span></td><td>deepgram</td><td class="dim">14:31:10</td><td class="err">connect timeout api.deepgram.com:443</td></tr>
+          <tr><td>#8224</td><td><span class="badge badge--neutral">queued</span></td><td>0</td><td>deepgram</td><td class="dim">14:30:55</td><td class="dim">—</td></tr>
+          <tr><td>#8219</td><td><span class="badge badge--danger">failed</span></td><td>3 <span class="dim">(3 fail)</span></td><td>deepgram</td><td class="dim">13:58:41</td><td class="err">400 invalid audio: container corrupt</td></tr>
+          <tr><td>#8203</td><td><span class="badge badge--danger">failed</span></td><td>3 <span class="dim">(3 fail)</span></td><td>whisper-local</td><td class="dim">12:14:02</td><td class="err">model file missing: whisper-large-v3-turbo</td></tr>
+        </tbody>
+      </table>
+      <div class="pager"><span>6 of 12 jobs</span><span class="spacer"></span><span>← prev · page 1/2 · next →</span></div>
+    </div>
+
+    <!-- selected job inspector -->
+    <div class="card">
+      <div class="insp__head">
+        <span class="insp__title">Job #tj_4482 — segment #8226</span>
+        <span class="badge badge--warn">retrying</span>
+        <span style="flex:1"></span>
+        <button class="btn">Copy id</button>
+      </div>
+      <dl class="kv">
+        <dt>subject</dt><dd>audio_segment <b>#8226</b> · mic · 09:42:00 – 09:47:00 · 4.8 MB</dd>
+        <dt>processor</dt><dd>audio_transcription · provider <b>deepgram</b> · model nova-3</dd>
+        <dt>attempts</dt><dd><b>2</b> total · <b>1</b> counted failure <span class="new-chip">attempt ≠ failure</span></dd>
+        <dt>next attempt</dt><dd><b>14:36:12</b> · backoff 300s (attempt 2 of 3)</dd>
+        <dt>queued / started</dt><dd>09:47:02 · last started 14:26:08</dd>
+      </dl>
+      <div class="errline">connect timeout api.deepgram.com:443 after 30s — classified transient (liveness), requeued without consuming a retry attempt</div>
+      <div class="attempts">
+        <div class="alabel">Attempt history</div>
+        <div class="attempt"><span class="t">14:26:08</span><span class="what bad">✗ connect timeout (transient — attempt not burned)</span></div>
+        <div class="attempt"><span class="t">14:20:40</span><span class="what bad">✗ 429 rate limited — retry scheduled +300s (failure 1/3)</span></div>
+        <div class="attempt"><span class="t">09:47:05</span><span class="what">… claimed by worker-2, uploaded 4.8 MB in 1.2s</span></div>
+      </div>
+      <div class="payload">payload: { "provider": "deepgram", "modelId": "nova-3", "language": "auto",
+           "diarize": false, "sourceKind": "microphone" }</div>
+      <div class="insp__actions">
+        <button class="btn btn--primary">Retry now</button>
+        <button class="btn">Reprocess segment</button>
+        <button class="btn">Open segment in timeline</button>
+        <button class="btn">Filter log to this job</button>
+      </div>
+    </div>
+
+  </div>
+  </main>
+</body>
+</html>
