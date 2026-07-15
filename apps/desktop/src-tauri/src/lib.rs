@@ -688,6 +688,7 @@ pub fn run() {
             usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
+            privacy_redaction_sources::set_privacy_filter_system_audio,
             privacy_redaction_sources::remove_privacy_excluded_app,
             native_capture::get_native_capture_debug_log_status,
             native_capture::open_native_capture_debug_log,

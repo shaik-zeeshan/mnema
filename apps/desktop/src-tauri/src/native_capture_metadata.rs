@@ -647,6 +647,7 @@ mod tests {
                 bundle_id: "com.secret".to_string(),
                 display_name: "Secret".to_string(),
             }],
+            ..PrivacySettings::default()
         };
 
         let state = CaptureMetadataState::default();
@@ -674,6 +675,7 @@ mod tests {
                 bundle_id: "com.example.Secret".to_string(),
                 display_name: "Secret".to_string(),
             }],
+            ..PrivacySettings::default()
         };
 
         let decision =

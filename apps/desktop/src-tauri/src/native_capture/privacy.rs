@@ -30,6 +30,7 @@ pub(super) const PRIVACY_FILTER_DISPLAY_UNAVAILABLE_CODE: &str =
 pub(super) struct InitialPrivacyFilter {
     decision: capture_metadata::PrivacyFilterDecision,
     filter: Option<capture_screen::PrivacyContentFilter>,
+    filter_system_audio: bool,
 }
 
 #[cfg(target_os = "macos")]
@@ -40,9 +41,15 @@ impl InitialPrivacyFilter {
 
     /// The same excluded apps the screen filter hides, for the system-audio tap's
     /// exclude list. Parity, not a feature: ScreenCaptureKit's content filter
-    /// already silenced these apps' audio (ADR 0052).
+    /// already silenced these apps' audio (ADR 0052). Gated on the
+    /// `privacy.filterSystemAudio` Settings toggle — see
+    /// [`system_audio_privacy_excluded_bundle_ids`].
     pub(super) fn excluded_bundle_ids(&self) -> Vec<String> {
-        self.decision.excluded_bundle_ids.clone()
+        system_audio_privacy_excluded_bundle_ids(
+            self.filter_system_audio,
+            &self.decision.excluded_bundle_ids,
+        )
+        .to_vec()
     }
 
     pub(super) fn mark_applied(self, app_handle: &tauri::AppHandle) {
@@ -55,13 +62,38 @@ impl InitialPrivacyFilter {
 pub(super) struct PrivacyFilterUpdate {
     decision: capture_metadata::PrivacyFilterDecision,
     filter: Option<capture_screen::PrivacyContentFilter>,
+    filter_system_audio: bool,
 }
 
 #[cfg(target_os = "macos")]
 impl PrivacyFilterUpdate {
     /// The apps this update excludes, for the system-audio tap's exclude list.
+    /// Gated on the `privacy.filterSystemAudio` Settings toggle — see
+    /// [`system_audio_privacy_excluded_bundle_ids`].
     pub(super) fn excluded_bundle_ids(&self) -> &[String] {
-        &self.decision.excluded_bundle_ids
+        system_audio_privacy_excluded_bundle_ids(
+            self.filter_system_audio,
+            &self.decision.excluded_bundle_ids,
+        )
+    }
+}
+
+/// The privacy-list half of the system-audio tap's effective exclude list — the
+/// ONE gate every path (capture start, privacy-edit push, fallback poll) goes
+/// through. With the `privacy.filterSystemAudio` toggle off, the privacy ids are
+/// withheld so the tap excludes only Mnema's own process (that self-exclusion
+/// lives inside `capture_system_audio::compute_exclude_list` and is never
+/// toggleable). The SCREEN filter never routes through here; it stays gated on
+/// the privacy list alone.
+#[cfg(target_os = "macos")]
+fn system_audio_privacy_excluded_bundle_ids(
+    filter_system_audio: bool,
+    excluded_bundle_ids: &[String],
+) -> &[String] {
+    if filter_system_audio {
+        excluded_bundle_ids
+    } else {
+        &[]
     }
 }
 
@@ -198,7 +230,11 @@ pub(super) fn collect_initial_privacy_filter(
         &settings,
     );
     let filter = privacy_filter_from_decision(decision.clone());
-    InitialPrivacyFilter { decision, filter }
+    InitialPrivacyFilter {
+        decision,
+        filter,
+        filter_system_audio: settings.privacy.filter_system_audio,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -249,7 +285,11 @@ fn collect_static_privacy_filter_update(app_handle: &tauri::AppHandle) -> Privac
             .privacy_filter_applied
             .then_some(empty_privacy_filter())
     });
-    PrivacyFilterUpdate { decision, filter }
+    PrivacyFilterUpdate {
+        decision,
+        filter,
+        filter_system_audio: settings.privacy.filter_system_audio,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -281,7 +321,11 @@ fn collect_metadata_privacy_filter_update(
             .privacy_filter_applied
             .then_some(empty_privacy_filter())
     });
-    PrivacyFilterUpdate { decision, filter }
+    PrivacyFilterUpdate {
+        decision,
+        filter,
+        filter_system_audio: settings.privacy.filter_system_audio,
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -686,6 +730,7 @@ mod tests {
                 update: PrivacyFilterUpdate {
                     decision: capture_metadata::PrivacyFilterDecision::default(),
                     filter: None,
+                    filter_system_audio: true,
                 },
             },
         );
@@ -748,6 +793,7 @@ mod tests {
                 update: PrivacyFilterUpdate {
                     decision: capture_metadata::PrivacyFilterDecision::default(),
                     filter: None,
+                    filter_system_audio: true,
                 },
             },
         );
@@ -768,6 +814,7 @@ mod tests {
                 update: PrivacyFilterUpdate {
                     decision: capture_metadata::PrivacyFilterDecision::default(),
                     filter: None,
+                    filter_system_audio: true,
                 },
             },
         );
@@ -789,5 +836,51 @@ mod tests {
             .lock()
             .expect("capture metadata state should lock");
         assert!(runtime.latest_snapshot().is_some());
+    }
+
+    // The one gate for the system-audio exclude list (Settings → Privacy →
+    // "Filter system audio"): toggle on = privacy ids reach the tap (own-process
+    // exclusion is added inside capture-system-audio on top); toggle off = no
+    // privacy ids, so the tap excludes only Mnema's own process.
+    #[test]
+    fn system_audio_exclude_list_gates_privacy_ids_on_the_filter_toggle() {
+        let privacy_ids = vec!["com.example.secret".to_string()];
+
+        assert_eq!(
+            system_audio_privacy_excluded_bundle_ids(true, &privacy_ids),
+            privacy_ids.as_slice()
+        );
+        assert!(system_audio_privacy_excluded_bundle_ids(false, &privacy_ids).is_empty());
+
+        // Both carriers route through the same gate.
+        let decision = capture_metadata::PrivacyFilterDecision {
+            excluded_bundle_ids: privacy_ids.clone(),
+            ..capture_metadata::PrivacyFilterDecision::default()
+        };
+        let filtered = PrivacyFilterUpdate {
+            decision: decision.clone(),
+            filter: None,
+            filter_system_audio: true,
+        };
+        assert_eq!(filtered.excluded_bundle_ids(), privacy_ids.as_slice());
+        let unfiltered = PrivacyFilterUpdate {
+            decision: decision.clone(),
+            filter: None,
+            filter_system_audio: false,
+        };
+        assert!(unfiltered.excluded_bundle_ids().is_empty());
+
+        let initial_filtered = InitialPrivacyFilter {
+            decision: decision.clone(),
+            filter: None,
+            filter_system_audio: true,
+        };
+        assert_eq!(initial_filtered.excluded_bundle_ids(), privacy_ids);
+        let initial_unfiltered = InitialPrivacyFilter {
+            decision,
+            filter: None,
+            filter_system_audio: false,
+        };
+        assert!(initial_unfiltered.excluded_bundle_ids().is_empty());
     }
 }

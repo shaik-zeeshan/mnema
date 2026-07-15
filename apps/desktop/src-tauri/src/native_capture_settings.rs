@@ -293,7 +293,10 @@ fn validate_audio_speech_detection_settings(
 pub(crate) fn validate_privacy_settings(
     value: capture_types::PrivacySettings,
 ) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
-    let capture_types::PrivacySettings { excluded_apps } = value;
+    let capture_types::PrivacySettings {
+        excluded_apps,
+        filter_system_audio,
+    } = value;
 
     let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
     let excluded_apps = excluded_apps
@@ -307,7 +310,10 @@ pub(crate) fn validate_privacy_settings(
         })
         .collect();
 
-    Ok(capture_types::PrivacySettings { excluded_apps })
+    Ok(capture_types::PrivacySettings {
+        excluded_apps,
+        filter_system_audio,
+    })
 }
 
 pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
