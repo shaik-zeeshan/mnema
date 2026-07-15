@@ -17,6 +17,7 @@ import type {
   AudioTranscriptionProvider,
   ExcludedAppEntry,
   MicrophoneVadAdapter,
+  OcrModelStatusResponse,
   OcrProvider,
   OcrRecognitionMode,
   OcrTesseractPageSegmentationMode,
@@ -28,6 +29,10 @@ import type {
   VideoBitrateMode,
   VideoBitratePreset,
 } from "$lib/types";
+import {
+  firstSelectableOcrProvider,
+  selectableOcrProviders,
+} from "$lib/settings/state/models-format";
 import type { OnboardingAiStore } from "./onboarding-ai.svelte";
 import type { SemanticSearchPickedModel } from "./onboarding-models.svelte";
 import {
@@ -36,7 +41,6 @@ import {
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
   defaultTranscriptionModelIdForProvider,
-  isSelectableOcrProvider,
 } from "./onboarding-mapping";
 import { syncPrivacyDraftInto } from "./onboarding-privacy-sync";
 
@@ -101,6 +105,10 @@ export interface OnboardingDraftTarget {
   settings: RecordingSettings | null;
   readonly selectedSemanticSearchModel: SemanticSearchPickedModel | null;
   readonly ai: OnboardingAiStore;
+  // Live OCR model status (delegated to the controller's OCR store). Used to
+  // resolve the OCR provider against the backend-selectable set — the controller
+  // satisfies this structurally via its `ocrModelStatus` getter.
+  readonly ocrModelStatus: OcrModelStatusResponse | null;
 }
 
 export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSettings): void {
@@ -155,15 +163,31 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
     next.audioSpeechDetection?.detector ?? next.microphoneVadAdapter ?? "silero";
   draft.draftSystemAudioActivitySensitivity = next.systemAudioActivitySensitivity ?? 50;
   draft.draftOcrEnabled = next.ocr?.enabled ?? true;
-  const loadedOcrProvider = next.ocr?.provider;
-  const loadedOcrProviderSelectable = isSelectableOcrProvider(loadedOcrProvider);
-  draft.draftOcrProvider = loadedOcrProviderSelectable ? loadedOcrProvider : "apple_vision";
+  // Resolve the OCR provider against the backend-selectable set (the providers
+  // present in the live status response). The set is empty until that status
+  // loads; meanwhile we trust the persisted provider, which the backend's
+  // settings-normalization path has already coerced to a runnable value. Once
+  // the status is present we additionally drop a provider the backend hides and
+  // fall back to the first provider it returns (macOS → apple_vision, Windows →
+  // tesseract — matching the backend default). No `if windows` lives here.
+  const ocrStatus = draft.ocrModelStatus;
+  const ocrSelectable = selectableOcrProviders(ocrStatus);
+  const persistedOcrProvider = next.ocr?.provider ?? null;
+  const fallbackOcrProvider = firstSelectableOcrProvider(ocrStatus) ?? "tesseract";
+  draft.draftOcrProvider =
+    persistedOcrProvider !== null
+    && (ocrSelectable.length === 0 || ocrSelectable.includes(persistedOcrProvider))
+      ? persistedOcrProvider
+      : fallbackOcrProvider;
+  // Whether we kept the persisted provider (vs. coercing to the fallback); when
+  // coerced we drop the stale persisted model id / language too.
+  const loadedOcrProviderSelectable = draft.draftOcrProvider === persistedOcrProvider;
   draft.draftOcrModelId = loadedOcrProviderSelectable
     ? (next.ocr?.modelId ?? defaultOcrModelIdForProvider(draft.draftOcrProvider))
     : defaultOcrModelIdForProvider(draft.draftOcrProvider);
   draft.draftOcrLanguage = loadedOcrProviderSelectable
     ? (next.ocr?.language ?? defaultOcrLanguageForProvider(draft.draftOcrProvider) ?? "")
-    : defaultOcrLanguageForProvider(draft.draftOcrProvider) ?? "";
+    : (defaultOcrLanguageForProvider(draft.draftOcrProvider) ?? "");
   draft.draftOcrRecognitionMode = next.ocr?.recognitionMode ?? "fast";
   draft.draftOcrLanguageCorrection = next.ocr?.languageCorrection ?? false;
   draft.draftOcrTesseractPageSegmentationMode = next.ocr?.tesseractPageSegmentationMode ?? "single_block";

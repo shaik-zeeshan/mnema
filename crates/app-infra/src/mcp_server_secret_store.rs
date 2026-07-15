@@ -207,21 +207,56 @@ fn delete_platform_secret(id: &str) -> Result<()> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+// Windows Credential Manager backend, sharing the generic-credential helpers
+// with `ai_provider_key_store`. Note the OAuth token-set JSON stored here can
+// approach the Credential Manager blob cap; the helper rejects over-cap writes
+// with a named limit.
+#[cfg(target_os = "windows")]
+fn load_platform_secret(id: &str) -> Result<Option<String>> {
+    crate::windows_credential_store::load_credential(
+        KEYCHAIN_SERVICE,
+        id,
+        "mcp server secret",
+        AppInfraError::McpServerSecretStore,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn store_platform_secret(id: &str, secret: &str) -> Result<()> {
+    crate::windows_credential_store::store_credential(
+        KEYCHAIN_SERVICE,
+        id,
+        secret,
+        "mcp server secret",
+        AppInfraError::McpServerSecretStore,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn delete_platform_secret(id: &str) -> Result<()> {
+    crate::windows_credential_store::delete_credential(
+        KEYCHAIN_SERVICE,
+        id,
+        "mcp server secret",
+        AppInfraError::McpServerSecretStore,
+    )
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn load_platform_secret(_id: &str) -> Result<Option<String>> {
     Err(AppInfraError::McpServerSecretStore(
         "mcp server secret store is unsupported on this platform".to_string(),
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn store_platform_secret(_id: &str, _secret: &str) -> Result<()> {
     Err(AppInfraError::McpServerSecretStore(
         "mcp server secret store is unsupported on this platform".to_string(),
     ))
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 fn delete_platform_secret(_id: &str) -> Result<()> {
     Err(AppInfraError::McpServerSecretStore(
         "mcp server secret store is unsupported on this platform".to_string(),

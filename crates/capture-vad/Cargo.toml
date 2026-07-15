@@ -6,6 +6,11 @@ edition = "2021"
 [features]
 default = ["silero"]
 silero = ["dep:silero"]
+# Enabled by builds whose ONNX Runtime is loaded dynamically (`ort/load-dynamic`,
+# the Windows desktop app per ADR 0005/#137). Under it the Silero adapter
+# requires ORT_DYLIB_PATH and fails fast to the WebRTC fallback when unset,
+# instead of letting `ort` LoadLibrary a system `onnxruntime.dll`.
+dynamic-ort = []
 
 [dependencies]
 capture-types = { path = "../capture-types" }

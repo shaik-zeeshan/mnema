@@ -199,10 +199,7 @@
         value={rec.draftTranscriptionProvider}
         onValueChange={chooseTranscriptionProvider}
         options={transcriptionProviderOptions.length > 0 ? transcriptionProviderOptions : [
-          { value: "local_whisper", label: "Local Whisper", description: "Model status is loading" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)", description: "Model status is loading" },
-          { value: "parakeet", label: "Parakeet", description: "Model status is loading" },
-          { value: "deepgram", label: "Deepgram (cloud)", description: "Cloud transcription — requires an API key" },
+          { value: rec.draftTranscriptionProvider, label: "Loading providers…", description: "Model status is loading" },
         ]}
       />
     {/snippet}
@@ -276,7 +273,7 @@
             {/if}
           </div>
           {#if deepgramKeyPresent}
-            <p class="group-hint">Key saved to the macOS keychain.</p>
+            <p class="group-hint">Key saved to the system keychain.</p>
           {/if}
           {#if deepgramSaveError}
             <p class="group-hint group-hint--warn" role="alert">Couldn’t save key: {deepgramSaveError}</p>

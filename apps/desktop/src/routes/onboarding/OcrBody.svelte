@@ -34,10 +34,11 @@
           value: provider.provider,
           label: provider.displayName,
         }))
-      : [
-          { value: "apple_vision", label: "Apple Vision" },
-          { value: "tesseract", label: "Tesseract" },
-        ],
+      : // Pre-status fallback is a neutral placeholder keyed to the current draft
+        // provider (mirrors Ocr.svelte): it never lists a non-backend provider, so
+        // a platform-locked provider (e.g. Apple Vision on Windows) is never shown
+        // — the real options arrive from the live status response below.
+        [{ value: controller.draftOcrProvider, label: "Loading providers…" }],
   );
 
   // Contextual availability hint for the active provider (replaces RadioGroup's

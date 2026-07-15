@@ -143,7 +143,7 @@
       options={AUTH_OPTIONS}
     />
     {#if oauthHttp}
-      <p class="group-hint">Sign in through your browser when you add this connector — nothing is pasted here. Only the returned token is stored, in your macOS keychain.</p>
+      <p class="group-hint">Sign in through your browser when you add this connector — nothing is pasted here. Only the returned token is stored, in your system keychain.</p>
     {:else}
       <p class="group-hint">The keychain secret below is sent as an <code>Authorization: Bearer</code> header.</p>
     {/if}
@@ -167,7 +167,7 @@
   {#if edit && secretSaved}
     <p class="group-hint"><span class="saved-badge"><IconCheck class="saved-badge__icon" aria-hidden="true" />secret in keychain</span></p>
   {:else}
-    <p class="group-hint">Stored only in the macOS keychain — never in Mnema's settings.</p>
+    <p class="group-hint">Stored only in the system keychain — never in Mnema's settings.</p>
   {/if}
 {/if}
 

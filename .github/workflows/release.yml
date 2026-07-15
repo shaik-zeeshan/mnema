@@ -1,0 +1,458 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to build, for example 0.3.0 or v0.3.0-preview.1"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build-macos:
+    name: Build arm64 macOS release artifacts
+    runs-on: macos-15
+    environment: macos-release
+
+    env:
+      APPLE_SIGNING_IDENTITY: "-"
+      CI: true
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      # Build OpenBLAS with all-generation arm64 kernels + runtime dispatch, so a
+      # release built on one Apple Silicon generation (whatever the runner is)
+      # runs on every other (M1–M4). Without this, the static OpenBLAS is tuned to
+      # the build machine's exact core and can hit illegal-instruction crashes on
+      # older CPUs.
+      OPENBLAS_DYNAMIC_ARCH: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            apps/desktop/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add aarch64-apple-darwin
+
+      # speakrs links OpenBLAS via the `openblas-static` feature: openblas-src
+      # builds OpenBLAS (incl. Fortran LAPACK) from source, and the desktop
+      # build.rs force-links the static gfortran/quadmath runtime. The shared
+      # script installs gcc and makes an unversioned `gfortran` resolvable on
+      # PATH (+ FC/OPENBLAS_FC/LIBRARY_PATH) — the hosted runner's keg exposes
+      # only `gfortran-15`, which otherwise breaks every literal `gfortran`
+      # consumer. See scripts/ci-install-fortran.sh.
+      - name: Install Fortran toolchain (gcc/gfortran)
+        run: ./scripts/ci-install-fortran.sh
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+            ${{ runner.os }}-cargo-
+
+      - name: Verify release version
+        id: release_version
+        run: ./scripts/verify-desktop-release-version.sh "${{ github.event.inputs.version || github.ref_name }}"
+
+      - name: Derive release channel
+        id: release_channel
+        run: |
+          set -euo pipefail
+          version="${{ steps.release_version.outputs.version }}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            echo "channel=preview" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release version must be stable X.Y.Z or preview X.Y.Z-preview.N; got $version" >&2
+            exit 1
+          fi
+
+      - name: Check frontend
+        run: bun run check
+
+      - name: Generate third-party license attribution
+        run: ./scripts/generate-third-party-licenses.sh
+
+      - name: Prepare Mnema CLI sidecar for Tauri check
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
+
+      - name: Check Tauri Rust app
+        run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+
+      # BUILD ONLY: no tagName/releaseName/releaseDraft/prerelease/etc, so
+      # tauri-action compiles + signs the bundle but does NOT create a GitHub
+      # release. The signing keys still make it emit the `.app.tar.gz.sig`
+      # updater signature. Release creation happens in the `assemble` job.
+      - name: Build macOS bundle (no release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: "-"
+          CI: true
+        with:
+          projectPath: apps/desktop
+          args: --target aarch64-apple-darwin
+
+      - name: Stage release artifacts
+        id: stage_artifacts
+        run: ./scripts/stage-macos-release-artifacts.sh target/aarch64-apple-darwin/release/bundle dist/macos-release
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnema-macos-arm64-${{ steps.release_version.outputs.version }}
+          path: dist/macos-release/*
+          if-no-files-found: error
+
+  build-windows:
+    name: Build x64 Windows release artifacts
+    runs-on: windows-latest
+    environment: macos-release
+    # A cold Windows build statically links whisper.cpp/candle/ort/Tesseract and
+    # stages the ~268 MB ORT redist; bound the job well under GitHub's 6h default
+    # so a pathological native link (which can OOM-thrash the 16 GB runner) fails
+    # fast and visibly instead of burning hours.
+    timeout-minutes: 120
+
+    env:
+      CI: true
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: 1
+      # Cap parallel codegen/link jobs: link-time commit-memory can otherwise
+      # exhaust the runner and fail with a spurious allocation error.
+      CARGO_BUILD_JOBS: "4"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Cache Bun dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+            apps/desktop/node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json', 'apps/desktop/package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install frontend dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Set up MSVC developer environment
+        # `tesseract-rs` (the Windows `ocr` feature) only selects the single-config
+        # NMake generator — the one that honors its `CMAKE_BUILD_TYPE=Release` and
+        # emits `leptonica-1.84.1.lib` / `tesseract53.lib` — when `VSINSTALLDIR` is
+        # set (build.rs gates on it). This also puts `nmake`/`cl` on PATH for every
+        # subsequent compile step.
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Verify release version
+        id: release_version
+        shell: bash
+        run: ./scripts/verify-desktop-release-version.sh "${{ github.event.inputs.version || github.ref_name }}"
+
+      - name: Derive release channel
+        id: release_channel
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release_version.outputs.version }}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "channel=stable" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            echo "channel=preview" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release version must be stable X.Y.Z or preview X.Y.Z-preview.N; got $version" >&2
+            exit 1
+          fi
+
+      # cargo-about + license-checker-rseidelsohn + python3 based, all
+      # cross-platform (read manifests + Cargo.lock only, compile nothing). Runs
+      # under git-bash on the runner and produces the real
+      # apps/desktop/THIRD_PARTY_LICENSES.md the Tauri bundle declares as a
+      # resource — NOT a stub, since this is a real packaged build.
+      - name: Generate third-party license attribution
+        shell: bash
+        run: ./scripts/generate-third-party-licenses.sh
+
+      # BUILD ONLY: no tagName, so tauri-action compiles + signs the NSIS bundle
+      # but does NOT create a GitHub release. The beforeBuildCommand auto-runs
+      # prepare-ort-dylibs.mjs (stages the 3 declared ONNX Runtime DLLs) and the
+      # frontend build. The signing keys make it emit the `-setup.exe.sig`
+      # updater signature. Release creation happens in the `assemble` job.
+      #
+      # Authenticode: `bundle.windows.signCommand` (tauri.windows.conf.json)
+      # runs scripts/windows-sign.ps1 on every produced binary DURING bundling,
+      # so Azure Artifact Signing happens BEFORE the minisign `-setup.exe.sig`
+      # is generated and the updater signature covers the signed bytes.
+      # AZURE_SIGNING_ENABLED derives from the AZURE_TENANT_ID secret: with no
+      # Azure account provisioned the script is a clean no-op (unsigned
+      # preview); once the secrets below are set, signing turns on with no
+      # workflow change.
+      - name: Build Windows bundle (no release)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          AZURE_SIGNING_ENABLED: ${{ secrets.AZURE_TENANT_ID != '' }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+          CI: true
+        with:
+          projectPath: apps/desktop
+          args: --target x86_64-pc-windows-msvc
+
+      # Signing itself already ran inside the bundle step (signCommand). This
+      # step only asserts the outcome: signed when secrets are present,
+      # explicit unsigned-preview notice when they are not.
+      - name: Verify Authenticode signature (secret-gated)
+        shell: pwsh
+        env:
+          AZURE_SIGNING_ENABLED: ${{ secrets.AZURE_TENANT_ID != '' }}
+        run: |
+          $installer = Get-ChildItem "target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe" |
+            Select-Object -First 1
+          if (-not $installer) {
+            Write-Output "::error::NSIS installer not found for signature verification."
+            exit 1
+          }
+          if ($env:AZURE_SIGNING_ENABLED -ne 'true') {
+            Write-Output "::notice::No Azure Artifact Signing secrets present -> shipping UNSIGNED installer."
+            Write-Output "SmartScreen 'unknown publisher' friction is expected on install AND auto-update (the updater runs the downloaded .exe). Acceptable for preview/smoke only. Provider when adopted: Azure Artifact Signing (set the AZURE_* secrets to enable)."
+            exit 0
+          }
+          $sig = Get-AuthenticodeSignature -LiteralPath $installer.FullName
+          if ($sig.Status -ne 'Valid') {
+            Write-Output "::error::Signing was enabled but $($installer.Name) is not validly Authenticode-signed (status: $($sig.Status) - $($sig.StatusMessage))."
+            exit 1
+          }
+          Write-Output "Authenticode signature OK on $($installer.Name): $($sig.SignerCertificate.Subject)"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mnema-windows-x64-${{ steps.release_version.outputs.version }}
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe.sig
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble draft release + updater manifest
+    runs-on: ubuntu-latest
+    needs: [build-macos, build-windows]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: release_version
+        run: |
+          set -euo pipefail
+          version="${{ github.event.inputs.version || github.ref_name }}"
+          version="${version#v}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            channel="stable"
+            prerelease="false"
+          elif [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-preview\.[0-9]+$ ]]; then
+            channel="preview"
+            prerelease="true"
+          else
+            echo "release version must be stable X.Y.Z or preview X.Y.Z-preview.N; got $version" >&2
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "channel=$channel"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Locate release assets
+        id: assets
+        run: |
+          set -euo pipefail
+
+          find_one() {
+            local desc="$1"
+            local pattern="$2"
+            local match
+            match="$(find dist -type f -name "$pattern" | sort | head -n1)"
+            if [[ -z "$match" ]]; then
+              echo "missing required release asset: $desc (pattern: $pattern)" >&2
+              find dist -type f | sort >&2
+              exit 1
+            fi
+            echo "$match"
+          }
+
+          mac_targz="$(find_one 'macOS updater archive' '*.app.tar.gz')"
+          mac_sig="$(find_one 'macOS updater signature' '*.app.tar.gz.sig')"
+          mac_dmg="$(find_one 'macOS DMG' '*.dmg')"
+          win_exe="$(find_one 'Windows NSIS installer' '*-setup.exe')"
+          win_sig="$(find_one 'Windows NSIS signature' '*-setup.exe.sig')"
+
+          {
+            echo "mac_targz=$mac_targz"
+            echo "mac_sig=$mac_sig"
+            echo "mac_dmg=$mac_dmg"
+            echo "win_exe=$win_exe"
+            echo "win_sig=$win_sig"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate updater manifest (latest.json)
+        env:
+          VERSION: ${{ steps.release_version.outputs.version }}
+          MAC_SIG: ${{ steps.assets.outputs.mac_sig }}
+          MAC_TARGZ: ${{ steps.assets.outputs.mac_targz }}
+          WIN_SIG: ${{ steps.assets.outputs.win_sig }}
+          WIN_EXE: ${{ steps.assets.outputs.win_exe }}
+        run: |
+          set -euo pipefail
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          node scripts/assemble-release-manifest.mjs \
+            --version "$VERSION" --pub-date "$PUB_DATE" \
+            --repo shaik-zeeshan/mnema \
+            --macos-sig "$MAC_SIG" --macos-asset "$(basename "$MAC_TARGZ")" \
+            --windows-sig "$WIN_SIG" --windows-asset "$(basename "$WIN_EXE")" \
+            --out latest.json
+          # Sanity-parse: fail loudly on any malformed manifest.
+          node -e "JSON.parse(require('fs').readFileSync('latest.json','utf8'))"
+          cat latest.json
+
+      - name: Stage assets + checksums
+        id: stage
+        env:
+          MAC_TARGZ: ${{ steps.assets.outputs.mac_targz }}
+          MAC_SIG: ${{ steps.assets.outputs.mac_sig }}
+          MAC_DMG: ${{ steps.assets.outputs.mac_dmg }}
+          WIN_EXE: ${{ steps.assets.outputs.win_exe }}
+          WIN_SIG: ${{ steps.assets.outputs.win_sig }}
+        run: |
+          set -euo pipefail
+          staging="release-assets"
+          rm -rf "$staging"
+          mkdir -p "$staging"
+          cp "$MAC_DMG" "$MAC_TARGZ" "$MAC_SIG" "$WIN_EXE" "$WIN_SIG" latest.json "$staging/"
+          (
+            cd "$staging"
+            : > SHA256SUMS
+            for asset in *; do
+              [[ "$asset" == "SHA256SUMS" ]] && continue
+              sha256sum "$asset" >> SHA256SUMS
+            done
+            cat SHA256SUMS
+          )
+          echo "dir=$staging" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release_version.outputs.tag }}
+          VERSION: ${{ steps.release_version.outputs.version }}
+          PRERELEASE: ${{ steps.release_version.outputs.prerelease }}
+          STAGING: ${{ steps.stage.outputs.dir }}
+        run: |
+          set -euo pipefail
+          # Expand PRERELEASE ("true"/"false") into the gh flag only for previews.
+          prerelease_flag=""
+          if [[ "$PRERELEASE" == "true" ]]; then
+            prerelease_flag="--prerelease"
+          fi
+          assets=(
+            "$STAGING"/*.dmg
+            "$STAGING"/*.app.tar.gz
+            "$STAGING"/*.app.tar.gz.sig
+            "$STAGING"/*-setup.exe
+            "$STAGING"/*-setup.exe.sig
+            "$STAGING/latest.json"
+            "$STAGING/SHA256SUMS"
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists -> updating assets (idempotent re-run)."
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" --draft=true --prerelease="$PRERELEASE"
+          else
+            echo "Creating draft release $TAG."
+            gh release create "$TAG" --draft --title "Mnema v$VERSION" --generate-notes \
+              $prerelease_flag "${assets[@]}"
+          fi

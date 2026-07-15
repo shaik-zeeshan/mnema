@@ -37,6 +37,7 @@ export type SettingsSectionId =
   | "ocr"
   | "transcription"
   | "speakers"
+  | "gpuAcceleration"
   | "semanticSearch"
   | "storage"
   | "access"
@@ -70,6 +71,12 @@ export interface SettingsSection {
   // though they aren't in its label. Optional; sections without searchable
   // settings can omit it.
   keywords?: string[];
+  // Platform-gated section: only surfaced in the rail (and its search) on Windows.
+  // Used by the Windows-only GPU Acceleration (NVIDIA CUDA backend) panel — macOS
+  // has no GPU pack/toggle, so the section must be absent there entirely. The rail
+  // filters these via `filterPlatform` (rail-filter.ts); the panel mirrors the same
+  // `detectKeyboardPlatform()` guard so it renders nothing off Windows.
+  windowsOnly?: boolean;
 }
 
 export interface SettingsGroup {
@@ -194,6 +201,18 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         anchor: "settings-section-speakers",
         label: "Speakers",
         keywords: ["diarization", "speaker separation", "recognize people"],
+      },
+      // Windows-only: the NVIDIA CUDA Execution Backend provisioning + Force-CPU
+      // override (#137 / ADR 0005). `windowsOnly` keeps it out of the rail + search
+      // on macOS, where speaker analysis is always CoreML (no pack, no toggle).
+      // Placed right after Speakers (still BEFORE Semantic Search, so it is never the
+      // group's tail section — the scroll-spy tail-fix keeps targeting semanticSearch).
+      {
+        id: "gpuAcceleration",
+        anchor: "settings-section-gpuAcceleration",
+        label: "GPU Acceleration",
+        keywords: ["gpu", "cuda", "nvidia", "acceleration", "diarization"],
+        windowsOnly: true,
       },
       {
         id: "semanticSearch",

@@ -7,6 +7,11 @@ use super::*;
 /// *Authorized* -- else Settings paints a green "authorized" badge for a connector
 /// whose OAuth connect fails to parse the slot on every turn. A real Token Set
 /// (even client_id-only) still reads authorized.
+///
+/// macOS-only: the `MNEMA_MCP_SERVER_SECRET_DIR` fallback is `cfg(test)` inside
+/// app-infra and compiled out here, so the store hits the platform keychain —
+/// macOS-only (SUPPORTS.md: "Windows unaddressed").
+#[cfg(target_os = "macos")]
 #[test]
 fn a_stale_bearer_secret_never_reads_as_oauth_authorized() {
     let dir = fixture_dir("mnema-mcp-oauth-flip");
@@ -78,6 +83,11 @@ fn pending_oauth_evicts_only_the_stale_flow_and_keys_by_state() {
 /// reconnect flag / pending flow / cached slot) with NO server-side revoke in
 /// the picture. A stored token must be gone afterward — local teardown must
 /// never depend on the server being reachable.
+///
+/// macOS-only: the `MNEMA_MCP_SERVER_SECRET_DIR` fallback is `cfg(test)` inside
+/// app-infra and compiled out here, so the store hits the platform keychain —
+/// macOS-only (SUPPORTS.md: "Windows unaddressed").
+#[cfg(target_os = "macos")]
 #[tokio::test]
 async fn disconnect_local_drop_forgets_the_token_unconditionally() {
     let dir = fixture_dir("mnema-mcp-oauth-drop");

@@ -17,6 +17,7 @@ import { serializeError } from "./onboarding-mapping";
 import {
   permissionActionFor,
   permissionLabelFor,
+  permissionPermitsCapture,
   permissionToneFor,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
@@ -42,7 +43,9 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
     permissions === null
       ? 0
       : (["screen", "microphone", "systemAudio"] as const).filter(
-          (k) => permissions?.[k] === "granted",
+          // permissionPermitsCapture counts the Windows-only "unknown" mic state
+          // as satisfied, so a configured Windows user reaches the full count.
+          (k) => permissionPermitsCapture(permissions?.[k]),
         ).length,
   );
   const geckoInstalled = $derived(

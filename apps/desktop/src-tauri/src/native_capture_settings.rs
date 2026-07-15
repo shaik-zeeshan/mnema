@@ -73,22 +73,93 @@ pub(crate) struct AppliedRecordingSettingsUpdate {
     pub(crate) debug_logging_enabled_changed: bool,
 }
 
-pub(crate) fn default_save_directory() -> String {
-    // Honor MNEMA_SAVE_DIRECTORY verbatim when set, matching the broker/CLI
-    // read-only resolver in `crates/app-infra/src/brokered_access.rs`
-    // (`default_save_directory_from_config`): any set value is taken as the
-    // directory path with no trimming, no `~` expansion, and no emptiness
-    // filtering. This keeps the dev sandbox (`dev:sandbox` sets the env var to
-    // `$HOME/.mnema-dev`) isolated from the production `~/.mnema` root.
-    if let Ok(path) = std::env::var("MNEMA_SAVE_DIRECTORY") {
-        return PathBuf::from(path).to_string_lossy().to_string();
-    }
+/// The Tauri bundle identifier (`tauri.conf.json` -> `identifier`), used to
+/// scope the Windows default capture library under LocalAppData so it matches
+/// the convention used for Mnema's other Windows app folders.
+#[cfg(windows)]
+const APP_IDENTIFIER: &str = "com.shaikzeeshan.mnema";
 
-    std::env::var("HOME")
-        .map(|home| Path::new(&home).join(".mnema"))
-        .unwrap_or_else(|_| PathBuf::from(".mnema"))
+/// Honor `MNEMA_SAVE_DIRECTORY` verbatim when set, matching the broker/CLI
+/// read-only resolver in `crates/app-infra/src/brokered_access.rs`
+/// (`default_save_directory_from_config`): any set value is taken as the
+/// directory path with no trimming, no `~` expansion, and no emptiness
+/// filtering. This keeps the dev sandbox (`dev:sandbox` sets the env var to
+/// `$HOME/.mnema-dev`) isolated from the production default root. Checked first
+/// on every platform, ahead of the OS-specific default.
+fn save_directory_env_override() -> Option<String> {
+    std::env::var("MNEMA_SAVE_DIRECTORY")
+        .ok()
+        .map(|path| PathBuf::from(path).to_string_lossy().to_string())
+}
+
+/// `<home>/.mnema`, falling back to a bare relative `.mnema` only when the
+/// home directory cannot be resolved. Shared last-resort for both platforms.
+///
+/// `std::env::home_dir` reads `$HOME` on Unix, so the default lands at
+/// `<home>/.mnema` instead of a bare relative `.mnema` when `HOME` is absent.
+fn home_dot_mnema_save_directory() -> String {
+    std::env::home_dir()
+        .map(|home| home.join(".mnema"))
+        .unwrap_or_else(|| PathBuf::from(".mnema"))
         .to_string_lossy()
         .to_string()
+}
+
+#[cfg(not(windows))]
+pub(crate) fn default_save_directory() -> String {
+    if let Some(path) = save_directory_env_override() {
+        return path;
+    }
+    // Resolve the user's home directory cross-platform, landing at
+    // `<home>/.mnema` (see `home_dot_mnema_save_directory`).
+    home_dot_mnema_save_directory()
+}
+
+/// Pure Windows default-library logic, isolated from the process environment so
+/// it can be unit-tested without mutating the global `LOCALAPPDATA` (which other
+/// tests in this multi-threaded binary observe). Prefers
+/// `%LOCALAPPDATA%\com.shaikzeeshan.mnema\library`, falling back to the shared
+/// `<home>/.mnema` last resort when LocalAppData is unset or empty.
+#[cfg(windows)]
+fn windows_default_save_directory(local_app_data: Option<std::ffi::OsString>) -> String {
+    if let Some(local_app_data) = local_app_data {
+        let local_app_data = PathBuf::from(local_app_data);
+        if !local_app_data.as_os_str().is_empty() {
+            return local_app_data
+                .join(APP_IDENTIFIER)
+                .join("library")
+                .to_string_lossy()
+                .to_string();
+        }
+    }
+
+    home_dot_mnema_save_directory()
+}
+
+/// Windows default capture library: a shallow, NON-roaming location under
+/// `%LOCALAPPDATA%\com.shaikzeeshan.mnema\library` (see
+/// `docs/windows/storage-access-release-research.md`). This avoids AppData
+/// roaming for the large capture library, follows Windows conventions, and
+/// keeps the path shallow to leave headroom under the legacy `MAX_PATH`
+/// (260-char) limit for the nested `recordings/YYYY/MM/DD/` tree underneath it.
+///
+/// Prefer `%LOCALAPPDATA%` directly to stay dependency-light (this crate does
+/// not depend on `dirs`). Fall back to `<USERPROFILE>\.mnema` if LocalAppData is
+/// unset, and only as an absolute last resort use a bare relative `.mnema`.
+///
+/// MIGRATION NOTE: `default_save_directory()` is only the *fresh-install*
+/// default. Once any recording setting is saved, `save_directory` is persisted
+/// to `recording-settings.json` and that persisted value is reused on every
+/// launch (see `initialize_recording_settings_state_from_disk`). Changing this
+/// default therefore only affects installs that have never persisted settings.
+/// On Windows (unreleased) that means dev-only recordings made under the old
+/// `HOME/.mnema` default and never saved would be orphaned on the next launch.
+#[cfg(windows)]
+pub(crate) fn default_save_directory() -> String {
+    if let Some(path) = save_directory_env_override() {
+        return path;
+    }
+    windows_default_save_directory(std::env::var_os("LOCALAPPDATA"))
 }
 
 pub(crate) fn default_recording_settings() -> RecordingSettings {
@@ -452,7 +523,33 @@ fn validate_semantic_search_settings(value: SemanticSearchSettings) -> SemanticS
     }
 }
 
+/// Map a persisted [`OcrProvider`] to its stable provider-id string so the
+/// settings path can ask [`ocr::provider_runtime_available`]. Reuses the
+/// `ocr::*_PROVIDER_ID` constants (the same ids `ocr::OcrProviderKind::as_str`
+/// emits) rather than hardcoding strings.
+fn ocr_provider_runtime_id(provider: OcrProvider) -> &'static str {
+    match provider {
+        OcrProvider::AppleVision => ocr::APPLE_VISION_PROVIDER_ID,
+        OcrProvider::Tesseract => ocr::TESSERACT_PROVIDER_ID,
+        OcrProvider::PaddleOcr => ocr::PADDLE_OCR_PROVIDER_ID,
+    }
+}
+
 fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureErrorResponse> {
+    // Runtime-availability guard (the durable fix for OCR defaults across OSes):
+    // any persisted provider that cannot actually run on this OS — Apple Vision
+    // on Windows/Linux, the legacy PaddleOCR option where it is not built, or any
+    // future mismatch — is silently coerced to the platform default. That default
+    // (`default_ocr_settings()`) is guaranteed runnable here because its provider
+    // comes from `default_ocr_provider()`'s `cfg`-seeded default (Apple Vision on
+    // macOS, Tesseract elsewhere). A provider that IS runtime-runnable falls
+    // through unchanged into the provider-specific match below.
+    if !ocr::provider_runtime_available(ocr_provider_runtime_id(value.provider)) {
+        let mut settings = default_ocr_settings();
+        settings.enabled = value.enabled;
+        return Ok(settings);
+    }
+
     let model_id = value
         .model_id
         .as_deref()
@@ -533,9 +630,12 @@ fn validate_ocr_settings(value: OcrSettings) -> Result<OcrSettings, CaptureError
             )
         }
         OcrProvider::PaddleOcr => {
-            // PaddleOCR remains available in the OCR crate for existing queued jobs and
-            // direct provider tests, but it is no longer a user-selectable recording
-            // setting. Normalize legacy persisted settings back to the supported default.
+            // Reached only when PaddleOCR IS runtime-available on this build (e.g.
+            // the `paddle-rs`-enabled non-Windows target); the runtime guard above
+            // already coerces it where it cannot run. PaddleOCR remains available
+            // in the OCR crate for existing queued jobs and direct provider tests,
+            // but it is no longer a user-selectable recording setting, so legacy
+            // persisted settings are still normalized back to the supported default.
             let mut settings = default_ocr_settings();
             settings.enabled = value.enabled;
             return Ok(settings);
@@ -639,22 +739,30 @@ fn is_original_screen_resolution(value: &ScreenResolution) -> bool {
     )
 }
 
-fn supports_non_original_screen_resolution() -> bool {
-    capture_screen::support_for_current_platform().system_audio
+fn current_capture_support_capabilities() -> (bool, bool) {
+    let screen_support = capture_screen::support_for_current_platform();
+    (
+        screen_support.non_original_resolution,
+        super::system_audio_requires_screen_for_platform(&screen_support.platform),
+    )
 }
 
 pub(crate) fn validate_recording_settings(
     request: UpdateRecordingSettingsRequest,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    validate_recording_settings_with_resolution_support(
+    let (non_original_resolution_supported, system_audio_requires_screen) =
+        current_capture_support_capabilities();
+    validate_recording_settings_with_capture_support(
         request,
-        supports_non_original_screen_resolution(),
+        non_original_resolution_supported,
+        system_audio_requires_screen,
     )
 }
 
-pub(crate) fn validate_recording_settings_with_resolution_support(
+pub(crate) fn validate_recording_settings_with_capture_support(
     request: UpdateRecordingSettingsRequest,
     non_original_resolution_supported: bool,
+    system_audio_requires_screen: bool,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     if !request.capture_screen && !request.capture_microphone && !request.capture_system_audio {
         return Err(CaptureErrorResponse {
@@ -663,7 +771,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
+    if system_audio_requires_screen && request.capture_system_audio && !request.capture_screen {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
             message: "System audio capture requires screen capture".to_string(),
@@ -738,7 +846,7 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
     {
         return Err(CaptureErrorResponse {
             code: "screen_resolution_unsupported".to_string(),
-            message: "Selected screen resolution requires the ScreenCaptureKit backend (macOS 15+). On this backend, only the original display resolution is supported.".to_string(),
+            message: "Selected screen resolution is not supported by the active native capture backend. Only the original display resolution is supported on this system.".to_string(),
         });
     }
 
@@ -820,12 +928,19 @@ pub(crate) fn recording_settings_file_path(app_handle: &tauri::AppHandle) -> Pat
 }
 
 fn load_recording_settings_from_path(path: &Path) -> Option<RecordingSettings> {
-    load_recording_settings_from_path_with_resolution_support(path, true)
+    let (non_original_resolution_supported, system_audio_requires_screen) =
+        current_capture_support_capabilities();
+    load_recording_settings_from_path_with_capture_support(
+        path,
+        non_original_resolution_supported,
+        system_audio_requires_screen,
+    )
 }
 
-fn load_recording_settings_from_path_with_resolution_support(
+fn load_recording_settings_from_path_with_capture_support(
     path: &Path,
     non_original_resolution_supported: bool,
+    system_audio_requires_screen: bool,
 ) -> Option<RecordingSettings> {
     let raw = std::fs::read_to_string(path).ok()?;
 
@@ -846,7 +961,7 @@ fn load_recording_settings_from_path_with_resolution_support(
     }
 
     let parsed = serde_json::from_str::<RecordingSettings>(&raw).ok()?;
-    validate_recording_settings_with_resolution_support(
+    validate_recording_settings_with_capture_support(
         UpdateRecordingSettingsRequest {
             capture_screen: parsed.capture_screen,
             capture_microphone: parsed.capture_microphone,
@@ -883,6 +998,7 @@ fn load_recording_settings_from_path_with_resolution_support(
             inactivity_activity_mode: parsed.inactivity_activity_mode,
         },
         non_original_resolution_supported,
+        system_audio_requires_screen,
     )
     .ok()
 }
@@ -936,12 +1052,6 @@ pub(crate) fn load_recording_settings_from_disk(
     app_handle: &tauri::AppHandle,
 ) -> Option<RecordingSettings> {
     load_recording_settings_from_path(&recording_settings_file_path(app_handle))
-}
-
-pub(crate) fn load_recording_settings_or_default(
-    app_handle: &tauri::AppHandle,
-) -> RecordingSettings {
-    load_recording_settings_from_disk(app_handle).unwrap_or_else(default_recording_settings)
 }
 
 pub(crate) fn initialize_recording_settings_state_from_disk(
@@ -1492,6 +1602,26 @@ mod tests {
     }
 
     #[test]
+    fn canonicalize_app_bundle_id_trim_only_is_windows_path_safe() {
+        // On Windows (ADR 0043) the canonical executable path is stored opaquely
+        // in `app_bundle_id`. Canonicalization is trim-only, so it must preserve
+        // backslashes, the drive letter, and internal casing/spaces — anything
+        // else would corrupt the path grouping key. (Case-insensitive `app:`
+        // matching is handled at query time by `LOWER(TRIM(...))`, not here.)
+        assert_eq!(
+            canonicalize_app_bundle_id(
+                "  C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe  "
+            ),
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
+        );
+        // A macOS bundle id is likewise only trimmed, unchanged otherwise.
+        assert_eq!(
+            canonicalize_app_bundle_id("  com.google.Chrome "),
+            "com.google.Chrome"
+        );
+    }
+
+    #[test]
     fn load_recording_settings_from_path_returns_none_for_invalid_file() {
         let dir = TestDir::new("invalid");
         let path = dir.path().join("recording-settings.json");
@@ -1544,6 +1674,65 @@ mod tests {
         assert_eq!(
             default_recording_settings().microphone_vad_adapter,
             capture_types::default_microphone_vad_adapter()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn default_save_directory_uses_home_dot_mnema_on_unix() {
+        let save_directory = default_save_directory();
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected default save directory to end with .mnema, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_uses_local_app_data_library() {
+        // Exercise the pure helper directly so we never mutate the process-global
+        // `LOCALAPPDATA`, which a concurrently-running sibling test reading
+        // `default_save_directory()` could otherwise observe (this binary runs
+        // tests multi-threaded).
+        let save_directory =
+            windows_default_save_directory(Some(std::ffi::OsString::from(
+                r"C:\Users\test\AppData\Local",
+            )));
+
+        assert_eq!(
+            save_directory,
+            r"C:\Users\test\AppData\Local\com.shaikzeeshan.mnema\library"
+        );
+        assert!(
+            save_directory.contains(APP_IDENTIFIER),
+            "expected default save directory to contain the bundle identifier, got {save_directory}"
+        );
+        assert!(
+            save_directory.ends_with("library"),
+            "expected default save directory to end with the library subfolder, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_falls_back_for_empty_local_app_data() {
+        let save_directory =
+            windows_default_save_directory(Some(std::ffi::OsString::new()));
+
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected empty LocalAppData to fall back to the home/.mnema path, got {save_directory}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_default_save_directory_falls_back_for_missing_local_app_data() {
+        let save_directory = windows_default_save_directory(None);
+
+        assert!(
+            save_directory.ends_with(".mnema"),
+            "expected missing LocalAppData to fall back to the home/.mnema path, got {save_directory}"
         );
     }
 
@@ -1675,15 +1864,35 @@ mod tests {
         );
     }
 
-    fn apply_domain_patch_for_test(
+    fn apply_domain_patch_for_test_with_capture_support(
         mut settings: RecordingSettings,
         patch: RecordingSettingsDomainPatch,
+        system_audio_requires_screen: bool,
     ) -> Result<RecordingSettings, CaptureErrorResponse> {
         apply_domain_patch_to_settings(&mut settings, patch)?;
-        validate_recording_settings_with_resolution_support(
+        validate_recording_settings_with_capture_support(
             recording_settings_request_from_settings(settings),
             true,
+            system_audio_requires_screen,
         )
+    }
+
+    fn apply_domain_patch_for_test(
+        settings: RecordingSettings,
+        patch: RecordingSettingsDomainPatch,
+    ) -> Result<RecordingSettings, CaptureErrorResponse> {
+        apply_domain_patch_for_test_with_capture_support(settings, patch, true)
+    }
+
+    /// OCR settings as a caller observes them after settings normalization.
+    /// `validate_ocr_settings` intentionally enriches the Tesseract provider
+    /// (the Windows default) with its pinned model id and language, so
+    /// preserve-unrelated-fields tests must compare against the normalized
+    /// form of their base OCR settings rather than the raw default (which
+    /// carries `model_id: None` / `language: None`). On macOS the Apple
+    /// Vision default normalizes to itself, so this is a no-op there.
+    fn normalized_ocr_settings(ocr: OcrSettings) -> OcrSettings {
+        validate_ocr_settings(ocr).expect("test base ocr settings should validate")
     }
 
     #[test]
@@ -1706,7 +1915,7 @@ mod tests {
 
         assert!(!updated.capture_microphone);
         assert_eq!(updated.capture_screen, base.capture_screen);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
     }
@@ -1743,7 +1952,7 @@ mod tests {
         // Unrelated fields are untouched.
         assert!(updated.capture_microphone);
         assert_eq!(updated.save_directory, base.save_directory);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
     }
 
     #[test]
@@ -1869,7 +2078,7 @@ mod tests {
             Some("anthropic:claude-opus-4")
         );
         assert_eq!(updated.capture_microphone, base.capture_microphone);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(updated.appearance, base.appearance);
         assert_eq!(updated.save_directory, base.save_directory);
     }
@@ -2164,7 +2373,8 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_rejects_system_audio_without_screen() {
+    fn capture_sources_domain_rejects_system_audio_without_screen_when_capability_requires_screen()
+    {
         let error = apply_domain_patch_for_test(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
@@ -2180,6 +2390,24 @@ mod tests {
             error.message,
             "System audio capture requires screen capture"
         );
+    }
+
+    #[test]
+    fn capture_sources_domain_allows_system_audio_without_screen_when_capability_allows_independent_audio(
+    ) {
+        let updated = apply_domain_patch_for_test_with_capture_support(
+            default_recording_settings(),
+            RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
+                capture_screen: Some(false),
+                capture_microphone: Some(true),
+                capture_system_audio: Some(true),
+            }),
+            false,
+        )
+        .expect("independent system audio should validate without screen");
+
+        assert!(!updated.capture_screen);
+        assert!(updated.capture_system_audio);
     }
 
     #[test]
@@ -2255,7 +2483,7 @@ mod tests {
             updated.developer_options_enabled,
             base.developer_options_enabled
         );
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
     }
 
     #[test]
@@ -2277,7 +2505,7 @@ mod tests {
         assert!(updated.developer_options_enabled);
         assert!(updated.native_capture_debug_logging_enabled);
         assert_eq!(updated.capture_microphone, base.capture_microphone);
-        assert_eq!(updated.ocr, base.ocr);
+        assert_eq!(updated.ocr, normalized_ocr_settings(base.ocr.clone()));
         assert_eq!(
             updated.preview_cache_ttl_seconds,
             base.preview_cache_ttl_seconds
@@ -2319,7 +2547,7 @@ mod tests {
 
     #[test]
     fn validate_recording_settings_normalizes_microphone_vad_adapter_from_shared_detector() {
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: true,
@@ -2358,6 +2586,7 @@ mod tests {
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
+            true,
         )
         .expect("settings should validate");
 
@@ -2381,7 +2610,7 @@ mod tests {
             capture_types::OcrTesseractPageSegmentationMode::SparseText;
         ocr.tesseract_preprocess_mode = capture_types::OcrTesseractPreprocessMode::Thresholded;
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: false,
@@ -2417,6 +2646,7 @@ mod tests {
                 microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
+            true,
             true,
         )
         .expect("settings should validate");
@@ -2457,7 +2687,7 @@ mod tests {
         ocr_settings.model_id = Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID.to_string());
         ocr_settings.language = Some(ocr::DEFAULT_PADDLE_OCR_LANGUAGE.to_string());
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: false,
@@ -2494,10 +2724,88 @@ mod tests {
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
             true,
+            true,
         )
         .expect("legacy PaddleOCR settings should normalize");
 
         assert_eq!(settings.ocr, default_ocr_settings());
+    }
+
+    // The platform default provider must always be runtime-runnable, otherwise the
+    // coercion guard would hand back an unusable provider. (On this Windows host
+    // that default is Tesseract; on macOS it is Apple Vision.)
+    #[test]
+    fn default_ocr_settings_provider_is_runtime_available() {
+        assert!(
+            ocr::provider_runtime_available(ocr_provider_runtime_id(
+                default_ocr_settings().provider
+            )),
+            "default OCR provider must be runnable on this OS"
+        );
+    }
+
+    // A provider that can actually run on this OS passes the guard untouched and
+    // keeps its provider through the provider-specific match arms.
+    #[test]
+    fn validate_ocr_settings_passes_through_runnable_provider() {
+        let value = default_ocr_settings();
+        let provider = value.provider;
+        assert!(ocr::provider_runtime_available(ocr_provider_runtime_id(
+            provider
+        )));
+
+        let normalized =
+            validate_ocr_settings(value).expect("runnable default provider should validate");
+
+        assert_eq!(normalized.provider, provider);
+    }
+
+    // Apple Vision can never run off macOS, so a persisted Apple-Vision selection
+    // is silently coerced to the runnable platform default (Tesseract here),
+    // preserving `enabled`. This assertion executes on the Windows host.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn validate_ocr_settings_coerces_apple_vision_when_not_runnable() {
+        let mut value = default_ocr_settings();
+        value.provider = OcrProvider::AppleVision;
+        value.enabled = false;
+
+        let normalized =
+            validate_ocr_settings(value).expect("apple vision should coerce off macOS");
+
+        assert_ne!(normalized.provider, OcrProvider::AppleVision);
+        assert!(
+            ocr::provider_runtime_available(ocr_provider_runtime_id(normalized.provider)),
+            "coerced provider must be runtime-available, got {:?}",
+            normalized.provider
+        );
+        let mut expected = default_ocr_settings();
+        expected.enabled = false;
+        assert_eq!(normalized, expected);
+    }
+
+    // On the Windows build PaddleOCR is not compiled (`paddle-rs` is off), so a
+    // legacy persisted PaddleOCR selection hits the runtime guard and is coerced
+    // to the runnable default.
+    #[cfg(windows)]
+    #[test]
+    fn validate_ocr_settings_coerces_legacy_paddle_ocr_when_not_runnable() {
+        assert!(
+            !ocr::provider_runtime_available(ocr::PADDLE_OCR_PROVIDER_ID),
+            "precondition: PaddleOCR is not runnable on the Windows build"
+        );
+
+        let mut value = default_ocr_settings();
+        value.provider = OcrProvider::PaddleOcr;
+        value.model_id = Some(ocr::DEFAULT_PADDLE_OCR_MODEL_ID.to_string());
+        value.language = Some(ocr::DEFAULT_PADDLE_OCR_LANGUAGE.to_string());
+
+        let normalized = validate_ocr_settings(value).expect("legacy PaddleOCR should coerce");
+
+        assert_eq!(normalized, default_ocr_settings());
+        assert!(ocr::provider_runtime_available(ocr_provider_runtime_id(
+            normalized.provider
+        )));
     }
 
     #[test]
@@ -2507,7 +2815,7 @@ mod tests {
         transcription.model_id = Some("parakeet-tdt-0.6b-v3-onnx".to_string());
         transcription.language = " en ".to_string();
 
-        let settings = validate_recording_settings_with_resolution_support(
+        let settings = validate_recording_settings_with_capture_support(
             UpdateRecordingSettingsRequest {
                 capture_screen: true,
                 capture_microphone: true,
@@ -2543,6 +2851,7 @@ mod tests {
                 microphone_vad_adapter: capture_types::default_microphone_vad_adapter(),
                 inactivity_activity_mode: default_inactivity_activity_mode(),
             },
+            true,
             true,
         )
         .expect("settings should validate");
@@ -2629,7 +2938,7 @@ mod tests {
         );
         assert_eq!(loaded.follow_timeline_live, default_follow_timeline_live());
         assert_eq!(loaded.appearance, default_appearance());
-        assert_eq!(loaded.ocr, default_ocr_settings());
+        assert_eq!(loaded.ocr, normalized_ocr_settings(default_ocr_settings()));
         assert_eq!(loaded.access, AccessSettings::default());
         assert_eq!(loaded.transcription, default_audio_transcription_settings());
     }

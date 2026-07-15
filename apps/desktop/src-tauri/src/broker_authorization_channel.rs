@@ -1,41 +1,46 @@
 #[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
-use std::{
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
-    },
-    time::Duration,
-};
+#[cfg(any(test, unix))]
+use std::path::PathBuf;
+#[cfg(any(test, unix, windows))]
+use std::sync::atomic::Ordering;
+use std::sync::{atomic::AtomicBool, Arc, Mutex};
+#[cfg(any(unix, windows))]
+use std::time::Duration;
 
 use app_infra::brokered_access::{
     BrokerClientIdentity, BrokerClientIdentitySource, BrokerGrantScope, BrokeredCaptureAccess,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
+#[cfg(any(unix, windows))]
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
 use tokio::sync::oneshot;
 #[cfg(unix)]
+use tokio::net::UnixListener as TokioUnixListener;
+#[cfg(any(unix, windows))]
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{UnixListener as TokioUnixListener, UnixStream},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     time::timeout,
 };
 
+#[cfg(any(unix, windows))]
 use crate::windows;
 
+#[cfg(any(test, unix, windows))]
 const QUICK_APPROVAL_SCOPE: &str = "lastDay";
+#[cfg(any(test, unix, windows))]
 const QUICK_APPROVAL_DURATION_SECONDS: u64 = 24 * 60 * 60;
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(5);
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 const REQUEST_MAX_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Default)]
 pub struct BrokerAuthorizationChannelState {
+    #[cfg_attr(not(any(unix, windows)), allow(dead_code))]
     active: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<PendingAuthorizationRequest>>>,
 }
@@ -120,16 +125,19 @@ pub struct ApproveCliAccessRequest {
     pub duration_seconds: u64,
 }
 
+#[cfg(any(test, unix, windows))]
 struct ActiveRequestGuard {
     active: Arc<AtomicBool>,
 }
 
+#[cfg(any(test, unix, windows))]
 impl ActiveRequestGuard {
     fn acquire(active: Arc<AtomicBool>) -> Option<Self> {
         (!active.swap(true, Ordering::SeqCst)).then_some(Self { active })
     }
 }
 
+#[cfg(any(test, unix, windows))]
 impl Drop for ActiveRequestGuard {
     fn drop(&mut self) {
         self.active.store(false, Ordering::SeqCst);
@@ -137,7 +145,7 @@ impl Drop for ActiveRequestGuard {
 }
 
 pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
-    #[cfg(not(unix))]
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = app;
         return Ok(());
@@ -190,10 +198,124 @@ pub fn start(app: &tauri::AppHandle) -> Result<(), String> {
         });
         Ok(())
     }
+
+    #[cfg(windows)]
+    {
+        use std::ffi::c_void;
+        use tokio::net::windows::named_pipe::ServerOptions;
+        use windows_sys::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+
+        // The DACL is always keyed to the *real* current-user SID, even when the
+        // pipe name is overridden for tests, so resolve it up front and log a
+        // dedicated error if the token lookup fails (ADR 0045 observability note).
+        let sid = match current_user_sid_string() {
+            Ok(sid) => sid,
+            Err(error) => {
+                tauri_plugin_log::log::error!(
+                    "failed to resolve current user SID for CLI access pipe: {error}"
+                );
+                return Ok(());
+            }
+        };
+        // Reuse the SID resolved above rather than looking it up a second time.
+        let pipe_name = cli_access_pipe_name(app.config().identifier.as_str(), &sid);
+
+        // Protected DACL granting GENERIC_ALL only to the current user — no
+        // Everyone, no anonymous, no inherited ACE can widen it.
+        let sddl = format!("D:P(A;;GA;;;{sid})");
+        let sddl_wide: Vec<u16> = sddl.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut security_descriptor: *mut c_void = std::ptr::null_mut();
+        let converted = unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl_wide.as_ptr(),
+                SDDL_REVISION_1,
+                &mut security_descriptor,
+                std::ptr::null_mut(),
+            )
+        };
+        if converted == 0 {
+            tauri_plugin_log::log::error!(
+                "failed to build CLI access pipe security descriptor (SDDL {sddl})"
+            );
+            return Ok(());
+        }
+
+        // The security descriptor and its SECURITY_ATTRIBUTES must outlive every
+        // pipe instance created over the process lifetime — each instance carries
+        // the same DACL, not just the first. Per ADR 0045 ("Security-descriptor
+        // lifetime"), build it once and intentionally leak it: the accept loop
+        // runs until the app exits, so there is nothing to free. We carry the raw
+        // pointer across `.await` points as a `usize` (raw pointers are not `Send`)
+        // and re-materialize it for each `create_*` call, which never crosses an
+        // await.
+        let security_attributes = Box::new(SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: security_descriptor,
+            bInheritHandle: 0,
+        });
+        let security_attributes_addr = Box::into_raw(security_attributes) as usize;
+
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            // First instance owns the endpoint name: `first_pipe_instance(true)`
+            // makes us fail loudly rather than adopt a squatted pipe.
+            let mut server = match unsafe {
+                ServerOptions::new()
+                    .first_pipe_instance(true)
+                    .reject_remote_clients(true)
+                    .create_with_security_attributes_raw(
+                        &pipe_name,
+                        security_attributes_addr as *mut c_void,
+                    )
+            } {
+                Ok(server) => server,
+                Err(error) => {
+                    tauri_plugin_log::log::error!(
+                        "failed to create CLI access pipe (endpoint may already be owned): {error}"
+                    );
+                    return;
+                }
+            };
+            loop {
+                if let Err(error) = server.connect().await {
+                    // A failed connect leaves this instance unusable; replace it
+                    // with a fresh one rather than re-polling the same handle in
+                    // a tight (potentially 100% CPU) loop, keeping the channel
+                    // alive rather than killing it for the app's lifetime.
+                    tauri_plugin_log::log::error!("CLI access pipe connect failed: {error}");
+                    server =
+                        create_next_pipe_instance_with_backoff(&pipe_name, security_attributes_addr)
+                            .await;
+                    continue;
+                }
+                let connected = server;
+                // Hand off the connected client first, so a failure to create the
+                // *next* listening instance can never drop an already-connected
+                // client or permanently kill the channel.
+                let handler_app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    handle_connection(handler_app, connected).await;
+                });
+                // Bring up the next listening instance (same DACL, no
+                // `first_pipe_instance`) so a concurrent second client can
+                // connect and get the fast `busy` response.
+                server =
+                    create_next_pipe_instance_with_backoff(&pipe_name, security_attributes_addr)
+                        .await;
+            }
+        });
+        Ok(())
+    }
 }
 
-#[cfg(unix)]
-async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
+#[cfg(any(unix, windows))]
+async fn handle_connection<S>(app: tauri::AppHandle, mut stream: S)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let raw = match timeout(REQUEST_READ_TIMEOUT, read_request_line(&mut stream)).await {
         Ok(Ok(Some(raw))) => raw,
         Ok(Ok(None)) | Err(_) => return,
@@ -220,8 +342,7 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
         return;
     };
 
-    let onboarding_state = app.state::<windows::OnboardingStateStore>();
-    if !windows::current_onboarding_state_for_app(&app, onboarding_state.inner()).is_complete() {
+    if !windows::is_onboarding_complete(&app) {
         let _ = write_unavailable(stream, request.request_id, "onboardingRequired").await;
         return;
     }
@@ -261,8 +382,11 @@ async fn handle_connection(app: tauri::AppHandle, mut stream: UnixStream) {
     }
 }
 
-#[cfg(unix)]
-async fn read_request_line(stream: &mut UnixStream) -> std::io::Result<Option<String>> {
+#[cfg(any(unix, windows))]
+async fn read_request_line<S>(stream: &mut S) -> std::io::Result<Option<String>>
+where
+    S: AsyncRead + Unpin,
+{
     let mut raw = Vec::new();
     let mut buffer = [0_u8; 1024];
     loop {
@@ -292,6 +416,7 @@ async fn read_request_line(stream: &mut UnixStream) -> std::io::Result<Option<St
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
+#[cfg(any(unix, windows))]
 fn store_pending_request(
     app: &tauri::AppHandle,
     request: AuthorizationChannelRequest,
@@ -437,12 +562,14 @@ fn scope_satisfies_minimum(selected: &str, minimum: &str) -> bool {
     selected == minimum || selected == "allRetained"
 }
 
+#[cfg(any(unix, windows))]
 enum AuthorizationDecision {
     Approved,
     MoreOptions,
     Cancelled,
 }
 
+#[cfg(any(unix, windows))]
 async fn prompt_for_default_access(
     app: &tauri::AppHandle,
     request: &AuthorizationChannelRequest,
@@ -538,10 +665,12 @@ fn grant_policy(scope: &str, duration_seconds: u64) -> GrantPolicy {
     }
 }
 
+#[cfg(any(test, unix, windows))]
 fn quick_approval_grant_policy() -> GrantPolicy {
     grant_policy(QUICK_APPROVAL_SCOPE, QUICK_APPROVAL_DURATION_SECONDS)
 }
 
+#[cfg(any(test, unix, windows))]
 fn quick_approval_grant_policy_for_request(
     request: &AuthorizationChannelRequest,
 ) -> Result<GrantPolicy, String> {
@@ -553,8 +682,11 @@ fn quick_approval_grant_policy_for_request(
     Ok(quick_approval_grant_policy())
 }
 
-#[cfg(unix)]
-async fn write_denied(stream: UnixStream, request_id: String, reason: &str) -> std::io::Result<()> {
+#[cfg(any(unix, windows))]
+async fn write_denied<S>(stream: S, request_id: String, reason: &str) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     write_response(
         stream,
         AuthorizationChannelResponse {
@@ -568,12 +700,15 @@ async fn write_denied(stream: UnixStream, request_id: String, reason: &str) -> s
     .await
 }
 
-#[cfg(unix)]
-async fn write_unavailable(
-    stream: UnixStream,
+#[cfg(any(unix, windows))]
+async fn write_unavailable<S>(
+    stream: S,
     request_id: String,
     reason: &str,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     write_response(
         stream,
         AuthorizationChannelResponse {
@@ -587,11 +722,14 @@ async fn write_unavailable(
     .await
 }
 
-#[cfg(unix)]
-async fn write_response(
-    mut stream: UnixStream,
+#[cfg(any(unix, windows))]
+async fn write_response<S>(
+    mut stream: S,
     response: AuthorizationChannelResponse,
-) -> std::io::Result<()> {
+) -> std::io::Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let raw = serde_json::to_string(&response)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     stream.write_all(format!("{raw}\n").as_bytes()).await
@@ -602,16 +740,131 @@ fn stale_socket(path: &PathBuf) -> bool {
     std::os::unix::net::UnixStream::connect(path).is_err()
 }
 
+#[cfg(any(test, unix))]
 pub fn socket_path_for_identifier(identifier: &str) -> PathBuf {
     default_app_config_dir_for_identifier(identifier)
         .unwrap_or_else(|| std::env::temp_dir().join(identifier))
         .join("cli-access.sock")
 }
 
+/// Pure Windows named-pipe endpoint name, mirroring `socket_path_for_identifier`.
+/// Ungated so it can be unit-tested on every OS. The SID sits in the *name*
+/// (not only the DACL) because the name determines which user's server owns the
+/// endpoint on a multi-session box (ADR 0045).
+pub fn pipe_name_for(identifier: &str, sid: &str) -> String {
+    format!(r"\\.\pipe\{identifier}-{sid}-cli-access")
+}
+
+/// Resolve the current user's SID as an `S-1-…` string from this process's own
+/// token — no handoff and no durable discovery artifact; the CLI derives the
+/// same value from its own token when running as the same user (ADR 0045).
+#[cfg(windows)]
+fn current_user_sid_string() -> Result<String, String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err("OpenProcessToken failed for current process".to_string());
+        }
+        // Size probe: expected to fail with ERROR_INSUFFICIENT_BUFFER, filling
+        // `needed` with the required byte count.
+        let mut needed: u32 = 0;
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+        if needed == 0 {
+            CloseHandle(token);
+            return Err("GetTokenInformation size probe failed".to_string());
+        }
+        let mut buffer = vec![0u8; needed as usize];
+        if GetTokenInformation(
+            token,
+            TokenUser,
+            buffer.as_mut_ptr() as *mut core::ffi::c_void,
+            needed,
+            &mut needed,
+        ) == 0
+        {
+            CloseHandle(token);
+            return Err("GetTokenInformation failed to read TokenUser".to_string());
+        }
+        CloseHandle(token);
+
+        // `buffer` is a `Vec<u8>` (alignment 1); `TOKEN_USER` contains a pointer
+        // and needs pointer alignment, so read it out with `read_unaligned`
+        // rather than forming a (possibly-misaligned) reference, which is UB.
+        let token_user = std::ptr::read_unaligned(buffer.as_ptr() as *const TOKEN_USER);
+        let mut sid_pwstr: windows_sys::core::PWSTR = std::ptr::null_mut();
+        if ConvertSidToStringSidW(token_user.User.Sid, &mut sid_pwstr) == 0 || sid_pwstr.is_null() {
+            return Err("ConvertSidToStringSidW failed".to_string());
+        }
+        let mut len = 0usize;
+        while *sid_pwstr.add(len) != 0 {
+            len += 1;
+        }
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(sid_pwstr, len));
+        LocalFree(sid_pwstr as *mut core::ffi::c_void);
+        Ok(sid)
+    }
+}
+
+/// The CLI-access pipe name, honoring a non-empty `MNEMA_CLI_ACCESS_PIPE_NAME`
+/// override for tests (returned verbatim); otherwise derived from the app
+/// identifier and the already-resolved current-user SID.
+#[cfg(windows)]
+fn cli_access_pipe_name(identifier: &str, sid: &str) -> String {
+    if let Ok(name) = std::env::var("MNEMA_CLI_ACCESS_PIPE_NAME") {
+        if !name.is_empty() {
+            return name;
+        }
+    }
+    pipe_name_for(identifier, sid)
+}
+
+/// Create the next listening pipe instance (same DACL, without
+/// `first_pipe_instance`), retrying transient failures with a capped
+/// exponential backoff so the channel stays alive rather than dying on a
+/// one-off error — while bounding log volume to at most one line per backoff
+/// interval (≤ 30 s at the cap).
+#[cfg(windows)]
+async fn create_next_pipe_instance_with_backoff(
+    pipe_name: &str,
+    security_attributes_addr: usize,
+) -> tokio::net::windows::named_pipe::NamedPipeServer {
+    use std::ffi::c_void;
+    use tokio::net::windows::named_pipe::ServerOptions;
+
+    let mut delay = Duration::from_millis(200);
+    loop {
+        let result = unsafe {
+            ServerOptions::new()
+                .reject_remote_clients(true)
+                .create_with_security_attributes_raw(
+                    pipe_name,
+                    security_attributes_addr as *mut c_void,
+                )
+        };
+        match result {
+            Ok(server) => return server,
+            Err(error) => {
+                tauri_plugin_log::log::error!(
+                    "failed to create CLI access pipe instance, retrying in {delay:?}: {error}"
+                );
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 fn socket_path_for_config_dir(config_dir: &std::path::Path) -> PathBuf {
     config_dir.join("cli-access.sock")
 }
 
+#[cfg(any(test, unix))]
 fn default_app_config_dir_for_identifier(identifier: &str) -> Option<PathBuf> {
     if let Ok(path) = std::env::var("MNEMA_APP_CONFIG_DIR") {
         return Some(PathBuf::from(path));
@@ -731,9 +984,18 @@ mod tests {
     }
 
     #[test]
+    fn pipe_name_uses_configured_identifier_and_sid() {
+        assert_eq!(
+            pipe_name_for("com.example.mnema-test", "S-1-5-21-1-2-3-1001"),
+            r"\\.\pipe\com.example.mnema-test-S-1-5-21-1-2-3-1001-cli-access"
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
     fn request_line_reader_rejects_oversized_requests() {
         tauri::async_runtime::block_on(async {
-            let (mut client, mut server) = UnixStream::pair().expect("socket pair should open");
+            let (mut client, mut server) = tokio::io::duplex(REQUEST_MAX_BYTES * 2);
             let request = vec![b'a'; REQUEST_MAX_BYTES + 1];
             let writer = tokio::spawn(async move { client.write_all(&request).await });
 

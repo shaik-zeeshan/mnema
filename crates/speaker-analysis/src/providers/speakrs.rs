@@ -1,7 +1,12 @@
 //! speakrs on-device diarization provider (Slice 2 + 3).
 //!
-//! speakrs is a pure-Rust pyannote community-1 pipeline with native CoreML
-//! acceleration. Segments at or below [`SPEAKRS_SAFE_CHUNK_SECONDS`] are diarized
+//! speakrs is a pure-Rust pyannote community-1 pipeline run on a derived
+//! Execution Backend (CoreML on macOS; CPU or — opt-in — CUDA on Windows; see
+//! [`create_pipeline_for_backend`]), orthogonal to identity (ADR 0004/0005).
+//! macOS chooses the backend at compile time; Windows chooses at RUNTIME from the
+//! live Force-CPU override + GPU-pack presence, attempting `ExecutionMode::Cuda`
+//! and init-falling-back to CPU. Segments at or below [`SPEAKRS_SAFE_CHUNK_SECONDS`]
+//! are diarized
 //! in a single whole-segment pass; longer segments are diarized in sequential
 //! safe-chunks through the same pipeline and the per-chunk speaker clusters are
 //! stitched back into segment-wide identities by centroid similarity
@@ -36,9 +41,10 @@ use crate::providers::speakrs_mapping::{
     SpeakerClusterCentroid, SpeakrsMapping,
 };
 use crate::{
-    model_install_dir, safe_path_component, SpeakerAnalysisError, SpeakerAnalysisMetadata,
-    SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest, SpeakerAnalysisResult,
-    SpeakerCluster, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_EMBEDDING_MODEL_ID, SPEAKRS_PROVIDER_ID,
+    apply_execution_mode_provenance, model_install_dir, safe_path_component, SpeakerAnalysisError,
+    SpeakerAnalysisMetadata, SpeakerAnalysisOutput, SpeakerAnalysisProvider, SpeakerAnalysisRequest,
+    SpeakerAnalysisResult, SpeakerCluster, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_EMBEDDING_MODEL_ID,
+    SPEAKRS_PROVIDER_ID,
 };
 
 /// `provider_version` stamp; the crate version is pinned in Cargo.toml.
@@ -61,6 +67,145 @@ const SPEAKRS_MIN_CHUNK_TAIL_SECONDS: usize = 20;
 /// segment-wide identities. Tuned on the VoxConverse bench: 0.5 over-merges
 /// distinct speakers (+3.4pp DER), 0.8 over-splits; 0.6 is DER-neutral.
 const SPEAKRS_STITCH_SIMILARITY: f32 = 0.6;
+
+/// Execution-time backend inputs threaded from the helper into the blocking
+/// entry. Backend is an *execution-time* decision read live at each spawn (ADR
+/// 0005), never frozen at admission like provider/model/timeout — so it rides in
+/// as a parameter rather than on the request.
+///
+/// `Default` (`force_cpu = false`, `pack_dir = None`) reproduces the pre-#137
+/// behavior exactly: plain CPU on Windows / CoreML on macOS, no CUDA attempt, no
+/// fallback diagnostics. Slice 3 populates these from the helper's
+/// `--force-cpu` / `--gpu-acceleration-pack-dir` args.
+#[derive(Debug, Clone, Default)]
+pub struct ExecutionBackendConfig {
+    /// The Windows-only "Use GPU acceleration" override is OFF ⇒ cap selection at
+    /// CPU (identity-safe; CPU and CUDA share `model_id` / Voiceprint Space /
+    /// Continuity keying — it changes speed, never identity).
+    pub force_cpu: bool,
+    /// The GPU Acceleration Pack dir. CUDA is attempted only when this is set AND
+    /// holds the install marker ([`crate::gpu_pack_present`]); `None` ⇒ never
+    /// attempt CUDA (plain CPU, no fallback noise — "not provisioned" is not a
+    /// failure).
+    pub pack_dir: Option<PathBuf>,
+}
+
+/// The DEFAULT **Execution Backend** provenance string seeded into a job's base
+/// output, so the too-short/silent SKIP path (which never creates a pipeline)
+/// still carries an honest `executionMode`. Compile-time per platform: `"coreml"`
+/// on macOS, `"cpu"` elsewhere (Windows CPU is the baseline; the full run upgrades
+/// it to `"cuda"` — or stamps a fallback — via
+/// [`crate::apply_execution_mode_provenance`] once the backend is actually
+/// known). Orthogonal to identity (ADR 0004/0005).
+fn default_execution_mode_provenance() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "coreml"
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Windows + the always-type-check fallback target both baseline to CPU.
+        "cpu"
+    }
+}
+
+/// `from_dir` with the crate's typed pipeline-load error. Used for every direct
+/// load and for the CPU leg of a CUDA-init fallback.
+fn load_pipeline(
+    install_dir: &Path,
+    mode: speakrs::ExecutionMode,
+) -> SpeakerAnalysisResult<speakrs::OwnedDiarizationPipeline> {
+    speakrs::OwnedDiarizationPipeline::from_dir(install_dir.to_path_buf(), mode).map_err(|error| {
+        SpeakerAnalysisError::Runtime {
+            stage: "create_pipeline".to_string(),
+            message: format!(
+                "failed to load speakrs pipeline from {}: {error}",
+                install_dir.display()
+            ),
+        }
+    })
+}
+
+/// Create the speakrs pipeline on the chosen **Execution Backend** and report
+/// what to stamp into provenance: the backend that ACTUALLY ran, plus — only on a
+/// CUDA-init fallback — the reason CUDA initialization failed.
+///
+/// macOS is compile-time CoreML (unchanged, ADR 0004): the Force-CPU override and
+/// the pack are Windows-only (macOS always runs CoreML). Windows is a RUNTIME
+/// decision (ADR 0005): [`crate::select_execution_mode`] chooses
+/// whether to ATTEMPT `ExecutionMode::Cuda` from the live Force-CPU override +
+/// pack presence. On a `from_dir(.., Cuda)` INIT `Err` — speakrs's CUDA arm uses
+/// `.error_on_failure()`, so a missing/incompatible CUDA runtime surfaces *here*
+/// as `Err`, not a silent CPU run — we re-run on `Cpu` and record the fallback. A
+/// CUDA failure AFTER successful init is a later `pipeline.run` error and
+/// propagates as a job failure ([`SpeakerAnalysisError::Runtime`]); it never
+/// reaches this fallback (CONTEXT.md / ADR 0005).
+///
+/// The `ExecutionMode::Cuda` reference lives ONLY in the `#[cfg(target_os =
+/// "windows")]` arm: the `cuda` speakrs feature is Windows-target-only, and only
+/// the Windows build attempts CUDA, so non-Windows builds never name the variant.
+fn create_pipeline_for_backend(
+    install_dir: &Path,
+    exec_config: &ExecutionBackendConfig,
+) -> SpeakerAnalysisResult<(speakrs::OwnedDiarizationPipeline, &'static str, Option<String>)> {
+    #[cfg(target_os = "macos")]
+    {
+        // Compile-time CoreML; the override + pack are Windows-only (ADR 0005).
+        let _ = exec_config;
+        let pipeline = load_pipeline(install_dir, speakrs::ExecutionMode::CoreMl)?;
+        Ok((pipeline, "coreml", None))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // CUDA is attempted only when the pack is present AND the user has not
+        // forced CPU; pack presence is a filesystem marker check (NVML detection
+        // drives the Settings offer, never the attempt — the try/fallback subsumes
+        // it). `gpu_detected` is therefore passed as `false` here.
+        let pack_present = exec_config
+            .pack_dir
+            .as_deref()
+            .map(crate::gpu_pack_present)
+            .unwrap_or(false);
+        match crate::select_execution_mode(exec_config.force_cpu, pack_present, false) {
+            crate::ExecutionModeSelection::Cpu => {
+                // No pack OR Force-CPU: plain CPU, no CUDA attempt, no fallback noise.
+                let pipeline = load_pipeline(install_dir, speakrs::ExecutionMode::Cpu)?;
+                Ok((pipeline, "cpu", None))
+            }
+            crate::ExecutionModeSelection::AttemptCuda => {
+                // Attempt CUDA. The `cuda` feature (Cargo.toml) + Slice-1
+                // load-dynamic ORT + the operator-provided provider DLL + the GPU
+                // pack make this real on-device; with any of those missing, init
+                // fails and we fall back to CPU below.
+                match speakrs::OwnedDiarizationPipeline::from_dir(
+                    install_dir.to_path_buf(),
+                    speakrs::ExecutionMode::Cuda,
+                ) {
+                    Ok(pipeline) => Ok((pipeline, "cuda", None)),
+                    Err(cuda_error) => {
+                        // INIT-only fallback (ADR 0005): re-run on CPU. If CPU ALSO
+                        // fails to load, THAT error propagates as a real job failure
+                        // (we do not swallow it). The CUDA error becomes the
+                        // recorded `cudaFallbackReason` on the successful CPU run.
+                        let reason = cuda_error.to_string();
+                        let pipeline = load_pipeline(install_dir, speakrs::ExecutionMode::Cpu)?;
+                        Ok((pipeline, "cpu", Some(reason)))
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        // speakrs.rs only compiles under the `speakrs` feature (macOS/Windows
+        // only), but keep a CPU fallback so the module always type-checks.
+        let _ = exec_config;
+        let pipeline = load_pipeline(install_dir, speakrs::ExecutionMode::Cpu)?;
+        Ok((pipeline, "cpu", None))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SpeakrsSpeakerAnalysisProvider {
@@ -86,20 +231,31 @@ impl SpeakerAnalysisProvider for SpeakrsSpeakerAnalysisProvider {
         request: SpeakerAnalysisRequest,
     ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
         let models_dir = self.models_dir.clone();
-        tokio::task::spawn_blocking(move || run_speakrs_blocking(request, &models_dir))
-            .await
-            .map_err(|error| {
-                SpeakerAnalysisError::Analysis(format!("speakrs worker failed to join: {error}"))
-            })?
+        // The in-process provider has no helper args to source a backend config
+        // from, so it runs the default backend (plain CPU on Windows / CoreML on
+        // macOS). The CUDA path is driven only through the subprocess helper, which
+        // threads a populated `ExecutionBackendConfig` (Slice 3).
+        tokio::task::spawn_blocking(move || {
+            run_speakrs_blocking(request, &models_dir, &ExecutionBackendConfig::default())
+        })
+        .await
+        .map_err(|error| {
+            SpeakerAnalysisError::Analysis(format!("speakrs worker failed to join: {error}"))
+        })?
     }
 }
 
 /// Blocking entry the Slice 4 subprocess helper calls. Keep this name EXACTLY.
+///
+/// `exec_config` carries the execution-time **Execution Backend** inputs (live
+/// Force-CPU override + GPU-pack dir). Pass `&ExecutionBackendConfig::default()`
+/// for the pre-#137 behavior (plain CPU / CoreML).
 pub fn analyze_speakrs_request_blocking(
     request: SpeakerAnalysisRequest,
     models_dir: &Path,
+    exec_config: &ExecutionBackendConfig,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
-    run_speakrs_blocking(request, models_dir)
+    run_speakrs_blocking(request, models_dir, exec_config)
 }
 
 /// Resolve the speakrs model install dir for this request.
@@ -146,6 +302,7 @@ fn resolve_install_dir(
 fn run_speakrs_blocking(
     request: SpeakerAnalysisRequest,
     models_dir: &Path,
+    exec_config: &ExecutionBackendConfig,
 ) -> SpeakerAnalysisResult<SpeakerAnalysisOutput> {
     // 1. Validate provider + resolve the install dir.
     let install_dir = resolve_install_dir(&request, models_dir)?;
@@ -184,16 +341,26 @@ fn run_speakrs_blocking(
         return Ok(output);
     }
 
-    // 5. Create the CoreML pipeline (compute units left at speakrs's default; the
-    //    GPU-vs-ANE choice was measured not to affect the memory peak).
-    let mut pipeline = speakrs::OwnedDiarizationPipeline::from_dir(
-        install_dir.clone(),
-        speakrs::ExecutionMode::CoreMl,
-    )
-    .map_err(|error| SpeakerAnalysisError::Runtime {
-        stage: "create_pipeline".to_string(),
-        message: format!("failed to load speakrs pipeline from {}: {error}", install_dir.display()),
-    })?;
+    // 5. Create the pipeline on the chosen Execution Backend. macOS is compile-time
+    //    CoreML; Windows decides at RUNTIME (live Force-CPU override + GPU-pack
+    //    presence → maybe attempt CUDA, init-fall-back to CPU). The backend is
+    //    orthogonal to identity and recorded only in provenance. On macOS the
+    //    compute units are left at speakrs's default; the GPU-vs-ANE choice was
+    //    measured not to affect the memory peak. The returned tuple is the backend
+    //    that ACTUALLY ran plus, on a CUDA-init fallback, the reason CUDA failed.
+    let (mut pipeline, actual_execution_mode, cuda_fallback_reason) =
+        create_pipeline_for_backend(&install_dir, exec_config)?;
+
+    // Stamp the ACTUAL Execution Backend over the seeded default, and — only on a
+    // CUDA-init fallback — the `executionModeRequested` + `cudaFallbackReason`
+    // diagnostics. A plain CPU run (no pack / Force-CPU) and a successful CUDA or
+    // CoreML run get `executionMode` only, no extra keys (ADR 0005). The skip/empty
+    // path above never reaches here and keeps the seeded default executionMode.
+    apply_execution_mode_provenance(
+        &mut output.metadata.provenance,
+        actual_execution_mode,
+        cuda_fallback_reason.as_deref(),
+    );
 
     // 6. Run + map into the provider-neutral turns/centroids contract. Segments
     //    longer than the safe-chunk window are diarized in sequential chunks through
@@ -397,7 +564,15 @@ fn speaker_output_for_request(
     provenance.insert("skipReason".to_string(), serde_json::Value::Null);
     // Default; overridden to "safe_chunked" when a long segment is chunked.
     provenance.insert("chunkingMode".to_string(), json!("single"));
-    provenance.insert("executionMode".to_string(), json!("coreml"));
+    // Seed the DEFAULT Execution Backend (provenance-only; CoreML on macOS, CPU
+    // elsewhere). The full diarization path overrides this with the backend that
+    // actually ran (and any CUDA-fallback diagnostics) via
+    // `apply_execution_mode_provenance`; the too-short/silent skip path keeps this
+    // honest default. Orthogonal to identity (ADR 0004/0005).
+    provenance.insert(
+        "executionMode".to_string(),
+        json!(default_execution_mode_provenance()),
+    );
     provenance.insert("turnCount".to_string(), json!(0));
     provenance.insert("clusterCount".to_string(), json!(0));
     provenance.insert(
@@ -454,7 +629,7 @@ mod tests {
             "session-a",
             7,
         );
-        let error = run_speakrs_blocking(request, temp.path())
+        let error = run_speakrs_blocking(request, temp.path(), &ExecutionBackendConfig::default())
             .expect_err("missing speakrs bundle should fail");
         assert!(matches!(
             error,
@@ -498,6 +673,42 @@ mod tests {
             output.provider_version.as_deref(),
             Some(SPEAKRS_PROVIDER_VERSION)
         );
+    }
+
+    #[test]
+    fn base_output_seeds_default_execution_mode() {
+        // The base output (which the too-short/silent SKIP path returns as-is)
+        // carries an honest default executionMode and NO CUDA-fallback diagnostics.
+        // The full diarization path overrides executionMode via
+        // `apply_execution_mode_provenance` once the real backend is known.
+        let request = SpeakerAnalysisRequest::new(
+            "/tmp/audio.m4a",
+            SPEAKRS_PROVIDER_ID,
+            Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
+            "session-a",
+            7,
+        );
+        let output = speaker_output_for_request(
+            &request,
+            Path::new("/tmp/models/speakrs/x"),
+            SPEAKRS_DEFAULT_MODEL_ID,
+            500,
+            0.0,
+        );
+        let expected = if cfg!(target_os = "macos") { "coreml" } else { "cpu" };
+        assert_eq!(
+            output.metadata.provenance.get("executionMode"),
+            Some(&json!(expected))
+        );
+        // No fallback diagnostics on the seed/skip path (ADR 0005).
+        assert!(!output
+            .metadata
+            .provenance
+            .contains_key("executionModeRequested"));
+        assert!(!output
+            .metadata
+            .provenance
+            .contains_key("cudaFallbackReason"));
     }
 
     #[test]

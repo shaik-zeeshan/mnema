@@ -59,6 +59,7 @@
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
   import DataPanel from "$lib/settings/panels/data/DataPanel.svelte";
   import AboutPanel from "$lib/settings/panels/about/AboutPanel.svelte";
+  import { detectKeyboardPlatform } from "$lib/keyboard";
   import type {
     RecordingSettings,
     RecordingSettingsDomainUpdateResponse,
@@ -66,6 +67,7 @@
     OcrModelDownloadProgress,
     AudioTranscriptionModelDownloadProgress,
     SpeakerAnalysisModelDownloadProgress,
+    GpuAccelerationPackDownloadProgress,
     SemanticSearchModelDownloadProgress,
   } from "$lib/types";
 
@@ -74,6 +76,7 @@
   const APP_UPDATE_STATUS_CHANGED_EVENT = "app_update_status_changed";
   const AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT = "audio_transcription_model_download_progress";
   const SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT = "speaker_analysis_model_download_progress";
+  const GPU_ACCELERATION_PACK_DOWNLOAD_PROGRESS_EVENT = "gpu_acceleration_pack_download_progress";
   const OCR_MODEL_DOWNLOAD_PROGRESS_EVENT = "ocr_model_download_progress";
   const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT = "semantic_search_model_download_progress";
 
@@ -444,6 +447,14 @@
       loadOcrModelStatus();
       loadTranscriptionModelStatus();
       loadSpeakerModelStatus();
+      // GPU Acceleration (Windows CUDA backend, #137): load the pack status + the
+      // execution state so the Windows-only panel reflects current status on open.
+      // Gated to Windows so macOS makes zero extra IPC calls — the panel is absent
+      // there, keeping the macOS Settings experience unchanged.
+      if (detectKeyboardPlatform() === "windows") {
+        void c.loadGpuPackStatus();
+        void c.loadGpuAccelerationState();
+      }
       void loadSemanticSearchModelStatus();
       void loadSemanticSearchSupportedModels();
       void loadPersonProfileCount();
@@ -469,6 +480,7 @@
     let unlistenOcrDownloadProgress: (() => void) | undefined;
     let unlistenTranscriptionDownloadProgress: (() => void) | undefined;
     let unlistenSpeakerDownloadProgress: (() => void) | undefined;
+    let unlistenGpuPackDownloadProgress: (() => void) | undefined;
     let unlistenSemanticSearchDownloadProgress: (() => void) | undefined;
     let destroyed = false;
 
@@ -543,6 +555,16 @@
       else unlistenSpeakerDownloadProgress = fn;
     });
 
+    listen<GpuAccelerationPackDownloadProgress>(
+      GPU_ACCELERATION_PACK_DOWNLOAD_PROGRESS_EVENT,
+      (event) => {
+        void c.handleGpuPackDownloadProgress(event.payload);
+      },
+    ).then((fn) => {
+      if (destroyed) fn();
+      else unlistenGpuPackDownloadProgress = fn;
+    });
+
     listen<SemanticSearchModelDownloadProgress>(
       SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
       (event) => {
@@ -571,6 +593,7 @@
       unlistenOcrDownloadProgress?.();
       unlistenTranscriptionDownloadProgress?.();
       unlistenSpeakerDownloadProgress?.();
+      unlistenGpuPackDownloadProgress?.();
       unlistenSemanticSearchDownloadProgress?.();
       unlistenUserContextChanged?.();
       if (hasWindow) window.removeEventListener("focus", onWindowFocus);

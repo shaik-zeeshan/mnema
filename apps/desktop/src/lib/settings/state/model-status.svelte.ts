@@ -15,6 +15,9 @@ import type {
   AudioTranscriptionModelStatusResponse,
   DeleteUnusedAudioTranscriptionModelsResponse,
   DeleteUnusedOcrModelsResponse,
+  GpuAccelerationPackDownloadProgress,
+  GpuAccelerationPackStatus,
+  GpuAccelerationState,
   OcrModelDownloadProgress,
   OcrModelStatusResponse,
   PersonProfileDto,
@@ -75,6 +78,32 @@ export function createModelStatusStore() {
   let switchingSpeakerModel = $state(false);
   // Saved-person count drives the preset-switch warning.
   let personProfileCount = $state(0);
+
+  // ── GPU Acceleration Pack (Windows CUDA backend, #137) ─────────────────────
+  // Provisions HARDWARE (the NVIDIA CUDA 12 + cuDNN 9 redist), not identity —
+  // a single shared, license-gated unit, meaningful only on Windows. Mirrors the
+  // speaker download state shape above. Slice 5 owns the visual panel.
+  let gpuPackStatus = $state<GpuAccelerationPackStatus | null>(null);
+  let loadingGpuPackStatus = $state(false);
+  let gpuPackError = $state<string | null>(null);
+  let gpuPackDownloadProgress = $state<GpuAccelerationPackDownloadProgress | null>(null);
+  let startingGpuPackDownload = $state(false);
+  let cancellingGpuPackDownload = $state(false);
+  let gpuPackDownloadError = $state<string | null>(null);
+  let deletingGpuPack = $state(false);
+  let gpuPackDeleteMessage = $state<string | null>(null);
+
+  // ── GPU Acceleration execution state (live Force-CPU toggle + outcome, #137) ──
+  // Sibling to the pack download state above, but a different axis: the pack state
+  // is about provisioning the HARDWARE redist; this is the live EXECUTION state —
+  // whether an NVIDIA GPU exists, whether the pack is installed, the default-on
+  // "Use GPU acceleration" override, and the last job's backend outcome (incl. any
+  // CUDA-fallback reason). The Slice 5 panel reads it; the toggle persists via the
+  // backend command. Windows-only in the UI.
+  let gpuAccelerationState = $state<GpuAccelerationState | null>(null);
+  let loadingGpuAccelerationState = $state(false);
+  let gpuAccelerationStateError = $state<string | null>(null);
+  let settingUseGpuAcceleration = $state(false);
 
   // ── Semantic search ─────────────────────────────────────────────────────
   let semanticSearchModelStatus = $state<SemanticSearchModelStatusResponse | null>(null);
@@ -369,6 +398,113 @@ export function createModelStatusStore() {
     }
   }
 
+  // ── GPU Acceleration Pack loaders/actions ─────────────────────────────────
+  async function loadGpuPackStatus() {
+    loadingGpuPackStatus = true;
+    gpuPackError = null;
+    try {
+      gpuPackStatus = await invoke<GpuAccelerationPackStatus>("get_gpu_acceleration_pack_status");
+    } catch (err) {
+      gpuPackError = errorText(err);
+    } finally {
+      loadingGpuPackStatus = false;
+    }
+  }
+
+  // The NVIDIA redist is fetched under terms the user accepts in-app; the
+  // accepted-license flag is required by the backend and refused without it.
+  async function startGpuPackDownload(acceptedLicense: boolean) {
+    if (startingGpuPackDownload) return;
+    startingGpuPackDownload = true;
+    gpuPackDownloadError = null;
+    gpuPackDeleteMessage = null;
+    try {
+      gpuPackDownloadProgress = await invoke<GpuAccelerationPackDownloadProgress>(
+        "start_gpu_acceleration_pack_download",
+        { acceptedLicense },
+      );
+    } catch (err) {
+      gpuPackDownloadError = errorText(err);
+    } finally {
+      startingGpuPackDownload = false;
+    }
+  }
+
+  async function cancelGpuPackDownload() {
+    cancellingGpuPackDownload = true;
+    gpuPackDownloadError = null;
+    try {
+      await invoke("cancel_gpu_acceleration_pack_download");
+    } catch (err) {
+      gpuPackDownloadError = errorText(err);
+    } finally {
+      cancellingGpuPackDownload = false;
+    }
+  }
+
+  async function deleteGpuPack() {
+    const ok = await ask("Delete the GPU acceleration pack? Speaker analysis will run on the CPU until you reinstall it.", {
+      title: "Delete GPU acceleration pack", kind: "warning", okLabel: "Delete", cancelLabel: "Cancel",
+    });
+    if (!ok) return;
+    deletingGpuPack = true;
+    gpuPackDeleteMessage = null;
+    gpuPackDownloadError = null;
+    try {
+      await invoke("delete_gpu_acceleration_pack");
+      gpuPackDeleteMessage = "Deleted the GPU acceleration pack.";
+      await loadGpuPackStatus();
+    } catch (err) {
+      gpuPackDownloadError = errorText(err);
+    } finally {
+      deletingGpuPack = false;
+    }
+  }
+
+  async function handleGpuPackDownloadProgress(progress: GpuAccelerationPackDownloadProgress) {
+    gpuPackDownloadProgress = progress;
+    if (progress.status === "failed") {
+      gpuPackDownloadError = progress.message ?? "Download failed.";
+    }
+    if (["completed", "failed", "cancelled"].includes(progress.status)) {
+      await loadGpuPackStatus();
+      // Also refresh the execution state: a completed install flips packInstalled
+      // (and the next job will populate lastExecutionMode), so the panel's
+      // installed/working view updates immediately rather than on next open.
+      await loadGpuAccelerationState();
+    }
+  }
+
+  // ── GPU Acceleration execution-state loaders/actions ──────────────────────
+  async function loadGpuAccelerationState() {
+    loadingGpuAccelerationState = true;
+    gpuAccelerationStateError = null;
+    try {
+      gpuAccelerationState = await invoke<GpuAccelerationState>("get_gpu_acceleration_state");
+    } catch (err) {
+      gpuAccelerationStateError = errorText(err);
+    } finally {
+      loadingGpuAccelerationState = false;
+    }
+  }
+
+  // Flip the live "Use GPU acceleration" override. The backend persists it and the
+  // provider reads it live at the next job; we re-fetch afterwards so the panel
+  // reflects the authoritative value (correct even if the write was refused).
+  async function setUseGpuAcceleration(useGpu: boolean) {
+    if (settingUseGpuAcceleration) return;
+    settingUseGpuAcceleration = true;
+    gpuAccelerationStateError = null;
+    try {
+      await invoke("set_use_gpu_acceleration", { useGpu });
+    } catch (err) {
+      gpuAccelerationStateError = errorText(err);
+    } finally {
+      settingUseGpuAcceleration = false;
+      await loadGpuAccelerationState();
+    }
+  }
+
   // ── Semantic search loaders/actions ───────────────────────────────────────
   async function loadSemanticSearchModelStatus() {
     loadingSemanticSearchModelStatus = true;
@@ -519,6 +655,30 @@ export function createModelStatusStore() {
     cancelSpeakerModelDownload,
     deleteSpeakerModel,
     handleSpeakerDownloadProgress,
+
+    // GPU Acceleration Pack
+    get gpuPackStatus() { return gpuPackStatus; },
+    get loadingGpuPackStatus() { return loadingGpuPackStatus; },
+    get gpuPackError() { return gpuPackError; },
+    get gpuPackDownloadProgress() { return gpuPackDownloadProgress; },
+    get startingGpuPackDownload() { return startingGpuPackDownload; },
+    get cancellingGpuPackDownload() { return cancellingGpuPackDownload; },
+    get gpuPackDownloadError() { return gpuPackDownloadError; },
+    get deletingGpuPack() { return deletingGpuPack; },
+    get gpuPackDeleteMessage() { return gpuPackDeleteMessage; },
+    loadGpuPackStatus,
+    startGpuPackDownload,
+    cancelGpuPackDownload,
+    deleteGpuPack,
+    handleGpuPackDownloadProgress,
+
+    // GPU Acceleration execution state (live toggle + detection/outcome)
+    get gpuAccelerationState() { return gpuAccelerationState; },
+    get loadingGpuAccelerationState() { return loadingGpuAccelerationState; },
+    get gpuAccelerationStateError() { return gpuAccelerationStateError; },
+    get settingUseGpuAcceleration() { return settingUseGpuAcceleration; },
+    loadGpuAccelerationState,
+    setUseGpuAcceleration,
 
     // Semantic search
     get semanticSearchModelStatus() { return semanticSearchModelStatus; },

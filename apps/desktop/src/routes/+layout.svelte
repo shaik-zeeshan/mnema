@@ -23,6 +23,7 @@
   import { initTheme } from "$lib/theme.svelte";
   import { theme, persistAppearance } from "$lib/theme.svelte";
   import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
+  import WindowsCaptionControls from "$lib/components/WindowsCaptionControls.svelte";
   import type { AppearanceSetting } from "$lib/types";
   import {
     appNotifications,
@@ -87,6 +88,9 @@
   const isMainWindow = $derived(!showDedicatedTitlebar && !isPanelSurface);
   const canShowShortcutsHelp = $derived(isMainWindow && isMainRoute);
   let windowPlatform = $state<KeyboardPlatform>(detectKeyboardPlatform());
+  // Windows has no native overlay title bar, so the main window is frameless
+  // (see `windows.rs`) and this custom title bar hosts its own caption controls.
+  const isWindows = $derived(windowPlatform === "windows");
   let notificationsOpen = $state(false);
   let notificationsOpenedByKeyboard = false;
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
@@ -325,13 +329,18 @@
   });
 
   async function runNotificationAction(notification: AppNotification): Promise<void> {
-    if (notification.action?.type !== "open_settings_tab") return;
-    try {
-      await openSettings(notification.action.tab);
-    } catch {
-      // Navigation failed — keep the notification and the popover so the user
-      // can see the action did not complete and retry.
-      noteAppNotificationError("Couldn't open settings. Try again.");
+    if (notification.action?.type === "open_settings_tab") {
+      try {
+        await openSettings(notification.action.tab);
+      } catch {
+        // Navigation failed — keep the notification and the popover so the user
+        // can see the action did not complete and retry.
+        noteAppNotificationError("Couldn't open settings. Try again.");
+        return;
+      }
+    } else if (notification.action?.type === "open_capture_privacy_settings") {
+      await invoke("open_capture_privacy_settings", { kind: notification.action.kind });
+    } else {
       return;
     }
     // Only dismiss + close once the navigation succeeded; if the clear itself
@@ -341,6 +350,10 @@
   }
 
   function notificationActionLabel(notification: AppNotification): string {
+    if (notification.action?.type === "open_capture_privacy_settings") {
+      if (notification.action.kind === "microphone") return "Open microphone settings";
+      return "Open privacy settings";
+    }
     if (notification.action?.type !== "open_settings_tab") return "Open";
     if (notification.action.tab === "about") return "Open update settings";
     if (notification.action.tab === "processing") return "Open OCR settings";
@@ -952,7 +965,7 @@
     button.
   -->
   {#if showMainTitlebar}
-  <header class="titlebar">
+  <header class="titlebar" class:titlebar--windows={isWindows}>
     <div class="titlebar__group titlebar__group--left">
       {#if showMainTitlebar}
         <span
@@ -1461,6 +1474,13 @@
         {/if}
       {/if}
     </div>
+
+    {#if isWindows}
+      <!-- Frameless main window on Windows: the OS draws no caption buttons, so
+           the app supplies its own minimize / maximize / close, flush to the
+           top-right corner. -->
+      <WindowsCaptionControls />
+    {/if}
   </header>
   {/if}
 
@@ -2149,6 +2169,14 @@
     position: sticky;
     top: 0;
     z-index: 100;
+  }
+
+  /* Windows draws no native traffic lights, so drop the macOS left inset and
+     let the custom caption controls hug the top-right corner (padding-right 0;
+     the controls own their own edge spacing). */
+  .titlebar--windows {
+    padding-left: 10px;
+    padding-right: 0;
   }
 
   .surface-titlebar {

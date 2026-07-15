@@ -11,7 +11,8 @@
   import FeatureRow from "./FeatureRow.svelte";
   import WelcomeScreen from "./WelcomeScreen.svelte";
   import FinaleScreen from "./FinaleScreen.svelte";
-  import { FEATURES } from "./feature-model";
+  import { platformFeatures } from "./feature-model";
+  import { detectKeyboardPlatform } from "$lib/keyboard";
   import { OnboardingController } from "./onboarding.svelte";
   import PermissionsBody from "./PermissionsBody.svelte";
   import ScreenBody from "./ScreenBody.svelte";
@@ -27,6 +28,11 @@
 
   const c = new OnboardingController();
 
+  // Platform-filtered feature list: the App-Privacy-Exclusion "privacy" step is
+  // macOS-only (ADR 0025), so it's absent on Windows. Computed once — platform
+  // can't change mid-session — and mirrored by the controller's on/attention counts.
+  const features = platformFeatures(detectKeyboardPlatform());
+
   // Cross-phase wayfinding: map the three-state phase machine
   // (welcome → configure → done) to a 1-based step so the shell can show a quiet
   // "Welcome · Configure · Finish" stepper telling the user where they are and
@@ -36,7 +42,7 @@
   // Intra-step progress for the otherwise-undifferentiated Configure dot: the
   // accordion is many rows, so surface "X of Y ready" — every row minus those
   // still flagged for attention. Derived from existing controller state.
-  const configureTotal = FEATURES.length;
+  const configureTotal = features.length;
   const configureReady = $derived(Math.max(0, configureTotal - c.attentionCount));
 
   // Spoken step announcement for the polite live region below: a phase change is a
@@ -164,7 +170,7 @@
       secondaryLabel="← Back"
       onSecondary={() => c.backToWelcome()}
     >
-    {#each FEATURES as f (f.id)}
+    {#each features as f (f.id)}
       <FeatureRow
         featureId={f.id}
         icon={f.icon}

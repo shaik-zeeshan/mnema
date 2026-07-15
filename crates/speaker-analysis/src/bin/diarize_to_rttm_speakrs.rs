@@ -53,8 +53,9 @@ use std::{
 };
 
 use speaker_analysis::{
-    providers::speakrs::analyze_speakrs_request_blocking, SpeakerAnalysisOutput,
-    SpeakerAnalysisRequest, MODEL_STORE_DIR_NAME, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_PROVIDER_ID,
+    providers::speakrs::{analyze_speakrs_request_blocking, ExecutionBackendConfig},
+    SpeakerAnalysisOutput, SpeakerAnalysisRequest, MODEL_STORE_DIR_NAME, SPEAKRS_DEFAULT_MODEL_ID,
+    SPEAKRS_PROVIDER_ID,
 };
 
 struct Args {
@@ -193,8 +194,14 @@ fn run(args: &Args) -> Result<(), String> {
         1,
     );
 
-    let output = analyze_speakrs_request_blocking(request, Path::new(&args.models_dir))
-        .map_err(|e| format!("diarization failed: {e}"))?;
+    // The DER bench runs the default Execution Backend (CoreML on macOS / CPU on
+    // Windows); the CUDA path is exercised on-device through the app, not here.
+    let output = analyze_speakrs_request_blocking(
+        request,
+        Path::new(&args.models_dir),
+        &ExecutionBackendConfig::default(),
+    )
+    .map_err(|e| format!("diarization failed: {e}"))?;
 
     eprintln!(
         "[diarize_to_rttm_speakrs] uri={} clusters={} turns={} model={}",

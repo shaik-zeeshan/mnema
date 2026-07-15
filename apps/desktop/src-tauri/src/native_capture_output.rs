@@ -1,11 +1,11 @@
 use capture_types::{CaptureErrorResponse, CaptureOutputFiles, CaptureSources};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::BTreeSet;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::fs::File;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::io::{Read, Seek, SeekFrom};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::Path;
 
 pub(crate) fn set_current_microphone_output_file(
@@ -44,14 +44,13 @@ pub(crate) fn clear_current_system_audio_output_file(output_files: &mut CaptureO
     output_files.system_audio_files.clear();
 }
 
-#[cfg(target_os = "macos")]
 const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
     "screen output missing: expected screen recording file";
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 const MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX: &str =
     "screen output missing: expected screen recording file at ";
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn maybe_remove_intermediate_file(file: &str, label: &str, failures: &mut Vec<String>) {
     match std::fs::remove_file(file) {
         Ok(()) => {}
@@ -81,7 +80,15 @@ fn microphone_output_files(output_files: &CaptureOutputFiles) -> Vec<&str> {
     }
 }
 
-#[cfg(target_os = "macos")]
+/// Byte-level openability probe for a finalized visible screen segment.
+///
+/// Both the macOS `.mov` (QuickTime) and Windows `.mp4` (Media Foundation)
+/// containers are ISO-BMFF and carry a `moov` atom once finalized; an
+/// in-flight, truncated, or otherwise unopenable file is missing it. The check
+/// is purely on bytes, so it validates `.mp4` exactly as it validates `.mov` —
+/// the only per-platform difference is the extension used to *find* the file,
+/// resolved by `capture_runtime::screen_segment_extension()` upstream.
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn screen_output_appears_openable(path: &str) -> bool {
     const SEARCH_WINDOW_BYTES: u64 = 256 * 1024;
 
@@ -121,7 +128,7 @@ fn screen_output_appears_openable(path: &str) -> bool {
     suffix.windows(4).any(|window| window == b"moov")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_screen_output_file(
     output_files: &mut CaptureOutputFiles,
     recording_file: Option<&str>,
@@ -138,16 +145,7 @@ fn sync_finalized_screen_output_file(
     true
 }
 
-#[cfg(target_os = "macos")]
-fn is_usable_audio_output_file(path: &str, unusable_files: &BTreeSet<String>) -> bool {
-    is_usable_audio_output_file_with_duration_validator(
-        path,
-        unusable_files,
-        audio_file_has_positive_duration,
-    )
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn is_usable_audio_output_file_with_duration_validator(
     path: &str,
     unusable_files: &BTreeSet<String>,
@@ -167,6 +165,14 @@ fn is_usable_audio_output_file_with_duration_validator(
     has_positive_duration(path)
 }
 
+/// Windows definition of an openable `.m4a`: the Media Foundation Source Reader
+/// opens it and reports `MF_PD_DURATION > 0`. This is the only new validator
+/// leaf on Windows; the structural finalization helpers above are shared.
+#[cfg(target_os = "windows")]
+fn audio_file_has_positive_duration(path: &str) -> bool {
+    capture_writers::windows_audio_file_has_positive_duration(path)
+}
+
 #[cfg(target_os = "macos")]
 fn audio_file_has_positive_duration(path: &str) -> bool {
     use cidre::{av, ns};
@@ -184,14 +190,19 @@ fn audio_file_has_positive_duration(path: &str) -> bool {
     result
 }
 
-#[cfg(target_os = "macos")]
-fn maybe_remove_unusable_audio_output_file(
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn maybe_remove_unusable_audio_output_file_with_duration_validator(
     file: &str,
     label: &str,
     unusable_files: &BTreeSet<String>,
     failures: &mut Vec<String>,
+    has_positive_duration: impl Fn(&str) -> bool,
 ) {
-    if is_usable_audio_output_file(file, unusable_files) {
+    if is_usable_audio_output_file_with_duration_validator(
+        file,
+        unusable_files,
+        has_positive_duration,
+    ) {
         return;
     }
 
@@ -199,25 +210,7 @@ fn maybe_remove_unusable_audio_output_file(
     maybe_remove_intermediate_file(file, cleanup_label.as_str(), failures);
 }
 
-#[cfg(target_os = "macos")]
-fn sync_finalized_audio_output_file(
-    current_file: &mut Option<String>,
-    files: &mut Vec<String>,
-    label: &str,
-    unusable_files: &BTreeSet<String>,
-    failures: &mut Vec<String>,
-) {
-    sync_finalized_audio_output_file_with_duration_validator(
-        current_file,
-        files,
-        label,
-        unusable_files,
-        failures,
-        audio_file_has_positive_duration,
-    );
-}
-
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sync_finalized_audio_output_file_with_duration_validator(
     current_file: &mut Option<String>,
     files: &mut Vec<String>,
@@ -237,7 +230,13 @@ fn sync_finalized_audio_output_file_with_duration_validator(
             true
         } else {
             if removed_paths.insert(path.clone()) {
-                maybe_remove_unusable_audio_output_file(path, label, unusable_files, failures);
+                maybe_remove_unusable_audio_output_file_with_duration_validator(
+                    path,
+                    label,
+                    unusable_files,
+                    failures,
+                    has_positive_duration,
+                );
             }
             false
         }
@@ -257,7 +256,13 @@ fn sync_finalized_audio_output_file_with_duration_validator(
     if current.is_none() {
         if let Some(path) = current_file.as_ref() {
             if removed_paths.insert(path.clone()) {
-                maybe_remove_unusable_audio_output_file(path, label, unusable_files, failures);
+                maybe_remove_unusable_audio_output_file_with_duration_validator(
+                    path,
+                    label,
+                    unusable_files,
+                    failures,
+                    has_positive_duration,
+                );
             }
         }
     }
@@ -273,22 +278,59 @@ fn sync_finalized_audio_output_file_with_duration_validator(
     };
 }
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn sync_finalized_microphone_output_files_with_duration_validator(
+    output_files: &mut CaptureOutputFiles,
+    unusable_files: &BTreeSet<String>,
+    failures: &mut Vec<String>,
+    has_positive_duration: impl Fn(&str) -> bool + Copy,
+) {
+    sync_finalized_audio_output_file_with_duration_validator(
+        &mut output_files.microphone_file,
+        &mut output_files.microphone_files,
+        "microphone",
+        unusable_files,
+        failures,
+        has_positive_duration,
+    );
+
+    if output_files.microphone_file.is_none() {
+        clear_current_microphone_output_file(output_files);
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn sync_finalized_microphone_output_files(
     output_files: &mut CaptureOutputFiles,
     unusable_files: &BTreeSet<String>,
     failures: &mut Vec<String>,
 ) {
-    sync_finalized_audio_output_file(
-        &mut output_files.microphone_file,
-        &mut output_files.microphone_files,
-        "microphone",
+    sync_finalized_microphone_output_files_with_duration_validator(
+        output_files,
         unusable_files,
         failures,
+        audio_file_has_positive_duration,
+    );
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn sync_finalized_system_audio_output_files_with_duration_validator(
+    output_files: &mut CaptureOutputFiles,
+    unusable_files: &BTreeSet<String>,
+    failures: &mut Vec<String>,
+    has_positive_duration: impl Fn(&str) -> bool + Copy,
+) {
+    sync_finalized_audio_output_file_with_duration_validator(
+        &mut output_files.system_audio_file,
+        &mut output_files.system_audio_files,
+        "system audio",
+        unusable_files,
+        failures,
+        has_positive_duration,
     );
 
-    if output_files.microphone_file.is_none() {
-        clear_current_microphone_output_file(output_files);
+    if output_files.system_audio_file.is_none() {
+        clear_current_system_audio_output_file(output_files);
     }
 }
 
@@ -298,20 +340,15 @@ fn sync_finalized_system_audio_output_files(
     unusable_files: &BTreeSet<String>,
     failures: &mut Vec<String>,
 ) {
-    sync_finalized_audio_output_file(
-        &mut output_files.system_audio_file,
-        &mut output_files.system_audio_files,
-        "system audio",
+    sync_finalized_system_audio_output_files_with_duration_validator(
+        output_files,
         unusable_files,
         failures,
+        audio_file_has_positive_duration,
     );
-
-    if output_files.system_audio_file.is_none() {
-        clear_current_system_audio_output_file(output_files);
-    }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn audio_output_files_are_empty(output_files: &CaptureOutputFiles) -> bool {
     output_files.microphone_file.is_none()
         && output_files.microphone_files.is_empty()
@@ -319,7 +356,7 @@ fn audio_output_files_are_empty(output_files: &CaptureOutputFiles) -> bool {
         && output_files.system_audio_files.is_empty()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> String {
     let path_detail = recording_file
         .map(|path| format!(" at {path}"))
@@ -327,7 +364,7 @@ fn missing_requested_screen_output_failure(recording_file: Option<&str>) -> Stri
     format!("{MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX}{path_detail}")
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(test, target_os = "macos"))]
 pub(crate) fn is_missing_requested_screen_output_failure_detail(detail: &str) -> bool {
     detail == MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX
         || detail.starts_with(MISSING_REQUESTED_SCREEN_OUTPUT_AT_PATH_PREFIX)
@@ -500,7 +537,108 @@ pub(crate) fn finalize_capture_outputs(
     capture_writers::aggregate_output_processing_failures(failures)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_os = "windows")]
+fn finalize_windows_audio_outputs_with_duration_validator(
+    output_files: &mut CaptureOutputFiles,
+    has_positive_duration: impl Fn(&str) -> bool + Copy,
+) -> Result<(), CaptureErrorResponse> {
+    let mut failures: Vec<String> = Vec::new();
+    let unusable_audio_files: BTreeSet<String> = BTreeSet::new();
+
+    sync_finalized_microphone_output_files_with_duration_validator(
+        output_files,
+        &unusable_audio_files,
+        &mut failures,
+        has_positive_duration,
+    );
+    sync_finalized_system_audio_output_files_with_duration_validator(
+        output_files,
+        &unusable_audio_files,
+        &mut failures,
+        has_positive_duration,
+    );
+
+    capture_writers::aggregate_output_processing_failures(failures)
+}
+
+/// Windows capture-output finalization.
+///
+/// Windows writes the final `.m4a` directly via Media Foundation, so there is no
+/// source→`.m4a` conversion or video-only strip step (those are macOS-only). The
+/// finalization work is (1) validating the produced audio outputs through the
+/// shared injectable validator seam — `MF_PD_DURATION > 0` via the MF Source
+/// Reader probe — and dropping any unusable files, and (2) validating the
+/// finalized screen `.mp4` is openable.
+///
+/// The screen-output validation mirrors macOS: a requested screen segment whose
+/// `.mp4` is missing or unopenable (no `moov` atom — e.g. a sink writer that
+/// crashed mid-segment) is rejected exactly as an unopenable macOS `.mov` is.
+/// `.mp4` and `.mov` are both ISO-BMFF, so the byte-level `moov` probe in
+/// [`screen_output_appears_openable`] is container-agnostic; the only thing that
+/// made this Windows-blind before was that the screen path was never validated
+/// here at all. When valid audio was captured, the audio-only segment is
+/// preserved instead of discarding the whole segment, matching macOS.
+#[cfg(target_os = "windows")]
+pub(crate) fn finalize_capture_outputs(
+    output_files: Option<&mut CaptureOutputFiles>,
+    recording_file: Option<&str>,
+    microphone_recording_file: Option<&str>,
+    system_audio_recording_file: Option<&str>,
+    requested_sources: Option<&CaptureSources>,
+) -> Result<(), CaptureErrorResponse> {
+    let _ = (microphone_recording_file, system_audio_recording_file);
+    let Some(output_files) = output_files else {
+        return Ok(());
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let has_screen_output = sync_finalized_screen_output_file(output_files, recording_file);
+    if requested_sources.is_some_and(|sources| sources.screen) && !has_screen_output {
+        failures.push(missing_requested_screen_output_failure(recording_file));
+    }
+
+    // Validate/drop unusable audio outputs. `failures` only carries the
+    // missing-screen failure (audio problems route through `audio_failures`),
+    // so `failures.len() == 1` with empty `audio_failures` means the screen
+    // output is the lone problem — the same invariant the macOS path relies on.
+    let audio_failures = match finalize_windows_audio_outputs_with_duration_validator(
+        output_files,
+        audio_file_has_positive_duration,
+    ) {
+        Ok(()) => Vec::new(),
+        Err(error) => vec![error.message],
+    };
+
+    // When the only failure is a missing/unopenable screen segment but usable
+    // audio was captured, drop the unusable screen recording and commit the
+    // audio-only segment rather than discarding everything. Mirrors the macOS
+    // `preserve_audio_despite_missing_screen` path.
+    let preserve_audio_despite_missing_screen = requested_sources
+        .is_some_and(|sources| sources.screen && (sources.microphone || sources.system_audio))
+        && !has_screen_output
+        && audio_failures.is_empty()
+        && failures.len() == 1
+        && !audio_output_files_are_empty(output_files);
+
+    if preserve_audio_despite_missing_screen {
+        if let Some(recording_file) = recording_file {
+            let mut discarded_failures = Vec::new();
+            maybe_remove_intermediate_file(recording_file, "screen", &mut discarded_failures);
+        }
+        return capture_writers::aggregate_output_processing_failures(Vec::new());
+    }
+
+    // Only fold audio failures into the segment failure when the screen output
+    // itself is missing/unopenable or some other failure already exists. When the
+    // screen `.mp4` finalized fine, a failure merely deleting an unusable audio
+    // file must not sink the good screen+audio segment. Mirrors the macOS guard.
+    if !has_screen_output || !failures.is_empty() {
+        failures.extend(audio_failures);
+    }
+    capture_writers::aggregate_output_processing_failures(failures)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn append_output_file(current_file: &mut Option<String>, files: &mut Vec<String>, file: &str) {
     let file = file.to_string();
     *current_file = Some(file.clone());
@@ -509,7 +647,7 @@ fn append_output_file(current_file: &mut Option<String>, files: &mut Vec<String>
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 pub(crate) fn append_committed_segment_output_files(
     committed: &mut CaptureOutputFiles,
     segment: &CaptureOutputFiles,
@@ -563,12 +701,12 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     struct TestDir {
         path: PathBuf,
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     impl TestDir {
         fn new(label: &str) -> Self {
             let unique = SystemTime::now()
@@ -638,11 +776,183 @@ mod tests {
         file.close();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finalization_validates_system_audio_files_with_duration_seam() {
+        let dir = TestDir::new("windows-system-audio-finalization");
+        let microphone_file = dir
+            .path
+            .join("microphone.m4a")
+            .to_string_lossy()
+            .to_string();
+        let system_audio_file = dir
+            .path
+            .join("system-audio.m4a")
+            .to_string_lossy()
+            .to_string();
+        let system_audio_rotated_file = dir
+            .path
+            .join("system-audio-rotated.m4a")
+            .to_string_lossy()
+            .to_string();
+        fs::write(&microphone_file, b"microphone").expect("microphone artifact should exist");
+        fs::write(&system_audio_file, b"system-audio").expect("system audio artifact should exist");
+        fs::write(&system_audio_rotated_file, b"system-audio-rotated")
+            .expect("rotated system audio artifact should exist");
+        let mut output_files = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: Some(microphone_file.clone()),
+            microphone_files: vec![microphone_file.clone()],
+            system_audio_file: Some(system_audio_file.clone()),
+            system_audio_files: vec![system_audio_file.clone(), system_audio_rotated_file.clone()],
+        };
+
+        finalize_windows_audio_outputs_with_duration_validator(&mut output_files, |path| {
+            path == microphone_file || path == system_audio_rotated_file
+        })
+        .expect("valid rotated system audio output should be retained");
+
+        assert_eq!(output_files.microphone_file, Some(microphone_file.clone()));
+        assert_eq!(output_files.microphone_files, vec![microphone_file]);
+        assert_eq!(
+            output_files.system_audio_file,
+            Some(system_audio_rotated_file.clone())
+        );
+        assert_eq!(
+            output_files.system_audio_files,
+            vec![system_audio_rotated_file]
+        );
+        assert!(!Path::new(&system_audio_file).exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn committed_output_bookkeeping_appends_system_audio_files() {
+        let mut committed = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some("system-audio-old.m4a".to_string()),
+            system_audio_files: vec!["system-audio-old.m4a".to_string()],
+        };
+        let segment = CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some("system-audio-new.m4a".to_string()),
+            system_audio_files: vec![
+                "system-audio-rotated-1.m4a".to_string(),
+                "system-audio-rotated-2.m4a".to_string(),
+            ],
+        };
+
+        append_committed_segment_output_files(&mut committed, &segment);
+
+        assert_eq!(
+            committed.system_audio_file,
+            Some("system-audio-rotated-2.m4a".to_string())
+        );
+        assert_eq!(
+            committed.system_audio_files,
+            vec![
+                "system-audio-old.m4a".to_string(),
+                "system-audio-rotated-1.m4a".to_string(),
+                "system-audio-rotated-2.m4a".to_string(),
+            ]
+        );
+    }
+
+    // A finalized `.mp4` carries a `moov` atom, exactly like a finalized `.mov`.
+    #[cfg(target_os = "windows")]
+    fn write_openable_screen_mp4(path: &Path) {
+        fs::write(path, b"\0\0\0\x14ftypisom\0\0\0\0isom\0\0\0\x10moovtrak")
+            .expect("screen artifact should exist");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finalization_commits_openable_mp4_screen_segment() {
+        let dir = TestDir::new("windows-openable-mp4");
+        let recording_file = dir.path.join("screen.mp4");
+        write_openable_screen_mp4(&recording_file);
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect("openable mp4 screen segment should finalize");
+
+        assert_eq!(output_files.screen_file, Some(recording_file.clone()));
+        assert_eq!(output_files.screen_files, vec![recording_file.clone()]);
+        assert!(Path::new(&recording_file).exists());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_finalization_rejects_existing_but_unopenable_mp4_screen_segment() {
+        let dir = TestDir::new("windows-unopenable-mp4");
+        let recording_file = dir.path.join("screen.mp4");
+        // Present on disk but missing the `moov` atom — e.g. the MF sink writer
+        // crashed mid-segment. Must be rejected exactly like an unopenable `.mov`.
+        fs::write(&recording_file, b"\0\0\0\x14ftypisom\0\0\0\0isom\0\0\0\x10mdatjunk")
+            .expect("unopenable screen artifact should exist");
+        let recording_file = recording_file.to_string_lossy().to_string();
+        let requested_sources = CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: false,
+        };
+        let mut output_files = CaptureOutputFiles {
+            screen_file: Some(recording_file.clone()),
+            screen_files: vec![recording_file.clone()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        };
+
+        let error = finalize_capture_outputs(
+            Some(&mut output_files),
+            Some(&recording_file),
+            None,
+            None,
+            Some(&requested_sources),
+        )
+        .expect_err("unopenable mp4 screen segment should be rejected");
+
+        assert_eq!(error.code, "capture_output_processing_failed");
+        assert!(error
+            .message
+            .contains("screen output missing: expected screen recording file"));
+        assert_eq!(output_files.screen_file, None);
+        assert!(output_files.screen_files.is_empty());
     }
 
     #[cfg(target_os = "macos")]

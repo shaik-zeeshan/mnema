@@ -25,6 +25,7 @@ import IconUserContext from "~icons/lucide/user";
 import IconOcr from "~icons/lucide/scan-text";
 import IconTranscription from "~icons/lucide/mic";
 import IconSpeakers from "~icons/lucide/users";
+import IconGpuAcceleration from "~icons/lucide/cpu";
 import IconSemanticSearch from "~icons/lucide/search";
 import IconStorage from "~icons/lucide/database";
 import IconAccess from "~icons/lucide/key-round";
@@ -49,6 +50,7 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   ocr: IconOcr,
   transcription: IconTranscription,
   speakers: IconSpeakers,
+  gpuAcceleration: IconGpuAcceleration,
   semanticSearch: IconSemanticSearch,
   storage: IconStorage,
   access: IconAccess,

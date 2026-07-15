@@ -159,7 +159,7 @@
 
 <SettingGroup
   title="MCP connectors"
-  hint="Connect Model Context Protocol servers so chat can use their tools (GitHub, Notion, a filesystem, …). A connector works only when it's both enabled AND authorized — two separate things. Some servers sign in with OAuth (click Connect, approve in your browser); others take a pasted token. Either way the secret lives only in the macOS keychain — never in Mnema's settings."
+  hint="Connect Model Context Protocol servers so chat can use their tools (GitHub, Notion, a filesystem, …). A connector works only when it's both enabled AND authorized — two separate things. Some servers sign in with OAuth (click Connect, approve in your browser); others take a pasted token. Either way the secret lives only in the system keychain — never in Mnema's settings."
 >
   <SettingRow label="Connectors" full divider={false}>
     {#snippet control()}
@@ -274,7 +274,7 @@
             + Add connector
           </button>
         </div>
-        <p class="group-hint">Secrets are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. Removing a connector deletes its secret right away.</p>
+        <p class="group-hint">Secrets are stored only in the system keychain — never in Mnema's settings, config, or save directory. Removing a connector deletes its secret right away.</p>
       </div>
     {/snippet}
   </SettingRow>

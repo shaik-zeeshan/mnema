@@ -1016,6 +1016,31 @@ pub(crate) fn provider_id_for_settings(provider: AudioTranscriptionProvider) -> 
     }
 }
 
+/// Whether a transcription provider should be listed as selectable on this
+/// desktop OS. Symmetric with `is_desktop_selectable_ocr_provider`: a provider
+/// whose model is not downloaded yet (Local Whisper, Parakeet) stays selectable
+/// so the user can trigger its download ("selectable" != "available"); only
+/// providers that are *platform-locked and can never run here* are dropped.
+///
+/// The `audio_transcription` crate exposes no `provider_runtime_available`-style
+/// helper — only `AppleSpeechOnDeviceProvider::availability()`, which is a
+/// richer per-language/per-OS-version runtime check that conflates "selectable"
+/// with "available" (it can report `false` on a perfectly capable macOS host
+/// when the speech model/language is not ready). For *selectability* we mirror
+/// `ocr::provider_runtime_available`'s `cfg!(target_os = "macos")` gate instead.
+fn is_desktop_selectable_transcription_provider(provider: &str) -> bool {
+    match provider {
+        // Apple Speech (on-device) is platform-locked to macOS; omit it on every
+        // other OS so the status response never offers an unrunnable provider.
+        audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID => cfg!(target_os = "macos"),
+        // Local Whisper (the documented default; runs on Windows) and Parakeet
+        // are downloadable on every desktop OS and stay selectable even before
+        // their model is downloaded. Any other manifest provider stays listed
+        // too (behavior-preserving for non-Apple providers).
+        _ => true,
+    }
+}
+
 fn build_audio_transcription_model_status_response(
     app_data_dir: &Path,
 ) -> Result<AudioTranscriptionModelStatusResponseDto, ModelStatusError> {
@@ -1024,6 +1049,9 @@ fn build_audio_transcription_model_status_response(
     let mut grouped: BTreeMap<String, Vec<AudioTranscriptionModelStatusDto>> = BTreeMap::new();
 
     for descriptor in manifest.models {
+        if !is_desktop_selectable_transcription_provider(&descriptor.provider) {
+            continue;
+        }
         let status = detect_model_status(&models_dir, &descriptor)?;
         grouped
             .entry(descriptor.provider.clone())
@@ -1233,38 +1261,103 @@ mod tests {
             "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin"
         );
 
-        let parakeet = find_model(
-            &response,
-            audio_transcription::PARAKEET_PROVIDER_ID,
-            Some("parakeet-tdt-0.6b-v3-onnx"),
-        );
-        let parakeet_download = parakeet
-            .download
-            .as_ref()
-            .expect("parakeet download artifact");
-        assert_eq!(parakeet_download.byte_size, 2_549_945_719);
-        assert_eq!(
-            parakeet_download.url,
-            "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx"
-        );
+        // The full-precision Parakeet variant is gated off Windows v1 at the
+        // manifest source of truth (`audio_transcription::builtin_model_manifest`
+        // pushes `parakeet_v3_onnx_model()` only on `not(target_os = "windows")`;
+        // Windows offers just the int8 bundle), so only assert it where it exists.
+        #[cfg(not(target_os = "windows"))]
+        {
+            let parakeet = find_model(
+                &response,
+                audio_transcription::PARAKEET_PROVIDER_ID,
+                Some("parakeet-tdt-0.6b-v3-onnx"),
+            );
+            let parakeet_download = parakeet
+                .download
+                .as_ref()
+                .expect("parakeet download artifact");
+            assert_eq!(parakeet_download.byte_size, 2_549_945_719);
+            assert_eq!(
+                parakeet_download.url,
+                "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx"
+            );
+        }
 
-        let apple = find_model(
-            &response,
-            audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID,
-            None,
-        );
+        // Apple Speech (on-device) is platform-locked: listed only on macOS.
+        #[cfg(target_os = "macos")]
+        {
+            let apple = find_model(
+                &response,
+                audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID,
+                None,
+            );
+            assert_eq!(
+                apple.management,
+                AudioTranscriptionModelManagementDto::OsManaged
+            );
+            assert_eq!(apple.status, ModelStatusKind::OsManaged);
+            assert_eq!(apple.install_path, None);
+            assert_eq!(
+                apple.availability_status,
+                Some(
+                    audio_transcription::providers::AppleSpeechOnDeviceProvider::availability()
+                        .status
+                )
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        assert!(response.providers.iter().flat_map(|p| p.models.iter()).all(
+            |model| model.provider != audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID
+        ));
+    }
+
+    #[test]
+    fn is_desktop_selectable_transcription_provider_gates_apple_speech() {
+        // Local Whisper (default) and Parakeet stay selectable even before their
+        // model is downloaded ("selectable" != "available").
+        assert!(is_desktop_selectable_transcription_provider(
+            audio_transcription::LOCAL_WHISPER_PROVIDER_ID
+        ));
+        assert!(is_desktop_selectable_transcription_provider(
+            audio_transcription::PARAKEET_PROVIDER_ID
+        ));
+        // Apple Speech (on-device) is selectable only on macOS.
         assert_eq!(
-            apple.management,
-            AudioTranscriptionModelManagementDto::OsManaged
+            is_desktop_selectable_transcription_provider(
+                audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID
+            ),
+            cfg!(target_os = "macos")
         );
-        assert_eq!(apple.status, ModelStatusKind::OsManaged);
-        assert_eq!(apple.install_path, None);
-        assert_eq!(
-            apple.availability_status,
-            Some(
-                audio_transcription::providers::AppleSpeechOnDeviceProvider::availability().status
-            )
-        );
+        #[cfg(target_os = "macos")]
+        assert!(is_desktop_selectable_transcription_provider(
+            audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID
+        ));
+        #[cfg(not(target_os = "macos"))]
+        assert!(!is_desktop_selectable_transcription_provider(
+            audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID
+        ));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn status_response_omits_apple_speech_when_not_runtime_available() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let response =
+            build_audio_transcription_model_status_response(temp.path()).expect("status response");
+        // The platform-locked Apple provider is omitted from `providers[]`.
+        assert!(response
+            .providers
+            .iter()
+            .all(|p| p.provider != audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID));
+        // Runnable-but-downloadable providers stay listed.
+        assert!(response
+            .providers
+            .iter()
+            .any(|p| p.provider == audio_transcription::LOCAL_WHISPER_PROVIDER_ID));
+        assert!(response
+            .providers
+            .iter()
+            .any(|p| p.provider == audio_transcription::PARAKEET_PROVIDER_ID));
     }
 
     #[test]

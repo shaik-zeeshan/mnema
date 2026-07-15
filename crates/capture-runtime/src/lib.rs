@@ -21,6 +21,20 @@ pub fn current_date_prefix() -> String {
     Local::now().format("%Y/%m/%d").to_string()
 }
 
+/// Container extension for the final per-segment screen video file.
+///
+/// macOS records QuickTime `.mov` (AVFoundation / ScreenCaptureKit); the Windows
+/// backend records H.264 `.mp4` via the Media Foundation sink writer. Frame-index
+/// sidecar derivation keys off `file_stem`, so the extension is otherwise opaque
+/// to the runtime.
+pub const fn screen_segment_extension() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "mp4"
+    } else {
+        "mov"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeState {
     Idle,
@@ -151,8 +165,19 @@ impl SegmentPlanner {
     }
 
     /// Base directory for this session's date: `<save_root>/YYYY/MM/DD`
+    ///
+    /// The `"YYYY/MM/DD"` prefix carries literal `/`s; join it component-wise so
+    /// every derived path string is fully native-separated on Windows. These
+    /// strings are persisted (frame/segment rows) and string-compared against
+    /// `read_dir`-scanned paths (hidden-workspace repair, active-workspace
+    /// skipping), which always yield native separators — a single `join` of the
+    /// whole prefix would embed the `/`s verbatim and break those comparisons.
     fn date_dir(&self) -> PathBuf {
-        Path::new(&self.save_root_dir).join(&self.date_prefix)
+        self.date_prefix
+            .split('/')
+            .fold(PathBuf::from(&self.save_root_dir), |dir, component| {
+                dir.join(component)
+            })
     }
 
     /// Per-segment workspace directory for screen artifacts (frames, etc.).
@@ -164,12 +189,42 @@ impl SegmentPlanner {
     }
 
     /// Final visible screen output path.
-    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####.mov`
+    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####.<ext>` where `<ext>` is
+    /// `mov` on macOS and `mp4` on Windows (see [`screen_segment_extension`]).
     pub fn segment_screen_output(&self, segment_index: u64) -> PathBuf {
         self.date_dir().join(format!(
-            "{}-segment-{segment_index:04}.mov",
-            self.session_id
+            "{}-segment-{segment_index:04}.{}",
+            self.session_id,
+            screen_segment_extension()
         ))
+    }
+
+    /// Collision-safe screen resume path for rejoining a live segment.
+    /// `<save_root>/YYYY/MM/DD/<session_id>-segment-####-<ts>.<ext>`
+    ///
+    /// If the base timestamp path already exists (e.g. two resumes in the same
+    /// millisecond), an incrementing suffix is appended to guarantee uniqueness.
+    pub fn screen_resume_file(&self, segment_index: u64, resumed_at_unix_ms: u64) -> PathBuf {
+        let date_dir = self.date_dir();
+        let extension = screen_segment_extension();
+        let base = date_dir.join(format!(
+            "{}-segment-{segment_index:04}-{resumed_at_unix_ms}.{extension}",
+            self.session_id
+        ));
+        if !base.exists() {
+            return base;
+        }
+        let mut counter = 1u32;
+        loop {
+            let candidate = date_dir.join(format!(
+                "{}-segment-{segment_index:04}-{resumed_at_unix_ms}-{counter}.{extension}",
+                self.session_id
+            ));
+            if !candidate.exists() {
+                return candidate;
+            }
+            counter += 1;
+        }
     }
 
     /// Legacy alias – returns the workspace dir so existing callers that
@@ -389,7 +444,10 @@ mod tests {
         // Final visible screen output
         assert_eq!(
             planner.segment_screen_output(7),
-            PathBuf::from("/tmp/records/2026/04/16/native-session-123-segment-0007.mov")
+            PathBuf::from(format!(
+                "/tmp/records/2026/04/16/native-session-123-segment-0007.{}",
+                screen_segment_extension()
+            ))
         );
 
         // Audio layout: all audio files are flat under dated audio/
@@ -503,6 +561,47 @@ mod tests {
         assert_eq!(
             third,
             audio_dir.join("sess-col-segment-0001-1700000000000-2.m4a")
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn screen_resume_file_avoids_collision() {
+        let dir = std::env::temp_dir().join("capture-runtime-test-screen-resume-collision");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("2026/01/01")).unwrap();
+
+        let ts: u64 = 1700000000000;
+        let planner =
+            SegmentPlanner::with_date_prefix(dir.to_str().unwrap(), "sess-screen", "2026/01/01");
+        let date_dir = dir.join("2026/01/01");
+        let extension = screen_segment_extension();
+
+        let first = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            first,
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000.{extension}"
+            ))
+        );
+
+        std::fs::write(&first, b"").unwrap();
+        let second = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            second,
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000-1.{extension}"
+            ))
+        );
+
+        std::fs::write(&second, b"").unwrap();
+        let third = planner.screen_resume_file(1, ts);
+        assert_eq!(
+            third,
+            date_dir.join(format!(
+                "sess-screen-segment-0001-1700000000000-2.{extension}"
+            ))
         );
 
         let _ = std::fs::remove_dir_all(&dir);

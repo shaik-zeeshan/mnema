@@ -38,7 +38,12 @@ pub async fn mcp_check_node() -> Option<String> {
         .flatten()
 }
 
-#[cfg(test)]
+// macOS-only: both tests assert the Unix login-shell PATH mechanism —
+// resolution via the child's `PATH` env — which SUPPORTS.md marks Windows
+// unaddressed. On Windows, CreateProcess resolves `node` through the parent's
+// search path regardless of the child PATH override, so the bogus-PATH test
+// finds an installed Node and fails.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

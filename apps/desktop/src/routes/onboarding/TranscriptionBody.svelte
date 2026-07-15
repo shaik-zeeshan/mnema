@@ -34,8 +34,10 @@
     return live.length > 0
       ? live.map((provider) => ({ value: provider.provider, label: provider.displayName }))
       : [
+          // Pre-status fallback lists only cross-platform-runnable providers;
+          // platform-locked ones (e.g. Apple Speech) arrive from the live status
+          // response, which omits them server-side on platforms they can't run on.
           { value: "local_whisper", label: "Local Whisper" },
-          { value: "apple_speech_on_device", label: "Apple Speech (on-device)" },
           { value: "parakeet", label: "Parakeet" },
         ];
   });

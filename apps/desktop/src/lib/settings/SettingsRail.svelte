@@ -27,9 +27,10 @@
     type SettingsSection,
     type SettingsSectionId,
   } from "./groups";
-  import { filterGroups, flattenSections } from "./rail-filter";
+  import { filterGroups, filterPlatform, flattenSections } from "./rail-filter";
   import { getSettingsController } from "./state/controller.svelte";
   import { getLastMainSurface } from "$lib/surface-windows";
+  import { detectKeyboardPlatform } from "$lib/keyboard";
 
   interface Props {
     /** The active group (the one group panel currently mounted). */
@@ -67,9 +68,16 @@
   let searchQuery = $state("");
   let searchInput = $state<HTMLInputElement | null>(null);
 
+  // Platform-gate the section list ONCE up front (the platform can't change mid-
+  // session): drops Windows-only sections off Windows — the NVIDIA CUDA GPU
+  // Acceleration panel — so macOS never sees it in the rail OR its search. The
+  // search filter then runs over this already-gated list.
+  const platformGroups = filterPlatform(SETTINGS_GROUPS, detectKeyboardPlatform());
+
   // The visible (filtered) groups — what the nav actually renders. An empty or
-  // whitespace query is a pass-through (all groups). A no-match query yields [].
-  const visibleGroups = $derived(filterGroups(SETTINGS_GROUPS, searchQuery));
+  // whitespace query is a pass-through (all platform-visible groups). A no-match
+  // query yields [].
+  const visibleGroups = $derived(filterGroups(platformGroups, searchQuery));
 
   // The flattened sub-section order (rail order) — the keyboard roving model.
   // Derived from the VISIBLE groups so Arrow/Home/End only traverse the items

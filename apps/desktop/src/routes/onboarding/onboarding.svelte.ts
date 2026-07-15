@@ -35,7 +35,8 @@ import type {
   VideoBitratePreset,
 } from "$lib/types";
 import type { FeatureId, FeatureLockContext } from "./feature-model";
-import { FEATURES, featureLockReason as lockReasonFor } from "./feature-model";
+import { featureLockReason as lockReasonFor, platformFeatures } from "./feature-model";
+import { detectKeyboardPlatform } from "$lib/keyboard";
 import {
   createOcrModelStore,
   createSemanticSearchModelStore,
@@ -51,9 +52,12 @@ import {
   defaultOcrLanguageForProvider,
   defaultOcrModelIdForProvider,
   defaultTranscriptionModelIdForProvider,
-  isSelectableOcrProvider,
   parsePositiveInteger,
 } from "./onboarding-mapping";
+import {
+  firstSelectableOcrProvider,
+  isSelectableOcrProvider,
+} from "$lib/settings/state/models-format";
 import {
   buildSettingsRequestFrom,
   finaleBlockReasonFor,
@@ -64,6 +68,7 @@ import { startOnboardingListeners } from "./onboarding-listeners";
 import {
   customBitrateErrors as buildCustomBitrateErrors,
   customResolutionErrors as buildCustomResolutionErrors,
+  permissionPermitsCapture,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
 import {
@@ -79,6 +84,12 @@ import {
 // Permission types live in `onboarding-attention` (shared by the lifecycle +
 // listener helpers); re-exported here so body components keep their import site.
 export type { PermissionKey, PermissionValue } from "./onboarding-attention";
+
+// The features actually shown this session — drops the macOS-only App-Privacy-
+// Exclusion "privacy" step off Windows (ADR 0025), mirroring `+page.svelte`'s
+// render list so on/attention counts never include a hidden feature. Computed
+// once — the platform can't change mid-session.
+const visibleFeatures = platformFeatures(detectKeyboardPlatform());
 
 export class OnboardingController {
   // ── Draft fields (same names/types/defaults as the legacy page) ───────────
@@ -112,7 +123,10 @@ export class OnboardingController {
   draftSystemAudioActivitySensitivity = $state(50);
   // Optional feature — starts OFF; the user opts in via its accordion toggle.
   draftOcrEnabled = $state(false);
-  draftOcrProvider = $state<OcrProvider>("apple_vision");
+  // Neutral cross-platform-runnable seed (mirrors recording.svelte.ts). The real
+  // provider is resolved against the backend OCR status by `syncDrafts` on load;
+  // this seed is only the pre-load placeholder and is never platform-locked.
+  draftOcrProvider = $state<OcrProvider>("tesseract");
   draftOcrModelId = $state<string | null>(null);
   draftOcrLanguage = $state("");
   draftOcrRecognitionMode = $state<OcrRecognitionMode>("fast");
@@ -231,7 +245,10 @@ export class OnboardingController {
     }
     this.draftCaptureScreen = true;
     this.draftOcrEnabled = true;
-    this.chooseOcrProvider("apple_vision");
+    // The recommended OCR provider is the platform default the backend reports
+    // first (macOS → apple_vision, Windows → tesseract); never a hardcoded
+    // platform-locked provider. Falls back to tesseract before the status loads.
+    this.chooseOcrProvider(firstSelectableOcrProvider(this.ocrModelStatus) ?? "tesseract");
     this.draftTranscriptionEnabled = true;
     // Mirror `toggleFeature("transcribe")`'s ON-branch: bind the master to the
     // currently-enabled audio sources, so a source enabled BEFORE this runs
@@ -414,7 +431,7 @@ export class OnboardingController {
 
   // ── Provider / model selection helpers (used by Slice 4 bodies) ──────────
   chooseOcrProvider(value: string): void {
-    if (!isSelectableOcrProvider(value)) return;
+    if (!isSelectableOcrProvider(value, this.ocrModelStatus)) return;
     this.draftOcrProvider = value;
     this.draftOcrModelId = this.ocrStore.preferredOcrModelIdForProvider(
       this.draftOcrProvider,
@@ -575,8 +592,10 @@ export class OnboardingController {
   // ── Feature dependency relations ─────────────────────────────────────────
   private lockContext(): FeatureLockContext {
     return {
-      micGranted: this.permissions?.microphone === "granted",
-      systemAudioGranted: this.permissions?.systemAudio === "granted",
+      // permissionPermitsCapture keeps the Windows-only "unknown" mic state from
+      // locking transcription/speaker rows behind a permission Windows can't read.
+      micGranted: permissionPermitsCapture(this.permissions?.microphone),
+      systemAudioGranted: permissionPermitsCapture(this.permissions?.systemAudio),
       transcriptionEnabled: this.draftTranscriptionEnabled,
     };
   }
@@ -603,8 +622,8 @@ export class OnboardingController {
   }
 
   // ── Footer / CTA deriveds ────────────────────────────────────────────────
-  onCount = $derived(FEATURES.filter((feature) => this.isEnabled(feature.id)).length);
-  attentionCount = $derived(FEATURES.filter((feature) => this.featureAttention(feature.id)).length);
+  onCount = $derived(visibleFeatures.filter((feature) => this.isEnabled(feature.id)).length);
+  attentionCount = $derived(visibleFeatures.filter((feature) => this.featureAttention(feature.id)).length);
 
   // The configure→finale CTA ("Review & finish"): block leaving configure while
   // anything needs attention OR a selected custom resolution/bitrate is invalid
@@ -621,7 +640,7 @@ export class OnboardingController {
   // disabled "Review & finish" CTA points at what to fix instead of leaving the
   // user to hunt for it. Mirrors `attentionCount`'s single-owner predicate.
   firstAttentionFeatureId = $derived(
-    FEATURES.find((feature) => this.featureAttention(feature.id))?.id ?? null,
+    visibleFeatures.find((feature) => this.featureAttention(feature.id))?.id ?? null,
   );
 
   // True when a selected custom resolution/bitrate is invalid. These serialize as
@@ -646,7 +665,7 @@ export class OnboardingController {
   // attention rows AND an invalid custom resolution/bitrate (which would otherwise
   // disable the CTA with no stated reason).
   configureBlockReason = $derived.by(() => {
-    const names = FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
+    const names = visibleFeatures.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
     if (names.length > 0) {
       return `Needs attention before you can finish: ${names.join(", ")}.`;
     }
@@ -727,7 +746,7 @@ export class OnboardingController {
 
   // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
   finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,
-    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
+    visibleFeatures.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
 
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
   // The two transforms are factored into `onboarding-settings-sync` (operating

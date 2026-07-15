@@ -950,14 +950,14 @@ fn frame_batch_window(captured_at: &str) -> Result<FrameBatchWindow> {
 /// loop normally bumps `/` to `0` on the first iteration; the fallback only
 /// matters for pathological inputs (empty / un-incrementable trailing chars).
 pub(crate) fn workspace_path_prefix_upper_bound(prefix: &str) -> String {
-    // The range bound only replicates `LIKE 'prefix%'` when `prefix` ends in `/`
-    // (callers pass `format!("{}/", workspace_dir)`). A non-slash prefix still
-    // yields a valid pure-prefix range, but would silently diverge from the
-    // deleted `workspace_like_pattern`'s `/%` separator and could bleed a sibling
-    // workspace's frames in — so pin the contract.
+    // The range bound only replicates `LIKE 'prefix%'` when `prefix` ends in a
+    // path separator (callers append `std::path::MAIN_SEPARATOR`). A prefix
+    // without one still yields a valid pure-prefix range, but would silently
+    // diverge from the deleted `workspace_like_pattern`'s `/%` separator and
+    // could bleed a sibling workspace's frames in — so pin the contract.
     debug_assert!(
-        prefix.ends_with('/'),
-        "workspace path prefix must be slash-terminated: {prefix:?}"
+        prefix.ends_with('/') || prefix.ends_with(std::path::MAIN_SEPARATOR),
+        "workspace path prefix must be separator-terminated: {prefix:?}"
     );
     let mut chars: Vec<char> = prefix.chars().collect();
     while let Some(last) = chars.pop() {
@@ -1116,6 +1116,14 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    /// Visible-segment file name for the current platform's container
+    /// (`.mov` on macOS, `.mp4` on Windows). Artifact cleanup keys off the
+    /// sibling the resolver derives, so fixtures must use the matching
+    /// extension on whichever platform CI runs.
+    fn visible_segment_file_name(stem: &str) -> String {
+        format!("{stem}.{}", capture_runtime::screen_segment_extension())
     }
 
     fn run_async_test(test: impl std::future::Future<Output = ()>) {
@@ -1472,7 +1480,7 @@ mod tests {
                 .join("frames");
             fs::create_dir_all(&frames_dir).expect("frames directory should be created");
             fs::write(
-                recordings_day_dir.join("session-cleanup-segment-0001.mov"),
+                recordings_day_dir.join(visible_segment_file_name("session-cleanup-segment-0001")),
                 b"fake mov",
             )
             .expect("visible segment should be written");
@@ -1638,7 +1646,7 @@ mod tests {
                 .join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should be created");
             fs::write(
-                recordings_day_dir.join("session-ordering-segment-0001.mov"),
+                recordings_day_dir.join(visible_segment_file_name("session-ordering-segment-0001")),
                 b"fake mov",
             )
             .expect("visible segment should be written");

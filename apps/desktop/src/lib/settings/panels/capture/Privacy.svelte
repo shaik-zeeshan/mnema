@@ -1,5 +1,6 @@
 <script lang="ts">
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
+  import { detectKeyboardPlatform } from "$lib/keyboard";
   import Switch from "$lib/components/Switch.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
   import AppPrivacyExclusion from "$lib/components/AppPrivacyExclusion.svelte";
@@ -10,6 +11,11 @@
   const c = getSettingsController();
   const rec = c.rec;
   const appPrivacyExclusion = c.appPrivacyExclusion;
+
+  // macOS-only: App Privacy Exclusion is a macOS capability — Windows v1 ships no
+  // live privacy filter, so an exclusions editor there would silently do nothing
+  // (ADR 0025). Computed once — the platform can't change mid-session.
+  const isMacOS = detectKeyboardPlatform() === "macos";
 
   const setBrowserUrlMode = (m: string) => c.setBrowserUrlMode(m);
 
@@ -87,18 +93,20 @@
     </SettingRow>
   {/if}
 
-  <SettingRow
-    label="Excluded Apps"
-    description="Apps whose visible content is never recorded."
-    full
-    divider={false}
-  >
-    {#snippet control()}
-      <div class="exclusion-cell" class:exclusion-cell--open={appPrivacyExclusion.comboboxOpen}>
-        <AppPrivacyExclusion controller={appPrivacyExclusion} />
-      </div>
-    {/snippet}
-  </SettingRow>
+  {#if isMacOS}
+    <SettingRow
+      label="Excluded Apps"
+      description="Apps whose visible content is never recorded."
+      full
+      divider={false}
+    >
+      {#snippet control()}
+        <div class="exclusion-cell" class:exclusion-cell--open={appPrivacyExclusion.comboboxOpen}>
+          <AppPrivacyExclusion controller={appPrivacyExclusion} />
+        </div>
+      {/snippet}
+    </SettingRow>
+  {/if}
 </SettingGroup>
 
 <style>

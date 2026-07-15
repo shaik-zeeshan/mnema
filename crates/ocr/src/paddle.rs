@@ -2,9 +2,13 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+#[cfg(feature = "paddle-rs")]
 use crate::{
-    normalize_candidate_text, OcrBoundingBox, OcrError, OcrObservation, OcrOutput, OcrRequest,
-    OcrResult, OcrStructuredPayload, DEFAULT_PADDLE_OCR_LANGUAGE, DEFAULT_PADDLE_OCR_MODEL_ID,
+    normalize_candidate_text, OcrBoundingBox, OcrObservation, OcrStructuredPayload,
+    DEFAULT_PADDLE_OCR_LANGUAGE,
+};
+use crate::{
+    OcrError, OcrOutput, OcrRequest, OcrResult, DEFAULT_PADDLE_OCR_MODEL_ID,
     PADDLE_OCR_PROVIDER_ID,
 };
 
@@ -34,10 +38,12 @@ const DEFAULT_REC_BATCH_SIZE: usize = 8;
 
 #[derive(Debug, Clone)]
 pub struct PaddleOcrModelSelection {
+    #[cfg_attr(not(feature = "paddle-rs"), allow(dead_code))]
     pub model_id: String,
     pub model_path: PathBuf,
 }
 
+#[cfg_attr(not(feature = "paddle-rs"), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct PaddleOcrBundleLayout {
     pub bundle_dir: PathBuf,
@@ -51,6 +57,7 @@ pub struct PaddleOcrBundleLayout {
 #[serde(rename_all = "camelCase")]
 pub struct PaddleOcrBundleManifest {
     #[serde(default)]
+    #[cfg_attr(not(feature = "paddle-rs"), allow(dead_code))]
     pub version: Option<String>,
     #[serde(default)]
     pub detection: PaddleDetectionConfig,
@@ -68,6 +75,7 @@ impl Default for PaddleOcrBundleManifest {
     }
 }
 
+#[cfg_attr(not(feature = "paddle-rs"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaddleDetectionConfig {
@@ -98,6 +106,7 @@ impl Default for PaddleDetectionConfig {
     }
 }
 
+#[cfg_attr(not(feature = "paddle-rs"), allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaddleRecognitionConfig {

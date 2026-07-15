@@ -301,7 +301,7 @@ pub(crate) fn add_warning_reason(output: &mut SpeakerAnalysisOutput, reason: &st
 }
 
 // ---------------------------------------------------------------------------
-// macOS audio decode entry (shared by both providers)
+// Audio decode entry (per-platform; feeds the platform-agnostic pipeline)
 // ---------------------------------------------------------------------------
 
 /// Decode an audio file to mono 16 kHz f32 via AVFoundation (macOS). Both
@@ -319,13 +319,24 @@ pub(crate) fn decode_audio_to_mono_16khz(
     ))
 }
 
-/// Non-macOS stub: AVFoundation decode is the only v1 implementation.
-#[cfg(not(target_os = "macos"))]
+/// Windows decode goes through the shared `media-decode` Media Foundation seam
+/// (ADR 0024) to mono 16 kHz f32, feeding the same platform-agnostic pipeline.
+/// The CPU Execution Backend consumes the identical mono-16-kHz contract.
+#[cfg(target_os = "windows")]
+pub(crate) fn decode_audio_to_mono_16khz(
+    path: &std::path::Path,
+) -> crate::SpeakerAnalysisResult<Vec<f32>> {
+    crate::windows_audio_decode::decode_audio_to_mono_16khz(path)
+}
+
+/// Other platforms: no decode backend in v1 (speakrs is macOS/Windows only).
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
 pub(crate) fn decode_audio_to_mono_16khz(
     _path: &std::path::Path,
 ) -> crate::SpeakerAnalysisResult<Vec<f32>> {
     Err(crate::SpeakerAnalysisError::ProviderUnavailable(
-        "speaker-analysis audio decoding is only implemented with AVFoundation on macOS in v1"
+        "speaker-analysis audio decoding is only implemented with AVFoundation (macOS) and \
+         Media Foundation (Windows) in v1"
             .to_string(),
     ))
 }

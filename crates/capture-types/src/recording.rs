@@ -177,7 +177,19 @@ pub enum OcrProvider {
 }
 
 pub fn default_ocr_provider() -> OcrProvider {
-    OcrProvider::AppleVision
+    // Apple Vision can only run on macOS (it errors at runtime on other OSes),
+    // so seed the platform-appropriate default. This mirrors how
+    // `ocr::provider_runtime_available` already gates Apple Vision behind
+    // `cfg!(target_os = "macos")`. This crate depends only on
+    // `capture-metadata` + serde and cannot call `provider_runtime_available`,
+    // so a `cfg` seed is the most it can do here; the durable
+    // runtime-availability coercion lives in the desktop settings-normalization
+    // path (`native_capture_settings::validate_ocr_settings`).
+    if cfg!(target_os = "macos") {
+        OcrProvider::AppleVision
+    } else {
+        OcrProvider::Tesseract
+    }
 }
 
 pub fn default_ocr_enabled() -> bool {
@@ -1333,4 +1345,24 @@ pub struct UpdateAccessSettingsRequest {
 pub struct UpdateDeveloperSettingsRequest {
     pub developer_options_enabled: Option<bool>,
     pub native_capture_debug_logging_enabled: Option<bool>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Apple Vision is the macOS default; everywhere else (Windows, Linux) it can
+    // never run, so the platform-seeded default is Tesseract. The runtime
+    // coercion in the desktop settings path then guarantees a runnable provider.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_ocr_provider_is_apple_vision_on_macos() {
+        assert_eq!(default_ocr_provider(), OcrProvider::AppleVision);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn default_ocr_provider_is_tesseract_off_macos() {
+        assert_eq!(default_ocr_provider(), OcrProvider::Tesseract);
+    }
 }

@@ -115,9 +115,15 @@ impl HiddenSegmentWorkspacePaths {
 
         let visible_segment_name = workspace_name.strip_prefix('.')?;
         let frames_dir = workspace_dir.join("frames");
-        let visible_segment_path = workspace_dir
-            .parent()?
-            .join(format!("{visible_segment_name}.mov"));
+        // The visible-segment container is per-platform: `.mov` on macOS
+        // (AVFoundation / ScreenCaptureKit) and `.mp4` on Windows (Media
+        // Foundation sink writer). Route through the single resolver so cleanup
+        // safety, openability validation, and preview lookup all key off the
+        // container this platform actually wrote.
+        let visible_segment_path = workspace_dir.parent()?.join(format!(
+            "{visible_segment_name}.{}",
+            capture_runtime::screen_segment_extension()
+        ));
 
         Some(Self {
             workspace_dir: workspace_dir.to_string_lossy().to_string(),
@@ -153,7 +159,11 @@ impl HiddenSegmentWorkspaceRepair {
             return Ok(None);
         };
 
-        let workspace_prefix = format!("{}/", paths.workspace_dir);
+        // DB frame paths are written with the platform's native separator, so
+        // the range-scan prefix must use it too: a hardcoded "/" would never
+        // match the "\"-separated rows on Windows and every workspace would
+        // misclassify as NoReferences (and get reclaimed prematurely).
+        let workspace_prefix = format!("{}{}", paths.workspace_dir, std::path::MAIN_SEPARATOR);
         let SegmentWorkspaceFrameBatchReferences {
             frame_count,
             batch_references,
@@ -489,26 +499,40 @@ mod tests {
             .expect("visible segment should exist");
     }
 
+    /// Visible-segment file name for the current platform's container
+    /// (`.mov` on macOS, `.mp4` on Windows). Tests that materialize a sibling
+    /// visible segment must use the same extension the resolver derives, so
+    /// classification finds the file on whichever platform CI runs.
+    fn visible_segment_file_name(stem: &str) -> String {
+        format!("{stem}.{}", capture_runtime::screen_segment_extension())
+    }
+
     #[test]
     fn hidden_segment_workspace_paths_resolve_visible_segment_path() {
-        let frame_path = PathBuf::from(
-            "/tmp/2026/04/12/.session-abc-segment-0004/frames/frame-1744459200123-7.png",
-        );
+        // Derive the expected strings via the same PathBuf joins the resolver
+        // uses so the assertions hold with either platform's separator.
+        let day_dir = std::env::temp_dir().join("2026").join("04").join("12");
+        let workspace_dir = day_dir.join(".session-abc-segment-0004");
+        let frame_path = workspace_dir
+            .join("frames")
+            .join("frame-1744459200123-7.png");
 
         let paths = HiddenSegmentWorkspacePaths::from_frame_artifact_path(&frame_path)
             .expect("hidden workspace paths should resolve");
 
-        assert_eq!(
-            paths.workspace_dir,
-            "/tmp/2026/04/12/.session-abc-segment-0004"
-        );
+        assert_eq!(paths.workspace_dir, workspace_dir.to_string_lossy());
         assert_eq!(
             paths.frames_dir,
-            "/tmp/2026/04/12/.session-abc-segment-0004/frames"
+            workspace_dir.join("frames").to_string_lossy()
         );
         assert_eq!(
             paths.visible_segment_path,
-            "/tmp/2026/04/12/session-abc-segment-0004.mov"
+            day_dir
+                .join(format!(
+                    "session-abc-segment-0004.{}",
+                    capture_runtime::screen_segment_extension()
+                ))
+                .to_string_lossy()
         );
     }
 
@@ -654,7 +678,9 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-live-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            write_openable_visible_segment(&segment_dir.join("session-live-segment-0001.mov"));
+            write_openable_visible_segment(
+                &segment_dir.join(visible_segment_file_name("session-live-segment-0001")),
+            );
             fs::write(frames_dir.join("frame-1.jpg"), b"jpg").expect("frame artifact should exist");
 
             let info = repair
@@ -740,7 +766,9 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-preview-segment-0003");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            write_openable_visible_segment(&segment_dir.join("session-preview-segment-0003.mov"));
+            write_openable_visible_segment(
+                &segment_dir.join(visible_segment_file_name("session-preview-segment-0003")),
+            );
             let frame_path = frames_dir.join("frame-1.png");
 
             let batch = store
@@ -804,7 +832,9 @@ mod tests {
             let workspace_dir = segment_dir.join(".session-preview-segment-0004");
             let frames_dir = workspace_dir.join("frames");
             fs::create_dir_all(&frames_dir).expect("frames dir should exist");
-            write_openable_visible_segment(&segment_dir.join("session-preview-segment-0004.mov"));
+            write_openable_visible_segment(
+                &segment_dir.join(visible_segment_file_name("session-preview-segment-0004")),
+            );
             let frame_path = frames_dir.join("frame-1.png");
 
             let batch = store
@@ -885,7 +915,7 @@ mod tests {
             let frames_dir = workspace_dir.join("frames");
             std::fs::create_dir_all(&frames_dir).expect("frames dir should exist");
             std::fs::write(
-                segment_dir.join("session-preview-segment-0005.mov"),
+                segment_dir.join(visible_segment_file_name("session-preview-segment-0005")),
                 b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk",
             )
             .expect("invalid visible segment should exist");
@@ -965,12 +995,18 @@ mod tests {
             let store = crate::FrameBatchStore::new(CaptureDb::single(pool.clone()));
             let repair = HiddenSegmentWorkspaceRepair::new(store.clone(), processing.clone());
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
 
             let safe_workspace_dir = day_dir.join(".session-safe-segment-0001");
             let safe_frames_dir = safe_workspace_dir.join("frames");
             std::fs::create_dir_all(&safe_frames_dir).expect("safe frames dir should exist");
-            write_openable_visible_segment(&day_dir.join("session-safe-segment-0001.mov"));
+            write_openable_visible_segment(
+                &day_dir.join(visible_segment_file_name("session-safe-segment-0001")),
+            );
             let safe_frame_path = safe_frames_dir.join("frame-1.jpg");
             std::fs::write(&safe_frame_path, b"jpg").expect("safe frame should exist");
 
@@ -1146,7 +1182,13 @@ mod tests {
             // Dead segment: no visible .mov, a lingering DB frame row, and an empty
             // frames/ dir (artifacts already consumed). Nothing left to protect, so
             // the periodic repair should reclaim the husk rather than skip it.
-            let workspace_dir = recordings_root.join("2026/04/12/.session-dead-segment-0001");
+            // Component-wise joins so the DB frame path shares the exact
+            // string prefix of the read_dir-scanned workspace on any platform.
+            let workspace_dir = recordings_root
+                .join("2026")
+                .join("04")
+                .join("12")
+                .join(".session-dead-segment-0001");
             let frames_dir = workspace_dir.join("frames");
             std::fs::create_dir_all(&frames_dir).expect("frames dir should exist");
             processing
@@ -1193,7 +1235,11 @@ mod tests {
                 processing.clone(),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
 
             // Dead segment: a truncated, never-finalized .mov (no moov atom), an
             // empty frames/ dir (artifacts already consumed), and a lingering DB
@@ -1202,7 +1248,8 @@ mod tests {
             let workspace_dir = day_dir.join(".session-dead-segment-0001");
             std::fs::create_dir_all(workspace_dir.join("frames"))
                 .expect("frames dir should exist");
-            let dead_mov = day_dir.join("session-dead-segment-0001.mov");
+            let dead_mov =
+                day_dir.join(visible_segment_file_name("session-dead-segment-0001"));
             std::fs::write(&dead_mov, b"\0\0\0\x14ftypqt  \0\0\0\0qt  \0\0\0\x10mdatjunk")
                 .expect("dead visible segment should exist");
             processing
@@ -1286,12 +1333,18 @@ mod tests {
                 crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");
 
             std::fs::create_dir_all(workspace_dir.join("frames"))
                 .expect("active frames dir should exist");
-            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0001.mov"));
+            write_openable_visible_segment(
+                &day_dir.join(visible_segment_file_name("active-screen-session-segment-0001")),
+            );
 
             let result = repair
                 .repair_hidden_segment_workspaces_with_context(
@@ -1328,7 +1381,11 @@ mod tests {
                 crate::ProcessingStore::new(CaptureDb::single(pool)),
             );
             let recordings_root = dir.path().join("recordings");
-            let day_dir = recordings_root.join("2026/04/12");
+            // Component-wise joins: the repair scan discovers workspaces via
+            // read_dir (native separators), and active-workspace matching plus
+            // the DB range scan compare path STRINGS, so the fixture must
+            // produce the exact string read_dir will yield on this platform.
+            let day_dir = recordings_root.join("2026").join("04").join("12");
             let old_workspace_dir = day_dir.join(".active-screen-session-segment-0001");
             let current_workspace_dir = day_dir.join(".active-screen-session-segment-0002");
 
@@ -1336,8 +1393,12 @@ mod tests {
                 .expect("old frames dir should exist");
             std::fs::create_dir_all(current_workspace_dir.join("frames"))
                 .expect("current frames dir should exist");
-            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0001.mov"));
-            write_openable_visible_segment(&day_dir.join("active-screen-session-segment-0002.mov"));
+            write_openable_visible_segment(
+                &day_dir.join(visible_segment_file_name("active-screen-session-segment-0001")),
+            );
+            write_openable_visible_segment(
+                &day_dir.join(visible_segment_file_name("active-screen-session-segment-0002")),
+            );
 
             let result = repair
                 .repair_hidden_segment_workspaces_with_context(

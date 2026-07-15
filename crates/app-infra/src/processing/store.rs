@@ -238,10 +238,13 @@ impl ProcessingStore {
 
     fn workspace_like_pattern(workspace_prefix: &str) -> String {
         let escaped = Self::escape_sql_like_pattern(workspace_prefix);
-        if workspace_prefix.ends_with('/') {
+        if workspace_prefix.ends_with('/')
+            || workspace_prefix.ends_with(std::path::MAIN_SEPARATOR)
+        {
             format!("{escaped}%")
         } else {
-            format!("{escaped}/%")
+            let separator = Self::escape_sql_like_pattern(std::path::MAIN_SEPARATOR_STR);
+            format!("{escaped}{separator}%")
         }
     }
 

@@ -12,6 +12,7 @@
 // match (group-label matches keep ALL of that group's sections). An empty or
 // whitespace-only query is a pass-through (returns the input groups unchanged).
 
+import type { KeyboardPlatform } from "$lib/keyboard";
 import type { SettingsGroup, SettingsSection } from "./groups";
 
 // Normalize a query the same way for both the haystack and needle: trim + lower.
@@ -59,6 +60,31 @@ export function filterGroups(
     if (sections.length > 0) {
       result.push({ ...group, sections });
     }
+  }
+  return result;
+}
+
+/**
+ * Drop platform-gated sections that don't apply to the current platform, so the
+ * rail (and its search) never surface them.
+ *
+ * Today only `windowsOnly` sections exist — the Windows-only GPU Acceleration
+ * (NVIDIA CUDA backend) panel. On any non-Windows platform they are removed, and a
+ * group left with zero sections is dropped; Windows keeps everything. Pure and
+ * order-preserving (mirrors `filterGroups`), and applied BEFORE the search filter
+ * so a macOS user can never reach a Windows-only section by typing its name. This is
+ * the rail-side half of the gate; the panel mirrors the same `detectKeyboardPlatform()`
+ * check and renders nothing off Windows.
+ */
+export function filterPlatform(
+  groups: readonly SettingsGroup[],
+  platform: KeyboardPlatform,
+): SettingsGroup[] {
+  if (platform === "windows") return [...groups];
+  const result: SettingsGroup[] = [];
+  for (const group of groups) {
+    const sections = group.sections.filter((s) => !s.windowsOnly);
+    if (sections.length > 0) result.push({ ...group, sections });
   }
   return result;
 }

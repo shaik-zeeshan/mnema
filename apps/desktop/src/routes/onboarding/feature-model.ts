@@ -2,6 +2,7 @@
 // in display order. Slice 3's controller keys all per-feature state off the
 // `FeatureId` union; the row chrome (FeatureRow) renders the static metadata.
 import type { IconName } from "$lib/settings/groups";
+import type { KeyboardPlatform } from "$lib/keyboard";
 
 export type FeatureId =
   | "permissions"
@@ -23,6 +24,10 @@ export interface FeatureMeta {
   eyebrow: string;
   sub: string;
   required: boolean;
+  // Platform-gated feature shown only on macOS. Used for App Privacy Exclusion,
+  // which Windows v1 lacks — there is no live privacy filter, so an exclusions
+  // step there would silently do nothing (ADR 0025).
+  macOnly?: boolean;
 }
 
 // Display order is the array order. Required features are always-on and locked
@@ -99,6 +104,7 @@ export const FEATURES: FeatureMeta[] = [
     eyebrow: "Optional",
     sub: "Apps on this list are never captured — windows, audio, or text.",
     required: false,
+    macOnly: true,
   },
   {
     id: "askai",
@@ -117,6 +123,13 @@ export const FEATURES: FeatureMeta[] = [
     required: false,
   },
 ];
+
+// The feature catalog for a given platform: drops `macOnly` features (App Privacy
+// Exclusion) off macOS. Used by the onboarding page (render) and controller
+// (on/attention counts) so a hidden feature is never shown OR counted.
+export function platformFeatures(platform: KeyboardPlatform): FeatureMeta[] {
+  return FEATURES.filter((f) => !f.macOnly || platform === "macos");
+}
 
 // ── Feature dependency relations ───────────────────────────────────────────
 // A feature can only be ENABLED once its prerequisite is met (turning a feature

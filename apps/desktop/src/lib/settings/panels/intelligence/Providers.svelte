@@ -232,7 +232,7 @@
             </button>
           {/each}
         </div>
-        <p class="group-hint">Cloud keys are stored only in the macOS keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
+        <p class="group-hint">Cloud keys are stored only in the system keychain — never in Mnema's settings, config, or save directory. One key per provider instance, shared by every feature. Add a kind more than once to connect several instances (e.g. two OpenAI-compatible servers).</p>
         {#if aiProviderRemovalError}
           <p class="error-text" role="alert">{aiProviderRemovalError}</p>
         {/if}

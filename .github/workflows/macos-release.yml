@@ -1,9 +1,10 @@
+# RETIRED TO MANUAL-ONLY: the combined `release.yml` now owns the `v*` tag
+# trigger and builds both macOS and Windows. This workflow is kept as a manual
+# fallback (workflow_dispatch only) until `release.yml` is proven on a preview
+# tag; delete it (see docs/release-process.md operator runbook) once that passes.
 name: macOS Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       version:
@@ -113,7 +114,7 @@ jobs:
         run: ./scripts/generate-third-party-licenses.sh
 
       - name: Prepare Mnema CLI sidecar for Tauri check
-        run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
       - name: Check Tauri Rust app
         run: cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --locked

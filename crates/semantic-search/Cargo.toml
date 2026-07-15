@@ -33,7 +33,26 @@ candle-nn = { version = "=0.10.2" }
 candle-transformers = { version = "=0.10.2" }
 # The forward pass tokenizer (loaded with special tokens) and the non-truncating
 # split tokenizer (used to compute the 256-token windows above the trait).
-tokenizers = { version = "0.22" }
+#
+# `default-features = false` drops the default `esaxx_fast` feature, which builds
+# esaxx-rs's C++ with a STATIC CRT (`/MT`). On Windows that collides with the
+# tesseract-rs OCR C++ (built `/MD`), failing the desktop link with LNK2038
+# ("RuntimeLibrary mismatch"). esaxx is only used to TRAIN unigram models; we only
+# load/encode pretrained tokenizers, so dropping it is functionally inert. `onig`
+# (the regex pre-tokenizer) is kept and matches candle-core's own tokenizers dep,
+# so feature unification resolves to a single esaxx-free build on every platform.
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 
 [dev-dependencies]
 tempfile = "3"
+
+# Process CPU time (GetProcessTimes) + RSS (K32GetProcessMemoryInfo) for the manual
+# candle-CPU measurement harness (`tests/cpu_measurement.rs`, ADR 0037's Windows
+# Semantic Search gate). Test-only and target-gated: production code never links these.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
+# Unix counterpart (getrusage) so the harness compiles and reports CPU/peak-RSS
+# cross-platform.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

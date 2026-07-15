@@ -66,7 +66,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Prepare Mnema CLI sidecar
-        run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
 
       # tauri.conf.json bundles apps/desktop/THIRD_PARTY_LICENSES.md, a
       # gitignored build output generated only at release time
@@ -82,3 +82,148 @@ jobs:
 
       - name: Run semantic-search descriptor drift guard
         run: cargo test -p semantic-search --locked
+
+  windows-check:
+    name: Windows compile check
+    runs-on: windows-latest
+    # Bound the job well under GitHub's 6h default so a pathological native
+    # link (the mnema test binary statically links whisper.cpp/candle/ort/
+    # Tesseract; debug-info link can OOM-thrash on the 16 GB runner) fails fast
+    # and visibly instead of burning hours. A cold full build + tests fits
+    # comfortably under this; see the dependency-debug strip in /Cargo.toml.
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+
+      - name: Set up Rust
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Set up MSVC developer environment
+        # `tesseract-rs` (the Windows `ocr` feature) only selects the single-config
+        # NMake generator — the one that honors its `CMAKE_BUILD_TYPE=Release` and
+        # emits `leptonica-1.84.1.lib` / `tesseract53.lib` — when `VSINSTALLDIR` is
+        # set (build.rs gates on it). Without a developer environment it falls back
+        # to the multi-config Visual Studio generator, which ignores
+        # `CMAKE_BUILD_TYPE` and builds the debug `…d.lib` variants that the crate's
+        # own link-search list never matches, failing the native link. This also
+        # puts `nmake`/`cl` on PATH for every subsequent compile and test step.
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'apps/desktop/src-tauri/Cargo.lock', '**/Cargo.toml', '.cargo/config.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Mnema CLI sidecar
+        # Compiles and *links* `mnema-cli`, which exercises the Windows SQLCipher
+        # build end to end: `libsqlite3-sys` (bundled-sqlcipher-vendored-openssl
+        # on Windows) builds OpenSSL from source via `openssl-src` using the
+        # runner's pre-installed Perl + NASM + MSVC, then links libcrypto
+        # statically. No system OpenSSL or OPENSSL_DIR is required. This stages a
+        # real sidecar for the Tauri externalBin resource instead of a placeholder.
+        run: bun scripts/prepare-mnema-cli-sidecar.mjs debug --locked
+
+      # tauri.conf.json bundles apps/desktop/THIRD_PARTY_LICENSES.md, a
+      # gitignored build output generated only at release time
+      # (scripts/generate-third-party-licenses.sh). The Tauri build script
+      # validates that every declared bundle resource exists even under
+      # `cargo check`/`cargo build`, so stub a placeholder here to keep the
+      # compile check fast (no cargo-about install / dep-graph resolve needed).
+      # The Windows runner's default shell is pwsh, so use Set-Content rather
+      # than the macOS job's printf.
+      - name: Stub third-party licenses resource
+        run: Set-Content -Path apps/desktop/THIRD_PARTY_LICENSES.md -Value 'Placeholder for compile-check only; real file is generated at release.'
+
+      # tauri.windows.conf.json bundles three ONNX Runtime DLLs from
+      # resources/ort/ — gitignored build outputs that scripts/prepare-ort-dylibs.mjs
+      # stages at build time (a ~268 MB GPU redist auto-download). Under
+      # `ort/load-dynamic` (=> ort-sys disable-linking) those DLLs are NEVER linked;
+      # ort loads onnxruntime.dll at runtime via libloading. The Tauri build script
+      # only validates that each declared bundle resource *exists*, and this job
+      # neither bundles nor runs ORT inference (its tests are capture/pipeline only),
+      # so stub empty placeholders to satisfy the check without the heavy download.
+      - name: Stub ONNX Runtime DLL resources
+        run: |
+          $ort = 'apps/desktop/src-tauri/resources/ort'
+          New-Item -ItemType Directory -Force $ort | Out-Null
+          foreach ($dll in 'onnxruntime.dll','onnxruntime_providers_shared.dll','onnxruntime_providers_cuda.dll') {
+            Set-Content -Path "$ort/$dll" -Value 'Placeholder for compile-check only; real DLL is staged at release by scripts/prepare-ort-dylibs.mjs.'
+          }
+
+      - name: Check Rust workspace
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Build desktop crate (exercises ML native link)
+        # `cargo check` above type-checks the workspace but never *links* the
+        # heavy native ML runtimes. The desktop `mnema` crate enables the
+        # `audio-transcription` (local-whisper + parakeet-onnx/ort) and Windows
+        # `ocr`/`media-decode` features, so building its lib forces the real
+        # Windows link of onnxruntime (ort) and whisper.cpp. (The speakrs
+        # diarization engine is macOS-only — CoreML — so it is not built or
+        # linked on Windows; on-device diarization is unavailable there.) Scoped
+        # to `--lib` (no Tauri bundle / no frontend dist) to keep CI time bounded
+        # while still validating that the native ML link succeeds on Windows.
+        # NOT covered here: producing the packaged NSIS/MSI bundle.
+        run: cargo build -p mnema --lib --locked
+
+      - name: Test platform-neutral crates
+        run: >
+          cargo test --locked
+          -p capture-runtime
+          -p capture-types
+          -p capture-vad
+          -p secret-redaction
+          -p capture-metadata
+
+      - name: Test Windows capture crates
+        # These crates carry the #[cfg(target_os = "windows")] runtime tests for
+        # the Windows recording pipeline: capture-writers (F02 AAC sink
+        # zero-sample finalize guard via a real IMFSinkWriter round-trip),
+        # capture-screen + media-decode (F07 past-EOS frame extraction, F16 RGB32
+        # stride/flip, the MF Source Reader decode round-trips), and
+        # capture-microphone (MF format/HRESULT classification). They pull only
+        # the in-box Windows media stack (MF / WGC / WASAPI) — no ML native
+        # runtimes, no capture device or display — so they run headlessly on the
+        # GitHub runner. `cargo check --all-targets` above only type-checks these
+        # tests; this step actually executes them.
+        run: >
+          cargo test --locked
+          -p capture-writers
+          -p capture-microphone
+          -p capture-screen
+          -p media-decode
+
+      - name: Test full desktop-crate and app-infra suites
+        # The FULL `mnema` (apps/desktop/src-tauri) and `app-infra` test suites
+        # (#77): the pre-existing Unix-path failures that forced the old
+        # test-name filter are fixed (fixtures build native paths; the
+        # workspace-prefix DB matching uses `MAIN_SEPARATOR`). The ML/native
+        # link these need was already built by the "Build desktop crate" step
+        # above (cargo test reuses it).
+        #
+        # No ORT_DYLIB_PATH is set here, deliberately: the desktop build loads
+        # ONNX Runtime dynamically (`ort/load-dynamic`, #137), and with the env
+        # unset the Silero VAD adapter fails fast to its non-ORT fallback
+        # (capture-vad `dynamic-ort` feature) instead of letting `ort`
+        # LoadLibrary a system `onnxruntime.dll` — the eager load that
+        # previously deadlocked `windows_system_suspend_*` on this headless
+        # runner (misdiagnosed as a WGC/WASAPI restart; the capture starts are
+        # fully hook-covered in tests). No mnema/app-infra test runs real ORT
+        # inference, so the suites need no staged DLL.
+        #
+        # Bounded so any future headless hang fails in minutes, not the job's 90.
+        timeout-minutes: 30
+        run: cargo test --locked -p mnema --lib -p app-infra

@@ -1,4 +1,8 @@
+use std::env;
+
 fn main() {
+    link_windows_common_controls_v6_manifest_dependency();
+
     // Tauri codegen + asset/permission embedding.
     tauri_build::build();
 
@@ -17,6 +21,12 @@ fn main() {
     // commands are dropped. Result: zero Homebrew dylib dependencies. Archive
     // paths are discovered at build time from the Fortran compiler — never baked
     // in, since they are toolchain/version specific (see CLAUDE.md).
+    //
+    // This Fortran/OpenBLAS static-link is macOS-only: it exists because the
+    // macOS speakrs Execution Backend (CoreML) uses OpenBLAS, whose LAPACK drags
+    // in gfortran/quadmath. Windows speakrs runs the CPU backend on
+    // `intel-mkl-static` (no OpenBLAS, no Fortran), so the `target_macos` guard
+    // keeps the Windows build free of any Fortran toolchain requirement.
     let target_macos = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos");
     if target_macos && std::env::var_os("CARGO_FEATURE_SPEAKER_ANALYSIS_SPEAKRS").is_some() {
         link_static_fortran_runtime();
@@ -70,4 +80,16 @@ fn link_static_fortran_runtime() {
     // Drop the dynamic libgfortran/libquadmath load commands openblas-src still
     // emits: their symbols are now satisfied statically, so the dylibs are unused.
     println!("cargo:rustc-link-arg=-Wl,-dead_strip_dylibs");
+}
+
+fn link_windows_common_controls_v6_manifest_dependency() {
+    if env::var("CARGO_CFG_WINDOWS").is_err() {
+        return;
+    }
+
+    println!(
+        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' \
+         name='Microsoft.Windows.Common-Controls' version='6.0.0.0' \
+         processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+    );
 }

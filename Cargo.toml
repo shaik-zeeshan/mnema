@@ -15,6 +15,20 @@ members = [
     "crates/capture-types",
     "crates/capture-vad",
     "crates/capture-writers",
+    "crates/media-decode",
     "crates/secret-redaction",
 ]
 resolver = "2"
+
+# Strip debug info from third-party dependencies in debug/test builds. The
+# desktop `mnema` test binary statically links the entire native stack
+# (whisper.cpp, candle, ONNX Runtime/ort glue, Tesseract + Leptonica OCR,
+# media-decode); with the default `debug = true` the Windows linker has to
+# merge and emit a PDB spanning all of that, which made the CI `cargo test`
+# link step take well over an hour and risk OOM-thrash on the 16 GB runner.
+# Dropping dependency debug info shrinks that link dramatically (and speeds
+# the dep compile too). Workspace crates keep full debug info, so backtraces
+# into our own code are unaffected. `"*"` targets dependencies only, never the
+# workspace members.
+[profile.dev.package."*"]
+debug = false

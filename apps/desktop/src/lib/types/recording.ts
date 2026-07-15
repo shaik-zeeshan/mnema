@@ -739,6 +739,77 @@ export interface SpeakerAnalysisModelDownloadProgress {
 	message: string | null;
 }
 
+// --- GPU Acceleration Pack (Windows CUDA Execution Backend, #137 / ADR 0005) ---
+//
+// The opt-in NVIDIA CUDA 12 + cuDNN 9 redistributable pack. Identical download
+// machinery to the speaker model above, but it provisions HARDWARE (the CUDA
+// backend), not identity — it is a single shared unit, gated by a license-consent
+// flag, and meaningful only on Windows. Mirrors the Rust DTOs in
+// `gpu_acceleration_pack.rs` (serde camelCase).
+
+export type GpuAccelerationPackDownloadStatus =
+	| "starting"
+	| "downloading"
+	| "installing"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface GpuAccelerationPackInstalledVersions {
+	cudaVersion: string;
+	cudnnVersion: string;
+	ortVersion: string;
+	installedDlls: string[];
+}
+
+export interface GpuAccelerationPackLicenseUrls {
+	cuda: string;
+	cudnn: string;
+}
+
+export interface GpuAccelerationPackStatus {
+	packInstalled: boolean;
+	installedVersions: GpuAccelerationPackInstalledVersions | null;
+	requiredCudaVersion: string;
+	requiredCudnnVersion: string;
+	totalBytes: number;
+	licenseUrls: GpuAccelerationPackLicenseUrls;
+	/** The current in-flight download phase, or null when idle. */
+	downloadState: GpuAccelerationPackDownloadStatus | null;
+	packDirectory: string;
+}
+
+export interface GpuAccelerationPackDownloadProgress {
+	status: GpuAccelerationPackDownloadStatus;
+	downloadedBytes: number;
+	totalBytes: number | null;
+	/** The NVIDIA component currently downloading/installing (e.g. "cudnn"). */
+	component: string | null;
+	message: string | null;
+}
+
+// --- GPU Acceleration execution state (Windows CUDA backend, #137 / ADR 0005) ---
+//
+// The Settings panel's read model: GPU detection + pack-install + the live
+// "Use GPU acceleration" (Force-CPU) override + the last job's backend outcome.
+// Mirrors the Rust `GpuAccelerationStateDto` (`gpu_acceleration.rs`, serde
+// camelCase). Windows-only in the UI; on macOS the panel is never rendered and
+// `gpuDetected` is always false. Distinct from `GpuAccelerationPackStatus` above:
+// that describes the downloadable HARDWARE pack, this describes how the backend is
+// CURRENTLY behaving (detected / installed / on / last-ran / fell-back).
+export interface GpuAccelerationState {
+	/** An NVIDIA GPU exists (NVML probe). Drives the in-Settings offer. */
+	gpuDetected: boolean;
+	/** The GPU Acceleration Pack is installed (CUDA + cuDNN redist present). */
+	packInstalled: boolean;
+	/** The live "Use GPU acceleration" toggle (default on). Off ⇒ the next job runs on CPU. */
+	useGpu: boolean;
+	/** The Execution Backend that ran the last completed job ("cpu" | "cuda" | "coreml"). */
+	lastExecutionMode: string | null;
+	/** Why CUDA fell back to CPU on the last job, if it did — the "why isn't my GPU used?" answer. */
+	lastCudaFallbackReason: string | null;
+}
+
 export interface AudioTranscriptionModelStatusResponse {
 	modelsDirectory: string;
 	providers: AudioTranscriptionProviderStatus[];

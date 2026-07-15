@@ -9,6 +9,8 @@ Root entry point: [CONTEXT-MAP.md](../../CONTEXT-MAP.md).
 - [ADR 0001: Speaker Model Presets and Per-Preset Voiceprint Scope](docs/adr/0001-speaker-model-presets-and-voiceprint-scope.md) — superseded by 0003
 - [ADR 0002: Adopt speakrs as a Second On-Device Diarization Provider, Trending to Replacement](docs/adr/0002-adopt-speakrs-as-second-on-device-diarization-provider.md) — its replacement path is now realized by 0003
 - [ADR 0003: Remove sherpa, Make speakrs the Sole On-Device Diarization Provider](docs/adr/0003-remove-sherpa-make-speakrs-sole-diarization-provider.md)
+- [ADR 0004: Windows speaker-analysis Runs speakrs on a Derived Execution Backend; CPU Ships First, CUDA Deferred](docs/adr/0004-windows-speakrs-derived-execution-backend-cpu-first.md)
+- [ADR 0005: Windows CUDA Execution Backend — in-app NVIDIA-redist provisioning, Windows-scoped dynamic ORT, init-only fallback](docs/adr/0005-windows-cuda-backend-in-app-provisioning-and-dynamic-ort.md)
 
 ## Language
 
@@ -32,6 +34,10 @@ _Avoid_: raw segmentation/embedding pickers, model file names, arbitrary user-bu
 The set of enrolled **Person Profile** embeddings that are comparable to each other, scoped to one **Speaker Model Preset**'s `model_id`; recognition only matches within the active preset's space.
 _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 
+**Execution Backend**:
+The hardware acceleration path (CoreML, CPU, or CUDA) a **Speaker Analysis Job** runs a **Speaker Model Preset** on. Orthogonal to model identity: it never changes `model_id`, **Voiceprint Space**, or **Speaker Continuity** keying. A backend is *purely* a hardware path — every backend runs the same-precision pipeline, so a backend never trades speaker-turn boundary precision for speed; a faster-but-coarser variant is a different, future axis, not a backend. Recorded only in result provenance (`executionMode`).
+_Avoid_: CPU/GPU model, execution-mode-as-preset, backend-scoped voiceprints, GPU model variant, fast/low-precision variant as a backend
+
 ## Relationships
 
 - **Retention Cleanup** preserves **Person Profile** values even when derived speaker rows are deleted.
@@ -42,7 +48,7 @@ _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 - Successful **Speaker Analysis Job** diagnostics live in result provenance.
 - Failed **Speaker Analysis Job** diagnostics live in `processing_jobs.last_error`.
 - **Speaker Analysis Job** execution has a dedicated single-concurrency processing worker so speaker work does not block OCR/frame-batch or audio-transcription lanes.
-- Speaker analysis has a single on-device diarization provider, **speakrs** (pure-Rust pyannote-community-1 segmentation + WeSpeaker embedding + VBx clustering on CoreML; model id `pyannote-community-1-wespeaker`). The helper runs subprocess-per-job; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design. To bound the transient CoreML memory peak, speakrs runs segments at or below a fixed internal safe-chunk window (180s, `SPEAKRS_SAFE_CHUNK_SECONDS`) whole, and diarizes longer ones in sequential chunks no larger than that window, then stitches the per-chunk speaker clusters back into segment-wide identities by centroid cosine similarity (`SPEAKRS_STITCH_SIMILARITY` = 0.6). Whole-segment diarization spikes a large transient CoreML buffer past ~3min; chunking caps that peak (and is faster) while staying DER-neutral on the VoxConverse bench — ADR 0003's amendment documents this and marks the old "no chunking" rationale disproven by measurement. The window is a fixed internal constant, not a tunable: the dispatch path keeps a generic `provider` axis and the helper accepts a `--safe-chunk-ms` flag, but speakrs accepts-and-ignores it; it existed for a provider with its own per-call ceiling.
+- Speaker analysis has a single on-device diarization provider, **speakrs** (pure-Rust pyannote-community-1 segmentation + WeSpeaker embedding + VBx clustering, run on a derived **Execution Backend** — CoreML on macOS, CPU on Windows; model id `pyannote-community-1-wespeaker`). The helper runs subprocess-per-job; no persistent helper daemon, in-process model reuse, or generic audio-heavy worker abstraction is part of the current design. To bound the transient CoreML memory peak, speakrs runs segments at or below a fixed internal safe-chunk window (180s, `SPEAKRS_SAFE_CHUNK_SECONDS`) whole, and diarizes longer ones in sequential chunks no larger than that window, then stitches the per-chunk speaker clusters back into segment-wide identities by centroid cosine similarity (`SPEAKRS_STITCH_SIMILARITY` = 0.6). Whole-segment diarization spikes a large transient CoreML buffer past ~3min; chunking caps that peak (and is faster) while staying DER-neutral on the VoxConverse bench — ADR 0003's amendment documents this and marks the old "no chunking" rationale disproven by measurement. The window is a fixed internal constant, not a tunable: the dispatch path keeps a generic `provider` axis and the helper accepts a `--safe-chunk-ms` flag, but speakrs accepts-and-ignores it; it existed for a provider with its own per-call ceiling.
 - Each **Speaker Analysis Job** freezes its helper timeout in payload option `helperTimeoutSeconds` when admitted, so later settings changes affect only future jobs.
 - The speaker-analysis helper timeout defaults to 600 seconds, clamps to 60-3600 seconds, and timeout failures kill/reap the helper before the job follows the normal failed processing path.
 - **Speaker Turn Alignment** treats **Audio Transcription** words or segments as the source timeline and assigns them to the best speaker turn annotation.
@@ -52,9 +58,13 @@ _Avoid_: global voiceprints, cross-model recognition, embedding-only scope
 - VAD-based audio cutting or trimming is outside **Speaker Analysis Job** quality policy; audio segment production remains owned by the recording flow.
 - Speaker turns may decorate an **Audio Transcription Span** when available, but they do not define the searchable audio unit.
 - A **Speaker Model Preset** maps to exactly one manifest `model_id` (one combined segmentation+embedding artifact); presets are curated, not assembled by users.
+- A **Speaker Model Preset**'s `model_id` is platform-stable; only its on-disk artifact varies by platform (CoreML `.mlmodelc` on macOS, `.onnx` on Windows), so one **Voiceprint Space** stays comparable across **Execution Backend** values.
 - Each **Speaker Model Preset** defines its own **Voiceprint Space**; switching presets changes both **Speaker Continuity** keying and which enrolled people are recognizable.
 - Switching **Speaker Model Preset** does not delete prior enrollments: **Person Profile** embeddings persist per `model_id`, so an earlier preset's recognition returns if the user switches back.
 - Changing **Speaker Model Preset** warns (when enrolled people exist) but does not block, auto-migrate voiceprints, or re-run diarization on past recordings; re-enrollment is organic re-tagging under the new preset.
+- **Execution Backend** is orthogonal to identity: CoreML, CPU, and CUDA produce results for the same **Speaker Model Preset**, share one **Voiceprint Space**, and key **Speaker Continuity** identically; a single **Speaker Analysis Job** may fall back from CUDA to CPU without crossing identity.
+- **Execution Backend** is selected automatically by the helper at execution time — not frozen at admission like provider/model/timeout — and is observable only in provenance (`executionMode`). It is not a model-list entry. The one user lever is a Windows-only *Use GPU acceleration* override that caps selection at CPU when off (the identity-safe Force-CPU override: CPU and CUDA share `model_id`, **Voiceprint Space**, and **Speaker Continuity** keying, so it changes speed, never identity). It chooses *whether* the GPU backend may be used, never *which* model or identity, and is read live at execution time. macOS always runs CoreML with no such override.
+- A CUDA-init failure that falls back to CPU is a *successful* **Speaker Analysis Job** (it ran on CPU); the fallback is observable in provenance (the actual `executionMode` plus a recorded requested-backend and reason), never surfaced as a job failure. A CUDA failure *after* the backend successfully initialized is a normal **Speaker Analysis Job** failure, not a silent CPU re-run.
 
 ## Example Dialogue
 

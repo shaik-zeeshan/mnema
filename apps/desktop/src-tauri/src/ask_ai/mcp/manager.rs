@@ -1030,6 +1030,12 @@ done"#,
     /// The retryable path end to end: a transport-write failure (request never
     /// transmitted) must redial exactly once and succeed on the fresh
     /// connection. The counter file proves the second connect happened.
+    ///
+    /// macOS-only: dials a real `sh -c` stdio fixture through `connect()`, whose
+    /// keychain secret read errors on Windows (the MCP secret store is macOS
+    /// Keychain only — SUPPORTS.md marks the stdio connector rows "Windows
+    /// unaddressed").
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn transport_send_failure_redials_once() {
         let dir = fixture_dir("mnema-mcp-retry-test");
@@ -1107,6 +1113,10 @@ done"#,
     /// The budget is injected small: a real [`CALL_TOOL_BUDGET`] would take a
     /// minute, and tokio virtual time cannot bound a real child process
     /// (auto-advance races past real I/O, spuriously elapsing the connect too).
+    ///
+    /// macOS-only: dials a real `sh -c` stdio fixture through `connect()`, whose
+    /// keychain secret read errors on Windows (SUPPORTS.md: "Windows unaddressed").
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn hung_tool_call_is_bounded_not_retried_and_invalidates_the_slot() {
         let dir = fixture_dir("mnema-mcp-stall-test");
@@ -1270,6 +1280,10 @@ done"#;
     /// Because `content` serializes before `isError`, truncating the serialized
     /// result string drops the flag and the (truncated) error content reaches the
     /// model as an apparent success — poisoning the turn.
+    ///
+    /// macOS-only: dials a real `sh -c` stdio fixture through `connect()`, whose
+    /// keychain secret read errors on Windows (SUPPORTS.md: "Windows unaddressed").
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn large_in_band_error_result_keeps_its_error_signal() {
         let dir = fixture_dir("mnema-mcp-inband-error");

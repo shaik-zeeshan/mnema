@@ -20,6 +20,8 @@ import {
   defaultOcrModelIdForProvider,
   defaultOcrLanguageForProvider,
   defaultTranscriptionModelIdForProvider,
+  isSelectableOcrProvider as ocrProviderInBackendStatus,
+  isSelectableAudioTranscriptionProvider as transcriptionProviderInBackendStatus,
   shouldConfirmDeepgramSwitch,
 } from "./models-format";
 import type { RecordingStore } from "./recording.svelte";
@@ -34,22 +36,18 @@ import type {
 
 type ModelStatusStore = ReturnType<typeof createModelStatusStore>;
 
-const SELECTABLE_OCR_PROVIDERS: readonly OcrProvider[] = ["apple_vision", "tesseract"];
-const SELECTABLE_TRANSCRIPTION_PROVIDERS: readonly AudioTranscriptionProvider[] = [
-  "local_whisper",
-  "apple_speech_on_device",
-  "parakeet",
-  "deepgram",
-];
-
 export function createProcessingModelsView(rec: RecordingStore, models: ModelStatusStore) {
+  // The selectable set is whatever the backend status response returns — it omits
+  // platform-locked providers server-side, so there is no hardcoded list (and no
+  // `if windows`) here. Reading `models.*ModelStatus` inside these closures keeps
+  // the option derivations reactive to the live status.
   function isSelectableOcrProvider(value: string | null | undefined): value is OcrProvider {
-    return SELECTABLE_OCR_PROVIDERS.includes(value as OcrProvider);
+    return ocrProviderInBackendStatus(value, models.ocrModelStatus);
   }
   function isSelectableTranscriptionProvider(
     value: string | null | undefined,
   ): value is AudioTranscriptionProvider {
-    return SELECTABLE_TRANSCRIPTION_PROVIDERS.includes(value as AudioTranscriptionProvider);
+    return transcriptionProviderInBackendStatus(value, models.transcriptionModelStatus);
   }
 
   // ─── OCR option derivations ────────────────────────────────────────────────
@@ -113,13 +111,15 @@ export function createProcessingModelsView(rec: RecordingStore, models: ModelSta
 
   // ─── Transcription option derivations ──────────────────────────────────────
   const transcriptionProviderOptions = $derived(
-    (models.transcriptionModelStatus?.providers ?? []).map((provider) => ({
-      value: provider.provider,
-      label: provider.displayName,
-      description: provider.models.some((model) => model.available)
-        ? "At least one model is available"
-        : "No available model detected",
-    })),
+    (models.transcriptionModelStatus?.providers ?? [])
+      .filter((provider) => isSelectableTranscriptionProvider(provider.provider))
+      .map((provider) => ({
+        value: provider.provider,
+        label: provider.displayName,
+        description: provider.models.some((model) => model.available)
+          ? "At least one model is available"
+          : "No available model detected",
+      })),
   );
   const selectedTranscriptionProviderStatus = $derived(
     models.transcriptionModelStatus?.providers.find((provider) => provider.provider === rec.draftTranscriptionProvider) ?? null,

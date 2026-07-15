@@ -6,6 +6,7 @@
   import Ocr from "./Ocr.svelte";
   import Transcription from "./Transcription.svelte";
   import Speakers from "./Speakers.svelte";
+  import GpuAcceleration from "./GpuAcceleration.svelte";
   import SemanticSearch from "./SemanticSearch.svelte";
 </script>
 
@@ -17,5 +18,8 @@
   <Ocr />
   <Transcription />
   <Speakers />
+  <!-- Windows-only: self-gates on `detectKeyboardPlatform()`, rendering nothing on
+       macOS so the Settings experience there is unchanged (rail also hides it). -->
+  <GpuAcceleration />
   <SemanticSearch />
 </div>

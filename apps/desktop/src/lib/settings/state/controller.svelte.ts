@@ -73,6 +73,7 @@ import type {
   AiEngineRef,
   McpServerConfig,
   BrowserUrlMode,
+  GpuAccelerationPackDownloadProgress,
   SemanticSearchModelStatus,
 } from "$lib/types";
 
@@ -107,6 +108,10 @@ export class SettingsController {
     loadAiRuntimeStatus: () => void this.aiRuntime.loadAiRuntimeStatus(),
     loadAskAiAvailability: () => void this.askAi.loadAskAiAvailability(),
     gates: () => ({ resolutionSupportPendingForNonOriginal: this.resolutionSupportPendingForNonOriginal }),
+    // The OCR default resolves to the first backend-selectable provider; feed the
+    // recording store the live model-status response (lazy — `this.models` is
+    // initialized just below, and these closures only run after mount).
+    ocrModelStatus: () => this.models.ocrModelStatus,
     // Re-seed the semantic-search picker once settings land — closes the init
     // race where the picker status resolved before recording settings, leaving
     // the picker blank while a model is actually persisted. Dirty-guarded.
@@ -292,7 +297,7 @@ export class SettingsController {
     if (removed && this.isCloudAiProviderKind(removed.kind)) {
       const label = this.aiProviderInstanceLabel(removed);
       const confirmed = await confirm(
-        `Removing “${label}” deletes its API key from the macOS keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
+        `Removing “${label}” deletes its API key from the system keychain right away. Any AI feature using this provider will stop working until you reconnect it.`,
         {
           title: "Remove this provider?",
           kind: "warning",
@@ -503,6 +508,20 @@ export class SettingsController {
   get selectedSpeakerDownloadRunning() { return this.processing.selectedSpeakerDownloadRunning; }
   get selectedSpeakerDownloadPercent() { return this.processing.selectedSpeakerDownloadPercent; }
   chooseSpeakerModel(value: string) { return this.processing.chooseSpeakerModel(value); }
+
+  // GPU Acceleration Pack (Windows CUDA backend, #137). Delegates straight to the
+  // model-status store (no draft-derived state) — Slice 5's panel consumes these.
+  loadGpuPackStatus = () => this.models.loadGpuPackStatus();
+  startGpuPackDownload = (acceptedLicense: boolean) => this.models.startGpuPackDownload(acceptedLicense);
+  cancelGpuPackDownload = () => this.models.cancelGpuPackDownload();
+  deleteGpuPack = () => this.models.deleteGpuPack();
+  handleGpuPackDownloadProgress = (progress: GpuAccelerationPackDownloadProgress) =>
+    this.models.handleGpuPackDownloadProgress(progress);
+
+  // GPU Acceleration execution state (live Force-CPU override + detection/outcome,
+  // #137 / Slice 5). The Windows-only panel reads `models.gpuAccelerationState`.
+  loadGpuAccelerationState = () => this.models.loadGpuAccelerationState();
+  setUseGpuAcceleration = (useGpu: boolean) => this.models.setUseGpuAcceleration(useGpu);
 
   loadSemanticSearchSupportedModels = () => this.models.loadSemanticSearchSupportedModels();
   startSemanticSearchModelDownload = (model: SemanticSearchModelStatus) =>

@@ -62,6 +62,13 @@ mod tests {
     /// presence check is the entire "authorized?" signal Settings reads. Uses the
     /// same `MNEMA_MCP_SERVER_SECRET_DIR` file-backed fallback the store's own
     /// tests use (no real keychain in CI).
+    ///
+    /// macOS-only: that env fallback is `cfg(test)` inside app-infra, so it is
+    /// compiled out here (app-infra is a non-test dependency of this crate's
+    /// tests) and the store falls through to the platform keychain — which is
+    /// macOS-only (SUPPORTS.md: "Windows unaddressed"; Windows errors
+    /// "unsupported on this platform").
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn token_set_round_trips_and_reports_authorized() {
         let dir = std::env::temp_dir().join(format!(

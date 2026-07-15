@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "dev": "turbo run dev --filter=desktop",
-    "dev:sandbox": "./scripts/dev-app.sh",
+    "dev:sandbox": "bun scripts/dev-app.mjs",
     "build": "turbo run build --cache=local:r",
     "check": "turbo run check --cache=local:r",
     "tauri": "turbo run tauri --filter=desktop --",
@@ -17,6 +17,7 @@
     "build:web": "turbo run build --filter=web",
     "check:web": "turbo run check --filter=web",
     "build:macos-local-sign": "./scripts/build-macos-local-sign.sh",
+    "build:windows-local": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/build-windows-local.ps1",
     "release": "./scripts/release.sh"
   },
   "devDependencies": {

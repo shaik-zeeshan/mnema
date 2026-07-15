@@ -226,7 +226,11 @@ impl CapturedFrameEquivalenceScope {
     pub fn from_frame_path(file_path: &str) -> Self {
         HiddenSegmentWorkspacePaths::from_frame_artifact_path(Path::new(file_path))
             .map(|paths| Self::HiddenSegmentWorkspace {
-                frames_dir_prefix: format!("{}/", paths.frames_dir),
+                frames_dir_prefix: format!(
+                    "{}{}",
+                    paths.frames_dir,
+                    std::path::MAIN_SEPARATOR
+                ),
             })
             .unwrap_or(Self::Session)
     }

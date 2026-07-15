@@ -2,6 +2,9 @@ mod activity;
 #[cfg(target_os = "macos")]
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
+#[cfg(target_os = "windows")]
+#[path = "native_capture_browser_url_uia.rs"]
+pub(crate) mod browser_url_uia;
 #[path = "native_capture_debug_log.rs"]
 pub(crate) mod debug_log;
 pub(crate) mod disk_space;
@@ -10,6 +13,9 @@ pub(crate) mod inactivity;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
+#[cfg(target_os = "windows")]
+#[path = "native_capture_foreground_listener.rs"]
+pub(crate) mod foreground_listener;
 mod microphone;
 #[path = "native_capture_output.rs"]
 pub(crate) mod output;
@@ -22,6 +28,11 @@ pub(crate) mod settings;
 pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
+pub(crate) mod windows_browser_url_smoke;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_inactivity_smoke;
+pub(crate) mod windows_smoke_invariants;
+pub(crate) mod windows_transient_liveness_smoke;
 
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -48,7 +59,7 @@ use settings::{
     initialize_recording_settings_state_from_disk, RecordingSettingsDomainPatch,
 };
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::path::Path;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -56,7 +67,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(target_os = "macos")]
 use std::time::Duration;
-use tauri::{path::BaseDirectory, Emitter, Manager};
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+use tauri::path::BaseDirectory;
+use tauri::{Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 pub(crate) use debug_log::install_panic_hook;
@@ -84,7 +97,7 @@ pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationG
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct SystemWakeNotifierState;
 
 // Holds the registration for the Core Graphics display-reconfiguration callback
 // used as the primary, polling-free wake-recovery signal (dark/deep-idle wakes
@@ -107,7 +120,7 @@ pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGua
 
 #[cfg(not(target_os = "macos"))]
 #[derive(Default)]
-pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+pub struct MetadataNotifierState;
 
 #[cfg(target_os = "macos")]
 impl MetadataNotifierState {
@@ -116,13 +129,7 @@ impl MetadataNotifierState {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-impl MetadataNotifierState {
-    pub(crate) fn replace(&self, guards: Vec<()>) {
-        *self.0.lock().expect("metadata notifier state poisoned") = guards;
-    }
-}
-
+#[cfg(target_os = "macos")]
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
 #[cfg(target_os = "macos")]
 // ScreenCaptureKit can report no displays for several seconds after macOS
@@ -140,17 +147,18 @@ const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcripti
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
+#[cfg(target_os = "macos")]
 const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
 const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const APP_ICON_CACHE_DIR: &str = "app-icons";
 // Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
 // larger source keeps the icon crisp on Retina (2x → ~48 device px) by always
 // downscaling instead of upscaling a small bitmap. Baked into the cache
 // filename so bumping this size supersedes previously cached lower-res PNGs.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -158,6 +166,7 @@ const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AppNotificationAction {
     OpenSettingsTab { tab: String },
+    OpenCapturePrivacySettings { kind: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -355,7 +364,36 @@ pub async fn resolve_app_icons(
         Ok(icons)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
+    {
+        // Each requested identifier is a canonical executable path (ADR 0043 stores
+        // it opaquely in `app_bundle_id`). Resolve each to a cached PNG extracted
+        // from the exe's Win32 icon, reusing the same app-owned icon cache + asset
+        // scope as macOS. Unresolvable identifiers stay `None`; the frontend renders
+        // its letter fallback.
+        let cache_dir = match ensure_app_icon_cache_dir(&app_handle) {
+            Ok(cache_dir) => Some(cache_dir),
+            Err(error) => {
+                debug_log::log_warn(format!(
+                    "failed to prepare Windows app icon cache directory: {error}"
+                ));
+                None
+            }
+        };
+
+        let icons = requested_bundle_ids
+            .into_iter()
+            .map(|identifier| AppIconResolution {
+                icon_path: cache_dir
+                    .as_deref()
+                    .and_then(|cache_dir| resolve_windows_app_icon(cache_dir, &identifier)),
+                bundle_id: identifier,
+            })
+            .collect();
+        Ok(icons)
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
         let _ = app_handle;
         Ok(requested_bundle_ids
@@ -446,6 +484,7 @@ fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
     candidates
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn mark_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_bundle_ids: &BTreeSet<String>,
@@ -457,6 +496,7 @@ fn mark_running_privacy_app_candidates(
     }
 }
 
+#[cfg(any(test, target_os = "macos"))]
 fn merge_running_privacy_app_candidates(
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
     running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
@@ -642,7 +682,7 @@ fn macos_application_bundle_path_for_bundle_id(bundle_id: &str) -> Option<PathBu
     .flatten()
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn ensure_app_icon_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     let cache_dir = app_handle
         .path()
@@ -691,7 +731,7 @@ fn materialize_app_candidate_icons(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
     let file_stem = sanitize_app_icon_file_stem(bundle_id);
     if file_stem.is_empty() {
@@ -701,7 +741,7 @@ fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
     Some(cache_dir.join(format!("{file_stem}@{APP_ICON_RENDER_POINT_SIZE}.png")))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn sanitize_app_icon_file_stem(bundle_id: &str) -> String {
     bundle_id
         .trim()
@@ -799,6 +839,190 @@ fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<()
     })
 }
 
+/// Resolve one Windows identifier (a canonical executable path, per ADR 0043) to a
+/// cached icon PNG. Mirrors the macOS `materialize_app_candidate_icons` cache-first
+/// behaviour: reuse a non-empty cached PNG when present, otherwise extract the
+/// exe's Win32 icon into the cache. Returns the cached path on success, `None` when
+/// no icon resolves (the frontend then renders its letter fallback).
+#[cfg(target_os = "windows")]
+fn resolve_windows_app_icon(cache_dir: &Path, identifier: &str) -> Option<String> {
+    let icon_path = app_icon_cache_path(cache_dir, identifier)?;
+    let cached_icon_available = icon_path
+        .metadata()
+        .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
+    if cached_icon_available
+        || write_windows_app_icon_png(Path::new(identifier), &icon_path).is_ok()
+    {
+        Some(icon_path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract the large (32×32) Win32 shell icon for `exe_path` and encode it to a PNG
+/// at `output_path`. Win32 executables only — packaged/UWP logo assets are out of
+/// scope for v1 (they resolve through the shell's generic exe icon at worst).
+///
+/// Returns `Err` (never panics) on any failure so the caller can fall back to the
+/// letter placeholder. Every GDI/USER handle acquired here is released before
+/// returning.
+#[cfg(target_os = "windows")]
+fn write_windows_app_icon_png(exe_path: &Path, output_path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::{SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+    use windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon;
+
+    let wide_path: Vec<u16> = exe_path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `wide_path` is a NUL-terminated wide string. `SHGetFileInfoW` fills a
+    // zeroed `SHFILEINFOW` and, on success with `SHGFI_ICON`, hands back an `HICON`
+    // we own and unconditionally `DestroyIcon` below. Pixel extraction happens in
+    // `windows_icon_to_rgba`, which frees the bitmaps it derives from the icon.
+    let image = unsafe {
+        let mut file_info: SHFILEINFOW = std::mem::zeroed();
+        let result = SHGetFileInfoW(
+            wide_path.as_ptr(),
+            0,
+            &mut file_info,
+            std::mem::size_of::<SHFILEINFOW>() as u32,
+            SHGFI_ICON | SHGFI_LARGEICON,
+        );
+        if result == 0 || file_info.hIcon.is_null() {
+            return Err(format!(
+                "failed to load Windows icon for {}",
+                exe_path.display()
+            ));
+        }
+
+        let extracted = windows_icon_to_rgba(file_info.hIcon);
+        DestroyIcon(file_info.hIcon);
+        extracted?
+    };
+
+    image.save(output_path).map_err(|error| {
+        format!(
+            "failed to write Windows app icon {}: {error}",
+            output_path.display()
+        )
+    })
+}
+
+/// Convert an `HICON` into an [`image::RgbaImage`]. Reads the icon's color bitmap
+/// as a top-down 32bpp DIB (`GetDIBits`), converts the BGRA the GDI returns into
+/// the RGBA `image` expects, and forces opaque alpha when the icon comes back with
+/// an all-zero alpha channel (some icons carry no per-pixel alpha and would
+/// otherwise render fully transparent).
+///
+/// # Safety
+/// `hicon` must be a valid icon handle. This reads the icon's bitmaps and frees
+/// both (`hbmColor`/`hbmMask`) before returning; it does NOT destroy `hicon` (the
+/// caller owns that).
+#[cfg(target_os = "windows")]
+unsafe fn windows_icon_to_rgba(
+    hicon: windows_sys::Win32::UI::WindowsAndMessaging::HICON,
+) -> Result<image::RgbaImage, String> {
+    use windows_sys::Win32::Graphics::Gdi::DeleteObject;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetIconInfo, ICONINFO};
+
+    let mut icon_info: ICONINFO = std::mem::zeroed();
+    if GetIconInfo(hicon, &mut icon_info) == 0 {
+        return Err("failed to read Windows icon info".to_string());
+    }
+    let hbm_color = icon_info.hbmColor;
+    let hbm_mask = icon_info.hbmMask;
+
+    // Extract into a Result first, then free both bitmaps on every path.
+    let extracted = windows_color_bitmap_to_rgba(hbm_color);
+
+    if !hbm_color.is_null() {
+        DeleteObject(hbm_color);
+    }
+    if !hbm_mask.is_null() {
+        DeleteObject(hbm_mask);
+    }
+    extracted
+}
+
+/// Copy a 32bpp top-down DIB out of an icon's color `HBITMAP` and return it as an
+/// RGBA image. Splitting this out of [`windows_icon_to_rgba`] keeps bitmap-handle
+/// ownership in the caller: this borrows `hbm_color` and never frees it.
+///
+/// # Safety
+/// `hbm_color` must be a valid color bitmap handle from `GetIconInfo`.
+#[cfg(target_os = "windows")]
+unsafe fn windows_color_bitmap_to_rgba(
+    hbm_color: windows_sys::Win32::Graphics::Gdi::HBITMAP,
+) -> Result<image::RgbaImage, String> {
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
+        DIB_RGB_COLORS,
+    };
+
+    if hbm_color.is_null() {
+        return Err("Windows icon had no color bitmap".to_string());
+    }
+
+    let mut bitmap: BITMAP = std::mem::zeroed();
+    let measured = GetObjectW(
+        hbm_color,
+        std::mem::size_of::<BITMAP>() as i32,
+        (&mut bitmap as *mut BITMAP).cast(),
+    );
+    if measured == 0 || bitmap.bmWidth <= 0 || bitmap.bmHeight <= 0 {
+        return Err("failed to measure Windows icon bitmap".to_string());
+    }
+    let width = bitmap.bmWidth as u32;
+    let height = bitmap.bmHeight as u32;
+
+    // Negative height requests a top-down DIB so row 0 is the top scanline.
+    let mut bmi: BITMAPINFO = std::mem::zeroed();
+    bmi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+    bmi.bmiHeader.biWidth = bitmap.bmWidth;
+    bmi.bmiHeader.biHeight = -bitmap.bmHeight;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB as u32;
+
+    let mut buffer: Vec<u8> = vec![0u8; (width as usize) * (height as usize) * 4];
+
+    let hdc = GetDC(std::ptr::null_mut());
+    if hdc.is_null() {
+        return Err("failed to acquire device context for Windows icon".to_string());
+    }
+    let scanlines = GetDIBits(
+        hdc,
+        hbm_color,
+        0,
+        height,
+        buffer.as_mut_ptr().cast(),
+        &mut bmi,
+        DIB_RGB_COLORS,
+    );
+    ReleaseDC(std::ptr::null_mut(), hdc);
+
+    if scanlines == 0 {
+        return Err("failed to copy Windows icon pixels".to_string());
+    }
+
+    // GDI returns BGRA; the `image` crate wants RGBA. Some icons come back with an
+    // all-zero alpha channel — treat those as opaque so they are not rendered fully
+    // transparent.
+    let has_alpha = buffer.iter().skip(3).step_by(4).any(|&alpha| alpha != 0);
+    for pixel in buffer.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+        if !has_alpha {
+            pixel[3] = 255;
+        }
+    }
+
+    image::RgbaImage::from_raw(width, height, buffer)
+        .ok_or_else(|| "failed to build Windows icon image buffer".to_string())
+}
+
 #[tauri::command]
 pub async fn check_browser_url_support(
     request: CheckBrowserUrlSupportRequest,
@@ -839,6 +1063,7 @@ fn browser_url_metadata_source(
     }
 }
 
+#[cfg(target_os = "macos")]
 fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
 }
@@ -888,6 +1113,7 @@ fn push_app_notification(
     emit_app_notifications_changed(app_handle, &notifications);
 }
 
+#[cfg(target_os = "macos")]
 pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
     let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
         debug_log::log_warn(
@@ -1322,6 +1548,146 @@ pub fn maybe_push_ocr_unavailable_startup_warning(app_handle: &tauri::AppHandle)
     );
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_lock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows session lock");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_lock(),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session lock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_session_unlock_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows session unlock",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_session_unlock(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows session unlock",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_suspend_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows system suspend",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_suspend(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system suspend",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_system_resume_from_app_handle(app_handle: &tauri::AppHandle) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn("native capture state unavailable while handling Windows system resume");
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => lifecycle.handle_windows_system_resume(app_handle),
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows system resume",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+/// Forward a decoded console display-power change (`GUID_CONSOLE_DISPLAY_STATE`) to
+/// the capture lifecycle (Stream 3 — DPMS-off sleep policy, ADR 0023). Mirrors the
+/// suspend/resume twins above: lock `NativeCaptureState`, dispatch to the lifecycle
+/// display-off (pause) / display-on (guarded resume) handler, and on a changed
+/// session emit the update + refresh the status bar.
+///
+/// `display_on == false` means the console display slept (pause for `DisplayAsleep`);
+/// `true` means it woke (guarded resume — only when the pause reason is `DisplayAsleep`
+/// and the session is not locked or suspended).
+#[cfg(target_os = "windows")]
+pub(crate) fn handle_windows_display_power_changed_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    display_on: bool,
+) {
+    let Some(state) = app_handle.try_state::<NativeCaptureState>() else {
+        debug_log::log_warn(
+            "native capture state unavailable while handling Windows display power change",
+        );
+        return;
+    };
+
+    let session = match state.lock() {
+        Ok(mut lifecycle) => {
+            if display_on {
+                lifecycle.handle_windows_display_awake(app_handle)
+            } else {
+                lifecycle.handle_windows_display_asleep()
+            }
+        }
+        Err(_) => {
+            debug_log::log_warn(
+                "native capture state poisoned while handling Windows display power change",
+            );
+            return;
+        }
+    };
+
+    if let Some(session) = session {
+        emit_native_capture_session_changed(app_handle, &session);
+        crate::status_bar::refresh(app_handle);
+    }
+}
+
+
 #[cfg(target_os = "macos")]
 fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
     let state = app_handle.state::<NativeCaptureState>();
@@ -1641,6 +2007,8 @@ pub fn start_display_reconfiguration_notifier(_app_handle: tauri::AppHandle) {}
 struct CaptureSupportSnapshot {
     platform: String,
     native_capture_supported: bool,
+    supports_non_original_resolution: bool,
+    system_audio_requires_screen: bool,
     supported_sources: CaptureSources,
 }
 
@@ -1926,6 +2294,8 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     let snapshot = CaptureSupportSnapshot {
         platform: response.platform.clone(),
         native_capture_supported: response.native_capture_supported,
+        supports_non_original_resolution: response.supports_non_original_resolution,
+        system_audio_requires_screen: response.system_audio_requires_screen,
         supported_sources: response.supported_sources.clone(),
     };
     let mut last_snapshot = capture_support_log_snapshot_state()
@@ -1939,9 +2309,11 @@ fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
     *last_snapshot = Some(snapshot.clone());
 
     debug_log::log(format!(
-        "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
+        "observed native capture support (platform='{}', native_supported={}, non_original_resolution={}, system_audio_requires_screen={}, supported_sources={})",
         snapshot.platform,
         snapshot.native_capture_supported,
+        snapshot.supports_non_original_resolution,
+        snapshot.system_audio_requires_screen,
         format_capture_source_flags(&snapshot.supported_sources)
     ));
 }
@@ -2293,6 +2665,22 @@ fn start_native_capture_inner(
                 error.code,
                 error.message
             ));
+            if error.code == "microphone_access_denied" {
+                push_app_notification(
+                    &app_handle,
+                    app_notifications_state.inner(),
+                    AppNotification {
+                        id: "microphone-access-denied".to_string(),
+                        severity: "warning".to_string(),
+                        title: "Microphone access blocked".to_string(),
+                        message: error.message.clone(),
+                        created_at_unix_ms: runtime::now_unix_ms(),
+                        action: Some(AppNotificationAction::OpenCapturePrivacySettings {
+                            kind: "microphone".to_string(),
+                        }),
+                    },
+                );
+            }
             return Err(error);
         }
     };
@@ -2343,24 +2731,77 @@ fn start_native_capture_inner(
         session: started_session,
     })
 }
+fn system_audio_requires_screen_for_platform(platform: &str) -> bool {
+    match platform {
+        "windows" => false,
+        "macos" => true,
+        _ => true,
+    }
+}
 
-#[tauri::command]
-pub fn get_capture_support() -> CaptureSupportResponse {
-    let screen_support = capture_screen::support_for_current_platform();
+fn capture_support_response_from_observed_platform(
+    screen_support: capture_screen::ScreenCaptureSupport,
+    microphone_permission_state: CapturePermissionState,
+    windows_system_audio_supported: bool,
+) -> CaptureSupportResponse {
     let microphone_supported = !matches!(
-        microphone_capture::microphone_permission_state(),
+        microphone_permission_state,
         CapturePermissionState::Unsupported
     );
+    let system_audio_supported = if screen_support.platform == "windows" {
+        windows_system_audio_supported
+    } else {
+        screen_support.system_audio
+    };
 
-    let response = CaptureSupportResponse {
-        platform: screen_support.platform,
-        native_capture_supported: screen_support.native_capture_supported,
+    CaptureSupportResponse {
+        platform: screen_support.platform.clone(),
+        native_capture_supported: screen_support.native_capture_supported
+            || microphone_supported
+            || system_audio_supported,
+        supports_non_original_resolution: screen_support.non_original_resolution,
+        system_audio_requires_screen: system_audio_requires_screen_for_platform(
+            &screen_support.platform,
+        ),
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,
-            system_audio: screen_support.system_audio,
+            system_audio: system_audio_supported,
         },
-    };
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    microphone_capture::system_audio_loopback_capture_supported()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_supported_without_prompt() -> bool {
+    false
+}
+
+/// System-audio permission state for the capture-permissions surface. On Windows
+/// this reflects WASAPI loopback-endpoint availability (no per-app prompt); on
+/// every other platform it defers to the screen-capture permission, which owns
+/// system audio there.
+#[cfg(target_os = "windows")]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    microphone_capture::system_audio_loopback_permission_state()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn windows_system_audio_permission_state() -> CapturePermissionState {
+    capture_screen::system_audio_permission_state()
+}
+
+#[tauri::command]
+pub fn get_capture_support() -> CaptureSupportResponse {
+    let response = capture_support_response_from_observed_platform(
+        capture_screen::support_for_current_platform(),
+        microphone_capture::microphone_permission_state(),
+        windows_system_audio_supported_without_prompt(),
+    );
 
     log_capture_support_if_changed(&response);
     response
@@ -2368,17 +2809,22 @@ pub fn get_capture_support() -> CaptureSupportResponse {
 
 #[tauri::command]
 pub fn get_capture_permissions(
-    app_handle: tauri::AppHandle,
+    _app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> CapturePermissionsResponse {
     #[cfg(target_os = "macos")]
-    recover_screen_capture_after_possible_missed_wake(app_handle);
+    recover_screen_capture_after_possible_missed_wake(_app_handle);
 
     let runtime = state.lock().expect("native capture state poisoned");
     let permissions = CapturePermissions {
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
-        system_audio: capture_screen::system_audio_permission_state(),
+        // On Windows system audio is independent WASAPI loopback, not the
+        // screen-recording permission (which `capture_screen` hardcodes as
+        // `Unsupported` off macOS). Use the loopback-endpoint probe so the
+        // onboarding permission row reports the real state instead of a spurious
+        // "Unsupported".
+        system_audio: windows_system_audio_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);
@@ -2401,7 +2847,22 @@ pub async fn request_capture_permission(
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<CapturePermissionsResponse, String> {
     match kind.as_str() {
+        // On Windows, system audio is WASAPI loopback and needs no permission
+        // prompt, so skip the screen-recording preflight and just return the
+        // refreshed permission state. On macOS system audio shares the
+        // screen-recording permission, so it still runs the screen preflight.
+        #[cfg(target_os = "windows")]
+        "systemAudio" => {}
+        #[cfg(not(target_os = "windows"))]
         "screen" | "systemAudio" => {
+            tauri::async_runtime::spawn_blocking(|| {
+                capture_screen::ensure_screen_permission();
+            })
+            .await
+            .map_err(|error| format!("screen permission request failed: {error}"))?;
+        }
+        #[cfg(target_os = "windows")]
+        "screen" => {
             tauri::async_runtime::spawn_blocking(|| {
                 capture_screen::ensure_screen_permission();
             })
@@ -2421,30 +2882,59 @@ pub async fn request_capture_permission(
     Ok(get_capture_permissions(app_handle, state))
 }
 
-/// Open the macOS Privacy & Security pane for a capture source so the user can
-/// flip a permission that was already denied (macOS will not re-prompt once
-/// denied).
+/// Open the platform privacy settings pane for a capture source so the user can
+/// flip a permission that was already denied. On macOS this opens the Privacy &
+/// Security pane via `x-apple.systempreferences:` URLs (macOS will not re-prompt
+/// once denied); on Windows it opens the relevant `ms-settings:` deep link.
 #[tauri::command]
 pub fn open_capture_privacy_settings(
     kind: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
+    #[cfg(target_os = "macos")]
+    {
+        use tauri_plugin_opener::OpenerExt;
 
-    let url = match kind.as_str() {
-        "screen" | "systemAudio" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-        "microphone" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-        }
-        other => return Err(format!("unknown permission kind: {other}")),
-    };
+        let url = match kind.as_str() {
+            "screen" | "systemAudio" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
+            "microphone" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            other => return Err(format!("unknown permission kind: {other}")),
+        };
 
-    app_handle
-        .opener()
-        .open_url(url, None::<String>)
-        .map_err(|error| format!("failed to open privacy settings: {error}"))
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri_plugin_opener::OpenerExt;
+
+        let url = match kind.as_str() {
+            "microphone" => "ms-settings:privacy-microphone",
+            other => {
+                return Err(format!(
+                "capture privacy settings deep link is not supported on Windows for kind: {other}"
+            ))
+            }
+        };
+
+        app_handle
+            .opener()
+            .open_url(url, None::<String>)
+            .map_err(|error| format!("failed to open privacy settings: {error}"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = (kind, app_handle);
+        Err("opening capture privacy settings is not supported on this platform".to_string())
+    }
 }
 
 /// One Gecko browser Mnema knows about (reads its active-tab URL via the macOS
@@ -2763,18 +3253,21 @@ fn finish_recording_settings_update(
             },
         );
     }
-    let privacy_changed = previous_settings.privacy != settings.privacy;
-    let metadata_changed = previous_settings.metadata != settings.metadata;
-    if metadata_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
-        );
-    } else if privacy_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-        );
+    #[cfg(target_os = "macos")]
+    {
+        let privacy_changed = previous_settings.privacy != settings.privacy;
+        let metadata_changed = previous_settings.metadata != settings.metadata;
+        if metadata_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+            );
+        } else if privacy_changed {
+            privacy::request_privacy_filter_refresh(
+                app_handle,
+                privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+            );
+        }
     }
     crate::status_bar::refresh(app_handle);
 

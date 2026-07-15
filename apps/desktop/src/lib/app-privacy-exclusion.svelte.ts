@@ -24,6 +24,7 @@ import {
   type PrivacyAppCandidateDto,
   type SensitiveCaptureRecommendations,
 } from "$lib/app-privacy-exclusion";
+import { detectKeyboardPlatform } from "$lib/keyboard";
 
 type AppPrivacyExclusionHost = {
   getExcludedApps: () => ExcludedAppEntry[];
@@ -304,6 +305,11 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
       return visibleBrowserDisclosureApps(state.recommendations);
     },
     get showSensitiveRecommendationPrompt(): boolean {
+      // App Privacy Exclusion is macOS-only (ADR 0025): Windows v1 has no live
+      // privacy filter, so excluding an app does nothing. Never surface the
+      // first-run recommended-exclusions prompt off macOS — gating here also
+      // stops the `mark_one_time_prompt_shown` effect below from firing.
+      if (detectKeyboardPlatform() !== "macos") return false;
       return shouldShowSensitiveRecommendationPrompt(state.recommendations);
     },
     loadPrivacyAppCandidates,
