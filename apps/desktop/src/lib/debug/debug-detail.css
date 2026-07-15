@@ -1,0 +1,308 @@
+/* Debug detail — the pushed feature view (level 2, mockup
+ * `debug-mockup-a-detail-transcription.html`): breadcrumb, status hero, sub-tab
+ * row, the jobs card (filter bar + rows) and the job inspector.
+ *
+ * Sixth part of the shared Debug stylesheet (map + import order:
+ * debug-layout.css). A new part rather than more of debug-capture.css, which is
+ * a different concern and already at 740 of the repo's 800-line ceiling.
+ *
+ * Only the shapes the mockup adds live here. Everything the app already has is
+ * the real thing, not a copy: the sub-tabs are <Segmented>, the filter chips are
+ * debug-logs.css's `.log-chip`, the table is `.debug-table`, the pager is
+ * `.job-pager`, the stat strip is StatGrid + debug-features.css, the badges and
+ * buttons are debug-controls.css. Every selector stays namespaced under
+ * `.debug-shell`. */
+
+.debug-shell .debug-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Shared filler — pushes trailing header items to the right edge. */
+.debug-shell .debug-detail__spacer {
+  flex: 1;
+}
+
+/* ── Breadcrumb ─────────────────────────────────────────────────────── */
+.debug-shell .debug-detail__crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+}
+
+.debug-shell .debug-detail__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--app-text-subtle);
+  font: inherit;
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+
+.debug-shell .debug-detail__back:hover {
+  color: var(--app-accent);
+}
+
+.debug-shell .debug-detail__back:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+  border-radius: 4px;
+}
+
+.debug-shell .debug-detail__back svg {
+  width: 12px;
+  height: 12px;
+}
+
+.debug-shell .debug-detail__crumb-sep {
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .debug-detail__crumb-here {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--app-text-strong);
+}
+
+/* The Esc hint doubles as the affordance for the keybinding — a shortcut
+   nobody is told about may as well not exist. */
+.debug-shell .debug-detail__esc {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 4px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--app-text-subtle);
+}
+
+/* ── Status hero ────────────────────────────────────────────────────────
+   Same card frame as SettingGroup's, with the accent hairline re-tinted by
+   severity so a failing feature is legible before a word is read. */
+.debug-shell .debug-detail__hero {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.debug-shell .debug-detail__hero--warn { border-color: var(--app-warn-border); }
+.debug-shell .debug-detail__hero--err { border-color: var(--app-danger-border); }
+
+.debug-shell .debug-detail__hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--debug-detail-hero-accent, var(--app-accent)) 18%, transparent) 22%,
+    color-mix(in srgb, var(--debug-detail-hero-accent, var(--app-accent)) 18%, transparent) 78%,
+    transparent
+  );
+}
+
+.debug-shell .debug-detail__hero--warn { --debug-detail-hero-accent: var(--app-warn); }
+.debug-shell .debug-detail__hero--err { --debug-detail-hero-accent: var(--app-danger); }
+
+.debug-shell .debug-detail__hero-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 16px 20px 10px;
+  flex-wrap: wrap;
+}
+
+.debug-shell .debug-detail__hero-title {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-strong);
+}
+
+/* The plain-language diagnosis. Capped so it stays a sentence to read, not a
+   paragraph to skim. */
+.debug-shell .debug-detail__hero-desc {
+  max-width: 62ch;
+  padding: 0 20px 12px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--app-text-muted);
+}
+
+/* The stat strip is StatGrid; it sits flush in the hero's foot rather than
+   floating inside a padded body. */
+.debug-shell .debug-detail__hero .debug-stats {
+  margin-top: 0;
+  border-radius: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+}
+
+/* ── Sub-tab row ────────────────────────────────────────────────────── */
+.debug-shell .debug-detail__tabs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+}
+
+/* ── Cards (jobs table, inspector, panes) ───────────────────────────── */
+.debug-shell .debug-detail__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* A pane holds free-form content (kv rows, JSON, the log viewer) and needs the
+   body padding the table/filter-bar cards supply themselves. */
+.debug-shell .debug-detail__pane {
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+/* ── Filter bar ─────────────────────────────────────────────────────── */
+.debug-shell .debug-detail__filters {
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+/* The mockup's "segment id…" search, right-aligned in the filter bar. */
+.debug-shell .debug-detail__search {
+  margin-left: auto;
+}
+
+.debug-shell .debug-detail__search input {
+  width: 180px;
+  padding: 4px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  color: var(--app-text);
+  outline: none;
+}
+
+.debug-shell .debug-detail__search input::placeholder {
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .debug-detail__search input:focus-visible {
+  border-color: var(--app-border-hover);
+  box-shadow: var(--app-ring);
+}
+
+.debug-shell .debug-detail__empty {
+  padding: 18px 16px;
+}
+
+/* ── Job rows ───────────────────────────────────────────────────────── */
+.debug-shell .debug-detail__row {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.debug-shell .debug-detail__row:hover {
+  background: var(--app-surface-hover);
+}
+
+.debug-shell .debug-detail__row:focus-visible {
+  outline: none;
+  box-shadow: inset var(--app-ring);
+}
+
+/* The selected row keeps its accent rail while the inspector below is open. */
+.debug-shell .debug-detail__row--selected {
+  background: color-mix(in srgb, var(--app-accent) 6%, transparent);
+  box-shadow: inset 2px 0 0 var(--app-accent);
+}
+
+.debug-shell .debug-detail__err-cell {
+  max-width: 260px;
+  color: var(--app-danger);
+}
+
+/* The countdown rides above the error text it explains. */
+.debug-shell .debug-detail__retry {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--app-warn);
+}
+
+/* ── Job inspector ──────────────────────────────────────────────────── */
+.debug-shell .debug-detail__insp-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px 8px;
+}
+
+.debug-shell .debug-detail__insp-title {
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--app-text-strong);
+}
+
+.debug-shell .debug-detail__insp-kv {
+  padding: 0 18px 6px;
+}
+
+.debug-shell .debug-detail__insp-err,
+.debug-shell .debug-detail__insp-note {
+  margin: 2px 18px 8px;
+}
+
+.debug-shell .debug-detail__insp-actions {
+  padding: 6px 18px 16px;
+}
+
+.debug-shell .debug-detail__payload {
+  margin: 4px 18px 12px;
+}
+
+/* ── JSON block ─────────────────────────────────────────────────────────
+   The raw record — a job payload, a settings slice. `pre` (not `pre-wrap`):
+   these are machine records whose indentation carries the structure, so a long
+   line scrolls rather than reflows. */
+.debug-shell .debug-json {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-subtle, var(--app-surface));
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+  font-size: 10px;
+  line-height: 1.55;
+  color: var(--app-text-muted);
+  white-space: pre;
+  overflow-x: auto;
+}

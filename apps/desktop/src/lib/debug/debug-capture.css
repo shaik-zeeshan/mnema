@@ -1,0 +1,478 @@
+/* Debug capture blocks — the bespoke instrument panels the Capture Sources and
+ * Privacy & Inactivity cards are made of: the recording dot, source-session
+ * cards, the system probe, runtime-source lanes, detector cards, the
+ * effective-idle summary and the privacy JSON dumps. Third part of the shared
+ * Debug stylesheet (see debug-layout.css for the full part map). Every selector
+ * is namespaced under `.debug-shell`.
+ *
+ * These are shapes mockup A never specified — it draws Capture and Privacy as
+ * plain `.row` cards, but the real page carries per-source truth lanes and
+ * per-detector state the mockup's fake data never had. The card CHROME around
+ * them (rows, badges, stats, actions) is the mockup's; these panels are what
+ * lives inside. Anything the mockup did specify moved out to debug-cards.css —
+ * the old overview/health-board block, the session-status header and the
+ * settings-preview strip are gone with it. */
+
+/* ── Recording dot ──────────────────────────────────────────────────── */
+.debug-shell .rec-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--app-text-faint);
+  flex-shrink: 0;
+  transition: background 0.2s;
+}
+
+.debug-shell .rec-dot--active {
+  background: var(--app-danger-strong);
+  animation: debug-pulse-rec 1.2s ease-in-out infinite;
+}
+
+@keyframes debug-pulse-rec {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 68, 85, 0.4); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 5px rgba(255, 68, 85, 0); }
+}
+
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.debug-shell .source-session-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+}
+
+.debug-shell .source-session-card__header {
+  display: flex;
+  align-items: center;
+}
+
+/* ── System probe grid ──────────────────────────────────────────────── */
+.debug-shell .probe-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.debug-shell .probe-block {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.debug-shell .probe-block__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.debug-shell .probe-block__name {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+
+/* ── Privacy debug dumps ────────────────────────────────────────────── */
+.debug-shell .privacy-debug-list {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.debug-shell .privacy-debug-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.debug-shell .privacy-debug-json {
+  margin: 4px 0 0;
+  padding: 8px;
+  border: 1px solid var(--app-border);
+  border-radius: 4px;
+  background: var(--app-surface-raised);
+  color: var(--app-text-muted);
+  font-family: var(--app-font-mono);
+  font-size: 10px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .debug-shell .privacy-debug-grid { grid-template-columns: 1fr; }
+}
+
+/* ── Runtime source lanes ───────────────────────────────────────────── */
+.debug-shell .rs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.debug-shell .rs-lane {
+  position: relative;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 5px;
+  padding: 12px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+/* Subtle vertical accent identifying the source family. */
+.debug-shell .rs-lane::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  opacity: 0.85;
+}
+
+.debug-shell .rs-lane--screen::before { background: linear-gradient(180deg, var(--app-source-screen-strong) 0%, var(--app-source-screen-border) 100%); }
+.debug-shell .rs-lane--microphone::before { background: linear-gradient(180deg, var(--app-source-mic-strong) 0%, var(--app-source-mic-border) 100%); }
+.debug-shell .rs-lane--systemAudio::before { background: linear-gradient(180deg, var(--app-source-sysaudio-strong) 0%, var(--app-source-sysaudio-border) 100%); }
+
+.debug-shell .rs-lane--off { opacity: 0.5; }
+.debug-shell .rs-lane--paused { background: var(--app-warn-bg); border-color: var(--app-warn-border); }
+.debug-shell .rs-lane--running { border-color: var(--app-accent-border); }
+
+.debug-shell .rs-lane__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-shell .rs-lane__glyph {
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+  display: inline-flex;
+}
+
+.debug-shell .rs-lane__glyph svg {
+  width: 1em;
+  height: 1em;
+}
+
+.debug-shell .rs-lane__name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+  flex: 1;
+}
+
+.debug-shell .rs-state {
+  font-size: var(--text-xs);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: 2px;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.debug-shell .rs-state--running { background: var(--app-source-mic-bg); color: var(--app-source-mic); border-color: var(--app-source-mic-border); }
+.debug-shell .rs-state--paused { background: var(--app-warn-bg); color: var(--app-warn); border-color: var(--app-warn-border); }
+.debug-shell .rs-state--partial { background: var(--app-source-screen-bg); color: var(--app-source-screen); border-color: var(--app-source-screen-border); }
+.debug-shell .rs-state--idle { background: var(--app-neutral-bg); color: var(--app-neutral-text); border-color: var(--app-neutral-border); }
+.debug-shell .rs-state--off { background: var(--app-surface-raised); color: var(--app-text-subtle); border-color: var(--app-border); }
+.debug-shell .rs-state--unknown { background: var(--app-danger-bg-soft); color: var(--app-danger-text); border-color: var(--app-danger-border); }
+
+/* Truth rows: tiny indicator + label + value. */
+.debug-shell .rs-rows {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+}
+
+.debug-shell .rs-rows--activity {
+  border-top: 1px solid var(--app-border);
+  padding-top: 8px;
+}
+
+/* The activity rows carry no indicator bar (they are readouts, not states), so
+   their value must span the bar column too — left in the 28px bar track it
+   wrapped one word per line. Only reachable with a live session, which is why
+   it survived: the lanes render nothing at all while capture is stopped. */
+.debug-shell .rs-rows--activity .rs-row__val {
+  grid-column: 2 / -1;
+}
+
+.debug-shell .rs-row {
+  display: grid;
+  grid-template-columns: 56px 28px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-shell .rs-row__label {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+
+/* Indicator bar — colour by state, mimicking a tiny status LED. */
+.debug-shell .rs-row__bar {
+  position: relative;
+  display: inline-block;
+  width: 100%;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--app-neutral-bg);
+  overflow: hidden;
+}
+
+.debug-shell .rs-row__bar-fill {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.debug-shell .rs-row__bar[data-state="on"] .rs-row__bar-fill {
+  background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%);
+  box-shadow: 0 0 6px var(--app-accent-glow);
+}
+
+.debug-shell .rs-row__bar[data-state="paused"] .rs-row__bar-fill {
+  background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%);
+  opacity: 0.85;
+}
+
+.debug-shell .rs-row__bar[data-state="off"] .rs-row__bar-fill { background: var(--app-neutral-border); opacity: 0.6; }
+.debug-shell .rs-row__bar[data-state="idle"] .rs-row__bar-fill { background: var(--app-neutral-text); }
+.debug-shell .rs-row__bar[data-state="unknown"] .rs-row__bar-fill { background: repeating-linear-gradient(45deg, var(--app-danger-border) 0 3px, var(--app-danger-bg-soft) 3px 6px); }
+
+.debug-shell .rs-row__val {
+  font-size: 10px;
+  color: var(--app-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-shell .rs-row__val--mono {
+  font-family: var(--app-font-mono);
+  font-size: 10px;
+  color: var(--app-text-muted);
+  /* Sample/activity readouts: show full text, allow wrapping. */
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  word-break: break-word;
+}
+
+/* Output path block. */
+.debug-shell .rs-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+}
+
+.debug-shell .rs-path__label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+
+.debug-shell .rs-path__val {
+  font-family: var(--app-font-mono);
+  font-size: 10px;
+  color: var(--app-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.debug-shell .rs-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  font-size: 9px;
+  color: var(--app-text-muted);
+  letter-spacing: 0.04em;
+  padding-top: 4px;
+  border-top: 1px solid var(--app-border);
+}
+
+.debug-shell .rs-legend span { display: inline-flex; align-items: center; gap: 5px; }
+
+.debug-shell .rs-legend__dot {
+  display: inline-block;
+  width: 8px;
+  height: 4px;
+  border-radius: 1px;
+}
+
+.debug-shell .rs-legend__dot--on { background: linear-gradient(90deg, var(--app-source-mic-strong) 0%, var(--app-source-mic) 100%); }
+.debug-shell .rs-legend__dot--paused { background: linear-gradient(90deg, var(--app-warn-strong) 0%, var(--app-warn) 100%); }
+.debug-shell .rs-legend__dot--off { background: var(--app-neutral-border); }
+
+/* ── Detector grid ──────────────────────────────────────────────────── */
+.debug-shell .detector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.debug-shell .detector-card {
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: 5px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.debug-shell .detector-card--screen { border-left: 2px solid var(--app-source-screen-strong); }
+.debug-shell .detector-card--mic { border-left: 2px solid var(--app-source-mic-strong); }
+.debug-shell .detector-card--sysaudio { border-left: 2px solid var(--app-source-sysaudio-strong); }
+
+.debug-shell .detector-card--paused { background: var(--app-warn-bg); }
+.debug-shell .detector-card--off { opacity: 0.55; }
+
+.debug-shell .detector-card__header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-shell .detector-card__icon {
+  font-size: 11px;
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--app-text-muted);
+}
+
+.debug-shell .detector-card__icon svg {
+  width: 1em;
+  height: 1em;
+}
+
+.debug-shell .detector-card__name {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+  flex: 1;
+}
+
+.debug-shell .detector-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.debug-shell .detector-card__metric {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-shell .detector-card__metric-label {
+  font-size: 9px;
+  color: var(--app-text-subtle);
+  min-width: 56px;
+}
+
+.debug-shell .detector-card__metric-value {
+  font-family: var(--app-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--app-source-screen);
+  letter-spacing: 0.04em;
+}
+
+.debug-shell .detector-card--mic .detector-card__metric-value { color: var(--app-source-mic); }
+.debug-shell .detector-card--sysaudio .detector-card__metric-value { color: var(--app-source-sysaudio); }
+
+.debug-shell .detector-card__metric-source {
+  font-family: var(--app-font-mono);
+  font-size: 9px;
+  color: var(--app-text-muted);
+}
+
+/* ── Effective idle summary (subordinate) ───────────────────────────── */
+.debug-shell .effective-idle-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border);
+  border-radius: 3px;
+}
+
+.debug-shell .effective-idle-summary__label {
+  font-size: 9px;
+  color: var(--app-text-subtle);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.debug-shell .effective-idle-summary__value {
+  font-family: var(--app-font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--app-text);
+}
+
+.debug-shell .effective-idle-summary__source {
+  font-family: var(--app-font-mono);
+  font-size: 9px;
+  color: var(--app-text-muted);
+}
+
+.debug-shell .effective-idle-block__note {
+  font-size: 9px;
+  color: var(--app-text-muted);
+  line-height: 1.5;
+  margin-top: 4px;
+  border-top: 1px solid var(--app-border);
+  padding-top: 6px;
+}
+
+.debug-shell .effective-idle-block__note em {
+  font-style: normal;
+  color: var(--app-source-screen);
+  font-weight: 600;
+}
+

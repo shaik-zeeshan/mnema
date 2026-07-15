@@ -209,6 +209,18 @@ pub struct UserContextStatus {
     pub budget_tier: DerivationBudgetTier,
     /// `None` until the first Conclusion distillation completes.
     pub last_distillation: Option<UserContextDistillationSummary>,
+    /// Distinct Subjects across non-dismissed Conclusions (NOCASE-deduped).
+    pub subject_count: i64,
+    /// Distinct dismissed beliefs, keyed on `(subject, statement)`.
+    pub dismissed_count: i64,
+    /// Derivation windows recorded `skipped` (low-signal, dropped before any
+    /// LLM call) in the last 24 hours.
+    pub skipped_windows_24h: i64,
+    /// Frontend-stamped local UTC offset in minutes (IST = +330); `None` when
+    /// never stamped.
+    pub local_offset_minutes: Option<i64>,
+    /// The most recently generated day-kind Digest; `None` until one exists.
+    pub last_day_digest: Option<UserContextDigest>,
 }
 
 /// The engine-written narrative lede for one Insights Overview range (the
@@ -553,6 +565,18 @@ mod tests {
             },
             budget_tier: DerivationBudgetTier::Thorough,
             last_distillation: None,
+            subject_count: 3,
+            dismissed_count: 1,
+            skipped_windows_24h: 2,
+            local_offset_minutes: Some(330),
+            last_day_digest: Some(UserContextDigest {
+                range_kind: "day".to_string(),
+                range_start_ms: 1_000,
+                range_end_ms: 2_000,
+                narrative: "A day.".to_string(),
+                headline: None,
+                generated_at_ms: 3_000,
+            }),
         };
         let value = serde_json::to_value(&status).unwrap();
         let obj = value.as_object().unwrap();
@@ -567,6 +591,11 @@ mod tests {
         assert_eq!(obj["lastDerivedAtMs"], json!(null));
         assert_eq!(obj["lastDistillation"], json!(null));
         assert_eq!(obj["budgetTier"], json!("thorough"));
+        assert_eq!(obj["subjectCount"], json!(3));
+        assert_eq!(obj["dismissedCount"], json!(1));
+        assert_eq!(obj["skippedWindows24h"], json!(2));
+        assert_eq!(obj["localOffsetMinutes"], json!(330));
+        assert_eq!(obj["lastDayDigest"]["generatedAtMs"], json!(3_000));
 
         let round_tripped: UserContextStatus = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, status);

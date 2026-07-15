@@ -8,6 +8,27 @@
     id?: string;
     /** Optional snippet rendered at the right of the header (e.g. a reset button). */
     actions?: Snippet;
+    /** Optional snippet rendered INLINE after the title, on the same line (e.g.
+        a status badge). Opt-in — omit it and the title line is unchanged, which
+        is what Settings wants. Used by the Debug page's feature cards, whose
+        mockup puts the severity badge in the group title rather than in
+        `actions`' right-aligned rail. */
+    titleExtra?: Snippet;
+    /** Optional extra class on the card element. Opt-in; used by the Debug
+        page's severity-tinted card hairlines (`setting-group__card--warn`). */
+    cardClass?: string;
+    /** Put `hint` on the RIGHT of the title, on one baseline-aligned row,
+        instead of stacked beneath it. Opt-in — omit it and the header is
+        unchanged, which is what Settings wants: its hints are long prose
+        descriptions that only read as a block under the title. The Debug
+        page's hints are short machine status (`processor: ocr`), which its
+        mockup pins to the header's right edge. */
+    hintInline?: boolean;
+    /** When set, the title becomes the group's drill-in affordance: it renders
+        as a button with a trailing chevron and calls this on click. Opt-in —
+        omit it and the title stays inert text, which is what Settings wants.
+        Used by the Debug page's feature cards to push their detail view. */
+    onTitleClick?: () => void;
     /** Drop the card chrome (border, background, accent hairline) so children
         sit directly on the page. Used by the keybinding lists, whose rows
         already carry their own borders — the parent frame is redundant. */
@@ -20,15 +41,30 @@
     children: Snippet;
   }
 
-  let { title, hint, id, actions, bare = false, nested = false, children }: Props = $props();
+  let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, bare = false, nested = false, children }: Props = $props();
 </script>
 
 <!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
      scrollable <section>, never on the inner card. -->
 <section class="setting-group" {id}>
-  <header class="setting-group__header">
+  <header class="setting-group__header" class:setting-group__header--inline={hintInline}>
     <div class="setting-group__heading">
-      <span class="setting-group__title" class:setting-group__title--nested={nested}>{title}</span>
+      <!-- The title and anything inline after it share one row so a trailing
+           badge sits beside the title rather than under it. With no
+           `titleExtra` this is a one-item flex row — identical to the bare
+           title it replaced. -->
+      <div class="setting-group__title-line">
+        {#if onTitleClick}
+          <button type="button" class="setting-group__title setting-group__title--link" onclick={onTitleClick}>
+            {title}<span class="setting-group__title-chevron" aria-hidden="true">›</span>
+          </button>
+        {:else}
+          <span class="setting-group__title" class:setting-group__title--nested={nested}>{title}</span>
+        {/if}
+        {#if titleExtra}
+          {@render titleExtra()}
+        {/if}
+      </div>
       {#if hint}
         <span class="setting-group__hint">{hint}</span>
       {/if}
@@ -40,7 +76,7 @@
     {/if}
   </header>
 
-  <div class="setting-group__card" class:setting-group__card--bare={bare}>
+  <div class="setting-group__card {cardClass ?? ''}" class:setting-group__card--bare={bare}>
     {@render children()}
   </div>
 </section>
@@ -68,6 +104,38 @@
     min-width: 0;
   }
 
+  /* `hintInline`: the whole header becomes one baseline-aligned row —
+     title left, hint right (then `actions`, if any, further right). Reached
+     only via the opt-in prop, so every other caller keeps the stacked
+     heading above byte-for-byte. */
+  .setting-group__header--inline {
+    align-items: baseline;
+  }
+
+  .setting-group__header--inline .setting-group__heading {
+    flex: 1;
+    flex-direction: row;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  /* Short status, not prose: keep it on its line and let the title's flex
+     row give up the space instead. */
+  .setting-group__header--inline .setting-group__hint {
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Title row: the title plus whatever `titleExtra` renders beside it. */
+  .setting-group__title-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
   /* Eyebrow/overline: kept smaller than the row labels by design, but pushed to
      the strong text tone so it registers on the squint test rather than reading
      as the faintest line on the page. */
@@ -78,6 +146,35 @@
     letter-spacing: 0.13em;
     text-transform: uppercase;
     color: var(--app-text-strong);
+  }
+
+  /* Drill-in title: same type as the inert one, plus a hit target and a
+     chevron that says there is a level below. */
+  .setting-group__title--link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    transition: color 0.12s;
+  }
+
+  .setting-group__title--link:hover {
+    color: var(--app-accent);
+  }
+
+  .setting-group__title--link:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 4px;
+  }
+
+  .setting-group__title-chevron {
+    font-weight: 400;
+    opacity: 0.7;
   }
 
   /* Nested/child section title: a parent section (e.g. "Keyboard Shortcuts")
@@ -92,7 +189,8 @@
   }
 
   .setting-group__hint {
-    font-size: 11px;
+    /* --text-sm is 11px — same value the mockup's `.group__hint` names. */
+    font-size: var(--text-sm);
     color: var(--app-text-muted);
     letter-spacing: 0.01em;
     line-height: 1.5;

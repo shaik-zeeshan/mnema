@@ -1,0 +1,289 @@
+/* Debug layout — shell, floating icon dock, page head, scroll region, section
+ * bodies. First part of the shared Debug stylesheet.
+ *
+ * The Debug styles follow the Settings convention: split across cohesive concern
+ * files, each under the 800-line cap, imported by the shell
+ * `routes/debug/+page.svelte` in SOURCE ORDER. The parts are:
+ *   debug-layout.css   — shell / dock / scroll / section bodies (this file)
+ *   debug-controls.css — shared controls: buttons, badges, kv-lists, tables,
+ *                        job list/pager, inputs, errors, skeletons
+ *   debug-capture.css  — capture-specific blocks: session, runtime-source lanes,
+ *                        detector cards, privacy JSON, health board
+ *   debug-features.css — the feature summary cards' stat grid and inline
+ *                        error/result lines
+ *   debug-cards.css    — mockup A's card vocabulary: .row, .bar, .strip,
+ *                        .new-chip, .actions, card severity hairlines
+ *   debug-logs.css     — the log-tail viewer: toolbar, filter chips, scrollback
+ *   debug-detail.css   — the pushed feature detail (level 2): breadcrumb, status
+ *                        hero, sub-tab row, jobs card, job inspector, JSON block
+ *
+ * Every selector is namespaced under `.debug-shell` (the shell root) so the
+ * rules never leak to other surfaces (Settings, Insights) that reuse generic
+ * class names like `.card` / `.badge` / `.btn`. @keyframes stay global
+ * (referenced by name). The `.debug-shell` root rule itself is the namespace
+ * anchor and is therefore the one unprefixed rule here.
+ *
+ * Dock design (mockup A "feature rail"): left, vertically centered, frosted
+ * pill, icon-only, one health dot per icon, hover tooltips (via the shared `tip`
+ * action — NOT the mockup's ::after), separators between feature groups, and a
+ * live-poll pulse at the bottom. Clicking scrolls to the matching summary
+ * section. The old top tab strip and its `.debug-tabs*` rules are gone. */
+
+/* ── Shell ──────────────────────────────────────────────────────────────
+   Sole child of `.app-content` (a flex column with `min-height: 0`), so
+   `flex: 1 1 0` + `min-height: 0` hand the leftover height to
+   `.debug-scroll`, which owns the overflow — the window never scrolls.
+
+   The dock's gutter is reserved by `.debug-scroll`'s left padding, NOT here:
+   the scroll region must run edge-to-edge so its scrollbar sits at the window
+   edge rather than 88px in from it. */
+.debug-shell {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Floating icon dock ─────────────────────────────────────────────── */
+.debug-shell .debug-dock {
+  position: fixed;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 6px;
+  background: color-mix(in srgb, var(--app-surface-raised) 88%, transparent);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+/* Faint top-edge accent hairline — Mnema signature, inset L/R. */
+.debug-shell .debug-dock::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  height: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-accent) 14%, transparent) 25%,
+    color-mix(in srgb, var(--app-accent) 14%, transparent) 75%,
+    transparent
+  );
+}
+
+.debug-shell .debug-dock__sep {
+  width: 22px;
+  height: 1px;
+  margin: 4px 0;
+  background: var(--app-border-strong);
+  flex: 0 0 auto;
+}
+
+.debug-shell .debug-dock__item {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.debug-shell .debug-dock__item svg {
+  width: 16px;
+  height: 16px;
+}
+
+.debug-shell .debug-dock__item:hover {
+  background: var(--app-surface-hover);
+  color: var(--app-text-strong);
+}
+
+.debug-shell .debug-dock__item:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
+
+.debug-shell .debug-dock__item--active {
+  background: color-mix(in srgb, var(--app-accent) 10%, transparent);
+  color: var(--app-accent);
+  box-shadow: inset 0 0 0 1px var(--app-accent-border), 0 0 10px var(--app-accent-glow);
+}
+
+/* Health dot pinned to the icon's corner. `content-box` sizing keeps the
+   ring an outline around the 5px dot rather than eating into it. */
+.debug-shell .health-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--app-surface-raised);
+  box-sizing: content-box;
+  pointer-events: none;
+}
+
+.debug-shell .health-dot--ok { background: var(--app-accent); }
+
+.debug-shell .health-dot--warn {
+  background: var(--app-warn);
+  box-shadow: 0 0 5px color-mix(in srgb, var(--app-warn) 50%, transparent);
+}
+
+.debug-shell .health-dot--err {
+  background: var(--app-danger);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--app-danger) 60%, transparent);
+  animation: debug-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.debug-shell .health-dot--idle { background: var(--app-border-hover); }
+
+.debug-shell .debug-dock__live {
+  position: relative;
+  width: 34px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.debug-shell .debug-dock__live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--app-accent);
+  animation: debug-dot-pulse 1.1s ease-in-out infinite;
+}
+
+/* The poll is failing — stop implying liveness. */
+.debug-shell .debug-dock__live-dot--err {
+  background: var(--app-danger);
+  animation: none;
+}
+
+@keyframes debug-dot-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .debug-shell .health-dot--err,
+  .debug-shell .debug-dock__live-dot {
+    animation: none;
+  }
+}
+
+/* ── Page head ──────────────────────────────────────────────────────────
+   Mockup A's `.page-head`: it lives INSIDE the panel, so it aligns with the
+   cards' left edge and shares their column width. No rule under it — the gap
+   between it and the first card is the separation. */
+.debug-shell .debug-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 4px 0;
+  flex: 0 0 auto;
+}
+
+.debug-shell .debug-head__title {
+  font-size: var(--text-md);
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--app-text-strong);
+  line-height: 1.1;
+}
+
+.debug-shell .debug-head__meta {
+  font-size: var(--text-xs);
+  color: var(--app-text-subtle);
+  letter-spacing: 0.08em;
+}
+
+/* ── Scroll region ──────────────────────────────────────────────────────
+   Mockup A's `.scroll`: the 88px left padding is the fixed dock's gutter. The
+   dock's right edge lands at ~60px (left:14px + 6px pad + 34px item + 6px pad),
+   so 88px is the breathing room between it and the content column. */
+.debug-shell .debug-scroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 24px 48px 88px;
+}
+
+/* Mockup A's `.panel`: ONE centered column that every card, the page head and
+   the pushed detail view share. Without it the cards stretch to the window
+   width and the page stops reading as the design. */
+.debug-shell .debug-panel {
+  max-width: 680px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Each summary section is a <SettingGroup>; its `id` (the dock's scroll
+   target) sits on the outer <section>, so the offset belongs here. */
+.debug-shell .setting-group {
+  scroll-margin-top: 8px;
+}
+
+/* ── Section body ───────────────────────────────────────────────────────
+   Migrated debug content is not <SettingRow>-shaped (it is tables, lanes,
+   kv-lists), so it sits in one padded body inside SettingGroup's card
+   rather than as label/description rows. */
+.debug-shell .debug-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+/* Sub-block heading inside a section body — the demoted successor to the
+   legacy `.card__title` now that SettingGroup owns the section title. */
+.debug-shell .debug-block__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+
+/* First block in a body needs no extra separation; later ones read as new
+   blocks rather than as a continuation of the previous one's content. */
+.debug-shell .debug-block__label:not(:first-child) {
+  margin-top: 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border);
+}
+
+.debug-shell .debug-block__action {
+  margin-left: auto;
+}
+
+/* Small button riding inside an inline label row (e.g. "Job #12  ↻"). */
+.debug-shell .debug-inline-btn {
+  margin-left: 6px;
+}
