@@ -1,8 +1,7 @@
 use super::output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
-    clear_current_system_audio_output_file, finalize_capture_outputs,
-    set_current_microphone_output_file, set_current_screen_output_file,
-    set_current_system_audio_output_file,
+    finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
+    set_current_system_audio_output_file, strip_live_system_audio_output_file,
 };
 use super::settings::compute_effective_screen_bitrate_bps;
 use super::{disk_space, metadata, privacy};
@@ -1226,7 +1225,7 @@ fn commit_suspended_screen_system_outputs(
     let commit_sources = CaptureSources {
         screen: requested_sources.screen,
         microphone: false,
-        system_audio: system_audio_stopped,
+        system_audio: requested_sources.system_audio,
     };
     let Some(mut output_files) = screen_system_output_files(
         runtime.current_segment_output_files.as_ref(),
@@ -1235,6 +1234,22 @@ fn commit_suspended_screen_system_outputs(
     ) else {
         return;
     };
+    if !system_audio_stopped {
+        // The tap outlives every suspension except LowDisk (ADR 0052), so the file
+        // it is still writing stays out of this commit — but generations a
+        // mid-segment rebuild already finalized belong to this segment and are
+        // orphaned if dropped here.
+        if let Some(live_file) = runtime.system_audio_recording_file.as_deref() {
+            strip_live_system_audio_output_file(&mut output_files, live_file);
+        }
+        if output_files.screen_file.is_none()
+            && output_files.screen_files.is_empty()
+            && output_files.system_audio_file.is_none()
+            && output_files.system_audio_files.is_empty()
+        {
+            return;
+        }
+    }
 
     match finalize_capture_outputs(
         Some(&mut output_files),
@@ -3138,15 +3153,17 @@ pub(super) fn pause_screen_for_inactivity_with_app_handle(
     // the file it is still writing must be kept out of the commit below entirely.
     // An open `.m4a` has no readable duration, which the finalize path reads as
     // unusable and deletes — out from under the running writer — and this path
-    // cannot stop the tap first the way every explicit stop path does.
+    // cannot stop the tap first the way every explicit stop path does. Only the
+    // live file, though: generations a mid-segment tap rebuild already finalized
+    // belong to this segment and are orphaned if dropped from the commit.
     let live_system_audio_file = live_system_audio_continuation_file(runtime);
     let system_audio_recording_file = live_system_audio_file
         .is_none()
         .then(|| runtime.system_audio_recording_file.clone())
         .flatten();
-    if live_system_audio_file.is_some() {
+    if let Some(live_file) = live_system_audio_file.as_deref() {
         if let Some(output_files) = current_segment_output_files.as_mut() {
-            clear_current_system_audio_output_file(output_files);
+            strip_live_system_audio_output_file(output_files, live_file);
         }
     }
     let requested_sources = runtime.requested_sources.clone();

@@ -8748,6 +8748,111 @@ fn cold_screen_pause_never_finalizes_the_file_the_tap_is_still_writing() {
     );
 }
 
+// Sibling of the test above: keeping the live file out of the commit must not
+// also drop the earlier-generation `.m4a` a mid-segment tap rebuild already
+// finalized. That file is complete on disk and belongs to this segment; a cold
+// screen pause that clears the whole system-audio list orphans it — no
+// audio_segment row, never transcribed, invisible to retention — and the
+// live-only continuation never carries it into a later commit either.
+#[cfg(target_os = "macos")]
+#[test]
+fn cold_screen_pause_commits_the_generation_a_rebuild_already_finalized() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+
+    let screen_path = temp.path().join("segment-0001-screen.mov");
+    std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+        .expect("openable screen mov should be written");
+    let screen = screen_path.to_string_lossy().into_owned();
+
+    // Generation 1: finalized by a tap rebuild — a real, closed, readable m4a.
+    let finalized_path = temp.path().join("segment-0001-system-audio-gen1.m4a");
+    low_disk::write_valid_m4a_audio_file(&finalized_path);
+    let finalized = finalized_path.to_string_lossy().into_owned();
+
+    // Generation 2: the rebuilt tap's live file, still being written.
+    let live_path = temp.path().join("segment-0001-system-audio-gen2.m4a");
+    std::fs::write(&live_path, b"open writer, no moov atom yet")
+        .expect("in-flight system audio m4a should be written");
+    let live = live_path.to_string_lossy().into_owned();
+
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_and_system_audio = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let mut current_segment_output_files = super::segments::empty_output_files();
+    super::output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
+    super::output::set_current_system_audio_output_file(
+        &mut current_segment_output_files,
+        finalized.clone(),
+    );
+    super::output::set_current_system_audio_output_file(
+        &mut current_segment_output_files,
+        live.clone(),
+    );
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(screen_and_system_audio.clone()),
+        current_segment_sources: Some(screen_and_system_audio),
+        current_segment_index: 1,
+        screen_frame_rate: 5.0,
+        screen_resolution: ScreenResolution::default(),
+        current_segment_output_files: Some(current_segment_output_files),
+        output_files: Some(super::segments::empty_output_files()),
+        recording_file: Some(screen.clone()),
+        system_audio_recording_file: Some(live.clone()),
+        active_screen_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_screen_for_inactivity(&mut runtime).expect("screen pause should succeed");
+
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("committed output_files slot should exist");
+    assert!(
+        committed
+            .system_audio_files
+            .iter()
+            .any(|file| file == &finalized),
+        "the generation a rebuild already finalized must commit with the segment (got {committed:?})"
+    );
+    assert!(
+        !committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &live),
+        "the file the tap is still writing must not be committed"
+    );
+    assert!(
+        live_path.is_file(),
+        "the live file must survive the pause untouched"
+    );
+    let continuation = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("continuation output files should exist for the live tap");
+    assert_eq!(
+        continuation.system_audio_files,
+        vec![live.clone()],
+        "the continuation carries only the live file — the finalized one is already committed"
+    );
+    assert_eq!(runtime.system_audio_recording_file.as_deref(), Some(live.as_str()));
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn pause_screen_for_inactivity_keeps_continuation_for_system_audio_only() {
@@ -9984,7 +10089,7 @@ mod low_disk {
     /// audio (a junk byte file would be legitimately dropped as unusable, which
     /// would mask the data-loss this test guards against). Mirrors the helper in
     /// `native_capture_output.rs`'s tests.
-    fn write_valid_m4a_audio_file(path: &std::path::Path) {
+    pub(super) fn write_valid_m4a_audio_file(path: &std::path::Path) {
         use cidre::{av, ns};
 
         let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
