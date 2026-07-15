@@ -181,9 +181,10 @@ impl SystemAudioFamily {
         (after != before).then_some(after).flatten()
     }
 
-    /// The privacy-edit hook: reconciles the tap's exclude list, signalling a
-    /// rebuild when the list actually moves. Reads Core Audio's process list
-    /// synchronously, so callers diff first rather than calling it every tick.
+    /// The privacy-edit hook: hands the new privacy list to the tap's exclude
+    /// watcher. Cheap and lock-safe — it only stores the set and marks the
+    /// watcher dirty; the next `poll` does the Core Audio read, reconcile, and
+    /// any rebuild off the caller's lock.
     pub(super) fn set_excluded_bundle_ids(&self, excluded_bundle_ids: Vec<String>) {
         self.session.set_excluded_bundle_ids(excluded_bundle_ids);
     }

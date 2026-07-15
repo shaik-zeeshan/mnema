@@ -304,8 +304,10 @@ impl SystemAudioCaptureSession {
         Ok(session)
     }
 
-    /// The privacy-edit hook, forwarded to the exclude watcher. A move signals a
-    /// rebuild, which the next [`Self::poll`] performs.
+    /// The privacy-edit hook, forwarded to the exclude watcher. Touches no
+    /// Core Audio itself: the edit marks the watcher dirty, and the next
+    /// [`Self::poll`] reads the process list, reconciles, and performs any
+    /// rebuild the move calls for.
     pub fn set_excluded_bundle_ids(&self, excluded_bundle_ids: Vec<String>) {
         self.excludes.set_excluded_bundle_ids(excluded_bundle_ids);
     }

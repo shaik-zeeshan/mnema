@@ -172,11 +172,13 @@ fn read_exclude_inputs() -> Result<(Option<u32>, Vec<AudioProcess>), CaptureErro
 struct WatcherState {
     excluded_bundle_ids: Vec<String>,
     exclude_list: ExcludeList,
-    /// Set when a reconcile could not read Core Audio, so `exclude_list` is
-    /// owed a recompute. Sticky on purpose: standing still after a failed read
-    /// is only safe while the bundle-id set has not moved, and a privacy edit is
-    /// exactly the case where it has. Retried from [`Self::reconcile_if_dirty`]
-    /// on the capture tick, which bounds the window to one tick.
+    /// Set when `exclude_list` is owed a recompute — by a privacy edit, or by a
+    /// reconcile that could not read Core Audio. Sticky on purpose: standing
+    /// still after a failed read is only safe while the bundle-id set has not
+    /// moved, and a privacy edit is exactly the case where it has. Cleared only
+    /// by a reconcile that read successfully, from
+    /// [`SystemAudioExcludeWatcher::reconcile_if_dirty`] on the capture tick,
+    /// which bounds the window to one tick.
     dirty: bool,
 }
 
@@ -266,17 +268,22 @@ impl SystemAudioExcludeWatcher {
     /// `update_content_filter_ch` path. A mid-recording privacy-list edit lands
     /// here and signals a rebuild when it actually moves the exclude list.
     ///
-    /// A Core Audio read that fails under an edit does not lose it: the reconcile
-    /// leaves the watcher dirty and [`Self::reconcile_if_dirty`] retries.
+    /// Stores the new set and marks the watcher dirty; the Core Audio read and
+    /// the reconcile happen on the next tick, in [`Self::reconcile_if_dirty`].
+    /// Deliberately no read here: the caller edits privacy state under the
+    /// capture lock, and the process-list read is a synchronous round-trip to
+    /// coreaudiod — slow exactly when coreaudiod is restarting, which would
+    /// stall every capture command behind that lock. Dirty is sticky, so an
+    /// edit whose first read fails keeps retrying rather than being lost.
     pub fn set_excluded_bundle_ids(&self, excluded_bundle_ids: Vec<String>) {
-        lock_state(&self.state).excluded_bundle_ids = excluded_bundle_ids;
-        reconcile(&self.state, self.on_rebuild_needed.as_ref());
+        note_excluded_bundle_ids(&self.state, excluded_bundle_ids);
     }
 
-    /// Re-attempts a reconcile that a failed Core Audio read left owing.
+    /// Performs a reconcile a privacy edit or a failed Core Audio read left
+    /// owing.
     ///
-    /// Driven from the capture tick rather than a timer, and a no-op unless a
-    /// read actually failed — reconciling every tick would put the process-list
+    /// Driven from the capture tick rather than a timer, and a no-op unless one
+    /// is actually owed — reconciling every tick would put the process-list
     /// read (a synchronous round-trip to coreaudiod, and a slow one exactly when
     /// it is failing) on the tick for nothing.
     pub fn reconcile_if_dirty(&self) {
@@ -297,6 +304,17 @@ impl Drop for SystemAudioExcludeWatcher {
         );
         capture_runtime::debug_log!("{LOG_PREFIX} stopped process list listener ({removed:?})");
     }
+}
+
+/// A privacy edit: the new bundle-id set is stored and the watcher marked
+/// dirty, leaving the exclude list itself untouched until a reconcile can read
+/// Core Audio. Split out so the edit-then-retry contract is exercisable over
+/// plain data.
+#[cfg(target_os = "macos")]
+fn note_excluded_bundle_ids(state: &Mutex<WatcherState>, excluded_bundle_ids: Vec<String>) {
+    let mut state = lock_state(state);
+    state.excluded_bundle_ids = excluded_bundle_ids;
+    state.dirty = true;
 }
 
 /// Swaps in the freshly read exclude list, reporting whether it moved.
@@ -634,8 +652,17 @@ mod tests {
         };
         let rebuild_count = || *rebuilds.lock().expect("counter");
 
-        // The user adds com.secret; the read behind the edit fails.
-        lock_state(&state).excluded_bundle_ids = excluded(&["com.secret"]);
+        // The user adds com.secret. The edit itself reads no Core Audio — the
+        // caller holds the capture lock — it only marks the reconcile owing.
+        note_excluded_bundle_ids(&state, excluded(&["com.secret"]));
+        assert!(lock_state(&state).dirty, "an edit marks the watcher dirty");
+        assert_eq!(
+            lock_state(&state).exclude_list.process_object_ids(),
+            &[OWN],
+            "the edit must not touch the list before a read"
+        );
+
+        // The tick's reconcile fails to read Core Audio.
         reconcile_with(
             &state,
             Err(exclude_error("read audio process list", "coreaudiod restarting")),
