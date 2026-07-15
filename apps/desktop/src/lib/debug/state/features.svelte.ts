@@ -33,6 +33,7 @@ import type {
 	SemanticSearchModelStatusResponse,
 	SpeakerAnalysisModelStatusResponse,
 	UserContextDerivationRunResult,
+	UserContextDigest,
 	UserContextStatus,
 } from "$lib/types";
 
@@ -105,6 +106,8 @@ export function createFeaturesStore() {
 	let deepgramTestResult = $state<{ ok: boolean; message: string } | null>(null);
 	let runningDerivation = $state(false);
 	let derivationRunMessage = $state<string | null>(null);
+	let regeneratingDigest = $state(false);
+	let digestMessage = $state<string | null>(null);
 
 	// ─── Loaders ─────────────────────────────────────────────────────────────
 
@@ -246,6 +249,31 @@ export function createFeaturesStore() {
 		}
 	}
 
+	/**
+	 * Force-regenerate TODAY's daily digest (local calendar day), ignoring the
+	 * fingerprint cache — the debug counterpart of the Overview's re-read button.
+	 * `null` back means the day genuinely has too little activity to read.
+	 */
+	async function regenerateDailyDigest() {
+		regeneratingDigest = true;
+		digestMessage = null;
+		const start = new Date();
+		start.setHours(0, 0, 0, 0);
+		try {
+			const digest = await invoke<UserContextDigest | null>("regenerate_user_context_digest", {
+				rangeKind: "day",
+				startMs: start.getTime(),
+				endMs: start.getTime() + 24 * 60 * 60 * 1000,
+			});
+			digestMessage = digest ? null : "Not enough activity today to write a digest.";
+		} catch (err) {
+			digestMessage = humanizeError(err);
+		} finally {
+			regeneratingDigest = false;
+			await loadUserContextStatus();
+		}
+	}
+
 	return {
 		/** This poll's lane for a processor, zero-defaulted — see `laneFor`. */
 		lane(processor: string): ProcessorPipelineStatus {
@@ -291,6 +319,8 @@ export function createFeaturesStore() {
 		get deepgramTestResult() { return deepgramTestResult; },
 		get runningDerivation() { return runningDerivation; },
 		get derivationRunMessage() { return derivationRunMessage; },
+		get regeneratingDigest() { return regeneratingDigest; },
+		get digestMessage() { return digestMessage; },
 
 		poll,
 		startPolling,
@@ -302,6 +332,7 @@ export function createFeaturesStore() {
 		testAiConnection,
 		testDeepgram,
 		runDerivationNow,
+		regenerateDailyDigest,
 	};
 }
 

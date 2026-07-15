@@ -1,10 +1,13 @@
 <script lang="ts">
-  // User Context — distillation runs, gate drops, and the tail of the
-  // derivation-run ledger (mockup A).
+  // User Context — distillation runs, the window gate, digest freshness, and
+  // the tail of the derivation-run ledger (mockup A).
   //
-  // Gate drops come from `UserContextStatus.lastDistillation`, the per-gate
-  // withheld counts of the most recent Conclusion pass — the "why is my dossier
-  // thin?" readout. The ledger tail below answers "did the pass even run?".
+  // "Distillation gate" here is the WINDOW gate: low-signal windows the
+  // scheduler recorded `skipped` before any LLM call (24h count from
+  // `UserContextStatus.skippedWindows24h`). The per-draft persist gates
+  // (ungrounded / guardrail / formation bar / resurface) of the last
+  // Conclusion pass survive as the row's tooltip. The ledger tail below
+  // answers "did the pass even run?".
 
   import { tip } from "$lib/components/tooltip";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
@@ -28,6 +31,13 @@
   const status = $derived(features.userContextStatus);
   const distillation = $derived(status?.lastDistillation ?? null);
 
+  /** Newest ledger row of any kind — the "Last derivation run" headline. */
+  const lastRun = $derived(features.derivationRuns[0] ?? null);
+  /** Newest Activity-deriving run (forward window or backfill) for the stat. */
+  const lastActivityRun = $derived(
+    features.derivationRuns.find((run) => run.kind === "activity" || run.kind === "backfill") ?? null,
+  );
+
   function runStatusBadgeClass(runStatus: string): string {
     if (runStatus === "completed") return "badge badge--ok badge--sm";
     if (runStatus === "failed") return "badge badge--err badge--sm";
@@ -36,13 +46,7 @@
     return "badge badge--neutral badge--sm";
   }
 
-  /** Every gate that withheld something on the last Conclusion pass. */
-  const gateDrops = $derived.by(() => {
-    if (!distillation) return 0;
-    return distillation.ungrounded + distillation.guardrailSuppressed
-      + distillation.belowFormationBar + distillation.resurfaceBlocked;
-  });
-
+  /** Per-draft persist-gate breakdown of the last Conclusion pass (tooltip). */
   const gateBreakdown = $derived.by(() => {
     if (!distillation) return null;
     const parts = [
@@ -52,32 +56,68 @@
       ["resurface", distillation.resurfaceBlocked],
     ] as const;
     const active = parts.filter(([, n]) => n > 0);
-    return active.length === 0 ? null : active.map(([label, n]) => `${label} ${n}`).join(" · ");
+    if (active.length === 0) return null;
+    return `last pass also withheld drafts: ${active.map(([label, n]) => `${label} ${n}`).join(" · ")}`;
+  });
+
+  /** `+05:30` from frontend-stamped offset minutes. */
+  function formatOffset(minutes: number): string {
+    const sign = minutes < 0 ? "-" : "+";
+    const abs = Math.abs(minutes);
+    const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+    const mm = String(abs % 60).padStart(2, "0");
+    return `${sign}${hh}:${mm}`;
+  }
+
+  function isToday(ms: number): boolean {
+    const d = new Date(ms);
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  }
+
+  const digest = $derived(status?.lastDayDigest ?? null);
+  /** Fresh = the newest day digest was generated today (local clock). */
+  const digestFresh = $derived(digest != null && isToday(digest.generatedAtMs));
+  const digestDesc = $derived.by(() => {
+    if (!digest) return "no daily digest generated yet";
+    const at = digestFresh
+      ? `today ${formatOptionalTime(digest.generatedAtMs)}`
+      : new Date(digest.generatedAtMs).toLocaleString();
+    const offset = status?.localOffsetMinutes;
+    return `last generated ${at}${offset != null ? ` · local offset ${formatOffset(offset)}` : ""}`;
   });
 
   const stats = $derived.by<DebugStat[]>(() => [
-    { key: "activities", label: "Activities", value: formatCount(status?.activityCount), sub: "total derived" },
-    { key: "conclusions", label: "Conclusions", value: formatCount(status?.conclusionCount), sub: "total derived" },
     {
-      key: "gate",
-      label: "Gate drops",
-      value: distillation ? gateDrops : "—",
-      sub: gateBreakdown ?? "last distillation",
-      tone: gateDrops > 0 ? "warn" : undefined,
-      isNew: true,
+      key: "activities-run",
+      label: "Activities (run)",
+      value: lastActivityRun ? formatCount(lastActivityRun.activitiesDerived) : "—",
+      sub: "derived last window",
     },
     {
-      key: "tokens",
-      label: "Tokens",
-      value: formatCount(status?.tokenUsage.totalTokens),
-      sub: status ? `${formatCount(status.tokenUsage.runCount)} runs` : null,
+      key: "conclusions-run",
+      label: "Conclusions (run)",
+      value: distillation ? formatCount(distillation.conclusionsDerived) : "—",
+      sub: "upserted last pass",
+    },
+    {
+      key: "subjects",
+      label: "Subjects",
+      value: formatCount(status?.subjectCount),
+      sub: status ? `${formatCount(status.conclusionCount)} conclusions total` : null,
+    },
+    {
+      key: "dismissed",
+      label: "Dismissed",
+      value: formatCount(status?.dismissedCount),
+      sub: "excluded from digest",
     },
   ]);
 </script>
 
 <SettingGroup
   title="User Context"
-  hint="activities · conclusions · derivation ledger"
+  hint="activities · conclusions · digest"
   hintInline
   id={anchor("userContext")}
   cardClass={severityCardClass(severity)}
@@ -103,17 +143,24 @@
 
   <div class="row">
     <div class="row__main">
-      <div class="row__label">Derivation</div>
+      <div class="row__label">Last derivation run</div>
       <div class="row__desc">
-        {status?.engineAvailable ? "an AI model is available to distill with" : "no usable AI model — distillation cannot run"}
+        {#if lastRun}
+          {formatOptionalTime(lastRun.createdAtMs)} · window {formatWindow(lastRun.windowStartMs, lastRun.windowEndMs)} · model {lastRun.model ?? "—"}
+        {:else}
+          no derivation runs yet
+        {/if}
       </div>
     </div>
     <div class="row__value">
-      <span class={status?.engineAvailable ? "badge badge--ok" : "badge badge--warn"}>
-        {status?.engineAvailable ? "available" : "unavailable"}
-      </span>
+      {#if status && !status.engineAvailable}
+        <span class="badge badge--warn">engine unavailable</span>
+      {/if}
       {#if status?.backfilling}
         <span class="badge badge--running">backfilling</span>
+      {/if}
+      {#if lastRun}
+        <span class={runStatusBadgeClass(lastRun.status)}>{lastRun.status}</span>
       {/if}
       <button class="btn btn--ghost btn--sm" onclick={features.runDerivationNow} disabled={features.runningDerivation}>
         {features.runningDerivation ? "…" : "run now"}
@@ -123,26 +170,29 @@
 
   <div class="row">
     <div class="row__main">
-      <div class="row__label">Last derived</div>
-      <div class="row__desc">the most recent pass that produced anything</div>
+      <div class="row__label">Distillation gate <span class="new-chip">new</span></div>
+      <div class="row__desc">low-signal windows dropped before the LLM call</div>
     </div>
-    <div class="row__value">{formatOptionalTime(status?.lastDerivedAtMs)}</div>
+    <div class="row__value" use:tip={gateBreakdown ?? ""}>
+      {formatCount(status?.skippedWindows24h)} <span class="dim">windows dropped 24h</span>
+    </div>
   </div>
 
   <div class="row">
     <div class="row__main">
-      <div class="row__label">Covered until</div>
-      <div class="row__desc">activity up to here has been read into context</div>
+      <div class="row__label">Daily digest</div>
+      <div class="row__desc">{digestDesc}</div>
     </div>
-    <div class="row__value">{formatOptionalTime(status?.coveredUntilMs)}</div>
-  </div>
-
-  <div class="row">
-    <div class="row__main">
-      <div class="row__label">Budget tier</div>
-      <div class="row__desc">how much the distillation passes are allowed to spend</div>
+    <div class="row__value">
+      {#if digest}
+        <span class={digestFresh ? "badge badge--ok" : "badge badge--neutral"}>{digestFresh ? "fresh" : "stale"}</span>
+      {:else}
+        <span class="badge badge--neutral">none</span>
+      {/if}
+      <button class="btn btn--ghost btn--sm" onclick={features.regenerateDailyDigest} disabled={features.regeneratingDigest}>
+        {features.regeneratingDigest ? "…" : "regenerate"}
+      </button>
     </div>
-    <div class="row__value"><span class="badge badge--neutral">{status?.budgetTier ?? "—"}</span></div>
   </div>
 
   {#if status?.reason}
@@ -153,6 +203,9 @@
   {/if}
   {#if features.derivationRunMessage}
     <p class="debug-note" role="status" aria-live="polite">{features.derivationRunMessage}</p>
+  {/if}
+  {#if features.digestMessage}
+    <p class="debug-note" role="status" aria-live="polite">{features.digestMessage}</p>
   {/if}
 
   <StatGrid {stats} />

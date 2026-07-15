@@ -782,6 +782,20 @@ impl UserContextStore {
             .collect())
     }
 
+    /// How many derivation windows were recorded `skipped` (low-signal / empty —
+    /// dropped before any LLM call) since `since_ms`. Powers the debug surface's
+    /// "windows dropped 24h" readout.
+    pub async fn count_skipped_runs_since(&self, since_ms: i64) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS count FROM user_context_derivation_runs \
+             WHERE status = 'skipped' AND created_at_ms >= ?1",
+        )
+        .bind(since_ms)
+        .fetch_one(self.db.read())
+        .await?;
+        Ok(row.get("count"))
+    }
+
     /// Records the (estimated) token usage on an existing derivation run, e.g.
     /// after the LLM round trip completes.
     pub async fn record_derivation_run_tokens(
@@ -1739,6 +1753,34 @@ impl UserContextStore {
         Ok(row.get("count"))
     }
 
+    /// Number of distinct Subjects across non-dismissed Conclusions, deduped
+    /// case-insensitively (matching [`Self::list_subject_handles_by_recency`]).
+    pub async fn count_subjects(&self) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS count FROM ( \
+                 SELECT 1 FROM user_context_conclusions \
+                 WHERE status NOT IN ('dismissed', 'superseded') \
+                 GROUP BY subject COLLATE NOCASE)",
+        )
+        .fetch_one(self.db.read())
+        .await?;
+        Ok(row.get("count"))
+    }
+
+    /// Number of distinct dismissed beliefs, keyed case-insensitively on
+    /// `(subject, statement)` — the same identity the Dismissed archive dedups
+    /// on (a belief dismissed twice counts once).
+    pub async fn count_dismissed(&self) -> Result<i64> {
+        let row = sqlx::query(
+            "SELECT COUNT(*) AS count FROM ( \
+                 SELECT 1 FROM user_context_dismissals \
+                 GROUP BY subject COLLATE NOCASE, statement COLLATE NOCASE)",
+        )
+        .fetch_one(self.db.read())
+        .await?;
+        Ok(row.get("count"))
+    }
+
     /// Fetch one Conclusion by id, hydrated with its evidence. `None` if absent.
     pub async fn get_conclusion(&self, id: i64) -> Result<Option<Conclusion>> {
         let row = sqlx::query(
@@ -2274,6 +2316,32 @@ impl UserContextStore {
         )
         .bind(range_kind)
         .bind(range_start_ms)
+        .fetch_optional(self.db.read())
+        .await?;
+
+        Ok(row.map(|row| StoredDigest {
+            range_kind: row.get("range_kind"),
+            range_start_ms: row.get("range_start_ms"),
+            range_end_ms: row.get("range_end_ms"),
+            narrative: row.get("narrative"),
+            headline: row.get("headline"),
+            input_fingerprint: row.get("input_fingerprint"),
+            generated_at_ms: row.get("generated_at_ms"),
+        }))
+    }
+
+    /// The most recently GENERATED day-kind **Digest**, or `None` when no day
+    /// digest exists yet. Powers the debug surface's "Daily digest" freshness
+    /// row (newest `generated_at_ms`, not newest range).
+    pub async fn latest_day_digest(&self) -> Result<Option<StoredDigest>> {
+        let row = sqlx::query(
+            "SELECT range_kind, range_start_ms, range_end_ms, narrative, headline, \
+                    input_fingerprint, generated_at_ms \
+             FROM user_context_digests \
+             WHERE range_kind = 'day' \
+             ORDER BY generated_at_ms DESC, range_start_ms DESC \
+             LIMIT 1",
+        )
         .fetch_optional(self.db.read())
         .await?;
 
@@ -6652,6 +6720,105 @@ mod tests {
                     .expect("noop"),
                 "second resurface is a no-op",
             );
+        });
+    }
+
+    /// The debug-status reads: NOCASE-distinct Subject count, distinct dismissed
+    /// beliefs, skipped windows since a cutoff, and the newest-GENERATED day
+    /// digest (day-kind only, newest `generated_at_ms` not newest range).
+    #[test]
+    fn debug_status_counts_and_latest_day_digest() {
+        block_on(async {
+            let store = test_store().await;
+
+            // "Apple"/"apple" dedupe to one Subject; Rust is a second, but its
+            // only Conclusion is dismissed → excluded from both counts' bases.
+            store
+                .upsert_conclusion(draft("Apple", "Likes apples", 0.6))
+                .await
+                .expect("a1");
+            store
+                .upsert_conclusion(draft("apple", "Buys apple gear", 0.6))
+                .await
+                .expect("a2");
+            let rust = store
+                .upsert_conclusion(draft("Rust", "Learning Rust", 0.6))
+                .await
+                .expect("r");
+            sqlx::query("UPDATE user_context_conclusions SET status = 'dismissed' WHERE id = ?1")
+                .bind(rust)
+                .execute(store.pool())
+                .await
+                .expect("dismiss rust");
+            assert_eq!(store.count_subjects().await.expect("subjects"), 1);
+
+            // Two dismissal rows for the same belief (case-varied) count once;
+            // a second distinct belief makes two.
+            for (subject, statement) in
+                [("Rust", "Learning Rust"), ("rust", "learning rust"), ("Vim", "Uses Vim")]
+            {
+                sqlx::query(
+                    "INSERT INTO user_context_dismissals \
+                        (subject, statement, evidence_fingerprint, evidence_activity_count, dismissed_at_ms) \
+                     VALUES (?1, ?2, 'fp', 1, 1000)",
+                )
+                .bind(subject)
+                .bind(statement)
+                .execute(store.pool())
+                .await
+                .expect("dismissal row");
+            }
+            assert_eq!(store.count_dismissed().await.expect("dismissed"), 2);
+
+            // Two skipped runs + one completed → 2 since epoch, 0 since the future.
+            for status in ["skipped", "skipped", "completed"] {
+                store
+                    .insert_derivation_run(NewDerivationRun {
+                        kind: "activity".to_string(),
+                        window_start_ms: Some(0),
+                        window_end_ms: Some(1),
+                        status: status.to_string(),
+                        activities_derived: 0,
+                        conclusions_derived: 0,
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        provider: None,
+                        model: None,
+                        error: None,
+                        gate_drops: DistillationGateDrops::default(),
+                    })
+                    .await
+                    .expect("run");
+            }
+            assert_eq!(store.count_skipped_runs_since(0).await.expect("skipped"), 2);
+            assert_eq!(
+                store
+                    .count_skipped_runs_since(now_ms() + 60_000)
+                    .await
+                    .expect("skipped future"),
+                0
+            );
+
+            // No day digest yet.
+            assert!(store.latest_day_digest().await.expect("empty").is_none());
+
+            // Newest-generated day digest wins even with an older range start;
+            // a week digest never qualifies.
+            store
+                .upsert_digest("day", 0, 100, "old day", None, "fp", 5_000)
+                .await
+                .expect("day 1");
+            store
+                .upsert_digest("day", 200, 300, "new-range day", None, "fp", 4_000)
+                .await
+                .expect("day 2");
+            store
+                .upsert_digest("week", 0, 700, "week", None, "fp", 9_000)
+                .await
+                .expect("week");
+            let latest = store.latest_day_digest().await.expect("latest").expect("some");
+            assert_eq!(latest.generated_at_ms, 5_000);
+            assert_eq!(latest.narrative, "old day");
         });
     }
 }

@@ -362,6 +362,16 @@ export interface UserContextStatus {
 	tokenUsage: UserContextTokenUsage;
 	budgetTier: DerivationBudgetTier;
 	lastDistillation?: UserContextDistillationSummary | null;
+	/** Distinct Subjects across non-dismissed Conclusions (NOCASE-deduped). */
+	subjectCount: number;
+	/** Distinct dismissed beliefs, keyed on `(subject, statement)`. */
+	dismissedCount: number;
+	/** Low-signal windows skipped before any LLM call, last 24h. */
+	skippedWindows24h: number;
+	/** Frontend-stamped local UTC offset minutes; null when never stamped. */
+	localOffsetMinutes?: number | null;
+	/** The most recently generated day-kind Digest; null until one exists. */
+	lastDayDigest?: UserContextDigest | null;
 }
 
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
