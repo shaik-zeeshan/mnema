@@ -499,4 +499,43 @@ mod tests {
         let time = cat::AudioTimeStamp::invalid();
         assert!(builder.build(&time, &[]).is_none());
     }
+
+    #[test]
+    fn malformed_deliveries_never_become_samples() {
+        let mut builder = SystemAudioSampleBuilder::new(asbd(48_000.0, 2)).expect("builder starts");
+
+        // More buffers than a tap delivery can legitimately carry.
+        let mut pcm = vec![0.25_f32; 256];
+        let overfull = [buffers(&mut pcm, 2)[0]; MAX_TAP_AUDIO_BUFFERS + 1];
+        assert!(builder.build(&timestamp(0.0), &overfull).is_none());
+
+        // A buffer smaller than one frame (stereo f32 frame = 8 bytes).
+        let mut sub_frame_pcm = vec![0.25_f32; 1];
+        assert!(builder
+            .build(&timestamp(0.0), &buffers(&mut sub_frame_pcm, 2))
+            .is_none());
+    }
+
+    #[test]
+    fn a_paused_segment_finalizes_to_nothing() {
+        let mut context = SystemAudioOutputContext::new(None);
+
+        let mut builder = SystemAudioSampleBuilder::new(asbd(48_000.0, 2)).expect("builder starts");
+        let mut pcm = vec![0.25_f32; 256];
+        let sample = deliver(&mut builder, 0.0, &mut pcm, 2).expect("delivery becomes a sample");
+        context.append(&sample);
+
+        assert!(context.finalize().is_none());
+    }
+
+    #[test]
+    fn a_segment_that_never_got_a_sample_finalizes_to_an_error() {
+        let path = std::env::temp_dir().join("mnema-system-audio-never-got-a-sample.m4a");
+        let context = SystemAudioOutputContext::new(Some(path.clone()));
+
+        let finalization = context.finalize().expect("an opened segment finalizes");
+        assert_eq!(finalization.output_file, path);
+        let error = finalization.result.expect_err("no samples is an error");
+        assert_eq!(error.code, "capture_output_processing_failed");
+    }
 }
