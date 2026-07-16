@@ -9,6 +9,7 @@
 
   const c = getSettingsController();
   const rec = c.rec;
+  const sysAudio = c.systemAudioAccess;
 
   // Recording-wide save-block reasons (controller-derived). Surfaced inline so a
   // blocked save shows the specific guidance instead of failing silently.
@@ -46,21 +47,50 @@
       {/snippet}
     </SettingRow>
 
+    <!-- System audio is its own capture family on a Core Audio process tap
+         (ADR 0052): no screen dependency, so no `disabled` coupling to Screen. -->
     <SettingRow
       label="System Audio"
-      description={rec.draftCaptureScreen
-        ? "Capture Mac system audio (macOS 15+)"
-        : "Capture Mac system audio (macOS 15+). System Audio is unavailable — enable Screen first."}
-      disabled={!rec.draftCaptureScreen}
+      description="Capture Mac system audio (macOS 15+) — meetings, videos, and app sound."
     >
       {#snippet control()}
-        <Switch
-          bind:checked={rec.draftCaptureSystemAudio}
-          disabled={!rec.draftCaptureScreen}
-          ariaLabel="System Audio"
-        />
+        <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />
       {/snippet}
     </SettingRow>
+
+    <!-- Inferred, never known: a denied tap records silence and says nothing, so
+         this is the only signal the user gets (ADR 0052). Same
+         `.permission-callout` shape Privacy.svelte uses for Accessibility. -->
+    {#if sysAudio.mayBeBlocked}
+      <SettingRow label="System audio access" full warn>
+        {#snippet control()}
+          <div class="permission-cell">
+            <div class="permission-callout">
+              <div class="permission-callout__copy">
+                <span class="permission-callout__eyebrow">Screen &amp; System Audio Recording</span>
+                <strong>System audio · May be blocked</strong>
+                <p>
+                  System audio is on, but no recording has captured a sound yet. If you denied the
+                  macOS prompt, enable Mnema under Privacy &amp; Security → Screen &amp; System Audio
+                  Recording. If your Mac has simply been quiet, you can ignore this.
+                </p>
+              </div>
+            </div>
+            <div class="row-actions">
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => sysAudio.openSettings()}>
+                Open System Settings
+              </button>
+              <button class="btn btn--ghost btn--sm" type="button" onclick={() => sysAudio.dismiss()}>
+                Dismiss
+              </button>
+            </div>
+            {#if sysAudio.error}
+              <p class="group-hint group-hint--warn">{sysAudio.error}</p>
+            {/if}
+          </div>
+        {/snippet}
+      </SettingRow>
+    {/if}
 
     <SettingRow
       label="Segment Duration"
@@ -286,5 +316,15 @@
   .control-stack :global(.group-hint) {
     margin: 0;
     text-align: left;
+  }
+
+  /* Stack the system-audio callout, its actions, and any error vertically in the
+     full-width control cell (mirrors Privacy.svelte's `.gecko-access`). */
+  .permission-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+    min-width: 0;
   }
 </style>

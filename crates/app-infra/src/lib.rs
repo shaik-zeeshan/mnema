@@ -26,8 +26,12 @@ pub mod processing;
 mod receipt_verify;
 pub mod retry_policy;
 mod search;
+mod secret_vault;
+mod secret_vault_handle;
+mod secret_vault_migration;
 mod semantic_search;
 pub mod status;
+pub mod system_audio_evidence;
 pub mod usage_charts;
 pub mod user_context;
 
@@ -37,8 +41,19 @@ use std::{collections::BTreeSet, path::Path, sync::Arc};
 use sqlx::SqlitePool;
 
 pub use ai_provider_key_store::{
-    delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key, store_ai_provider_key,
+    ai_provider_vault_account, delete_ai_provider_key, has_ai_provider_key, load_ai_provider_key,
+    store_ai_provider_key,
 };
+pub use mcp_server_secret_store::{
+    delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret,
+    mcp_server_vault_account, store_mcp_server_secret,
+};
+pub use secret_vault::{
+    unlock_secret_vault, unlock_secret_vault_with_source, FileMasterKeySource,
+    KeychainMasterKeySource, MasterKeySource, SecretVault, SecretVaultUnlock,
+    SECRET_VAULT_FILE_NAME,
+};
+pub use secret_vault_handle::{install_process_secret_vault, SecretVaultHandle};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
@@ -67,8 +82,8 @@ pub use crl_verify::{
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
-    FrameBatch, FrameBatchFinalizePayload, FrameBatchFinalizeResult, FrameBatchStatus,
-    FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
+    FrameBatch, FrameBatchCounts, FrameBatchFinalizePayload, FrameBatchFinalizeResult,
+    FrameBatchStatus, FrameBatchStore, FrameBatchWindow, SegmentWorkspaceBatchReference,
     FRAME_BATCH_DURATION_MINUTES, FRAME_BATCH_FINALIZE_JOB_KIND,
 };
 pub use hidden_segment_workspace::{
@@ -95,10 +110,6 @@ pub use licensing_state::{
     read_licensing_state, set_trial_started_once, LicensingStateRow,
 };
 pub use machine_id::{hardware_uuid, machine_hash};
-pub use mcp_server_secret_store::{
-    delete_mcp_server_secret, has_mcp_server_secret, load_mcp_server_secret,
-    store_mcp_server_secret,
-};
 pub use ocr::{
     AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
     OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
@@ -111,10 +122,11 @@ pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
     FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
-    ProcessingJobReclamationSummary, ProcessingJobRunOutcome, ProcessingJobStatus,
-    ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft, ProcessingRuntime,
-    ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorRegistry,
-    SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload, SpeakerAnalysisProcessorBackend,
+    ProcessingJobListing, ProcessingJobReclamationSummary, ProcessingJobRunOutcome,
+    ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft,
+    ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorPipelineStatus,
+    ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
+    SpeakerAnalysisProcessorBackend,
     SpeakerClusterView, SpeakerTurnView, SystemAudioSpeechActivityJobPayload,
     SystemAudioSpeechActivityProcessorBackend, SystemAudioSpeechActivityResult,
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
@@ -135,7 +147,7 @@ pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::SubjectVectorStore;
 pub use user_context::{
     digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
-    CaptureWindowItem, DistillationGateDrops, FailedDerivationWindow, NewActivity,
+    CaptureWindowItem, DerivationRun, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
     SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };
@@ -318,6 +330,7 @@ pub struct AppInfra {
     semantic_search: SemanticSearchStore,
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
+    system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
     subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -325,6 +338,7 @@ pub struct AppInfra {
     runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
+    secret_vault: SecretVaultHandle,
 }
 
 impl AppInfra {
@@ -398,6 +412,8 @@ impl AppInfra {
         let semantic_search = SemanticSearchStore::new(database.handle().clone());
         let usage_charts = UsageChartsStore::new(database.handle().clone());
         let user_context = UserContextStore::new(database.handle().clone());
+        let system_audio_evidence =
+            system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
         let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -406,6 +422,14 @@ impl AppInfra {
         let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
         let processing_runtime = ProcessingRuntime::new(processing.clone(), processing_registry);
+        // Construction is cheap and touches no keychain: the vault unlocks at
+        // most once per process, on the desktop app's explicit `unlock_now` at
+        // startup or lazily on the first secret access (never on the Brokered
+        // Reader path — the CLI reads no AI/MCP secrets). The free-function
+        // store APIs route through the process slot; the first AppInfra wins
+        // (a test-installed handle is never clobbered).
+        let secret_vault = SecretVaultHandle::new(database.base_dir());
+        secret_vault_handle::install_process_secret_vault_if_absent(&secret_vault);
 
         Ok(Self {
             database,
@@ -418,6 +442,7 @@ impl AppInfra {
             semantic_search,
             usage_charts,
             user_context,
+            system_audio_evidence,
             subject_vectors,
             conversation,
             captured_frame_equivalence,
@@ -425,7 +450,15 @@ impl AppInfra {
             runtime,
             frame_batch_runtime,
             processing_runtime,
+            secret_vault,
         })
+    }
+
+    /// The vault handle behind the AI-provider-key and MCP-connector-secret
+    /// stores. Unlocked at most once per process; a denied unlock is cached and
+    /// surfaces as [`AppInfraError::SecretVaultDenied`] on every access.
+    pub fn secret_vault(&self) -> &SecretVaultHandle {
+        &self.secret_vault
     }
 
     /// Runs the one-time startup maintenance passes that repair/reconcile the
@@ -511,6 +544,14 @@ impl AppInfra {
 
     pub fn user_context(&self) -> &user_context::UserContextStore {
         &self.user_context
+    }
+
+    /// Persisted evidence for the system-audio denial heuristic (ADR 0052) —
+    /// the only thing standing between a denied grant and hours of silent
+    /// recordings, because Core Audio taps cannot be asked about their own
+    /// authorization.
+    pub fn system_audio_evidence(&self) -> &system_audio_evidence::SystemAudioEvidenceStore {
+        &self.system_audio_evidence
     }
 
     /// The **Subject Vector** store seam (migration `0043`): embedding-free
@@ -730,6 +771,11 @@ impl AppInfra {
 
     pub async fn list_frame_batches(&self, session_id: Option<&str>) -> Result<Vec<FrameBatch>> {
         self.frame_batches.list_batches(session_id).await
+    }
+
+    /// See [`FrameBatchStore::list_unfinished_batches`].
+    pub async fn list_unfinished_frame_batches(&self, limit: i64) -> Result<Vec<FrameBatch>> {
+        self.frame_batches.list_unfinished_batches(limit).await
     }
 
     pub async fn get_frame_batch(&self, batch_id: i64) -> Result<Option<FrameBatch>> {
@@ -1798,6 +1844,35 @@ impl AppInfra {
             .await
     }
 
+    pub async fn processing_pipeline_status(&self) -> Result<Vec<ProcessorPipelineStatus>> {
+        self.processing.pipeline_status().await
+    }
+
+    pub async fn list_processing_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<ProcessingJobListing>> {
+        self.processing
+            .list_jobs_by_processor(processor, status, subject_id, limit, offset)
+            .await
+    }
+
+    /// Total rows behind one `list_processing_jobs_by_processor` filter (the debug pager's "of N").
+    pub async fn count_processing_jobs_by_processor(
+        &self,
+        processor: &str,
+        status: Option<ProcessingJobStatus>,
+        subject_id: Option<i64>,
+    ) -> Result<i64> {
+        self.processing
+            .count_jobs_by_processor(processor, status, subject_id)
+            .await
+    }
+
     pub async fn count_queued_or_running_processing_jobs_for_processor(
         &self,
         processor: &str,
@@ -1856,11 +1931,20 @@ impl AppInfra {
     }
 
     pub async fn status(&self) -> Result<AppInfraStatus> {
+        let database_path = self.database.database_path();
         Ok(AppInfraStatus {
-            database_path: self.database.database_path().display().to_string(),
+            database_size_bytes: std::fs::metadata(database_path).ok().map(|meta| meta.len()),
+            database_path: database_path.display().to_string(),
             migrations_ran: self.database.migrations_ran(),
+            applied_migration_count: sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM _sqlx_migrations",
+            )
+            .fetch_one(self.database.read_pool())
+            .await
+            .ok(),
             worker_thread_count: self.runtime.worker_thread_count(),
             job_counts: self.jobs.counts().await?,
+            frame_batch_counts: self.frame_batches.counts().await?,
         })
     }
 }

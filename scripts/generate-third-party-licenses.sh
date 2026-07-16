@@ -26,12 +26,15 @@ trap cleanup EXIT
 # 1. Ensure cargo-about is available (guarded so re-runs are fast).
 if ! cargo about --version >/dev/null 2>&1; then
   echo "==> cargo-about not found; installing (cargo install cargo-about --locked)…"
-  cargo install cargo-about --locked
+  # cargo-about 0.9+ gates its binary behind the non-default `cli` feature.
+  cargo install cargo-about --locked --features cli
 fi
 
 # 2. Rust dependency licenses.
 echo "==> Generating Rust licenses with cargo-about…"
-( cd "${src_tauri}" && cargo about generate about.hbs --frozen ) > "${tmp_dir}/rust-licenses.txt"
+# --locked (not --frozen): enforce Cargo.lock but allow the crates.io index
+# fetch — fresh CI runners have no registry cache, so --frozen fails there.
+( cd "${src_tauri}" && cargo about generate about.hbs --locked ) > "${tmp_dir}/rust-licenses.txt"
 
 # 3. JavaScript / frontend production dependency licenses.
 echo "==> Generating JS licenses with license-checker-rseidelsohn…"

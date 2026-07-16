@@ -17,7 +17,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Tauri desktop shell | [x] | [~] | [~] | Shell is mostly cross-platform, but window chrome/dock behavior has macOS-specific paths. |
 | Native screen capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit / AVFoundation fallback. |
 | Native microphone capture | [x] | [ ] | [ ] | macOS uses AVFoundation. |
-| Native system-audio capture | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit and currently requires screen capture. |
+| Native system-audio capture | [x] | [ ] | [ ] | macOS uses Core Audio process taps (`CATapDescription` + aggregate device) in `crates/capture-system-audio` — an **independent capture family**, a sibling of the microphone, with no screen dependency: audio-only sessions are allowed, it records through display sleep/lock/disconnect, and it carries its own TCC category ("Screen & System Audio Recording", `NSAudioCaptureUsageDescription`) that no API can query. Recovery is a tap rebuild (device-change listeners + zero-watchdog with backoff). Runtime gate stays macOS 15.0. See [ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md). |
 | Capture segment lifecycle | [x] | [ ] | [ ] | Lifecycle is generic in shape but active runtime fields are macOS-gated. |
 | Media writers/finalization | [x] | [ ] | [ ] | macOS uses AVAssetWriter, AVFoundation, `afconvert`, and some `ffmpeg` trim paths. |
 | Screen frame export / frame index | [x] | [ ] | [ ] | Required for OCR, exact frame lookup, duplicate detection, and scrub previews. |
@@ -32,10 +32,11 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 | Semantic Search (local embeddings + vec0) | [x] | [~] | [~] | Built and tested on macOS only. Embeddings run on-device via **candle** behind a pluggable **Semantic Search Backend**: the Apple GPU (Metal, F16) on macOS or **candle-CPU** (F32) elsewhere — the runtime tries Metal then falls back to CPU; CUDA is deferred (no v1 artifact). This replaces the earlier `fastembed`/ONNX (`ort`) path along with its per-thread QoS downclock and arena mitigations. `sqlite-vec` (`vec0`) is still statically linked into the SQLCipher amalgamation (unchanged), and model download is still a desktop-owned `reqwest` (now `rustls`) fetch from Hugging Face (now safetensors layout) — all cross-platform in principle and free of native capture/audio-decode dependencies. Note candle-metal is a **second native ML runtime** in the bundle (links Metal/MPS) alongside `ort`, which now remains only for transcription — flag for the release/notarization checklist. Windows/Linux are **unverified**: claiming support is gated on a **candle-CPU measurement** (CPU%, throughput, RSS) plus a real build/run of the candle-CPU + static `vec0` link on those platforms. See [ADR 0037](docs/adr/0037-semantic-search-embeddings-on-candle-with-pluggable-backend.md). |
 | Inactivity detection | [x] | [ ] | [ ] | macOS uses CoreGraphics input idle plus capture-sourced screen/audio activity. |
 | Sleep/wake recovery | [x] | [ ] | [ ] | macOS uses AppKit/NSWorkspace + ScreenCaptureKit liveness. |
-| Live app privacy exclusion | [x] | [ ] | [ ] | macOS uses ScreenCaptureKit app exclusion filters. Windows/Linux semantics need design. |
+| Live app privacy exclusion | [x] | [ ] | [ ] | macOS excludes an app's **windows** through ScreenCaptureKit app exclusion filters and its **audio** through the process tap's exclude list — two mechanisms, one privacy list, kept in parity since the tap replaced the SCK content filter that used to silence both ([ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)). The audio half is optional: Settings → Privacy → "Filter system audio" (`privacy.filterSystemAudio`, default on) gates whether the privacy list reaches the tap; screen exclusion is unaffected. The tap also excludes Mnema's own process, which is never toggleable. Windows/Linux semantics need design. |
 | Active app/window metadata | [x] | [ ] | [ ] | macOS uses NSWorkspace/CoreGraphics. |
 | Browser URL metadata | [x] | [ ] | [ ] | macOS reads the active-tab URL through a per-browser **Browser URL Strategy**: AppleScript for supported Chromium and WebKit browsers (no extra permission), and the macOS Accessibility API for Firefox-family (Gecko) browsers — Firefox and Zen — reading `AXURL` off the focused web area. The Accessibility path is opt-in and Gecko-only: it requires the macOS Accessibility permission; if the permission is not granted, Gecko browsers yield no URL. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md). |
 | Recommended app exclusions | [x] | [ ] | [ ] | Current catalog uses macOS bundle IDs. |
+| Webview memory-cache purge on blur | [x] | [ ] | [ ] | macOS purges `WKWebsiteDataTypeMemoryCache` when a window blurs (rate-limited) so decoded frame-preview IOSurfaces don't accumulate in the WebContent process (`webview_cache.rs`). WebView2/WebKitGTK cache behavior unassessed. |
 | Quick Recall launcher panel | [x] | [~] | [~] | macOS summons a non-activating NSPanel (key without activating Mnema, like Spotlight/Raycast); non-macOS falls back to a plain shown/focused always-on-top window without non-activating semantics. |
 | Ask AI (in-process Reasoning Engine) | [x] | [~] | [~] | Quick Recall + Insights Chat run in-process on the shared Reasoning Engine (`crates/ai-runtime` via `rig-core`) — no installed PI/Node runtime, no shim, no `node`/`pi`-on-PATH resolution. Brokered `search`/`timeline`/`show_text`/`recall_context` tools (plus presentation-only `reference_captures`) are injected from the Tauri layer under the All-Retained Ask AI broker scope. Cross-platform Rust like the engine itself; a cloud engine needs the bring-your-own-key in the Encrypted Capture Index key store (macOS Keychain only today, see that row), a local Ollama/Llamafile engine needs no key and is platform-agnostic. Windows/Linux are blocked only on the platform key store for cloud keys. |
 | MCP stdio connector login-shell PATH | [x] | [ ] | [~] | Stdio MCP connector children get the user's login-shell PATH (`$SHELL -l -c`, resolved once per process, `/bin/zsh` fallback) set as their `PATH` env, so a packaged GUI app's minimal launchd PATH doesn't break bare commands (`npx`) or their shebang lookups (`#!/usr/bin/env node`). A user-provided PATH env row on the connector overrides it; resolution failure falls back to the inherited PATH unchanged. Unix mechanism (macOS exercised; Linux should behave the same but is unexercised); Windows resolves via its own rules and is unaddressed. |
@@ -60,21 +61,21 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Screen capture via ScreenCaptureKit on macOS 15+.
 - [x] AVFoundation screen fallback for older macOS backend constraints.
 - [x] Microphone capture via AVFoundation.
-- [x] System-audio capture through ScreenCaptureKit.
+- [x] System-audio capture through a Core Audio process tap (`crates/capture-system-audio`), independent of screen capture ([ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)). The tap excludes Mnema's own process plus the privacy-listed apps' audio processes (parity with the ScreenCaptureKit content filter it replaced), and the writer format follows the tap's device-dependent ASBD (44.1 ↔ 48 kHz) rather than a pinned rate.
+- [x] System-audio tap rebuild as the one recovery mechanism: default-output-device change, device death, exclude-list movement, or a zero-watchdog trip (~30 s without sound, backing off 30 s → 600 s, running even while paused for inactivity) tears down tap + aggregate and starts a fresh segment. Events log under the `system-audio-tap:` prefix.
 - [x] Segment rotation and finalization for screen, microphone, and system audio.
 - [x] User capture pause/resume.
 - [x] Inactivity pause/resume for screen, microphone, and system audio families.
-- [x] Sleep/wake recovery for screen/system-audio while preserving microphone continuation.
-- [x] Screen/system-audio liveness reconciliation from AppKit wake notifications and ScreenCaptureKit stream delegate failures.
+- [x] Sleep/wake recovery for screen while preserving microphone and system-audio continuation.
+- [x] Screen liveness reconciliation from AppKit wake notifications and ScreenCaptureKit stream delegate failures.
 - [x] Dark/deep-idle wake recovery via a Core Graphics display-reconfiguration listener (the panel powering back on re-arms capture even when macOS does not post `NSWorkspaceDidWake`, e.g. Power Nap / "Wake from Deep Idle"); `NSWorkspaceDidWake` is kept as an idempotent fast-path fallback. No polling.
-- [x] Display-unavailable recovery: a display sleep/lock/lid-close/disconnect — surfaced as a `DisplayUnavailable` privacy-filter apply error **or** as a ScreenCaptureKit delegate stream-stop (`-3815`) — suspends screen/system-audio (preserving microphone continuation), commits the finalized in-flight tail segment, and auto-resumes when a display returns, instead of failing the session. Segment rotation suspends rather than fails if the screen session is missing without a suspension owner.
+- [x] Display-unavailable recovery: a display sleep/lock/lid-close/disconnect — surfaced as a `DisplayUnavailable` privacy-filter apply error **or** as a ScreenCaptureKit delegate stream-stop (`-3815`) — suspends **screen only** (microphone and system audio keep recording), commits the finalized in-flight tail segment, and auto-resumes when a display returns, instead of failing the session. Segment rotation suspends rather than fails if the screen session is missing without a suspension owner.
 - [x] Screen frame export, captured-frame equivalence, OCR batching, and frame-index sidecars.
 
 ### Media and processing
 
 - [x] `.mov` screen segment output.
 - [x] `.m4a` microphone/system-audio output.
-- [x] Video-only screen finalization when system audio was captured.
 - [x] Exact frame preview extraction from finalized video.
 - [x] Scrub preview generation from finalized indexed segments.
 - [x] Apple Vision OCR provider.
@@ -89,11 +90,12 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 ### Privacy, metadata, and UX
 
 - [x] Screen and microphone permission checks/prompts.
+- [x] System-audio permission without an authorization API: the TCC prompt fires on the first tap read (or from onboarding's Grant button, which runs a throwaway tap), and the state is **inferred** as a tri-state — *not yet requested* / *assumed working* (a tap delivered a sound) / *possibly blocked* (every tap so far delivered only silence) — backed by one persisted `app_settings` evidence row. A "possibly blocked" state raises a dismissible hint deep-linking to Privacy & Security → Screen & System Audio Recording. See [ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md).
 - [x] Open macOS Privacy & Security panes for denied permissions.
 - [x] Active app/window metadata from NSWorkspace/CoreGraphics.
 - [x] Browser URL metadata for supported Chromium/WebKit browsers via AppleScript. Firefox-family (Gecko) browsers — Firefox and Zen — are supported through the macOS Accessibility API (reading `AXURL` off the focused web area); this path is opt-in and requires the macOS Accessibility permission, and Gecko browsers yield no URL until it is granted. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
 - [x] Gecko (Firefox/Zen) Accessibility-permission UX: a Settings → Privacy row (gated on a Gecko browser being installed and browser-URL capture being on) and an optional onboarding item (shown only when a Gecko browser is installed; never gates progression). Both probe trust via `get_browser_url_accessibility_status`, raise the macOS Accessibility prompt via `request_browser_url_accessibility`, deep-link to Privacy & Security → Accessibility via `open_browser_url_accessibility_settings`, and re-poll trust on demand and on window focus. A failed probe leaves the status null so the row simply hides — it never gates capture. See [ADR 0039](docs/adr/0039-gecko-browser-active-tab-url-via-accessibility-api.md).
-- [x] Live App Privacy Exclusion through ScreenCaptureKit app filters.
+- [x] Live App Privacy Exclusion through ScreenCaptureKit app filters (windows) and the process tap's exclude list (audio), both fed from the same privacy list.
 - [x] Exclude Current App tray action.
 - [x] Recommended sensitive app exclusion catalog using macOS bundle IDs.
 - [x] Native status-bar tray menu.
@@ -144,7 +146,7 @@ Research notes:
   - Must support device listing, default device tracking, selected-device reconnect policy, and VAD PCM feed.
 - [ ] Implement Windows system-audio capture.
   - Candidate API: WASAPI loopback.
-  - Decide whether system audio requires screen capture on Windows or can become an independent source.
+  - **Decided (macOS, [ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)): system audio is an independent capture family, not a rider on screen capture.** A Windows implementation is out of scope here, but it should mirror that shape: own session and inactivity lifecycle, no screen dependency, audio-only sessions allowed, and privacy-listed apps excluded from the audio itself. Only the low-disk suspension stops audio alongside the screen ([ADR 0040](docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)), because that one is about the volume, not the display.
 - [ ] Implement Windows capture session IDs and source-session bookkeeping.
 - [ ] Implement segment rotation without dropping OCR/frame-index invariants.
 - [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
@@ -278,13 +280,14 @@ Use this map when turning checklist items into implementation slices.
 
 | Source area | macOS-only implementation today | Windows/Linux replacement needed |
 | --- | --- | --- |
-| `crates/capture-screen/src/lib.rs` | ScreenCaptureKit/AVFoundation screen capture, system audio, permissions, stream liveness, frame export, video stripping, frame-index rebuild | Platform capture backend, permission semantics, writers, frame export/index, liveness/recovery |
+| `crates/capture-screen/src/lib.rs` | ScreenCaptureKit/AVFoundation screen capture (video only), permissions, stream liveness, frame export, frame-index rebuild | Platform capture backend, permission semantics, writers, frame export/index, liveness/recovery |
+| `crates/capture-system-audio/src/lib.rs` | Core Audio process tap + aggregate device + IOProc (cidre `core_audio`), exclude-list computation and listeners, zero-watchdog/rebuild engine, tap-following writer format, inferred permission tri-state | WASAPI loopback (Windows) / PipeWire monitor (Linux) adapter as an independent source, plus its own exclusion and permission semantics |
 | `crates/capture-microphone/src/lib.rs` | AVFoundation microphone capture, device list/change notifications, permission prompt, VAD PCM feed | WASAPI/CPAL/PipeWire/etc. microphone adapter, device policy, permission UX |
 | `crates/capture-writers/src/lib.rs` | AVAssetWriter/AVAudioFile, `afconvert`, AVFoundation duration/decode helpers | Cross-platform writer, duration validation, decode/trim/convert |
 | `apps/desktop/src-tauri/src/native_capture/*` | Runtime active sessions and lifecycle operations are mostly macOS-gated | Promote runtime fields/adapters to platform-neutral traits or add Windows/Linux gated implementations |
 | `apps/desktop/src-tauri/src/native_capture_metadata.rs` | NSWorkspace, CoreGraphics window list, AppleScript browser URL probe (Chromium/WebKit) | Foreground-window/app metadata and optional browser metadata per OS |
 | `apps/desktop/src-tauri/src/native_capture_browser_url_ax.rs` | macOS Accessibility (`AXUIElement`) reader for Gecko (Firefox/Zen) active-tab URL — `AXURL` off the focused→outermost web area, gated by `AXIsProcessTrusted`, with the first-sighting trust prompt | OS-specific Gecko URL source if a non-AppleScript browser must be supported, or explicit unsupported behavior |
-| `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters | OS-specific live exclusion or explicit unsupported/degraded behavior |
+| `apps/desktop/src-tauri/src/native_capture/privacy.rs` | ScreenCaptureKit app exclusion filters; the same collected exclusion list is forwarded from the segment loop to the system-audio tap's exclude list | OS-specific live exclusion or explicit unsupported/degraded behavior, for windows **and** audio |
 | `apps/desktop/src-tauri/src/native_capture_system_idle.rs` | CoreGraphics idle time | `GetLastInputInfo` on Windows; portal/X11/compositor path on Linux |
 | `apps/desktop/src-tauri/src/app_infra/frame_preview.rs` | AVAssetImageGenerator exact/scrub previews | FFmpeg/GStreamer/Media Foundation extractor |
 | `crates/audio-transcription/src/macos_audio_decode.rs` | AVFoundation audio decode for Local Whisper/Parakeet | Cross-platform audio decode module |

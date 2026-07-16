@@ -36,6 +36,11 @@ const MIN_AUDIO_ACTIVITY_SENSITIVITY: u8 = 0;
 const MAX_AUDIO_ACTIVITY_SENSITIVITY: u8 = 100;
 const MAX_PREVIEW_CACHE_TTL_SECONDS: u64 = 24 * 60 * 60;
 const MAX_SEGMENT_DURATION_SECONDS: u64 = 300;
+// One snapshot per minute. Matches the frontend capture-rate ladder floor
+// (lib/components/capture-rate.ts); JS `1/60` and Rust `1.0/60.0` produce the
+// same f64, so the boundary value round-trips the wire exactly.
+const MIN_SCREEN_FRAME_RATE: f64 = 1.0 / 60.0;
+const MAX_SCREEN_FRAME_RATE: f64 = 10.0;
 const MIN_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 500_000;
 const MAX_EFFECTIVE_VIDEO_BITRATE_BPS: u32 = 120_000_000;
 const VIDEO_BITRATE_ROUND_STEP_BPS: u32 = 250_000;
@@ -288,7 +293,10 @@ fn validate_audio_speech_detection_settings(
 pub(crate) fn validate_privacy_settings(
     value: capture_types::PrivacySettings,
 ) -> Result<capture_types::PrivacySettings, CaptureErrorResponse> {
-    let capture_types::PrivacySettings { excluded_apps } = value;
+    let capture_types::PrivacySettings {
+        excluded_apps,
+        filter_system_audio,
+    } = value;
 
     let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
     let excluded_apps = excluded_apps
@@ -302,7 +310,10 @@ pub(crate) fn validate_privacy_settings(
         })
         .collect();
 
-    Ok(capture_types::PrivacySettings { excluded_apps })
+    Ok(capture_types::PrivacySettings {
+        excluded_apps,
+        filter_system_audio,
+    })
 }
 
 pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
@@ -658,13 +669,6 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
-        return Err(CaptureErrorResponse {
-            code: "invalid_recording_settings".to_string(),
-            message: "System audio capture requires screen capture".to_string(),
-        });
-    }
-
     let save_directory = request.save_directory.trim().to_string();
     if save_directory.is_empty() {
         return Err(CaptureErrorResponse {
@@ -682,10 +686,11 @@ pub(crate) fn validate_recording_settings_with_resolution_support(
         });
     }
 
-    if !(0.5..=10.0).contains(&request.screen_frame_rate) {
+    if !(MIN_SCREEN_FRAME_RATE..=MAX_SCREEN_FRAME_RATE).contains(&request.screen_frame_rate) {
         return Err(CaptureErrorResponse {
             code: "invalid_recording_settings".to_string(),
-            message: "screenFrameRate must be between 0.5 and 10".to_string(),
+            message: "screenFrameRate must be between 1/60 (one snapshot per minute) and 10"
+                .to_string(),
         });
     }
 
@@ -2158,8 +2163,8 @@ mod tests {
     }
 
     #[test]
-    fn capture_sources_domain_rejects_system_audio_without_screen() {
-        let error = apply_domain_patch_for_test(
+    fn capture_sources_domain_allows_system_audio_without_screen() {
+        let settings = apply_domain_patch_for_test(
             default_recording_settings(),
             RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
                 capture_screen: Some(false),
@@ -2167,13 +2172,10 @@ mod tests {
                 capture_system_audio: Some(true),
             }),
         )
-        .expect_err("system audio without screen should be rejected");
+        .expect("system audio runs on its own tap, so it needs no screen capture");
 
-        assert_eq!(error.code, "invalid_recording_settings");
-        assert_eq!(
-            error.message,
-            "System audio capture requires screen capture"
-        );
+        assert!(!settings.capture_screen);
+        assert!(settings.capture_system_audio);
     }
 
     #[test]

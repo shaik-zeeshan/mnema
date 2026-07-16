@@ -1,6 +1,6 @@
 [package]
 name = "mnema"
-version = "0.1.9"
+version = "0.1.13"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -75,6 +75,7 @@ capture-metadata = { path = "../../../crates/capture-metadata" }
 capture-runtime = { path = "../../../crates/capture-runtime" }
 capture-screen = { path = "../../../crates/capture-screen" }
 capture-microphone = { path = "../../../crates/capture-microphone" }
+capture-system-audio = { path = "../../../crates/capture-system-audio" }
 capture-vad = { path = "../../../crates/capture-vad" }
 capture-writers = { path = "../../../crates/capture-writers" }
 tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }
@@ -105,6 +106,9 @@ reqwest13 = { package = "reqwest", version = "0.13", default-features = false, f
 process-wrap = { version = "9.0", features = ["tokio1", "process-group"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Already in the tree via cocoa; needed directly for the non-nil completion
+# handler WKWebsiteDataStore requires (webview_cache.rs).
+block = "0.1"
 cocoa = "0.26"
 core-graphics = "0.25"
 core-foundation = "0.10"

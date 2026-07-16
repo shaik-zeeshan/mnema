@@ -577,7 +577,6 @@ export class OnboardingController {
   private lockContext(): FeatureLockContext {
     return {
       micGranted: this.permissions?.microphone === "granted",
-      systemAudioGranted: this.permissions?.systemAudio === "granted",
       transcriptionEnabled: this.draftTranscriptionEnabled,
     };
   }

@@ -12,11 +12,6 @@ import type {
 } from "$lib/types";
 import { describeError, formatBytes } from "./format";
 
-// Canonical project links surfaced in the About panel. The GitHub repo is the
-// app's source of truth for releases — the updater pulls latest.json from it.
-export const ABOUT_REPO_URL = "https://github.com/shaik-zeeshan/mnema";
-export const ABOUT_RELEASES_URL = "https://github.com/shaik-zeeshan/mnema/releases";
-
 // ── Pure label/format helpers ───────────────────────────────────────────────
 
 export function appUpdateStateLabel(status: AppUpdateStatus | null): string {

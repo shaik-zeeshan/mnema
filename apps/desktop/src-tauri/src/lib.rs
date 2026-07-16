@@ -7,6 +7,9 @@ mod broker_authorization_channel;
 mod cli_access;
 mod conversation;
 mod crl_refresh;
+mod debug_health;
+mod debug_pipeline;
+mod debug_status;
 mod general_app_log;
 mod keyboard_bindings;
 mod licensing;
@@ -20,6 +23,8 @@ mod semantic_search_models;
 mod semantic_search_query;
 mod semantic_search_worker;
 mod sensitive_capture_recommendations;
+#[cfg(test)]
+mod secret_vault_test_support;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
@@ -27,6 +32,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod webview_cache;
 mod windows;
 
 use std::{collections::VecDeque, path::Path, sync::Mutex};
@@ -399,6 +405,8 @@ fn exit_request_action_for_exit_request(
 /// ordering the previous synchronous startup path guaranteed.
 fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool) {
     app_infra::run_deferred_startup_blocking(app_handle);
+    reap_stale_system_audio_aggregate_devices();
+    hydrate_system_audio_permission_evidence(app_handle);
     // If the user quit while the (now background) startup work was running,
     // graceful exit may have already stopped capture and be heading for a hard
     // process exit. Do not auto-start a NEW capture session or kick off the
@@ -420,6 +428,44 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
         app_updates::start_startup_update_check(app_handle);
     }
 }
+
+/// Destroys aggregate devices a crashed Mnema left behind: their UIDs collide
+/// with the ones the system-audio tap mints, and the collision fails the tap's
+/// start outright (ADR 0052). Runs off the first-paint path — an aggregate from a
+/// previous process can only matter once a recording starts.
+#[cfg(target_os = "macos")]
+fn reap_stale_system_audio_aggregate_devices() {
+    let destroyed = capture_system_audio::cleanup_stale_aggregate_devices();
+    if destroyed > 0 {
+        native_capture::debug_log::log_info(format!(
+            "{} destroyed {destroyed} stale aggregate device(s) from a previous process",
+            capture_system_audio::LOG_PREFIX
+        ));
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn reap_stale_system_audio_aggregate_devices() {}
+
+/// Loads the persisted system-audio denial evidence into the cache the
+/// permission surfaces read (ADR 0052). Off the first-paint path with the reap
+/// above: until it lands the permission reads as "not yet requested", and the
+/// frontend re-polls on focus.
+#[cfg(target_os = "macos")]
+fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+
+    let Some(infra) = app_handle.try_state::<app_infra::AppInfraState>() else {
+        return;
+    };
+    let infra = infra.inner().clone();
+    tauri::async_runtime::block_on(native_capture::hydrate_system_audio_permission_evidence(
+        &infra,
+    ));
+}
+
+#[cfg(not(target_os = "macos"))]
+fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -452,6 +498,10 @@ pub fn run() {
         .manage(InsightsOpenConversationState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
+        // The Semantic Index Backfill worker's health, published each sweep pass and
+        // read by the debug surface's `get_semantic_index_status`. Registered here
+        // (not in the worker) so the state exists before deferred startup spawns it.
+        .manage(debug_status::SemanticWorkerHealthState::default())
         // MCP tool connectors (Workstream C, ADR 0048): persistent connection
         // manager. Lazy — nothing connects here at launch; it dials on first use.
         .manage(ask_ai::mcp::McpManager::default())
@@ -512,7 +562,15 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             app_infra::get_app_infra_status,
+            debug_pipeline::get_processing_pipeline_status,
+            debug_pipeline::list_processing_jobs_by_processor,
+            debug_health::get_debug_health,
+            ask_ai::get_ask_ai_last_turn_usage,
             app_infra::get_storage_location,
+            debug_status::get_semantic_index_status,
+            debug_status::list_frame_batches,
+            debug_status::list_user_context_derivation_runs,
+            debug_status::tail_app_log,
             app_updates::get_app_update_status,
             app_updates::check_for_app_update,
             app_updates::set_app_update_channel,
@@ -626,6 +684,7 @@ pub fn run() {
             native_capture::get_capture_permissions,
             native_capture::request_capture_permission,
             native_capture::open_capture_privacy_settings,
+            native_capture::get_system_audio_access_hint,
             native_capture::get_browser_url_accessibility_status,
             native_capture::request_browser_url_accessibility,
             native_capture::open_browser_url_accessibility_settings,
@@ -693,6 +752,7 @@ pub fn run() {
             usage_charts::get_usage_charts,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
+            privacy_redaction_sources::set_privacy_filter_system_audio,
             privacy_redaction_sources::remove_privacy_excluded_app,
             native_capture::get_native_capture_debug_log_status,
             native_capture::open_native_capture_debug_log,

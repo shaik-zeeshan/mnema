@@ -8,6 +8,6 @@
   "skills": ["./"],
   "homepage": "https://github.com/shaik-zeeshan/mnema",
   "repository": "https://github.com/shaik-zeeshan/mnema",
-  "license": "MIT",
+  "license": "BUSL-1.1",
   "keywords": ["mnema", "activity", "recall", "timeline", "cli", "privacy"]
 }

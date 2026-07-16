@@ -16,9 +16,12 @@ fn general_app_log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Captur
 }
 
 fn status_for_path(path: &Path) -> GeneralAppLogStatus {
+    // `metadata` on a missing file errors, so a missing log is `None`, not 0.
+    let metadata = std::fs::metadata(path).ok().filter(|m| m.is_file());
     GeneralAppLogStatus {
         path: path.to_string_lossy().to_string(),
-        exists: path.is_file(),
+        exists: metadata.is_some(),
+        size_bytes: metadata.map(|m| m.len()),
     }
 }
 
@@ -146,11 +149,13 @@ mod tests {
         let missing = status_for_path(&log_path);
         assert_eq!(missing.path, log_path.to_string_lossy().to_string());
         assert!(!missing.exists);
+        assert_eq!(missing.size_bytes, None);
 
         fs::write(&log_path, "hello").expect("log file should write");
 
         let present = status_for_path(&log_path);
         assert!(present.exists);
+        assert_eq!(present.size_bytes, Some(5));
     }
 
     #[test]

@@ -2900,6 +2900,7 @@
     position: fixed;
     top: calc(var(--app-titlebar-height) + 8px);
     right: 8px;
+    /* Above the sticky titlebar's z-index: 100. */
     z-index: 200;
     width: min(340px, calc(100vw - 24px));
     max-height: 360px;

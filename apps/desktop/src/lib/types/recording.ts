@@ -44,6 +44,12 @@ export interface ExcludedAppEntry {
 
 export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
+	/**
+	 * Whether the excluded-apps list also filters the system-audio tap. Screen
+	 * exclusion and Mnema's own-process self-exclusion are never gated by this.
+	 * Defaults to true (the pre-toggle behavior).
+	 */
+	filterSystemAudio: boolean;
 }
 
 /** Stable provider id, matching the Rust `AiProviderKind::id` values. */
@@ -362,6 +368,16 @@ export interface UserContextStatus {
 	tokenUsage: UserContextTokenUsage;
 	budgetTier: DerivationBudgetTier;
 	lastDistillation?: UserContextDistillationSummary | null;
+	/** Distinct Subjects across non-dismissed Conclusions (NOCASE-deduped). */
+	subjectCount: number;
+	/** Distinct dismissed beliefs, keyed on `(subject, statement)`. */
+	dismissedCount: number;
+	/** Low-signal windows skipped before any LLM call, last 24h. */
+	skippedWindows24h: number;
+	/** Frontend-stamped local UTC offset minutes; null when never stamped. */
+	localOffsetMinutes?: number | null;
+	/** The most recently generated day-kind Digest; null until one exists. */
+	lastDayDigest?: UserContextDigest | null;
 }
 
 /** Result of a manual "Run derivation now" pass, mirroring the Rust DTO. */
@@ -505,6 +521,10 @@ export interface AiRuntimeModel {
 	id: string;
 	/** Stable provider id (`AiProviderKind`). */
 	provider: string;
+	/** Provider-reported context-window size in tokens, when the listing route
+	 *  advertises one (many OpenAI-compatible vendors and the Fireworks catalog
+	 *  do); null when the provider doesn't expose it (Anthropic, OpenAI). */
+	contextWindow: number | null;
 }
 
 /** One connected provider that failed to list its models, surfaced so the

@@ -76,3 +76,29 @@ describe("buildSettingsRequestFrom preserves Settings-page-owned slices", () => 
     expect(buildSettingsRequestFrom(draft).aiRuntime.mcpServers).toEqual(mcpServers);
   });
 });
+
+// ADR 0052: system audio is an independent capture family — no screen
+// dependency, and audio-only sessions are allowed. Anding the saved flag with
+// `draftCaptureScreen` silently persisted `captureSystemAudio: false` for a
+// returning user whose saved `captureScreen` was off, making audio-only
+// unreachable from onboarding.
+describe("buildSettingsRequestFrom system audio has no screen dependency", () => {
+  const withCapture = (over: Partial<OnboardingDraftTarget>): OnboardingDraftTarget =>
+    ({ ...draft, ...over }) as unknown as OnboardingDraftTarget;
+
+  test("sysaudio on + screen off -> persists sysaudio on", () => {
+    const next = buildSettingsRequestFrom(
+      withCapture({ draftCaptureScreen: false, draftCaptureSystemAudio: true } as Partial<OnboardingDraftTarget>),
+    );
+    expect(next.captureScreen).toBe(false);
+    expect(next.captureSystemAudio).toBe(true);
+  });
+
+  test("sysaudio off -> persists sysaudio off regardless of screen", () => {
+    expect(
+      buildSettingsRequestFrom(
+        withCapture({ draftCaptureScreen: true, draftCaptureSystemAudio: false } as Partial<OnboardingDraftTarget>),
+      ).captureSystemAudio,
+    ).toBe(false);
+  });
+});

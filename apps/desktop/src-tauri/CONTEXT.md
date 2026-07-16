@@ -11,7 +11,7 @@ Background work that materializes generated **Scrub Preview** cache artifacts fo
 _Avoid_: scrub-time extraction, exact frame preview generation, thumbnail pipeline
 
 **Recording Lifecycle**:
-The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen and system audio share the screen capture backend, while microphone runs as a separate native session.
+The in-memory control flow for one coordinated recording runtime that starts capture, owns pause/resume decisions, rotates segments, recovers after wake, and stops capture across the requested sources. Screen, microphone, and system audio are three independent capture families, each on its own native session — system audio runs on a Core Audio process tap with no screen dependency ([ADR 0052](../../../docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)), so any subset of sources is a valid session, including audio only.
 _Avoid_: capture runtime, recorder service, session manager
 
 **Capture Suspension**:
@@ -140,7 +140,7 @@ _Avoid_: enabled-means-ready, connected (overloaded with the transport handle), 
 - Desktop Tauri **Access Settings** commands and app-facing access types belong in a dedicated CLI access module separate from the socket protocol module.
 - Desktop window ownership for **CLI Access Request** stays in the shared window helper module, while authorization protocol decisions stay outside the window helper.
 - Legacy broker authorization request files should be translated into the new **CLI Access Request** flow rather than opening the old Privacy Agent Access section.
-- If a live app-exclusion change cannot be applied while recording, Mnema reports that screen/system-audio capture is suspended because privacy exclusions could not be applied, reusing the existing privacy suspension path.
+- If a live app-exclusion change cannot be applied to the screen while recording, Mnema reports that screen capture is suspended because privacy exclusions could not be applied, reusing the existing privacy suspension path. System audio is not part of that suspension: the same exclusion list reaches its process tap as an exclude list, and a change there is applied by rebuilding the tap rather than by suspending anything.
 - Historical **Capture Segment** values encountered through dashboard demand enqueue only visible-window intervals, not full-segment warming.
 - Metadata collection kept after removing metadata privacy rules must serve non-privacy product features such as timeline context, app/window labels, or debug surfaces.
 - Current-run **OCR Throughput Budget** state belongs to the desktop runtime, not app-infra durable storage.

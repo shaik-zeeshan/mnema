@@ -8,11 +8,21 @@ export interface JobCounts {
 	failed: number;
 }
 
+export interface FrameBatchCounts {
+	open: number;
+	failed: number;
+}
+
 export interface AppInfraStatus {
 	databasePath: string;
+	/** Size of the main DB file in bytes; null when it cannot be stat'd. */
+	databaseSizeBytes: number | null;
 	migrationsRan: boolean;
+	/** Rows in `_sqlx_migrations`; null when the count query fails. */
+	appliedMigrationCount: number | null;
 	workerThreadCount: number;
 	jobCounts: JobCounts;
+	frameBatchCounts: FrameBatchCounts;
 }
 
 export interface FrameMetadataSnapshot {

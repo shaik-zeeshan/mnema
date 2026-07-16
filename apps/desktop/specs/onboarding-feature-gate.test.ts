@@ -2,15 +2,18 @@ import { describe, expect, test } from "bun:test";
 import { featureLockReason, type FeatureLockContext } from "../src/routes/onboarding/feature-model";
 import { isFeatureEnabled, featureAttentionFor, type OnboardingFeatureTarget } from "../src/routes/onboarding/onboarding-feature-state";
 
+// specs/ sits outside the `.svelte-kit` tsconfig `include` (src/ only), so
+// `bun run check` does not type-check this file — these tests are the only
+// thing pinning the contracts below.
 const ctx = (over: Partial<FeatureLockContext> = {}): FeatureLockContext => ({
-  micGranted: false, systemAudioGranted: false, transcriptionEnabled: false, ...over,
+  micGranted: false, transcriptionEnabled: false, ...over,
 });
 const avail = (available: boolean) => ({ available });
 const target = (over: Partial<OnboardingFeatureTarget> = {}): OnboardingFeatureTarget => ({
   draftCaptureMicrophone: false, draftCaptureSystemAudio: false, draftOcrEnabled: false,
   draftTranscriptionEnabled: false, draftSpeakerSeparateSpeakers: false, privacyEnabled: false,
   draftAskAiEnabled: false, draftSemanticSearchEnabled: false,
-  permissions: { screen: "granted", microphone: "granted", systemAudio: "granted" },
+  permissions: { screen: "granted", microphone: "granted", systemAudio: "not_determined" },
   transcriptionRequestedWhileOff: false,
   selectedOcrModel: avail(true), selectedTranscriptionModel: avail(true),
   selectedSpeakerModel: avail(true), selectedSemanticSearchModel: avail(true),
@@ -26,9 +29,10 @@ describe("featureLockReason (INV-DEP-GATE)", () => {
     expect(featureLockReason("mic", ctx({ micGranted: false }))).toBe("Needs Microphone permission");
     expect(featureLockReason("mic", ctx({ micGranted: true }))).toBeNull();
   });
-  test("sysaudio locked until System audio permission granted", () => {
-    expect(featureLockReason("sysaudio", ctx({ systemAudioGranted: false }))).toBe("Needs System audio permission");
-    expect(featureLockReason("sysaudio", ctx({ systemAudioGranted: true }))).toBeNull();
+  // ADR 0052: a Core Audio process tap's grant is unreadable and its prompt only
+  // fires at the first tap read, so a lock would never open.
+  test("sysaudio never locks — its grant is unreadable", () => {
+    expect(featureLockReason("sysaudio", ctx())).toBeNull();
   });
   test("speakers locked until transcription on", () => {
     expect(featureLockReason("speakers", ctx({ transcriptionEnabled: false }))).toBe("Needs Audio transcription on");
@@ -45,7 +49,15 @@ describe("featureAttentionFor permissions (INV-SCREEN-UNSUPPORTED)", () => {
   test("screen unsupported -> NON-blocking", () => { expect(featureAttentionFor(target({ permissions: { screen: "unsupported" } }), "permissions")).toBe(false); });
   test("screen granted -> no attention", () => { expect(featureAttentionFor(target({ permissions: { screen: "granted" } }), "permissions")).toBe(false); });
   test("sysaudio enabled + unsupported -> NON-blocking", () => { expect(featureAttentionFor(target({ draftCaptureSystemAudio: true, permissions: { systemAudio: "unsupported" } }), "sysaudio")).toBe(false); });
-  test("sysaudio enabled + denied -> attention", () => { expect(featureAttentionFor(target({ draftCaptureSystemAudio: true, permissions: { systemAudio: "denied" } }), "sysaudio")).toBe(true); });
+  // ADR 0052 tri-state: only a positive suspicion blocks. "not yet requested" is
+  // the normal onboarding state (the prompt fires at the first tap read), so
+  // demanding proof would make the attention count unclearable.
+  test("sysaudio enabled + possibly_blocked -> attention", () => { expect(featureAttentionFor(target({ draftCaptureSystemAudio: true, permissions: { systemAudio: "possibly_blocked" } }), "sysaudio")).toBe(true); });
+  test("sysaudio enabled + not_determined/assumed_working -> no attention", () => {
+    expect(featureAttentionFor(target({ draftCaptureSystemAudio: true, permissions: { systemAudio: "not_determined" } }), "sysaudio")).toBe(false);
+    expect(featureAttentionFor(target({ draftCaptureSystemAudio: true, permissions: { systemAudio: "assumed_working" } }), "sysaudio")).toBe(false);
+  });
+  test("sysaudio off + possibly_blocked -> no attention", () => { expect(featureAttentionFor(target({ draftCaptureSystemAudio: false, permissions: { systemAudio: "possibly_blocked" } }), "sysaudio")).toBe(false); });
   test("mic enabled + ungranted -> attention; granted -> none", () => {
     expect(featureAttentionFor(target({ draftCaptureMicrophone: true, permissions: { microphone: "denied" } }), "mic")).toBe(true);
     expect(featureAttentionFor(target({ draftCaptureMicrophone: true, permissions: { microphone: "granted" } }), "mic")).toBe(false);

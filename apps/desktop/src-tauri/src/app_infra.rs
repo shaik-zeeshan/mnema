@@ -1634,13 +1634,10 @@ fn desktop_processing_registry(
                     audio_transcription::providers::ParakeetProvider::with_models_dir(models_dir),
                 ),
                 Arc::new(audio_transcription::providers::DeepgramProvider::new(
-                    Arc::new(|| {
-                        ::app_infra::load_ai_provider_key(
-                            crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT,
-                        )
-                        .ok()
-                        .flatten()
-                    }),
+                    // Denied ≠ missing (ADR 0048 amendment): a vault-denied read
+                    // surfaces as Err and parks the job as transient liveness;
+                    // only Ok(None) means "no key configured".
+                    Arc::new(crate::transcription_deepgram::load_deepgram_key),
                     deepgram_auth_status.clone(),
                 )) as Arc<dyn audio_transcription::TranscriptionProvider>,
             ]),
@@ -1821,6 +1818,17 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     };
     let background_workers = background_workers.inner().clone();
     let base_dir = infra.base_dir().to_path_buf();
+
+    // Unlock the secret vault exactly once per process, here on the deferred
+    // thread so a first-run keychain prompt never blocks the window opening.
+    // A denied unlock is cached: features degrade with a distinct
+    // SecretVaultDenied error instead of re-prompting per read.
+    match infra.secret_vault().unlock_now() {
+        Ok(()) => crate::native_capture::debug_log::log_info("secret vault unlocked"),
+        Err(error) => crate::native_capture::debug_log::log_error(format!(
+            "secret vault unlock failed; AI/MCP secret access is disabled for this run: {error}"
+        )),
+    }
 
     // #3: This runs on a detached background thread, so we cannot cleanly
     // fail-fast the app from here (the old synchronous path could). We

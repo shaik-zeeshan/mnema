@@ -56,11 +56,29 @@ pub struct ExcludedAppEntry {
     pub display_name: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PrivacySettings {
     #[serde(default)]
     pub excluded_apps: Vec<ExcludedAppEntry>,
+    /// Whether the excluded-apps list also filters the system-audio tap.
+    /// Defaults to true (the pre-toggle behavior). Screen exclusion is never
+    /// gated by this, and neither is the tap's own-process self-exclusion.
+    #[serde(default = "default_filter_system_audio")]
+    pub filter_system_audio: bool,
+}
+
+fn default_filter_system_audio() -> bool {
+    true
+}
+
+impl Default for PrivacySettings {
+    fn default() -> Self {
+        Self {
+            excluded_apps: Vec::new(),
+            filter_system_audio: default_filter_system_audio(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -552,11 +570,28 @@ mod tests {
     #[test]
     fn default_privacy_settings_are_app_only() {
         assert!(PrivacySettings::default().excluded_apps.is_empty());
+        assert!(PrivacySettings::default().filter_system_audio);
         let parsed: PrivacySettings = serde_json::from_str(
             r#"{"excludedApps":[],"excludedWebsiteRules":[{"id":"site","enabled":true,"pattern":"example.com"}],"browserTitleRules":[{"id":"title","enabled":true,"matchType":"substring","pattern":"secret"}],"privateBrowserExclusionEnabled":true}"#,
         )
         .expect("legacy privacy settings should be ignored");
         assert!(parsed.excluded_apps.is_empty());
+        // A settings file persisted before the toggle existed keeps today's
+        // behavior: privacy-listed apps stay filtered out of system audio.
+        assert!(parsed.filter_system_audio);
+    }
+
+    #[test]
+    fn filter_system_audio_round_trips_on_the_wire() {
+        let settings = PrivacySettings {
+            excluded_apps: Vec::new(),
+            filter_system_audio: false,
+        };
+        let json = serde_json::to_string(&settings).expect("privacy settings should serialize");
+        assert!(json.contains(r#""filterSystemAudio":false"#));
+        let parsed: PrivacySettings =
+            serde_json::from_str(&json).expect("privacy settings should parse");
+        assert!(!parsed.filter_system_audio);
     }
 
     #[test]
@@ -598,6 +633,7 @@ mod tests {
                     display_name: "Secret Again".to_string(),
                 },
             ],
+            ..PrivacySettings::default()
         };
         let context = MetadataContext {
             active_bundle_id: Some("com.apple.Safari".to_string()),

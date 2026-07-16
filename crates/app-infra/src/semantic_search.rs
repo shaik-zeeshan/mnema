@@ -430,6 +430,22 @@ impl SemanticSearchStore {
         .await?;
         Ok(count)
     }
+
+    /// Count of stored **Semantic Search Vector**s — the size of the live index.
+    ///
+    /// Reports `0` (never an error) when the `vec0` table is absent, the same
+    /// "absent → nothing stored" reading [`recreate_vectors_table`] takes: this
+    /// is a debug readout, and a missing table means an empty index.
+    pub async fn count_vectors(&self) -> Result<i64> {
+        if self.live_vector_dimension().await?.is_none() {
+            return Ok(0);
+        }
+        Ok(
+            sqlx::query_scalar("SELECT COUNT(*) FROM search_document_vectors")
+                .fetch_one(self.db.read())
+                .await?,
+        )
+    }
 }
 
 /// Serialize an f32 vector to the little-endian byte BLOB vec0 stores. The one

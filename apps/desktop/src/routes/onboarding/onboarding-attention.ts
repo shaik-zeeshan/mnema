@@ -15,10 +15,17 @@ export type PermissionKey = "screen" | "microphone" | "systemAudio";
 
 // Granted/unsupported need no action. macOS won't re-prompt once denied, so
 // those rows deep-link to System Settings instead of re-requesting.
+//
+// System audio (ADR 0052) has no "denied" — nothing can read its grant. It gets
+// a request button until a tap proves the grant by delivering sound, including
+// while it is `possibly_blocked`: macOS may never have been asked (a fresh
+// install that recorded before onboarding's Grant button was pressed), and if it
+// was asked and denied, the prompt is a no-op and the hint's own deep-link is
+// what carries the user to the pane.
 export function permissionActionFor(
   value: PermissionValue | undefined,
 ): { label: string; mode: "request" | "settings" } | null {
-  if (value === "granted" || value === "unsupported") return null;
+  if (value === "granted" || value === "unsupported" || value === "assumed_working") return null;
   if (value === "denied" || value === "restricted") return { label: "Open Settings", mode: "settings" };
   return { label: "Grant access", mode: "request" };
 }
@@ -30,6 +37,8 @@ export function permissionLabelFor(value: PermissionValue | undefined): string {
     case "not_determined": return "Not requested";
     case "restricted": return "Restricted";
     case "unsupported": return "Unsupported";
+    case "assumed_working": return "Working";
+    case "possibly_blocked": return "May be blocked";
     default: return "Unknown";
   }
 }
@@ -37,7 +46,7 @@ export function permissionLabelFor(value: PermissionValue | undefined): string {
 export function permissionToneFor(
   value: PermissionValue | undefined,
 ): "ok" | "pending" | "blocked" {
-  if (value === "granted") return "ok";
+  if (value === "granted" || value === "assumed_working") return "ok";
   if (value === "not_determined") return "pending";
   return "blocked";
 }

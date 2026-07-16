@@ -29,9 +29,9 @@ pub(crate) use store::structured_payload_json_from_row;
 pub(crate) use store::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS;
 pub use store::{
     FocusedFrameWindow, FrameProcessingJob, PersonProfile, ProcessingJobCompletion,
-    ProcessingJobReclamationSummary, ProcessingModelCleanupLock, ProcessingStore,
-    SegmentWorkspaceOcrReference, SpeakerClusterView, SpeakerTurnView,
-    SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
+    ProcessingJobListing, ProcessingJobReclamationSummary, ProcessingModelCleanupLock,
+    ProcessingStore, ProcessorPipelineStatus, SegmentWorkspaceOcrReference, SpeakerClusterView,
+    SpeakerTurnView, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
 };
 #[cfg(test)]
 pub(crate) use store::{

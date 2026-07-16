@@ -14,10 +14,11 @@ use crate::{native_capture, windows};
 pub const APP_UPDATE_STATUS_CHANGED_EVENT: &str = "app_update_status_changed";
 const APP_UPDATE_AVAILABLE_NOTIFICATION_ID: &str = "app-update-available";
 const APP_UPDATE_SETTINGS_FILE_NAME: &str = "app-update-settings.json";
-pub const STABLE_UPDATE_ENDPOINT: &str =
-    "https://github.com/shaik-zeeshan/mnema/releases/latest/download/latest.json";
-pub const PREVIEW_UPDATE_ENDPOINT: &str =
-    "https://shaik-zeeshan.github.io/mnema/updates/preview/latest.json";
+// Update feeds live on Cloudflare R2 behind release.mnema.day (one latest.json
+// per channel, written by the promote workflow), so they stay reachable even
+// if the source repository goes private. See docs/release-process.md.
+pub const STABLE_UPDATE_ENDPOINT: &str = "https://release.mnema.day/stable/latest.json";
+pub const PREVIEW_UPDATE_ENDPOINT: &str = "https://release.mnema.day/preview/latest.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

@@ -86,13 +86,12 @@ export function featureAttentionFor(target: OnboardingFeatureTarget, id: Feature
     case "mic":
       return target.draftCaptureMicrophone && target.permissions?.microphone !== "granted";
     case "sysaudio":
-      // "unsupported" (macOS < 15) needs no action and has no fix button —
-      // treat it as non-blocking, mirroring the `permissions` rule above.
-      return (
-        target.draftCaptureSystemAudio
-        && target.permissions?.systemAudio !== "granted"
-        && target.permissions?.systemAudio !== "unsupported"
-      );
+      // Only a positive suspicion counts (ADR 0052). System audio's grant
+      // cannot be read, so "not yet requested" is the *normal* state during
+      // onboarding — the prompt fires at the first recording. Demanding proof
+      // here would make the attention count unclearable and the finish button
+      // unreachable, since nothing short of recording can produce that proof.
+      return target.draftCaptureSystemAudio && target.permissions?.systemAudio === "possibly_blocked";
     case "ocr":
       return ocrModelNeedsAttentionFor(target.draftOcrEnabled, target.selectedOcrModel);
     case "transcribe":

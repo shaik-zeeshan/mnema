@@ -14,6 +14,7 @@ import type {
 import { serializeError } from "./onboarding-mapping";
 import type { OnboardingAiStore } from "./onboarding-ai.svelte";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
+import { buildStartCaptureRequest } from "./onboarding-start-request";
 
 type OnboardingState = {
   schemaVersion: number;
@@ -144,20 +145,10 @@ export async function finishOnboarding(
     // re-showing onboarding next launch with capture already running.
     await invoke("complete_onboarding");
     if (startRecording) {
-      // Defense-in-depth: never request a source whose OS permission isn't
-      // granted, independent of the attention gate. Capture must not outrun
-      // authorization even if the gating logic ever changes. (System audio
-      // uses the `systemAudio` PermissionKey; screen is required-on and
-      // already gates system audio.)
+      // Defense-in-depth mic/screen permission gating (and system audio's ADR
+      // 0052 exemption) lives in `buildStartCaptureRequest` — see its doc.
       await invoke("start_native_capture", {
-        request: {
-          captureScreen: target.draftCaptureScreen,
-          captureMicrophone: target.draftCaptureMicrophone && target.permissions?.microphone === "granted",
-          captureSystemAudio:
-            target.draftCaptureScreen
-            && target.draftCaptureSystemAudio
-            && target.permissions?.systemAudio === "granted",
-        },
+        request: buildStartCaptureRequest(target),
       });
     }
     await goto("/");

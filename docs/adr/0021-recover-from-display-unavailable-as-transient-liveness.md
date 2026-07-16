@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment).
+Accepted. Amended 2026-07-04: the delegate-stop door now enters the same suspension (see Amendment). Amended 2026-07-15: scope narrows to screen only once system audio leaves the shared stream (see second Amendment; [ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)).
 
 ## Context
 
@@ -51,3 +51,7 @@ Changes:
 - **Delegate-stop reconcile suspends.** An unexpected stream-stop error taken in `tick_inactivity` now enters the `DisplayUnavailable` suspension (same owner, recovery, and retry policy as the privacy door) instead of a bare state clear.
 - **Rotation-boundary backstop.** `tick_rotation` suspends (rather than fatally rotating) if screen/system-audio is active but the screen session is missing with no suspension owner — covering any remaining path into that state, e.g. a wake racing the will-sleep teardown.
 - **The tail segment is preserved, superseding "no doomed work".** A delegate-reported stop is terminal (`stream_terminated`), so the stop path skips the doomed second `stop_stream` call but still finalizes the writers — the samples appended before the stream died make an openable `.mov`. With the tail no longer truncated, the suspend path commits the in-flight segment for all suspension kinds instead of skipping the commit for `DisplayUnavailable`; the "spurious finalize error" this ADR avoided no longer occurs because the file is valid.
+
+## Amendment (2026-07-15): display-unavailable suspension becomes screen-only
+
+[ADR 0052](0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md) moves system audio off the shared ScreenCaptureKit stream onto a Core Audio process tap, which has no display dependency. Once that swap ships, every "screen/system-audio" pairing in this ADR reads as screen only: a display-unavailable suspension pauses and recovers screen capture alone, while system audio records through display sleep, lock, and disconnect exactly like the microphone. The suspension mechanism, recovery policy, and tail-segment handling are unchanged — only their scope narrows.

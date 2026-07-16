@@ -18,6 +18,8 @@ mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
+#[cfg(target_os = "macos")]
+mod system_audio;
 #[path = "native_capture_system_idle.rs"]
 pub(crate) mod system_idle;
 #[cfg(test)]
@@ -1732,6 +1734,8 @@ fn permission_state_label(state: &CapturePermissionState) -> &'static str {
         CapturePermissionState::NotDetermined => "not_determined",
         CapturePermissionState::Unsupported => "unsupported",
         CapturePermissionState::Unknown => "unknown",
+        CapturePermissionState::AssumedWorking => "assumed_working",
+        CapturePermissionState::PossiblyBlocked => "possibly_blocked",
     }
 }
 
@@ -2389,6 +2393,86 @@ pub fn get_capture_support() -> CaptureSupportResponse {
     response
 }
 
+/// System audio's permission is inferred from what its taps have delivered
+/// (ADR 0052) — it is no longer an alias of the screen grant, which it never
+/// shared a TCC category with in the first place.
+#[cfg(target_os = "macos")]
+fn system_audio_permission_state() -> CapturePermissionState {
+    system_audio::permission_state()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_audio_permission_state() -> CapturePermissionState {
+    CapturePermissionState::Unsupported
+}
+
+/// Loads the persisted denial evidence into the permission cache, on the
+/// deferred-startup thread (ADR 0052).
+#[cfg(target_os = "macos")]
+pub(crate) async fn hydrate_system_audio_permission_evidence(infra: &::app_infra::AppInfra) {
+    system_audio::hydrate_evidence(infra).await;
+}
+
+/// The prompt id for the "system audio may be blocked" hint. Versioned like the
+/// recommended-exclusions prompt: bumping it re-shows the hint to users who
+/// dismissed the previous wording.
+pub const SYSTEM_AUDIO_BLOCKED_PROMPT_ID: &str = "system-audio-blocked/v1";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemAudioAccessHint {
+    pub prompt_id: String,
+    pub should_show: bool,
+}
+
+/// Whether to warn that system audio may be blocked (ADR 0052).
+///
+/// Every half of the decision lives here, mirroring
+/// `get_sensitive_capture_recommendations`: system audio is switched on, every
+/// tap so far has delivered only silence, and the user has not already waved the
+/// hint away. A denied tap produces no OS-level signal at all, so this is the
+/// only thing standing between a denial and hours of silent recordings — and
+/// because a genuinely quiet Mac is indistinguishable from a denied one, it is
+/// dismissible rather than blocking.
+#[tauri::command]
+pub fn get_system_audio_access_hint(app_handle: tauri::AppHandle) -> SystemAudioAccessHint {
+    let dismissed = crate::one_time_prompts::current_state(&app_handle)
+        .prompts
+        .get(SYSTEM_AUDIO_BLOCKED_PROMPT_ID)
+        .is_some_and(|record| record.dismissed_at.is_some());
+    // Evidence outlives the switch: a user who turned system audio off after a
+    // silent session must not keep being warned about a source they no longer
+    // record.
+    let enabled = current_recording_settings_from_app_handle(&app_handle).capture_system_audio;
+
+    SystemAudioAccessHint {
+        prompt_id: SYSTEM_AUDIO_BLOCKED_PROMPT_ID.to_string(),
+        should_show: enabled
+            && !dismissed
+            && system_audio_permission_state() == CapturePermissionState::PossiblyBlocked,
+    }
+}
+
+/// Raises the "Screen & System Audio Recording" prompt by running a throwaway
+/// tap. A failure to *build* the tap is worth reporting; the prompt's answer is
+/// not knowable here either way.
+#[cfg(target_os = "macos")]
+async fn request_system_audio_permission() -> Result<(), String> {
+    if !capture_screen::supports_system_audio_capture() {
+        return Ok(());
+    }
+
+    tauri::async_runtime::spawn_blocking(capture_system_audio::prompt_for_system_audio_permission)
+        .await
+        .map_err(|error| format!("system audio permission request failed: {error}"))?
+        .map_err(|error| format!("system audio permission request failed: {}", error.message))
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn request_system_audio_permission() -> Result<(), String> {
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_capture_permissions(
     app_handle: tauri::AppHandle,
@@ -2401,7 +2485,9 @@ pub fn get_capture_permissions(
     let permissions = CapturePermissions {
         screen: capture_screen::screen_permission_state(),
         microphone: microphone_capture::microphone_permission_state(),
-        system_audio: capture_screen::system_audio_permission_state(),
+        // Inferred, not read: a process tap has its own TCC category and no
+        // authorization query at all (ADR 0052).
+        system_audio: system_audio_permission_state(),
     };
 
     log_capture_permissions_if_changed(&permissions);
@@ -2414,9 +2500,9 @@ pub fn get_capture_permissions(
 
 /// Trigger the native macOS permission prompt for a capture source, then return
 /// the refreshed permission state. `kind` is "screen", "microphone", or
-/// "systemAudio" (system audio shares the screen-recording permission). The
-/// underlying request blocks (microphone waits on a system callback), so it
-/// runs on a blocking thread to keep the UI responsive.
+/// "systemAudio". The underlying request blocks (microphone waits on a system
+/// callback, system audio runs a throwaway tap), so it runs on a blocking thread
+/// to keep the UI responsive.
 #[tauri::command]
 pub async fn request_capture_permission(
     kind: String,
@@ -2424,12 +2510,18 @@ pub async fn request_capture_permission(
     state: tauri::State<'_, NativeCaptureState>,
 ) -> Result<CapturePermissionsResponse, String> {
     match kind.as_str() {
-        "screen" | "systemAudio" => {
+        "screen" => {
             tauri::async_runtime::spawn_blocking(|| {
                 capture_screen::ensure_screen_permission();
             })
             .await
             .map_err(|error| format!("screen permission request failed: {error}"))?;
+        }
+        // System audio has its own TCC category and no authorization query, so
+        // the only way to raise its prompt is to build a tap and read it — the
+        // grant is never reported back, only inferred later (ADR 0052).
+        "systemAudio" => {
+            request_system_audio_permission().await?;
         }
         "microphone" => {
             tauri::async_runtime::spawn_blocking(|| {

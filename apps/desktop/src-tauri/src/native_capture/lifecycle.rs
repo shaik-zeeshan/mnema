@@ -8,7 +8,8 @@ use super::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
-    screen_planner_for_runtime, system_audio_planner_for_runtime, CaptureSuspensionKind,
+    screen_planner_for_runtime, system_audio_planner_for_runtime, system_audio_stops_with_suspension,
+    CaptureSuspensionKind,
 };
 use super::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
@@ -16,15 +17,15 @@ use super::runtime::{
 };
 use super::segments::{
     apply_microphone_output_finalization, cleanup_failed_segment_dirs, create_segment_output_dirs,
-    empty_output_files, handle_inactivity_resume_error,
+    current_segment_output_files_mut, empty_output_files, handle_inactivity_resume_error,
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
     pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
     plan_live_rotation_segment, reanchor_active_segment_timing,
     flush_frame_artifacts, recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
-    start_segment_with_current_privacy_filter, stop_active_sessions_after_failure,
-    stop_capture_runtime,
+    start_segment_with_current_privacy_filter, start_system_audio_family_for_runtime,
+    stop_active_sessions_after_failure, stop_capture_runtime,
 };
 use capture_runtime::RuntimeSignal;
 use capture_types::{
@@ -32,9 +33,40 @@ use capture_types::{
 };
 use capture_vad::MicrophoneVadFallbackNotice;
 
+/// The tap-start retry band, mirroring the zero-watchdog's backoff (ADR 0052):
+/// often enough that a coreaudiod restart heals within a segment, rarely enough
+/// that a permanently unavailable tap is not probed on every tick.
+#[cfg(target_os = "macos")]
+const SYSTEM_AUDIO_START_RETRY_MIN_MS: u64 = 30_000;
+#[cfg(target_os = "macos")]
+const SYSTEM_AUDIO_START_RETRY_MAX_MS: u64 = 600_000;
+
+/// Whether the tick should try to bring a missing tap up.
+///
+/// Low disk is the carve-out: it is the one suspension that deliberately stops
+/// the tap, and it restarts it itself once space returns (ADR 0040). Every other
+/// suspension leaves the tap alone, so a tap-less runtime under one is a tap that
+/// failed to start — exactly the case worth retrying.
+#[cfg(target_os = "macos")]
+pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) -> bool {
+    runtime.is_running
+        && runtime
+            .requested_sources
+            .as_ref()
+            .is_some_and(|sources| sources.system_audio)
+        && !runtime.inactivity.is_system_audio_paused()
+        && !system_audio_stops_with_suspension(runtime)
+        && runtime.active_system_audio_session.is_none()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
     runtime: NativeCaptureRuntime,
+    /// Monotonic deadline for the next tap-start retry, and the delay that set
+    /// it. Kept here rather than on the runtime because it is the tick's pacing,
+    /// not capture state; [`RecordingLifecycle::start`] resets it per session.
+    system_audio_start_retry_at_ms: Option<u64>,
+    system_audio_start_retry_delay_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -61,29 +93,23 @@ impl RecordingLifecycle {
             return false;
         }
 
-        let has_screen_state = self.runtime.active_screen_session.is_some()
-            || self.runtime.recording_file.is_some()
-            || self.runtime.system_audio_recording_file.is_some();
+        let has_screen_state =
+            self.runtime.active_screen_session.is_some() || self.runtime.recording_file.is_some();
         if !has_screen_state {
             return false;
         }
 
+        // Screen state only. The tap has no display dependency, so a sleep leaves
+        // it recording — and clearing its file here would orphan the segment it is
+        // still writing (ADR 0052).
         self.runtime.active_screen_session = None;
         self.runtime.recording_file = None;
-        self.runtime.system_audio_recording_file = None;
         self.runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
             &requested_sources,
             true,
             self.runtime.inactivity.microphone_paused,
-            true,
+            self.runtime.inactivity.system_audio_paused,
         );
-
-        if let Some(outputs) = self.runtime.current_segment_output_files.as_mut() {
-            if outputs.screen_file.is_none() && outputs.screen_files.is_empty() {
-                outputs.system_audio_file = None;
-                outputs.system_audio_files.clear();
-            }
-        }
 
         true
     }
@@ -102,7 +128,7 @@ impl RecordingLifecycle {
         app_handle: Option<&tauri::AppHandle>,
         error: &CaptureErrorResponse,
     ) -> TickOutcome {
-        if let Err(stop_error) = super::segments::suspend_screen_system_audio_capture(
+        if let Err(stop_error) = super::segments::suspend_screen_capture(
             app_handle,
             &mut self.runtime,
             error,
@@ -112,7 +138,7 @@ impl RecordingLifecycle {
             // (an in-flight stop timeout); keep the session and let a later
             // tick or the wake/display recovery paths reconcile it.
             super::debug_log::log(format!(
-                "capture suspension could not stop screen/system-audio capture; preserving runtime state: [{}] {}",
+                "capture suspension could not stop screen capture; preserving runtime state: [{}] {}",
                 stop_error.code, stop_error.message
             ));
         }
@@ -153,26 +179,26 @@ impl RecordingLifecycle {
         Some(TickOutcome::StopLoop)
     }
 
-    // Backstop at the rotation boundary for any path that still reaches it
-    // with screen/system-audio active but no live session (e.g. a system wake
-    // racing the will-sleep teardown before the did-wake recovery re-arms).
-    // Rotating would call into the missing session, hit `invalid_runtime_state`
-    // and end the whole session; suspend instead so recovery restarts capture
-    // when it can.
+    // Backstop at the rotation boundary for any path that still reaches it with
+    // screen active but no live session (e.g. a system wake racing the will-sleep
+    // teardown before the did-wake recovery re-arms). Rotating would call into the
+    // missing session, hit `invalid_runtime_state` and end the whole session;
+    // suspend instead so recovery restarts capture when it can.
+    //
+    // Screen-only by design: a system-audio-only session has no screen session to
+    // miss, and suspending one for that would kill a healthy recording.
     #[cfg(target_os = "macos")]
     fn suspend_if_screen_session_missing_at_rotation(
         &mut self,
         app_handle: Option<&tauri::AppHandle>,
         active_sources: &CaptureSources,
     ) -> Option<TickOutcome> {
-        if !(active_sources.screen || active_sources.system_audio)
-            || self.runtime.active_screen_session.is_some()
-        {
+        if !active_sources.screen || self.runtime.active_screen_session.is_some() {
             return None;
         }
 
         super::debug_log::log(
-            "segment rotation due but the screen capture session is missing; suspending screen/system-audio until capture can restart",
+            "segment rotation due but the screen capture session is missing; suspending screen until capture can restart",
         );
         Some(self.suspend_screen_after_unexpected_stop(
             app_handle,
@@ -230,6 +256,9 @@ impl RecordingLifecycle {
                 self.session(),
             ));
         }
+
+        self.system_audio_start_retry_at_ms = None;
+        self.system_audio_start_retry_delay_ms = 0;
 
         start_capture_runtime(
             &mut self.runtime,
@@ -317,11 +346,6 @@ impl RecordingLifecycle {
                         .to_string(),
                 })?;
             let microphone_planner = microphone_planner_for_runtime(&self.runtime).cloned();
-            let system_audio_planner = if sources.system_audio {
-                ensure_system_audio_planner_for_runtime(&mut self.runtime, "resuming user pause")?
-            } else {
-                system_audio_planner_for_runtime(&self.runtime).cloned()
-            };
             let next_index = self.runtime.current_segment_index.saturating_add(1);
             let segment_dir = screen_planner.segment_dir(next_index);
             let screen_output_file = screen_planner.segment_screen_output(next_index);
@@ -333,29 +357,18 @@ impl RecordingLifecycle {
                         .map(|planner| planner.microphone_file(next_index))
                 })
                 .flatten();
-            let system_audio_output_path = sources
-                .system_audio
-                .then(|| {
-                    system_audio_planner
-                        .as_ref()
-                        .map(|planner| planner.system_audio_file(next_index))
-                })
-                .flatten();
             create_segment_output_dirs(
                 &segment_dir,
                 microphone_output_path
                     .as_deref()
                     .and_then(|path| path.parent()),
-                system_audio_output_path
-                    .as_deref()
-                    .and_then(|path| path.parent()),
+                None,
                 &sources,
             )?;
             let started = start_segment_with_current_privacy_filter(
                 app_handle,
                 &segment_dir,
                 sources.screen.then_some(screen_output_file.as_path()),
-                system_audio_output_path.as_deref(),
                 &sources,
                 self.runtime.screen_frame_rate,
                 &self.runtime.screen_resolution,
@@ -364,16 +377,41 @@ impl RecordingLifecycle {
                 self.runtime.frame_artifact_tx.clone(),
                 microphone_output_path.as_deref(),
             )?;
-            self.runtime.current_segment_output_files = Some(started.0.clone());
+            let mut segment_outputs = started.0;
             self.runtime
                 .output_files
                 .get_or_insert_with(empty_output_files);
             self.runtime.recording_file = started.1;
             self.runtime.microphone_recording_file = started.2;
-            self.runtime.system_audio_recording_file = started.3;
-            self.runtime.active_screen_session = started.4;
-            self.runtime.active_microphone_session = started.5;
+            self.runtime.active_screen_session = started.3;
+            self.runtime.active_microphone_session = started.4;
             self.runtime.current_segment_index = next_index;
+
+            // A user pause stopped the tap with everything else, so a user resume
+            // starts it again — including for a session with no screen at all.
+            match super::segments::start_system_audio_family_for_runtime(
+                &mut self.runtime,
+                super::privacy::collect_initial_privacy_filter(app_handle).excluded_bundle_ids(),
+                next_index,
+                "resuming user pause",
+            ) {
+                Ok(system_audio_recording_file) => {
+                    if let Some(system_audio_output_file) = system_audio_recording_file.as_ref() {
+                        set_current_system_audio_output_file(
+                            &mut segment_outputs,
+                            system_audio_output_file.clone(),
+                        );
+                    }
+                    self.runtime.system_audio_recording_file = system_audio_recording_file;
+                }
+                Err(error) => {
+                    super::debug_log::log(format!(
+                        "failed to restart system audio while resuming user pause; continuing without it: [{}] {}",
+                        error.code, error.message
+                    ));
+                }
+            }
+            self.runtime.current_segment_output_files = Some(segment_outputs);
             self.runtime.runtime_controller = Default::default();
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::StartRequested)?;
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
@@ -445,7 +483,6 @@ impl RecordingLifecycle {
             if let Err(error) = capture_screen::stop_screen_capture_session(
                 capture_screen::StopScreenCaptureSessionArgs {
                     active_session: &mut self.runtime.active_screen_session,
-                    inactivity_tail_trim_seconds: 0,
                 },
             ) {
                 super::debug_log::log(format!(
@@ -460,56 +497,126 @@ impl RecordingLifecycle {
         self.clear_screen_state_for_sleep_or_stop()
     }
 
-    /// Watchdog for a silently dead ScreenCaptureKit audio tap: silence still
-    /// produces audio sample callbacks, so a stale sample marker on a live
-    /// stream with a drawable display means the OS stopped delivering audio
-    /// buffers entirely (a stream-scoped condition only a session restart
-    /// clears). Logs — rate-limited — so field occurrences are attributable.
+    /// Drives the system-audio tap's rebuild engine.
+    ///
+    /// Deliberately unconditional on pause state, and deliberately ahead of the
+    /// screen reconcile below: the zero-watchdog is the only thing that notices a
+    /// wedged tap, and a tap paused for inactivity is exactly where a wedge hides
+    /// — the resume trigger is "sound detected", which a wedged tap can never
+    /// deliver. That is how the ScreenCaptureKit bug trapped a live session for
+    /// 34 minutes (ADR 0052).
     #[cfg(target_os = "macos")]
-    fn warn_if_system_audio_samples_stalled(&mut self) {
-        const STALL_WARN_AFTER_MS: u64 = 30_000;
-        const STALL_WARN_INTERVAL_MS: u64 = 60_000;
-        static LAST_WARN_MONOTONIC_MS: std::sync::atomic::AtomicU64 =
-            std::sync::atomic::AtomicU64::new(0);
-
-        if self.runtime.capture_suspension.is_some()
-            || !self
-                .runtime
-                .requested_sources
-                .as_ref()
-                .is_some_and(|sources| sources.system_audio)
-            || !capture_screen::screen_capture_session_is_live(
-                self.runtime.active_screen_session.as_ref(),
-            )
-            || !capture_screen::screen_display_available()
-        {
+    fn tick_system_audio(&mut self, app_handle: &tauri::AppHandle) {
+        let Some(session) = self.runtime.active_system_audio_session.as_mut() else {
+            self.retry_system_audio_start(app_handle);
             return;
-        }
-
-        // No sample marker yet (fresh session) is measured against the capture
-        // clock so a dead-from-start tap is caught too.
-        let stalled_ms = match capture_screen::system_audio_activity_idle_ms() {
-            Some(idle_ms) => idle_ms,
-            None => match self.runtime.capture_clock.as_ref() {
-                Some(clock) => clock.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-                None => return,
-            },
         };
-        if stalled_ms < STALL_WARN_AFTER_MS {
+        // A rebuild rotates onto a fresh file mid-segment; track it so the next
+        // boundary commits it rather than the file the dead tap left behind.
+        let rotated_output_file = session.poll();
+
+        // Judged every tick rather than at stop: a denied grant should surface
+        // while the user is still recording, not once they happen to stop
+        // (ADR 0052). It settles after the first judgement and costs an atomic
+        // load thereafter.
+        let session_age_ms = self
+            .runtime
+            .source_sessions
+            .as_ref()
+            .and_then(|sessions| sessions.system_audio.as_ref())
+            .map(|session| super::runtime::now_unix_ms().saturating_sub(session.started_at_unix_ms))
+            .unwrap_or(0);
+        super::system_audio::note_permission_evidence(app_handle, session_age_ms);
+
+        let Some(system_audio_output_file) = rotated_output_file else {
+            return;
+        };
+
+        self.track_live_system_audio_output_file(system_audio_output_file);
+    }
+
+    #[cfg(target_os = "macos")]
+    fn track_live_system_audio_output_file(&mut self, output_file: String) {
+        self.runtime.system_audio_recording_file = Some(output_file.clone());
+        set_current_system_audio_output_file(
+            current_segment_output_files_mut(&mut self.runtime),
+            output_file,
+        );
+    }
+
+    /// Retries a tap that never started.
+    ///
+    /// A start failure costs only system audio, so it is logged rather than
+    /// failing the session — but with `requested_sources.system_audio` still true
+    /// the session then reports itself healthy while recording no system audio at
+    /// all, and the zero-watchdog cannot notice because it lives inside the
+    /// session that was never created. The failures worth healing are transient
+    /// (coreaudiod restarting, an aggregate-UID collision), so the tick retries on
+    /// the watchdog's own shape (ADR 0052).
+    ///
+    /// `start_system_audio_family_for_runtime` refuses on its own unless system
+    /// audio is requested, unpaused and tap-less; only low disk — the one
+    /// suspension that stops the tap and restarts it itself (ADR 0040) — has to be
+    /// excluded here.
+    #[cfg(target_os = "macos")]
+    fn retry_system_audio_start(&mut self, app_handle: &tauri::AppHandle) {
+        if !should_retry_system_audio_start(&self.runtime) {
             return;
         }
 
         let now = super::runtime::now_monotonic_marker_ms();
-        let last_warn = LAST_WARN_MONOTONIC_MS.load(std::sync::atomic::Ordering::Relaxed);
-        if now.saturating_sub(last_warn) < STALL_WARN_INTERVAL_MS {
+        if self
+            .system_audio_start_retry_at_ms
+            .is_some_and(|retry_at| now < retry_at)
+        {
             return;
         }
-        LAST_WARN_MONOTONIC_MS.store(now, std::sync::atomic::Ordering::Relaxed);
 
-        super::debug_log::log(format!(
-            "system audio stream has delivered no sample buffers for {}s while the capture session is live; the ScreenCaptureKit audio tap appears dead (stop/start recording recovers it)",
-            stalled_ms / 1000
-        ));
+        let segment_index = self.runtime.current_segment_index;
+        match start_system_audio_family_for_runtime(
+            &mut self.runtime,
+            super::privacy::collect_initial_privacy_filter(app_handle).excluded_bundle_ids(),
+            segment_index,
+            "retrying system audio start",
+        ) {
+            Ok(output_file) => {
+                self.system_audio_start_retry_at_ms = None;
+                self.system_audio_start_retry_delay_ms = 0;
+                if let Some(output_file) = output_file {
+                    super::debug_log::log(format!(
+                        "{} tap started on retry after an earlier start failure",
+                        capture_system_audio::LOG_PREFIX
+                    ));
+                    self.track_live_system_audio_output_file(output_file);
+                }
+            }
+            Err(error) => {
+                self.schedule_system_audio_start_retry(now);
+                super::debug_log::log(format!(
+                    "{} tap start retry failed; next attempt in {}ms: [{}] {}",
+                    capture_system_audio::LOG_PREFIX,
+                    self.system_audio_start_retry_delay_ms,
+                    error.code,
+                    error.message
+                ));
+            }
+        }
+    }
+
+    /// Doubles the retry delay into the [`SYSTEM_AUDIO_START_RETRY_MIN_MS`] ..=
+    /// [`SYSTEM_AUDIO_START_RETRY_MAX_MS`] band. A delay of zero is the
+    /// never-backed-off state, so the first failure lands on the minimum.
+    #[cfg(target_os = "macos")]
+    fn schedule_system_audio_start_retry(&mut self, now: u64) {
+        self.system_audio_start_retry_delay_ms = self
+            .system_audio_start_retry_delay_ms
+            .saturating_mul(2)
+            .clamp(
+                SYSTEM_AUDIO_START_RETRY_MIN_MS,
+                SYSTEM_AUDIO_START_RETRY_MAX_MS,
+            );
+        self.system_audio_start_retry_at_ms =
+            Some(now.saturating_add(self.system_audio_start_retry_delay_ms));
     }
 
     #[cfg(target_os = "macos")]
@@ -517,6 +624,9 @@ impl RecordingLifecycle {
         if self.runtime.user_capture_paused {
             return TickOutcome::SkipRotation;
         }
+
+        self.tick_system_audio(app_handle);
+
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),
         ) {
@@ -525,13 +635,11 @@ impl RecordingLifecycle {
                 return TickOutcome::SkipRotation;
             }
             super::debug_log::log(format!(
-                "screen capture stream stopped unexpectedly; suspending screen/system-audio until capture can restart: [{}] {}",
+                "screen capture stream stopped unexpectedly; suspending screen until capture can restart: [{}] {}",
                 error.code, error.message
             ));
             return self.suspend_screen_after_unexpected_stop(Some(app_handle), &error);
         }
-
-        self.warn_if_system_audio_samples_stalled();
 
         let now = super::runtime::now_monotonic_marker_ms();
         let activity_snapshot = current_activity_snapshot(&mut self.runtime);
@@ -892,13 +1000,30 @@ impl RecordingLifecycle {
         let mut next_system_audio_recording_file = self.runtime.system_audio_recording_file.clone();
         let mut legacy_rotated = false;
 
-        if active_sources.screen || active_sources.system_audio {
+        // System audio rotates on its own seam, whether or not the screen is
+        // rotating — and whether or not there is a screen at all.
+        if active_sources.system_audio {
+            if let (Some(planner), Some(session)) = (
+                system_audio_planner.as_ref(),
+                self.runtime.active_system_audio_session.as_mut(),
+            ) {
+                next_system_audio_recording_file = session.advance_segment(
+                    planner,
+                    next_index,
+                    system_audio_output_path.clone(),
+                );
+                if let Some(file) = next_system_audio_recording_file.clone() {
+                    set_current_system_audio_output_file(&mut next_segment_outputs, file);
+                }
+            }
+        }
+
+        if active_sources.screen {
             let rotate_result = capture_screen::rotate_screen_capture_session(
                 capture_screen::RotateScreenCaptureSessionArgs {
                     active_session: &mut self.runtime.active_screen_session,
                     segment_dir: &segment_dir,
                     screen_output_file: Some(&screen_output_file),
-                    system_audio_output_path: system_audio_output_path.as_deref(),
                 },
             );
 
@@ -907,11 +1032,7 @@ impl RecordingLifecycle {
                     if let Some(file) = rotated.output_files.screen_file {
                         set_current_screen_output_file(&mut next_segment_outputs, file);
                     }
-                    if let Some(file) = rotated.output_files.system_audio_file {
-                        set_current_system_audio_output_file(&mut next_segment_outputs, file);
-                    }
                     next_recording_file = Some(rotated.recording_file);
-                    next_system_audio_recording_file = rotated.system_audio_recording_file;
                 }
                 Err(error) if error.code == "capture_rotation_requires_restart" => {
                     legacy_rotated = true;
@@ -964,7 +1085,6 @@ impl RecordingLifecycle {
             if capture_screen::stop_screen_capture_session(
                 capture_screen::StopScreenCaptureSessionArgs {
                     active_session: &mut self.runtime.active_screen_session,
-                    inactivity_tail_trim_seconds: 0,
                 },
             )
             .is_err()
@@ -978,18 +1098,13 @@ impl RecordingLifecycle {
             let screen_only_sources = CaptureSources {
                 screen: active_sources.screen,
                 microphone: false,
-                system_audio: active_sources.system_audio,
+                system_audio: false,
             };
-            let legacy_system_audio_path = screen_only_sources
-                .system_audio
-                .then(|| system_audio_output_path.as_deref())
-                .flatten();
 
             let started_segment = start_segment_with_current_privacy_filter(
                 app_handle,
                 &segment_dir,
                 Some(&screen_output_file),
-                legacy_system_audio_path,
                 &screen_only_sources,
                 self.runtime.screen_frame_rate,
                 &self.runtime.screen_resolution,
@@ -1000,10 +1115,9 @@ impl RecordingLifecycle {
             );
 
             let (
-                started_outputs,
+                mut started_outputs,
                 started_recording_file,
                 started_microphone_recording_file,
-                started_system_audio_recording_file,
                 active_screen_session,
                 _,
             ) = match started_segment {
@@ -1020,10 +1134,14 @@ impl RecordingLifecycle {
                 }
             };
 
+            // The screen restart mints fresh outputs; carry over the file the tap
+            // rotated onto above, which the restart knows nothing about.
+            if let Some(file) = next_system_audio_recording_file.clone() {
+                set_current_system_audio_output_file(&mut started_outputs, file);
+            }
             next_segment_outputs = started_outputs;
             next_recording_file = started_recording_file;
             next_microphone_recording_file = started_microphone_recording_file;
-            next_system_audio_recording_file = started_system_audio_recording_file;
             self.runtime.active_screen_session = active_screen_session;
 
             if active_sources.microphone {
@@ -1269,6 +1387,7 @@ impl RecordingLifecycle {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
+    use crate::native_capture::runtime::CaptureSuspension;
     use capture_types::CaptureOutputFiles;
 
     fn screen_only_sources() -> CaptureSources {
@@ -1277,6 +1396,95 @@ mod tests {
             microphone: false,
             system_audio: false,
         }
+    }
+
+    fn system_audio_only_sources() -> CaptureSources {
+        CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }
+    }
+
+    /// A running system-audio-only session whose tap failed to start: requested,
+    /// unpaused, and no session — the shape that used to report itself healthy
+    /// while recording nothing at all.
+    fn tapless_system_audio_runtime() -> NativeCaptureRuntime {
+        NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(system_audio_only_sources()),
+            active_system_audio_session: None,
+            ..Default::default()
+        }
+    }
+
+    // Regression: `start_system_audio_family_for_runtime` logs "continuing without
+    // it" on Err while `requested_sources.system_audio` stays true, and nothing
+    // retried — the rotation arm needs a session, the tick early-returned without
+    // one, and the zero-watchdog lives inside the session that was never created.
+    // So a transient start failure (coreaudiod restarting, an aggregate-UID
+    // collision) bought a whole session that recorded no system audio while the UI
+    // showed a healthy recording — and under ADR 0052's audio-only sessions, a
+    // recording that records literally nothing.
+    #[test]
+    fn a_tapless_session_that_still_wants_system_audio_is_retried() {
+        assert!(should_retry_system_audio_start(
+            &tapless_system_audio_runtime()
+        ));
+    }
+
+    #[test]
+    fn a_low_disk_suspension_is_never_retried_back_into_a_tap() {
+        let mut runtime = tapless_system_audio_runtime();
+        runtime.capture_suspension = Some(CaptureSuspension::with_kind(
+            CaptureSuspensionKind::LowDisk,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+        ));
+
+        assert!(
+            !should_retry_system_audio_start(&runtime),
+            "low disk is the one suspension that stops the tap on purpose, and it restarts it itself (ADR 0040)"
+        );
+    }
+
+    #[test]
+    fn a_paused_or_unrequested_system_audio_family_is_never_started_by_the_retry() {
+        let mut paused = tapless_system_audio_runtime();
+        paused
+            .inactivity
+            .set_family_paused_states(false, false, true);
+        assert!(!should_retry_system_audio_start(&paused));
+
+        let mut unrequested = tapless_system_audio_runtime();
+        unrequested.requested_sources = Some(screen_only_sources());
+        assert!(!should_retry_system_audio_start(&unrequested));
+
+        let mut stopped = tapless_system_audio_runtime();
+        stopped.is_running = false;
+        assert!(!should_retry_system_audio_start(&stopped));
+    }
+
+    // The tap-start retry rides the zero-watchdog's ladder: 30s, doubling, capped
+    // at 10 minutes. A start does synchronous Core Audio work, so an unbounded or
+    // un-paced retry would probe it on every tick.
+    #[test]
+    fn the_tap_start_retry_backs_off_from_thirty_seconds_to_a_ten_minute_cap() {
+        let mut lifecycle = RecordingLifecycle::default();
+        let mut delays = Vec::new();
+
+        for _ in 0..8 {
+            lifecycle.schedule_system_audio_start_retry(0);
+            delays.push(lifecycle.system_audio_start_retry_delay_ms);
+        }
+
+        assert_eq!(
+            delays,
+            vec![30_000, 60_000, 120_000, 240_000, 480_000, 600_000, 600_000, 600_000]
+        );
+        assert_eq!(lifecycle.system_audio_start_retry_at_ms, Some(600_000));
     }
 
     // A running screen-only runtime as the delegate-stop reconcile sees it: the
@@ -1300,6 +1508,7 @@ mod tests {
                 recording_file: Some(screen_file.to_string()),
                 ..Default::default()
             },
+            ..Default::default()
         }
     }
 
@@ -1450,6 +1659,26 @@ mod tests {
 
         assert_eq!(outcome, None);
         assert!(lifecycle.runtime().is_running, "an allowed status must not stop the session");
+    }
+
+    // A system-audio-only session has no screen session, so the guard must not
+    // read "no screen session" as a fault: suspending here would stop a perfectly
+    // healthy audio-only recording at its first rotation (ADR 0052).
+    #[test]
+    fn rotation_guard_ignores_a_system_audio_only_session() {
+        let temp_dir = tempfile::tempdir().expect("temp dir should be created");
+        let screen_file = write_openable_screen_segment(&temp_dir);
+        let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
+        let sources = CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        };
+
+        let outcome = lifecycle.suspend_if_screen_session_missing_at_rotation(None, &sources);
+
+        assert_eq!(outcome, None);
+        assert!(lifecycle.runtime().capture_suspension.is_none());
     }
 
     #[test]

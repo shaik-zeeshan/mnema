@@ -1,0 +1,411 @@
+/* Debug cards — mockup A's card vocabulary, ported verbatim. Fifth part of the
+ * shared Debug stylesheet; see debug-layout.css for the part map and the
+ * namespacing rule.
+ *
+ * These are the shapes `docs/agents/mockups/debug/debug-mockup-a-feature-rail.html`
+ * specifies for the *inside* of a card. The mockup is authored entirely in the
+ * app's own design tokens (--app-*, --text-*), so it IS the app's design
+ * language — it wins on visual vocabulary, and nothing here is a fork of it.
+ *
+ * The card shell itself stays <SettingGroup> (its `.setting-group__card` is
+ * already the mockup's `.card`, accent hairline and all); the only shell thing
+ * missing was the severity-tinted hairline, hence `--warn` / `--danger` below.
+ *
+ *   .row / .row__label / .row__desc / .row__value  — the two-line config row
+ *   .bar / .bar__fill / .bar-caption               — a coverage/progress bar
+ *   .strip / .strip__item                          — the Health card's diagnosis list
+ *   .new-chip                                      — "new since the redesign" tag
+ *   .actions                                       — the card-footer button row
+ *
+ * Every selector stays namespaced under `.debug-shell`. */
+
+/* ── Card severity ──────────────────────────────────────────────────────
+   SettingGroup paints the neutral accent hairline in its own (Svelte-scoped)
+   `::before`. These re-tint it for a card whose feature is degraded/failing.
+   The doubled class is deliberate: it outranks the scoped rule regardless of
+   which stylesheet the bundler emits last. */
+.debug-shell .setting-group__card.setting-group__card--warn::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-warn) 22%, transparent) 22%,
+    color-mix(in srgb, var(--app-warn) 22%, transparent) 78%,
+    transparent
+  );
+}
+
+.debug-shell .setting-group__card.setting-group__card--danger::before {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--app-danger) 25%, transparent) 22%,
+    color-mix(in srgb, var(--app-danger) 25%, transparent) 78%,
+    transparent
+  );
+}
+
+/* ── Row ────────────────────────────────────────────────────────────────
+   A config row: label (+ an optional description line beneath it) on the
+   left, value/badges/inline buttons right-aligned. Rows are separated by an
+   inset hairline, NOT by a gap — hence the `::before` rather than a border on
+   the row itself (a border would run to the card's edge). */
+.debug-shell .row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+}
+
+.debug-shell .row + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 1px;
+  background: var(--app-border);
+}
+
+/* A `.debug-body` (a grid/table too heavy to be a row's value) sitting between
+   two rows must not swallow the hairline that would have separated them. */
+.debug-shell .debug-body + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 1px;
+  background: var(--app-border);
+}
+
+/* A row that HEADS the block directly beneath it (`Runtime sources` over the
+   lane grid, `Inactivity policy` over the detector grid). The row and its block
+   are one unit, so no rule divides them — the rule sits above the header row
+   instead, which is what `.debug-body + .row` / `.row + .row` already draw. */
+.debug-shell .row--head + .debug-body,
+.debug-shell .row--head + .jobs {
+  border-top: none;
+}
+
+/* The left half. `min-width: 0` lets a long description wrap instead of
+   pushing the value column off the card. */
+.debug-shell .row__main {
+  min-width: 0;
+}
+
+.debug-shell .row__label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-md);
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  color: var(--app-text-strong);
+  line-height: 1.3;
+}
+
+.debug-shell .row__desc {
+  font-size: var(--text-sm);
+  color: var(--app-text-muted);
+  line-height: 1.45;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* Mono is for machine strings (model ids, paths, providers) inside a desc. */
+.debug-shell .row__desc--mono {
+  font-family: var(--app-font-mono, ui-monospace, monospace);
+}
+
+/* `white-space: nowrap` keeps a badge pair on one line; `flex-wrap` lets it
+   give up and stack when the card is genuinely too narrow. */
+.debug-shell .row__value {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: var(--text-base);
+  color: var(--app-text);
+  text-align: right;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.debug-shell .row__value .dim {
+  color: var(--app-text-subtle);
+}
+
+/* ── Bar ────────────────────────────────────────────────────────────────
+   Sits between rows and the stat grid (Embeddings' index coverage), so it
+   carries the rows' 20px inset itself. */
+.debug-shell .bar-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px 4px;
+  font-size: var(--text-xs);
+  color: var(--app-text-subtle);
+  letter-spacing: 0.04em;
+}
+
+.debug-shell .bar {
+  margin: 2px 20px 14px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+
+.debug-shell .bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
+  box-shadow: 0 0 8px var(--app-accent-glow);
+}
+
+/* ── Strip ──────────────────────────────────────────────────────────────
+   The Health card's diagnosis list: one line per condition, dot + sentence.
+   The sentences are the backend's own plain-language `reason` strings from
+   `get_debug_health` — this list renders them, it does not compose them. */
+.debug-shell .strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 20px 16px;
+}
+
+.debug-shell .strip__item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: var(--text-base);
+  color: var(--app-text);
+  line-height: 1.5;
+}
+
+/* The dock pins its dots to an icon corner (debug-layout.css); in the strip
+   they are inline, so undo the positioning and drop them onto the text
+   baseline. */
+.debug-shell .strip__item .health-dot {
+  position: static;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.debug-shell .strip__link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-family: inherit;
+  font-size: inherit;
+  color: var(--app-info);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.debug-shell .strip__link:hover {
+  text-decoration: underline;
+}
+
+.debug-shell .strip__link:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+  border-radius: 3px;
+}
+
+/* ── New chip ───────────────────────────────────────────────────────────
+   Tags a readout that did not exist before this redesign. Honesty rule: only
+   on genuinely new surfaces, never as decoration. */
+.debug-shell .new-chip {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--app-info-bg);
+  color: var(--app-info);
+  border: 1px solid var(--app-info-border);
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* ── Mini table ─────────────────────────────────────────────────────────
+   Mockup A's `.jobs`: a borderless table that sits flush in the card, ruled by
+   hairlines rather than boxed by a frame. Distinct from `.debug-table`
+   (debug-controls.css), which is the dense, wide, framed table the OCR event
+   logs need.
+
+   The `overflow-x` wrapper is not in the mockup, but the mockup's fake tables
+   are 4 columns wide and the real ones are not — the panel column is 680px, so
+   a wide table has to scroll inside itself rather than push the card out. */
+.debug-shell .jobs {
+  padding: 6px 20px 16px;
+  overflow-x: auto;
+}
+
+.debug-shell .jobs table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.debug-shell .jobs th {
+  text-align: left;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  white-space: nowrap;
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.debug-shell .jobs td {
+  padding: 7px 8px 7px 0;
+  color: var(--app-text);
+  border-bottom: 1px solid var(--app-border);
+  vertical-align: top;
+}
+
+.debug-shell .jobs tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.debug-shell .jobs .mono-dim {
+  color: var(--app-text-subtle);
+  white-space: nowrap;
+}
+
+/* Numeric columns: right-aligned with tabular figures so magnitudes line up
+   down a column. The compound selector outranks the `th`/`td` base rules. */
+.debug-shell .jobs th.cell-num,
+.debug-shell .jobs td.cell-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A stat grid immediately above a table or a body is the card's midpoint, not
+   its foot — give what follows its own top rule. */
+.debug-shell .debug-stats + .jobs {
+  border-top: 1px solid var(--app-border);
+  padding-top: 12px;
+}
+
+.debug-shell .debug-stats + .debug-body,
+.debug-shell .row + .debug-body {
+  border-top: 1px solid var(--app-border);
+}
+
+/* A body that ended up with nothing to render must not leave a stray rule and
+   32px of padding hanging off the card's foot. */
+.debug-shell .debug-body:empty {
+  display: none;
+}
+
+/* ── Disclosure ─────────────────────────────────────────────────────────
+   Mockup A has no <details> — but the page does, and legitimately: the support
+   probes and the raw decision JSON are genuinely secondary and must stay
+   collapsed by default. So the disclosure borrows the row vocabulary instead of
+   keeping the pre-redesign eyebrow (`▸ SYSTEM PROBE  SUPPORT & PERMISSIONS`):
+   the summary IS a `.row`, its chevron is the row's value, and the panel below
+   is an ordinary `.debug-body`. Nothing about the <details> behaviour changes.
+
+   Distinct from `.advanced` (debug-controls.css), which is the same idea one
+   level down — nested INSIDE a `.debug-body` rather than flush in the card. */
+.debug-shell .disclosure > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.debug-shell .disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.debug-shell .disclosure > summary:hover .row__label {
+  color: var(--app-accent);
+}
+
+.debug-shell .disclosure > summary:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+  border-radius: 8px;
+}
+
+/* Card-level block: takes the same inset hairline every other card-level block
+   after the first gets. `.row + .row::before` can't reach it — the summary's
+   sibling is the <details>, not the preceding row. */
+.debug-shell .setting-group__card > * + .disclosure {
+  position: relative;
+}
+
+.debug-shell .setting-group__card > * + .disclosure::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 20px;
+  right: 20px;
+  height: 1px;
+  background: var(--app-border);
+}
+
+/* The summary's own top hairline would double the one above. */
+.debug-shell .disclosure > summary.row::before {
+  display: none;
+}
+
+.debug-shell .disclosure__chevron {
+  display: inline-block;
+  color: var(--app-text-subtle);
+  transition: transform 0.15s;
+}
+
+.debug-shell .disclosure[open] > summary .disclosure__chevron {
+  transform: rotate(90deg);
+}
+
+/* ── Inline policy chips ────────────────────────────────────────────────
+   A dense "key: badge" run for a handful of related flags that are not worth
+   a `.row` each (the inactivity policy's gating/timeout/mode). */
+.debug-shell .idle-policy {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+}
+
+.debug-shell .idle-policy__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-shell .idle-policy__k {
+  font-size: var(--text-xs);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+
+/* ── Card footer actions ────────────────────────────────────────────────
+   A button row flush inside the card's bottom padding (the mockup's
+   `.actions`). Distinct from `.action-row` (debug-controls.css), which is an
+   inline row *inside* a padded `.debug-body`. */
+.debug-shell .actions {
+  display: flex;
+  gap: 8px;
+  padding: 14px 20px 16px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* When actions follow a flush stat grid they need their own top rule, since
+   the grid's own bottom edge is the card's. */
+.debug-shell .debug-stats + .actions {
+  border-top: 1px solid var(--app-border);
+}

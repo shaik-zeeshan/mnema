@@ -57,20 +57,13 @@ impl CredentialStore for OAuthCredentialStore {
 mod tests {
     use super::*;
 
-    /// The Token Set round-trips through the keychain slot as JSON, and once one
+    /// The Token Set round-trips through the vault slot as JSON, and once one
     /// is saved `has_mcp_server_secret` reports the connector authorized — that
-    /// presence check is the entire "authorized?" signal Settings reads. Uses the
-    /// same `MNEMA_MCP_SERVER_SECRET_DIR` file-backed fallback the store's own
-    /// tests use (no real keychain in CI).
+    /// presence check is the entire "authorized?" signal Settings reads. Uses
+    /// the shared file-key-backed test vault (no real keychain in CI).
     #[tokio::test]
     async fn token_set_round_trips_and_reports_authorized() {
-        let dir = std::env::temp_dir().join(format!(
-            "mnema-oauth-store-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).expect("temp dir should be created");
-        std::env::set_var("MNEMA_MCP_SERVER_SECRET_DIR", &dir);
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
 
         let store = OAuthCredentialStore::new("oauth-connector".to_string());
         assert!(
@@ -97,8 +90,5 @@ mod tests {
             !app_infra::has_mcp_server_secret("oauth-connector").expect("has should succeed"),
             "clearing the Token Set must read as unauthorized"
         );
-
-        std::env::remove_var("MNEMA_MCP_SERVER_SECRET_DIR");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
