@@ -92,9 +92,8 @@ export function recValidationErrors(
       "At least one capture source (Screen, Microphone, or System Audio) must be enabled.",
     );
   }
-  if (rec.draftCaptureSystemAudio && !rec.draftCaptureScreen) {
-    errors.push("System Audio capture requires Screen capture to be enabled.");
-  }
+  // System audio is an independent capture family with no screen dependency
+  // (ADR 0052) — audio-only sessions are allowed.
   if (gates.resolutionSupportPendingForNonOriginal) {
     errors.push("Wait for capture support to load before saving preset/custom resolution.");
   }
@@ -120,10 +119,9 @@ export function recDomainSaveBlocked(
   gates: RecordingValidationGates,
 ): boolean {
   if (domain === "capture_sources") {
-    return (
-      (!rec.draftCaptureScreen && !rec.draftCaptureMicrophone && !rec.draftCaptureSystemAudio) ||
-      (rec.draftCaptureSystemAudio && !rec.draftCaptureScreen)
-    );
+    // System audio has no screen dependency (ADR 0052); only "no source at all"
+    // blocks the capture_sources autosave.
+    return !rec.draftCaptureScreen && !rec.draftCaptureMicrophone && !rec.draftCaptureSystemAudio;
   }
   if (domain === "video") {
     return (
