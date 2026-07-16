@@ -66,9 +66,18 @@ Exercises both the device-change listener and the tap-follows-the-format rule (b
 **Log:**
 ```
 system-audio-tap: rebuilding tap generation (reason=default_output_device_changed, rebuild=1)
-system-audio-tap: started tap generation: 48000 Hz, 2 ch, excluding N process object(s)
+system-audio-tap: started tap generation: 48000 Hz (tap claims 48000 Hz), 2 ch, excluding N process object(s)
 system-audio-tap: sample_format_stabilized observed=<n> streak=<n> sample_rate_hz=48000 channels=2
 ```
+
+**Bluetooth variant (the speedy-audio regression):** with Bluetooth earbuds whose
+microphone is also in use (HFP), the device renegotiates to 16 kHz while the tap
+still *claims* 48 kHz — the recorded rate must follow the device, not the claim.
+Switch output to the earbuds mid-recording with the mic on them, keep audio
+playing ~30 s, and check the new segment with `afinfo`: expect `16000 Hz` and a
+duration matching wall clock (a third of wall clock = the pre-fix bug). A
+mid-recording A2DP ↔ HFP flip on the *same* device logs
+`reason=device_sample_rate_changed`.
 
 ---
 

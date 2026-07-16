@@ -125,9 +125,12 @@ impl SystemAudioTapSession {
             return Err(tap_error("start aggregate device", error));
         }
 
+        let tap_rate = asbd.sample_rate;
+        let asbd = writer_asbd(asbd, aggregate.nominal_sample_rate().ok());
         capture_runtime::debug_log!(
-            "{LOG_PREFIX} started tap generation: {} Hz, {} ch, excluding {} process object(s)",
+            "{LOG_PREFIX} started tap generation: {} Hz (tap claims {} Hz), {} ch, excluding {} process object(s)",
             asbd.sample_rate,
+            tap_rate,
             asbd.channels_per_frame,
             excluded_process_object_ids.len()
         );
@@ -142,11 +145,32 @@ impl SystemAudioTapSession {
         })
     }
 
-    /// The tap's own format (`kAudioTapPropertyFormat`). Device-dependent, and it
-    /// changes across rebuilds.
+    /// The format deliveries actually arrive in: the tap's own format
+    /// (`kAudioTapPropertyFormat`) with its sample rate replaced by the
+    /// aggregate's. Device-dependent, and it changes across rebuilds.
     pub fn asbd(&self) -> cat::AudioStreamBasicDesc {
         self.asbd
     }
+}
+
+/// The tap's ASBD reports its stereo mixdown layout at the tap's own rate, but
+/// drift compensation resamples deliveries onto the aggregate's clock, which
+/// follows the output device — a Bluetooth headset in HFP runs at 16 kHz while
+/// the tap still claims 48 kHz, and writing that claim into the file plays back
+/// 3× fast. The delivered cadence is the aggregate's nominal rate, so that is
+/// the rate the writer is told; layout (f32, channels, interleaving) stays the
+/// tap's.
+fn writer_asbd(
+    tap_asbd: cat::AudioStreamBasicDesc,
+    aggregate_nominal_rate: Option<f64>,
+) -> cat::AudioStreamBasicDesc {
+    let mut asbd = tap_asbd;
+    if let Some(rate) = aggregate_nominal_rate {
+        if rate.is_finite() && rate > 0.0 {
+            asbd.sample_rate = rate;
+        }
+    }
+    asbd
 }
 
 impl Drop for SystemAudioTapSession {
@@ -227,6 +251,32 @@ pub fn prompt_for_system_audio_permission() -> Result<(), CaptureErrorResponse> 
     std::thread::sleep(std::time::Duration::from_millis(250));
     drop(tap);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tap_asbd(rate: f64) -> cat::AudioStreamBasicDesc {
+        crate::writer::fixtures::asbd(rate, 2)
+    }
+
+    // The Bluetooth-HFP case: tap claims 48 kHz, aggregate runs at 16 kHz.
+    // Only the rate moves; the layout stays the tap's.
+    #[test]
+    fn writer_rate_follows_the_aggregate_clock() {
+        let corrected = writer_asbd(tap_asbd(48_000.0), Some(16_000.0));
+        assert_eq!(corrected.sample_rate, 16_000.0);
+        assert_eq!(corrected.channels_per_frame, 2);
+        assert_eq!(corrected.bytes_per_frame, tap_asbd(48_000.0).bytes_per_frame);
+    }
+
+    #[test]
+    fn an_unreadable_or_nonsense_aggregate_rate_keeps_the_taps_claim() {
+        for rate in [None, Some(0.0), Some(-48_000.0), Some(f64::NAN)] {
+            assert_eq!(writer_asbd(tap_asbd(48_000.0), rate).sample_rate, 48_000.0);
+        }
+    }
 }
 
 /// Destroys aggregate devices minted by an earlier Mnema process that crashed

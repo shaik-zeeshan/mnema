@@ -5,9 +5,11 @@
 //! a live tap back to health: IOProc restarts and aggregate-only recreates are
 //! both documented as insufficient for the macOS-26 all-zero wedge.
 //!
-//! Four triggers converge on one path:
+//! Five triggers converge on one path:
 //!
 //! - the default output device changes (property listener),
+//! - the device renegotiates its sample rate under the live tap
+//!   (`kAudioDevicePropertyNominalSampleRate` — Bluetooth A2DP ↔ HFP),
 //! - the device dies (`kAudioDevicePropertyDeviceIsAlive`),
 //! - the exclude list moves — a privacy-list edit, or an excluded app starting
 //!   or quitting an audio process ([`SystemAudioExcludeWatcher`]),
@@ -55,6 +57,11 @@ pub struct SystemAudioSegmentHooks {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RebuildReason {
     DefaultOutputDeviceChanged,
+    /// The device kept its identity but renegotiated its clock — Bluetooth
+    /// dropping from A2DP 48 kHz to HFP 16 kHz when its microphone engages, or
+    /// back. The writer format is baked per generation, so a rate change under
+    /// a live tap records speed-shifted audio until rebuilt.
+    DeviceSampleRateChanged,
     DeviceDied,
     ExcludeListMoved,
     ZeroWatchdog,
@@ -64,6 +71,7 @@ impl RebuildReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::DefaultOutputDeviceChanged => "default_output_device_changed",
+            Self::DeviceSampleRateChanged => "device_sample_rate_changed",
             Self::DeviceDied => "device_died",
             Self::ExcludeListMoved => "exclude_list_moved",
             Self::ZeroWatchdog => "zero_watchdog",
@@ -164,6 +172,7 @@ struct DeviceChangeListeners {
     queue: arc::R<dispatch::Queue>,
     default_output: arc::R<ca::PropListenerBlock>,
     device_alive: arc::R<ca::PropListenerBlock>,
+    device_sample_rate: arc::R<ca::PropListenerBlock>,
 }
 
 fn default_output_addr() -> ca::PropAddr {
@@ -172,6 +181,10 @@ fn default_output_addr() -> ca::PropAddr {
 
 fn device_alive_addr() -> ca::PropAddr {
     ca::PropSelector::DEVICE_IS_ALIVE.global_addr()
+}
+
+fn device_sample_rate_addr() -> ca::PropAddr {
+    ca::PropSelector::DEVICE_NOMINAL_SAMPLE_RATE.global_addr()
 }
 
 impl DeviceChangeListeners {
@@ -197,6 +210,11 @@ impl DeviceChangeListeners {
                 RebuildReason::DeviceDied,
                 "device liveness listener",
             ),
+            device_sample_rate: rebuild_listener_block(
+                shared,
+                RebuildReason::DeviceSampleRateChanged,
+                "device sample rate listener",
+            ),
         };
 
         ca::System::OBJ
@@ -214,6 +232,14 @@ impl DeviceChangeListeners {
                 &mut listeners.device_alive,
             )
             .map_err(|error| listener_error("add device liveness listener", error))?;
+        listeners
+            .device
+            .add_prop_listener_block(
+                &device_sample_rate_addr(),
+                Some(&listeners.queue),
+                &mut listeners.device_sample_rate,
+            )
+            .map_err(|error| listener_error("add device sample rate listener", error))?;
 
         Ok(listeners)
     }
@@ -231,8 +257,13 @@ impl Drop for DeviceChangeListeners {
             Some(&self.queue),
             &mut self.device_alive,
         );
+        let device_sample_rate = self.device.remove_prop_listener_block(
+            &device_sample_rate_addr(),
+            Some(&self.queue),
+            &mut self.device_sample_rate,
+        );
         capture_runtime::debug_log!(
-            "{LOG_PREFIX} stopped device listeners (default_output={default_output:?}, device_alive={device_alive:?})"
+            "{LOG_PREFIX} stopped device listeners (default_output={default_output:?}, device_alive={device_alive:?}, device_sample_rate={device_sample_rate:?})"
         );
     }
 }
@@ -592,6 +623,10 @@ mod tests {
         assert_eq!(
             RebuildReason::DefaultOutputDeviceChanged.as_str(),
             "default_output_device_changed"
+        );
+        assert_eq!(
+            RebuildReason::DeviceSampleRateChanged.as_str(),
+            "device_sample_rate_changed"
         );
         assert_eq!(RebuildReason::DeviceDied.as_str(), "device_died");
         assert_eq!(
