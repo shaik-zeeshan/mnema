@@ -14,6 +14,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { errorText } from "./format";
+import {
+  canDismissSystemAudioHint,
+  systemAudioHintVisible,
+} from "./system-audio-access-logic";
 
 /// Mirrors `SystemAudioAccessHint` in `native_capture.rs`. Whether to show is
 /// the backend's call — same shape as the sensitive-app recommendation prompt,
@@ -50,7 +54,7 @@ export function createSystemAudioAccessStore() {
 
   async function dismiss() {
     const promptId = hint?.promptId;
-    if (!promptId) return;
+    if (!canDismissSystemAudioHint(hint)) return;
     // Hidden immediately; the record is what keeps it hidden across restarts.
     dismissed = true;
     error = null;
@@ -63,7 +67,7 @@ export function createSystemAudioAccessStore() {
 
   return {
     get mayBeBlocked() {
-      return (hint?.shouldShow ?? false) && !dismissed;
+      return systemAudioHintVisible(hint, dismissed);
     },
     get error() {
       return error;

@@ -22,6 +22,8 @@ import { describe, expect, test } from "bun:test";
 import {
   buildRecDomainRequest,
   buildRecDomainRequestFromSettings,
+  buildRecDomainSnapshot,
+  buildRecDomainSnapshotFromSettings,
   ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
   DEFAULT_USER_CONTEXT_BUDGET_TIER,
   DEFAULT_USER_CONTEXT_BACKFILL_WINDOW_DAYS,
@@ -58,7 +60,7 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   systemAudioActivitySensitivity: 50,
   audioSpeechDetection: { detector: "silero" },
   metadata: { enabled: true, browserUrlMode: "sanitized" },
-  privacy: { excludedApps: [] },
+  privacy: { excludedApps: [], filterSystemAudio: true },
   access: {
     askAiEnabled: true,
     askAiWebFetchEnabled: false,
@@ -178,6 +180,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
     draftMetadataEnabled: s.metadata.enabled,
     draftBrowserUrlMode: s.metadata.browserUrlMode,
     draftExcludedApps: [...s.privacy.excludedApps],
+    draftFilterSystemAudio: s.privacy?.filterSystemAudio ?? true,
 
     draftAskAiEnabled: s.access.askAiEnabled,
     draftAskAiWebFetchEnabled: s.access.askAiWebFetchEnabled,
@@ -340,5 +343,51 @@ describe("recording autosave dirty-diff round-trip", () => {
       draftCustomMbps: null,
     };
     expect(() => buildRecDomainRequest("video", partialCustomDrafts)).not.toThrow();
+  });
+});
+
+// The privacy row's dirty-diff uses the SNAPSHOT builders (the domain commits
+// through its own commands, not the autosave engine, but diffs the same way):
+//
+//   live      = buildRecDomainSnapshot("app_privacy_exclusion", drafts)
+//   baseline  = buildRecDomainSnapshotFromSettings("app_privacy_exclusion", s)
+//
+// The live snapshot serializes the drafts field-by-field while the baseline
+// applies `?? true` defaults to raw settings — if their field order or defaults
+// ever disagree, the Privacy row reads perpetually dirty. The drafts below
+// mirror `syncPrivacyDrafts` (recording.svelte.ts) exactly.
+describe("app_privacy_exclusion snapshot fixed point", () => {
+  const excludedApps = [
+    { id: "x1", enabled: true, bundleId: "com.example.one", displayName: "One" },
+  ];
+
+  const privacyDrafts = (s: RecordingSettings): RecordingDraftState => ({
+    ...draftsFromCanonical(CANONICAL_SETTINGS),
+    // Mirror of syncPrivacyDrafts: the only two fields this domain snapshots.
+    draftExcludedApps: [...(s.privacy?.excludedApps ?? [])],
+    draftFilterSystemAudio: s.privacy?.filterSystemAudio ?? true,
+  });
+
+  test("explicit filterSystemAudio:false — live snapshot == baseline", () => {
+    const settings: RecordingSettings = {
+      ...CANONICAL_SETTINGS,
+      privacy: { excludedApps, filterSystemAudio: false },
+    };
+    expect(buildRecDomainSnapshot("app_privacy_exclusion", privacyDrafts(settings))).toBe(
+      buildRecDomainSnapshotFromSettings("app_privacy_exclusion", settings),
+    );
+  });
+
+  test("legacy settings omitting filterSystemAudio — both `?? true` defaults agree", () => {
+    // A pre-toggle settings file: the privacy object has no filterSystemAudio.
+    const settings: RecordingSettings = {
+      ...CANONICAL_SETTINGS,
+      privacy: { excludedApps } as RecordingSettings["privacy"],
+    };
+    const drafts = privacyDrafts(settings);
+    expect(drafts.draftFilterSystemAudio).toBe(true);
+    expect(buildRecDomainSnapshot("app_privacy_exclusion", drafts)).toBe(
+      buildRecDomainSnapshotFromSettings("app_privacy_exclusion", settings),
+    );
   });
 });
