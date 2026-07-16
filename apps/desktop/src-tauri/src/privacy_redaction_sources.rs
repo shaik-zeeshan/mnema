@@ -187,6 +187,22 @@ pub fn set_privacy_excluded_app_enabled(
     })
 }
 
+/// Whether the privacy excluded-apps list also filters the system-audio tap
+/// (Settings → Privacy → "Filter system audio"). Mnema's own-process exclusion
+/// is never toggleable. Routed through the same privacy-domain mutation seam as
+/// the excluded-apps edits, so a mid-recording flip reaches the live tap through
+/// the same refresh path a privacy-list edit takes.
+#[tauri::command]
+pub fn set_privacy_filter_system_audio(
+    enabled: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
+    with_app_exclusion_mutation(app_handle, |settings| {
+        settings.privacy.filter_system_audio = enabled;
+        Ok(())
+    })
+}
+
 #[tauri::command]
 pub fn remove_privacy_excluded_app(
     source_id: String,

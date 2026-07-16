@@ -216,7 +216,7 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     ...base,
     captureScreen: draft.draftCaptureScreen,
     captureMicrophone: draft.draftCaptureMicrophone,
-    captureSystemAudio: draft.draftCaptureScreen && draft.draftCaptureSystemAudio,
+    captureSystemAudio: draft.draftCaptureSystemAudio,
     screenFrameRate: draft.draftFrameRate,
     screenResolution: draft.draftResolutionMode === "custom"
       ? { mode: "custom", width: draft.draftCustomWidth!, height: draft.draftCustomHeight! }

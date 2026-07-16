@@ -44,6 +44,21 @@ pub(crate) fn clear_current_system_audio_output_file(output_files: &mut CaptureO
     output_files.system_audio_files.clear();
 }
 
+/// Drops only the file the tap is still writing, keeping earlier-generation
+/// files a mid-segment rebuild already finalized so they commit with the
+/// segment instead of being orphaned on disk.
+pub(crate) fn strip_live_system_audio_output_file(
+    output_files: &mut CaptureOutputFiles,
+    live_file: &str,
+) {
+    output_files
+        .system_audio_files
+        .retain(|path| path != live_file);
+    if output_files.system_audio_file.as_deref() == Some(live_file) {
+        output_files.system_audio_file = None;
+    }
+}
+
 #[cfg(target_os = "macos")]
 const MISSING_REQUESTED_SCREEN_OUTPUT_FAILURE_PREFIX: &str =
     "screen output missing: expected screen recording file";
@@ -407,17 +422,6 @@ pub(crate) fn finalize_capture_outputs(
             audio_failures.push(
                 "system audio output conversion failed: missing source recording".to_string(),
             );
-        }
-    }
-
-    if has_screen_output && requested_sources.is_some_and(|sources| sources.system_audio) {
-        if let Some(recording_file) = recording_file {
-            if let Err(error) = capture_screen::strip_audio_from_recording_file(recording_file) {
-                audio_failures.push(format!(
-                    "screen output video-only conversion failed: {}",
-                    error.message
-                ));
-            }
         }
     }
 

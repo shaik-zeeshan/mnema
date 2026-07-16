@@ -195,8 +195,9 @@ export class RecordingStore {
   draftBrowserUrlMode = $state<BrowserUrlMode>("sanitized");
   draftAppearance = $state<AppearanceSetting>("system");
 
-  // Privacy-exclusion draft (committed through the dedicated controller).
+  // Privacy-exclusion drafts (committed through the dedicated controller).
   draftExcludedApps = $state<ExcludedAppEntry[]>([]);
+  draftFilterSystemAudio = $state(true);
 
   // Access drafts (Ask AI). Tool-call cap: persisted as a single number where
   // 0 = no cap; the UI splits it into a "limit on/off" toggle + numeric value.
@@ -356,6 +357,7 @@ export class RecordingStore {
 
   syncPrivacyDrafts(s: RecordingSettings): void {
     this.draftExcludedApps = [...(s.privacy?.excludedApps ?? [])];
+    this.draftFilterSystemAudio = s.privacy?.filterSystemAudio ?? true;
   }
 
   syncAccessDrafts(s: RecordingSettings): void {

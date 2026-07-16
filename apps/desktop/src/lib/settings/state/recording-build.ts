@@ -168,6 +168,7 @@ export interface RecordingDraftState {
   draftMetadataEnabled: boolean;
   draftBrowserUrlMode: BrowserUrlMode;
   draftExcludedApps: ExcludedAppEntry[];
+  draftFilterSystemAudio: boolean;
 
   draftAskAiEnabled: boolean;
   draftAskAiWebFetchEnabled: boolean;
@@ -448,6 +449,7 @@ export function buildRecDomainRequestFromSettings(
     case "app_privacy_exclusion":
       return {
         excludedApps: s.privacy?.excludedApps ?? [],
+        filterSystemAudio: s.privacy?.filterSystemAudio ?? true,
       };
     case "inactivity":
       return {
@@ -560,7 +562,10 @@ export function buildRecDomainSnapshot(
   rec: RecordingDraftState,
 ): string {
   if (domain === "app_privacy_exclusion") {
-    return JSON.stringify({ excludedApps: rec.draftExcludedApps });
+    return JSON.stringify({
+      excludedApps: rec.draftExcludedApps,
+      filterSystemAudio: rec.draftFilterSystemAudio,
+    });
   }
   return JSON.stringify(buildRecDomainRequest(domain, rec));
 }

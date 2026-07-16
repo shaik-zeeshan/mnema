@@ -28,9 +28,9 @@ pub(crate) enum CaptureSuspensionStatus {
     RestartRequired,
 }
 
-/// Why screen/system-audio capture was suspended. Both kinds drive the same
-/// recovery loop — restart a fresh screen segment once it's possible again — but
-/// they retry on different terms.
+/// Why screen capture was suspended. Both kinds drive the same recovery loop —
+/// restart a fresh screen segment once it's possible again — but they retry on
+/// different terms.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CaptureSuspensionKind {
@@ -40,7 +40,8 @@ pub(crate) enum CaptureSuspensionKind {
     /// The capture display became unavailable (display sleep, screen lock, lid
     /// close, monitor disconnect). This is a transient liveness condition, not an
     /// error, so recovery never gives up: it waits for a display to return and
-    /// then resumes capture automatically.
+    /// then resumes capture automatically. Screen-only: system audio runs on a
+    /// process tap and records straight through it (ADR 0021, amended).
     DisplayUnavailable,
     /// The recordings volume is too low on free space to safely open the next
     /// segment file. Like [`CaptureSuspensionKind::DisplayUnavailable`] this is a
@@ -49,10 +50,10 @@ pub(crate) enum CaptureSuspensionKind {
     LowDisk,
 }
 
-/// A suspension of screen/system-audio capture that the segment loop keeps
-/// trying to recover from. Despite the name it now covers both privacy-filter
-/// failures and transient display-unavailable conditions (see
-/// [`CaptureSuspensionKind`]); `kind` selects the retry policy.
+/// A suspension of screen capture that the segment loop keeps trying to recover
+/// from. Despite the name it now covers privacy-filter failures, transient
+/// display-unavailable conditions, and low disk (see [`CaptureSuspensionKind`]);
+/// `kind` selects the retry policy.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CaptureSuspension {
@@ -156,6 +157,10 @@ pub struct NativeCaptureRuntime {
     pub active_screen_session: Option<capture_screen::ActiveCaptureSession>,
     #[cfg(target_os = "macos")]
     pub active_microphone_session: Option<microphone_capture::AvFoundationMicrophoneCaptureSession>,
+    /// The system-audio capture family: its own Core Audio process tap, with no
+    /// screen or display dependency (ADR 0052).
+    #[cfg(target_os = "macos")]
+    pub active_system_audio_session: Option<super::system_audio::SystemAudioFamily>,
     #[cfg(target_os = "macos")]
     pub capture_suspension: Option<CaptureSuspension>,
     /// Injectable free-space probe used by the low-disk preflight, the rotation
@@ -367,14 +372,6 @@ pub(super) fn validate_start_request(
         });
     }
 
-    if request.capture_system_audio && !request.capture_screen {
-        return Err(CaptureErrorResponse {
-            code: "system_audio_requires_screen".to_string(),
-            message: "System audio-only capture is not supported; enable screen capture as well"
-                .to_string(),
-        });
-    }
-
     Ok(CaptureSources {
         screen: request.capture_screen,
         microphone: request.capture_microphone,
@@ -404,11 +401,20 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        stop_system_audio_session(runtime);
         runtime.capture_suspension = None;
     }
 
     runtime.runtime_controller = RuntimeController::default();
     runtime.runtime_state = RuntimeState::Idle;
+}
+
+/// Tears the tap down, closing its in-flight segment. Terminal for the session.
+#[cfg(target_os = "macos")]
+pub(super) fn stop_system_audio_session(runtime: &mut NativeCaptureRuntime) {
+    if let Some(session) = runtime.active_system_audio_session.take() {
+        session.stop();
+    }
 }
 
 #[cfg(test)]
@@ -476,6 +482,7 @@ pub(super) fn mark_runtime_session_failed(runtime: &mut NativeCaptureRuntime) {
     {
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        stop_system_audio_session(runtime);
         runtime.capture_suspension = None;
     }
 
@@ -537,6 +544,7 @@ pub(super) fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime
         runtime.system_audio_recording_file = None;
         runtime.active_screen_session = None;
         runtime.active_microphone_session = None;
+        stop_system_audio_session(runtime);
         runtime.capture_suspension = None;
     }
     runtime.runtime_controller = RuntimeController::default();
@@ -550,7 +558,6 @@ pub(super) fn should_recover_from_segment_finalize_error(error: &CaptureErrorRes
             &[
                 "microphone output conversion failed: ",
                 "system audio output conversion failed: ",
-                "screen output video-only conversion failed: ",
                 "failed to remove intermediate ",
             ],
         )
@@ -570,18 +577,22 @@ pub(super) fn active_sources_for_inactivity_paused_state(
     microphone_paused: bool,
     system_audio_paused: bool,
 ) -> Option<CaptureSources> {
-    // system_audio is captured through the screen session backend, so it
-    // requires both the screen session to be live (!screen_paused) AND the
-    // system audio family to be active (!system_audio_paused).
     let active_sources = CaptureSources {
         screen: requested_sources.screen && !screen_paused,
         microphone: requested_sources.microphone && !microphone_paused,
-        system_audio: requested_sources.system_audio && !system_audio_paused && !screen_paused,
+        system_audio: requested_sources.system_audio && !system_audio_paused,
     };
 
     has_any_capture_sources(&active_sources).then_some(active_sources)
 }
 
+/// What is still recording while screen capture is suspended.
+///
+/// Only the screen stops. The microphone keeps its own session, and system audio
+/// keeps its own tap — a display going away is not a reason for either to stop
+/// (ADR 0021, amended). Low disk is the exception: it stops the microphone too,
+/// which is why `microphone_paused`/the live-session check decide rather than the
+/// suspension kind.
 #[cfg(target_os = "macos")]
 pub(super) fn privacy_suspended_sources_for_runtime_state(
     runtime: &NativeCaptureRuntime,
@@ -595,13 +606,34 @@ pub(super) fn privacy_suspended_sources_for_runtime_state(
         && (runtime.active_microphone_session.is_some()
             || runtime.microphone_recording_file.is_some());
 
+    let system_audio_active = runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.system_audio)
+        && !runtime.inactivity.is_system_audio_paused()
+        && !system_audio_stops_with_suspension(runtime);
+
     let active_sources = CaptureSources {
         screen: false,
         microphone: microphone_active,
-        system_audio: false,
+        system_audio: system_audio_active,
     };
 
     has_any_capture_sources(&active_sources).then_some(active_sources)
+}
+
+/// Whether the suspension the runtime is entering (or already in) takes the
+/// system-audio tap down with the screen.
+///
+/// Only [`CaptureSuspensionKind::LowDisk`] does, and not because of the screen:
+/// every source writes to the same volume (ADR 0040). A display sleeping,
+/// locking or disconnecting leaves the tap recording (ADR 0021, amended).
+#[cfg(target_os = "macos")]
+pub(super) fn system_audio_stops_with_suspension(runtime: &NativeCaptureRuntime) -> bool {
+    runtime
+        .capture_suspension
+        .as_ref()
+        .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
 }
 
 pub(super) fn screen_planner_for_runtime(
@@ -816,6 +848,7 @@ pub(super) fn current_segment_sources_for_runtime(
     if runtime.current_segment_output_files.is_some()
         || capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
         || runtime.active_microphone_session.is_some()
+        || runtime.active_system_audio_session.is_some()
     {
         return runtime.requested_sources.as_ref().and_then(|sources| {
             active_sources_for_inactivity_paused_state(
@@ -844,10 +877,14 @@ pub(super) fn microphone_probe_active_for_runtime(runtime: &NativeCaptureRuntime
 }
 
 #[cfg(target_os = "macos")]
+pub(super) fn system_audio_probe_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
+    runtime.active_system_audio_session.is_some()
+}
+
+#[cfg(target_os = "macos")]
 pub(super) fn system_audio_writer_active_for_runtime(runtime: &NativeCaptureRuntime) -> bool {
     !runtime.inactivity.is_system_audio_paused()
-        && !runtime.inactivity.is_screen_paused()
-        && capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref())
+        && runtime.active_system_audio_session.is_some()
         && runtime.system_audio_recording_file.is_some()
         && current_segment_sources_for_runtime(runtime).is_some_and(|sources| sources.system_audio)
 }

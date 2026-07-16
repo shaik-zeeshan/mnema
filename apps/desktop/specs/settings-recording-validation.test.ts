@@ -169,12 +169,16 @@ describe("recValidationErrors", () => {
       "At least one capture source (Screen, Microphone, or System Audio) must be enabled.",
     );
   });
-  test("system audio without screen -> error", () => {
+  // ADR 0052: system audio is an independent capture family — audio-only
+  // sessions (screen + mic off, system audio on) are allowed. The Settings
+  // System Audio toggle was decoupled from Screen, so this state is reachable
+  // and must not raise a validation error.
+  test("audio-only (system audio without screen) -> no error", () => {
     const errs = recValidationErrors(
-      state({ draftCaptureScreen: false, draftCaptureSystemAudio: true }),
+      state({ draftCaptureScreen: false, draftCaptureMicrophone: false, draftCaptureSystemAudio: true }),
       gates(),
     );
-    expect(errs).toContain("System Audio capture requires Screen capture to be enabled.");
+    expect(errs).toEqual([]);
   });
   test("resolution support pending -> error", () => {
     const errs = recValidationErrors(state(), gates({ resolutionSupportPendingForNonOriginal: true }));
@@ -216,14 +220,16 @@ describe("recDomainSaveBlocked", () => {
       ),
     ).toBe(true);
   });
-  test("capture_sources: system audio without screen -> blocked", () => {
+  // ADR 0052: audio-only must persist — the capture_sources autosave must not
+  // block system-audio-on + screen-off, or the toggle silently never saves.
+  test("capture_sources: audio-only (system audio without screen) -> not blocked", () => {
     expect(
       recDomainSaveBlocked(
         "capture_sources",
-        state({ draftCaptureScreen: false, draftCaptureSystemAudio: true }),
+        state({ draftCaptureScreen: false, draftCaptureMicrophone: false, draftCaptureSystemAudio: true }),
         gates(),
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
   test("capture_sources: valid -> not blocked", () => {
     expect(recDomainSaveBlocked("capture_sources", state(), gates())).toBe(false);

@@ -12,6 +12,7 @@ members = [
     "crates/capture-microphone",
     "crates/capture-metadata",
     "crates/capture-screen",
+    "crates/capture-system-audio",
     "crates/capture-types",
     "crates/capture-vad",
     "crates/capture-writers",

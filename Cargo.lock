@@ -1101,6 +1101,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "capture-system-audio"
+version = "0.1.0"
+dependencies = [
+ "capture-runtime",
+ "capture-types",
+ "capture-writers",
+ "cidre",
+]
+
+[[package]]
 name = "capture-types"
 version = "0.1.0"
 dependencies = [
@@ -4619,6 +4629,7 @@ dependencies = [
  "capture-microphone",
  "capture-runtime",
  "capture-screen",
+ "capture-system-audio",
  "capture-types",
  "capture-vad",
  "capture-writers",

@@ -19,7 +19,7 @@
     {
       key: "systemAudio",
       title: "System audio",
-      sub: "macOS audio capture entitlement.",
+      sub: "Asked the first time a recording captures sound.",
     },
   ];
 

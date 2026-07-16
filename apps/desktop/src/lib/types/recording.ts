@@ -44,6 +44,12 @@ export interface ExcludedAppEntry {
 
 export interface PrivacySettings {
 	excludedApps: ExcludedAppEntry[];
+	/**
+	 * Whether the excluded-apps list also filters the system-audio tap. Screen
+	 * exclusion and Mnema's own-process self-exclusion are never gated by this.
+	 * Defaults to true (the pre-toggle behavior).
+	 */
+	filterSystemAudio: boolean;
 }
 
 /** Stable provider id, matching the Rust `AiProviderKind::id` values. */

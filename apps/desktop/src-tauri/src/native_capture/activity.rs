@@ -15,7 +15,7 @@ use std::sync::MutexGuard;
 #[cfg(target_os = "macos")]
 use super::runtime::{
     microphone_backend_active_for_runtime, microphone_probe_active_for_runtime,
-    system_audio_writer_active_for_runtime,
+    system_audio_probe_active_for_runtime, system_audio_writer_active_for_runtime,
 };
 use super::runtime::{now_monotonic_marker_ms, NativeCaptureRuntime};
 
@@ -165,13 +165,13 @@ fn current_activity_snapshot_with_audio_peak_mode(
         },
         system_audio_activity: AudioActivitySourceState {
             enabled: capture_source_requested(runtime, |sources| sources.system_audio),
-            idle_ms: capture_screen::system_audio_activity_idle_ms(),
+            idle_ms: capture_system_audio::system_audio_activity_idle_ms(),
             latest_normalized_level: match audio_peak_read_mode {
                 AudioPeakReadMode::Take => {
-                    capture_screen::take_system_audio_activity_window_peak_level()
+                    capture_system_audio::take_system_audio_activity_window_peak_level()
                 }
                 AudioPeakReadMode::Peek => {
-                    capture_screen::peek_system_audio_activity_window_peak_level()
+                    capture_system_audio::peek_system_audio_activity_window_peak_level()
                 }
             },
         },
@@ -212,8 +212,8 @@ pub(super) fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> Idl
         level: microphone_capture::microphone_activity_level(),
     };
     let system_audio_raw_sample = RawActivityReading {
-        last_unix_ms: capture_screen::last_system_audio_activity_unix_ms(),
-        level: capture_screen::system_audio_activity_level(),
+        last_unix_ms: capture_system_audio::last_system_audio_activity_unix_ms(),
+        level: capture_system_audio::system_audio_activity_level(),
     };
     let activity_snapshot = current_activity_snapshot_for_debug(runtime);
     let combined_policy = runtime
@@ -377,16 +377,15 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
         let screen_session =
             capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref());
         let mic_session = microphone_probe_active_for_runtime(runtime);
-        // System audio runs over the screen session; "session active" means the
-        // host screen session is up. Writer active is gated by the dedicated
-        // truth helper.
-        let sys_session = screen_session;
+        let sys_session = system_audio_probe_active_for_runtime(runtime);
 
         let mic_writer = microphone_backend_active_for_runtime(runtime);
         let sys_writer = system_audio_writer_active_for_runtime(runtime);
         // Screen "writer active": session attached and not paused; the screen
         // writer is implicit in the session lifetime.
         let screen_writer = screen_session && !runtime.inactivity.is_screen_paused();
+        // Screen-scoped: a display-unavailable or privacy suspension stops the
+        // screen alone (ADR 0021, amended).
         let privacy_suspension_reason = runtime
             .capture_suspension
             .as_ref()
@@ -400,7 +399,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(screen_writer),
                 output_path: runtime.recording_file.clone(),
                 reason: if requested_screen {
-                    privacy_suspension_reason.clone()
+                    privacy_suspension_reason
                 } else {
                     Some("not_requested".to_string())
                 },
@@ -424,7 +423,7 @@ fn build_runtime_sources_status(runtime: &NativeCaptureRuntime) -> RuntimeSource
                 writer_active: Some(sys_writer),
                 output_path: runtime.system_audio_recording_file.clone(),
                 reason: if requested_sys {
-                    privacy_suspension_reason
+                    None
                 } else {
                     Some("not_requested".to_string())
                 },

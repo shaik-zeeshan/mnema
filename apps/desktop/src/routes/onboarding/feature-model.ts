@@ -64,7 +64,7 @@ export const FEATURES: FeatureMeta[] = [
     id: "sysaudio",
     icon: "speakers",
     name: "System audio",
-    eyebrow: "Optional · needs screen",
+    eyebrow: "Optional",
     sub: "Capture sound coming out of your speakers (macOS).",
     required: false,
   },
@@ -125,7 +125,6 @@ export const FEATURES: FeatureMeta[] = [
 // the live context.
 export interface FeatureLockContext {
   micGranted: boolean;
-  systemAudioGranted: boolean;
   transcriptionEnabled: boolean;
 }
 
@@ -135,8 +134,11 @@ export function featureLockReason(id: FeatureId, ctx: FeatureLockContext): strin
   switch (id) {
     case "mic":
       return ctx.micGranted ? null : "Needs Microphone permission";
-    case "sysaudio":
-      return ctx.systemAudioGranted ? null : "Needs System audio permission";
+    // `sysaudio` has no lock and cannot have one: a Core Audio process tap's
+    // grant is unreadable, and its prompt only fires when a tap is first read —
+    // which is the recording this toggle enables (ADR 0052). Gating it on a
+    // grant we can never observe would lock the feature shut forever. The body's
+    // Grant button raises the prompt early; it is an offer, not a prerequisite.
     case "speakers":
       return ctx.transcriptionEnabled ? null : "Needs Audio transcription on";
     default:

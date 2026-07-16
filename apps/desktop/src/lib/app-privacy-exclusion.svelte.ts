@@ -117,7 +117,11 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
   }
 
   async function runPrivacySettingsCommand(
-    command: "add_privacy_excluded_app" | "set_privacy_excluded_app_enabled" | "remove_privacy_excluded_app",
+    command:
+      | "add_privacy_excluded_app"
+      | "set_privacy_excluded_app_enabled"
+      | "remove_privacy_excluded_app"
+      | "set_privacy_filter_system_audio",
     args: Record<string, unknown>,
   ): Promise<RecordingSettingsDomainUpdateResponse | null> {
     host.beforePrivacyCommand?.();
@@ -175,6 +179,12 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
 
   function removePrivacyApp(sourceId: string): void {
     void runPrivacySettingsCommand("remove_privacy_excluded_app", { sourceId });
+  }
+
+  // Whether the excluded-apps list also filters system audio (the tap's
+  // privacy-list half; Mnema's own-process exclusion is never toggleable).
+  function setFilterSystemAudio(enabled: boolean): void {
+    void runPrivacySettingsCommand("set_privacy_filter_system_audio", { enabled });
   }
 
   function handlePrivacyAppComboboxInput(): void {
@@ -317,6 +327,7 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
     applyRecommendation,
     setPrivacyExcludedAppEnabled,
     removePrivacyApp,
+    setFilterSystemAudio,
     handlePrivacyAppComboboxInput,
     handlePrivacyAppComboboxKeydown,
     closePrivacyAppComboboxSoon,

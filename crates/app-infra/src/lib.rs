@@ -24,6 +24,7 @@ mod secret_vault_handle;
 mod secret_vault_migration;
 mod semantic_search;
 pub mod status;
+pub mod system_audio_evidence;
 pub mod usage_charts;
 pub mod user_context;
 
@@ -300,6 +301,7 @@ pub struct AppInfra {
     semantic_search: SemanticSearchStore,
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
+    system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
     subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -381,6 +383,8 @@ impl AppInfra {
         let semantic_search = SemanticSearchStore::new(database.handle().clone());
         let usage_charts = UsageChartsStore::new(database.handle().clone());
         let user_context = UserContextStore::new(database.handle().clone());
+        let system_audio_evidence =
+            system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
         let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -409,6 +413,7 @@ impl AppInfra {
             semantic_search,
             usage_charts,
             user_context,
+            system_audio_evidence,
             subject_vectors,
             conversation,
             captured_frame_equivalence,
@@ -510,6 +515,14 @@ impl AppInfra {
 
     pub fn user_context(&self) -> &user_context::UserContextStore {
         &self.user_context
+    }
+
+    /// Persisted evidence for the system-audio denial heuristic (ADR 0052) —
+    /// the only thing standing between a denied grant and hours of silent
+    /// recordings, because Core Audio taps cannot be asked about their own
+    /// authorization.
+    pub fn system_audio_evidence(&self) -> &system_audio_evidence::SystemAudioEvidenceStore {
+        &self.system_audio_evidence
     }
 
     /// The **Subject Vector** store seam (migration `0043`): embedding-free

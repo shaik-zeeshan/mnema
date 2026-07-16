@@ -38,9 +38,8 @@ use super::segments::{
     recover_screen_capture_after_wake_with_start_segment, resume_microphone_from_inactivity,
     resume_runtime_from_inactivity, resume_screen_from_inactivity,
     resume_screen_from_inactivity_with_start_segment, resume_system_audio_from_inactivity,
-    should_defer_screen_resume_for_missing_display,
-    segment_loop_sleep_duration, stop_capture_runtime, system_audio_resume_action,
-    StartedSegmentState, SystemAudioResumeAction,
+    should_defer_screen_resume_for_missing_display, segment_loop_sleep_duration,
+    stop_capture_runtime, StartedSegmentState,
 };
 use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
@@ -242,6 +241,56 @@ fn write_openable_screen_file(path: &Path) {
 fn write_existing_audio_placeholder(path: &Path) -> String {
     fs::write(path, b"placeholder audio").expect("placeholder audio file should exist");
     path.to_string_lossy().to_string()
+}
+
+// A real, positive-duration AAC/m4a file so that the AVFoundation duration
+// validation inside `finalize_capture_outputs` accepts it as usable captured
+// audio (mirrors the helper in `native_capture_output.rs`'s tests).
+#[cfg(target_os = "macos")]
+fn write_valid_m4a_audio_file(path: &Path) {
+    use cidre::{av, ns};
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let path_str = path.to_string_lossy().to_string();
+    let url = ns::Url::with_fs_path_str(&path_str, false);
+    let sample_rate = 48_000.0_f64;
+    let format_id = ns::Number::with_u32(u32::from_be_bytes(*b"aac "));
+    let sample_rate_value = ns::Number::with_f64(sample_rate);
+    let channel_count_value = ns::Number::with_i64(1);
+    let settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+        ns::Dictionary::with_keys_values(
+            &[
+                av::audio::all_formats_keys::id(),
+                av::audio::all_formats_keys::sample_rate(),
+                av::audio::all_formats_keys::number_of_channels(),
+            ],
+            &[
+                format_id.as_id_ref(),
+                sample_rate_value.as_id_ref(),
+                channel_count_value.as_id_ref(),
+            ],
+        );
+    let mut file = av::AudioFile::open_write_common_format(
+        &url,
+        &settings,
+        av::AudioCommonFormat::PcmF32,
+        false,
+    )
+    .expect("writable test audio file should open");
+    let processing_format = file.processing_format();
+    let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
+    let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
+        .expect("test audio buffer should allocate");
+    buffer
+        .set_frame_len(frames)
+        .expect("frame length should set");
+    if let Some(samples) = buffer.data_f32_mut_at(0) {
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = ((index as f32) * 0.05).sin() * 0.1;
+        }
+    }
+    file.write(&buffer).expect("test audio should write");
+    file.close();
 }
 
 fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> AppNotification {
@@ -1070,7 +1119,6 @@ fn resumed_segment_state_fixture(screen_file: String) -> StartedSegmentState {
         None,
         None,
         None,
-        None,
     )
 }
 
@@ -1163,6 +1211,38 @@ fn validate_start_request_rejects_system_audio_when_not_supported() {
     assert_eq!(error.code, "system_audio_unsupported");
 }
 
+// A system-audio-only session is allowed: the tap needs no screen, and refusing
+// one would be new coupling written into a decoupling project (ADR 0052).
+#[test]
+fn validate_start_request_allows_a_system_audio_only_session() {
+    let request = StartNativeCaptureRequest {
+        capture_screen: false,
+        capture_microphone: false,
+        capture_system_audio: true,
+    };
+    let support = CaptureSupportResponse {
+        platform: "macos".to_string(),
+        native_capture_supported: true,
+        supported_sources: CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        },
+    };
+
+    let sources = validate_start_request(&request, &support)
+        .expect("system audio alone is a valid recording session");
+
+    assert_eq!(
+        sources,
+        CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }
+    );
+}
+
 #[test]
 fn describe_recording_settings_changes_returns_empty_for_identical_settings() {
     let settings = recording_settings_fixture();
@@ -1240,20 +1320,18 @@ fn validate_recording_settings_rejects_all_sources_disabled() {
 }
 
 #[test]
-fn validate_recording_settings_rejects_system_audio_without_screen() {
-    let error = validate_recording_settings(UpdateRecordingSettingsRequest {
+fn validate_recording_settings_allows_system_audio_without_screen() {
+    let settings = validate_recording_settings(UpdateRecordingSettingsRequest {
         capture_screen: false,
-        capture_microphone: true,
+        capture_microphone: false,
         capture_system_audio: true,
         ..update_recording_settings_request_fixture()
     })
-    .expect_err("system audio without screen must be rejected");
+    .expect("system audio runs on its own tap, so it needs no screen capture");
 
-    assert_eq!(error.code, "invalid_recording_settings");
-    assert_eq!(
-        error.message,
-        "System audio capture requires screen capture"
-    );
+    assert!(!settings.capture_screen);
+    assert!(!settings.capture_microphone);
+    assert!(settings.capture_system_audio);
 }
 
 #[test]
@@ -1667,6 +1745,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
@@ -1747,6 +1826,67 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
     assert_eq!(runtime.runtime_state, RuntimeState::Idle);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_commits_the_system_audio_segment_on_an_audio_only_stop() {
+    // The shape a stop lands in during an audio-only session (or a stop while
+    // the screen is asleep): no screen session at all, only the tap's `.m4a`
+    // tracked in the current segment. The stop must persist that recording into
+    // the committed output_files — the other stop test asserts nothing about
+    // outputs, so a regression silently dropping audio-only segments would
+    // still pass it.
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let sys_path = temp.path().join("segment-0001-sys.m4a");
+    write_valid_m4a_audio_file(&sys_path);
+    let sys = sys_path.to_string_lossy().into_owned();
+
+    let mut current = super::segments::empty_output_files();
+    super::output::set_current_system_audio_output_file(&mut current, sys.clone());
+
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 1,
+        system_audio_recording_file: Some(sys.clone()),
+        current_segment_output_files: Some(current),
+        output_files: Some(super::segments::empty_output_files()),
+        active_screen_session: None,
+        runtime_controller,
+        runtime_state,
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None)
+        .expect("an audio-only stop should succeed without a screen session");
+
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("committed output_files slot should exist");
+    let committed_sys = committed
+        .system_audio_file
+        .iter()
+        .chain(committed.system_audio_files.iter())
+        .any(|file| file == &sys);
+    assert!(
+        committed_sys,
+        "an audio-only stop must commit the current segment's finalized \
+         system-audio `.m4a` into runtime.output_files (got {committed:?}); \
+         otherwise the whole recording is silently lost on stop"
+    );
+    assert_eq!(
+        runtime.runtime_state,
+        RuntimeState::Idle,
+        "the stop must run the runtime down to Idle"
+    );
+}
+
 #[test]
 fn stopped_session_from_runtime_preserves_finalized_metadata() {
     let runtime = NativeCaptureRuntime {
@@ -1790,6 +1930,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
@@ -1943,7 +2084,7 @@ fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_
     recover_screen_capture_after_wake_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _| {
             Err(CaptureErrorResponse {
                 code: "capture_stream_start_failed".to_string(),
                 message: "wake restart failed".to_string(),
@@ -1963,12 +2104,14 @@ fn session_from_runtime_reports_not_running_when_screen_capture_is_broken_after_
             system_audio: true,
         })
     );
+    // The screen is broken; both audio families are untouched by that and keep
+    // recording (ADR 0052).
     assert_eq!(
         runtime.current_segment_sources,
         Some(CaptureSources {
             screen: false,
             microphone: true,
-            system_audio: false,
+            system_audio: true,
         })
     );
 }
@@ -2006,6 +2149,7 @@ fn session_from_runtime_reports_running_during_privacy_suspension_with_live_micr
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: Some(CaptureSuspension::with_kind(
             CaptureSuspensionKind::PrivacyFilter,
             &privacy_error,
@@ -2305,6 +2449,7 @@ fn system_audio_planner_for_runtime_does_not_fall_back_to_screen_planner() {
 
 #[test]
 fn current_activity_snapshot_marks_audio_sources_enabled_from_requested_sources() {
+    let _guard = audio_activity_state_test_guard();
     let mut runtime = NativeCaptureRuntime {
         is_running: true,
         requested_sources: Some(CaptureSources {
@@ -2340,6 +2485,7 @@ fn screen_activity_polling_skips_live_screen_streams() {
 
 #[test]
 fn current_activity_snapshot_for_debug_does_not_consume_microphone_vad_speech_pulse() {
+    let _guard = audio_activity_state_test_guard();
     let mut runtime = NativeCaptureRuntime {
         is_running: true,
         requested_sources: Some(CaptureSources {
@@ -2395,14 +2541,24 @@ fn voiced_like_frame_16khz_30ms() -> Vec<i16> {
         .collect()
 }
 
+/// Serializes the tests that read the process-global audio activity peaks.
+/// `current_activity_snapshot` *drains* them, so two such tests running in
+/// parallel consume each other's sample.
+fn audio_activity_state_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
-    // Uses global capture-screen test state, so keep the assertion window as
-    // small as possible: debug should observe the peak without draining it,
-    // and the next normal take should still receive the same peak.
-    capture_screen::reset_last_screen_activity_unix_ms();
-    capture_screen::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
+    // Debug should observe the peak without draining it, and the next normal
+    // take should still receive the same peak.
+    let _guard = audio_activity_state_test_guard();
+    capture_system_audio::reset_system_audio_activity();
+    capture_system_audio::record_system_audio_activity_for_tests(0.20, 10_000, 20_000);
 
     let mut runtime = NativeCaptureRuntime {
         is_running: true,
@@ -2421,11 +2577,11 @@ fn current_activity_snapshot_for_debug_does_not_drain_system_audio_peak() {
         Some(0.20)
     );
     assert_eq!(
-        capture_screen::take_system_audio_activity_window_peak_level(),
+        capture_system_audio::take_system_audio_activity_window_peak_level(),
         Some(0.20)
     );
 
-    capture_screen::reset_last_screen_activity_unix_ms();
+    capture_system_audio::reset_system_audio_activity();
 }
 
 #[test]
@@ -2531,6 +2687,7 @@ fn should_reconnect_waiting_microphone_session_when_device_returns() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
@@ -2603,6 +2760,7 @@ fn should_not_reconnect_waiting_microphone_session_while_device_missing() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
@@ -2711,6 +2869,7 @@ fn next_microphone_output_file_for_runtime_uses_flat_audio_session_directory() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: None,
         #[cfg(target_os = "macos")]
         free_space_probe: None,
@@ -3638,7 +3797,6 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
         None,
         |segment_dir,
          screen_output,
-         system_audio_output_path,
          sources,
          frame_rate,
          resolution,
@@ -3651,8 +3809,9 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
                 &CaptureSources {
                     screen: true,
                     microphone: false,
-                    system_audio: true,
-                }
+                    system_audio: false,
+                },
+                "a wake restarts the screen alone; the tap is untouched by it"
             );
             assert_eq!(frame_rate, 5.0);
             assert_eq!(resolution, &ScreenResolution::default());
@@ -3672,16 +3831,8 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
                     "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
                 ))
             );
-            assert_eq!(
-                system_audio_output_path,
-                Some(std::path::Path::new(
-                    "/tmp/native-capture-tests/2026/04/23/audio/native-session-wake-system-audio-segment-0002.m4a"
-                ))
-            );
 
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.3 = system_audio_output_path.map(|path| path.to_string_lossy().to_string());
-            Ok(state)
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
     .expect("wake recovery should restart screen capture");
@@ -3689,11 +3840,11 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
     assert!(recovered);
     assert_eq!(runtime.current_segment_index, 2);
     assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
+    // The tap kept writing across the wake, so its file is neither replanned nor
+    // finalized here — it stays exactly as it was.
     assert_eq!(
         runtime.system_audio_recording_file.as_deref(),
-        Some(
-            "/tmp/native-capture-tests/2026/04/23/audio/native-session-wake-system-audio-segment-0002.m4a"
-        )
+        Some("/tmp/system-audio.m4a")
     );
     let outputs = runtime
         .current_segment_output_files
@@ -3712,9 +3863,153 @@ fn wake_recovery_restarts_screen_capture_and_preserves_live_microphone_output() 
     );
 }
 
+// Regression: the wake path rebuilt `current_segment_output_files` from the fresh
+// screen start and merged only the microphone continuation, so the file the tap
+// had been writing straight through the sleep ended up tracked nowhere. The next
+// rotation's `finalize_capture_outputs` then read a segment whose
+// `system_audio_file` was `None`, concluded the tap's path was an untracked
+// intermediate, and deleted it — up to five minutes of system audio gone on the
+// first rotation after every wake, with no `audio_segment` row, no transcription
+// and no error. The two sibling restart paths merged both families already.
 #[cfg(target_os = "macos")]
 #[test]
-fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
+fn wake_recovery_carries_the_live_system_audio_file_into_the_refreshed_outputs() {
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = running_screen_capture_runtime_fixture();
+    assert!(
+        lifecycle.handle_system_will_sleep(),
+        "the sleep handler should clear screen state"
+    );
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        lifecycle.runtime_mut(),
+        None,
+        |_segment_dir,
+         _screen_output,
+         _sources,
+         _frame_rate,
+         _resolution,
+         _bitrate,
+         _microphone_device_id,
+         _frame_tx,
+         _microphone_output_path| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    let runtime = lifecycle.runtime();
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some("/tmp/system-audio.m4a"),
+        "the tap never stopped, so the runtime still names its file"
+    );
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some("/tmp/system-audio.m4a"),
+        "and the segment the next rotation finalizes has to name it too, or finalize deletes it"
+    );
+    assert_eq!(
+        outputs.system_audio_files,
+        vec!["/tmp/system-audio.m4a".to_string()]
+    );
+}
+
+// Regression: a mid-segment tap rebuild finalizes an earlier system-audio
+// generation and opens a fresh one, both tracked in the current segment's
+// `system_audio_files`. Wake recovery rebuilt the previous segment's outputs by
+// clearing *all* system audio and carrying only the live file forward — so the
+// finalized earlier generation was committed nowhere: a real `.m4a` on disk with
+// no `audio_segment` row, never transcribed, invisible to retention. The suspend
+// path already strips only the live file for exactly this reason; the wake path
+// must mirror it.
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_commits_earlier_system_audio_rebuild_generations() {
+    let dir = TestDir::new("wake-recovery-system-audio-rebuild-generations");
+    let stale_screen_file = dir.path().join("stale-sleep-screen.mov");
+    write_openable_screen_file(&stale_screen_file);
+    // A finalized earlier tap generation — a real, positive-duration m4a.
+    let finalized_generation = dir.path().join("system-audio-gen1.m4a");
+    write_valid_m4a_audio_file(&finalized_generation);
+    let finalized_generation = finalized_generation.to_string_lossy().to_string();
+    // The file the tap is still writing across the wake.
+    let live_system_audio_file = "/tmp/system-audio-live.m4a".to_string();
+
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime.current_segment_output_files = Some(CaptureOutputFiles {
+        screen_file: Some(stale_screen_file.to_string_lossy().to_string()),
+        screen_files: vec![stale_screen_file.to_string_lossy().to_string()],
+        microphone_file: None,
+        microphone_files: Vec::new(),
+        system_audio_file: Some(live_system_audio_file.clone()),
+        system_audio_files: vec![finalized_generation.clone(), live_system_audio_file.clone()],
+    });
+    runtime.recording_file = Some(stale_screen_file.to_string_lossy().to_string());
+    runtime.microphone_recording_file = None;
+    runtime.system_audio_recording_file = Some(live_system_audio_file.clone());
+
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = runtime;
+    assert!(
+        lifecycle.handle_system_will_sleep(),
+        "the sleep handler should clear screen state"
+    );
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        lifecycle.runtime_mut(),
+        None,
+        |_segment_dir,
+         _screen_output,
+         _sources,
+         _frame_rate,
+         _resolution,
+         _bitrate,
+         _microphone_device_id,
+         _frame_tx,
+         _microphone_output_path| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    let runtime = lifecycle.runtime();
+    // The live file is still carried into the refreshed segment for the next
+    // rotation (the previously fixed bug must stay fixed).
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some(live_system_audio_file.as_str()),
+    );
+    // ...and the finalized earlier generation is committed with the previous
+    // segment rather than orphaned on disk.
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("previous segment outputs should be committed during wake recovery");
+    assert!(
+        committed.system_audio_files.contains(&finalized_generation),
+        "the finalized earlier tap generation must be committed, not orphaned: {:?}",
+        committed.system_audio_files
+    );
+    // The valid earlier generation must still exist on disk (it is real audio).
+    assert!(std::path::Path::new(&finalized_generation).exists());
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_restarts_the_screen_alone_while_system_audio_is_paused() {
     let mut runtime = running_screen_capture_runtime_fixture();
     runtime
         .inactivity
@@ -3739,7 +4034,6 @@ fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
         None,
         |_segment_dir,
          _screen_output,
-         system_audio_output_path,
          sources,
          _frame_rate,
          _resolution,
@@ -3752,13 +4046,9 @@ fn wake_recovery_keeps_system_audio_stream_attached_when_writer_was_paused() {
                 &CaptureSources {
                     screen: true,
                     microphone: false,
-                    system_audio: true,
+                    system_audio: false,
                 },
-                "the ScreenCaptureKit stream must keep system audio attached so activity can resume the paused writer"
-            );
-            assert!(
-                system_audio_output_path.is_none(),
-                "paused system-audio writer should not receive an output path during wake recovery"
+                "the screen stream carries no audio; the tap delivers its own activity and resumes itself"
             );
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -3792,7 +4082,12 @@ fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation()
     assert!(runtime.is_running);
     assert!(runtime.active_screen_session.is_none());
     assert!(runtime.recording_file.is_none());
-    assert!(runtime.system_audio_recording_file.is_none());
+    // The tap has no display dependency: a sleep leaves it recording, so its
+    // in-flight file must stay tracked rather than be orphaned.
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
+    );
     assert_eq!(
         runtime.microphone_recording_file.as_deref(),
         Some("/tmp/mic.m4a")
@@ -3813,12 +4108,13 @@ fn system_sleep_clears_live_screen_state_but_preserves_microphone_continuation()
     );
     assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
     assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
+    // Both audio families survive the sleep; only the screen stops.
     assert_eq!(
         runtime.current_segment_sources,
         Some(CaptureSources {
             screen: false,
             microphone: true,
-            system_audio: false,
+            system_audio: true,
         })
     );
 
@@ -3879,7 +4175,6 @@ fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
     let runtime = lifecycle.runtime();
     assert!(runtime.active_screen_session.is_none());
     assert!(runtime.recording_file.is_none());
-    assert!(runtime.system_audio_recording_file.is_none());
     let outputs = runtime
         .current_segment_output_files
         .as_ref()
@@ -3899,7 +4194,7 @@ fn system_sleep_clears_paused_screen_state_so_wake_can_restart_capture() {
         Some(CaptureSources {
             screen: false,
             microphone: true,
-            system_audio: false,
+            system_audio: true,
         })
     );
 }
@@ -3919,7 +4214,7 @@ fn system_sleep_handler_matches_broken_screen_session_shape() {
         Some(CaptureSources {
             screen: false,
             microphone: true,
-            system_audio: false,
+            system_audio: true,
         })
     );
     assert!(!super::runtime::system_audio_writer_active_for_runtime(
@@ -3935,7 +4230,7 @@ fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone
     let error = recover_screen_capture_after_wake_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _| {
             Err(CaptureErrorResponse {
                 code: "capture_stream_start_failed".to_string(),
                 message: "wake restart failed".to_string(),
@@ -3947,13 +4242,17 @@ fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone
     assert_eq!(error.code, "capture_stream_start_failed");
     assert_eq!(runtime.current_segment_index, 1);
     assert!(runtime.recording_file.is_none());
-    assert!(runtime.system_audio_recording_file.is_none());
     let outputs = runtime
         .current_segment_output_files
         .as_ref()
-        .expect("microphone continuation should remain trackable");
+        .expect("audio continuation should remain trackable");
     assert!(outputs.screen_file.is_none());
-    assert!(outputs.system_audio_file.is_none());
+    // Both audio families outlive a failed screen restart, so both keep their
+    // in-flight files tracked for the next boundary to commit.
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
+    );
     assert_eq!(outputs.microphone_file.as_deref(), Some("/tmp/mic.m4a"));
     assert_eq!(outputs.microphone_files, vec!["/tmp/mic.m4a".to_string()]);
     assert!(runtime.is_running);
@@ -3962,7 +4261,7 @@ fn wake_recovery_failure_clears_screen_bookkeeping_but_preserves_live_microphone
         Some(CaptureSources {
             screen: false,
             microphone: true,
-            system_audio: false,
+            system_audio: true,
         })
     );
 }
@@ -3991,14 +4290,11 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
     let expected_screen_file = format!(
         "/tmp/native-capture-tests/{expected_date_prefix}/native-session-screen-pause-segment-0002.mov"
     );
-    let expected_system_audio_file = "/tmp/native-capture-tests/2026/04/23/audio/native-session-screen-pause-system-audio-segment-0002.m4a"
-        .to_string();
     let recovered = recover_screen_capture_after_wake_with_start_segment(
         &mut runtime,
         None,
         |segment_dir,
          screen_output_file,
-         system_audio_output_path,
          sources,
          screen_frame_rate,
          _screen_resolution,
@@ -4017,26 +4313,17 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
                 expected_screen_file
             );
             assert_eq!(
-                system_audio_output_path
-                    .expect("system audio should be planned")
-                    .to_string_lossy(),
-                expected_system_audio_file
-            );
-            assert_eq!(
                 *sources,
                 CaptureSources {
                     screen: true,
                     microphone: false,
-                    system_audio: true,
-                }
+                    system_audio: false,
+                },
+                "the screen restart never plans a system-audio file; the tap owns its own"
             );
             assert_eq!(screen_frame_rate, 5.0);
 
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.0.system_audio_file = Some(expected_system_audio_file.clone());
-            state.0.system_audio_files = vec![expected_system_audio_file.clone()];
-            state.3 = Some(expected_system_audio_file.clone());
-            Ok(state)
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
     .expect("wake recovery should restart paused screen capture");
@@ -4044,10 +4331,6 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
     assert!(recovered);
     assert_eq!(runtime.current_segment_index, 2);
     assert_eq!(runtime.recording_file, Some(expected_screen_file.clone()));
-    assert_eq!(
-        runtime.system_audio_recording_file.as_deref(),
-        Some(expected_system_audio_file.as_str())
-    );
     let outputs = runtime
         .current_segment_output_files
         .as_ref()
@@ -4059,9 +4342,9 @@ fn wake_recovery_restarts_screen_capture_after_sleep_while_screen_was_paused() {
             "/tmp/native-capture-tests/.mnema/segments/native-session-screen-pause/1/audio/microphone.m4a"
         )
     );
-    assert_eq!(
-        outputs.system_audio_file.as_deref(),
-        Some(expected_system_audio_file.as_str())
+    assert!(
+        outputs.system_audio_file.is_none(),
+        "the screen restart contributes no system-audio file; the tap owns its own"
     );
     assert_eq!(
         runtime.current_segment_sources,
@@ -4116,7 +4399,6 @@ fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_f
         None,
         |segment_dir,
          screen_output_file,
-         system_audio_output_path,
          sources,
          screen_frame_rate,
          _screen_resolution,
@@ -4134,7 +4416,6 @@ fn wake_recovery_finalizes_stale_screen_output_after_sleep_even_when_recording_f
                     .to_string_lossy(),
                 expected_screen_file
             );
-            assert!(system_audio_output_path.is_none());
             assert_eq!(
                 *sources,
                 CaptureSources {
@@ -4360,9 +4641,9 @@ fn active_sources_for_inactivity_excludes_screen_when_screen_paused() {
 
     assert!(!active.screen);
     assert!(active.microphone);
-    // system_audio depends on the screen session backend, so it is also
-    // inactive when the screen session is stopped.
-    assert!(!active.system_audio);
+    // Both audio families are independent of the screen session, so a screen
+    // pause leaves both of them recording (ADR 0052).
+    assert!(active.system_audio);
 }
 
 #[test]
@@ -4513,6 +4794,7 @@ fn audio_paused_runtime_fixture() -> NativeCaptureRuntime {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None, // screen still conceptually active
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -4554,6 +4836,7 @@ fn pause_microphone_for_inactivity_sets_microphone_paused_preserves_screen() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -4607,6 +4890,7 @@ fn pause_microphone_for_inactivity_clears_backend_truth_and_current_output() {
         microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -4670,6 +4954,7 @@ fn live_audio_inactivity_pause_does_not_resume_microphone_without_threshold_acti
         microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5098,9 +5383,99 @@ fn resume_system_audio_from_inactivity_noop_when_system_audio_not_requested() {
     );
 }
 
+// Regression, the ADR 0052 headline scenario: screen + system audio with the mic
+// off, the user walks away, both families pause for inactivity (the tap stays
+// alive by design), then the display sleeps. The suspension leaves
+// `current_segment_output_files` at `None` because nothing was live. Music starts,
+// system audio resumes on its own — nothing gates it on the screen any more — and
+// `advance_segment` opens a real file the tap records into. The resume tracked
+// that path with `as_mut()`, which silently no-ops on `None`, so the file was
+// tracked nowhere: up to five minutes of real audio on disk with no
+// `audio_segment` row, never transcribed, never searchable, invisible to
+// retention. Both halves are pinned here — that the `None` state is reachable at
+// all, and that tracking a resumed file into it creates the map rather than
+// dropping the file. Driving the resume itself would need a live Core Audio tap,
+// which no headless test has.
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_system_audio_from_inactivity_noop_without_planner_metadata_when_no_screen_session() {
+fn a_system_audio_resume_into_a_suspended_segment_still_tracks_its_output_file() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_and_system_audio = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(screen_and_system_audio.clone()),
+        current_segment_sources: Some(screen_and_system_audio),
+        current_segment_index: 1,
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: Some("/tmp/screen.mov".to_string()),
+            screen_files: vec!["/tmp/screen.mov".to_string()],
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: None,
+            system_audio_files: Vec::new(),
+        }),
+        recording_file: Some("/tmp/screen.mov".to_string()),
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            microphone_paused: true,
+            system_audio_paused: true,
+            is_paused: true,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    super::segments::suspend_screen_capture(
+        None,
+        &mut runtime,
+        &CaptureErrorResponse {
+            code: "capture_display_unavailable".to_string(),
+            message: "display asleep".to_string(),
+        },
+        CaptureSuspensionKind::DisplayUnavailable,
+    )
+    .expect("a display sleep should suspend the screen");
+
+    assert!(
+        runtime.current_segment_output_files.is_none(),
+        "with both families paused the suspension leaves no segment outputs — the state a resume lands in"
+    );
+
+    super::output::set_current_system_audio_output_file(
+        super::segments::current_segment_output_files_mut(&mut runtime),
+        "/tmp/system-audio-resumed.m4a".to_string(),
+    );
+
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("tracking a resumed file must create the segment outputs, not drop it");
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some("/tmp/system-audio-resumed.m4a")
+    );
+    assert_eq!(
+        outputs.system_audio_files,
+        vec!["/tmp/system-audio-resumed.m4a".to_string()]
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn resume_system_audio_from_inactivity_without_a_tap_clears_the_flag_and_does_no_writer_work() {
+    // With no tap (and no system-audio planner) there is no writer work to do,
+    // but the resume must still succeed and clear the paused flag: "paused for
+    // inactivity" tracks activity, not backend health. It used to stay paused
+    // because the resume asked the screen backend for permission (ADR 0052).
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -5135,16 +5510,94 @@ fn resume_system_audio_from_inactivity_noop_without_planner_metadata_when_no_scr
     };
 
     resume_system_audio_from_inactivity(&mut runtime)
-        .expect("resume should noop without planner metadata when no screen session exists");
+        .expect("resume should do nothing rather than fail when no tap is running");
 
-    assert!(runtime.system_audio_planner.is_none());
-    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(
+        !runtime.inactivity.is_system_audio_paused(),
+        "the resume must clear the paused flag even with no tap to resume"
+    );
+    assert!(
+        runtime.system_audio_planner.is_none(),
+        "no tap means no writer to plan a file for"
+    );
+    assert!(
+        runtime.system_audio_recording_file.is_none(),
+        "with no tap there is no file to write"
+    );
+    // The screen's bookkeeping is untouched by an audio-only resume.
     assert_eq!(runtime.recording_file.as_deref(), Some("/tmp/screen.mov"));
+}
+
+// The pause/resume cycle the family runs with no screen at all — the shape an
+// audio-only session lives in, and the one the old resume action could never
+// reach (it demanded a live ScreenCaptureKit session).
+#[cfg(target_os = "macos")]
+#[test]
+fn system_audio_inactivity_pause_and_resume_need_no_screen() {
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let audio_only = CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(audio_only.clone()),
+        current_segment_sources: Some(audio_only.clone()),
+        current_segment_index: 1,
+        current_segment_output_files: Some(CaptureOutputFiles {
+            screen_file: None,
+            screen_files: Vec::new(),
+            microphone_file: None,
+            microphone_files: Vec::new(),
+            system_audio_file: Some("/tmp/system-audio.m4a".to_string()),
+            system_audio_files: vec!["/tmp/system-audio.m4a".to_string()],
+        }),
+        system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
+        active_screen_session: None,
+        active_microphone_session: None,
+        active_system_audio_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_system_audio_for_inactivity(&mut runtime)
+        .expect("system audio must pause with no screen session in sight");
+
+    assert!(runtime.inactivity.is_system_audio_paused());
+    assert!(runtime.system_audio_recording_file.is_none());
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("segment bookkeeping survives the pause");
+    assert!(outputs.system_audio_file.is_none());
+    assert!(outputs.system_audio_files.is_empty());
+    assert!(
+        runtime.current_segment_sources.is_none(),
+        "pausing the only source leaves nothing recording"
+    );
+
+    resume_system_audio_from_inactivity(&mut runtime)
+        .expect("system audio must resume with no screen session in sight");
+
+    assert!(
+        !runtime.inactivity.is_system_audio_paused(),
+        "the resume must not defer on screen state it no longer reads"
+    );
+    assert_eq!(runtime.current_segment_sources, Some(audio_only));
 }
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_flow() {
+fn resume_screen_from_inactivity_never_plans_system_audio() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
     let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
@@ -5162,50 +5615,26 @@ fn resume_screen_from_inactivity_seeds_missing_system_audio_planner_for_write_fl
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, screen_output, system_audio_output_path, sources, _, _, _, _, _, _| {
+        |_, screen_output, sources, _, _, _, _, _, _| {
             assert!(sources.screen);
-            assert!(sources.system_audio);
             assert!(!sources.microphone);
+            assert!(
+                !sources.system_audio,
+                "a screen resume starts the screen alone; the tap is already running"
+            );
             assert_eq!(
                 screen_output,
                 Some(std::path::Path::new(expected_screen_file.as_str()))
             );
-            let system_audio_output_path = system_audio_output_path
-                .expect("system audio output should be planned for resume write flow");
-            assert_eq!(
-                system_audio_output_path.parent(),
-                Some(std::path::Path::new(
-                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio").as_str()
-                ))
-            );
-            assert!(
-                !system_audio_output_path
-                    .to_string_lossy()
-                    .contains("native-session-screen"),
-                "system-audio path should stay on its dedicated session id"
-            );
 
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.3 = Some(system_audio_output_path.to_string_lossy().to_string());
-            Ok(state)
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
-    .expect("screen resume should seed planner for system-audio output creation");
+    .expect("screen resume should not require system-audio metadata");
 
-    let planner = runtime
-        .system_audio_planner
-        .as_ref()
-        .expect("system audio planner should be seeded for actual resume/write flow");
-    assert_eq!(planner.save_root_dir(), "/tmp/native-capture-tests");
-    assert_eq!(planner.date_prefix(), expected_date_prefix);
-    assert_ne!(planner.session_id(), "native-session-screen");
-    assert_eq!(
-        runtime
-            .source_sessions
-            .as_ref()
-            .and_then(|sessions| sessions.system_audio.as_ref())
-            .map(|session| session.session_id.as_str()),
-        Some(planner.session_id())
+    assert!(
+        runtime.system_audio_planner.is_none(),
+        "the system-audio planner is seeded when the tap starts, not by a screen resume"
     );
 }
 
@@ -5256,6 +5685,7 @@ fn microphone_reconnect_allowed_when_only_screen_paused() {
             system_audio: false,
         }),
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5329,6 +5759,7 @@ fn screen_paused_runtime_fixture() -> NativeCaptureRuntime {
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5370,6 +5801,7 @@ fn pause_screen_for_inactivity_sets_screen_paused_preserves_audio() {
         microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5511,6 +5943,7 @@ fn pause_screen_preserves_audio_paused_state() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5934,6 +6367,7 @@ fn screen_paused_with_system_audio_runtime_fixture(audio_paused: bool) -> Native
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -5968,7 +6402,6 @@ fn resume_screen_keeps_system_audio_stream_when_audio_writer_paused() {
         None,
         |_segment_dir,
          _screen_output,
-         system_audio_output_path,
          sources,
          _fr,
          _res,
@@ -5977,12 +6410,8 @@ fn resume_screen_keeps_system_audio_stream_when_audio_writer_paused() {
          _tx,
          _mic_path| {
             assert!(
-                sources.system_audio,
-                "system_audio stream should stay enabled so audio activity can resume the writer"
-            );
-            assert!(
-                system_audio_output_path.is_none(),
-                "system_audio output path should be omitted while the writer is paused"
+                !sources.system_audio,
+                "the screen stream carries no audio; the tap keeps delivering the activity that resumes it"
             );
             assert!(!sources.microphone);
             assert!(sources.screen);
@@ -6011,11 +6440,10 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, _, system_audio_output_path, sources, _, _, _, _, _, _| {
+        |_, _, sources, _, _, _, _, _, _| {
             assert!(sources.screen);
             assert!(!sources.microphone);
-            assert!(sources.system_audio);
-            assert!(system_audio_output_path.is_none());
+            assert!(!sources.system_audio);
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
@@ -6029,9 +6457,8 @@ fn resume_screen_from_inactivity_does_not_require_system_audio_metadata_when_aud
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_screen_includes_system_audio_when_audio_not_paused() {
+fn resume_screen_leaves_the_running_system_audio_tap_alone() {
     let mut runtime = screen_paused_with_system_audio_runtime_fixture(false);
-    let expected_date_prefix = current_date_prefix();
     runtime.segment_planner = Some(SegmentPlanner::with_date_prefix(
         "/tmp/native-capture-tests",
         "screen-session",
@@ -6042,6 +6469,8 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
         "system-audio-session",
         "2026/04/19",
     ));
+    // The tap kept recording straight through the screen pause.
+    runtime.system_audio_recording_file = Some("/tmp/system-audio.m4a".to_string());
 
     let expected_screen_file =
         "/tmp/native-capture-tests/native-session-screen-audio-resume-segment-0002/screen.mov"
@@ -6050,24 +6479,15 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_segment_dir, _screen_output, system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
-            // system_audio should flow through because audio is not paused
+        |_segment_dir, _screen_output, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert!(
-                sources.system_audio,
-                "system_audio should be true when audio is not paused"
+                !sources.system_audio,
+                "an unpaused system-audio family is already recording on its tap; the screen start must not re-plan it"
             );
             assert!(!sources.microphone);
             assert!(sources.screen);
-            assert_eq!(
-                system_audio_output_path,
-                Some(std::path::Path::new(
-                    format!("/tmp/native-capture-tests/{expected_date_prefix}/audio/system-audio-session-segment-0002.m4a").as_str()
-                ))
-            );
 
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.3 = Some("/tmp/system-audio.m4a".to_string());
-            Ok(state)
+            Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
     .expect("resume screen should succeed");
@@ -6077,7 +6497,17 @@ fn resume_screen_includes_system_audio_when_audio_not_paused() {
     assert!(!runtime.inactivity.is_paused);
     assert_eq!(
         runtime.system_audio_recording_file,
-        Some("/tmp/system-audio.m4a".to_string())
+        Some("/tmp/system-audio.m4a".to_string()),
+        "the screen resume must not disturb the file the tap is writing"
+    );
+    // ...and it must be carried into the new segment's bookkeeping, or the
+    // rotation that closes it would never commit it.
+    assert_eq!(
+        runtime
+            .current_segment_output_files
+            .as_ref()
+            .and_then(|outputs| outputs.system_audio_file.as_deref()),
+        Some("/tmp/system-audio.m4a")
     );
 }
 
@@ -6093,7 +6523,7 @@ fn resume_screen_while_audio_paused_preserves_audio_paused_state() {
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
@@ -6131,7 +6561,7 @@ fn resume_screen_uses_contiguous_segment_index_when_schedule_has_advanced() {
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |segment_dir, screen_output, _, _, _, _, _, _, _, _| {
+        |segment_dir, screen_output, _, _, _, _, _, _, _| {
             assert_eq!(
                 segment_dir.to_string_lossy(),
                 format!(
@@ -6172,7 +6602,7 @@ fn resume_screen_reanchors_segment_boundary_timing() {
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
@@ -6260,6 +6690,7 @@ fn pause_audio_for_inactivity_updates_current_segment_sources() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
             "native-session-audio-pause-sources",
@@ -6326,6 +6757,7 @@ fn pause_audio_for_inactivity_clears_system_audio_recording_file() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
             "native-session-audio-pause-sysaudio",
@@ -6384,6 +6816,7 @@ fn live_audio_inactivity_pause_detaches_system_audio_writer_truth_while_screen_s
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -6465,7 +6898,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_reflecting_audio_p
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
+        |_, _, _, _, _, _, _, _, _| {
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
         },
     )
@@ -6499,11 +6932,7 @@ fn resume_screen_from_inactivity_sets_current_segment_sources_with_all_when_audi
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |_, _, _, _, _, _, _, _, _, _| {
-            let mut state = resumed_segment_state_fixture(expected_screen_file.clone());
-            state.3 = Some("/tmp/system-audio.m4a".to_string());
-            Ok(state)
-        },
+        |_, _, _, _, _, _, _, _, _| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
     )
     .expect("resume screen should succeed");
 
@@ -6558,6 +6987,7 @@ fn pause_audio_for_inactivity_clears_system_audio_output_file_bookkeeping() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
             "native-session-audio-pause-output",
@@ -6737,6 +7167,7 @@ fn pause_audio_for_inactivity_does_not_clear_mic_if_screen_restart_fails() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: Some(SegmentPlanner::new(
             "/tmp/native-capture-tests",
             "native-session-audio-pause-mic-order",
@@ -6795,6 +7226,7 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused() {
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -6825,15 +7257,30 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused() {
         segment_sources.microphone,
         "microphone should be active after audio resume"
     );
-    // system_audio depends on the screen session backend, so it cannot be
-    // active when the screen session is stopped.
     assert!(
-        !segment_sources.system_audio,
-        "system_audio should be inactive without screen session"
+        segment_sources.system_audio,
+        "system audio resumes on its own tap while the screen stays paused"
     );
     // Screen should still be paused
     assert!(runtime.inactivity.is_screen_paused());
     assert!(!runtime.inactivity.is_any_audio_paused());
+
+    // The resume started here with `current_segment_output_files` at `None` — the
+    // state a screen pause or suspension leaves behind. Tracking the file it just
+    // opened used to `as_mut()` into that `None` and silently drop it, orphaning a
+    // real recording that no rotation would ever commit.
+    let microphone_recording_file = runtime
+        .microphone_recording_file
+        .as_deref()
+        .expect("a resumed microphone names the file it is writing");
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("an audio resume into an empty segment must create its output map");
+    assert_eq!(
+        outputs.microphone_file.as_deref(),
+        Some(microphone_recording_file)
+    );
 }
 
 #[cfg(target_os = "macos")]
@@ -6866,6 +7313,7 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused_without_sou
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -6904,7 +7352,10 @@ fn resume_audio_from_inactivity_refreshes_sources_when_screen_paused_without_sou
         .as_ref()
         .expect("current_segment_sources should be refreshed after audio resume attempt");
     assert!(!segment_sources.screen);
-    assert!(!segment_sources.system_audio);
+    assert!(
+        segment_sources.system_audio,
+        "system audio resumes on its own tap regardless of the screen"
+    );
     assert_eq!(
         runtime
             .source_sessions
@@ -6978,6 +7429,7 @@ fn pause_screen_for_inactivity_preserves_sources_for_active_audio() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7003,11 +7455,9 @@ fn pause_screen_for_inactivity_preserves_sources_for_active_audio() {
         segment_sources.microphone,
         "microphone should remain active"
     );
-    // system_audio depends on the screen session backend, so it is also
-    // inactive when the screen session is stopped.
     assert!(
-        !segment_sources.system_audio,
-        "system_audio should be inactive without screen session"
+        segment_sources.system_audio,
+        "system audio keeps recording on its own tap through a screen pause"
     );
 }
 
@@ -7047,6 +7497,7 @@ fn screen_idle_with_threshold_active_microphone_pauses_only_screen_in_activity_m
             microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
             active_screen_session: None,
             active_microphone_session: None,
+        active_system_audio_session: None,
             runtime_controller,
             runtime_state,
             inactivity: InactivityState {
@@ -7129,6 +7580,7 @@ fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_fa
             system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
             active_screen_session: None,
             active_microphone_session: None,
+        active_system_audio_session: None,
             runtime_controller,
             runtime_state,
             inactivity: InactivityState {
@@ -7167,11 +7619,20 @@ fn screen_idle_with_threshold_active_system_audio_pauses_screen_without_audio_fa
         assert!(runtime.inactivity.is_screen_paused());
         assert!(!runtime.inactivity.is_microphone_paused());
         assert!(!runtime.inactivity.is_system_audio_paused());
-        assert!(
-            runtime.current_segment_sources.is_none(),
-            "system audio is semantically unpaused but detached because the screen backend stopped"
+        assert_eq!(
+            runtime.current_segment_sources,
+            Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+            "an unpaused system-audio family keeps recording on its tap through a screen pause"
         );
-        assert!(runtime.system_audio_recording_file.is_none());
+        assert_eq!(
+            runtime.system_audio_recording_file.as_deref(),
+            Some("/tmp/system-audio.m4a"),
+            "and the file it is still writing stays tracked, or nothing ever commits it"
+        );
     }
 }
 
@@ -7209,6 +7670,7 @@ fn pause_screen_for_inactivity_clears_sources_when_audio_also_paused() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7271,6 +7733,7 @@ fn pause_audio_restart_screen_fails_fast_on_no_planner() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: None, // no planner
         runtime_controller,
         runtime_state,
@@ -7332,6 +7795,7 @@ fn current_segment_sources_for_runtime_fallback_respects_audio_paused() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        active_system_audio_session: None,
         inactivity: InactivityState {
             enabled: true,
             idle_timeout_seconds: 10,
@@ -7382,6 +7846,7 @@ fn current_segment_sources_for_runtime_fallback_respects_screen_paused() {
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        active_system_audio_session: None,
         inactivity: InactivityState {
             enabled: true,
             idle_timeout_seconds: 10,
@@ -7429,6 +7894,7 @@ fn current_segment_sources_for_runtime_fallback_returns_all_when_nothing_paused(
         active_screen_session: None,
         #[cfg(target_os = "macos")]
         active_microphone_session: None,
+        active_system_audio_session: None,
         inactivity: InactivityState::default(),
         ..Default::default()
     };
@@ -7478,8 +7944,8 @@ fn current_segment_sources_for_runtime_masks_stale_screen_during_privacy_suspens
     );
     assert!(sources.microphone);
     assert!(
-        !sources.system_audio,
-        "stale explicit sources must not re-enable suspended system audio"
+        sources.system_audio,
+        "a screen suspension does not suspend the tap, so system audio stays active"
     );
 }
 
@@ -7522,6 +7988,7 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
         system_audio_recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         capture_suspension: Some(CaptureSuspension::with_kind(
             CaptureSuspensionKind::PrivacyFilter,
             &privacy_error,
@@ -7553,60 +8020,72 @@ fn pause_microphone_for_inactivity_preserves_privacy_suspended_source_mask() {
     assert!(runtime.capture_suspension.is_some());
 }
 
-// --- Slice 3b8: system_audio requires live screen session ---
+// --- ADR 0052: system audio is independent of the screen ---
 
+// Inverts the old rule. System audio used to be forced inactive whenever the
+// screen was paused, because it rode the screen's stream; on its own tap it keeps
+// recording through a screen pause exactly as the microphone does.
 #[test]
-fn active_sources_for_inactivity_excludes_system_audio_when_screen_paused() {
-    // system_audio is captured through the screen session backend, so it
-    // must be inactive whenever the screen session is stopped, even when
-    // the audio family is not paused.
+fn active_sources_for_inactivity_keeps_system_audio_when_screen_paused() {
     let requested = CaptureSources {
         screen: true,
         microphone: false,
         system_audio: true,
     };
 
-    let active = active_sources_for_inactivity_paused_state(&requested, true, false, false);
+    let active = active_sources_for_inactivity_paused_state(&requested, true, false, false)
+        .expect("system audio alone keeps the active set non-empty");
 
-    // With screen paused and no microphone, only system_audio was requested
-    // for the audio side — but it cannot be active without the screen session,
-    // so the result should be None (no active sources).
     assert!(
-        active.is_none(),
-        "system_audio-only audio subset should be None when screen is paused"
+        active.system_audio,
+        "a paused screen must not stop system audio"
     );
+    assert!(!active.screen);
 }
 
 #[test]
-fn active_sources_for_inactivity_system_audio_requires_both_families_active() {
+fn active_sources_for_inactivity_system_audio_answers_only_to_its_own_family() {
     let requested = CaptureSources {
         screen: true,
         microphone: true,
         system_audio: true,
     };
 
-    // screen_paused=true, microphone/system_audio_paused=false → system_audio should be false
+    // Screen paused, audio families active → system audio keeps recording.
     let active = active_sources_for_inactivity_paused_state(&requested, true, false, false)
         .expect("microphone should keep sources non-empty");
-    assert!(
-        !active.system_audio,
-        "system_audio needs live screen session"
-    );
+    assert!(active.system_audio, "system audio needs no screen session");
     assert!(active.microphone);
+    assert!(!active.screen);
 
-    // screen_paused=false, microphone/system_audio_paused=true → system_audio should be false
+    // Its own family paused → inactive, whatever the screen is doing.
     let active = active_sources_for_inactivity_paused_state(&requested, false, true, true)
         .expect("screen should keep sources non-empty");
-    assert!(
-        !active.system_audio,
-        "system_audio needs audio family active"
-    );
+    assert!(!active.system_audio);
     assert!(active.screen);
 
-    // Both active → system_audio should be true
     let active = active_sources_for_inactivity_paused_state(&requested, false, false, false)
         .expect("all sources active");
     assert!(active.system_audio);
+}
+
+// An audio-only session is a first-class session: no screen, no microphone.
+#[test]
+fn active_sources_for_inactivity_allows_a_system_audio_only_session() {
+    let requested = CaptureSources {
+        screen: false,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let active = active_sources_for_inactivity_paused_state(&requested, false, false, false)
+        .expect("a system-audio-only session has an active source");
+    assert_eq!(active, requested);
+
+    assert!(
+        active_sources_for_inactivity_paused_state(&requested, false, false, true).is_none(),
+        "pausing the only source empties the active set"
+    );
 }
 
 // --- Slice 3b8: audio-pause restart failure reconciles bookkeeping ---
@@ -7651,6 +8130,7 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7685,37 +8165,6 @@ fn pause_audio_soft_pause_no_session_reconciles_bookkeeping() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn system_audio_resume_action_never_marks_resumed_without_a_writer_on_a_live_stream() {
-    // The wedge this pins down: system audio pauses (writer detached,
-    // bookkeeping cleared), the screen family then soft-pauses (stream stays
-    // live), audio starts playing. Resuming here used to mark the family
-    // unpaused without attaching a writer, so nothing recorded until the next
-    // rotation — and the screen soft-resume path skipped the writer too
-    // because system_audio_recording_file was still None.
-    assert_eq!(
-        system_audio_resume_action(true, true),
-        SystemAudioResumeAction::DeferKeepPaused,
-        "live stream + screen soft-paused must defer and stay paused"
-    );
-    assert_eq!(
-        system_audio_resume_action(true, false),
-        SystemAudioResumeAction::ResumeWriter,
-        "live stream + active screen family attaches the writer"
-    );
-    assert_eq!(
-        system_audio_resume_action(false, true),
-        SystemAudioResumeAction::MarkResumedOnly,
-        "cold screen pause marks resumed; the cold screen-resume recreates the writer"
-    );
-    assert_eq!(
-        system_audio_resume_action(false, false),
-        SystemAudioResumeAction::DeferKeepPaused,
-        "missing session outside a screen pause must defer and stay paused"
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
 fn pause_system_audio_clears_bookkeeping_even_when_screen_paused() {
     // Pausing system audio while the screen family is already paused used to
     // skip all backend and bookkeeping work, leaving a stale
@@ -7743,6 +8192,7 @@ fn pause_system_audio_clears_bookkeeping_even_when_screen_paused() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7813,6 +8263,7 @@ fn pause_audio_soft_pause_no_session_reconciles_paused_and_source_state() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7897,6 +8348,7 @@ fn pause_audio_mic_stop_skipped_still_refreshes_sources_after_screen_restart() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -7972,6 +8424,7 @@ fn resume_audio_mic_start_failure_refreshes_current_segment_sources() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8050,6 +8503,7 @@ fn resume_audio_mic_start_failure_with_system_audio_refreshes_rolled_back_source
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8084,80 +8538,10 @@ fn resume_audio_mic_start_failure_with_system_audio_refreshes_rolled_back_source
 }
 
 // --- Slice 3b11: missing-planner fallback reconciliation ---
-
-#[cfg(target_os = "macos")]
-#[test]
-fn resume_audio_soft_resume_no_session_succeeds_without_planner() {
-    // When there is no active screen session and no planner, resume should
-    // succeed (no-op for system audio) since there is nothing to resume.
-    // The paused flag is cleared so the inactivity system can re-evaluate.
-    let runtime_controller = running_runtime_controller();
-    let runtime_state = runtime_controller.state();
-
-    let mut runtime = NativeCaptureRuntime {
-        is_running: true,
-        requested_sources: Some(CaptureSources {
-            screen: true,
-            microphone: true,
-            system_audio: true,
-        }),
-        current_segment_sources: Some(CaptureSources {
-            screen: true,
-            microphone: false,
-            system_audio: false,
-        }),
-        current_segment_index: 1,
-        screen_frame_rate: 5.0,
-        screen_resolution: ScreenResolution::default(),
-        current_segment_output_files: Some(CaptureOutputFiles {
-            screen_file: Some("/tmp/screen.mov".to_string()),
-            screen_files: vec!["/tmp/screen.mov".to_string()],
-            microphone_file: None,
-            microphone_files: Vec::new(),
-            system_audio_file: None,
-            system_audio_files: Vec::new(),
-        }),
-        recording_file: Some("/tmp/screen.mov".to_string()),
-        system_audio_recording_file: None,
-        active_screen_session: None,
-        active_microphone_session: None,
-        segment_planner: None, // no planner
-        runtime_controller,
-        runtime_state,
-        inactivity: InactivityState {
-            enabled: true,
-            idle_timeout_seconds: 10,
-            microphone_paused: true,
-            system_audio_paused: true,
-            is_paused: true,
-            ..InactivityState::default()
-        },
-        ..Default::default()
-    };
-
-    // With no active screen session, resume is a no-op for system audio
-    // (the writer cannot be resumed without a session). The paused flag
-    // must remain set so the inactivity system does not lose track.
-    resume_system_audio_from_inactivity(&mut runtime)
-        .expect("resume should succeed as no-op without active session");
-
-    // System audio paused flag must remain set — no writer was actually resumed.
-    assert!(
-        runtime.inactivity.is_system_audio_paused(),
-        "system_audio_paused should remain set when no session to resume against"
-    );
-    // current_segment_sources should be unchanged (still paused).
-    let sources = runtime
-        .current_segment_sources
-        .as_ref()
-        .expect("current_segment_sources should still be present");
-    assert!(
-        !sources.system_audio,
-        "system_audio source should remain inactive when no session to resume"
-    );
-    // Recording file should be untouched (screen is still live from bookkeeping POV).
-    assert!(runtime.recording_file.is_some());
-}
+//
+// The no-tap soft-resume itself (paused flag cleared, no writer work, screen
+// bookkeeping untouched) is pinned by
+// `resume_system_audio_from_inactivity_without_a_tap_clears_the_flag_and_does_no_writer_work`.
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -8194,6 +8578,7 @@ fn pause_audio_missing_planner_clears_recording_file() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: None,
         runtime_controller,
         runtime_state,
@@ -8259,6 +8644,7 @@ fn pause_screen_preserves_audio_continuation_output_files() {
         microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8324,6 +8710,7 @@ fn pause_screen_clears_output_files_when_audio_also_paused() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8348,8 +8735,8 @@ fn pause_screen_clears_output_files_when_audio_also_paused() {
 #[cfg(target_os = "macos")]
 #[test]
 fn pause_screen_preserves_output_files_with_system_audio_and_mic() {
-    // With screen+mic+system_audio, screen pause should preserve mic in output files
-    // even though system_audio is cleared (it rides with screen session).
+    // With screen+mic+system_audio, a screen pause preserves both audio families'
+    // in-flight files: neither rides the screen session (ADR 0052).
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -8376,6 +8763,7 @@ fn pause_screen_preserves_output_files_with_system_audio_and_mic() {
         system_audio_recording_file: Some("/tmp/sys.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8393,13 +8781,20 @@ fn pause_screen_preserves_output_files_with_system_audio_and_mic() {
         .as_ref()
         .expect("output files should be preserved for audio continuation");
     assert!(output_files.screen_file.is_none());
-    assert!(output_files.system_audio_file.is_none());
+    assert_eq!(
+        output_files.system_audio_file.as_deref(),
+        Some("/tmp/sys.m4a"),
+        "the tap records through a screen pause, so its file stays tracked"
+    );
     assert_eq!(
         output_files.microphone_file.as_deref(),
         Some("/tmp/mic.m4a")
     );
     assert!(runtime.recording_file.is_none());
-    assert!(runtime.system_audio_recording_file.is_none());
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some("/tmp/sys.m4a")
+    );
     assert_eq!(
         runtime.microphone_recording_file.as_deref(),
         Some("/tmp/mic.m4a")
@@ -8408,12 +8803,208 @@ fn pause_screen_preserves_output_files_with_system_audio_and_mic() {
 
 // --- Slice 3b13: bookkeeping refinements ---
 
+// Regression: the cold screen-inactivity pause (the screen session is already
+// stopped — a sleep clears it, and the tick can reach the pause before the
+// did-wake handler runs) still treated system audio as screen-owned. It passed
+// `system_audio_recording_file` — which the tap is still writing — into
+// `finalize_capture_outputs`, which reads an open `.m4a` as having no duration,
+// judges it unusable, and deletes it out from under the running writer. Every
+// explicit stop path tears the tap down before committing; this path cannot,
+// because ADR 0052 requires a screen pause to leave the tap alive — so the live
+// file has to stay out of the commit entirely.
 #[cfg(target_os = "macos")]
 #[test]
-fn pause_screen_for_inactivity_no_continuation_for_system_audio_only() {
-    // When requested_sources has system_audio but no microphone, pausing the
-    // screen should NOT preserve continuation bookkeeping because system audio
-    // is captured through the screen session which is now stopped.
+fn cold_screen_pause_never_finalizes_the_file_the_tap_is_still_writing() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+
+    let screen_path = temp.path().join("segment-0001-screen.mov");
+    std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+        .expect("openable screen mov should be written");
+    let screen = screen_path.to_string_lossy().into_owned();
+
+    // What a live AVAssetWriter's output looks like on disk: real bytes, no moov
+    // atom yet, so nothing can read a duration off it.
+    let system_audio_path = temp.path().join("segment-0001-system-audio.m4a");
+    std::fs::write(&system_audio_path, b"open writer, no moov atom yet")
+        .expect("in-flight system audio m4a should be written");
+    let system_audio = system_audio_path.to_string_lossy().into_owned();
+
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_and_system_audio = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let mut current_segment_output_files = super::segments::empty_output_files();
+    super::output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
+    super::output::set_current_system_audio_output_file(
+        &mut current_segment_output_files,
+        system_audio.clone(),
+    );
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(screen_and_system_audio.clone()),
+        current_segment_sources: Some(screen_and_system_audio),
+        current_segment_index: 1,
+        screen_frame_rate: 5.0,
+        screen_resolution: ScreenResolution::default(),
+        current_segment_output_files: Some(current_segment_output_files),
+        output_files: Some(super::segments::empty_output_files()),
+        recording_file: Some(screen.clone()),
+        system_audio_recording_file: Some(system_audio.clone()),
+        // Cold: no live screen session to pause, so the pause runs its
+        // stop-and-commit path rather than returning early.
+        active_screen_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_screen_for_inactivity(&mut runtime).expect("screen pause should succeed");
+
+    assert!(
+        system_audio_path.is_file(),
+        "the tap is still writing this file — a screen pause must not finalize or delete it"
+    );
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some(system_audio.as_str()),
+        "and it stays tracked, so the tap's next boundary still commits it"
+    );
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("committed output_files slot should exist");
+    assert!(
+        !committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &system_audio),
+        "a file still being written must not be committed as a finished segment"
+    );
+}
+
+// Sibling of the test above: keeping the live file out of the commit must not
+// also drop the earlier-generation `.m4a` a mid-segment tap rebuild already
+// finalized. That file is complete on disk and belongs to this segment; a cold
+// screen pause that clears the whole system-audio list orphans it — no
+// audio_segment row, never transcribed, invisible to retention — and the
+// live-only continuation never carries it into a later commit either.
+#[cfg(target_os = "macos")]
+#[test]
+fn cold_screen_pause_commits_the_generation_a_rebuild_already_finalized() {
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+
+    let screen_path = temp.path().join("segment-0001-screen.mov");
+    std::fs::write(&screen_path, b"\0\0\0\x18ftypqt  \0\0\0\x08moov")
+        .expect("openable screen mov should be written");
+    let screen = screen_path.to_string_lossy().into_owned();
+
+    // Generation 1: finalized by a tap rebuild — a real, closed, readable m4a.
+    let finalized_path = temp.path().join("segment-0001-system-audio-gen1.m4a");
+    low_disk::write_valid_m4a_audio_file(&finalized_path);
+    let finalized = finalized_path.to_string_lossy().into_owned();
+
+    // Generation 2: the rebuilt tap's live file, still being written.
+    let live_path = temp.path().join("segment-0001-system-audio-gen2.m4a");
+    std::fs::write(&live_path, b"open writer, no moov atom yet")
+        .expect("in-flight system audio m4a should be written");
+    let live = live_path.to_string_lossy().into_owned();
+
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let screen_and_system_audio = CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: true,
+    };
+
+    let mut current_segment_output_files = super::segments::empty_output_files();
+    super::output::set_current_screen_output_file(&mut current_segment_output_files, screen.clone());
+    super::output::set_current_system_audio_output_file(
+        &mut current_segment_output_files,
+        finalized.clone(),
+    );
+    super::output::set_current_system_audio_output_file(
+        &mut current_segment_output_files,
+        live.clone(),
+    );
+
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(screen_and_system_audio.clone()),
+        current_segment_sources: Some(screen_and_system_audio),
+        current_segment_index: 1,
+        screen_frame_rate: 5.0,
+        screen_resolution: ScreenResolution::default(),
+        current_segment_output_files: Some(current_segment_output_files),
+        output_files: Some(super::segments::empty_output_files()),
+        recording_file: Some(screen.clone()),
+        system_audio_recording_file: Some(live.clone()),
+        active_screen_session: None,
+        runtime_controller,
+        runtime_state,
+        inactivity: InactivityState {
+            enabled: true,
+            idle_timeout_seconds: 10,
+            ..InactivityState::default()
+        },
+        ..Default::default()
+    };
+
+    pause_screen_for_inactivity(&mut runtime).expect("screen pause should succeed");
+
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("committed output_files slot should exist");
+    assert!(
+        committed
+            .system_audio_files
+            .iter()
+            .any(|file| file == &finalized),
+        "the generation a rebuild already finalized must commit with the segment (got {committed:?})"
+    );
+    assert!(
+        !committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &live),
+        "the file the tap is still writing must not be committed"
+    );
+    assert!(
+        live_path.is_file(),
+        "the live file must survive the pause untouched"
+    );
+    let continuation = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("continuation output files should exist for the live tap");
+    assert_eq!(
+        continuation.system_audio_files,
+        vec![live.clone()],
+        "the continuation carries only the live file — the finalized one is already committed"
+    );
+    assert_eq!(runtime.system_audio_recording_file.as_deref(), Some(live.as_str()));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn pause_screen_for_inactivity_keeps_continuation_for_system_audio_only() {
+    // A system-audio-only continuation is a real continuation: the tap has no
+    // screen dependency, so a screen pause leaves it recording and its file has to
+    // stay tracked (ADR 0052). Before the CATap swap this asserted the opposite —
+    // system audio rode the screen session, so a screen pause ended it.
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -8444,6 +9035,7 @@ fn pause_screen_for_inactivity_no_continuation_for_system_audio_only() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8456,11 +9048,18 @@ fn pause_screen_for_inactivity_no_continuation_for_system_audio_only() {
 
     pause_screen_for_inactivity(&mut runtime).expect("screen pause should succeed");
 
-    // With no microphone, there is no real audio continuation — output files
-    // should be cleared, not preserved with an empty stub.
-    assert!(
-        runtime.current_segment_output_files.is_none(),
-        "current_segment_output_files should be None for system-audio-only (no mic continuation)"
+    let output_files = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("a live tap is an audio continuation even with no microphone");
+    assert!(output_files.screen_file.is_none());
+    assert_eq!(
+        output_files.system_audio_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
+    );
+    assert_eq!(
+        runtime.system_audio_recording_file.as_deref(),
+        Some("/tmp/system-audio.m4a")
     );
 }
 
@@ -8500,6 +9099,7 @@ fn pause_audio_restart_screen_no_planner_clears_screen_output_files() {
         system_audio_recording_file: Some("/tmp/system-audio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         segment_planner: None, // no planner triggers the failure path
         runtime_controller,
         runtime_state,
@@ -8575,6 +9175,7 @@ fn pause_screen_for_inactivity_no_continuation_without_live_mic_session_or_file(
         // No microphone session or recording file — mic was requested but
         // never successfully started or already stopped.
         active_microphone_session: None,
+        active_system_audio_session: None,
         microphone_recording_file: None,
         active_screen_session: None,
         runtime_controller,
@@ -8631,6 +9232,7 @@ fn pause_screen_for_inactivity_continuation_with_mic_recording_file() {
         recording_file: Some("/tmp/screen.mov".to_string()),
         microphone_recording_file: Some("/tmp/mic.m4a".to_string()),
         active_microphone_session: None,
+        active_system_audio_session: None,
         active_screen_session: None,
         runtime_controller,
         runtime_state,
@@ -8699,6 +9301,7 @@ fn resume_audio_screen_restart_failure_reconciles_bookkeeping() {
         system_audio_recording_file: Some("/tmp/old-sysaudio.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8803,6 +9406,7 @@ fn pause_runtime_mic_fail_preserves_screen_bookkeeping() {
         // Instead, verify the success path preserves screen bookkeeping
         // when mic stop succeeds but screen is still live.
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8863,6 +9467,7 @@ fn pause_screen_fatal_finalize_preserves_audio_continuation() {
         microphone_recording_file: Some("/tmp/microphone.m4a".to_string()),
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8958,6 +9563,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -8979,7 +9585,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |segment_dir, screen_output, system_audio_output_path, _sources, _fr, _res, _br, _mic, _tx, _mic_path| {
+        |segment_dir, screen_output, _sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
@@ -8991,10 +9597,6 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
                 screen_output,
                 Some(std::path::Path::new(expected_screen_file.as_str())),
                 "screen_output should be the visible dated file path"
-            );
-            assert!(
-                system_audio_output_path.is_none(),
-                "paused resume should not pass a system-audio output path"
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -9008,7 +9610,7 @@ fn resume_screen_from_inactivity_passes_dated_paths_to_start_segment_closure() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() {
+fn resume_screen_from_inactivity_never_carries_system_audio() {
     let expected_date_prefix = current_date_prefix();
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
@@ -9040,6 +9642,7 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
         recording_file: None,
         active_screen_session: None,
         active_microphone_session: None,
+        active_system_audio_session: None,
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
@@ -9061,7 +9664,7 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
     resume_screen_from_inactivity_with_start_segment(
         &mut runtime,
         None,
-        |segment_dir, screen_output, system_audio_output_path, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
+        |segment_dir, screen_output, sources, _fr, _res, _br, _mic, _tx, _mic_path| {
             assert_eq!(
                 segment_dir,
                 std::path::Path::new(
@@ -9075,12 +9678,8 @@ fn resume_screen_from_inactivity_keeps_system_audio_stream_when_writer_paused() 
             assert!(sources.screen);
             assert!(!sources.microphone);
             assert!(
-                sources.system_audio,
-                "paused writer still needs the SCK audio stream for activity detection"
-            );
-            assert!(
-                system_audio_output_path.is_none(),
-                "paused writer should not allocate a system-audio output path until activity resumes it"
+                !sources.system_audio,
+                "the tap delivers its own activity, so the screen stream never carries audio for it"
             );
 
             Ok(resumed_segment_state_fixture(expected_screen_file.clone()))
@@ -9425,7 +10024,7 @@ mod low_disk {
             microphone_recording_file: Some("/tmp/low-disk-mic.m4a".to_string()),
             ..Default::default()
         };
-        super::super::segments::suspend_screen_system_audio_capture(
+        super::super::segments::suspend_screen_capture(
             None,
             &mut low_disk_runtime,
             &low_disk_error,
@@ -9459,7 +10058,7 @@ mod low_disk {
             microphone_recording_file: Some("/tmp/privacy-mic.m4a".to_string()),
             ..Default::default()
         };
-        super::super::segments::suspend_screen_system_audio_capture(
+        super::super::segments::suspend_screen_capture(
             None,
             &mut privacy_runtime,
             &privacy_error,
@@ -9635,7 +10234,7 @@ mod low_disk {
     /// audio (a junk byte file would be legitimately dropped as unusable, which
     /// would mask the data-loss this test guards against). Mirrors the helper in
     /// `native_capture_output.rs`'s tests.
-    fn write_valid_m4a_audio_file(path: &std::path::Path) {
+    pub(super) fn write_valid_m4a_audio_file(path: &std::path::Path) {
         use cidre::{av, ns};
 
         let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
@@ -9716,7 +10315,7 @@ mod low_disk {
             ..Default::default()
         };
 
-        super::super::segments::suspend_screen_system_audio_capture(
+        super::super::segments::suspend_screen_capture(
             None,
             &mut runtime,
             &CaptureErrorResponse {
@@ -9741,6 +10340,72 @@ mod low_disk {
             "low-disk boundary suspend must commit the current segment's finalized \
              microphone audio into runtime.output_files (got {committed:?}); otherwise \
              up to 5 minutes of mic audio is silently lost on every low-disk pause"
+        );
+    }
+
+    #[test]
+    fn low_disk_suspend_commits_the_current_segment_system_audio() {
+        // The system-audio sibling of the microphone test above: LowDisk is the
+        // one suspension kind that stops the tap (ADR 0040/0052), so the suspend
+        // entry must pass `system_audio_stops_with_suspension` = true into
+        // `commit_suspended_screen_system_outputs`, committing the tap's
+        // finalized `.m4a` instead of stripping it as a still-live file — and it
+        // must leave no live continuation file behind (the tap is down).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let sys_path = temp.path().join("segment-0001-sys.m4a");
+        write_valid_m4a_audio_file(&sys_path);
+        let sys = sys_path.to_string_lossy().into_owned();
+
+        let mut current_segment_output_files = super::super::segments::empty_output_files();
+        super::super::output::set_current_system_audio_output_file(
+            &mut current_segment_output_files,
+            sys.clone(),
+        );
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+            current_segment_index: 1,
+            system_audio_recording_file: Some(sys.clone()),
+            current_segment_output_files: Some(current_segment_output_files),
+            output_files: Some(super::super::segments::empty_output_files()),
+            ..Default::default()
+        };
+
+        super::super::segments::suspend_screen_capture(
+            None,
+            &mut runtime,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("low-disk suspend should succeed with no live screen/mic session");
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed output_files slot should exist");
+        let committed_sys = committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &sys);
+        assert!(
+            committed_sys,
+            "low-disk suspend must commit the current segment's finalized \
+             system-audio `.m4a` into runtime.output_files (got {committed:?}); \
+             LowDisk stops the tap, so skipping the commit orphans the segment"
+        );
+        assert!(
+            runtime.system_audio_recording_file.is_none(),
+            "LowDisk stops the tap — no live system-audio continuation file may \
+             survive the suspend"
         );
     }
 

@@ -2816,9 +2816,15 @@ pub fn microphone_permission_state() -> CapturePermissionState {
 pub fn ensure_microphone_permission() -> bool {
     match microphone_permission_state() {
         CapturePermissionState::Granted => return true,
+        // `AssumedWorking`/`PossiblyBlocked` are system audio's inferred states
+        // (ADR 0052) and unreachable here — the microphone can be *asked*
+        // whether it was granted. Refusing on them keeps this total: a state we
+        // cannot interpret must never be read as consent.
         CapturePermissionState::Denied
         | CapturePermissionState::Unsupported
-        | CapturePermissionState::Unknown => return false,
+        | CapturePermissionState::Unknown
+        | CapturePermissionState::AssumedWorking
+        | CapturePermissionState::PossiblyBlocked => return false,
         CapturePermissionState::NotDetermined => {}
     }
 

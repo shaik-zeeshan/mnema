@@ -91,12 +91,26 @@
     label="Excluded Apps"
     description="Apps whose visible content is never recorded."
     full
-    divider={false}
   >
     {#snippet control()}
       <div class="exclusion-cell" class:exclusion-cell--open={appPrivacyExclusion.comboboxOpen}>
         <AppPrivacyExclusion controller={appPrivacyExclusion} />
       </div>
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow
+    label="Filter system audio"
+    description="Also keep audio from excluded apps out of recordings."
+    divider={false}
+  >
+    {#snippet control()}
+      <Switch
+        checked={rec.draftFilterSystemAudio}
+        onCheckedChange={(enabled) => appPrivacyExclusion.setFilterSystemAudio(enabled)}
+        disabled={appPrivacyExclusion.commandInFlight}
+        ariaLabel="Filter system audio"
+      />
     {/snippet}
   </SettingRow>
 </SettingGroup>
