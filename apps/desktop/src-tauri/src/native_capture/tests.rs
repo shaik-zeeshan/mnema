@@ -1826,6 +1826,67 @@ fn stop_capture_runtime_accepts_idle_recording_boundary() {
     assert_eq!(runtime.runtime_state, RuntimeState::Idle);
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn stop_capture_runtime_commits_the_system_audio_segment_on_an_audio_only_stop() {
+    // The shape a stop lands in during an audio-only session (or a stop while
+    // the screen is asleep): no screen session at all, only the tap's `.m4a`
+    // tracked in the current segment. The stop must persist that recording into
+    // the committed output_files — the other stop test asserts nothing about
+    // outputs, so a regression silently dropping audio-only segments would
+    // still pass it.
+    let temp = tempfile::tempdir().expect("temp dir should be created");
+    let sys_path = temp.path().join("segment-0001-sys.m4a");
+    write_valid_m4a_audio_file(&sys_path);
+    let sys = sys_path.to_string_lossy().into_owned();
+
+    let mut current = super::segments::empty_output_files();
+    super::output::set_current_system_audio_output_file(&mut current, sys.clone());
+
+    let runtime_controller = running_runtime_controller();
+    let runtime_state = runtime_controller.state();
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        requested_sources: Some(CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }),
+        current_segment_index: 1,
+        system_audio_recording_file: Some(sys.clone()),
+        current_segment_output_files: Some(current),
+        output_files: Some(super::segments::empty_output_files()),
+        active_screen_session: None,
+        runtime_controller,
+        runtime_state,
+        ..Default::default()
+    };
+
+    stop_capture_runtime(&mut runtime, None)
+        .expect("an audio-only stop should succeed without a screen session");
+
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("committed output_files slot should exist");
+    let committed_sys = committed
+        .system_audio_file
+        .iter()
+        .chain(committed.system_audio_files.iter())
+        .any(|file| file == &sys);
+    assert!(
+        committed_sys,
+        "an audio-only stop must commit the current segment's finalized \
+         system-audio `.m4a` into runtime.output_files (got {committed:?}); \
+         otherwise the whole recording is silently lost on stop"
+    );
+    assert_eq!(
+        runtime.runtime_state,
+        RuntimeState::Idle,
+        "the stop must run the runtime down to Idle"
+    );
+}
+
 #[test]
 fn stopped_session_from_runtime_preserves_finalized_metadata() {
     let runtime = NativeCaptureRuntime {
@@ -5410,7 +5471,11 @@ fn a_system_audio_resume_into_a_suspended_segment_still_tracks_its_output_file()
 
 #[cfg(target_os = "macos")]
 #[test]
-fn resume_system_audio_from_inactivity_does_no_writer_work_without_a_tap() {
+fn resume_system_audio_from_inactivity_without_a_tap_clears_the_flag_and_does_no_writer_work() {
+    // With no tap (and no system-audio planner) there is no writer work to do,
+    // but the resume must still succeed and clear the paused flag: "paused for
+    // inactivity" tracks activity, not backend health. It used to stay paused
+    // because the resume asked the screen backend for permission (ADR 0052).
     let runtime_controller = running_runtime_controller();
     let runtime_state = runtime_controller.state();
 
@@ -5448,10 +5513,18 @@ fn resume_system_audio_from_inactivity_does_no_writer_work_without_a_tap() {
         .expect("resume should do nothing rather than fail when no tap is running");
 
     assert!(
+        !runtime.inactivity.is_system_audio_paused(),
+        "the resume must clear the paused flag even with no tap to resume"
+    );
+    assert!(
         runtime.system_audio_planner.is_none(),
         "no tap means no writer to plan a file for"
     );
-    assert!(runtime.system_audio_recording_file.is_none());
+    assert!(
+        runtime.system_audio_recording_file.is_none(),
+        "with no tap there is no file to write"
+    );
+    // The screen's bookkeeping is untouched by an audio-only resume.
     assert_eq!(runtime.recording_file.as_deref(), Some("/tmp/screen.mov"));
 }
 
@@ -8465,74 +8538,10 @@ fn resume_audio_mic_start_failure_with_system_audio_refreshes_rolled_back_source
 }
 
 // --- Slice 3b11: missing-planner fallback reconciliation ---
-
-#[cfg(target_os = "macos")]
-#[test]
-fn resume_audio_soft_resume_no_session_succeeds_without_planner() {
-    // With no tap and no planner there is no writer work to do, but the resume
-    // must still succeed and still clear the flag: "paused for inactivity"
-    // tracks activity, not backend health. It used to stay paused because the
-    // resume asked the screen backend for permission (ADR 0052).
-    let runtime_controller = running_runtime_controller();
-    let runtime_state = runtime_controller.state();
-
-    let mut runtime = NativeCaptureRuntime {
-        is_running: true,
-        requested_sources: Some(CaptureSources {
-            screen: true,
-            microphone: true,
-            system_audio: true,
-        }),
-        current_segment_sources: Some(CaptureSources {
-            screen: true,
-            microphone: false,
-            system_audio: false,
-        }),
-        current_segment_index: 1,
-        screen_frame_rate: 5.0,
-        screen_resolution: ScreenResolution::default(),
-        current_segment_output_files: Some(CaptureOutputFiles {
-            screen_file: Some("/tmp/screen.mov".to_string()),
-            screen_files: vec!["/tmp/screen.mov".to_string()],
-            microphone_file: None,
-            microphone_files: Vec::new(),
-            system_audio_file: None,
-            system_audio_files: Vec::new(),
-        }),
-        recording_file: Some("/tmp/screen.mov".to_string()),
-        system_audio_recording_file: None,
-        active_screen_session: None,
-        active_microphone_session: None,
-        active_system_audio_session: None,
-        segment_planner: None, // no planner
-        runtime_controller,
-        runtime_state,
-        inactivity: InactivityState {
-            enabled: true,
-            idle_timeout_seconds: 10,
-            microphone_paused: true,
-            system_audio_paused: true,
-            is_paused: true,
-            ..InactivityState::default()
-        },
-        ..Default::default()
-    };
-
-    resume_system_audio_from_inactivity(&mut runtime)
-        .expect("resume should succeed as a no-op without a tap");
-
-    assert!(
-        !runtime.inactivity.is_system_audio_paused(),
-        "the resume must not defer on a screen session it no longer reads"
-    );
-    assert!(
-        runtime.system_audio_recording_file.is_none(),
-        "with no tap there is no file to write"
-    );
-    assert!(runtime.system_audio_planner.is_none());
-    // Recording file should be untouched (screen is still live from bookkeeping POV).
-    assert!(runtime.recording_file.is_some());
-}
+//
+// The no-tap soft-resume itself (paused flag cleared, no writer work, screen
+// bookkeeping untouched) is pinned by
+// `resume_system_audio_from_inactivity_without_a_tap_clears_the_flag_and_does_no_writer_work`.
 
 #[cfg(target_os = "macos")]
 #[test]
@@ -10331,6 +10340,72 @@ mod low_disk {
             "low-disk boundary suspend must commit the current segment's finalized \
              microphone audio into runtime.output_files (got {committed:?}); otherwise \
              up to 5 minutes of mic audio is silently lost on every low-disk pause"
+        );
+    }
+
+    #[test]
+    fn low_disk_suspend_commits_the_current_segment_system_audio() {
+        // The system-audio sibling of the microphone test above: LowDisk is the
+        // one suspension kind that stops the tap (ADR 0040/0052), so the suspend
+        // entry must pass `system_audio_stops_with_suspension` = true into
+        // `commit_suspended_screen_system_outputs`, committing the tap's
+        // finalized `.m4a` instead of stripping it as a still-live file — and it
+        // must leave no live continuation file behind (the tap is down).
+        let temp = tempfile::tempdir().expect("temp dir should be created");
+        let sys_path = temp.path().join("segment-0001-sys.m4a");
+        write_valid_m4a_audio_file(&sys_path);
+        let sys = sys_path.to_string_lossy().into_owned();
+
+        let mut current_segment_output_files = super::super::segments::empty_output_files();
+        super::super::output::set_current_system_audio_output_file(
+            &mut current_segment_output_files,
+            sys.clone(),
+        );
+
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+            current_segment_index: 1,
+            system_audio_recording_file: Some(sys.clone()),
+            current_segment_output_files: Some(current_segment_output_files),
+            output_files: Some(super::super::segments::empty_output_files()),
+            ..Default::default()
+        };
+
+        super::super::segments::suspend_screen_capture(
+            None,
+            &mut runtime,
+            &CaptureErrorResponse {
+                code: "capture_low_disk".to_string(),
+                message: "low disk".to_string(),
+            },
+            CaptureSuspensionKind::LowDisk,
+        )
+        .expect("low-disk suspend should succeed with no live screen/mic session");
+
+        let committed = runtime
+            .output_files
+            .as_ref()
+            .expect("committed output_files slot should exist");
+        let committed_sys = committed
+            .system_audio_file
+            .iter()
+            .chain(committed.system_audio_files.iter())
+            .any(|file| file == &sys);
+        assert!(
+            committed_sys,
+            "low-disk suspend must commit the current segment's finalized \
+             system-audio `.m4a` into runtime.output_files (got {committed:?}); \
+             LowDisk stops the tap, so skipping the commit orphans the segment"
+        );
+        assert!(
+            runtime.system_audio_recording_file.is_none(),
+            "LowDisk stops the tap — no live system-audio continuation file may \
+             survive the suspend"
         );
     }
 

@@ -389,4 +389,110 @@ mod tests {
             SystemAudioEvidence::None
         );
     }
+
+    // ── SegmentBus::take_next_output_file ──────────────────────────────────
+    //
+    // The one method the tap's next-output-file hook runs, so its three arms
+    // decide what an inactivity pause, a caller-named segment, and a mid-segment
+    // rebuild each write (or don't).
+
+    fn test_bus_root(label: &str) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("system-audio-bus-{label}-{unique}"))
+    }
+
+    #[test]
+    fn take_next_output_file_returns_none_and_clears_live_when_paused() {
+        let root = test_bus_root("paused");
+        let mut bus = SegmentBus {
+            planner: Some(SegmentPlanner::new(
+                root.to_string_lossy().to_string(),
+                "sess-paused",
+            )),
+            segment_index: 1,
+            paused: true,
+            pending_output_file: Some(root.join("pending.m4a")),
+            live_output_file: Some(root.join("previous.m4a")),
+        };
+
+        assert_eq!(
+            bus.take_next_output_file(),
+            None,
+            "a paused bus must hand the session no file to open"
+        );
+        assert_eq!(
+            bus.live_output_file, None,
+            "pausing must clear the live file — nothing is being written"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn take_next_output_file_uses_the_pending_file_and_tracks_it() {
+        let root = test_bus_root("pending");
+        let pending = root.join("audio").join("caller-named.m4a");
+        let mut bus = SegmentBus {
+            planner: None,
+            segment_index: 1,
+            paused: false,
+            pending_output_file: Some(pending.clone()),
+            live_output_file: None,
+        };
+
+        assert_eq!(
+            bus.take_next_output_file(),
+            Some(pending.clone()),
+            "the caller-named pending file must win"
+        );
+        assert_eq!(
+            bus.live_output_file,
+            Some(pending),
+            "the opened file must be tracked as live"
+        );
+        assert_eq!(
+            bus.pending_output_file, None,
+            "the pending slot is one-shot"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn take_next_output_file_synthesizes_a_resume_file_from_the_planner_when_no_pending() {
+        // The rebuild arm: no caller-named path, so the bus asks the planner for
+        // a collision-safe resume path under the segment it last knew about.
+        let root = test_bus_root("rebuild");
+        let planner = SegmentPlanner::new(root.to_string_lossy().to_string(), "sess-rebuild");
+        let audio_dir = planner.audio_dir();
+        let mut bus = SegmentBus {
+            planner: Some(planner),
+            segment_index: 3,
+            paused: false,
+            pending_output_file: None,
+            live_output_file: None,
+        };
+
+        let next = bus
+            .take_next_output_file()
+            .expect("a rebuild with a planner must synthesize a path");
+        assert_eq!(
+            next.parent(),
+            Some(audio_dir.as_path()),
+            "the synthesized file must live in the planner's audio dir"
+        );
+        assert!(
+            next.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("sess-rebuild-segment-0003-")),
+            "the synthesized file must be a resume file for the current segment (got {next:?})"
+        );
+        assert_eq!(
+            bus.live_output_file,
+            Some(next),
+            "the synthesized file must be tracked as live"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
