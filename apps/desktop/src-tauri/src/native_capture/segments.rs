@@ -3991,6 +3991,14 @@ where
         system_audio: false,
     };
 
+    // The tap is not torn down by a wake, so the file it is still writing must not
+    // be finalized here — an open `.m4a` reads as zero-duration and the finalize
+    // path would delete it out from under the running writer. But generations a
+    // mid-segment tap rebuild already finalized belong to this segment and are
+    // orphaned if dropped, so strip only the live file and let the earlier
+    // generations commit with the previous segment — mirroring the suspend path
+    // (`commit_suspended_screen_system_outputs`), which strips exactly the same way.
+    let live_system_audio_file = live_system_audio_continuation_file(runtime);
     let mut previous_screen_outputs =
         runtime
             .current_segment_output_files
@@ -3998,8 +4006,9 @@ where
             .map(|mut outputs| {
                 outputs.microphone_file = None;
                 outputs.microphone_files.clear();
-                outputs.system_audio_file = None;
-                outputs.system_audio_files.clear();
+                if let Some(live_file) = live_system_audio_file.as_deref() {
+                    strip_live_system_audio_output_file(&mut outputs, live_file);
+                }
                 outputs
             });
     let recording_file = runtime.recording_file.clone().or_else(|| {

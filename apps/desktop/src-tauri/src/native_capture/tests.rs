@@ -243,6 +243,56 @@ fn write_existing_audio_placeholder(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+// A real, positive-duration AAC/m4a file so that the AVFoundation duration
+// validation inside `finalize_capture_outputs` accepts it as usable captured
+// audio (mirrors the helper in `native_capture_output.rs`'s tests).
+#[cfg(target_os = "macos")]
+fn write_valid_m4a_audio_file(path: &Path) {
+    use cidre::{av, ns};
+
+    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+    let path_str = path.to_string_lossy().to_string();
+    let url = ns::Url::with_fs_path_str(&path_str, false);
+    let sample_rate = 48_000.0_f64;
+    let format_id = ns::Number::with_u32(u32::from_be_bytes(*b"aac "));
+    let sample_rate_value = ns::Number::with_f64(sample_rate);
+    let channel_count_value = ns::Number::with_i64(1);
+    let settings: cidre::arc::R<ns::Dictionary<ns::String, ns::Id>> =
+        ns::Dictionary::with_keys_values(
+            &[
+                av::audio::all_formats_keys::id(),
+                av::audio::all_formats_keys::sample_rate(),
+                av::audio::all_formats_keys::number_of_channels(),
+            ],
+            &[
+                format_id.as_id_ref(),
+                sample_rate_value.as_id_ref(),
+                channel_count_value.as_id_ref(),
+            ],
+        );
+    let mut file = av::AudioFile::open_write_common_format(
+        &url,
+        &settings,
+        av::AudioCommonFormat::PcmF32,
+        false,
+    )
+    .expect("writable test audio file should open");
+    let processing_format = file.processing_format();
+    let frames: u32 = 24_000; // 0.5s @ 48kHz — comfortably positive duration.
+    let mut buffer = av::AudioPcmBuf::with_format(&processing_format, frames)
+        .expect("test audio buffer should allocate");
+    buffer
+        .set_frame_len(frames)
+        .expect("frame length should set");
+    if let Some(samples) = buffer.data_f32_mut_at(0) {
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = ((index as f32) * 0.05).sin() * 0.1;
+        }
+    }
+    file.write(&buffer).expect("test audio should write");
+    file.close();
+}
+
 fn app_notification_fixture(id: &str, title: &str, created_at_unix_ms: u64) -> AppNotification {
     AppNotification {
         id: id.to_string(),
@@ -3808,6 +3858,92 @@ fn wake_recovery_carries_the_live_system_audio_file_into_the_refreshed_outputs()
         outputs.system_audio_files,
         vec!["/tmp/system-audio.m4a".to_string()]
     );
+}
+
+// Regression: a mid-segment tap rebuild finalizes an earlier system-audio
+// generation and opens a fresh one, both tracked in the current segment's
+// `system_audio_files`. Wake recovery rebuilt the previous segment's outputs by
+// clearing *all* system audio and carrying only the live file forward — so the
+// finalized earlier generation was committed nowhere: a real `.m4a` on disk with
+// no `audio_segment` row, never transcribed, invisible to retention. The suspend
+// path already strips only the live file for exactly this reason; the wake path
+// must mirror it.
+#[cfg(target_os = "macos")]
+#[test]
+fn wake_recovery_commits_earlier_system_audio_rebuild_generations() {
+    let dir = TestDir::new("wake-recovery-system-audio-rebuild-generations");
+    let stale_screen_file = dir.path().join("stale-sleep-screen.mov");
+    write_openable_screen_file(&stale_screen_file);
+    // A finalized earlier tap generation — a real, positive-duration m4a.
+    let finalized_generation = dir.path().join("system-audio-gen1.m4a");
+    write_valid_m4a_audio_file(&finalized_generation);
+    let finalized_generation = finalized_generation.to_string_lossy().to_string();
+    // The file the tap is still writing across the wake.
+    let live_system_audio_file = "/tmp/system-audio-live.m4a".to_string();
+
+    let mut runtime = running_screen_capture_runtime_fixture();
+    runtime.current_segment_output_files = Some(CaptureOutputFiles {
+        screen_file: Some(stale_screen_file.to_string_lossy().to_string()),
+        screen_files: vec![stale_screen_file.to_string_lossy().to_string()],
+        microphone_file: None,
+        microphone_files: Vec::new(),
+        system_audio_file: Some(live_system_audio_file.clone()),
+        system_audio_files: vec![finalized_generation.clone(), live_system_audio_file.clone()],
+    });
+    runtime.recording_file = Some(stale_screen_file.to_string_lossy().to_string());
+    runtime.microphone_recording_file = None;
+    runtime.system_audio_recording_file = Some(live_system_audio_file.clone());
+
+    let mut lifecycle = RecordingLifecycle::default();
+    *lifecycle.runtime_mut() = runtime;
+    assert!(
+        lifecycle.handle_system_will_sleep(),
+        "the sleep handler should clear screen state"
+    );
+
+    let expected_screen_file =
+        "/tmp/native-capture-tests/2026/04/23/native-session-wake-screen-segment-0002.mov"
+            .to_string();
+    let recovered = recover_screen_capture_after_wake_with_start_segment(
+        lifecycle.runtime_mut(),
+        None,
+        |_segment_dir,
+         _screen_output,
+         _sources,
+         _frame_rate,
+         _resolution,
+         _bitrate,
+         _microphone_device_id,
+         _frame_tx,
+         _microphone_output_path| Ok(resumed_segment_state_fixture(expected_screen_file.clone())),
+    )
+    .expect("wake recovery should restart screen capture");
+
+    assert!(recovered);
+    let runtime = lifecycle.runtime();
+    // The live file is still carried into the refreshed segment for the next
+    // rotation (the previously fixed bug must stay fixed).
+    let outputs = runtime
+        .current_segment_output_files
+        .as_ref()
+        .expect("wake recovery should refresh current segment outputs");
+    assert_eq!(
+        outputs.system_audio_file.as_deref(),
+        Some(live_system_audio_file.as_str()),
+    );
+    // ...and the finalized earlier generation is committed with the previous
+    // segment rather than orphaned on disk.
+    let committed = runtime
+        .output_files
+        .as_ref()
+        .expect("previous segment outputs should be committed during wake recovery");
+    assert!(
+        committed.system_audio_files.contains(&finalized_generation),
+        "the finalized earlier tap generation must be committed, not orphaned: {:?}",
+        committed.system_audio_files
+    );
+    // The valid earlier generation must still exist on disk (it is real audio).
+    assert!(std::path::Path::new(&finalized_generation).exists());
 }
 
 #[cfg(target_os = "macos")]
