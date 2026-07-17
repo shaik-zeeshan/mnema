@@ -264,10 +264,22 @@ fn claim_checkout_id_from_url(url: &url::Url) -> Option<String> {
         .filter(|id| !id.is_empty())
 }
 
+/// The renewal-return deep link (`mnema://license/renewed` in prod,
+/// `mnema-dev://…` in dev) — the Polar RENEWAL product's success redirect. No
+/// payload: the machine already holds the key (a renewal extends the existing
+/// license, ADR 0055), so the hit only cues a short Receipt Refresh poll.
+/// Ops note: the Polar renewal product's success URL must redirect to
+/// `mnema://license/renewed` (`mnema-dev` scheme for the sandbox product).
+fn is_license_renewed_url(url: &url::Url) -> bool {
+    matches!(url.scheme(), "mnema" | "mnema-dev")
+        && url.host_str() == Some("license")
+        && url.path() == "/renewed"
+}
+
 /// Route one deep-link URL to its handler. The `mnema`/`mnema-dev` scheme carries
-/// four unrelated payloads (license activation, purchase claim, MCP OAuth
-/// callback, capture-broker handoff), discriminated by host+path so none
-/// swallows another.
+/// five unrelated payloads (license activation, purchase claim, renewal return,
+/// MCP OAuth callback, capture-broker handoff), discriminated by host+path so
+/// none swallows another.
 fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
     if let Some(key) = license_key_from_url(url) {
         let app_handle = app_handle.clone();
@@ -282,6 +294,14 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
             // from the browser and the claim poll can take ~30s.
             let _ = windows::open_main_window(&app_handle);
             licensing::claim_from_deep_link(app_handle, checkout_id).await;
+        });
+    } else if is_license_renewed_url(url) {
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            // Surface the app before polling — the buyer was just bounced back
+            // from the browser and the refresh poll can take up to ~60s.
+            let _ = windows::open_main_window(&app_handle);
+            licensing::renewed_from_deep_link(app_handle).await;
         });
     } else if is_oauth_callback_url(url) {
         app_handle
@@ -448,6 +468,7 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     // initial fetch plus the daily timer regardless of onboarding state.
     crl_refresh::spawn_crl_refresh(app_handle.clone());
     crl_refresh::start_daily_crl_timer(app_handle.clone());
+    licensing::receipt_refresh::start_receipt_refresh_timer(app_handle.clone());
     if onboarding_complete {
         native_capture::maybe_auto_start_native_capture(app_handle);
         app_updates::start_startup_update_check(app_handle);
@@ -604,6 +625,7 @@ pub fn run() {
             licensing::get_license_status,
             licensing::start_trial,
             licensing::activate_license,
+            licensing::refresh_license_now,
             licensing::reset::reset_license_devices,
             licensing::reset::get_license_devices,
             app_infra::preview_retention_cleanup,
@@ -949,8 +971,8 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 mod tests {
     use super::{
         broker_opaque_id_from_url, broker_payload_from_url, claim_checkout_id_from_url,
-        exit_request_action_for_exit_request, is_app_log_target, is_oauth_callback_url,
-        license_key_from_url, should_forward_window_event,
+        exit_request_action_for_exit_request, is_app_log_target, is_license_renewed_url,
+        is_oauth_callback_url, license_key_from_url, should_forward_window_event,
         should_notify_pending_broker_authorization_request,
         should_open_pending_broker_authorization_request, ExitRequestAction,
     };
@@ -1037,6 +1059,38 @@ mod tests {
             &url::Url::parse("https://license/claim?checkout_id=co_abc123").expect("url")
         )
         .is_none());
+    }
+
+    #[test]
+    fn renewed_deep_link_matches_both_schemes_and_stays_apart() {
+        let prod = url::Url::parse("mnema://license/renewed").expect("url");
+        let dev = url::Url::parse("mnema-dev://license/renewed").expect("url");
+        assert!(is_license_renewed_url(&prod));
+        assert!(is_license_renewed_url(&dev));
+        // A stray query string (checkout providers append them) still matches.
+        assert!(is_license_renewed_url(
+            &url::Url::parse("mnema://license/renewed?checkout_id=co_x").expect("url")
+        ));
+
+        // Never claims the activate/claim/oauth/broker payloads…
+        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
+        let claim = url::Url::parse("mnema://license/claim?checkout_id=co_x").expect("url");
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(!is_license_renewed_url(&activate));
+        assert!(!is_license_renewed_url(&claim));
+        assert!(!is_license_renewed_url(&oauth));
+        assert!(!is_license_renewed_url(&broker));
+        // …and none of them claims a renewed URL (no cross-swallow).
+        assert!(license_key_from_url(&prod).is_none());
+        assert!(claim_checkout_id_from_url(&prod).is_none());
+        assert!(!is_oauth_callback_url(&prod));
+        assert!(broker_opaque_id_from_url(&prod).is_none());
+
+        // Wrong scheme -> not a renewed link.
+        assert!(!is_license_renewed_url(
+            &url::Url::parse("https://license/renewed").expect("url")
+        ));
     }
 
     #[test]

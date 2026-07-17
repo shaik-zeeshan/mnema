@@ -1,6 +1,6 @@
 <script lang="ts">
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { licenseStatus } from "$lib/licensing-store.svelte";
+  import { licenseStatus, refreshLicenseNow } from "$lib/licensing-store.svelte";
   import { LICENSE_CHECKOUT_URL } from "$lib/licensing";
   import { bannerFor, bannerVisible, days } from "$lib/licensing-banner";
   import { openSettings } from "$lib/surface-windows";
@@ -40,6 +40,22 @@
 
   function enterLicense() {
     void openSettings("license");
+  }
+
+  // "Re-check license": manual Receipt Refresh — forces a re-activation; a
+  // heal flips the banner away via the `license_status` event.
+  let rechecking = $state(false);
+
+  async function recheck() {
+    if (rechecking) return;
+    rechecking = true;
+    try {
+      await refreshLicenseNow();
+    } catch (e) {
+      console.error("[LicenseBanner] re-check failed", e);
+    } finally {
+      rechecking = false;
+    }
   }
 </script>
 
@@ -83,7 +99,15 @@
       recorded history stays fully searchable; new recording is paused until then.
     </p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={enterLicense}>
+      <button
+        type="button"
+        class="license-banner__btn license-banner__btn--primary"
+        disabled={rechecking}
+        onclick={() => void recheck()}
+      >
+        {rechecking ? "Checking…" : "Re-check license"}
+      </button>
+      <button type="button" class="license-banner__btn" onclick={enterLicense}>
         Enter license
       </button>
     </div>

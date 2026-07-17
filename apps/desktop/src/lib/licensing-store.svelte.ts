@@ -44,6 +44,13 @@ export async function activateLicense(key: string): Promise<ActivateLicenseResul
 	return result;
 }
 
+/** Manual Receipt Refresh: forces a re-activation so a renewal (or freed-up
+ * device) lands now. The recomputed status arrives via the `license_status`
+ * event; resolving only means the check ran. */
+export async function refreshLicenseNow(): Promise<void> {
+	await invoke("refresh_license_now");
+}
+
 /** "Free up my devices" (over-cap self-service). On success the backend already
  * retried activation and republished the status via the `license_status` event;
  * a rejection carries a human-readable message. */

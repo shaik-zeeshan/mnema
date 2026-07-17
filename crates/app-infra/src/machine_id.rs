@@ -50,6 +50,62 @@ pub fn hardware_uuid() -> Result<String> {
     ))
 }
 
+/// The generic hardware model identifier ("Mac15,7") via `sysctl hw.model` —
+/// the device label sent on activation so the seller dashboard can tell a
+/// license's devices apart (ADR 0055). Never the personal computer name.
+#[cfg(target_os = "macos")]
+pub fn hardware_model() -> Result<String> {
+    let name = c"hw.model";
+    let mut len: libc::size_t = 0;
+    // SAFETY: a null buffer asks sysctl for the value's length only.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            std::ptr::null_mut(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || len == 0 {
+        return Err(AppInfraError::LicenseTokenStore(format!(
+            "sysctl hw.model length probe failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    let mut buf = vec![0u8; len];
+    // SAFETY: `buf` is a live buffer of exactly the length sysctl reported.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            name.as_ptr(),
+            buf.as_mut_ptr().cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 {
+        return Err(AppInfraError::LicenseTokenStore(format!(
+            "sysctl hw.model read failed: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+    buf.truncate(len);
+    // sysctl returns a NUL-terminated string; drop the terminator.
+    if buf.last() == Some(&0) {
+        buf.pop();
+    }
+    String::from_utf8(buf)
+        .map_err(|_| AppInfraError::LicenseTokenStore("hw.model is not utf-8".to_string()))
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn hardware_model() -> Result<String> {
+    Err(AppInfraError::LicenseTokenStore(
+        "hardware model / activation is unsupported on this platform".to_string(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +120,13 @@ mod tests {
         assert_eq!(first.as_bytes()[8], b'-');
         // Stable across calls.
         assert_eq!(first, hardware_uuid().expect("second call should succeed"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn hardware_model_is_nonempty_without_nul() {
+        let model = hardware_model().expect("macOS should return a hardware model");
+        assert!(!model.is_empty());
+        assert!(!model.contains('\0'));
     }
 }

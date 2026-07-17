@@ -95,7 +95,7 @@ pub use license_token_store::{
     store_trial_issuance,
 };
 pub use licensing_state::{bump_max_timestamp_seen, read_max_timestamp_seen};
-pub use machine_id::hardware_uuid;
+pub use machine_id::{hardware_model, hardware_uuid};
 pub use ocr::{
     AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
     OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,

@@ -9,10 +9,14 @@ and [ADR 0052](0052-refunded-licenses-die-via-a-signed-revocation-list.md)): the
 Fulfillment worker (`services/fulfillment`) and the app-side verify modules are replaced by
 **licensegate**, a standalone licensing platform. Every piece of philosophy those ADRs decided
 **stands unchanged**: offline verification forever, one mandatory activation per machine then
-never phone home, staleness never locks, Read-Only Mode never holds history hostage, the 3-device
-cap with self-service reset, and the privacy commitment word-for-word (the activation request
-carries exactly a license id and a salted irreversible machine hash; no name, email, device name,
-OS version, or telemetry; the CRL fetch stays an anonymous GET).
+never phone home *(amended 2026-07-17 by
+[ADR 0055](0055-receipt-refresh-is-event-driven-from-unhealthy-states.md): a machine whose
+Update Window has lapsed quietly re-activates on a cadence until healthy again — a healthy
+in-window machine still never phones home)*, staleness never locks, Read-Only Mode never holds
+history hostage, the 3-device cap with self-service reset, and the privacy commitment (the
+activation request carries exactly a license id, a salted irreversible machine hash, and — per
+ADR 0055 — a generic hardware model label such as "MacBook Air (M2, 2022)"; no name, email,
+personal computer name, OS version, or telemetry; the CRL fetch stays an anonymous GET).
 [ADR 0044](0044-monetize-as-one-time-purchase-with-paid-update-window.md) (the business model) is
 untouched.
 

@@ -1,6 +1,11 @@
 //! Once-per-machine activation (ADR 0053): the background attempt + retry over
 //! `licensegate::Client::activate`, and the in-memory over-cap hint it feeds
 //! back into the compute path. Retries piggyback the daily CRL tick.
+//!
+//! Receipt Refresh (ADR 0055) is the second entry point over the same core:
+//! `refresh_receipt` skips the already-activated early-return, so a renewed
+//! license's extended dates land in a fresh receipt. A failed refresh changes
+//! nothing — the stored receipt stays; refresh can only improve state.
 
 use tauri::Manager;
 
@@ -111,48 +116,81 @@ fn classify_activation(
     }
 }
 
+/// Whether an entry point may skip the network call: only the initial
+/// activation path skips (a Receipt Refresh always re-activates), and only
+/// when a verified receipt already exists.
+fn skip_network(already_activated: bool, forced_refresh: bool) -> bool {
+    already_activated && !forced_refresh
+}
+
 pub(super) async fn run_activation(app_handle: tauri::AppHandle) {
+    activate_machine(app_handle, false).await;
+}
+
+/// Receipt Refresh (ADR 0055): forced re-activation — always calls `activate`,
+/// stores the fresh receipt, recomputes. Idempotent server-side (a known
+/// machine hash consumes no slot). A failed refresh logs and keeps the stored
+/// receipt — staleness never locks. Returns `false` only on a transient
+/// failure (offline/`Retry` disposition) so the manual button can say
+/// "failed to reach the server"; any definitive answer — or nothing to
+/// refresh — is `true`.
+pub(crate) async fn refresh_receipt(app_handle: tauri::AppHandle) -> bool {
+    activate_machine(app_handle, true).await
+}
+
+/// The shared activation core behind both entry points. `forced_refresh`
+/// only disables the already-activated early-return; every disposition
+/// (`StoreReceipt`/`Recompute`/`SetOverCap`/`Retry`) behaves identically.
+/// Returns `false` only for the transient `Retry` disposition — every other
+/// path (definitive server answer, or an early return with nothing to do)
+/// is `true`. State is never changed on `false`.
+async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) -> bool {
+    let op = if forced_refresh {
+        "receipt refresh"
+    } else {
+        "activation"
+    };
     let Some(state) = app_handle.try_state::<AppInfraState>() else {
-        return;
+        return true;
     };
     let infra = std::sync::Arc::clone(&*state);
     let pool = infra.pool();
 
     // Need a stored, authentic, non-revoked key — else nothing to activate.
     let Some(verifier) = adapter::verifier() else {
-        return;
+        return true;
     };
     let Some(key_wire) = app_infra::load_license_key().ok().flatten() else {
-        return;
+        return true;
     };
     let Ok(key) = verifier.verify_license(&key_wire) else {
-        return;
+        return true;
     };
     let license_id = key.license_id.clone();
     let crl = load_effective_crl(&verifier, pool).await;
     if is_key_revoked(&license_id, crl.as_ref()) {
-        return;
+        return true;
     }
 
     let uuid = match app_infra::hardware_uuid() {
         Ok(uuid) => uuid,
         Err(error) => {
             // Non-macOS / no fingerprint: compute already treats this as Activated.
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation skipped: cannot read hardware uuid: {error}");
-            return;
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} skipped: cannot read hardware uuid: {error}");
+            return true;
         }
     };
     // The license-salted derivation (licensegate SPEC §2) — never the raw uuid.
     let machine_hash = licensegate::machine_hash(&license_id, &uuid);
 
-    // Already activated on this machine → done.
+    // Already activated on this machine → done (unless this is a refresh).
     let already_activated = app_infra::load_activation_receipt()
         .ok()
         .flatten()
         .and_then(|wire| verifier.verify_receipt_bound(&wire, &uuid).ok())
         .is_some_and(|receipt| receipt.license_id == license_id);
-    if already_activated {
-        return;
+    if skip_network(already_activated, forced_refresh) {
+        return true;
     }
 
     // Stamp first_seen (write-once) and record the high-water mark before the
@@ -162,8 +200,13 @@ pub(super) async fn run_activation(app_handle: tauri::AppHandle) {
     ensure_first_seen(&license_id, now.max(max_seen));
     let _ = app_infra::bump_max_timestamp_seen(pool, now).await;
 
+    // Generic hardware model label ("Mac15,7") so the seller dashboard can
+    // tell a license's devices apart — never the personal computer name
+    // (ADR 0055).
+    let device_label = app_infra::hardware_model().ok();
+    tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "{op}: activating license {license_id}");
     let result = adapter::client()
-        .activate(&license_id, &machine_hash, None)
+        .activate(&license_id, &machine_hash, device_label.as_deref())
         .await;
     let verify = |wire: &str| {
         verifier
@@ -174,24 +217,31 @@ pub(super) async fn run_activation(app_handle: tauri::AppHandle) {
     match classify_activation(result, verify) {
         ActivationDisposition::StoreReceipt(receipt_wire) => {
             if let Err(error) = app_infra::store_activation_receipt(&receipt_wire) {
-                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: could not store receipt: {error}");
-                return;
+                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} failed: could not store receipt: {error}");
+                return true;
             }
             clear_over_cap_hint(&app_handle);
+            tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "{op} succeeded: stored receipt for license {license_id}");
             // Recompute → badge flips to Activated.
             super::compute_license_status(pool, &app_handle, now_ms()).await;
+            true
         }
         ActivationDisposition::Recompute => {
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation refused: license {license_id} reported dead by the server; the offline evaluation enforces it");
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} refused: license {license_id} reported dead by the server; the offline evaluation enforces it");
             super::compute_license_status(pool, &app_handle, now_ms()).await;
+            true
         }
         ActivationDisposition::SetOverCap { reset_url, buy_url } => {
             set_over_cap_hint(&app_handle, reset_url, buy_url);
             super::compute_license_status(pool, &app_handle, now_ms()).await;
+            true
         }
         ActivationDisposition::Retry { reason } => {
-            // Leave the Provisional Window running; the daily tick retries.
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "activation failed: {reason} (from {})", adapter::base_url());
+            // Leave the Provisional Window running; the daily tick (or the
+            // refresh cadence) retries. On a refresh the stored receipt stays
+            // untouched — staleness never locks.
+            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} failed: {reason} (from {})", adapter::base_url());
+            false
         }
     }
 }
@@ -220,6 +270,25 @@ mod tests {
             code,
             message: "msg".to_string(),
         })
+    }
+
+    #[test]
+    fn refresh_never_skips_and_stores_the_fresh_receipt() {
+        // Receipt Refresh bypasses the already-activated early-return...
+        assert!(!skip_network(true, true));
+        assert!(!skip_network(false, true));
+        // ...and a verifiable fresh receipt takes the StoreReceipt path
+        // (stored + recomputed), exactly like initial activation.
+        assert_eq!(
+            classify_activation(ok_outcome("fresh.sig"), verify_ok),
+            ActivationDisposition::StoreReceipt("fresh.sig".to_string()),
+        );
+    }
+
+    #[test]
+    fn initial_activation_still_early_returns_when_activated() {
+        assert!(skip_network(true, false));
+        assert!(!skip_network(false, false));
     }
 
     #[test]

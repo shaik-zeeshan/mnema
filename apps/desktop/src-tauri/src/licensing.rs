@@ -12,6 +12,9 @@ mod activation;
 // pub(crate): `crl_refresh` fetches through the same one-config-point client.
 pub(crate) mod adapter;
 mod claim;
+// pub(crate): its timer is started from deferred startup in `lib.rs`.
+pub(crate) mod receipt_refresh;
+mod renewed;
 // pub(crate): its Tauri commands are registered by path in `lib.rs`.
 pub(crate) mod reset;
 mod trial;
@@ -19,6 +22,7 @@ mod trial;
 pub(crate) use activation::maybe_spawn_activation;
 use activation::read_over_cap_hint;
 pub use claim::claim_from_deep_link;
+pub use renewed::renewed_from_deep_link;
 pub use trial::ensure_trial_started;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -489,6 +493,21 @@ pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) 
     let infra = std::sync::Arc::clone(&*state);
     if let Err(error) = install_license_key(infra.pool(), &app_handle, &key).await {
         tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key rejected: {error}");
+    }
+}
+
+/// Manual Receipt Refresh (ADR 0055): the Settings "Refresh license status"
+/// button and the Read-Only screen's "Re-check license". Forces a
+/// re-activation; the recomputed status reaches the frontend through the
+/// existing `license_status` event. `Err` only means the server couldn't be
+/// reached (it feeds the button's transient "failed" note) — the stored
+/// receipt stays either way; staleness never locks.
+#[tauri::command]
+pub async fn refresh_license_now(app_handle: tauri::AppHandle) -> Result<(), String> {
+    if activation::refresh_receipt(app_handle).await {
+        Ok(())
+    } else {
+        Err("could not reach the license server".to_string())
     }
 }
 

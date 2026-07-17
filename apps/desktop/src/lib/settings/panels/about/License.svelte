@@ -6,6 +6,7 @@
     licenseStatus,
     activateLicense,
     getLicenseDevices,
+    refreshLicenseNow,
     resetLicenseDevices,
   } from "$lib/licensing-store.svelte";
   import {
@@ -73,6 +74,28 @@
   function onKeyInput() {
     if (activateError) activateError = null;
     if (activated) activated = false;
+  }
+
+  // Manual Receipt Refresh: the status itself updates reactively via the
+  // `license_status` event — this state only drives the button's transient note.
+  let refreshing = $state(false);
+  let refreshNote = $state<"ok" | "failed" | null>(null);
+  let refreshNoteTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function submitRefresh() {
+    if (refreshing) return;
+    refreshing = true;
+    refreshNote = null;
+    clearTimeout(refreshNoteTimer);
+    try {
+      await refreshLicenseNow();
+      refreshNote = "ok";
+    } catch {
+      refreshNote = "failed";
+    } finally {
+      refreshing = false;
+      refreshNoteTimer = setTimeout(() => (refreshNote = null), 4000);
+    }
   }
 
   function openCheckout() {
@@ -250,6 +273,33 @@
             </p>
           {/if}
         {/if}
+      </div>
+    {/snippet}
+  </SettingRow>
+
+  <SettingRow
+    label="Refresh license status"
+    description="Re-check with the license server — a renewal or freed-up device lands right away."
+  >
+    {#snippet control()}
+      <div class="row-actions">
+        {#if refreshNote === "ok"}
+          <p class="success-text" role="status">
+            <span class="success-text__icon" aria-hidden="true"><IconCheck /></span>
+            Checked just now
+          </p>
+        {:else if refreshNote === "failed"}
+          <p class="error-text" role="alert">Failed to reach the server.</p>
+        {/if}
+        <button
+          type="button"
+          class="btn btn--ghost btn--sm"
+          disabled={refreshing}
+          aria-busy={refreshing}
+          onclick={() => void submitRefresh()}
+        >
+          {#if refreshing}<ButtonSpinner />Checking{:else}Refresh{/if}
+        </button>
       </div>
     {/snippet}
   </SettingRow>

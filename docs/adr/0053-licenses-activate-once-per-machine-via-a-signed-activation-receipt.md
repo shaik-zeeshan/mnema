@@ -72,10 +72,14 @@ no expiry, no runtime calls after.**
   record per license id: `activation:<license_id> → { machines[], last_reset_at,
   lifetime_machine_count }`. Idempotent by construction: factory reset, reinstall, re-paste,
   and lost-key re-mints (same derived license id) all land on an existing hash and consume
-  nothing. **Renewals** keep their own license id (per ADR 0052's derivation — a refunded
+  nothing. ~~**Renewals** keep their own license id (per ADR 0052's derivation — a refunded
   renewal must revoke only itself) and therefore carry their own slots; pasting a renewal key
   triggers one silent re-activation. Accepted: slots multiply only with paid, owner-verified
-  renewals.
+  renewals.~~ *(Superseded 2026-07-17: licensegate renewals extend the **same** license id —
+  same slots, same CRL entry — re-minting the key in place; a refunded renewal rolls the date
+  extension back on that license rather than revoking a separate one. Extended dates reach
+  already-activated machines via **Receipt Refresh** —
+  [ADR 0055](0055-receipt-refresh-is-event-driven-from-unhealthy-states.md).)*
 - **At-cap refusal is never a dead end**: the refusal response carries a self-service **reset**
   link and a buy-another-license link. Reset is authorized by **possession of the key** (pasted
   on a seller web page, verified against the public key — no accounts), rate-limited to once
