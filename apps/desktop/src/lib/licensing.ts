@@ -60,18 +60,12 @@ export type ResetDevicesOutcome =
 // `||` not `??`: an unset GitHub Actions `vars.*` reaches the build as "" — treat empty as unset.
 export const LICENSE_CHECKOUT_URL =
 	import.meta.env.VITE_LICENSE_CHECKOUT_URL ||
-	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";
+	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_lMoTLnM0OegXGCtfDMzfFi54ZZ41zhfSL8mvP1BpK1L/redirect";
 
-/** Polar preselects a product on a multi-product checkout link via the
- * `product_id` query param — append it with the right `?`/`&` join. */
-export function renewalCheckoutUrl(baseCheckoutUrl: string, productId: string): string {
-	return `${baseCheckoutUrl}${baseCheckoutUrl.includes("?") ? "&" : "?"}product_id=${productId}`;
-}
-
-/** Checkout link for the $29 renewal. The default reuses the license link with
- * the (sandbox) renewal product preselected — the link must have the renewal
- * product attached in the Polar dashboard.
- * Override via VITE_RENEWAL_CHECKOUT_URL (e.g. a dedicated renewal link). */
+/** Dedicated checkout link for the $29 renewal — separate from the purchase
+ * link because the success URL is a property of the link, and renewals must
+ * return via `mnema.day/license/renewed` (purchases via `/license/claim`).
+ * Override via VITE_RENEWAL_CHECKOUT_URL. */
 export const RENEWAL_CHECKOUT_URL =
 	import.meta.env.VITE_RENEWAL_CHECKOUT_URL ||
-	renewalCheckoutUrl(LICENSE_CHECKOUT_URL, "adb6fc3d-a1c7-41d3-8568-3c1789b8b1f6");
+	"https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_Tihx0GjXAe53ljFFHWh4wxUwb3u0KSVLBvJ5b00hFyi/redirect";

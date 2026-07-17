@@ -1,6 +1,6 @@
 // License panel policy (licensing-panel.ts): the money path (buy vs renew),
 // badge, external-URL vetting, and the onboarding status line — plus the
-// RENEWAL_CHECKOUT_URL `?`/`&` join in licensing.ts.
+// purchase/renewal checkout-link split in licensing.ts.
 
 import { describe, expect, test } from "bun:test";
 import {
@@ -11,11 +11,7 @@ import {
   showBuyFor,
   statusLineFor,
 } from "../src/lib/licensing-panel";
-import {
-  LICENSE_CHECKOUT_URL,
-  RENEWAL_CHECKOUT_URL,
-  renewalCheckoutUrl,
-} from "../src/lib/licensing";
+import { LICENSE_CHECKOUT_URL, RENEWAL_CHECKOUT_URL } from "../src/lib/licensing";
 import {
   ALL_VARIANTS,
   LICENSED_LAPSED,
@@ -50,18 +46,8 @@ describe("money path: checkoutUrlFor / showBuyFor", () => {
     }
   });
 
-  test("renewalCheckoutUrl joins with ? on a bare URL and & when a query exists", () => {
-    expect(renewalCheckoutUrl("https://x.io/checkout", "p1")).toBe(
-      "https://x.io/checkout?product_id=p1",
-    );
-    expect(renewalCheckoutUrl("https://x.io/checkout?a=b", "p1")).toBe(
-      "https://x.io/checkout?a=b&product_id=p1",
-    );
-  });
-
-  test("default RENEWAL_CHECKOUT_URL carries the preselected product", () => {
-    expect(RENEWAL_CHECKOUT_URL).toContain("product_id=");
-    expect(RENEWAL_CHECKOUT_URL.startsWith(LICENSE_CHECKOUT_URL)).toBe(true);
+  test("renewal and purchase are distinct links (distinct success URLs)", () => {
+    expect(RENEWAL_CHECKOUT_URL).not.toBe(LICENSE_CHECKOUT_URL);
   });
 });
 
