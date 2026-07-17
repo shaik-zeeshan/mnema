@@ -218,7 +218,10 @@ async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) ->
         ActivationDisposition::StoreReceipt(receipt_wire) => {
             if let Err(error) = app_infra::store_activation_receipt(&receipt_wire) {
                 tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} failed: could not store receipt: {error}");
-                return true;
+                // A failed local persist is not success: return false so a
+                // manual refresh surfaces an error (retryable — activate is
+                // idempotent for a known machine hash) instead of a false "ok".
+                return false;
             }
             clear_over_cap_hint(&app_handle);
             tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "{op} succeeded: stored receipt for license {license_id}");

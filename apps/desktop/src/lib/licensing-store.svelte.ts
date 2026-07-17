@@ -14,6 +14,10 @@ const LICENSE_STATUS_EVENT = "license_status";
 
 let initialized = false;
 let status = $state<LicenseStatus | null>(null);
+// The `license_status` event is the live channel and is always fresher than the
+// boot snapshot; once any event has landed, the late-arriving startup snapshot
+// must never regress the store back to a stale value.
+let gotEvent = false;
 
 export const licenseStatus = {
 	get value(): LicenseStatus | null {
@@ -27,13 +31,16 @@ export function initLicenseStatus(): void {
 
 	void invoke<LicenseStatus>("get_license_status")
 		.then((next) => {
-			status = next;
+			// A live event may have raced ahead of this boot snapshot — don't
+			// clobber it with the older value.
+			if (!gotEvent) status = next;
 		})
 		.catch(() => {
 			// Leave `null` — the gate event will backfill once it runs.
 		});
 
 	void listen<LicenseStatus>(LICENSE_STATUS_EVENT, (event) => {
+		gotEvent = true;
 		status = event.payload;
 	});
 }

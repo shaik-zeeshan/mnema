@@ -82,6 +82,9 @@ git auth) to fetch it.
 |---|---|---|
 | `LICENSE_CHECKOUT_URL` | before selling | Live Polar checkout link → `VITE_LICENSE_CHECKOUT_URL`. |
 | `RENEWAL_CHECKOUT_URL` | before selling | Live Polar renewal link → `VITE_RENEWAL_CHECKOUT_URL`. |
+| `LICENSE_PUBLIC_KEY` | before selling | Prod verifying key (hex/base64) → `MNEMA_LICENSE_PUBLIC_KEY`. Unset → the all-zero placeholder is baked and the released gate verifies **nothing**. |
+| `LICENSE_KID` | before selling | Prod key id → `MNEMA_LICENSE_KID`. Same placeholder caveat. |
+| `LICENSE_PK_TOKEN` | before selling | Prod publishable token → `MNEMA_LICENSE_PK_TOKEN`. Same placeholder caveat. |
 
 ### Repository secrets
 

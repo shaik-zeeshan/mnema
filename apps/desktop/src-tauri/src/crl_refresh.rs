@@ -68,10 +68,20 @@ async fn refresh_once(app_handle: tauri::AppHandle) {
     apply_candidate(&app_handle, &wire, "fetched").await;
 }
 
+/// Serializes load → supersedes → store so concurrent appliers (startup spawn,
+/// manual update-check spawn, daily timer) can't invalidate each other's
+/// freshness check between the read and the write — an older baked floor
+/// committing after a newer fetched CRL would silently un-revoke licenses.
+// ponytail: one global lock; applies are rare (startup/daily/manual), so this
+// beats a compare-and-swap store. Move the monotonic check into the DB if it
+// ever contends.
+static CRL_APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Verify one candidate wire, gate it on monotonic freshness against the
 /// cache, store it verbatim, and recompute the license gate so a newly-revoked
 /// active key flips to Read-Only live. Any failure keeps the cache.
 async fn apply_candidate(app_handle: &tauri::AppHandle, wire: &str, source: &str) {
+    let _guard = CRL_APPLY_LOCK.lock().await;
     let Some(infra) = app_handle.try_state::<AppInfraState>() else {
         return;
     };

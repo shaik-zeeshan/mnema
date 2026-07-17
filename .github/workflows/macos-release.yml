@@ -42,6 +42,15 @@ jobs:
       # back to the sandbox defaults.
       VITE_LICENSE_CHECKOUT_URL: ${{ vars.LICENSE_CHECKOUT_URL }}
       VITE_RENEWAL_CHECKOUT_URL: ${{ vars.RENEWAL_CHECKOUT_URL }}
+      # Prod licensing config baked at compile time (option_env! in
+      # licensing/adapter.rs). Unset falls back to an all-zero placeholder key
+      # that verifies NOTHING — a release built without these ships a dead
+      # license gate that rejects every real key. Set repo variables
+      # LICENSE_PUBLIC_KEY / LICENSE_KID / LICENSE_PK_TOKEN from the licensegate
+      # console before a real release (verifying/publishable values, not secrets).
+      MNEMA_LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+      MNEMA_LICENSE_KID: ${{ vars.LICENSE_KID }}
+      MNEMA_LICENSE_PK_TOKEN: ${{ vars.LICENSE_PK_TOKEN }}
 
     steps:
       - name: Checkout
