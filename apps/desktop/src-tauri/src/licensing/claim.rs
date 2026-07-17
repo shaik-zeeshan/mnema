@@ -70,6 +70,16 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
     for attempt in 1..=CLAIM_POLL_ATTEMPTS {
         match classify_claim(adapter::client().claim(&checkout_id).await) {
             ClaimDisposition::Install(key) => {
+                // Deep-link overwrite guard: a claimed key that would replace
+                // a different, healthy license asks first (CONTEXT.md
+                // 2026-07-18). Declining is a deliberate stop, not the email
+                // fallback.
+                if super::deep_link_replacement_needs_confirm(&app_handle, &key)
+                    && !super::confirm_license_replacement(&app_handle).await
+                {
+                    tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "claim license replacement declined by the user");
+                    return;
+                }
                 // Same chain as a paste: verify+vet → store → first_seen stamp
                 // → recompute → background activation (non-macOS installs the
                 // key too; activation there is a no-op that maps to Activated).

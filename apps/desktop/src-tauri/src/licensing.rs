@@ -480,6 +480,71 @@ pub async fn activate_license(
     Ok(ActivateLicenseResult { status })
 }
 
+/// Pure decision for the deep-link overwrite guard: confirmation is needed
+/// only when a healthy Licensed machine would swap to a *different* license.
+fn replacing_healthy_license(
+    status: Option<&LicenseStatus>,
+    stored_id: Option<&str>,
+    incoming_id: &str,
+) -> bool {
+    matches!(status, Some(LicenseStatus::Licensed { .. }))
+        && stored_id.is_some_and(|stored| stored != incoming_id)
+}
+
+/// Deep-link overwrite guard (2026-07-18, `docs/licensing/CONTEXT.md`): any
+/// webpage can fire the activate/claim deep links, so a link that would
+/// replace a healthy Licensed key with a *different* license asks first —
+/// closing the silent-swap shape (attacker installs their own valid key, then
+/// refunds it; the victim drops to Revoked weeks later with no visible cause).
+/// Paste, fresh installs, same-license replays, and unhealthy states stay
+/// frictionless. An incoming key that doesn't verify never needs the dialog —
+/// `install_license_key` rejects it on its own.
+pub(crate) fn deep_link_replacement_needs_confirm(
+    app_handle: &tauri::AppHandle,
+    incoming_key: &str,
+) -> bool {
+    let Some(verifier) = adapter::verifier() else {
+        return false;
+    };
+    let Ok(incoming) = verifier.verify_license(incoming_key) else {
+        return false;
+    };
+    let stored_id = app_infra::load_license_key()
+        .ok()
+        .flatten()
+        .and_then(|stored| verifier.verify_license(&stored).ok())
+        .map(|payload| payload.license_id);
+    replacing_healthy_license(
+        cached_status(app_handle).as_ref(),
+        stored_id.as_deref(),
+        &incoming.license_id,
+    )
+}
+
+/// Blocking replace-license confirm for the deep-link paths. Resolves `false`
+/// on Cancel, dismissal, or a dropped dialog — declining is always the safe
+/// default.
+pub(crate) async fn confirm_license_replacement(app_handle: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app_handle
+        .dialog()
+        .message(
+            "This link would replace the license currently active on this Mac \
+             with a different one. Only continue if you expected this.",
+        )
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Replace License".to_string(),
+            "Keep Current License".to_string(),
+        ))
+        .kind(MessageDialogKind::Warning)
+        .title("Replace your Mnema license?")
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+    rx.await.unwrap_or(false)
+}
+
 /// Activate from a `mnema://license/activate?key=…` deep link. Same verify →
 /// store → recompute path as [`activate_license`], but callable from the
 /// deep-link handler in `lib.rs` where we only hold an `AppHandle`. Success
@@ -490,6 +555,12 @@ pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) 
     let Some(state) = app_handle.try_state::<AppInfraState>() else {
         return;
     };
+    if deep_link_replacement_needs_confirm(&app_handle, &key)
+        && !confirm_license_replacement(&app_handle).await
+    {
+        tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "deep-link license replacement declined by the user");
+        return;
+    }
     let infra = std::sync::Arc::clone(&*state);
     if let Err(error) = install_license_key(infra.pool(), &app_handle, &key).await {
         tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key rejected: {error}");
@@ -560,6 +631,22 @@ mod tests {
         assert!(is_key_revoked("01PRESS", Some(&crl)));
         assert!(!is_key_revoked("01FRIEND", Some(&crl)));
         assert!(!is_key_revoked("01PRESS", None));
+    }
+
+    #[test]
+    fn deep_link_confirm_only_guards_healthy_license_swaps() {
+        let licensed = licensed_with(Activation::Activated);
+        // The one guarded shape: healthy Licensed + a different incoming id.
+        assert!(replacing_healthy_license(Some(&licensed), Some("01OLD"), "01NEW"));
+        // Same license id (replayed link) → frictionless.
+        assert!(!replacing_healthy_license(Some(&licensed), Some("01OLD"), "01OLD"));
+        // No stored key (fresh claim) → frictionless.
+        assert!(!replacing_healthy_license(Some(&licensed), None, "01NEW"));
+        // Unhealthy states: replacement can only help → frictionless.
+        for status in [LicenseStatus::ReadOnly, LicenseStatus::Revoked] {
+            assert!(!replacing_healthy_license(Some(&status), Some("01OLD"), "01NEW"));
+        }
+        assert!(!replacing_healthy_license(None, Some("01OLD"), "01NEW"));
     }
 
     // ── license_block: the shared capture-gate decision ────────────────────
