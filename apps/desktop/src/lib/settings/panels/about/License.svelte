@@ -1,6 +1,13 @@
 <script lang="ts">
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { licenseStatus, activateLicense } from "$lib/licensing-store.svelte";
+  import type { LicenseDevices } from "$lib/licensing";
+  import {
+    licenseStatus,
+    activateLicense,
+    getLicenseDevices,
+    resetLicenseDevices,
+  } from "$lib/licensing-store.svelte";
   import {
     badgeFor,
     checkoutUrlFor,
@@ -84,6 +91,63 @@
     }
     void openUrl(safe).catch((e) => console.error("[License] open external failed", e));
   }
+
+  // Device COUNT (never a list) from the server, fetched lazily while the
+  // panel is showing a licensed key; `null` (offline / no license) renders
+  // nothing rather than stale numbers. Re-fetched on every status flip so a
+  // successful reset/activation updates the count.
+  let devices = $state<LicenseDevices | null>(null);
+  $effect(() => {
+    if (status?.kind === "licensed") {
+      void getLicenseDevices().then((next) => {
+        devices = next;
+      });
+    } else {
+      devices = null;
+    }
+  });
+
+  // "Free up my devices" (over-cap self-service): reset → the backend retries
+  // activation itself; success surfaces as the status flipping to Activated.
+  let resetting = $state(false);
+  let resetError = $state<string | null>(null);
+  let resetNotice = $state<string | null>(null);
+
+  async function submitReset() {
+    if (resetting) return;
+    const ok = await confirm(
+      "Free up your devices? This clears the license's device list so this Mac can activate. You can do this once every 30 days.",
+      { title: "Free up my devices", kind: "warning" },
+    );
+    if (!ok) return;
+    resetting = true;
+    resetError = null;
+    resetNotice = null;
+    try {
+      const result = await resetLicenseDevices();
+      if (result.outcome === "reset") {
+        // Activation was retried in the same breath; if it landed, the status
+        // event flips this whole branch to Licensed. This notice only shows
+        // when activation is still catching up.
+        resetNotice = "Devices freed — finishing activation on this Mac…";
+        void getLicenseDevices().then((next) => {
+          devices = next;
+        });
+      } else {
+        resetNotice =
+          result.retryAtMs !== null
+            ? `Your devices were already reset recently — you can reset again on ${fmtDate(result.retryAtMs)}.`
+            : "Your devices were already reset recently — you can reset again later.";
+      }
+    } catch (err) {
+      resetError =
+        typeof err === "string"
+          ? err
+          : ((err as Error)?.message ?? "Could not free up your devices. Try again later.");
+    } finally {
+      resetting = false;
+    }
+  }
 </script>
 
 <SettingGroup
@@ -130,17 +194,18 @@
           {:else if status.activation.state === "refusedOverCap"}
             {@const act = status.activation}
             <p class="group-hint group-hint--warn">
-              This license is already active on its 3 devices. Reset your devices to move it here,
-              or buy another license.
+              This license is already active on its 3 devices. Free them up to move it here, or
+              buy another license.
             </p>
             <div class="row-actions">
               <button
                 type="button"
-                class="btn btn--ghost btn--sm"
-                onclick={() => openExternal(act.resetUrl)}
+                class="btn btn--primary btn--sm"
+                disabled={resetting}
+                aria-busy={resetting}
+                onclick={() => void submitReset()}
               >
-                Reset devices
-                <span aria-hidden="true"><IconArrowUpRight /></span>
+                {#if resetting}<ButtonSpinner />Freeing up{:else}Free up my devices{/if}
               </button>
               <button
                 type="button"
@@ -150,12 +215,31 @@
                 Buy another license
                 <span aria-hidden="true"><IconArrowUpRight /></span>
               </button>
+              <button
+                type="button"
+                class="btn btn--ghost btn--sm"
+                onclick={() => openExternal(act.resetUrl)}
+              >
+                Help
+                <span aria-hidden="true"><IconArrowUpRight /></span>
+              </button>
             </div>
+            {#if resetError}
+              <p class="error-text" role="alert">{resetError}</p>
+            {:else if resetNotice}
+              <p class="group-hint" role="status">{resetNotice}</p>
+            {/if}
           {:else if status.activation.state === "lapsed"}
             <p class="group-hint group-hint--warn">
               We couldn't confirm your license — connect to the internet once to finish activation.
               Your recorded history stays fully searchable; new recording is paused until activation
               completes.
+            </p>
+          {/if}
+          {#if devices}
+            <!-- A count only, never a list: no device names are sent or stored. -->
+            <p class="group-hint">
+              {devices.used} of {devices.cap} devices activated.
             </p>
           {/if}
           {#if status.inWindow}

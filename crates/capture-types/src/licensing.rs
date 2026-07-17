@@ -79,6 +79,29 @@ pub struct ActivateLicenseResult {
     pub status: LicenseStatus,
 }
 
+/// Device usage from the server (`POST /v1/validate`): a COUNT only, never a
+/// device list — the published privacy commitment ("no device names sent or
+/// stored") stays true word-for-word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LicenseDevices {
+    pub used: u64,
+    pub cap: u64,
+}
+
+/// Result of "Free up my devices" (`POST /v1/reset`). Other refusals surface
+/// as the command's `Err(message)` — these are the two states the UI renders.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub enum ResetDevicesOutcome {
+    /// Slots emptied; the app is already retrying activation in the background
+    /// (the `license_status` event flips the UI when the receipt lands).
+    Reset,
+    /// Reset cooldown (once per 30 days). `retry_at_ms` is when it reopens;
+    /// `None` when the server omitted or malformed the date.
+    RateLimited { retry_at_ms: Option<i64> },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +238,32 @@ mod tests {
         assert_eq!(json["status"]["kind"], "readOnly");
         let back: ActivateLicenseResult = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, result);
+    }
+
+    #[test]
+    fn devices_and_reset_outcome_serialize_camel_case_and_round_trip() {
+        let json = serde_json::to_value(LicenseDevices { used: 2, cap: 3 }).expect("serialize");
+        assert_eq!(json["used"], 2);
+        assert_eq!(json["cap"], 3);
+        let back: LicenseDevices = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, LicenseDevices { used: 2, cap: 3 });
+
+        let json = serde_json::to_value(ResetDevicesOutcome::Reset).expect("serialize");
+        assert_eq!(json["outcome"], "reset");
+        let back: ResetDevicesOutcome = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back, ResetDevicesOutcome::Reset);
+
+        for retry_at_ms in [Some(1_754_784_000_000), None] {
+            let outcome = ResetDevicesOutcome::RateLimited { retry_at_ms };
+            let json = serde_json::to_value(&outcome).expect("serialize");
+            assert_eq!(json["outcome"], "rateLimited");
+            assert_eq!(
+                json["retryAtMs"],
+                retry_at_ms.map(serde_json::Value::from).unwrap_or(serde_json::Value::Null)
+            );
+            let back: ResetDevicesOutcome = serde_json::from_value(json).expect("deserialize");
+            assert_eq!(back, outcome);
+        }
     }
 
     #[test]

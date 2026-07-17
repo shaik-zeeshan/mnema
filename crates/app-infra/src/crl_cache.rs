@@ -1,8 +1,8 @@
 //! Verbatim cache of the fetched CRL wire string in `app_settings` (key
 //! `licensing.crl`, migration `0001`). The stored value is the signed document
-//! exactly as received; it is re-verified with [`crate::parse_and_verify_crl`]
-//! on every read, so the cache needs no trust and no schema migration. Mirrors
-//! the `set_local_offset_minutes`/`local_offset_minutes` upsert/read pattern.
+//! exactly as received; it is re-verified (licensegate `Verifier::verify_crl`,
+//! desktop-side) on every read, so the cache needs no trust and no schema
+//! migration. Mirrors the `local_offset_minutes` upsert/read pattern.
 
 use sqlx::SqlitePool;
 
@@ -53,6 +53,8 @@ mod tests {
     static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
     async fn app_settings_pool() -> SqlitePool {
+        // 0039's vec0 virtual table needs the auto-extension before migrating.
+        crate::db::register_vec0_auto_extension();
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")

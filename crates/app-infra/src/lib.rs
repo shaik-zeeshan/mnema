@@ -7,7 +7,6 @@ mod captured_frame_equivalence;
 mod captured_frame_pipeline;
 pub mod conversation;
 mod crl_cache;
-mod crl_verify;
 mod db;
 pub mod error;
 mod frame_batch_artifact_cleanup;
@@ -17,13 +16,11 @@ mod hidden_segment_workspace;
 pub mod jobs;
 mod lexical;
 mod license_token_store;
-mod license_verify;
 mod licensing_state;
 mod machine_id;
 mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
-mod receipt_verify;
 pub mod retry_policy;
 mod search;
 mod secret_vault;
@@ -76,9 +73,6 @@ pub use captured_frame_pipeline::{
 };
 pub use conversation::ConversationStore;
 pub use crl_cache::{load_cached_crl, store_cached_crl};
-pub use crl_verify::{
-    baked_crl, effective_crl, is_revoked, parse_and_verify_crl, Crl, CrlVerifyError, CRL_DOMAIN,
-};
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
@@ -96,20 +90,12 @@ pub use jobs::{
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
 pub use license_token_store::{
-    delete_activation_receipt, delete_activation_state, delete_license_key, delete_trial_record,
-    has_license_key, load_activation_receipt, load_activation_state, load_license_key,
-    load_trial_record, store_activation_receipt, store_activation_state, store_license_key,
-    store_trial_record,
+    clear_trial_issuance, load_activation_receipt, load_first_seen, load_license_key,
+    load_trial_issuance, store_activation_receipt, store_first_seen, store_license_key,
+    store_trial_issuance,
 };
-pub use license_verify::{
-    license_public_key, parse_and_verify_license, provisional_days_left, trial_days_left,
-    LicensePayload, LicenseVerifyError, PROVISIONAL_WINDOW_DAYS, TRIAL_LEN_DAYS,
-};
-pub use licensing_state::{
-    bump_max_timestamp_seen, cache_license_fields, clear_license_fields, clear_trial_started,
-    read_licensing_state, set_trial_started_once, LicensingStateRow,
-};
-pub use machine_id::{hardware_uuid, machine_hash};
+pub use licensing_state::{bump_max_timestamp_seen, read_max_timestamp_seen};
+pub use machine_id::hardware_uuid;
 pub use ocr::{
     AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
     OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
@@ -132,9 +118,6 @@ pub use processing::{
     AUDIO_SEGMENT_SUBJECT_TYPE, AUDIO_TRANSCRIPTION_PROCESSOR, FRAME_SUBJECT_TYPE,
     HELPER_TIMEOUT_SECONDS_OPTION, OCR_PROCESSOR, SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY,
     SPEAKER_ANALYSIS_PROCESSOR, SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
-};
-pub use receipt_verify::{
-    parse_and_verify_receipt, ActivationState, Receipt, ReceiptVerifyError, RECEIPT_DOMAIN,
 };
 pub use search::{
     semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,

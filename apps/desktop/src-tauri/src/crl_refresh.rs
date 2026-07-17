@@ -1,60 +1,40 @@
-//! Anonymous CRL fetch + verbatim monotonic cache (ADR 0052, slice 4).
+//! Anonymous CRL fetch + verbatim monotonic cache (ADR 0052, licensegate).
 //!
-//! One GET of a public static file — NO identifier, and no header about the
-//! user, is ever sent. A fetched document is accepted only if it verifies AND
-//! its `issued_at` is strictly newer than the cache (rollback-proof); any
-//! failure keeps the cache and the license stands (staleness never locks).
-//! On accept the gate recomputes so a flip to `Revoked`/Read-Only is live
-//! (`publish` updates the cache, emits `license_status`, and refreshes the tray;
-//! capture stops at the next seam and the in-flight segment commits normally).
+//! One anonymous GET of the per-product CRL (`GET /v1/crl/{slug}` via the
+//! licensegate client) — NO identifier, no auth header, nothing about the user
+//! is ever sent. A candidate document (fetched, or the CI-baked fresh-install
+//! floor) is accepted only if it verifies AND its `issued_at` is strictly newer
+//! than the cache (rollback-proof); any failure keeps the cache and the license
+//! stands (staleness never locks). On accept the gate recomputes so a flip to
+//! `Revoked`/Read-Only is live (capture stops at the next seam and the
+//! in-flight segment commits normally).
 
 use tauri::Manager;
 
 use crate::app_infra::AppInfraState;
+use crate::licensing::adapter;
 use crate::native_capture::debug_log;
 
-/// Fallback revocation-list URL, used only when the build-time `MNEMA_CRL_URL`
-/// is unset. Currently a dev `workers.dev` deploy — fine for development, but
-/// NOT for a public release (a `workers.dev` host baked into a binary can't be
-/// repointed once abandoned). Release CI sets `MNEMA_CRL_URL` to a seller-owned
-/// custom domain in front of the worker (e.g. `crl.mnema.app`); do that before
-/// shipping to real users.
-const DEFAULT_CRL_URL: &str =
-    "https://mnema-fulfillment.shaikzeeshan999.workers.dev/revocations.json";
-
-/// The URL to fetch, most- to least-specific:
-/// 1. `MNEMA_DEV_CRL_URL` at runtime (debug builds only) — simulate a revoked
-///    key locally without a rebuild.
-/// 2. `MNEMA_CRL_URL` baked in at build time — set by release CI to the
-///    production domain (`build.rs` re-runs when it changes).
-/// 3. [`DEFAULT_CRL_URL`] — the dev fallback.
-fn crl_url() -> String {
-    #[cfg(debug_assertions)]
-    if let Ok(url) = std::env::var("MNEMA_DEV_CRL_URL") {
-        if !url.trim().is_empty() {
-            return url;
-        }
-    }
-    match option_env!("MNEMA_CRL_URL") {
-        Some(url) if !url.trim().is_empty() => url.to_string(),
-        _ => DEFAULT_CRL_URL.to_string(),
+/// CI-baked fresh-install floor: release CI fetches the live prod CRL
+/// (`https://license.mnema.day/v1/crl/mnema`) and exports the signed wire as
+/// `MNEMA_CRL_FLOOR` before the build (macos-release.yml), so a fresh install
+/// starts from a real revocation list before its first fetch. Local/dev builds
+/// leave it unset — no floor.
+fn baked_floor_wire() -> Option<&'static str> {
+    match option_env!("MNEMA_CRL_FLOOR") {
+        Some(wire) if !wire.trim().is_empty() => Some(wire),
+        _ => None,
     }
 }
 
-/// Accept a fetched CRL iff its `issued_at` is strictly newer than the cached
-/// one. The baked floor is a floor, not a rollback target — compare against the
-/// cache specifically, so a fresh install's baked snapshot can't block a
-/// legitimately newer fetched list (and vice versa).
-fn should_accept(new_issued_at: i64, current_issued_at: Option<i64>) -> bool {
-    match current_issued_at {
-        Some(current) => new_issued_at > current,
-        None => true,
-    }
-}
-
-/// Fire-and-forget one anonymous CRL fetch + apply. Never blocks the caller.
+/// Fire-and-forget: seed the baked floor into the cache (same monotonic accept
+/// as a fetch, so it never downgrades a newer cache), then one fetch + apply.
+/// Never blocks the caller.
 pub fn spawn_crl_refresh(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
+        if let Some(wire) = baked_floor_wire() {
+            apply_candidate(&app_handle, wire, "baked floor").await;
+        }
         refresh_once(app_handle).await;
     });
 }
@@ -77,72 +57,134 @@ pub fn start_daily_crl_timer(app_handle: tauri::AppHandle) {
 }
 
 async fn refresh_once(app_handle: tauri::AppHandle) {
+    // Anonymous GET — fetch_crl sends no auth header and no identifier.
+    let wire = match adapter::client().fetch_crl(adapter::product_slug()).await {
+        Ok(wire) => wire,
+        Err(error) => {
+            debug_log::log_warn(format!("CRL fetch failed, keeping cache: {error:?}"));
+            return;
+        }
+    };
+    apply_candidate(&app_handle, &wire, "fetched").await;
+}
+
+/// Verify one candidate wire, gate it on monotonic freshness against the
+/// cache, store it verbatim, and recompute the license gate so a newly-revoked
+/// active key flips to Read-Only live. Any failure keeps the cache.
+async fn apply_candidate(app_handle: &tauri::AppHandle, wire: &str, source: &str) {
     let Some(infra) = app_handle.try_state::<AppInfraState>() else {
         return;
     };
     let infra = infra.inner().clone();
     let pool = infra.pool();
 
-    // Anonymous GET — nothing about the user is sent.
-    let body = match reqwest::get(crl_url()).await {
-        Ok(response) => match response.text().await {
-            Ok(body) => body,
-            Err(error) => {
-                debug_log::log_warn(format!("CRL fetch read failed, keeping cache: {error}"));
-                return;
-            }
-        },
-        Err(error) => {
-            debug_log::log_warn(format!("CRL fetch failed, keeping cache: {error}"));
-            return;
-        }
+    let Some(candidate) = crate::licensing::verify_crl_wire(wire) else {
+        debug_log::log_warn(format!("{source} CRL failed verification, keeping cache"));
+        return;
     };
 
-    let fetched = match app_infra::parse_and_verify_crl(&body) {
-        Ok(crl) => crl,
-        Err(error) => {
-            debug_log::log_warn(format!("CRL verify failed, keeping cache: {error}"));
-            return;
-        }
-    };
-
-    // Freshness is decided against the cache only (re-verified on read).
-    let current_issued_at = app_infra::load_cached_crl(pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|wire| app_infra::parse_and_verify_crl(&wire).ok())
-        .map(|crl| crl.issued_at);
-
-    if !should_accept(fetched.issued_at, current_issued_at) {
+    let cached_wire = app_infra::load_cached_crl(pool).await.ok().flatten();
+    if !supersedes(
+        cached_wire.as_deref(),
+        &candidate,
+        &crate::licensing::verify_crl_wire,
+    ) {
         return;
     }
 
-    if let Err(error) = app_infra::store_cached_crl(pool, &body).await {
+    if let Err(error) = app_infra::store_cached_crl(pool, wire).await {
         debug_log::log_warn(format!("CRL cache write failed, keeping old cache: {error}"));
         return;
     }
     debug_log::log_info(format!(
-        "accepted CRL update: issued_at={} revoked={}",
-        fetched.issued_at,
-        fetched.revoked_license_ids.len()
+        "accepted {source} CRL: issued_at={} revoked={}",
+        candidate.issued_at,
+        candidate.revoked_license_ids.len()
     ));
-    // Recompute so a newly-revoked active key flips to Read-Only live.
-    crate::licensing::compute_license_status(pool, &app_handle, crate::licensing::now_ms()).await;
+    crate::licensing::compute_license_status(pool, app_handle, crate::licensing::now_ms()).await;
+}
+
+/// Whether a verified candidate replaces the cached wire: yes when the cache
+/// is absent or unverifiable (contributes nothing — re-verified on every
+/// read), otherwise only when strictly newer (`licensegate::accept`, the
+/// rollback-proof monotonic gate; `issued_at` is RFC 3339 UTC, so
+/// lexicographic order is chronological order).
+fn supersedes(
+    cached_wire: Option<&str>,
+    candidate: &licensegate::Crl,
+    verify: &dyn Fn(&str) -> Option<licensegate::Crl>,
+) -> bool {
+    let cached = cached_wire.and_then(verify);
+    licensegate::accept(cached.as_ref(), candidate)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn crl(issued_at: &str) -> licensegate::Crl {
+        licensegate::Crl {
+            kid: "56475aa7".to_string(),
+            issued_at: issued_at.to_string(),
+            revoked_license_ids: vec![],
+        }
+    }
+
     #[test]
-    fn should_accept_only_strictly_newer() {
+    fn accept_only_strictly_newer() {
+        // Pins the monotonic gate this module relies on (rollback-proof).
+        let cached = crl("2026-07-10T00:00:00Z");
         // No cache yet → accept anything.
-        assert!(should_accept(100, None));
+        assert!(licensegate::accept(None, &cached));
         // Strictly newer → accept.
-        assert!(should_accept(200, Some(100)));
-        // Equal or older → reject (rollback-proof).
-        assert!(!should_accept(100, Some(100)));
-        assert!(!should_accept(50, Some(100)));
+        assert!(licensegate::accept(
+            Some(&cached),
+            &crl("2026-07-11T00:00:00Z")
+        ));
+        // Equal or older → reject.
+        assert!(!licensegate::accept(
+            Some(&cached),
+            &crl("2026-07-10T00:00:00Z")
+        ));
+        assert!(!licensegate::accept(
+            Some(&cached),
+            &crl("2026-07-09T00:00:00Z")
+        ));
+    }
+
+    #[test]
+    fn floor_seeds_fresh_installs_and_never_downgrades_a_newer_cache() {
+        // The wire IS the issued_at in this fake verifier; "garbage" fails
+        // verification — exactly the shapes apply_candidate feeds supersedes.
+        let verify = |wire: &str| (wire != "garbage").then(|| crl(wire));
+
+        // Fresh install: empty cache → the baked floor seeds it.
+        assert!(supersedes(None, &crl("2026-07-10T00:00:00Z"), &verify));
+        // A newer fetched CRL replaces the floor-seeded cache.
+        assert!(supersedes(
+            Some("2026-07-10T00:00:00Z"),
+            &crl("2026-07-11T00:00:00Z"),
+            &verify
+        ));
+        // The floor never overrides a newer or equal cached CRL.
+        assert!(!supersedes(
+            Some("2026-07-12T00:00:00Z"),
+            &crl("2026-07-10T00:00:00Z"),
+            &verify
+        ));
+        assert!(!supersedes(
+            Some("2026-07-10T00:00:00Z"),
+            &crl("2026-07-10T00:00:00Z"),
+            &verify
+        ));
+        // An unverifiable cache contributes nothing — the candidate wins.
+        assert!(supersedes(Some("garbage"), &crl("2026-07-10T00:00:00Z"), &verify));
+    }
+
+    #[test]
+    fn local_builds_carry_no_floor() {
+        // MNEMA_CRL_FLOOR is only exported by release CI; a normal build (this
+        // test build included) must have no floor.
+        assert_eq!(baked_floor_wire(), None);
     }
 }

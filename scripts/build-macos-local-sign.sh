@@ -36,6 +36,15 @@ print "Using signing identity: ${identity}"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
 
+# Repo-root .env (gitignored): TAURI_SIGNING_PRIVATE_KEY + licensing build env.
+# Same allexport source as dev-app.sh; .env wins over the inherited shell env.
+if [[ -f "${repo_root}/.env" ]]; then
+  set -a
+  . "${repo_root}/.env"
+  set +a
+  print "loaded ${repo_root}/.env"
+fi
+
 if [[ "${debug}" == true ]]; then
   profile_dir="debug"
   print "Build profile: debug"

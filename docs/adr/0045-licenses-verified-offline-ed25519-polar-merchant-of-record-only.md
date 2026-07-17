@@ -12,6 +12,11 @@ activation per machine** returning an offline-forever signed Activation Receipt 
 once, then never phones home"). Offline verification, updater-gated enforcement, and
 Polar-as-MoR-only remain in force.
 
+Implementation superseded by [ADR 0054](0054-licensing-moves-onto-licensegate.md) (2026-07-16):
+the serverless Fulfillment worker, the serverless keychain trial, and the in-app verify code this
+ADR specified are replaced by licensegate. Offline Ed25519 verification, updater-gated
+enforcement, and Polar-as-MoR-only still stand.
+
 ## Context
 
 [ADR 0044](0044-monetize-as-one-time-purchase-with-paid-update-window.md) commits Mnema to a

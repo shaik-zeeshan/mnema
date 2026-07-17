@@ -13,13 +13,19 @@ fn main() {
         .unwrap_or(0);
     println!("cargo:rustc-env=MNEMA_BUILD_DATE_MS={build_ms}");
 
-    // Licensing / ADR 0052: the baked CRL fetch URL comes from `MNEMA_CRL_URL`
-    // (read via `option_env!` in `crl_refresh.rs`; release CI sets it to the
-    // seller-owned domain). Rebuild the crate when it changes so a re-release
-    // with a new URL actually re-bakes it into the binary.
-    println!("cargo:rerun-if-env-changed=MNEMA_CRL_URL");
-    // Same for the activation endpoint (ADR 0053, `option_env!` in `licensing.rs`).
-    println!("cargo:rerun-if-env-changed=MNEMA_ACTIVATION_URL");
+    // Licensing / ADR 0052: the fresh-install CRL floor comes from
+    // `MNEMA_CRL_FLOOR` (read via `option_env!` in `crl_refresh.rs`; release CI
+    // fetches the live prod CRL and exports the signed wire). Rebuild when it
+    // changes so a re-release actually re-bakes the floor into the binary.
+    println!("cargo:rerun-if-env-changed=MNEMA_CRL_FLOOR");
+    // licensegate config (`option_env!` in `licensing/adapter.rs`): release CI
+    // bakes the prod pubkey/kid/publishable token/base URL; dev builds bake the
+    // sandbox equivalents. Rebuild when any of them changes.
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_KID");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PK_TOKEN");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_BASE_URL");
+    println!("cargo:rerun-if-env-changed=MNEMA_TRIAL_LEN_DAYS");
 
     // The speakrs on-device diarization engine pulls in OpenBLAS, built from
     // source and linked statically via speakrs' `openblas-static` feature.

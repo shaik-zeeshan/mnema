@@ -41,6 +41,21 @@ export interface ActivateLicenseResult {
   status: LicenseStatus;
 }
 
+/** Device usage from the server: a COUNT only, never a device list — the
+ * privacy commitment ("no device names sent or stored") stays word-for-word. */
+export interface LicenseDevices {
+  used: number;
+  cap: number;
+}
+
+/** Result of "Free up my devices". Other refusals surface as the invoke's
+ * rejection (a human-readable message). */
+export type ResetDevicesOutcome =
+  /** Slots emptied; activation is already retrying in the background. */
+  | { outcome: "reset" }
+  /** Reset cooldown (once per 30 days); `retryAtMs` is when it reopens. */
+  | { outcome: "rateLimited"; retryAtMs: number | null };
+
 /** Public Polar checkout link for the one-time Mnema License ($69). Override via VITE_LICENSE_CHECKOUT_URL. */
 // `||` not `??`: an unset GitHub Actions `vars.*` reaches the build as "" — treat empty as unset.
 export const LICENSE_CHECKOUT_URL =

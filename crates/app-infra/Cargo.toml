@@ -10,7 +10,6 @@ audio-speech-silero = ["capture-vad/silero"]
 [dependencies]
 async-trait = "0.1"
 base64 = "0.22"
-ed25519-dalek = "2"
 audio-transcription = { path = "../audio-transcription" }
 speaker-analysis = { path = "../speaker-analysis" }
 ocr = { path = "../ocr" }

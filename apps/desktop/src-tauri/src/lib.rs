@@ -248,15 +248,40 @@ fn license_key_from_url(url: &url::Url) -> Option<String> {
         .filter(|k| !k.is_empty())
 }
 
+/// The purchase-claim deep link (`mnema://license/claim?checkout_id=…` in prod,
+/// `mnema-dev://…` in dev) — Polar's success redirect. Host `license` + path
+/// `/claim` sits beside the activate route and apart from the oauth/broker hosts.
+fn claim_checkout_id_from_url(url: &url::Url) -> Option<String> {
+    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
+        return None;
+    }
+    if url.host_str() != Some("license") || url.path() != "/claim" {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(k, _)| k == "checkout_id")
+        .map(|(_, v)| v.into_owned())
+        .filter(|id| !id.is_empty())
+}
+
 /// Route one deep-link URL to its handler. The `mnema`/`mnema-dev` scheme carries
-/// three unrelated payloads (license activation, MCP OAuth callback, capture-broker
-/// handoff), discriminated by host so none swallows another.
+/// four unrelated payloads (license activation, purchase claim, MCP OAuth
+/// callback, capture-broker handoff), discriminated by host+path so none
+/// swallows another.
 fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
     if let Some(key) = license_key_from_url(url) {
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             licensing::activate_from_deep_link(app_handle.clone(), key).await;
             let _ = windows::open_main_window(&app_handle);
+        });
+    } else if let Some(checkout_id) = claim_checkout_id_from_url(url) {
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            // Surface the app before polling — the buyer was just bounced back
+            // from the browser and the claim poll can take ~30s.
+            let _ = windows::open_main_window(&app_handle);
+            licensing::claim_from_deep_link(app_handle, checkout_id).await;
         });
     } else if is_oauth_callback_url(url) {
         app_handle
@@ -579,6 +604,8 @@ pub fn run() {
             licensing::get_license_status,
             licensing::start_trial,
             licensing::activate_license,
+            licensing::reset::reset_license_devices,
+            licensing::reset::get_license_devices,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
@@ -921,8 +948,9 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_opaque_id_from_url, broker_payload_from_url, exit_request_action_for_exit_request,
-        is_app_log_target, is_oauth_callback_url, license_key_from_url, should_forward_window_event,
+        broker_opaque_id_from_url, broker_payload_from_url, claim_checkout_id_from_url,
+        exit_request_action_for_exit_request, is_app_log_target, is_oauth_callback_url,
+        license_key_from_url, should_forward_window_event,
         should_notify_pending_broker_authorization_request,
         should_open_pending_broker_authorization_request, ExitRequestAction,
     };
@@ -971,6 +999,42 @@ mod tests {
         // Missing/empty key -> not an activation link.
         assert!(license_key_from_url(
             &url::Url::parse("mnema://license/activate").expect("url")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn claim_deep_link_extracts_checkout_id_and_stays_apart() {
+        let prod =
+            url::Url::parse("mnema://license/claim?checkout_id=co_abc123").expect("url");
+        let dev =
+            url::Url::parse("mnema-dev://license/claim?checkout_id=co_abc123").expect("url");
+        assert_eq!(claim_checkout_id_from_url(&prod).as_deref(), Some("co_abc123"));
+        assert_eq!(claim_checkout_id_from_url(&dev).as_deref(), Some("co_abc123"));
+
+        // Never claims the activate/oauth/broker payloads…
+        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(claim_checkout_id_from_url(&activate).is_none());
+        assert!(claim_checkout_id_from_url(&oauth).is_none());
+        assert!(claim_checkout_id_from_url(&broker).is_none());
+        // …and none of them claims a claim URL (no cross-swallow).
+        assert!(license_key_from_url(&prod).is_none());
+        assert!(!is_oauth_callback_url(&prod));
+        assert!(broker_opaque_id_from_url(&prod).is_none());
+
+        // Missing/empty checkout_id -> not a claim link. Wrong scheme neither.
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("mnema://license/claim").expect("url")
+        )
+        .is_none());
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("mnema://license/claim?checkout_id=").expect("url")
+        )
+        .is_none());
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("https://license/claim?checkout_id=co_abc123").expect("url")
         )
         .is_none());
     }

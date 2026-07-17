@@ -1,33 +1,10 @@
 //! Machine fingerprint for once-per-machine activation (ADR 0053). macOS-only:
 //! the stable hardware UUID via `gethostuuid(2)` — one libc call, no shelling
 //! out (a packaged app has no Homebrew PATH). Other platforms error; activation
-//! is macOS-only today (see `SUPPORTS.md`).
-
-use sha2::{Digest, Sha256};
+//! is macOS-only today (see `SUPPORTS.md`). The salted machine-hash derivations
+//! live in the `licensegate` client crate (`machine_hash` / `trial_machine_hash`).
 
 use crate::error::{AppInfraError, Result};
-
-/// Domain-separation prefix for the machine hash (frozen wire contract; the
-/// Fulfillment worker computes the identical hash).
-const MACHINE_HASH_DOMAIN: &str = "mnema-activation-v1:";
-
-/// The stable per-machine hash bound into an activation receipt:
-/// `hex(SHA-256(MACHINE_HASH_DOMAIN + license_id + ":" + hardware_uuid))`,
-/// lowercase. Binds a receipt to one license on one machine so it can't be
-/// replayed for a different license or copied to another device.
-pub fn machine_hash(license_id: &str, hardware_uuid: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(MACHINE_HASH_DOMAIN.as_bytes());
-    hasher.update(license_id.as_bytes());
-    hasher.update(b":");
-    hasher.update(hardware_uuid.as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
-}
 
 /// The machine's stable hardware UUID (uppercase, dashed canonical form).
 /// macOS returns the same value across reboots; a factory reset / logic-board
@@ -76,38 +53,6 @@ pub fn hardware_uuid() -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn machine_hash_is_deterministic_and_binds_license() {
-        let uuid = "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE";
-        let a = machine_hash("order:one", uuid);
-        // Same inputs → same hash.
-        assert_eq!(a, machine_hash("order:one", uuid));
-        // Lowercase 64-hex-char SHA-256.
-        assert_eq!(a.len(), 64);
-        assert!(a
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
-        // Different license id → different hash (bound to the license).
-        assert_ne!(a, machine_hash("order:two", uuid));
-        // Different machine → different hash.
-        assert_ne!(
-            a,
-            machine_hash("order:one", "FFFFFFFF-0000-0000-0000-000000000000")
-        );
-    }
-
-    // Pin the frozen wire contract to the exact digest — the TS mirror lives in
-    // services/fulfillment/test/activation.test.ts (same input, same digest).
-    // A length-only assertion would let a domain/order change slip through.
-    #[test]
-    fn machine_hash_matches_frozen_vector() {
-        assert_eq!(
-            machine_hash("order:x", "uuid-y"),
-            // hex(SHA-256("mnema-activation-v1:order:x:uuid-y"))
-            "930bf42716d983015865298a40d659fac566c83885479185ac95f43707c476b4"
-        );
-    }
 
     #[cfg(target_os = "macos")]
     #[test]

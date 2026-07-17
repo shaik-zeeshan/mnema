@@ -2,7 +2,14 @@
 
 ## Status
 
-Proposed. Supersedes [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
+Proposed. **Implementation superseded by
+[ADR 0054](0054-licensing-moves-onto-licensegate.md)** (2026-07-16): the Fulfillment worker, its
+KV activation records, and the in-app receipt verification described below are replaced by
+licensegate; trials are no longer serverless (server-issued at first Capture). The philosophy —
+activation once per machine, offline-forever receipts, the 3-device cap with self-service reset,
+and the privacy commitment — stands unchanged.
+
+Supersedes [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
 rejection of an activation server ("the desktop app and the customer must never phone home" →
 now "activates once per machine, then never phones home"). Amends
 [ADR 0052](0052-refunded-licenses-die-via-a-signed-revocation-list.md): the CRL's charter widens

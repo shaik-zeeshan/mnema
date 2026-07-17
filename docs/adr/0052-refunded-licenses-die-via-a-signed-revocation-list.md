@@ -11,6 +11,12 @@ the CRL's charter widens from full refunds only to also cover demonstrably-leake
 activation endpoint refuses revoked license ids so a dead key can never plant itself on a new
 machine. "Staleness never locks" is scoped to machines holding an Activation Receipt.
 
+Implementation superseded by [ADR 0054](0054-licensing-moves-onto-licensegate.md) (2026-07-16):
+the CRL is now published per-product by licensegate (`GET /v1/crl/{slug}`) and verified via its
+client crate — the Fulfillment worker, its KV revoked-set, and `crl_verify.rs` are gone. The
+mechanism's philosophy is unchanged: anonymous fetch, monotonic accept, a CI-baked fresh-install
+floor, and staleness never locks.
+
 ## Context
 
 ADR 0045 accepted that a refunded buyer keeps a working key, because zero runtime phone-home

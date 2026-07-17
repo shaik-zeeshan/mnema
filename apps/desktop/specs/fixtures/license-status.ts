@@ -35,7 +35,7 @@ export function licensedPending(provisionalDaysLeft: number, inWindow = true): L
 }
 
 export function licensedOverCap(
-  resetUrl = "https://fulfillment.example/reset",
+  resetUrl = "https://license.example/reset",
   buyUrl = "https://mnema.day/#pricing",
 ): LicenseStatus {
   return licensed({ activation: { state: "refusedOverCap", resetUrl, buyUrl } });
