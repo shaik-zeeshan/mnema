@@ -7,9 +7,14 @@
 //! shows the Update Window open, then stops. Giving up is silent — the
 //! lapsed background cadence (`receipt_refresh`) covers the rest.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use capture_types::LicenseStatus;
+
+/// Dedup for the poll loop: the `renewed` deep link is web-fireable at zero
+/// cost, and stacked loops could rate-limit us against the server (ADR 0055).
+static POLL_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// Poll budget: the webhook usually lands within seconds; 30 × 2s ≈ 60s,
 /// past which the background cadence is the path.
@@ -33,6 +38,17 @@ fn window_open(status: Option<&LicenseStatus>) -> bool {
 /// `license_status` event — the extended window shows up in Settings with
 /// nothing to paste.
 pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
+    if POLL_RUNNING.swap(true, Ordering::AcqRel) {
+        tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: poll already running, ignoring");
+        return;
+    }
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            POLL_RUNNING.store(false, Ordering::Release);
+        }
+    }
+    let _reset = Reset;
     for attempt in 1..=RENEWED_POLL_ATTEMPTS {
         let reached = super::activation::refresh_receipt(app_handle.clone()).await;
         if window_open(super::cached_status(&app_handle).as_ref()) {

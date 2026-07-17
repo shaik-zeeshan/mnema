@@ -93,3 +93,11 @@ offline-forever valid. Refresh can only ever *improve* a machine's state.
 - Implementation seam: the `already_activated` early-return in `licensing/activation.rs` becomes
   state-aware; the cadence can ride the existing daily CRL tick's plumbing but needs its own
   4-hour timer while lapsed.
+- **Concurrent refresh triggers are deliberately uncoordinated** *(2026-07-18)*: the cadence
+  timer, the manual button, and the renewed deep-link poll may overlap freely — safe because
+  activation is idempotent per machine hash and the compute-generation guard defeats every
+  stale-publish interleaving; single-flight is not required and not implemented. The one
+  exception is the renewed deep-link poll itself, which is deduplicated (a second
+  `mnema://license/renewed` while a poll loop is already running is a no-op) — that link is
+  web-fireable at zero cost, and stacked loops could rate-limit the machine against the server
+  right when its legitimate renewal refresh needs to land.
