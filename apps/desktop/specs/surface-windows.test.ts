@@ -69,6 +69,7 @@ describe("normalizeSettingsTab", () => {
     ["storage", "storage"],
     ["appearance", "appearance"],
     ["developer", "developer"],
+    ["license", "license"],
   ];
 
   for (const [alias, canonical] of aliases) {

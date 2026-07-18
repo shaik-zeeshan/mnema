@@ -440,6 +440,7 @@ fn normalize_settings_tab(tab: &str) -> Option<&'static str> {
         // Legacy "processing" alias kept for back-compat (page maps it to OCR).
         "processing" => Some("processing"),
         "storage" => Some("storage"),
+        "license" => Some("license"),
         "appearance" => Some("appearance"),
         "developer" => Some("developer"),
         "intelligence" | "reasoning" | "reasoning-engine" | "ai" | "ai-runtime" => {

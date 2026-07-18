@@ -14,7 +14,8 @@ export type FeatureId =
   | "speakers"
   | "privacy"
   | "askai"
-  | "semanticSearch";
+  | "semanticSearch"
+  | "licensing";
 
 export interface FeatureMeta {
   id: FeatureId;
@@ -115,6 +116,18 @@ export const FEATURES: FeatureMeta[] = [
     eyebrow: "Optional · advanced",
     sub: "Meaning-based search fused with keyword search — runs fully on-device. Pick a model to activate.",
     required: false,
+  },
+  {
+    // Purely explanatory: the trial starts at first Capture (not here), so this
+    // row takes no key and starts nothing. Modeled `required` — an always-on,
+    // no-toggle info row (like permissions/screen/storage) — so it never carries
+    // an attention item and can't block the finale. No backing draft field.
+    id: "licensing",
+    icon: "about",
+    name: "Trial & ownership",
+    eyebrow: "Included · one-time purchase",
+    sub: "A 30-day free trial that starts when you first record — buy once, own it.",
+    required: true,
   },
 ];
 

@@ -1,0 +1,140 @@
+---
+// Post-checkout / email-CTA bounce page. Payment providers and licensegate emails
+// can't emit a custom `mnema://` protocol themselves — so they land the browser on
+// `https://mnema.day/license/open?flow={EVENT}&checkout_id={CHECKOUT_ID}` and this
+// page bounces into the right desktop deep link:
+//
+//   flow=claim (default)   → mnema://license/claim?checkout_id=…  (mint the key)
+//   flow=renewal           → mnema://license/renewed              (Receipt Refresh poll)
+//
+// `flow` values mirror licensegate's email template names (its {EVENT} placeholder);
+// unknown values fall back to the claim path so a future template degrades to the
+// safe default rather than a dead page. Only license_delivery and renewal emails
+// render a success_url CTA (payment_failed is text-only), so those two are the
+// whole surface.
+//
+// checkout_id is not a secret (unlike a license key, which would need hiding) — it's
+// an opaque id the app trades to licensegate for the key. For renewal/payment_failed
+// it's only a crawler guard; those deep links carry no payload at all.
+//
+// Self-contained on purpose (no Base.astro). Palette mirrors src/styles/tokens.css.
+//
+// Always fires `mnema://` — the release build's scheme. The dev build registers
+// `mnema-dev://` (tauri.dev.conf.json), but only a *bundled* app claims a scheme
+// with macOS LaunchServices, and `tauri dev` runs an unbundled binary that never
+// registers anything. So there is no `mnema-dev://` handler to fire at; to test the
+// deep link end-to-end, run a real installed build (`mnema://`).
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Open Mnema</title>
+    <link rel="icon" type="image/png" href="/icon.png" />
+    <meta name="robots" content="noindex" />
+    <style>
+      :root {
+        --bg: #0c0c0e;
+        --surface: #14141a;
+        --fg: #e2e2e8;
+        --fg-muted: #8a8aaa;
+        --border: #1e1e2e;
+        --accent: #3dffa0;
+        --sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: var(--sans);
+      }
+      .card {
+        width: 100%;
+        max-width: 460px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 32px;
+      }
+      .logo { width: 44px; height: 44px; border-radius: 10px; display: block; }
+      h1 { font-size: 22px; margin: 20px 0 8px; }
+      p { color: var(--fg-muted); font-size: 14px; line-height: 1.6; margin: 0 0 20px; }
+      .btn {
+        display: block;
+        width: 100%;
+        border: none;
+        border-radius: 10px;
+        padding: 13px 20px;
+        font-family: var(--sans);
+        font-size: 15px;
+        font-weight: 600;
+        cursor: pointer;
+        text-align: center;
+        text-decoration: none;
+      }
+      .btn-primary { background: var(--accent); color: var(--bg); }
+      .hint { margin: 12px 0 0; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <main class="card" hidden>
+      <img class="logo" src="/icon.png" alt="Mnema" />
+
+      <div class="copy" data-flow="claim" hidden>
+        <h1>Thanks for buying Mnema</h1>
+        <p>Opening the app to apply your license…</p>
+      </div>
+      <div class="copy" data-flow="renewal" hidden>
+        <h1>Thanks for renewing Mnema</h1>
+        <p>Opening the app to confirm your extended update window…</p>
+      </div>
+      <a id="open" class="btn btn-primary" href="#">Open Mnema</a>
+
+      <p class="hint" data-flow="claim" hidden>
+        Didn't open? Your license key is also on its way by email — paste it into
+        <strong>Settings → License</strong>.
+      </p>
+      <p class="hint" data-flow="renewal" hidden>
+        Didn't open? Use the <strong>Refresh license status</strong> button in
+        <strong>Settings → License</strong>.
+      </p>
+    </main>
+
+    <script is:inline>
+      (function () {
+        var params = new URLSearchParams(location.search);
+        var checkoutId = params.get("checkout_id") || "";
+        var flow = params.get("flow") === "renewal" ? "renewal" : "claim";
+
+        // No id means someone reached /license/open directly (crawler, guessed URL).
+        // Nothing to bounce — go to the site so it never reads as a real page.
+        if (!checkoutId) {
+          location.replace("/");
+          return;
+        }
+
+        // Only a claim carries a payload — a renewal just pokes the app's
+        // Receipt Refresh poll; the machine already holds the key.
+        var deepLink = flow === "claim"
+          ? "mnema://license/claim?checkout_id=" + encodeURIComponent(checkoutId)
+          : "mnema://license/renewed";
+
+        var openEl = document.getElementById("open");
+        openEl.href = deepLink;
+        document.querySelector('.copy[data-flow="' + flow + '"]').hidden = false;
+        document.querySelector('.hint[data-flow="' + flow + '"]').hidden = false;
+        document.querySelector(".card").hidden = false;
+
+        // Auto-fire once; the button stays as the manual fallback if the OS blocks it.
+        location.href = deepLink;
+      })();
+    </script>
+  </body>
+</html>

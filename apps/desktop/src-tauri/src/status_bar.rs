@@ -247,12 +247,47 @@ fn set_operation(app: &tauri::AppHandle, operation: StatusBarOperation) {
         .operation = operation;
 }
 
+/// Read-Only Mode (licensing) is a distinct condition from the low-disk liveness
+/// suspension: it does NOT self-heal (cleared only by buying a license) and it
+/// blocks *starting* new capture rather than holding a live session. When active
+/// and idle, surface its own status header and grey out Start Recording so the
+/// tray never offers a start the capture gate will refuse. Gating on the
+/// "Start Recording" label scopes this to the idle-and-not-recording state only.
+fn apply_read_only_status(
+    model: &mut StatusBarMenuModel,
+    blocked: bool,
+    status: Option<&capture_types::LicenseStatus>,
+) {
+    if blocked && model.recording_label == Some("Start Recording") {
+        model.recording_enabled = false;
+        let (label, tooltip) = match status {
+            Some(capture_types::LicenseStatus::Revoked) => (
+                "Read-Only — license revoked",
+                "Mnema — Read-Only (license revoked)",
+            ),
+            // A paid key whose once-per-machine activation Lapsed is NOT a trial —
+            // mirror `capture_refusal_copy`'s distinct "finish activation" copy so
+            // the tray never tells a paying customer their trial ended.
+            Some(capture_types::LicenseStatus::Licensed {
+                activation: capture_types::Activation::Lapsed,
+                ..
+            }) => (
+                "Read-Only — activation needed",
+                "Mnema — Read-Only (activation needed)",
+            ),
+            _ => ("Read-Only — trial ended", "Mnema — Read-Only (trial ended)"),
+        };
+        model.status_label = Some(label);
+        model.tooltip = tooltip;
+    }
+}
+
 fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
     let support = crate::native_capture::get_capture_support().supported_sources;
     let session = crate::native_capture::current_native_capture_session(app);
     let recording = session.is_running;
-    build_menu_model(
+    let mut model = build_menu_model(
         crate::windows::is_onboarding_complete(app),
         recording,
         session.is_user_paused,
@@ -260,7 +295,15 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         &settings,
         &support,
         operation(app),
-    )
+    );
+    // `cached_status` is `None` until the deferred license gate runs once; unknown
+    // reads as allow (never lock the tray on unknown).
+    let status = crate::licensing::cached_status(app);
+    let blocked = status
+        .as_ref()
+        .is_some_and(|status| !status.capture_allowed_at(crate::licensing::now_ms()));
+    apply_read_only_status(&mut model, blocked, status.as_ref());
+    model
 }
 
 fn build_menu(
@@ -746,6 +789,94 @@ mod tests {
         assert_eq!(model.status_label, Some("Paused — low disk"));
         assert_eq!(model.tooltip, "Mnema — Paused (low disk)");
         assert_ne!(model.tooltip, "Mnema - Recording");
+    }
+
+    #[test]
+    fn read_only_model_surfaces_trial_ended_and_disables_start() {
+        // Read-Only Mode (licensing) is distinct from the low-disk suspension:
+        // its own header + a greyed Start Recording, never a "paused" message.
+        let mut model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
+        assert_eq!(model.status_label, Some("Read-Only — trial ended"));
+        assert_eq!(model.tooltip, "Mnema — Read-Only (trial ended)");
+        assert!(!model.recording_enabled);
+    }
+
+    #[test]
+    fn revoked_model_surfaces_revoked_not_trial_ended() {
+        // A revoked (refunded/leaked) key blocks capture like a lapsed trial but
+        // must read as "revoked" — never the trial-ended copy.
+        let mut model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::Revoked));
+        assert_eq!(model.status_label, Some("Read-Only — license revoked"));
+        assert_eq!(model.tooltip, "Mnema — Read-Only (license revoked)");
+        assert!(!model.recording_enabled);
+    }
+
+    #[test]
+    fn unactivated_license_surfaces_activation_needed_not_trial_ended() {
+        // A paid `Licensed` key whose once-per-machine activation Lapsed blocks
+        // capture but is NOT a trial. `capture_refusal_copy` distinguishes it
+        // ("finish activation" vs "trial ended"); the tray must too — a paying
+        // customer must never be told their trial ended.
+        let mut model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        let status = capture_types::LicenseStatus::Licensed {
+            update_through_ms: 0,
+            in_window: true,
+            email: String::new(),
+            name: String::new(),
+            activation: capture_types::Activation::Lapsed,
+        };
+        apply_read_only_status(&mut model, true, Some(&status));
+        assert_ne!(
+            model.status_label,
+            Some("Read-Only — trial ended"),
+            "a paid but unactivated license must not read as a lapsed trial"
+        );
+        assert!(!model.recording_enabled);
+    }
+
+    #[test]
+    fn read_only_override_leaves_a_live_session_alone() {
+        // While recording (Stop Recording shown), a read-only read must not grey
+        // the Stop button or relabel the tray — the guard only blocks new starts.
+        let mut model = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
+        assert_eq!(model.recording_label, Some("Stop Recording"));
+        assert!(model.recording_enabled);
+        assert_eq!(model.status_label, None);
     }
 
     #[test]

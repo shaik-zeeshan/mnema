@@ -57,6 +57,9 @@ sha2 = "0.10"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
 thiserror = "2"
 app-infra = { path = "../../../crates/app-infra" }
+# licensegate client: offline verification (Verifier/evaluate) + the /v1 API
+# client. Private repo — fetched via the system git (see [net] in .cargo/config).
+licensegate = { git = "https://github.com/shaik-zeeshan/licensegate.git", rev = "1c27b6bdf91ec1ce564150c3a8bdb143e29b1737" }
 # Aliased so the Tauri-side `mod ai_runtime;` does not collide with the crate name.
 ai-engine = { package = "ai-runtime", path = "../../../crates/ai-runtime" }
 audio-transcription = { path = "../../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }

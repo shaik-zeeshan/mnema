@@ -37,7 +37,7 @@ describe("settings rail: 5-group structure", () => {
       "semanticSearch",
     ]);
     expect(byId.data).toEqual(["storage", "access"]);
-    expect(byId.about).toEqual(["about", "developer"]);
+    expect(byId.about).toEqual(["license", "about", "developer"]);
   });
 
   test("every section maps back to its owning group", () => {
@@ -58,6 +58,7 @@ describe("settings rail: 5-group structure", () => {
       semanticSearch: "intelligence",
       storage: "data",
       access: "data",
+      license: "about",
       about: "about",
       developer: "about",
     };
@@ -122,6 +123,12 @@ describe("settings deeplink resolution (verified gate expectations)", () => {
     const section = sectionForFocus(focus!);
     expect(section).toBe("access");
     expect(groupForSection(section)).toBe("data");
+  });
+
+  test("?tab=license → About/license (email + banner deeplink target)", () => {
+    const section = resolveTabDeeplink("license");
+    expect(section).toBe("license");
+    expect(groupForSection(section!)).toBe("about");
   });
 
   test("legacy aliases resolve to the same sections as before", () => {

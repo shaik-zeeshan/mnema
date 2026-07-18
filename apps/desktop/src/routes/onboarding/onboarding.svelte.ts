@@ -484,6 +484,7 @@ export class OnboardingController {
       case "permissions":
       case "screen":
       case "storage":
+      case "licensing":
         return; // required — no-op
       case "mic":
         // Recording the mic needs Microphone permission — gate the enable only.

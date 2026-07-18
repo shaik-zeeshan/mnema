@@ -8,15 +8,25 @@ if [[ "${OSTYPE}" != darwin* ]]; then
 fi
 
 debug=false
-for arg in "$@"; do
-  case "${arg}" in
+env_name=""
+while (( $# > 0 )); do
+  case "$1" in
     --debug) debug=true ;;
+    --env)
+      if (( $# < 2 )); then
+        print -u2 "--env requires a name (e.g. dev, prod)"
+        exit 1
+      fi
+      env_name="$2"
+      shift
+      ;;
     *)
-      print -u2 "Unknown option: ${arg}"
-      print -u2 "Usage: $0 [--debug]"
+      print -u2 "Unknown option: $1"
+      print -u2 "Usage: $0 [--debug] [--env <name>]  (loads .env.<name> instead of .env)"
       exit 1
       ;;
   esac
+  shift
 done
 
 identity="${APPLE_SIGNING_IDENTITY:-}"
@@ -35,6 +45,21 @@ fi
 print "Using signing identity: ${identity}"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(cd -- "${script_dir}/.." && pwd)"
+
+# Repo-root .env (gitignored): TAURI_SIGNING_PRIVATE_KEY + licensing build env.
+# Same allexport source as dev-app.sh; the env file wins over the inherited
+# shell env. --env <name> selects .env.<name> (must exist); default is .env.
+env_file="${repo_root}/.env${env_name:+.${env_name}}"
+if [[ -n "${env_name}" && ! -f "${env_file}" ]]; then
+  print -u2 "Env file not found: ${env_file}"
+  exit 1
+fi
+if [[ -f "${env_file}" ]]; then
+  set -a
+  . "${env_file}"
+  set +a
+  print "loaded ${env_file}"
+fi
 
 if [[ "${debug}" == true ]]; then
   profile_dir="debug"

@@ -6,6 +6,7 @@ mod capture_retention;
 mod captured_frame_equivalence;
 mod captured_frame_pipeline;
 pub mod conversation;
+mod crl_cache;
 mod db;
 pub mod error;
 mod frame_batch_artifact_cleanup;
@@ -14,6 +15,9 @@ mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
 mod lexical;
+mod license_token_store;
+mod licensing_state;
+mod machine_id;
 mod mcp_server_secret_store;
 mod ocr_budget;
 pub mod processing;
@@ -50,6 +54,11 @@ pub use secret_vault_handle::{install_process_secret_vault, SecretVaultHandle};
 pub use audio_segments::{
     AudioSegment, AudioSegmentSourceKind, AudioSegmentStore, NewAudioSegment,
 };
+/// Read-time browser-URL guard: raw captured URL -> sanitized, secret-redacted
+/// `host[:port]/path`, or `None` when there is no broker-safe text to emit. The
+/// public name external crates call to keep the raw URL off the cloud-facing
+/// data model (the raw URL is local-only, used only by `open_captured_url`).
+pub use brokered_access::guard_url as guard_browser_url;
 pub use capture_retention::{
     delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
@@ -62,11 +71,8 @@ pub use captured_frame_pipeline::{
     CapturedFramePipeline, CapturedFramePipelineResult, CapturedFrameReprocessingOutcome,
     CapturedFrameReprocessingResult, ClosedFrameBatchSummary,
 };
-/// Read-time browser-URL guard: raw captured URL -> sanitized, secret-redacted
-/// `host[:port]/path`, or `None` when there is no broker-safe text to emit. The
-/// public name external crates call to keep the raw URL off the cloud-facing
-/// data model (the raw URL is local-only, used only by `open_captured_url`).
-pub use brokered_access::guard_url as guard_browser_url;
+pub use conversation::ConversationStore;
+pub use crl_cache::{load_cached_crl, store_cached_crl};
 pub use error::{AppInfraError, Result};
 pub use frame_batch_runtime::FrameBatchRuntime;
 pub use frame_batch_store::{
@@ -83,6 +89,13 @@ pub use jobs::{
     default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
     CpuJobSuccess, DebugCpuJobRequest, JobCounts, JobDescriptor, JobRuntime, JobStore,
 };
+pub use license_token_store::{
+    clear_trial_issuance, load_activation_receipt, load_first_seen, load_license_key,
+    load_trial_issuance, store_activation_receipt, store_first_seen, store_license_key,
+    store_trial_issuance,
+};
+pub use licensing_state::{bump_max_timestamp_seen, read_max_timestamp_seen};
+pub use machine_id::{hardware_model, hardware_uuid};
 pub use ocr::{
     AppleVisionProvider, FrozenOcrPayload, OcrBoundingBox, OcrObservation, OcrOutput, OcrProvider,
     OcrProviderKind, OcrRecognitionMode, OcrRequest, OcrStructuredPayload, PaddleOcrProvider,
@@ -112,16 +125,15 @@ pub use search::{
     SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
 };
 pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
-pub use conversation::ConversationStore;
 pub use status::AppInfraStatus;
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
+pub use user_context::SubjectVectorStore;
 pub use user_context::{
     digest_input_fingerprint, evidence_fingerprint, ActivityCorrection, CaptureWindow,
     CaptureWindowItem, DerivationRun, DistillationGateDrops, FailedDerivationWindow, NewActivity,
     NewActivityEvidence, NewConclusion, NewConclusionEvidence, NewDerivationRun, StoredDigest,
     SupersedeOutcome, UpsertConclusionOutcome, UserContextCascadeSummary, UserContextStore,
 };
-pub use user_context::SubjectVectorStore;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioSegmentTranscriptionAdmission {
@@ -5136,7 +5148,8 @@ mod tests {
             .expect("payload should serialize");
             let speakrs_model_key = format!(
                 "{}/{}",
-                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
             );
             let job = infra
                 .enqueue_processing_job(
@@ -5231,7 +5244,8 @@ mod tests {
                 .expect("legacy speaker analysis job should insert");
             let speakrs_model_key = format!(
                 "{}/{}",
-                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
             );
             let lock = infra
                 .acquire_speaker_analysis_model_cleanup_locks(&BTreeSet::from([speakrs_model_key]))
@@ -5323,7 +5337,8 @@ mod tests {
             // through normalization, not from the frozen sherpa key (FIX 3).
             let speakrs_model_key = format!(
                 "{}/{}",
-                speaker_analysis::SPEAKRS_PROVIDER_ID, speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+                speaker_analysis::SPEAKRS_PROVIDER_ID,
+                speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
             );
             let queued_payload = serde_json::to_string(&mock_speaker_payload("queued-model"))
                 .expect("queued payload should serialize");

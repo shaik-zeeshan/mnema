@@ -27,6 +27,7 @@ System-wide decisions stay in [docs/adr](docs/adr/), while owner-local context l
 | Speaker analysis | [crates/speaker-analysis/CONTEXT.md](crates/speaker-analysis/CONTEXT.md) | Speaker analysis jobs, diarization policy, speaker turn alignment, speaker continuity. |
 | Secret redaction | [crates/secret-redaction/CONTEXT.md](crates/secret-redaction/CONTEXT.md) | Secret detection/redaction policy for searchable, copied, snippet, and broker-visible derived text. |
 | User Context | [docs/user-context/CONTEXT.md](docs/user-context/CONTEXT.md) | Standing, continuously-updated understanding of the user derived from captures: Activity (evidence) and Conclusion (distilled belief) layers. Storage + deterministic Confidence Policy / Sensitive Category Guardrail live in `crates/app-infra/src/user_context`; the Reasoning Engine derivation worker + Tauri commands live in `apps/desktop/src-tauri/src/user_context`. |
+| Licensing | [docs/licensing/CONTEXT.md](docs/licensing/CONTEXT.md) | Monetization: one-time License + paid Update Window, time-limited Trial, offline Ed25519 verification via the licensegate platform + pinned client crate (ADR 0054), Read-Only Mode on trial expiry. Account-less; activates once per machine, then never phones home. State + keychain store in `crates/app-infra`; adapter + gate + Tauri commands in `apps/desktop/src-tauri`; buy/trial UI in `apps/desktop/src`. |
 
 ## ADR Scope
 

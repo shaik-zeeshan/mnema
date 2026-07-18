@@ -39,7 +39,7 @@ describe("featureLockReason (INV-DEP-GATE)", () => {
     expect(featureLockReason("speakers", ctx({ transcriptionEnabled: true }))).toBeNull();
   });
   test("required + unconditional features never lock", () => {
-    for (const id of ["permissions","screen","storage","ocr","transcribe","privacy","askai","semanticSearch"] as const)
+    for (const id of ["permissions","screen","storage","ocr","transcribe","privacy","askai","semanticSearch","licensing"] as const)
       expect(featureLockReason(id, ctx())).toBeNull();
   });
 });
@@ -71,11 +71,11 @@ describe("featureAttentionFor model + transcribe-requested", () => {
     expect(featureAttentionFor(target({ draftOcrEnabled: true, selectedOcrModel: avail(true) }), "ocr")).toBe(false);
   });
   test("askai on + config not ready -> attention", () => { expect(featureAttentionFor(target({ draftAskAiEnabled: true, ai: { aiConfigReady: false } }), "askai")).toBe(true); });
-  test("screen/storage/privacy never raise attention", () => { for (const id of ["screen","storage","privacy"] as const) expect(featureAttentionFor(target({ privacyEnabled: true }), id)).toBe(false); });
+  test("screen/storage/privacy/licensing never raise attention", () => { for (const id of ["screen","storage","privacy","licensing"] as const) expect(featureAttentionFor(target({ privacyEnabled: true }), id)).toBe(false); });
 });
 
 describe("isFeatureEnabled", () => {
-  test("required features always enabled", () => { for (const id of ["permissions","screen","storage"] as const) expect(isFeatureEnabled(target(), id)).toBe(true); });
+  test("required features always enabled", () => { for (const id of ["permissions","screen","storage","licensing"] as const) expect(isFeatureEnabled(target(), id)).toBe(true); });
   test("optional features track their draft flag", () => {
     expect(isFeatureEnabled(target({ draftSemanticSearchEnabled: true }), "semanticSearch")).toBe(true);
     expect(isFeatureEnabled(target({ draftSemanticSearchEnabled: false }), "semanticSearch")).toBe(false);

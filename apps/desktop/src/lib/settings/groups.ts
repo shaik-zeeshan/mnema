@@ -27,6 +27,7 @@ export type SettingsSectionId =
   | "appearance"
   | "startup"
   | "shortcuts"
+  | "license"
   | "capture"
   | "video"
   | "audio"
@@ -225,8 +226,23 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   {
     id: "about",
     label: "About",
-    description: "Version, updates, developer",
+    description: "Version, license, updates",
     sections: [
+      {
+        id: "license",
+        anchor: "settings-section-license",
+        label: "License & Trial",
+        keywords: [
+          "license",
+          "trial",
+          "buy",
+          "purchase",
+          "activate",
+          "renew",
+          "read-only",
+          "subscription",
+        ],
+      },
       {
         id: "about",
         anchor: "settings-section-about",
@@ -330,6 +346,8 @@ export function resolveTabDeeplink(
       return "semanticSearch";
     case "storage":
       return "storage";
+    case "license":
+      return "license";
     case "appearance":
       return "appearance";
     case "developer":

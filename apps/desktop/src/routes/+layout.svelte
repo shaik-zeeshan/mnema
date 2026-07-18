@@ -34,6 +34,9 @@
     reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
+  import { initLicenseStatus } from "$lib/licensing-store.svelte";
+  import LicenseBanner from "$lib/LicenseBanner.svelte";
+  import LicenseDeepLinkModal from "$lib/LicenseDeepLinkModal.svelte";
   import {
     GLOBAL_SHORTCUTS,
     getEffectiveGlobalShortcut,
@@ -120,6 +123,7 @@
   initTheme();
   initAppNotifications();
   initKeyboardBindings();
+  initLicenseStatus();
 
   $effect(() => {
     chromeAppearance = theme.appearance;
@@ -1489,6 +1493,17 @@
       </button>
     </div>
   </header>
+  {/if}
+
+  {#if isMainWindow}
+    <!-- App-wide licensing banner (final-week trial teach-in + Read-Only Mode).
+         Renders nothing outside a trial's final week / Read-Only Mode. Main
+         window only — Quick Recall / onboarding / dedicated surfaces stay clean. -->
+    <LicenseBanner />
+    <!-- Deep-link receipt: the visible acknowledgement when a mnema://license/*
+         deep link bounces the user back into the app. Main window only — that's
+         the window the dispatcher surfaces. -->
+    <LicenseDeepLinkModal />
   {/if}
 
   <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>
@@ -2882,14 +2897,16 @@
     color: var(--app-bg);
   }
   .notification-popover {
-    /* Fixed, not absolute: the titlebar clips its overflow (narrow-window
-       backstop above), so an absolutely-positioned child hanging below the
-       bar is invisible. Viewport-fixed escapes that clip; the titlebar is
-       sticky at top:0 with a fixed height, so this lands just under it. */
+    /* Fixed, not absolute: `.titlebar { overflow: hidden }` (the tiling-WM
+       spill backstop) clips absolutely-positioned descendants, which clipped
+       this popover out of existence. Fixed positioning resolves against the
+       viewport and escapes the clip; the titlebar is sticky at the top with a
+       fixed height, so anchoring just below it lands in the same spot. */
     position: fixed;
     top: calc(var(--app-titlebar-height) + 8px);
     right: 8px;
-    z-index: 20;
+    /* Above the sticky titlebar's z-index: 100. */
+    z-index: 200;
     width: min(340px, calc(100vw - 24px));
     max-height: 360px;
     overflow: hidden;

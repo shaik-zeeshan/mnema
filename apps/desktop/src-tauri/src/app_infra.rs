@@ -1956,6 +1956,12 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Licensing gate (ADR 0044/0045): compute the offline trial/license status,
+    // cache it for synchronous reads (capture-stop, status bar), and emit the
+    // `license_status` event the frontend listens for. Runs here on the
+    // deferred-startup seam (after the window opens) — it never gates launch.
+    crate::licensing::run_license_gate(app_handle);
+
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 }
 

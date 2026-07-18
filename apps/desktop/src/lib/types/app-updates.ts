@@ -5,6 +5,7 @@ export type AppUpdateState =
 	| "checking"
 	| "upToDate"
 	| "available"
+	| "availableOutOfWindow"
 	| "downloading"
 	| "installing"
 	| "restartRequired"

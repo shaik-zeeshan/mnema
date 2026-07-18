@@ -6,11 +6,13 @@ mod audio_transcription_models;
 mod broker_authorization_channel;
 mod cli_access;
 mod conversation;
+mod crl_refresh;
 mod debug_health;
 mod debug_pipeline;
 mod debug_status;
 mod general_app_log;
 mod keyboard_bindings;
+mod licensing;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_budget;
@@ -191,6 +193,48 @@ fn open_conversation_in_chat(
     let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
 }
 
+/// Fired the instant a license deep link is routed — before any activation /
+/// claim / renewal work runs — so the frontend can raise the deep-link receipt
+/// modal in its "working" face right away. Every later transition (activated /
+/// pending / over-cap / renewed) rides the existing `license_status` event.
+const LICENSE_DEEP_LINK_EVENT: &str = "license_deep_link";
+
+/// Hand-mirrored in `$lib/license-deeplink-receipt.ts` (`DeepLinkFlow`).
+#[derive(Debug, Clone, serde::Serialize)]
+struct LicenseDeepLinkPayload {
+    /// "activate" | "claim" | "renewed" — the `mnema://license/*` route.
+    flow: &'static str,
+}
+
+/// Pending license deep-link announcement for a cold main window. Mirrors
+/// `InsightsOpenConversationState`: the live event drives a warm window, while
+/// a freshly-opened (cold) window — the checkout-bounce path launches the app
+/// via the deep link, so the webview isn't listening yet — takes this slot on
+/// mount. One slot, latest wins: only the newest deep link deserves a modal.
+#[derive(Default)]
+struct LicenseDeepLinkState {
+    pending: Mutex<Option<LicenseDeepLinkPayload>>,
+}
+
+#[tauri::command]
+fn take_pending_license_deep_link(
+    state: tauri::State<'_, LicenseDeepLinkState>,
+) -> Option<LicenseDeepLinkPayload> {
+    state.pending.lock().ok().and_then(|mut pending| pending.take())
+}
+
+/// Queue-when-cold + emit, same shape as `open_conversation_in_chat` (queuing
+/// on a warm window would strand a stale entry that replays on the next boot).
+fn announce_license_deep_link(app_handle: &tauri::AppHandle, flow: &'static str) {
+    let payload = LicenseDeepLinkPayload { flow };
+    if app_handle.get_webview_window("main").is_none() {
+        if let Ok(mut pending) = app_handle.state::<LicenseDeepLinkState>().pending.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app_handle.emit(LICENSE_DEEP_LINK_EVENT, payload);
+}
+
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
         target == *prefix
@@ -227,6 +271,91 @@ fn is_oauth_callback_url(url: &url::Url) -> bool {
     matches!(url.scheme(), "mnema" | "mnema-dev")
         && url.host_str() == Some("oauth")
         && url.path() == "/callback"
+}
+
+/// The license-activation deep link (`mnema://license/activate?key=…` in prod,
+/// `mnema-dev://…` in dev). Host `license` + path `/activate` is distinct from the
+/// oauth (`oauth`) and broker (`open`/`broker`) hosts, so the three never collide.
+/// Returns the URL-decoded key (standard base64 `.`-joined, as minted).
+fn license_key_from_url(url: &url::Url) -> Option<String> {
+    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
+        return None;
+    }
+    if url.host_str() != Some("license") || url.path() != "/activate" {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(k, _)| k == "key")
+        .map(|(_, v)| v.into_owned())
+        .filter(|k| !k.is_empty())
+}
+
+/// The purchase-claim deep link (`mnema://license/claim?checkout_id=…` in prod,
+/// `mnema-dev://…` in dev) — Polar's success redirect. Host `license` + path
+/// `/claim` sits beside the activate route and apart from the oauth/broker hosts.
+fn claim_checkout_id_from_url(url: &url::Url) -> Option<String> {
+    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
+        return None;
+    }
+    if url.host_str() != Some("license") || url.path() != "/claim" {
+        return None;
+    }
+    url.query_pairs()
+        .find(|(k, _)| k == "checkout_id")
+        .map(|(_, v)| v.into_owned())
+        .filter(|id| !id.is_empty())
+}
+
+/// The renewal-return deep link (`mnema://license/renewed` in prod,
+/// `mnema-dev://…` in dev) — the Polar RENEWAL product's success redirect. No
+/// payload: the machine already holds the key (a renewal extends the existing
+/// license, ADR 0055), so the hit only cues a short Receipt Refresh poll.
+/// Ops note: the Polar renewal product's success URL must point at
+/// `https://mnema.day/license/open?flow=renewal&checkout_id={CHECKOUT_ID}` — the
+/// bounce page that fires this deep link (providers can't emit custom schemes).
+fn is_license_renewed_url(url: &url::Url) -> bool {
+    matches!(url.scheme(), "mnema" | "mnema-dev")
+        && url.host_str() == Some("license")
+        && url.path() == "/renewed"
+}
+
+/// Route one deep-link URL to its handler. The `mnema`/`mnema-dev` scheme carries
+/// five unrelated payloads (license activation, purchase claim, renewal return,
+/// MCP OAuth callback, capture-broker handoff), discriminated by host+path so
+/// none swallows another.
+fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
+    if let Some(key) = license_key_from_url(url) {
+        announce_license_deep_link(app_handle, "activate");
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            licensing::activate_from_deep_link(app_handle.clone(), key).await;
+            let _ = windows::open_main_window(&app_handle);
+        });
+    } else if let Some(checkout_id) = claim_checkout_id_from_url(url) {
+        announce_license_deep_link(app_handle, "claim");
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            // Surface the app before polling — the buyer was just bounced back
+            // from the browser and the claim poll can take ~30s.
+            let _ = windows::open_main_window(&app_handle);
+            licensing::claim_from_deep_link(app_handle, checkout_id).await;
+        });
+    } else if is_license_renewed_url(url) {
+        announce_license_deep_link(app_handle, "renewed");
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            // Surface the app before polling — the buyer was just bounced back
+            // from the browser and the refresh poll can take up to ~60s.
+            let _ = windows::open_main_window(&app_handle);
+            licensing::renewed_from_deep_link(app_handle).await;
+        });
+    } else if is_oauth_callback_url(url) {
+        app_handle
+            .state::<ask_ai::mcp::McpManager>()
+            .complete_oauth_callback(app_handle, url);
+    } else {
+        enqueue_broker_open_result(app_handle, url);
+    }
 }
 
 async fn broker_payload_from_url(
@@ -381,6 +510,11 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
         );
         return;
     }
+    // CRL refresh is anonymous and harmless without onboarding — kick off an
+    // initial fetch plus the daily timer regardless of onboarding state.
+    crl_refresh::spawn_crl_refresh(app_handle.clone());
+    crl_refresh::start_daily_crl_timer(app_handle.clone());
+    licensing::receipt_refresh::start_receipt_refresh_timer(app_handle.clone());
     if onboarding_complete {
         native_capture::maybe_auto_start_native_capture(app_handle);
         app_updates::start_startup_update_check(app_handle);
@@ -440,6 +574,8 @@ pub fn run() {
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
+        .manage(licensing::LicenseGate(Mutex::new(None)))
+        .manage(licensing::ActivationHint(Mutex::new(None)))
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
@@ -452,6 +588,7 @@ pub fn run() {
         .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
+        .manage(LicenseDeepLinkState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
         // The Semantic Index Backfill worker's health, published each sweep pass and
@@ -532,6 +669,12 @@ pub fn run() {
             app_updates::set_app_update_channel,
             app_updates::install_app_update,
             app_updates::restart_after_app_update,
+            licensing::get_license_status,
+            licensing::start_trial,
+            licensing::activate_license,
+            licensing::refresh_license_now,
+            licensing::reset::reset_license_devices,
+            licensing::reset::get_license_devices,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
@@ -732,6 +875,7 @@ pub fn run() {
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
             drain_pending_insights_open_conversations,
+            take_pending_license_deep_link,
             has_pending_insights_open_conversations,
             open_conversation_in_chat,
         ])
@@ -739,28 +883,12 @@ pub fn run() {
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    // The deep-link scheme carries two unrelated payloads: the MCP
-                    // OAuth callback (host `oauth`) and the capture broker handoff
-                    // (host `open`/`broker`). Dispatch by host so neither swallows
-                    // the other.
-                    if is_oauth_callback_url(&url) {
-                        app_handle
-                            .state::<ask_ai::mcp::McpManager>()
-                            .complete_oauth_callback(&app_handle, &url);
-                    } else {
-                        enqueue_broker_open_result(&app_handle, &url);
-                    }
+                    dispatch_deep_link(&app_handle, &url);
                 }
             });
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    if is_oauth_callback_url(&url) {
-                        app.handle()
-                            .state::<ask_ai::mcp::McpManager>()
-                            .complete_oauth_callback(app.handle(), &url);
-                    } else {
-                        enqueue_broker_open_result(app.handle(), &url);
-                    }
+                    dispatch_deep_link(app.handle(), &url);
                 }
             }
             let _ = app.deep_link().register_all();
@@ -890,8 +1018,9 @@ pub fn maybe_run_speaker_analysis_helper_and_exit() {
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_opaque_id_from_url, broker_payload_from_url, exit_request_action_for_exit_request,
-        is_app_log_target, is_oauth_callback_url, should_forward_window_event,
+        broker_opaque_id_from_url, broker_payload_from_url, claim_checkout_id_from_url,
+        exit_request_action_for_exit_request, is_app_log_target, is_license_renewed_url,
+        is_oauth_callback_url, license_key_from_url, should_forward_window_event,
         should_notify_pending_broker_authorization_request,
         should_open_pending_broker_authorization_request, ExitRequestAction,
     };
@@ -917,6 +1046,99 @@ mod tests {
         assert!(broker_opaque_id_from_url(&prod).is_none());
         assert_eq!(broker_opaque_id_from_url(&broker_open).as_deref(), Some("f1"));
         assert_eq!(broker_opaque_id_from_url(&broker_nested).as_deref(), Some("f1"));
+    }
+
+    #[test]
+    fn license_deep_link_extracts_url_decoded_key_and_stays_apart() {
+        // Standard base64 (`+ / =`) joined by `.`, percent-encoded in the URL.
+        let key = "eyJlbWFpbCI6ImFAYi5jbyJ9.sig+with/slash=";
+        let url = url::Url::parse(&format!(
+            "mnema://license/activate?key={}",
+            "eyJlbWFpbCI6ImFAYi5jbyJ9.sig%2Bwith%2Fslash%3D"
+        ))
+        .expect("url");
+        assert_eq!(license_key_from_url(&url).as_deref(), Some(key));
+
+        // Never confused for oauth or broker; never claims their URLs.
+        assert!(!is_oauth_callback_url(&url));
+        assert!(broker_opaque_id_from_url(&url).is_none());
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(license_key_from_url(&oauth).is_none());
+        assert!(license_key_from_url(&broker).is_none());
+        // Missing/empty key -> not an activation link.
+        assert!(license_key_from_url(
+            &url::Url::parse("mnema://license/activate").expect("url")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn claim_deep_link_extracts_checkout_id_and_stays_apart() {
+        let prod =
+            url::Url::parse("mnema://license/claim?checkout_id=co_abc123").expect("url");
+        let dev =
+            url::Url::parse("mnema-dev://license/claim?checkout_id=co_abc123").expect("url");
+        assert_eq!(claim_checkout_id_from_url(&prod).as_deref(), Some("co_abc123"));
+        assert_eq!(claim_checkout_id_from_url(&dev).as_deref(), Some("co_abc123"));
+
+        // Never claims the activate/oauth/broker payloads…
+        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(claim_checkout_id_from_url(&activate).is_none());
+        assert!(claim_checkout_id_from_url(&oauth).is_none());
+        assert!(claim_checkout_id_from_url(&broker).is_none());
+        // …and none of them claims a claim URL (no cross-swallow).
+        assert!(license_key_from_url(&prod).is_none());
+        assert!(!is_oauth_callback_url(&prod));
+        assert!(broker_opaque_id_from_url(&prod).is_none());
+
+        // Missing/empty checkout_id -> not a claim link. Wrong scheme neither.
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("mnema://license/claim").expect("url")
+        )
+        .is_none());
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("mnema://license/claim?checkout_id=").expect("url")
+        )
+        .is_none());
+        assert!(claim_checkout_id_from_url(
+            &url::Url::parse("https://license/claim?checkout_id=co_abc123").expect("url")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn renewed_deep_link_matches_both_schemes_and_stays_apart() {
+        let prod = url::Url::parse("mnema://license/renewed").expect("url");
+        let dev = url::Url::parse("mnema-dev://license/renewed").expect("url");
+        assert!(is_license_renewed_url(&prod));
+        assert!(is_license_renewed_url(&dev));
+        // A stray query string (checkout providers append them) still matches.
+        assert!(is_license_renewed_url(
+            &url::Url::parse("mnema://license/renewed?checkout_id=co_x").expect("url")
+        ));
+
+        // Never claims the activate/claim/oauth/broker payloads…
+        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
+        let claim = url::Url::parse("mnema://license/claim?checkout_id=co_x").expect("url");
+        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
+        let broker = url::Url::parse("mnema://open/f1").expect("url");
+        assert!(!is_license_renewed_url(&activate));
+        assert!(!is_license_renewed_url(&claim));
+        assert!(!is_license_renewed_url(&oauth));
+        assert!(!is_license_renewed_url(&broker));
+        // …and none of them claims a renewed URL (no cross-swallow).
+        assert!(license_key_from_url(&prod).is_none());
+        assert!(claim_checkout_id_from_url(&prod).is_none());
+        assert!(!is_oauth_callback_url(&prod));
+        assert!(broker_opaque_id_from_url(&prod).is_none());
+
+        // Wrong scheme -> not a renewed link.
+        assert!(!is_license_renewed_url(
+            &url::Url::parse("https://license/renewed").expect("url")
+        ));
     }
 
     #[test]

@@ -1,0 +1,356 @@
+---
+import Base from "../layouts/Base.astro";
+import TopBar from "../components/TopBar.astro";
+import Footer from "../components/Footer.astro";
+import { CHECKOUT_URL, DOWNLOAD_URL, PLATFORM_LABEL } from "../config";
+
+const pageTitle = "mnema — pricing";
+const pageDescription =
+  "Mnema is a one-time $69 purchase with a year of updates included. 30-day free trial — no account, no card. Keep every version you own forever.";
+
+const included = [
+  {
+    label: "30-day free trial first",
+    detail: "No account, no card. The clock starts the first time you record — not when you install.",
+  },
+  {
+    label: "One year of new builds",
+    detail: "Every update released within a year of your purchase is yours.",
+  },
+  {
+    label: "Keep it forever",
+    detail: "The versions you own never expire, never need a subscription, never stop working.",
+  },
+  {
+    label: "Everything included",
+    detail: "Recall, Ask AI, Insights, agent access — no tiers, nothing metered.",
+  },
+  {
+    label: "Verified on your Mac",
+    detail: "Your license activates once per Mac, then it's verified on-device — no account, nothing personal sent.",
+  },
+];
+
+const faq = [
+  {
+    q: "What happens when the trial ends?",
+    a: "Mnema switches to read-only. Everything you recorded stays browsable, searchable, and Ask-AI-able — only new recording pauses until you buy.",
+  },
+  {
+    q: "What happens after my year of updates?",
+    a: "Nothing breaks. The app keeps working forever on the builds you own. If you want another year of new builds, renew for $29 — whenever you like, with no penalty for lapsing.",
+  },
+  {
+    q: "Is there a subscription?",
+    a: "No. $69 once. The optional $29 renewal is a purchase you make on your terms, not a plan that charges you.",
+  },
+  {
+    q: "How many Macs can I use it on?",
+    a: "Up to 3 at a time. Your license key is a signed string you paste into the app. Replaced a machine? Free up your old devices yourself from Settings, once every 30 days.",
+  },
+];
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <TopBar />
+  <main class="docs">
+    <article class="docs-col">
+      <header class="docs-hero">
+        <p class="kicker">// pricing</p>
+        <h1 class="docs-title">Pay once. Own it.</h1>
+        <p class="docs-sub">
+          Mnema is a one-time purchase, not a subscription. Try it free for 30
+          days, buy it once, and keep every version you own forever.
+        </p>
+        <p class="docs-meta">// one license · {PLATFORM_LABEL}</p>
+      </header>
+
+      <section class="docs-section" aria-labelledby="license">
+        <div class="price-card">
+          <div class="price-head">
+            <p class="kicker">// mnema license</p>
+            <p class="price-figure">
+              <span class="price-amount">$69</span>
+              <span class="price-term">one-time</span>
+            </p>
+          </div>
+
+          <ul class="guarantee-list">
+            {
+              included.map((item) => (
+                <li class="guarantee-item">
+                  <span class="guarantee-marker" aria-hidden="true">
+                    ✓
+                  </span>
+                  <div class="guarantee-text">
+                    <span class="guarantee-label">{item.label}</span>
+                    <span class="guarantee-detail">{item.detail}</span>
+                  </div>
+                </li>
+              ))
+            }
+          </ul>
+
+          <div class="price-actions">
+            <a href={CHECKOUT_URL} class="price-buy" rel="noopener noreferrer"
+              >Buy Mnema — $69</a
+            >
+            <a href={DOWNLOAD_URL} class="price-try">Try free for 30 days</a>
+          </div>
+        </div>
+
+        <p class="renew-note">
+          <span class="renew-price">+ $29/year, optional</span> — after your
+          update window, renew only if you want another year of new builds.
+          Your app never stops working either way.
+        </p>
+      </section>
+
+      <section class="docs-section" aria-labelledby="pricing-faq">
+        <p class="kicker">// the fine print</p>
+        <h2 class="section-heading" id="pricing-faq">Questions people ask</h2>
+        <dl class="faq-list">
+          {
+            faq.map((item) => (
+              <div class="faq-item">
+                <dt class="faq-q">{item.q}</dt>
+                <dd class="faq-a">{item.a}</dd>
+              </div>
+            ))
+          }
+        </dl>
+      </section>
+    </article>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  /* ---- Docs layout shell (lifted pattern) ---- */
+  .docs {
+    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  }
+
+  .docs-col {
+    max-width: 44rem;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .docs-hero {
+    padding-bottom: var(--space-xl);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .docs-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-3xl);
+    margin-bottom: var(--space-sm);
+    max-width: 22ch;
+  }
+
+  .docs-sub {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.7;
+    max-width: 60ch;
+    margin-bottom: var(--space-md);
+  }
+
+  .docs-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .docs-section {
+    margin-bottom: var(--space-2xl);
+  }
+
+  .section-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-sm);
+    max-width: 26ch;
+  }
+
+  /* ---- Price card ---- */
+  .price-card {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: var(--space-lg);
+    display: grid;
+    gap: var(--space-lg);
+  }
+
+  .price-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+  }
+
+  .price-head .kicker {
+    margin-bottom: 0;
+  }
+
+  .price-figure {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-xs);
+  }
+
+  .price-amount {
+    font-family: var(--font-mono);
+    font-size: var(--text-3xl);
+    font-weight: 600;
+    color: var(--fg);
+    line-height: 1;
+  }
+
+  .price-term {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  /* ---- Included list (guarantee pattern from /agents) ---- */
+  .guarantee-list {
+    list-style: none;
+    display: grid;
+    gap: var(--space-md);
+  }
+
+  .guarantee-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    gap: var(--space-sm);
+    align-items: start;
+  }
+
+  .guarantee-marker {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .guarantee-text {
+    display: grid;
+    gap: 0.15rem;
+    min-width: 0;
+  }
+
+  .guarantee-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+
+  .guarantee-detail {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    line-height: 1.65;
+  }
+
+  /* ---- CTAs ---- */
+  .price-actions {
+    display: flex;
+    gap: var(--space-sm);
+    flex-wrap: wrap;
+    align-items: center;
+  }
+
+  .price-buy,
+  .price-try {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    letter-spacing: 0.02em;
+    padding: 10px 20px;
+    border-radius: 999px;
+    text-decoration: none;
+    font-weight: 500;
+    transition: box-shadow 0.3s var(--ease-out-quart),
+      opacity 0.2s var(--ease-out-quart),
+      border-color 0.2s var(--ease-out-quart);
+  }
+
+  .price-buy {
+    color: var(--bg);
+    background: var(--accent);
+  }
+
+  .price-buy:hover {
+    text-decoration: none;
+    box-shadow: 0 0 16px var(--accent-glow);
+    opacity: 0.92;
+  }
+
+  .price-try {
+    color: var(--fg);
+    border: 1px solid var(--border-strong);
+  }
+
+  .price-try:hover {
+    text-decoration: none;
+    border-color: var(--fg-muted);
+  }
+
+  .renew-note {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    line-height: 1.65;
+    margin-top: var(--space-md);
+    max-width: 60ch;
+  }
+
+  .renew-price {
+    font-family: var(--font-mono);
+    color: var(--fg);
+  }
+
+  /* ---- FAQ ---- */
+  .faq-list {
+    display: grid;
+    gap: var(--space-lg);
+    margin-top: var(--space-lg);
+  }
+
+  .faq-item {
+    display: grid;
+    gap: var(--space-xs);
+  }
+
+  .faq-q {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+
+  .faq-a {
+    font-family: var(--font-sans);
+    font-size: var(--text-sm);
+    color: var(--fg-muted);
+    line-height: 1.7;
+    max-width: 62ch;
+    margin: 0;
+  }
+</style>

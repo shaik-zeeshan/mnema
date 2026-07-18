@@ -2,6 +2,31 @@ fn main() {
     // Tauri codegen + asset/permission embedding.
     tauri_build::build();
 
+    // Licensing slice 9: stamp the build time so the running binary can compare
+    // its own release date against a License's Update Window at launch (the
+    // fresh-install-after-lapse edge). Read via `option_env!("MNEMA_BUILD_DATE_MS")`.
+    // ponytail: build time ≈ release date — good enough for the window gate; wire
+    // the real updater-manifest `pub_date` if reproducible builds ever need exactness.
+    let build_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    println!("cargo:rustc-env=MNEMA_BUILD_DATE_MS={build_ms}");
+
+    // Licensing / ADR 0052: the fresh-install CRL floor comes from
+    // `MNEMA_CRL_FLOOR` (read via `option_env!` in `crl_refresh.rs`; release CI
+    // fetches the live prod CRL and exports the signed wire). Rebuild when it
+    // changes so a re-release actually re-bakes the floor into the binary.
+    println!("cargo:rerun-if-env-changed=MNEMA_CRL_FLOOR");
+    // licensegate config (`option_env!` in `licensing/adapter.rs`): release CI
+    // bakes the prod pubkey/kid/publishable token/base URL; dev builds bake the
+    // sandbox equivalents. Rebuild when any of them changes.
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PUBLIC_KEY");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_KID");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PK_TOKEN");
+    println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_BASE_URL");
+    println!("cargo:rerun-if-env-changed=MNEMA_TRIAL_LEN_DAYS");
+
     // The speakrs on-device diarization engine pulls in OpenBLAS, built from
     // source and linked statically via speakrs' `openblas-static` feature.
     // OpenBLAS's LAPACK is Fortran, so `openblas-src` re-emits the gfortran /

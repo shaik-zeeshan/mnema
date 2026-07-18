@@ -35,10 +35,34 @@ jobs:
       # the build machine's exact core and can hit illegal-instruction crashes on
       # older CPUs.
       OPENBLAS_DYNAMIC_ARCH: "1"
+      # Buy-button checkout links, baked into the frontend bundle by Vite
+      # (apps/desktop/src/lib/licensing.ts). Set repo variables
+      # LICENSE_CHECKOUT_URL / RENEWAL_CHECKOUT_URL to the LIVE Polar links
+      # before a real release; unset arrives as "" and the code (`||`) falls
+      # back to the sandbox defaults.
+      VITE_LICENSE_CHECKOUT_URL: ${{ vars.LICENSE_CHECKOUT_URL }}
+      VITE_RENEWAL_CHECKOUT_URL: ${{ vars.RENEWAL_CHECKOUT_URL }}
+      # Prod licensing config baked at compile time (option_env! in
+      # licensing/adapter.rs). Unset falls back to an all-zero placeholder key
+      # that verifies NOTHING — a release built without these ships a dead
+      # license gate that rejects every real key. Set repo variables
+      # LICENSE_PUBLIC_KEY / LICENSE_KID / LICENSE_PK_TOKEN from the licensegate
+      # console before a real release (verifying/publishable values, not secrets).
+      MNEMA_LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
+      MNEMA_LICENSE_KID: ${{ vars.LICENSE_KID }}
+      MNEMA_LICENSE_PK_TOKEN: ${{ vars.LICENSE_PK_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # licensegate is a PRIVATE git dependency (apps/desktop/src-tauri/Cargo.toml,
+      # fetched with the git CLI per .cargo/config.toml [net]). Rewrite its URL to
+      # embed a token so cargo can fetch it on the runner. Requires the
+      # LICENSEGATE_TOKEN secret: a PAT with read access to
+      # github.com/shaik-zeeshan/licensegate.
+      - name: Configure git auth for private licensegate dependency
+        run: git config --global url."https://x-access-token:${{ secrets.LICENSEGATE_TOKEN }}@github.com/shaik-zeeshan/licensegate".insteadOf "https://github.com/shaik-zeeshan/licensegate"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -111,6 +135,22 @@ jobs:
 
       - name: Generate third-party license attribution
         run: ./scripts/generate-third-party-licenses.sh
+
+      # Fresh-install CRL floor: fetch the live prod CRL and export the signed
+      # wire as MNEMA_CRL_FLOOR (option_env! in crl_refresh.rs) for the cargo
+      # check + Tauri build below. A release must never ship floorless, so any
+      # fetch failure (non-2xx, empty, not a payload.signature wire) fails the
+      # release loudly — no continue-on-error. The binary re-verifies the
+      # wire's Ed25519 signature at runtime before trusting it.
+      - name: Fetch live CRL floor
+        run: |
+          set -euo pipefail
+          wire="$(curl --fail --silent --show-error https://license.mnema.day/v1/crl/mnema)"
+          if [[ -z "$wire" || "$wire" != *.* ]]; then
+            echo "fetched CRL floor is empty or not a signed wire: '$wire'" >&2
+            exit 1
+          fi
+          echo "MNEMA_CRL_FLOOR=$wire" >> "$GITHUB_ENV"
 
       - name: Prepare Mnema CLI sidecar for Tauri check
         run: ./scripts/prepare-mnema-cli-sidecar.sh debug --locked

@@ -34,4 +34,12 @@ compile(
 // Driver: its `./jumper-cache` import resolves to gen/jumper-cache.js.
 compile(resolve(here, "driver.svelte.ts"), resolve(here, "gen/driver.js"), []);
 
+// License store: snapshot-vs-event race regression (licensing-store-race.test.ts).
+// Its "$lib/licensing" import is type-only and erased by the TS transpile.
+compile(
+  resolve(appRoot, "src/lib/licensing-store.svelte.ts"),
+  resolve(here, "gen/licensing-store.js"),
+  [],
+);
+
 console.log("compiled");

@@ -54,6 +54,7 @@ export function isFeatureEnabled(target: OnboardingFeatureTarget, id: FeatureId)
     case "permissions":
     case "screen":
     case "storage":
+    case "licensing":
       return true; // required — always on
     case "mic":
       return target.draftCaptureMicrophone;
@@ -116,6 +117,8 @@ export function featureAttentionFor(target: OnboardingFeatureTarget, id: Feature
     case "screen":
     case "storage":
     case "privacy":
+    // Explanatory-only: takes no key, starts nothing, so it never blocks finish.
+    case "licensing":
       return false;
   }
 }
