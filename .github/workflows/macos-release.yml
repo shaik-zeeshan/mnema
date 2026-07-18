@@ -130,6 +130,24 @@ jobs:
             exit 1
           fi
 
+      # A stable release built without the licensing repo variables silently
+      # bakes the all-zero placeholder key (dead gate) and sandbox checkout
+      # links — fail loudly instead. Prereleases stay placeholder-friendly.
+      - name: Require licensing config for stable releases
+        if: steps.release_channel.outputs.channel == 'stable'
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "${MNEMA_LICENSE_PUBLIC_KEY}" ]] || missing+=(LICENSE_PUBLIC_KEY)
+          [[ -n "${MNEMA_LICENSE_KID}" ]] || missing+=(LICENSE_KID)
+          [[ -n "${MNEMA_LICENSE_PK_TOKEN}" ]] || missing+=(LICENSE_PK_TOKEN)
+          [[ -n "${VITE_LICENSE_CHECKOUT_URL}" ]] || missing+=(LICENSE_CHECKOUT_URL)
+          [[ -n "${VITE_RENEWAL_CHECKOUT_URL}" ]] || missing+=(RENEWAL_CHECKOUT_URL)
+          if (( ${#missing[@]} )); then
+            echo "stable release requires repo variables: ${missing[*]} (Settings → Secrets and variables → Actions → Variables)" >&2
+            exit 1
+          fi
+
       - name: Check frontend
         run: bun run check
 

@@ -83,6 +83,9 @@ git auth) to fetch it.
 
 ### Repository variables — Settings → Secrets and variables → Actions → **Variables**
 
+All five are enforced for **stable** releases: the workflow fails before
+building if any is unset. Prereleases build placeholder/sandbox happily.
+
 | Variable | Required | Effect |
 |---|---|---|
 | `LICENSE_CHECKOUT_URL` | before selling | Live Polar checkout link → `VITE_LICENSE_CHECKOUT_URL`. |
