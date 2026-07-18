@@ -7,8 +7,10 @@
 use crate::error::{AppInfraError, Result};
 
 /// The machine's stable hardware UUID (uppercase, dashed canonical form).
-/// macOS returns the same value across reboots; a factory reset / logic-board
-/// swap changes it (acceptable — that's a different machine).
+/// macOS returns the same value across reboots, OS reinstalls, and factory
+/// resets (it lives in hardware, so re-activation after an erase is free —
+/// ADR 0053's idempotency depends on this); only a logic-board swap changes
+/// it (acceptable — that's effectively a different machine).
 #[cfg(target_os = "macos")]
 pub fn hardware_uuid() -> Result<String> {
     // gethostuuid fills 16 raw bytes; a zero timeout means "don't wait".

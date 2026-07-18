@@ -16,4 +16,4 @@ export const DOWNLOAD_URL = `${RELEASES_BASE_URL}/stable/Mnema.dmg`;
 // `||` not `??`: CI vars that are unset arrive as "" — treat empty as unset.
 export const CHECKOUT_URL =
   import.meta.env.PUBLIC_CHECKOUT_URL ||
-  "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_YHKNSVQFLu5jQdlQvAlupGMvOoH2a5axMrJti4NOEIu/redirect";
+  "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_lMoTLnM0OegXGCtfDMzfFi54ZZ41zhfSL8mvP1BpK1L/redirect";

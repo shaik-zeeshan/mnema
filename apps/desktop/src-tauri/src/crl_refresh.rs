@@ -1,4 +1,4 @@
-//! Anonymous CRL fetch + verbatim monotonic cache (ADR 0052, licensegate).
+//! Anonymous CRL fetch + verbatim monotonic cache (ADR 0056, licensegate).
 //!
 //! One anonymous GET of the per-product CRL (`GET /v1/crl/{slug}` via the
 //! licensegate client) — NO identifier, no auth header, nothing about the user

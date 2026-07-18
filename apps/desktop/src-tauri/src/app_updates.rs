@@ -796,7 +796,7 @@ pub fn get_app_update_status(app_handle: tauri::AppHandle) -> AppUpdateStatus {
 
 #[tauri::command]
 pub async fn check_for_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus {
-    // Piggyback the CRL refresh on a manual "check for updates" (ADR 0052).
+    // Piggyback the CRL refresh on a manual "check for updates" (ADR 0056).
     crate::crl_refresh::spawn_crl_refresh(app_handle.clone());
     run_update_check(&app_handle, false).await
 }

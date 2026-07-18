@@ -31,10 +31,15 @@ release builds to `mnema` (`cfg!(debug_assertions)` in
 `apps/desktop/src-tauri/src/licensing/adapter.rs`). The slug is part of the
 signature domain, so a sandbox key can never verify on a release build.
 
-`scripts/dev-app.sh` auto-exports `MNEMA_LICENSE_PUBLIC_KEY` from
-`~/.mnema-licensing-keys/dev_public_key.hex` if present (drop the sandbox
-product's verifying key there); export the matching `MNEMA_LICENSE_KID` and
-`MNEMA_LICENSE_PK_TOKEN` yourself.
+**How to set these locally:** both `scripts/dev-app.sh` and
+`scripts/build-macos-local-sign.sh` source a gitignored repo-root `.env`
+(allexport, so the values reach cargo through turbo) — put the
+`MNEMA_LICENSE_*` values there. The build script's `--env <name>` flag selects
+`.env.<name>` instead (e.g. `--env prod`). Additionally, `scripts/dev-app.sh`
+auto-exports `MNEMA_LICENSE_PUBLIC_KEY` from
+`~/.mnema-licensing-keys/dev_public_key.hex` if present (path overridable via
+`MNEMA_DEV_PUBLIC_KEY_FILE`; an explicit `MNEMA_LICENSE_PUBLIC_KEY` wins);
+export the matching `MNEMA_LICENSE_KID` and `MNEMA_LICENSE_PK_TOKEN` yourself.
 
 ### Runtime dev knobs (debug builds only; all in `turbo.json` `passThroughEnv`)
 
@@ -45,7 +50,7 @@ product's verifying key there); export the matching `MNEMA_LICENSE_KID` and
 | `MNEMA_TRIAL_RESET` | `1` | Clear the trial-issuance stamp once at launch (stored keys untouched), to re-run the first-capture trial flow. |
 | `MNEMA_TRIAL_LEN_MS` | `300000` | Shrink the 7-day offline-issuance ceiling (here, 5 min) so the "connect once to start your trial" gate is testable in one sitting. The trial days themselves are server-issued and not overridable client-side. |
 | `MNEMA_TRIAL_LEN_DAYS` | `45` | **Compile-time** (build env, not runtime): the trial-days number shown in the pre-trial promise copy (`TrialNotStarted`). Display-only — enforcement is the server plan; set this at build time if the server plan changes. Baked fallback: 30. |
-| `MNEMA_LICENSE_TOKEN_DIR` | a temp dir | Store licensing keychain items (key/receipt/stamps) as files in a directory instead of the OS keychain — test/dev isolation, same idea as `MNEMA_DEV_MASTER_KEY_FILE`. |
+| `MNEMA_LICENSE_TOKEN_DIR` | a temp dir | **Tests only** (`#[cfg(test)]` in `license_token_store.rs` — a built app ignores it): store licensing keychain items (key/receipt/stamps) as files in a directory instead of the OS keychain. |
 
 > Any new `MNEMA_*` var must be added to `turbo.json` `passThroughEnv` — turbo
 > silently strips undeclared vars, so a knob set on the command line never

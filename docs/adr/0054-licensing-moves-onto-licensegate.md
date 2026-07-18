@@ -2,10 +2,10 @@
 
 ## Status
 
-Proposed. Supersedes the *implementation* of
+Accepted. Implemented on PR #162 (2026-07-18). Supersedes the *implementation* of
 [ADR 0053](0053-licenses-activate-once-per-machine-via-a-signed-activation-receipt.md) (and the
 mechanism halves of [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)
-and [ADR 0052](0052-refunded-licenses-die-via-a-signed-revocation-list.md)): the in-repo
+and [ADR 0056](0056-refunded-licenses-die-via-a-signed-revocation-list.md)): the in-repo
 Fulfillment worker (`services/fulfillment`) and the app-side verify modules are replaced by
 **licensegate**, a standalone licensing platform. Every piece of philosophy those ADRs decided
 **stands unchanged**: offline verification forever, one mandatory activation per machine then
@@ -15,7 +15,7 @@ Update Window has lapsed quietly re-activates on a cadence until healthy again �
 in-window machine still never phones home)*, staleness never locks, Read-Only Mode never holds
 history hostage, the 3-device cap with self-service reset, and the privacy commitment (the
 activation request carries exactly a license id, a salted irreversible machine hash, and — per
-ADR 0055 — a generic hardware model label such as "MacBook Air (M2, 2022)"; no name, email,
+ADR 0055 — a generic hardware model label such as "Mac15,7" (`sysctl hw.model`); no name, email,
 personal computer name, OS version, or telemetry; the CRL fetch stays an anonymous GET).
 [ADR 0044](0044-monetize-as-one-time-purchase-with-paid-update-window.md) (the business model) is
 untouched.

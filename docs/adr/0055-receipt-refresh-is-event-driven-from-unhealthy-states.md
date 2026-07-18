@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-07-17). Amends
+Accepted (2026-07-17); implemented on PR #162. Amends
 [ADR 0053](0053-licenses-activate-once-per-machine-via-a-signed-activation-receipt.md) (the
 renewal model paragraph — renewals do **not** carry their own license id) and
 [ADR 0054](0054-licensing-moves-onto-licensegate.md) (the "never phone home" wording and the
@@ -46,7 +46,9 @@ A machine only re-activates when something could improve its situation:**
   button in Settings → licensing (the Read-Only screen's "Re-check license" button is the same
   action). User-initiated contact never counts against the no-phone-home promise — the promise
   governs what the app does unprompted. Nobody waits out the cadence: renewed elsewhere, click,
-  done. Opening the licensing section of Settings while unhealthy also refreshes automatically.
+  done. ~~Opening the licensing section of Settings while unhealthy also refreshes
+  automatically.~~ *(Struck 2026-07-18: not implemented — the buttons and the background
+  cadence cover the need; opening Settings only fetches the device count.)*
 - **Background cadence, scoped to one state only — a paid license whose Update Window has
   lapsed**: every 4 hours for the first 14 days after lapse (renewals cluster near lapse), then
   daily, stopping the moment a refresh reports the window open. Expired trials and Revoked
@@ -55,7 +57,7 @@ A machine only re-activates when something could improve its situation:**
   trial days, an un-revoke) propagates via the Re-check button. Provisional keeps its
   pre-existing 7-day activation retry loop unchanged.
 
-**Activation gains one field: a generic hardware model label** ("MacBook Air (M2, 2022)") so the
+**Activation gains one field: a generic hardware model label** (`sysctl hw.model`, e.g. "Mac15,7") so the
 seller's support dashboard can tell a license's ≤3 devices apart. Never the personal computer
 name — macOS defaults it to "⟨FirstName⟩'s MacBook Pro", which would attach the customer's real
 name to the license row. The label surfaces only in the admin dashboard; Mnema still shows a
@@ -79,8 +81,10 @@ offline-forever valid. Refresh can only ever *improve* a machine's state.
 ## Consequences
 
 - A renewing customer: the machine they renew from confirms in seconds; their other machines
-  heal within ≤4 hours unattended (instantly on opening Settings). The `receipt_stale` helper
-  cues the cadence.
+  heal within ≤4 hours unattended (or instantly via the Refresh button). The cadence is cued
+  by the governing status evaluation itself — `Licensed { in_window: false }` with a stored
+  receipt — in `licensing/receipt_refresh.rs`, so it can never disagree with what the gate
+  enforces.
 - Accepted residual — **early renewal blip**: someone who renews while still in-window has
   healthy sibling machines that stay silent and briefly read "lapsed" at the old expiry before
   the cadence heals them within hours.

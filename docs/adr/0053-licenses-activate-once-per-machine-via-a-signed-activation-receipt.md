@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. **Implementation superseded by
+Accepted. Implemented on PR #162 (2026-07-18). **Implementation superseded by
 [ADR 0054](0054-licensing-moves-onto-licensegate.md)** (2026-07-16): the Fulfillment worker, its
 KV activation records, and the in-app receipt verification described below are replaced by
 licensegate; trials are no longer serverless (server-issued at first Capture). The philosophy —
@@ -12,7 +12,7 @@ and the privacy commitment — stands unchanged.
 Supersedes [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
 rejection of an activation server ("the desktop app and the customer must never phone home" →
 now "activates once per machine, then never phones home"). Amends
-[ADR 0052](0052-refunded-licenses-die-via-a-signed-revocation-list.md): the CRL's charter widens
+[ADR 0056](0056-refunded-licenses-die-via-a-signed-revocation-list.md): the CRL's charter widens
 from full refunds only to also cover demonstrably-leaked keys, and the activation endpoint
 refuses revoked ids outright.
 
@@ -20,7 +20,7 @@ refuses revoked ids outright.
 
 ADR 0045 chose pure offline verification: any machine holding a valid signed key gets Capture,
 forever, with zero server contact. That leaves exactly one abuse channel wide open: **casual key
-sharing** — one purchased key pasted on unlimited machines. The CRL (ADR 0052) can kill a key
+sharing** — one purchased key pasted on unlimited machines. The CRL (ADR 0056) can kill a key
 after the fact but has no way to *see* sharing happen.
 
 A deep-research pass over shipped comparables found that **one-time online activation is the one
@@ -51,6 +51,8 @@ no expiry, no runtime calls after.**
   hardware-stable machine identifier (macOS Hardware UUID — survives factory reset). The salt
   derives from the license id, so the same machine always hashes the same (idempotency depends
   on it). No name, email, device name, OS, or telemetry. This privacy commitment is public.
+  *(Amended by ADR 0055: the request gains one field — a generic hardware model label, e.g.
+  "Mac15,7" — never the personal computer name.)*
 - **The receipt** is Ed25519-signed with the existing key, **domain-separated** (as the CRL is)
   so receipts, licenses, and CRLs can never be replayed as one another. Verified against the
   same hardcoded public key. A receipt never outranks the CRL.
@@ -72,7 +74,7 @@ no expiry, no runtime calls after.**
   record per license id: `activation:<license_id> → { machines[], last_reset_at,
   lifetime_machine_count }`. Idempotent by construction: factory reset, reinstall, re-paste,
   and lost-key re-mints (same derived license id) all land on an existing hash and consume
-  nothing. ~~**Renewals** keep their own license id (per ADR 0052's derivation — a refunded
+  nothing. ~~**Renewals** keep their own license id (per ADR 0056's derivation — a refunded
   renewal must revoke only itself) and therefore carry their own slots; pasting a renewal key
   triggers one silent re-activation. Accepted: slots multiply only with paid, owner-verified
   renewals.~~ *(Superseded 2026-07-17: licensegate renewals extend the **same** license id —
@@ -88,7 +90,7 @@ no expiry, no runtime calls after.**
   more; old machines keep working) is policed not at the reset lever but by the **lifetime
   distinct-machine count**: a license that has touched an implausible number of machines is
   leaked, and that is a CRL entry — which *does* reach already-activated machines. This is the
-  telemetry the CRL always lacked, and it widens the CRL's charter beyond refunds (amends 0052).
+  telemetry the CRL always lacked, and it widens the CRL's charter beyond refunds (amends 0056).
 - **The activation endpoint refuses Revoked license ids**, so a dead key can never plant itself
   on a new machine; previously-activated machines die via the CRL as before.
 - **The Trial stays 100% serverless.** The activation request is the first byte Mnema's
@@ -127,7 +129,9 @@ no expiry, no runtime calls after.**
   not a lock-out (history stays fully usable), so the never-lock-existing-data rule holds.
 - **Renewals inherit the original license id (shared slots).** Rejected: revocation kills by
   license id, so a refunded renewal would either kill the original paid license or be
-  unrevocable.
+  unrevocable. *(Later adopted after all — see the struck Decision paragraph above and
+  [ADR 0055](0055-receipt-refresh-is-event-driven-from-unhealthy-states.md): licensegate rolls
+  a refunded renewal's extension back instead of revoking, which dissolves this objection.)*
 
 ## Consequences
 

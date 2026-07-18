@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed. Amends [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
-"keys are non-revocable" decision.
+Accepted. Implemented on PR #162 (2026-07-18). Amends [ADR 0045](0045-licenses-verified-offline-ed25519-polar-merchant-of-record-only.md)'s
+"keys are non-revocable" decision. Renumbered from 0052 (2026-07-18) — that number was
+already taken by the system-audio ADR.
 
 Amended by [ADR 0053](0053-licenses-activate-once-per-machine-via-a-signed-activation-receipt.md):
 the CRL's charter widens from full refunds only to also cover demonstrably-leaked keys

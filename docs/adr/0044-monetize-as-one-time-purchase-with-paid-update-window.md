@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted. Implemented on PR #162 (2026-07-18).
 
 ## Context
 
@@ -35,7 +35,9 @@ CleanShot X / Sketch model. Launch parameters (revisable policy values, not arch
 - **Perpetual Fallback.** An owner permanently keeps the right to *run* the newest build released
   within their window. "Perpetual" = perpetual **use**, not perpetual **updates**.
 - **30-day Trial**, no account, no card. The clock starts at **first successful Capture** (not
-  first launch), so setup/permission time never burns trial days.
+  first launch), so setup/permission time never burns trial days. *(Amended 2026-07-16, ADR
+  0054: trials are server-issued — the clock starts at issuance, which is requested at first
+  Capture and may lag it by up to 7 offline days; capture never blocks on the request.)*
 - **Read-Only Mode on Trial expiry.** The paid product is fundamentally **forward Capture**. When
   a trial lapses, new Capture stops but all already-recorded history stays fully browsable,
   searchable, and Ask-AI-able. Trial expiry never holds a user's own recorded history hostage —
