@@ -554,6 +554,17 @@ impl CaptureRetentionStore {
             self.delete_eligible_batch(&[], &orphan_frame_ids, &orphan_audio_ids, &mut summary)
                 .await?;
         }
+        // Orphan speaker-cluster GC is global (not tied to any batch's rows), so
+        // it runs ONCE per sweep in its own short tx instead of inside every
+        // batch — per-batch it held the writer lock for the whole correlated
+        // scan, every batch, starving other writers into "database is locked".
+        // A crash before this leaves already-orphaned derived rows until the
+        // next sweep GCs them, which is fine.
+        {
+            let mut tx = self.db.begin_write().await?;
+            gc_orphan_speaker_rows(&mut tx).await?;
+            tx.commit().await?;
+        }
         // Run record is best-effort bookkeeping after the durable deletes (file
         // tombstoning below keys off its id); a crash here only loses one
         // latest_status row, never leaves raw-gone-dossier-left.
@@ -1455,6 +1466,14 @@ async fn delete_speaker_rows_for_audio_segments(
         audio_ids,
     )
     .await?;
+    Ok(())
+}
+
+/// Delete speaker rows that no longer have a referent: clusters with no
+/// remaining turns or segment-cluster links, then embeddings/rejections whose
+/// source cluster is gone. Global cleanup — runs once per sweep (not per
+/// batch), after all batches committed.
+async fn gc_orphan_speaker_rows(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Result<()> {
     sqlx::query(
         "DELETE FROM recording_speaker_clusters
          WHERE NOT EXISTS (SELECT 1 FROM speaker_turns WHERE speaker_turns.cluster_id = recording_speaker_clusters.id)
@@ -2152,6 +2171,77 @@ mod tests {
             assert_eq!(summary.deleted_processing_results, 1);
             assert_eq!(summary.status, "completed");
             for table in ["frames", "processing_jobs", "processing_results"] {
+                let count: i64 = sqlx::query(&format!("SELECT COUNT(*) AS count FROM {table}"))
+                    .fetch_one(&pool)
+                    .await
+                    .expect("count should query")
+                    .get("count");
+                assert_eq!(count, 0, "{table} should be empty after cleanup");
+            }
+        });
+    }
+
+    /// The orphan speaker-cluster GC now runs once per sweep (after the batch
+    /// loop, in its own tx) instead of inside every batch — this asserts a
+    /// cluster orphaned by the sweep's own turn deletes still gets collected,
+    /// along with its dependent embedding/rejection rows.
+    #[test]
+    fn cleanup_collects_orphaned_speaker_clusters_once_per_sweep() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            sqlx::query(
+                "INSERT INTO audio_segments (source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id)
+                 VALUES ('microphone', 'mic-source-1', 1, '/tmp/mnema-expired-orphan-audio.m4a', '2026-05-10T15:00:00Z', '2026-05-10T15:01:00Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("orphan audio segment should insert");
+            sqlx::query("INSERT INTO recording_speaker_clusters (id) VALUES (1)")
+                .execute(&pool)
+                .await
+                .expect("cluster should insert");
+            sqlx::query(
+                "INSERT INTO speaker_turns (audio_segment_id, cluster_id) VALUES (1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("speaker turn should insert");
+            sqlx::query("INSERT INTO person_voice_embeddings (source_cluster_id) VALUES (1)")
+                .execute(&pool)
+                .await
+                .expect("voice embedding should insert");
+            sqlx::query("INSERT INTO speaker_recognition_rejections (source_cluster_id) VALUES (1)")
+                .execute(&pool)
+                .await
+                .expect("rejection should insert");
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_audio_segments, 1);
+            for table in [
+                "audio_segments",
+                "speaker_turns",
+                "recording_speaker_clusters",
+                "person_voice_embeddings",
+                "speaker_recognition_rejections",
+            ] {
                 let count: i64 = sqlx::query(&format!("SELECT COUNT(*) AS count FROM {table}"))
                     .fetch_one(&pool)
                     .await
