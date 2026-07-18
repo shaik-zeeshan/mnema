@@ -269,8 +269,8 @@ fn claim_checkout_id_from_url(url: &url::Url) -> Option<String> {
 /// payload: the machine already holds the key (a renewal extends the existing
 /// license, ADR 0055), so the hit only cues a short Receipt Refresh poll.
 /// Ops note: the Polar renewal product's success URL must point at
-/// `https://mnema.day/license/renewed?checkout_id={CHECKOUT_ID}` — the bounce
-/// page that fires this deep link (providers can't emit custom schemes).
+/// `https://mnema.day/license/open?flow=renewal&checkout_id={CHECKOUT_ID}` — the
+/// bounce page that fires this deep link (providers can't emit custom schemes).
 fn is_license_renewed_url(url: &url::Url) -> bool {
     matches!(url.scheme(), "mnema" | "mnema-dev")
         && url.host_str() == Some("license")

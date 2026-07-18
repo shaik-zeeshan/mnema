@@ -64,7 +64,8 @@ export const LICENSE_CHECKOUT_URL =
 
 /** Dedicated checkout link for the $29 renewal — separate from the purchase
  * link because the success URL is a property of the link, and renewals must
- * return via `mnema.day/license/renewed` (purchases via `/license/claim`).
+ * return via `mnema.day/license/open?flow=renewal` (purchases via the same
+ * page's default claim flow).
  * Override via VITE_RENEWAL_CHECKOUT_URL. */
 export const RENEWAL_CHECKOUT_URL =
 	import.meta.env.VITE_RENEWAL_CHECKOUT_URL ||

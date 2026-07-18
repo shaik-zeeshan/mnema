@@ -35,7 +35,7 @@ A machine only re-activates when something could improve its situation:**
 
 - **On key install** (paste or claim) — the existing silent re-activation, unchanged.
 - **On return from the in-app Renew checkout.** The Renew button's Polar checkout gains a
-  success redirect via the `https://mnema.day/license/renewed` bounce page, which fires the
+  success redirect via the `https://mnema.day/license/open?flow=renewal` bounce page, which fires the
   `mnema://license/renewed` deep link; the app then polls Receipt Refresh
   (~2 s, webhook lag) until the extended window lands, giving up politely after ~1 minute into
   the background cadence. **Renewals never ride the claim flow** — claim is key *delivery* to a

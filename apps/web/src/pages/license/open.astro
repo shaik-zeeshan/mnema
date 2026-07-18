@@ -1,12 +1,21 @@
 ---
-// Renewal-return redirect. The Polar renewal product's success URL points here
-// because most providers can't emit a custom `mnema://` protocol themselves — so
-// they land the browser on `https://mnema.day/license/renewed?checkout_id=…` and
-// this page bounces into the `mnema://license/renewed` deep link the desktop app
-// handles (a short Receipt Refresh poll).
+// Post-checkout / email-CTA bounce page. Payment providers and licensegate emails
+// can't emit a custom `mnema://` protocol themselves — so they land the browser on
+// `https://mnema.day/license/open?flow={EVENT}&checkout_id={CHECKOUT_ID}` and this
+// page bounces into the right desktop deep link:
 //
-// checkout_id is only a crawler guard here — the machine already holds the key, a
-// renewal just extends it server-side, so the deep link carries no payload at all.
+//   flow=claim (default)   → mnema://license/claim?checkout_id=…  (mint the key)
+//   flow=renewal           → mnema://license/renewed              (Receipt Refresh poll)
+//
+// `flow` values mirror licensegate's email template names (its {EVENT} placeholder);
+// unknown values fall back to the claim path so a future template degrades to the
+// safe default rather than a dead page. Only license_delivery and renewal emails
+// render a success_url CTA (payment_failed is text-only), so those two are the
+// whole surface.
+//
+// checkout_id is not a secret (unlike a license key, which would need hiding) — it's
+// an opaque id the app trades to licensegate for the key. For renewal/payment_failed
+// it's only a crawler guard; those deep links carry no payload at all.
 //
 // Self-contained on purpose (no Base.astro). Palette mirrors src/styles/tokens.css.
 //
@@ -22,7 +31,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Mnema license renewed</title>
+    <title>Open Mnema</title>
     <link rel="icon" type="image/png" href="/icon.png" />
     <meta name="robots" content="noindex" />
     <style>
@@ -77,12 +86,22 @@
   <body>
     <main class="card" hidden>
       <img class="logo" src="/icon.png" alt="Mnema" />
-      <h1>Thanks for renewing Mnema</h1>
-      <p>Opening the app to confirm your extended update window…</p>
 
+      <div class="copy" data-flow="claim" hidden>
+        <h1>Thanks for buying Mnema</h1>
+        <p>Opening the app to apply your license…</p>
+      </div>
+      <div class="copy" data-flow="renewal" hidden>
+        <h1>Thanks for renewing Mnema</h1>
+        <p>Opening the app to confirm your extended update window…</p>
+      </div>
       <a id="open" class="btn btn-primary" href="#">Open Mnema</a>
 
-      <p class="hint">
+      <p class="hint" data-flow="claim" hidden>
+        Didn't open? Your license key is also on its way by email — paste it into
+        <strong>Settings → License</strong>.
+      </p>
+      <p class="hint" data-flow="renewal" hidden>
         Didn't open? Use the <strong>Refresh license status</strong> button in
         <strong>Settings → License</strong>.
       </p>
@@ -90,19 +109,27 @@
 
     <script is:inline>
       (function () {
-        var checkoutId = new URLSearchParams(location.search).get("checkout_id") || "";
-        var openEl = document.getElementById("open");
+        var params = new URLSearchParams(location.search);
+        var checkoutId = params.get("checkout_id") || "";
+        var flow = params.get("flow") === "renewal" ? "renewal" : "claim";
 
-        // No id means someone reached /license/renewed directly (crawler, guessed URL).
-        // Nothing to confirm — bounce to the site so it never reads as a real page.
+        // No id means someone reached /license/open directly (crawler, guessed URL).
+        // Nothing to bounce — go to the site so it never reads as a real page.
         if (!checkoutId) {
           location.replace("/");
           return;
         }
 
-        // No payload on the deep link — the app already holds the key.
-        var deepLink = "mnema://license/renewed";
+        // Only a claim carries a payload — a renewal just pokes the app's
+        // Receipt Refresh poll; the machine already holds the key.
+        var deepLink = flow === "claim"
+          ? "mnema://license/claim?checkout_id=" + encodeURIComponent(checkoutId)
+          : "mnema://license/renewed";
+
+        var openEl = document.getElementById("open");
         openEl.href = deepLink;
+        document.querySelector('.copy[data-flow="' + flow + '"]').hidden = false;
+        document.querySelector('.hint[data-flow="' + flow + '"]').hidden = false;
         document.querySelector(".card").hidden = false;
 
         // Auto-fire once; the button stays as the manual fallback if the OS blocks it.
