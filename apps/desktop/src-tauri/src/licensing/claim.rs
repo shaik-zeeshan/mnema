@@ -78,6 +78,7 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
                     && !super::confirm_license_replacement(&app_handle).await
                 {
                     tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "claim license replacement declined by the user");
+                    super::emit_deep_link_done(&app_handle, "closed", None);
                     return;
                 }
                 // Same chain as a paste: verify+vet → store → first_seen stamp
@@ -108,6 +109,9 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
             tokio::time::sleep(CLAIM_POLL_INTERVAL).await;
         }
     }
+    // The native dialog is the surface here; the receipt modal just stops
+    // spinning instead of duplicating it.
+    super::emit_deep_link_done(&app_handle, "closed", None);
     email_fallback_dialog(&app_handle);
 }
 

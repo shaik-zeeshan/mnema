@@ -36,6 +36,7 @@
   } from "$lib/notifications.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
+  import LicenseDeepLinkModal from "$lib/LicenseDeepLinkModal.svelte";
   import {
     GLOBAL_SHORTCUTS,
     getEffectiveGlobalShortcut,
@@ -1499,6 +1500,10 @@
          Renders nothing outside a trial's final week / Read-Only Mode. Main
          window only — Quick Recall / onboarding / dedicated surfaces stay clean. -->
     <LicenseBanner />
+    <!-- Deep-link receipt: the visible acknowledgement when a mnema://license/*
+         deep link bounces the user back into the app. Main window only — that's
+         the window the dispatcher surfaces. -->
+    <LicenseDeepLinkModal />
   {/if}
 
   <main class="app-content" class:app-content--narrow={isNarrow} class:app-content--dedicated={showDedicatedTitlebar} class:app-content--panel={isPanelSurface} class:app-content--settings={isSettingsRoute && !showDedicatedTitlebar}>

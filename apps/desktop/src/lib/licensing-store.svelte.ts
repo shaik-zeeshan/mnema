@@ -18,10 +18,17 @@ let status = $state<LicenseStatus | null>(null);
 // boot snapshot; once any event has landed, the late-arriving startup snapshot
 // must never regress the store back to a stale value.
 let gotEvent = false;
+// Bumped on every live `license_status` emit — lets one-shot UIs (the license
+// deep-link receipt modal) react to "a result landed" even when the payload
+// equals the previous status (e.g. re-activating the already-installed key).
+let revision = $state(0);
 
 export const licenseStatus = {
 	get value(): LicenseStatus | null {
 		return status;
+	},
+	get revision(): number {
+		return revision;
 	},
 };
 
@@ -42,6 +49,7 @@ export function initLicenseStatus(): void {
 	void listen<LicenseStatus>(LICENSE_STATUS_EVENT, (event) => {
 		gotEvent = true;
 		status = event.payload;
+		revision += 1;
 	});
 }
 

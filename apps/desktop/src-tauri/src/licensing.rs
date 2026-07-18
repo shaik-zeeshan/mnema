@@ -39,6 +39,33 @@ use crate::app_infra::AppInfraState;
 /// (the camelCase tagged shape mirrored in `apps/desktop/src/lib/licensing.ts`).
 pub const LICENSE_STATUS_EVENT: &str = "license_status";
 
+/// Terminal deep-link endings that will never produce a `license_status` emit —
+/// without this the deep-link receipt modal would spin forever on them.
+/// `failed` carries a human message and shows the modal's failed face; `closed`
+/// closes the receipt silently (the user declined the replacement confirm, or
+/// the claim path handed off to its native email dialog). Hand-mirrored in
+/// `$lib/license-deeplink-receipt.ts` (`LicenseDeepLinkDone`).
+pub(crate) const LICENSE_DEEP_LINK_DONE_EVENT: &str = "license_deep_link_done";
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct LicenseDeepLinkDonePayload {
+    /// "failed" | "closed"
+    outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<&'static str>,
+}
+
+pub(crate) fn emit_deep_link_done(
+    app_handle: &tauri::AppHandle,
+    outcome: &'static str,
+    message: Option<&'static str>,
+) {
+    let _ = app_handle.emit(
+        LICENSE_DEEP_LINK_DONE_EVENT,
+        LicenseDeepLinkDonePayload { outcome, message },
+    );
+}
+
 /// In-memory cache of the latest computed status. Other seams — the capture
 /// gate and the status bar — read it synchronously via [`cached_status`]
 /// instead of touching the DB/keychain on the hot path. `.manage(...)`-
@@ -559,11 +586,20 @@ pub async fn activate_from_deep_link(app_handle: tauri::AppHandle, key: String) 
         && !confirm_license_replacement(&app_handle).await
     {
         tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "deep-link license replacement declined by the user");
+        emit_deep_link_done(&app_handle, "closed", None);
         return;
     }
     let infra = std::sync::Arc::clone(&*state);
     if let Err(error) = install_license_key(infra.pool(), &app_handle, &key).await {
         tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "deep-link license key rejected: {error}");
+        emit_deep_link_done(
+            &app_handle,
+            "failed",
+            Some(
+                "This license key couldn't be verified. If it arrived by email, \
+                 paste it in Settings → License.",
+            ),
+        );
     }
 }
 

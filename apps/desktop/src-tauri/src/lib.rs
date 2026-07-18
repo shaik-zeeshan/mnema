@@ -193,6 +193,48 @@ fn open_conversation_in_chat(
     let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
 }
 
+/// Fired the instant a license deep link is routed — before any activation /
+/// claim / renewal work runs — so the frontend can raise the deep-link receipt
+/// modal in its "working" face right away. Every later transition (activated /
+/// pending / over-cap / renewed) rides the existing `license_status` event.
+const LICENSE_DEEP_LINK_EVENT: &str = "license_deep_link";
+
+/// Hand-mirrored in `$lib/license-deeplink-receipt.ts` (`DeepLinkFlow`).
+#[derive(Debug, Clone, serde::Serialize)]
+struct LicenseDeepLinkPayload {
+    /// "activate" | "claim" | "renewed" — the `mnema://license/*` route.
+    flow: &'static str,
+}
+
+/// Pending license deep-link announcement for a cold main window. Mirrors
+/// `InsightsOpenConversationState`: the live event drives a warm window, while
+/// a freshly-opened (cold) window — the checkout-bounce path launches the app
+/// via the deep link, so the webview isn't listening yet — takes this slot on
+/// mount. One slot, latest wins: only the newest deep link deserves a modal.
+#[derive(Default)]
+struct LicenseDeepLinkState {
+    pending: Mutex<Option<LicenseDeepLinkPayload>>,
+}
+
+#[tauri::command]
+fn take_pending_license_deep_link(
+    state: tauri::State<'_, LicenseDeepLinkState>,
+) -> Option<LicenseDeepLinkPayload> {
+    state.pending.lock().ok().and_then(|mut pending| pending.take())
+}
+
+/// Queue-when-cold + emit, same shape as `open_conversation_in_chat` (queuing
+/// on a warm window would strand a stale entry that replays on the next boot).
+fn announce_license_deep_link(app_handle: &tauri::AppHandle, flow: &'static str) {
+    let payload = LicenseDeepLinkPayload { flow };
+    if app_handle.get_webview_window("main").is_none() {
+        if let Ok(mut pending) = app_handle.state::<LicenseDeepLinkState>().pending.lock() {
+            *pending = Some(payload.clone());
+        }
+    }
+    let _ = app_handle.emit(LICENSE_DEEP_LINK_EVENT, payload);
+}
+
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
         target == *prefix
@@ -283,12 +325,14 @@ fn is_license_renewed_url(url: &url::Url) -> bool {
 /// none swallows another.
 fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
     if let Some(key) = license_key_from_url(url) {
+        announce_license_deep_link(app_handle, "activate");
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             licensing::activate_from_deep_link(app_handle.clone(), key).await;
             let _ = windows::open_main_window(&app_handle);
         });
     } else if let Some(checkout_id) = claim_checkout_id_from_url(url) {
+        announce_license_deep_link(app_handle, "claim");
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             // Surface the app before polling — the buyer was just bounced back
@@ -297,6 +341,7 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
             licensing::claim_from_deep_link(app_handle, checkout_id).await;
         });
     } else if is_license_renewed_url(url) {
+        announce_license_deep_link(app_handle, "renewed");
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
             // Surface the app before polling — the buyer was just bounced back
@@ -543,6 +588,7 @@ pub fn run() {
         .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
+        .manage(LicenseDeepLinkState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(semantic_search_query::SemanticQueryEmbedderState::new())
         // The Semantic Index Backfill worker's health, published each sweep pass and
@@ -829,6 +875,7 @@ pub fn run() {
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
             drain_pending_insights_open_conversations,
+            take_pending_license_deep_link,
             has_pending_insights_open_conversations,
             open_conversation_in_chat,
         ])

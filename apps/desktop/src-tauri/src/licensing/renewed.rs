@@ -61,6 +61,14 @@ pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
         }
     }
     tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: window still closed after {RENEWED_POLL_ATTEMPTS} attempts; the background cadence takes over");
+    super::emit_deep_link_done(
+        &app_handle,
+        "failed",
+        Some(
+            "We couldn't confirm your renewal yet — it will apply automatically \
+             once the license server is reachable.",
+        ),
+    );
 }
 
 #[cfg(test)]
