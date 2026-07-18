@@ -13,9 +13,10 @@
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { confirm } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import { trapTabKey } from "$lib/keyboard";
-  import { licenseStatus } from "$lib/licensing-store.svelte";
+  import { licenseStatus, resetLicenseDevices } from "$lib/licensing-store.svelte";
   import { safeExternalUrl } from "$lib/licensing-panel";
   import { openSettings } from "$lib/surface-windows";
   import {
@@ -57,6 +58,8 @@
     baselineRevision = licenseStatus.revision;
     face = { face: "working" };
     slow = false;
+    resetting = false;
+    resetNote = null;
     episodeActive = true;
     open = true;
     clearSlowTimer();
@@ -129,6 +132,36 @@
     void openUrl(safe).catch((e) =>
       console.error("[LicenseDeepLink] open external failed", e),
     );
+  }
+
+  // In-app "Free up my devices" (same seam as Settings → License): the backend
+  // resets and retries activation itself, so on success the license_status
+  // event morphs this face to activated/pending — the note only covers the gap.
+  let resetting = $state(false);
+  let resetNote = $state<string | null>(null);
+
+  async function submitReset(): Promise<void> {
+    if (resetting) return;
+    const ok = await confirm(
+      "Free up your devices? This clears the license's device list so this Mac can activate. You can do this once every 30 days.",
+      { title: "Free up my devices", kind: "warning" },
+    );
+    if (!ok) return;
+    resetting = true;
+    resetNote = null;
+    try {
+      const result = await resetLicenseDevices();
+      resetNote =
+        result.outcome === "reset"
+          ? "Devices freed — finishing activation on this Mac…"
+          : result.retryAtMs !== null
+            ? `Your devices were already reset recently — you can reset again on ${fmtReceiptDate(result.retryAtMs)}.`
+            : "Your devices were already reset recently — you can reset again later.";
+    } catch (err) {
+      resetNote = err instanceof Error ? err.message : String(err);
+    } finally {
+      resetting = false;
+    }
   }
 
   const ariaLabel = $derived(
@@ -263,12 +296,24 @@
           </button>
           <button
             type="button"
-            class="receipt-btn receipt-btn--primary"
+            class="receipt-btn receipt-btn--ghost"
             onclick={() => openExternal(cap.resetUrl)}
           >
-            Free up my devices
+            Help
+          </button>
+          <button
+            type="button"
+            class="receipt-btn receipt-btn--primary"
+            disabled={resetting}
+            aria-busy={resetting}
+            onclick={() => void submitReset()}
+          >
+            {resetting ? "Freeing up…" : "Free up my devices"}
           </button>
         </div>
+        {#if resetNote}
+          <p class="receipt-sub" role="status">{resetNote}</p>
+        {/if}
       {:else if face.face === "failed"}
         <div class="receipt-glyph receipt-glyph--warn">!</div>
         <h1 class="receipt-title">Couldn't finish this license link</h1>
