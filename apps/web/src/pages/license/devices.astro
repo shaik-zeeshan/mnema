@@ -1,13 +1,15 @@
 ---
 // Support note for the license device cap — this is the page the license
 // server's `reset_url` points at when an activation is refused with
-// "device cap reached". Everything self-service happens inside the app
+// "device cap reached" (set it to https://mnema.day/license/devices in the
+// licensegate console). Everything self-service happens inside the app
 // ("Free up my devices" in Settings → License); this page just explains it
-// for people who land here from the link.
+// for people who land here from the link. Subject-named route on purpose:
+// the page moves you to a new Mac, it doesn't reset anything itself.
 //
 // Self-contained on purpose, like /license/open: no Base.astro (its release-fetch
 // machinery is dead weight here). Palette mirrors src/styles/tokens.css.
-import { GITHUB_URL } from "../config";
+import { GITHUB_URL } from "../../config";
 ---
 
 <!doctype html>
