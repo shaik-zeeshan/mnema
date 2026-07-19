@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Triggers — Flow 1: dense terminal list</title>
+  <style>
+    /* Tokens copied from docs/user-context/mockups/tokens.css (dark theme only). */
+    :root {
+      --app-bg: #0c0c0e;
+      --app-fg: #e2e2e8;
+      --app-titlebar-bg: #08080c;
+      --app-titlebar-border: #15151f;
+      --app-titlebar-title: #45455a;
+      --app-status-bg: #0a0a10;
+      --app-status-border: #161624;
+      --app-status-fg: #555574;
+      --app-status-dot: #2a2a3a;
+      --app-surface: #0e0e16;
+      --app-surface-subtle: #101018;
+      --app-surface-raised: #13131a;
+      --app-surface-hover: #1a1a2a;
+      --app-border: #1e1e2e;
+      --app-border-strong: #2a2a3a;
+      --app-border-hover: #3a3a5a;
+      --app-text-strong: #e2e2e8;
+      --app-text: #c0c0d0;
+      --app-text-muted: #7a7a9a;
+      --app-text-subtle: #44445a;
+      --app-text-faint: #33334a;
+      --app-accent: #3dffa0;
+      --app-accent-strong: #2a8a60;
+      --app-accent-bg: #0d1f15;
+      --app-accent-border: #1a4a30;
+      --app-accent-glow: rgba(61, 255, 160, 0.18);
+      --app-warn: #d6a14a;
+      --app-warn-bg: #1a1208;
+      --app-warn-border: #7a4a18;
+      --app-danger: #ff6b7a;
+      --app-danger-text: #ff8090;
+      --app-neutral-bg: #1a1a2a;
+      --app-neutral-border: #2a2a3a;
+      --app-neutral-text: #7070a0;
+      --app-icon-fg: #8a8aaa;
+      --app-icon-fg-hover: #e2e2e8;
+      --app-icon-bg-hover: #1a1a2a;
+      --app-icon-border-hover: #2a2a3a;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+        "Cascadia Code", "Fira Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+    a { color: inherit; text-decoration: none; }
+    .hidden { display: none !important; }
+
+    /* ================================================== MOCKUP EXPLAINER BAR (not part of the app) */
+    .mockup-bar {
+      display: flex;
+      align-items: baseline;
+      gap: 12px 18px;
+      flex-wrap: wrap;
+      max-width: 1180px;
+      margin: 14px auto 0;
+      padding: 8px 12px;
+      border: 1px dashed var(--app-border-strong);
+      border-radius: 8px;
+      font-size: 11px;
+      line-height: 1.55;
+      color: var(--app-text-muted);
+    }
+    .mockup-bar b { color: var(--app-text); font-weight: 700; }
+    .mockup-bar .tag { color: var(--app-text-subtle); letter-spacing: 0.08em; }
+    .mockup-bar .spacer { flex: 1 1 auto; }
+    .flow-steps { white-space: nowrap; color: var(--app-text-faint); }
+    .flow-steps span { color: var(--app-text-subtle); }
+    .flow-steps span.on { color: var(--app-accent); }
+    .mockup-bar nav a { color: var(--app-text-subtle); text-decoration: none; margin-left: 10px; white-space: nowrap; }
+    .mockup-bar nav a:hover { color: var(--app-text); text-decoration: underline; }
+
+    /* ================================================== APP WINDOW FRAME */
+    .app-window {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1180px;
+      height: calc(100vh - 112px);
+      margin: 12px auto 16px;
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--app-bg);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+    }
+    .titlebar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      height: 36px;
+      flex: 0 0 36px;
+      padding: 0 12px;
+      background: var(--app-titlebar-bg);
+      border-bottom: 1px solid var(--app-titlebar-border);
+      user-select: none;
+    }
+    .titlebar-left { display: flex; align-items: center; gap: 12px; }
+    .titlebar-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+    .traffic-lights { display: flex; align-items: center; gap: 8px; }
+    .traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .tl-close { background: #ff5f57; }
+    .tl-min { background: #febc2e; }
+    .tl-max { background: #28c840; }
+    .wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+    /* On the DOC screen the titlebar shows the Timeline/Insights toggle (wordmark moves left). */
+    .doc-only { display: none !important; }
+    body[data-screen="doc"] .doc-only { display: inline-flex !important; }
+    body[data-screen="doc"] .not-doc { display: none !important; }
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; padding: 3px 9px;
+      border: 1px solid var(--app-status-border); border-radius: 999px;
+      background: var(--app-status-bg); color: var(--app-status-fg);
+    }
+    .status-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--app-status-dot); }
+
+    /* ================================================== SCREENS */
+    .screen { display: none !important; }
+    .screen.active { display: flex !important; }
+
+    /* ================================================== SHARED CONTROLS */
+    .btn {
+      font: inherit;
+      font-size: 11.5px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .btn-secondary { border: 1px solid var(--app-border-strong); background: transparent; color: var(--app-text-muted); }
+    .btn-secondary:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); background: var(--app-surface-hover); }
+    .btn-primary { border: 1px solid var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-accent); cursor: pointer; }
+    .btn.btn-primary:hover { box-shadow: 0 0 10px var(--app-accent-glow); }
+    .btn .plus { color: inherit; opacity: 0.8; }
+
+    /* Segmented control (canonical app pattern) — shared by list filter, condition picker, surface toggle. */
+    .seg { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface-subtle); align-self: flex-start; }
+    .seg button {
+      font: inherit;
+      font-size: 11.5px;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 13px;
+      height: 22px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .seg button:hover { color: var(--app-text-strong); }
+    .seg button.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+    .filter-seg { margin-bottom: 10px; }
+
+    .quiet-btn { font: inherit; font-size: 11px; border: 0; padding: 0; background: transparent; color: var(--app-text-muted); cursor: pointer; transition: color 0.12s ease; }
+    .quiet-btn:hover { color: var(--app-accent); }
+
+    /* ================================================== SCREEN: LIST (triggers page) */
+    .page { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 28px 0; flex-direction: column; }
+    .page-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+    .page-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: 0.02em; color: var(--app-text-strong); }
+    .page-header .spacer { flex: 1 1 auto; }
+    .page-subtitle { margin: -10px 0 14px; font-size: 11.5px; color: var(--app-text-muted); }
+
+    .trigger-table { border-top: 1px solid var(--app-border); }
+    .t-head, .t-row { display: grid; grid-template-columns: 44px minmax(160px, 1fr) 200px minmax(280px, 1.4fr) auto; align-items: center; gap: 14px; padding: 0 10px; }
+    .t-head { height: 26px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); border-bottom: 1px solid var(--app-border); user-select: none; }
+    .t-row { height: 44px; border-bottom: 1px solid var(--app-border); transition: background 0.12s ease; }
+    .t-row:hover { background: var(--app-surface-hover); }
+    .t-name { font-size: 12.5px; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .cond-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      line-height: 1;
+      letter-spacing: 0.03em;
+      padding: 4px 8px;
+      border: 1px solid var(--app-neutral-border);
+      border-radius: 4px;
+      background: var(--app-neutral-bg);
+      color: var(--app-neutral-text);
+      white-space: nowrap;
+    }
+    .cond-chip .param { color: var(--app-text-muted); }
+    .t-status { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--app-text-muted); }
+    .t-status .when { color: var(--app-text-subtle); }
+    .status-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--app-text-faint); }
+    .st-completed .status-dot { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+    .st-completed .label { color: var(--app-accent-strong); }
+    .st-skipped .status-dot { background: var(--app-text-subtle); }
+    .st-skipped .label { color: var(--app-text-muted); }
+    .st-failed .status-dot { background: var(--app-danger); }
+    .st-failed .label { color: var(--app-danger-text); }
+    .st-provider .status-dot { background: var(--app-warn); }
+    .st-provider .label { color: var(--app-warn); }
+    .st-off .label, .st-none .label { color: var(--app-text-subtle); }
+    .provider-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      line-height: 1;
+      padding: 4px 8px;
+      border: 1px solid var(--app-warn-border);
+      border-radius: 4px;
+      background: var(--app-warn-bg);
+      color: var(--app-warn);
+      white-space: nowrap;
+    }
+    .t-row.row-disabled .t-name, .t-row.row-disabled .cond-chip { opacity: 0.45; }
+    .t-row.row-open:not(.row-disabled) { cursor: pointer; }
+    .open-hint { display: none; font-size: 10px; color: var(--app-text-subtle); margin-left: 8px; }
+    .t-row.row-open:not(.row-disabled):hover .open-hint { display: inline; }
+    .t-actions { display: flex; align-items: center; gap: 2px; justify-content: flex-end; opacity: 0; transition: opacity 0.12s ease; }
+    .t-row:hover .t-actions { opacity: 1; }
+    .action-btn {
+      font: inherit;
+      font-size: 11px;
+      line-height: 1;
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .action-btn:hover { color: var(--app-text-strong); background: var(--app-neutral-bg); border-color: var(--app-neutral-border); }
+    .action-btn.danger:hover { color: var(--app-danger-text); border-color: var(--app-neutral-border); }
+    .switch {
+      position: relative;
+      width: 30px;
+      height: 17px;
+      flex: 0 0 auto;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 999px;
+      background: var(--app-surface-subtle);
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      background: var(--app-text-subtle);
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    .switch.on { background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+    .switch.on::after { transform: translateX(13px); background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+    .table-footer { display: flex; align-items: center; padding: 10px 10px 22px; font-size: 11px; color: var(--app-text-subtle); user-select: none; }
+
+    /* ================================================== SCREEN: CREATE (single-page form) */
+    .form-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; justify-content: center; padding: 28px 24px 48px; }
+    .form-panel { width: 100%; max-width: 640px; display: flex; flex-direction: column; gap: 18px; }
+    .page-head { display: flex; align-items: baseline; justify-content: space-between; }
+    .page-head h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.02em; color: var(--app-text-strong); }
+    .page-head .crumb { font-size: 11px; color: var(--app-text-subtle); }
+    .page-head .crumb b { color: var(--app-text-muted); font-weight: 400; }
+    .import-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      padding: 9px 12px;
+      border: 1px solid var(--app-warn-border);
+      border-radius: 6px;
+      background: var(--app-warn-bg);
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--app-warn);
+    }
+    .import-banner svg { flex: 0 0 auto; margin-top: 3px; }
+    .import-banner .sub { color: var(--app-text-muted); }
+    .field-block { display: flex; flex-direction: column; gap: 6px; }
+    .field-label { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-muted); }
+    .fl-num { color: var(--app-text-faint); margin-right: 6px; }
+    .field-hint { font-size: 11px; color: var(--app-text-subtle); line-height: 1.5; }
+    .text-input {
+      width: 100%;
+      height: 34px;
+      padding: 0 10px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 4px;
+      background: var(--app-surface);
+      color: var(--app-text);
+      font: inherit;
+      font-size: 12.5px;
+      outline: none;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    }
+    .text-input:focus { border-color: var(--app-accent); background: var(--app-surface-raised); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow); }
+    .condition-params { padding: 10px 12px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface-subtle); font-size: 11.5px; line-height: 1.55; color: var(--app-text-muted); }
+    .condition-params b { color: var(--app-text); font-weight: 600; }
+    .condition-params .alt { display: block; margin-top: 4px; color: var(--app-text-subtle); font-size: 11px; }
+    .app-picker { width: 240px; margin-bottom: 2px; }
+    .sched-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+    .time-input { width: 118px; flex: 0 0 auto; }
+    .day-chips { display: inline-flex; gap: 4px; }
+    .day-chip {
+      font: inherit;
+      font-size: 10.5px;
+      line-height: 1;
+      padding: 0 8px;
+      height: 26px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 5px;
+      background: var(--app-surface);
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+    }
+    .day-chip:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+    .day-chip.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+    .prompt-head { display: flex; align-items: baseline; gap: 12px; }
+    .prompt-head .char-count { margin-left: auto; font-size: 10.5px; color: var(--app-text-faint); }
+    .prompt-textarea {
+      width: 100%;
+      min-height: 280px;
+      resize: vertical;
+      padding: 12px 14px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 6px;
+      background: var(--app-surface);
+      color: var(--app-text);
+      font: inherit;
+      font-size: 12.5px;
+      line-height: 1.65;
+      outline: none;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    }
+    .prompt-textarea:focus { border-color: var(--app-accent); background: var(--app-surface-raised); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow); }
+    .advanced { border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface-subtle); }
+    .advanced summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    .advanced summary::-webkit-details-marker { display: none; }
+    .advanced summary .chev { transition: transform 0.12s ease; color: var(--app-text-subtle); display: inline-flex; }
+    .advanced[open] summary .chev { transform: rotate(90deg); }
+    .advanced summary .defaults-note { margin-left: auto; font-weight: 400; letter-spacing: 0.02em; text-transform: none; color: var(--app-text-faint); }
+    .advanced-body { border-top: 1px solid var(--app-border); padding: 4px 12px 10px; }
+    .adv-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 0; }
+    .adv-row + .adv-row { border-top: 1px solid var(--app-border); }
+    .adv-row .adv-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .adv-row .adv-name { font-size: 12px; color: var(--app-text); }
+    .adv-row .adv-hint { font-size: 10.5px; color: var(--app-text-subtle); line-height: 1.45; }
+    .stepper { display: inline-flex; align-items: stretch; gap: 6px; flex: 0 0 auto; }
+    .step-btn {
+      flex: 0 0 30px;
+      width: 30px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 4px;
+      background: var(--app-surface);
+      color: var(--app-text-muted);
+      font: inherit;
+      font-size: 16px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background 0.12s, border-color 0.12s, color 0.12s;
+    }
+    .step-btn:hover { background: var(--app-surface-hover); border-color: var(--app-border-hover); color: var(--app-text-strong); }
+    .stepper .field { position: relative; display: inline-flex; width: 96px; }
+    .num-input {
+      width: 100%;
+      height: 34px;
+      padding: 0 44px 0 10px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 4px;
+      background: var(--app-surface);
+      color: var(--app-text);
+      font: inherit;
+      font-size: 12px;
+      outline: none;
+      box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+    }
+    .unit-chip { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); color: var(--app-text-faint); font-size: 10px; font-weight: 800; letter-spacing: 0.06em; pointer-events: none; }
+    .engine-note { display: flex; align-items: center; gap: 7px; font-size: 11px; color: var(--app-text-subtle); }
+    .engine-note .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent-strong); }
+    .engine-note b { color: var(--app-text-muted); font-weight: 400; }
+    .form-footer { display: flex; align-items: center; gap: 10px; padding-top: 14px; border-top: 1px solid var(--app-border); }
+    .form-footer .btn-primary { font: inherit; font-size: 12px; font-weight: 700; letter-spacing: 0.03em; padding: 8px 18px; border-radius: 5px; transition: background 0.12s ease, border-color 0.12s ease; }
+    .form-footer .btn-primary:hover { border-color: var(--app-accent-strong); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+    .footer-share { margin-left: auto; display: flex; align-items: baseline; gap: 8px; }
+    .footer-share .share-hint { font-size: 10.5px; color: var(--app-text-faint); }
+
+    /* ================================================== SCREEN: DOC (document view) */
+    .app-body { flex: 1 1 auto; min-height: 0; }
+    .insights { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; }
+    .sidebar { flex: 0 0 200px; width: 200px; display: flex; flex-direction: column; min-height: 0; background: var(--app-surface-subtle); border-right: 1px solid var(--app-border); }
+    .sidebar-scroll { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 18px 16px 0; }
+    .rail-nav { display: flex; flex-direction: column; gap: 1px; }
+    .rail-nav-item { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 12px; text-transform: lowercase; color: var(--app-text-muted); transition: color 0.12s ease; }
+    .rail-nav-item:hover { color: var(--app-text-strong); }
+    .rail-nav-item .rail-count { margin-left: auto; font-size: 11px; color: var(--app-text-faint); }
+    .rail-newchat { display: inline-flex; align-items: center; gap: 7px; margin-top: 18px; font-size: 12px; text-transform: lowercase; color: var(--app-text-muted); cursor: pointer; }
+    .rail-newchat .plus { color: var(--app-text-subtle); }
+    .rail-newchat:hover, .rail-newchat:hover .plus { color: var(--app-accent); }
+    .origin-filter {
+      display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+      margin-top: 14px;
+      border: 1px solid var(--app-border); border-radius: 7px;
+      background: var(--app-surface-subtle);
+      align-self: stretch;
+    }
+    .origin-filter button {
+      flex: 1 1 0;
+      font: inherit; font-size: 10.5px; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 20px; padding: 0 4px;
+      border: 1px solid transparent; border-radius: 5px;
+      background: transparent; color: var(--app-text-muted); cursor: pointer;
+      text-transform: lowercase;
+    }
+    .origin-filter button:hover { color: var(--app-text-strong); }
+    .origin-filter button.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+    .rail-search { display: flex; align-items: center; gap: 8px; height: 30px; margin-top: 10px; border-bottom: 1px solid var(--app-border); }
+    .rail-search .glyph { color: var(--app-text-subtle); font-size: 12px; }
+    .rail-search input { flex: 1 1 auto; min-width: 0; background: transparent; border: 0; outline: 0; color: var(--app-text); font-family: inherit; font-size: 11.5px; }
+    .rail-search input::placeholder { color: var(--app-text-subtle); }
+    .rail-history { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; padding-bottom: 16px; }
+    .rail-group {
+      font-size: 9px; letter-spacing: 0.14em; text-transform: lowercase;
+      color: var(--app-text-subtle);
+      margin-top: 14px; padding-top: 11px; padding-bottom: 8px;
+      border-top: 1px solid var(--app-border);
+    }
+    .rail-group:first-child { border-top: none; margin-top: 12px; padding-top: 0; }
+    .rail-chat { display: flex; flex-direction: column; gap: 1px; padding: 3px 0 5px; }
+    .rail-chat .row1 { display: flex; align-items: baseline; gap: 8px; }
+    .rail-chat .t { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--app-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 0.12s ease; }
+    .rail-chat:hover .t { color: var(--app-text-strong); }
+    .rail-chat .when { font-size: 9.5px; color: var(--app-text-faint); flex: 0 0 auto; }
+    .rail-chat.active .t { color: var(--app-accent-strong); }
+    .origin-badge {
+      align-self: flex-start;
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 9px; letter-spacing: 0.03em;
+      padding: 0 5px; border-radius: 4px;
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg);
+      color: var(--app-accent-strong);
+      max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }
+    .origin-badge .zap { font-size: 8.5px; }
+    .rail-foot { flex: 0 0 auto; border-top: 1px solid var(--app-border); padding: 12px 16px; display: flex; align-items: center; gap: 6px; font-size: 9.5px; color: var(--app-text-muted); }
+    .rail-engine { display: inline-flex; align-items: center; gap: 6px; }
+    .rail-engine .dot { width: 5px; height: 5px; border-radius: 999px; background: var(--app-accent); }
+    .rail-engine .sep { color: var(--app-text-faint); }
+    .insights-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; overflow: hidden; padding: 0; }
+    .doc-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 26px 0 18px; }
+    .doc-col { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+    .doc-scroll::-webkit-scrollbar, .rail-history::-webkit-scrollbar { width: 8px; }
+    .doc-scroll::-webkit-scrollbar-track, .rail-history::-webkit-scrollbar-track { background: transparent; }
+    .doc-scroll::-webkit-scrollbar-thumb, .rail-history::-webkit-scrollbar-thumb { background: var(--app-border-strong); border: 2px solid var(--app-bg); border-radius: 999px; }
+    .doc-back { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; color: var(--app-text-subtle); margin-bottom: 12px; cursor: pointer; }
+    .doc-back:hover { color: var(--app-text-strong); }
+    .doc-head { padding-bottom: 16px; margin-bottom: 20px; border-bottom: 1px solid var(--app-border); }
+    .doc-eyebrow {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--app-accent-strong);
+      padding: 2px 8px; border-radius: 4px;
+      border: 1px solid var(--app-accent-border); background: var(--app-accent-bg);
+      margin-bottom: 10px;
+    }
+    .doc-head-row { display: flex; align-items: flex-start; gap: 12px; }
+    .doc-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 21px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em; color: var(--app-text-strong); }
+    .doc-actions { flex: 0 0 auto; display: inline-flex; gap: 4px; margin-top: 3px; }
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; font: inherit; font-size: 13px;
+      border: 1px solid transparent; border-radius: 6px;
+      background: transparent; color: var(--app-icon-fg); cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .icon-btn:hover { color: var(--app-icon-fg-hover); background: var(--app-icon-bg-hover); border-color: var(--app-icon-border-hover); }
+    .doc-meta { margin-top: 5px; font-size: 11px; color: var(--app-text-muted); }
+    .doc-meta .dotsep { color: var(--app-text-faint); margin: 0 6px; }
+    .doc-body { font-size: 13px; color: var(--app-text); line-height: 1.7; }
+    .doc-body h2 { margin: 26px 0 10px; font-size: 14px; font-weight: 650; letter-spacing: 0.01em; color: var(--app-text-strong); padding-bottom: 6px; border-bottom: 1px dashed var(--app-border); }
+    .doc-body h2:first-child { margin-top: 0; }
+    .doc-body p { margin: 0 0 12px; }
+    .doc-body ul { margin: 0 0 12px; padding-left: 20px; }
+    .doc-body li { margin-bottom: 4px; }
+    .doc-body li::marker { color: var(--app-text-subtle); }
+    .doc-body b, .doc-body strong { color: var(--app-text-strong); font-weight: 600; }
+    .speaker { color: var(--app-accent-strong); font-weight: 600; }
+    .checklist { list-style: none; padding-left: 2px; margin: 0 0 12px; }
+    .checklist li { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
+    .checklist .box {
+      flex: 0 0 auto; width: 12px; height: 12px;
+      border: 1px solid var(--app-border-strong); border-radius: 3px;
+      background: var(--app-surface-raised);
+      position: relative; top: 1px; cursor: pointer;
+    }
+    .checklist .box.done { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    .checklist .box.done::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; color: var(--app-accent-strong); line-height: 1; }
+    .checklist .owner { color: var(--app-text-muted); font-size: 11px; white-space: nowrap; }
+    .answer-block { margin: 14px 0 16px; border: 1px solid var(--app-border); border-radius: 9px; background: var(--app-surface); padding: 13px 14px 14px; }
+    .answer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+    .block-title { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--app-text-muted); }
+    .block-kind {
+      font-size: 9px; letter-spacing: 0.06em;
+      padding: 1px 6px; border-radius: 4px;
+      border: 1px solid var(--app-border-strong);
+      background: var(--app-surface-subtle);
+      color: var(--app-text-subtle);
+      text-transform: lowercase;
+    }
+    .answer-note { font-size: 10.5px; color: var(--app-text-muted); }
+    .barchart { display: flex; flex-direction: column; gap: 9px; }
+    .bar-row { display: grid; grid-template-columns: 76px 1fr 52px; align-items: center; gap: 10px; }
+    .bar-label { font-size: 11px; color: var(--app-text); }
+    .bar-track { position: relative; height: 14px; border-radius: 3px; background: var(--app-surface-hover); border: 1px solid var(--app-border); overflow: hidden; }
+    .bar-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px 0 0 2px; background: var(--app-accent); opacity: 0.85; }
+    .bar-val { font-size: 11px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+    .tl { display: flex; flex-direction: column; }
+    .tl-row { display: flex; gap: 12px; }
+    .tl-time { flex: 0 0 62px; text-align: right; font-size: 10.5px; color: var(--app-text-muted); font-variant-numeric: tabular-nums; padding-top: 1px; }
+    .tl-spine { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
+    .tl-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); margin-top: 6px; }
+    .tl-row:last-child .tl-dot { background: var(--app-text-subtle); box-shadow: none; }
+    .tl-line { flex: 1 1 auto; width: 1px; background: var(--app-border); min-height: 14px; }
+    .tl-row:last-child .tl-line { display: none; }
+    .tl-body { flex: 1 1 auto; min-width: 0; padding-bottom: 14px; }
+    .tl-row:last-child .tl-body { padding-bottom: 2px; }
+    .tl-title { font-size: 12px; color: var(--app-text-strong); }
+    .tl-sub { font-size: 10.5px; color: var(--app-text-muted); margin-top: 1px; }
+    .dossier { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+    .dossier .kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .dossier .k { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .dossier .v { font-size: 12px; color: var(--app-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .followup-divider { display: flex; align-items: center; gap: 10px; margin: 28px 0 20px; font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .followup-divider::before, .followup-divider::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--app-border); }
+    .followup-caption { text-align: center; font-size: 10px; color: var(--app-text-faint); margin: -14px 0 18px; }
+    .msg { display: flex; gap: 12px; margin-bottom: 22px; }
+    .msg-user { justify-content: flex-end; }
+    .user-bubble { max-width: 78%; background: var(--app-surface-raised); border: 1px solid var(--app-border-strong); border-radius: 10px; padding: 9px 13px; font-size: 13px; color: var(--app-text-strong); }
+    .avatar {
+      flex: 0 0 auto; width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 6px;
+      background: var(--app-accent-bg);
+      border: 1px solid var(--app-accent-border);
+      color: var(--app-accent-strong);
+      font-size: 13px; margin-top: 1px;
+    }
+    .msg-body { min-width: 0; flex: 1 1 auto; }
+    .msg-prose { font-size: 13px; color: var(--app-text); line-height: 1.65; }
+    .msg-prose .strong { color: var(--app-text-strong); font-weight: 600; }
+    .composer-wrap { flex: 0 0 auto; border-top: 1px solid var(--app-border); background: var(--app-bg); padding: 12px 24px 14px; }
+    .composer { max-width: 760px; margin: 0 auto; }
+    .composer-row { display: flex; align-items: center; gap: 9px; border: 1px solid var(--app-border-strong); border-radius: 10px; background: var(--app-surface); padding: 7px 8px 7px 10px; }
+    .composer-row:focus-within { border-color: var(--app-border-hover); }
+    .model-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font: inherit; font-size: 10.5px; padding: 3px 8px;
+      border: 1px solid var(--app-accent-border); border-radius: 6px;
+      background: var(--app-accent-bg); color: var(--app-accent-strong);
+      cursor: pointer;
+    }
+    .model-chip .mc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); }
+    .composer-input { flex: 1 1 auto; min-width: 0; border: none; background: transparent; font: inherit; font-size: 13px; color: var(--app-text-strong); outline: none; }
+    .composer-input::placeholder { color: var(--app-text-faint); }
+    .send-btn {
+      flex: 0 0 auto; width: 30px; height: 30px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg); color: var(--app-accent-strong);
+      font-size: 15px; cursor: pointer;
+    }
+    .composer-hint { max-width: 760px; margin: 7px auto 0; font-size: 10px; color: var(--app-text-faint); text-align: center; }
+  </style>
+</head>
+<body data-screen="list">
+
+  <div class="mockup-bar">
+    <span class="tag">MOCKUP · FLOW 1 of 5</span>
+    <span><b>Dense terminal list.</b> One complete flow: manage triggers → create/edit → read a finished run.</span>
+    <span class="flow-steps"><span data-step="list" class="on">list</span> → <span data-step="create">create</span> → <span data-step="doc">document</span></span>
+    <span class="spacer"></span>
+    <nav>
+      <a href="flow-2-card-grid.html">Flow 2</a>
+      <a href="flow-3-master-detail.html">Flow 3</a>
+      <a href="flow-4-wizard.html">Flow 4</a>
+      <a href="flow-5-tui.html">Flow 5</a>
+    </nav>
+  </div>
+
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark doc-only">MNEMA</span>
+      </div>
+      <div>
+        <span class="wordmark not-doc">MNEMA</span>
+        <div class="seg doc-only">
+          <button type="button">Timeline</button>
+          <button type="button" class="active" aria-current="page">Insights</button>
+        </div>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip doc-only"><span class="dot"></span>idle</span>
+      </div>
+    </header>
+
+    <!-- ================================================== SCREEN: LIST -->
+    <main class="page screen active" id="screen-list">
+      <div class="page-header">
+        <h1 class="page-title">Triggers</h1>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" id="btn-import" title="Paste shared Trigger JSON — prefills the creation form">Import</button>
+        <button class="btn btn-primary" id="btn-new"><span class="plus">+</span> New Trigger</button>
+      </div>
+      <p class="page-subtitle">A trigger runs your prompt automatically when its condition fires — results arrive as notifications.</p>
+
+      <div class="seg filter-seg" role="tablist" aria-label="Filter triggers" id="filter-seg">
+        <button class="active">All</button>
+        <button>Enabled</button>
+        <button>Disabled</button>
+      </div>
+
+      <div class="trigger-table" id="trigger-table">
+        <div class="t-head">
+          <span>On</span>
+          <span>Name</span>
+          <span>Condition</span>
+          <span>Last run</span>
+          <span></span>
+        </div>
+        <div id="trigger-rows"><!-- rows rendered from state --></div>
+      </div>
+
+      <div class="table-footer" id="table-footer"></div>
+    </main>
+
+    <!-- ================================================== SCREEN: CREATE -->
+    <main class="form-body screen" id="screen-create">
+      <form class="form-panel" onsubmit="return false">
+
+        <div class="page-head">
+          <h1 id="page-title">New Trigger</h1>
+          <span class="crumb">triggers <b id="crumb-leaf">/ new</b></span>
+        </div>
+
+        <div class="import-banner hidden" id="import-banner">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M8 1.5 15 14H1L8 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+            <path d="M8 6.5v3.2M8 11.6v.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+          </svg>
+          <div>
+            Imported — review the prompt before saving.
+            <span class="sub">This prompt will run automatically when the condition fires. Make sure it says what you want.</span>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <label class="field-label" for="trigger-name">Name</label>
+          <input class="text-input" id="trigger-name" type="text" value="Meeting Recap" />
+        </div>
+
+        <div class="field-block">
+          <span class="field-label"><span class="fl-num">01</span>Condition</span>
+          <div class="seg" role="tablist" aria-label="Condition" id="condition-seg">
+            <button type="button" class="active" data-condition="meeting_ends">Meeting Ends</button>
+            <button type="button" data-condition="app_opened">App Opened</button>
+            <button type="button" data-condition="schedule">Schedule</button>
+          </div>
+
+          <div class="condition-params" id="params-meeting_ends">
+            Fires when a meeting app releases the microphone and stays quiet for the
+            release grace period. Detects <b>Zoom, Teams, Slack, FaceTime</b> and
+            browser tabs on known meeting URLs.
+          </div>
+
+          <div class="condition-params hidden" id="params-app_opened">
+            <select class="text-input app-picker" id="app-picker" aria-label="App to watch">
+              <option>Figma</option>
+              <option>Xcode</option>
+              <option>Slack</option>
+              <option>Notion</option>
+              <option>Obsidian</option>
+              <option>Linear</option>
+            </select>
+            <span class="alt">Fires when this app becomes frontmost after a fresh session — at least 30 min away. Rapid window switching never counts.</span>
+          </div>
+
+          <div class="condition-params hidden" id="params-schedule">
+            <div class="sched-row">
+              <input class="text-input time-input" id="sched-time" type="time" value="18:00" aria-label="Time of day" />
+              <div class="day-chips" id="day-chips" role="group" aria-label="Days of week">
+                <button type="button" class="day-chip active" data-day="Mon">Mon</button>
+                <button type="button" class="day-chip active" data-day="Tue">Tue</button>
+                <button type="button" class="day-chip active" data-day="Wed">Wed</button>
+                <button type="button" class="day-chip active" data-day="Thu">Thu</button>
+                <button type="button" class="day-chip active" data-day="Fri">Fri</button>
+                <button type="button" class="day-chip" data-day="Sat">Sat</button>
+                <button type="button" class="day-chip" data-day="Sun">Sun</button>
+              </div>
+            </div>
+            <span class="alt" id="sched-preview">runs weekdays at 6:00 PM</span>
+          </div>
+        </div>
+
+        <div class="field-block">
+          <div class="prompt-head">
+            <label class="field-label" for="trigger-prompt"><span class="fl-num">02</span>Prompt</label>
+            <button type="button" class="quiet-btn" id="reset-template">Reset to template</button>
+            <span class="char-count" id="char-count"></span>
+          </div>
+          <textarea class="prompt-textarea" id="trigger-prompt" spellcheck="false"></textarea>
+          <span class="field-hint">Plain prose — no template variables. Mnema adds the meeting window, transcript, speakers, and what it knows about you automatically.</span>
+        </div>
+
+        <details class="advanced" id="advanced">
+          <summary>
+            <span class="chev">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M5.5 3l5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <span><span class="fl-num">03</span>Advanced</span>
+            <span class="defaults-note">all defaults</span>
+          </summary>
+          <div class="advanced-body">
+            <div class="adv-row" id="row-min-length">
+              <div class="adv-copy">
+                <span class="adv-name">Minimum meeting length</span>
+                <span class="adv-hint">Shorter mic holds don't count as a meeting.</span>
+              </div>
+              <div class="stepper" data-min="1" data-max="30">
+                <button type="button" class="step-btn" data-step="-1" aria-label="Decrease minimum meeting length"><span aria-hidden="true">−</span></button>
+                <div class="field"><input class="num-input" type="text" inputmode="numeric" value="5" aria-label="Minimum meeting length" /><span class="unit-chip">MIN</span></div>
+                <button type="button" class="step-btn" data-step="1" aria-label="Increase minimum meeting length"><span aria-hidden="true">+</span></button>
+              </div>
+            </div>
+            <div class="adv-row" id="row-cooldown">
+              <div class="adv-copy">
+                <span class="adv-name">Cooldown</span>
+                <span class="adv-hint">Never fires again within this window of the last firing.</span>
+              </div>
+              <div class="stepper" data-min="0" data-max="120">
+                <button type="button" class="step-btn" data-step="-1" aria-label="Decrease cooldown"><span aria-hidden="true">−</span></button>
+                <div class="field"><input class="num-input" type="text" inputmode="numeric" value="10" aria-label="Cooldown" /><span class="unit-chip">MIN</span></div>
+                <button type="button" class="step-btn" data-step="1" aria-label="Increase cooldown"><span aria-hidden="true">+</span></button>
+              </div>
+            </div>
+            <div class="adv-row hidden" id="row-away-gap">
+              <div class="adv-copy">
+                <span class="adv-name">Away gap</span>
+                <span class="adv-hint">How long the app must be out of front before opening it counts as a fresh session.</span>
+              </div>
+              <div class="stepper" data-min="5" data-max="240">
+                <button type="button" class="step-btn" data-step="-1" aria-label="Decrease away gap"><span aria-hidden="true">−</span></button>
+                <div class="field"><input class="num-input" type="text" inputmode="numeric" value="30" aria-label="Away gap" /><span class="unit-chip">MIN</span></div>
+                <button type="button" class="step-btn" data-step="1" aria-label="Increase away gap"><span aria-hidden="true">+</span></button>
+              </div>
+            </div>
+          </div>
+        </details>
+
+        <div class="engine-note">
+          <span class="dot"></span>
+          Runs with your <b>default AI provider</b> — change it in Settings → Intelligence.
+        </div>
+
+        <div class="form-footer">
+          <button type="button" class="btn-primary" id="create-btn">Create Trigger</button>
+          <button type="button" class="quiet-btn" id="cancel-btn">Cancel</button>
+          <div class="footer-share">
+            <button type="button" class="quiet-btn" id="share-btn">Share</button>
+            <span class="share-hint">copies this trigger as JSON — no provider or key data included</span>
+          </div>
+        </div>
+
+      </form>
+    </main>
+
+    <!-- ================================================== SCREEN: DOC -->
+    <!-- ponytail: the document is always the static Meeting Recap — Product Sync example,
+         whichever completed row was clicked; per-run content is out of scope for a mockup. -->
+    <div class="app-body screen" id="screen-doc">
+      <div class="insights">
+        <aside class="sidebar" aria-label="Insights navigation">
+          <div class="sidebar-scroll">
+            <nav class="rail-nav">
+              <a class="rail-nav-item" href="#doc">overview</a>
+              <a class="rail-nav-item" href="#doc">subjects<span class="rail-count">12</span></a>
+              <a class="rail-nav-item" href="#list" title="Back to the Triggers page">triggers<span class="rail-count">3</span></a>
+            </nav>
+            <a class="rail-newchat" href="#doc"><span class="plus">＋</span> new chat</a>
+
+            <div class="origin-filter" role="group" aria-label="Filter by origin">
+              <button type="button" class="active">all</button>
+              <button type="button">chats</button>
+              <button type="button">triggers</button>
+            </div>
+
+            <div class="rail-search">
+              <span class="glyph">⌕</span>
+              <input type="text" placeholder="search…" />
+            </div>
+
+            <div class="rail-history">
+              <div class="rail-group">today</div>
+              <a class="rail-chat active" href="#doc">
+                <span class="row1"><span class="t">Product Sync recap</span><span class="when">2:49p</span></span>
+                <span class="origin-badge"><span class="zap">⚡</span>Meeting Recap</span>
+              </a>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">Why is my DER stuck?</span><span class="when">11a</span></span>
+              </a>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">1:1 with Sarah recap</span><span class="when">10a</span></span>
+                <span class="origin-badge"><span class="zap">⚡</span>Meeting Recap</span>
+              </a>
+              <div class="rail-group">yesterday</div>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">Draft release notes v0.2</span><span class="when">1d</span></span>
+              </a>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">Morning Figma session</span><span class="when">1d</span></span>
+                <span class="origin-badge"><span class="zap">⚡</span>Design Kickoff</span>
+              </a>
+              <div class="rail-group">this week</div>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">What did I decide about cc?</span><span class="when">3d</span></span>
+              </a>
+              <a class="rail-chat" href="#doc">
+                <span class="row1"><span class="t">Compare cc thresholds</span><span class="when">4d</span></span>
+              </a>
+            </div>
+          </div>
+          <div class="rail-foot">
+            <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span>Claude</span></span>
+          </div>
+        </aside>
+
+        <main class="insights-main">
+          <div class="doc-scroll">
+            <div class="doc-col">
+
+              <a class="doc-back" href="#list">◀ back to triggers</a>
+
+              <header class="doc-head">
+                <span class="doc-eyebrow" title="This conversation was started by the Meeting Recap trigger, not by you">⚡ trigger run</span>
+                <div class="doc-head-row">
+                  <h1 class="doc-title">Meeting Recap — Product Sync</h1>
+                  <div class="doc-actions">
+                    <button class="icon-btn" type="button" id="copy-btn" title="Copy as markdown">⧉</button>
+                    <button class="icon-btn" type="button" title="Share">⇪</button>
+                    <button class="icon-btn" type="button" title="Re-run">⟳</button>
+                  </div>
+                </div>
+                <div class="doc-meta">
+                  Triggered by Meeting Ends<span class="dotsep">·</span>Zoom<span class="dotsep">·</span>today 2:03–2:47 PM<span class="dotsep">·</span>ran 2:49 PM
+                </div>
+              </header>
+
+              <article class="doc-body">
+                <h2>Summary</h2>
+                <p>
+                  A 44-minute product sync focused on the <strong>v0.3 release scope</strong>.
+                  The group agreed to ship semantic search behind a flag and to push the
+                  onboarding redesign to v0.4. Most of the debate was about whether the
+                  embedding backfill is safe to run on first launch.
+                </p>
+                <ul>
+                  <li><span class="speaker">You</span>: argued the backfill should stay opt-in until the RSS ceiling is verified on 8&nbsp;GB machines; walked through the vmmap numbers.</li>
+                  <li><span class="speaker">Sarah</span>: pushed for flag-on-by-default; conceded after the memory figures, asked for a follow-up benchmark by Friday.</li>
+                  <li><span class="speaker">Dev</span>: confirmed the sidecar approach reclaims memory fully; volunteered to own the Friday benchmark.</li>
+                </ul>
+
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Speaking time<span class="block-kind">mnema-bars</span></div>
+                    <span class="answer-note">2:03–2:47 PM</span>
+                  </div>
+                  <div class="barchart">
+                    <div class="bar-row">
+                      <div class="bar-label">You</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:100%;"></span></div>
+                      <div class="bar-val">18 min</div>
+                    </div>
+                    <div class="bar-row">
+                      <div class="bar-label">Sarah</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:67%;"></span></div>
+                      <div class="bar-val">12 min</div>
+                    </div>
+                    <div class="bar-row">
+                      <div class="bar-label">Dev</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:50%;"></span></div>
+                      <div class="bar-val">9 min</div>
+                    </div>
+                  </div>
+                </section>
+
+                <h2>Decisions</h2>
+                <ul>
+                  <li><strong>Semantic search ships in v0.3 behind a flag</strong>, off by default until the memory benchmark passes.</li>
+                  <li><strong>Onboarding redesign moves to v0.4</strong> — no partial version in v0.3.</li>
+                  <li>The backfill runs only on idle + AC power; Dev writes the gating check.</li>
+                </ul>
+
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Meeting flow<span class="block-kind">mnema-timeline</span></div>
+                  </div>
+                  <div class="tl">
+                    <div class="tl-row">
+                      <div class="tl-time">2:03 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Status round</div>
+                        <div class="tl-sub">quick per-person updates, ~6 min</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:09 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">v0.3 scope debate</div>
+                        <div class="tl-sub">semantic search flag, backfill memory ceiling — the bulk of the meeting</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:34 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Onboarding deferral</div>
+                        <div class="tl-sub">agreed quickly; moved to v0.4</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:41 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Wrap-up &amp; owners</div>
+                        <div class="tl-sub">action items assigned, Friday checkpoint set</div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <h2>Action items</h2>
+                <ul class="checklist">
+                  <li><span class="box"></span><span>Run the 8&nbsp;GB-machine embedding benchmark and post numbers</span><span class="owner">— Dev, Fri</span></li>
+                  <li><span class="box"></span><span>Write the idle + AC gating check for the backfill</span><span class="owner">— Dev</span></li>
+                  <li><span class="box"></span><span>Draft the v0.3 flag rollout note for the changelog</span><span class="owner">— You</span></li>
+                  <li><span class="box done"></span><span>Move onboarding-redesign issues to the v0.4 milestone</span><span class="owner">— Sarah, done in-call</span></li>
+                </ul>
+
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Meeting facts<span class="block-kind">mnema-dossier</span></div>
+                  </div>
+                  <div class="dossier">
+                    <div class="kv"><span class="k">Meeting</span><span class="v">Product Sync</span></div>
+                    <div class="kv"><span class="k">Duration</span><span class="v">44 min</span></div>
+                    <div class="kv"><span class="k">App</span><span class="v">zoom.us</span></div>
+                    <div class="kv"><span class="k">Participants</span><span class="v">3</span></div>
+                  </div>
+                </section>
+              </article>
+
+              <div class="followup-divider">follow-up</div>
+              <div class="followup-caption">follow-ups continue this conversation as normal chat</div>
+
+              <div id="followup">
+                <div class="msg msg-user">
+                  <div class="user-bubble">Did Sarah agree to the flag being off by default, or just stop pushing?</div>
+                </div>
+                <div class="msg">
+                  <div class="avatar">◈</div>
+                  <div class="msg-body">
+                    <div class="msg-prose">
+                      She explicitly agreed — at <span class="strong">2:31 PM</span> she said
+                      "fine, off by default until Friday's numbers", and then set the Friday
+                      checkpoint herself. It reads as a real concession, not a stalemate.
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+
+          <div class="composer-wrap">
+            <div class="composer">
+              <div class="composer-row">
+                <button class="model-chip" type="button"><span class="mc-dot"></span>Claude ▾</button>
+                <input class="composer-input" type="text" placeholder="Ask a follow-up about this meeting…" />
+                <button class="send-btn" type="button" aria-label="Send">↑</button>
+              </div>
+            </div>
+            <div class="composer-hint">
+              Follow-ups continue this conversation. Trigger runs use read-only tools over your own capture history.
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+    var $ = function (sel, root) { return (root || document).querySelector(sel); };
+    var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+      });
+    }
+
+    /* ================================================== SIMULATED STATE (in-memory only) */
+    var WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+    var DAY_FULL = { Mon: "Mondays", Tue: "Tuesdays", Wed: "Wednesdays", Thu: "Thursdays", Fri: "Fridays", Sat: "Saturdays", Sun: "Sundays" };
+    var TEMPLATES = {
+      meeting_ends: "Write a recap of the meeting that just ended.\n\nStart with a one-paragraph summary of what the meeting was about and what was decided.\n\nThen go speaker by speaker: for each person, summarize what they said, the points they pushed for, and anything they committed to doing.\n\nEnd with feedback for me: how I came across, whether I talked too much or too little, and one thing I could do better in the next meeting.\n\nKeep it direct and skip the pleasantries.",
+      app_opened: "I just came back to this app after being away for a while.\n\nRemind me where I left off: what I was working on in it last time, anything I said I'd do next, and any loose ends I left hanging.\n\nKeep it to a few sentences — just enough to get back into it fast.",
+      schedule: "It's the end of my workday.\n\nWrite a short review of today: what I actually spent time on, what moved forward, and what stalled.\n\nCall out anything I said I'd do but didn't get to, and suggest the first thing to pick up tomorrow.\n\nBe honest and keep it brief."
+    };
+    var STATUS_TITLES = {
+      completed: "The run completed — click the row to open its result document",
+      skipped: "The condition fired but Mnema wasn't recording, so there was nothing to run on",
+      failed: "The run failed — the AI provider returned an error",
+      off: "This trigger is switched off — its condition is ignored",
+      none: "This trigger hasn't fired yet"
+    };
+
+    /* Seed: the 5 existing example triggers, incl. one needs-provider disabled one. */
+    var triggers = [
+      { name: "Meeting Recap", condType: "meeting_ends", minLen: 5, cooldown: 10, awayGap: 30, app: "Figma", time: "18:00", days: WEEKDAYS.slice(), prompt: "Summarize the meeting that just ended: decisions, action items, open questions.", enabled: true, status: { kind: "completed", label: "completed", when: "today 2:14 PM" } },
+      { name: "Standup Notes", condType: "meeting_ends", minLen: 5, cooldown: 10, awayGap: 30, app: "Figma", time: "18:00", days: WEEKDAYS.slice(), prompt: "Draft my standup notes from this meeting: what I reported and any blockers raised.", enabled: true, status: { kind: "skipped", label: "skipped — wasn't recording", when: "yesterday 11:02 AM" } },
+      { name: "Figma Session Log", condType: "app_opened", minLen: 5, cooldown: 10, awayGap: 30, app: "Figma", time: "18:00", days: WEEKDAYS.slice(), prompt: "Log what I worked on during this Figma session.", enabled: true, status: { kind: "failed", label: "failed — provider returned an error", when: "Jul 17" } },
+      { name: "Daily Wrap-Up", condType: "schedule", minLen: 5, cooldown: 10, awayGap: 30, app: "Figma", time: "18:00", days: WEEKDAYS.concat(["Sat", "Sun"]), prompt: "Write a wrap-up of my day: what I worked on and what's unfinished.", enabled: true, status: { kind: "completed", label: "completed", when: "yesterday 6:03 PM" } },
+      { name: "Weekly Review", condType: "schedule", minLen: 5, cooldown: 10, awayGap: 30, app: "Figma", time: "17:00", days: ["Fri"], prompt: "Review my week: themes, wins, and what to carry into next week.", enabled: false, needsProvider: true, status: { kind: "none", label: "no runs yet" } }
+    ];
+    var filter = "All";
+    var editIndex = -1; /* -1 = creating new */
+
+    /* ================================================== SCREEN ROUTING (hash) */
+    var SCREENS = ["list", "create", "doc"];
+    function showScreen() {
+      var h = (location.hash || "#list").slice(1);
+      if (SCREENS.indexOf(h) < 0) h = "list";
+      document.body.dataset.screen = h;
+      SCREENS.forEach(function (s) {
+        $("#screen-" + s).classList.toggle("active", s === h);
+      });
+      $$(".flow-steps span").forEach(function (el) {
+        el.classList.toggle("on", el.dataset.step === h);
+      });
+    }
+    window.addEventListener("hashchange", showScreen);
+    function go(screen) { location.hash = "#" + screen; }
+
+    /* ================================================== HELPERS shared by list + form */
+    function fmtTime(hhmm) {
+      var parts = (hhmm || "18:00").split(":");
+      var h = parseInt(parts[0], 10);
+      var ampm = h >= 12 ? "PM" : "AM";
+      var h12 = h % 12 === 0 ? 12 : h % 12;
+      return h12 + ":" + parts[1] + " " + ampm;
+    }
+    function daysLabel(days) {
+      if (days.length === 0) return "never";
+      if (days.length === 7) return "every day";
+      if (days.length === 5 && days.indexOf("Sat") < 0 && days.indexOf("Sun") < 0) return "weekdays";
+      if (days.length === 2 && days.indexOf("Sat") >= 0 && days.indexOf("Sun") >= 0) return "weekends";
+      if (days.length === 1) return DAY_FULL[days[0]];
+      return days.join(", ");
+    }
+    function chipParam(t) {
+      if (t.condType === "app_opened") return t.app;
+      if (t.condType === "schedule") return daysLabel(t.days) + " " + fmtTime(t.time);
+      return null;
+    }
+    function jsonFor(t) {
+      var p;
+      if (t.condType === "meeting_ends") p = { min_meeting_minutes: t.minLen };
+      else if (t.condType === "app_opened") p = { app: t.app, away_gap_minutes: t.awayGap };
+      else p = { time: t.time, days: t.days };
+      return { version: 1, name: t.name, condition: { type: t.condType, params: p }, cooldown_minutes: t.cooldown, prompt: t.prompt };
+    }
+    function copyText(text, btn, restore) {
+      var done = function () {
+        var old = restore;
+        btn.textContent = "copied";
+        setTimeout(function () { btn.textContent = old; }, 1000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        done(); /* ponytail: mockup — no clipboard fallback needed */
+      }
+    }
+
+    /* ================================================== LIST: render from state */
+    var CHIP_LABEL = { meeting_ends: "meeting ends", app_opened: "app opened", schedule: "schedule" };
+    var rowsEl = $("#trigger-rows");
+    var footerEl = $("#table-footer");
+
+    function statusHtml(t) {
+      if (t.needsProvider) {
+        return '<span class="t-status st-provider"><span class="provider-note" title="This trigger can\'t run until an AI provider is configured in Settings → AI">⚠ needs an AI provider</span></span>';
+      }
+      var kind = t.enabled ? t.status.kind : "off";
+      var label = t.enabled ? t.status.label : "disabled";
+      var html = '<span class="t-status st-' + kind + '">' +
+        '<span class="status-dot"></span>' +
+        '<span class="label" title="' + esc(STATUS_TITLES[kind] || "") + '">' + esc(label) + "</span>";
+      if (t.enabled && t.status.when) html += '<span class="when">&nbsp;· ' + esc(t.status.when) + "</span>";
+      if (t.enabled && kind === "completed") html += '<span class="open-hint">open last run ↗</span>';
+      return html + "</span>";
+    }
+
+    function rowHtml(t, i) {
+      var open = t.enabled && t.status.kind === "completed";
+      var param = chipParam(t);
+      return '<div class="t-row' + (open ? " row-open" : "") + (t.enabled ? "" : " row-disabled") + '" data-i="' + i + '">' +
+        '<button class="switch' + (t.enabled ? " on" : "") + '" role="switch" aria-checked="' + t.enabled + '" aria-label="Enable ' + esc(t.name) + '"></button>' +
+        '<span class="t-name">' + esc(t.name) + "</span>" +
+        '<span><span class="cond-chip">' + esc(CHIP_LABEL[t.condType]) +
+        (param ? ' <span class="param">· ' + esc(param) + "</span>" : "") + "</span></span>" +
+        statusHtml(t) +
+        '<span class="t-actions">' +
+        '<button class="action-btn" data-act="edit">Edit</button>' +
+        '<button class="action-btn" data-act="share" title="Copy Trigger JSON to clipboard">Share</button>' +
+        '<button class="action-btn danger" data-act="del">Delete</button>' +
+        "</span></div>";
+    }
+
+    function renderList() {
+      var html = "";
+      triggers.forEach(function (t, i) {
+        var show = filter === "All" || (filter === "Enabled") === t.enabled;
+        if (show) html += rowHtml(t, i);
+      });
+      rowsEl.innerHTML = html;
+      var on = triggers.filter(function (t) { return t.enabled; }).length;
+      footerEl.textContent = triggers.length + " triggers · " + on + " enabled";
+    }
+
+    /* One delegated handler for switches, actions, and row-opens. */
+    rowsEl.addEventListener("click", function (e) {
+      var row = e.target.closest(".t-row");
+      if (!row) return;
+      var i = parseInt(row.dataset.i, 10);
+      var t = triggers[i];
+      if (e.target.closest(".switch")) {
+        t.enabled = !t.enabled;
+        renderList();
+        return;
+      }
+      var act = e.target.closest(".action-btn");
+      if (act) {
+        if (act.dataset.act === "edit") {
+          openForm("edit", i);
+          go("create");
+        } else if (act.dataset.act === "share") {
+          copyText(JSON.stringify(jsonFor(t), null, 2), act, "Share");
+        } else if (act.dataset.act === "del") {
+          if (confirm('Delete trigger "' + t.name + '"? Its past runs are kept.')) {
+            triggers.splice(i, 1);
+            renderList();
+          }
+        }
+        return;
+      }
+      if (t.enabled && t.status.kind === "completed") go("doc");
+    });
+
+    $$("#filter-seg button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        $("#filter-seg .active").classList.remove("active");
+        b.classList.add("active");
+        filter = b.textContent.trim();
+        renderList();
+      });
+    });
+
+    $("#btn-new").addEventListener("click", function () { openForm("new"); go("create"); });
+    $("#btn-import").addEventListener("click", function () { openForm("import"); go("create"); });
+
+    /* ================================================== CREATE: form behavior */
+    var condition = "meeting_ends";
+    var promptDirty = false;
+    var promptEl = $("#trigger-prompt");
+    var charCount = $("#char-count");
+
+    function updateCharCount() { charCount.textContent = promptEl.value.length + " chars"; }
+    function setPromptFromTemplate() {
+      promptEl.value = TEMPLATES[condition];
+      promptDirty = false;
+      updateCharCount();
+    }
+    promptEl.addEventListener("input", function () {
+      promptDirty = promptEl.value !== TEMPLATES[condition];
+      updateCharCount();
+    });
+    $("#reset-template").addEventListener("click", setPromptFromTemplate);
+
+    function setCondition(next) {
+      condition = next;
+      $$("#condition-seg button").forEach(function (b) {
+        b.classList.toggle("active", b.dataset.condition === next);
+      });
+      ["meeting_ends", "app_opened", "schedule"].forEach(function (c) {
+        $("#params-" + c).classList.toggle("hidden", c !== next);
+      });
+      $("#row-away-gap").classList.toggle("hidden", next !== "app_opened");
+      if (!promptDirty) setPromptFromTemplate();
+    }
+    $$("#condition-seg button").forEach(function (btn) {
+      btn.addEventListener("click", function () { setCondition(btn.dataset.condition); });
+    });
+
+    function activeDays() {
+      return $$("#day-chips .day-chip").filter(function (c) { return c.classList.contains("active"); })
+        .map(function (c) { return c.dataset.day; });
+    }
+    function setDays(days) {
+      $$("#day-chips .day-chip").forEach(function (c) {
+        c.classList.toggle("active", days.indexOf(c.dataset.day) >= 0);
+      });
+    }
+    function updateSchedPreview() {
+      var days = activeDays();
+      $("#sched-preview").textContent = days.length === 0
+        ? "never fires — pick at least one day"
+        : "runs " + daysLabel(days) + " at " + fmtTime($("#sched-time").value);
+    }
+    $$("#day-chips .day-chip").forEach(function (chip) {
+      chip.addEventListener("click", function () {
+        chip.classList.toggle("active");
+        updateSchedPreview();
+      });
+    });
+    $("#sched-time").addEventListener("input", updateSchedPreview);
+
+    $$(".stepper").forEach(function (stepper) {
+      var min = parseInt(stepper.dataset.min, 10);
+      var max = parseInt(stepper.dataset.max, 10);
+      var input = $(".num-input", stepper);
+      function clamp(v) { return Math.min(max, Math.max(min, v)); }
+      $$(".step-btn", stepper).forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var cur = parseInt(input.value, 10);
+          if (isNaN(cur)) cur = min;
+          input.value = clamp(cur + parseInt(btn.dataset.step, 10));
+        });
+      });
+      input.addEventListener("change", function () {
+        var v = parseInt(input.value, 10);
+        input.value = isNaN(v) ? min : clamp(v);
+      });
+    });
+
+    function stepperVal(rowSel) { return parseInt($(rowSel + " .num-input").value, 10); }
+    function setStepper(rowSel, v) { $(rowSel + " .num-input").value = v; }
+
+    /* Configure the form for a mode: "new", "import", or "edit" (with index). */
+    function openForm(mode, i) {
+      editIndex = mode === "edit" ? i : -1;
+      $("#page-title").textContent = mode === "edit" ? "Edit Trigger" : "New Trigger";
+      $("#crumb-leaf").textContent = mode === "edit" ? "/ edit" : "/ new";
+      $("#create-btn").textContent = mode === "edit" ? "Save Changes" : "Create Trigger";
+      $("#import-banner").classList.toggle("hidden", mode !== "import");
+      if (mode === "edit") {
+        var t = triggers[i];
+        $("#trigger-name").value = t.name;
+        setCondition(t.condType);
+        promptEl.value = t.prompt;
+        promptDirty = true; /* an edited trigger's prompt is its own — don't clobber on condition switch */
+        updateCharCount();
+        $("#app-picker").value = t.app;
+        $("#sched-time").value = t.time;
+        setDays(t.days);
+        setStepper("#row-min-length", t.minLen);
+        setStepper("#row-cooldown", t.cooldown);
+        setStepper("#row-away-gap", t.awayGap);
+      } else {
+        $("#trigger-name").value = mode === "import" ? "Meeting Recap (imported)" : "Meeting Recap";
+        setCondition("meeting_ends");
+        setPromptFromTemplate();
+        $("#app-picker").value = "Figma";
+        $("#sched-time").value = "18:00";
+        setDays(WEEKDAYS);
+        setStepper("#row-min-length", 5);
+        setStepper("#row-cooldown", 10);
+        setStepper("#row-away-gap", 30);
+      }
+      updateSchedPreview();
+    }
+
+    /* Read the live form values into `base` (a plain snapshot by default). */
+    function formTrigger(base) {
+      base = base || {};
+      base.name = $("#trigger-name").value.trim() || "Untitled Trigger";
+      base.condType = condition;
+      base.app = $("#app-picker").value;
+      base.time = $("#sched-time").value || "18:00";
+      base.days = activeDays();
+      base.minLen = stepperVal("#row-min-length");
+      base.cooldown = stepperVal("#row-cooldown");
+      base.awayGap = stepperVal("#row-away-gap");
+      base.prompt = promptEl.value;
+      return base;
+    }
+
+    $("#create-btn").addEventListener("click", function () {
+      var btn = $("#create-btn");
+      if (editIndex >= 0) {
+        formTrigger(triggers[editIndex]);
+      } else {
+        triggers.push(formTrigger({ enabled: true, status: { kind: "none", label: "no runs yet" } }));
+      }
+      renderList();
+      btn.textContent = editIndex < 0 ? "Created ✓" : "Saved ✓";
+      setTimeout(function () { go("list"); }, 400);
+    });
+    $("#cancel-btn").addEventListener("click", function () { go("list"); });
+    $("#share-btn").addEventListener("click", function () {
+      /* Share copies the live form values — never writes to state. */
+      copyText(JSON.stringify(jsonFor(formTrigger()), null, 2), $("#share-btn"), "Share");
+    });
+
+    /* ================================================== DOC: rail + document behavior */
+    var doc = $("#screen-doc");
+    var chats = $$(".rail-chat", doc);
+    var railSearch = $(".rail-search input", doc);
+    var origin = "all";
+    function applyRail() {
+      var q = railSearch.value.trim().toLowerCase();
+      chats.forEach(function (c) {
+        var isTrigger = !!$(".origin-badge", c);
+        var okOrigin = origin === "all" || (origin === "triggers" ? isTrigger : !isTrigger);
+        c.style.display = okOrigin && (!q || c.textContent.toLowerCase().indexOf(q) >= 0) ? "" : "none";
+      });
+    }
+    $$(".origin-filter button", doc).forEach(function (b) {
+      b.addEventListener("click", function () {
+        $$(".origin-filter button", doc).forEach(function (x) { x.classList.toggle("active", x === b); });
+        origin = b.textContent.trim();
+        applyRail();
+      });
+    });
+    railSearch.addEventListener("input", applyRail);
+
+    chats.forEach(function (c) {
+      c.addEventListener("click", function (e) {
+        e.preventDefault();
+        chats.forEach(function (x) { x.classList.toggle("active", x === c); });
+      });
+    });
+
+    var copyBtn = $("#copy-btn");
+    copyBtn.addEventListener("click", function () {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText($(".doc-title", doc).textContent + "\n\n" + $(".doc-body", doc).innerText);
+      }
+      copyBtn.textContent = "✓";
+      copyBtn.style.color = "var(--app-accent)";
+      setTimeout(function () { copyBtn.textContent = "⧉"; copyBtn.style.color = ""; }, 1200);
+    });
+
+    $$(".checklist .box", doc).forEach(function (b) {
+      b.addEventListener("click", function () { b.classList.toggle("done"); });
+    });
+
+    var composerInput = $(".composer-input", doc);
+    function sendFollowup() {
+      var text = composerInput.value.trim();
+      if (!text) return;
+      var u = document.createElement("div");
+      u.className = "msg msg-user";
+      u.innerHTML = '<div class="user-bubble"></div>';
+      u.firstChild.textContent = text;
+      var a = document.createElement("div");
+      a.className = "msg";
+      a.innerHTML = '<div class="avatar">◈</div><div class="msg-body"><div class="msg-prose" style="color:var(--app-text-muted)">(mock) In the real app the model would answer from your capture history — trigger runs use read-only tools only.</div></div>';
+      $("#followup").append(u, a);
+      composerInput.value = "";
+      a.scrollIntoView({ behavior: "smooth", block: "end" });
+    }
+    composerInput.addEventListener("keydown", function (e) { if (e.key === "Enter") sendFollowup(); });
+    $(".send-btn", doc).addEventListener("click", sendFollowup);
+
+    /* ================================================== INIT */
+    renderList();
+    openForm("new");
+    showScreen();
+  })();
+  </script>
+</body>
+</html>

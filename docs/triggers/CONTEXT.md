@@ -6,6 +6,8 @@ Decisions: [ADR 0057](../adr/0057-meetings-are-detected-from-core-audio-mic-hold
 
 Surfaces: dedicated `/triggers` page (list, last-run status, create/edit, share/import); runs appear in the chat rail with an origin badge + filter; definitions in `triggers.json` (app config dir); firing ledger + runs in the encrypted DB; release grace in Settings.
 
+UI direction (finalized 2026-07-20 from the flow mockups in `docs/triggers/mockups/`): the **guided wizard** flow. Final design = [`docs/triggers/mockups/final/DESIGN.md`](mockups/final/DESIGN.md) (spec) + [`triggers-ui.html`](mockups/final/triggers-ui.html) (interactive reference): `/triggers` list grouped by condition with per-section ghost add-rows and hover edit/share/delete; a per-trigger runs ledger; creation/edit as a 3-step wizard (Condition → Prompt → Review; Import prefills and lands on Prompt; Edit lands on Review with "Save Changes"); runs render as a chrome-free report-style document. Trigger runs are marked with condition glyphs (◉ meeting-ends, ▣ app-opened, ◷ schedule), not an emoji.
+
 ## Language
 
 **Trigger**:

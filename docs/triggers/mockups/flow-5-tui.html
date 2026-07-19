@@ -1,0 +1,1145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Triggers — Flow 5: TUI</title>
+  <style>
+    /* Tokens copied from docs/user-context/mockups/tokens.css (dark only). */
+    :root {
+      --app-bg: #0c0c0e;
+      --app-fg: #e2e2e8;
+
+      --app-titlebar-bg: #08080c;
+      --app-titlebar-border: #15151f;
+      --app-titlebar-title: #45455a;
+
+      --app-surface: #0e0e16;
+      --app-surface-subtle: #101018;
+      --app-surface-raised: #13131a;
+      --app-surface-hover: #1a1a2a;
+
+      --app-border: #1e1e2e;
+      --app-border-strong: #2a2a3a;
+      --app-border-hover: #3a3a5a;
+
+      --app-text-strong: #e2e2e8;
+      --app-text: #c0c0d0;
+      --app-text-muted: #7a7a9a;
+      --app-text-subtle: #44445a;
+      --app-text-faint: #33334a;
+
+      --app-accent: #3dffa0;
+      --app-accent-strong: #2a8a60;
+      --app-accent-bg: #0d1f15;
+      --app-accent-border: #1a4a30;
+      --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+      --app-warn: #d6a14a;
+      --app-warn-bg: #1a1208;
+      --app-warn-border: #7a4a18;
+
+      --app-danger: #ff6b7a;
+      --app-danger-text: #ff8090;
+
+      --app-neutral-bg: #1a1a2a;
+      --app-neutral-border: #2a2a3a;
+      --app-neutral-text: #7070a0;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+        "Cascadia Code", "Fira Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+    button { font: inherit; }
+
+    /* ================================================== MOCKUP EXPLAINER BAR */
+    .mockup-bar {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+      max-width: 1180px;
+      margin: 14px auto 0;
+      padding: 8px 12px;
+      border: 1px dashed var(--app-border-strong);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--app-text-muted);
+    }
+    .mockup-bar .tag { color: var(--app-text-subtle); letter-spacing: 0.08em; }
+    .mockup-bar .spacer { flex: 1 1 auto; }
+    .mockup-bar nav a {
+      color: var(--app-text-subtle);
+      text-decoration: none;
+      margin-left: 10px;
+      white-space: nowrap;
+    }
+    .mockup-bar nav a:hover { color: var(--app-text); text-decoration: underline; }
+    .mockup-bar nav a.current { color: var(--app-text-strong); font-weight: 700; }
+
+    /* ================================================== APP WINDOW */
+    .app-window {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1180px;
+      height: calc(100vh - 90px);
+      margin: 12px auto 16px;
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--app-bg);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+    }
+    .titlebar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      height: 36px;
+      flex: 0 0 36px;
+      padding: 0 12px;
+      background: var(--app-titlebar-bg);
+      border-bottom: 1px solid var(--app-titlebar-border);
+      user-select: none;
+    }
+    .traffic-lights { display: flex; align-items: center; gap: 8px; }
+    .traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .tl-close { background: #ff5f57; }
+    .tl-min { background: #febc2e; }
+    .tl-max { background: #28c840; }
+    .wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+
+    /* ================================================== TUI FRAME */
+    .tui {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      background: var(--app-bg);
+    }
+    .screen {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 14px 18px 8px;
+    }
+    .screen[hidden] { display: none; }
+
+    /* "─ SECTION ───────" flavored header: text + a 1px rule filling the rest. */
+    .tui-hd {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      color: var(--app-text-muted);
+      text-transform: uppercase;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .tui-hd::before { content: "─"; color: var(--app-border-strong); letter-spacing: 0; }
+    .tui-hd .fill { flex: 1 1 auto; height: 1px; background: var(--app-border-strong); min-width: 20px; }
+    .tui-hd .meta { font-size: 10.5px; letter-spacing: 0.03em; text-transform: none; color: var(--app-text-subtle); }
+
+    .counts { margin: 6px 0 10px; font-size: 11px; color: var(--app-text-subtle); }
+    .counts b { color: var(--app-text-muted); font-weight: 400; }
+    .counts .warn { color: var(--app-warn); }
+
+    /* ================================================== SCREEN 1 · LIST TABLE */
+    .t-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+    .t-head, .t-row {
+      display: grid;
+      grid-template-columns: 44px minmax(150px, 1fr) 230px minmax(260px, 1.3fr) 100px;
+      align-items: center;
+      gap: 14px;
+      padding: 0 8px;
+    }
+    .t-head {
+      height: 24px;
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+      border-bottom: 1px solid var(--app-border);
+      user-select: none;
+    }
+    .t-row {
+      height: 34px;
+      cursor: default;
+      border-bottom: 1px solid var(--app-border);
+      transition: background 0.12s ease;
+      user-select: none;
+    }
+    .t-row:hover { background: var(--app-surface-hover); }
+    /* selected row = accent-bg inverse strip, htop-style */
+    .t-row.sel { background: var(--app-accent-bg); box-shadow: inset 2px 0 0 var(--app-accent); }
+    .t-row.sel .t-name { color: var(--app-accent); }
+
+    .t-on { font-size: 12px; color: var(--app-accent); white-space: pre; }
+    .t-row.off .t-on { color: var(--app-text-subtle); }
+    .t-name {
+      font-size: 12.5px;
+      color: var(--app-text-strong);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .t-cond { font-size: 11.5px; color: var(--app-neutral-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .t-cond .param { color: var(--app-text-muted); }
+    .t-last { font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .t-last .glyph { display: inline-block; width: 12px; }
+    .t-last.ok .glyph, .t-last.ok .label { color: var(--app-accent-strong); }
+    .t-last.skip .glyph, .t-last.skip .label { color: var(--app-text-muted); }
+    .t-last.fail .glyph, .t-last.fail .label { color: var(--app-danger-text); }
+    .t-last.warn .glyph, .t-last.warn .label { color: var(--app-warn); }
+    .t-last.none .glyph, .t-last.none .label { color: var(--app-text-subtle); }
+    .t-last .when { color: var(--app-text-subtle); }
+    .t-runs { font-size: 13px; letter-spacing: 2px; line-height: 1; white-space: nowrap; }
+    .t-runs .ok { color: var(--app-accent); }
+    .t-runs .skip { color: var(--app-text-subtle); }
+    .t-runs .fail { color: var(--app-danger); }
+    .t-runs .empty { color: var(--app-text-faint); font-size: 10.5px; letter-spacing: 0; }
+    /* switched-off rows dim, but a provider warn stays legible */
+    .t-row.off .t-name, .t-row.off .t-cond, .t-row.off .t-runs { opacity: 0.4; }
+
+    /* ================================================== SCREEN 2 · DIALOG */
+    #screen-form { overflow-y: auto; align-items: center; }
+    .dialog {
+      width: 100%;
+      max-width: 640px;
+      margin: 26px auto;
+      position: relative;
+      border: 1px solid var(--app-border-strong);
+      background: var(--app-surface);
+      padding: 22px 20px 16px;
+    }
+    .dialog-title {
+      position: absolute;
+      top: -9px; left: 14px;
+      padding: 0 4px;
+      background: var(--app-surface);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      color: var(--app-accent-strong);
+      user-select: none;
+    }
+    .import-warn {
+      display: none;
+      margin: -6px 0 14px;
+      padding: 3px 8px;
+      background: var(--app-warn);
+      color: var(--app-bg);
+      font-size: 11.5px;
+    }
+    .dialog.importing .import-warn { display: block; }
+
+    .f-row {
+      display: grid;
+      grid-template-columns: 120px 1fr;
+      gap: 12px;
+      align-items: baseline;
+      margin-bottom: 12px;
+    }
+    .f-label {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+      user-select: none;
+    }
+    .f-input {
+      width: 100%;
+      background: var(--app-surface-subtle);
+      border: 1px solid var(--app-border-strong);
+      color: var(--app-text-strong);
+      font: inherit;
+      font-size: 12.5px;
+      padding: 4px 8px;
+      outline: none;
+    }
+    .f-input:focus { border-color: var(--app-accent-border); }
+
+    .radio-row { display: flex; gap: 18px; flex-wrap: wrap; user-select: none; }
+    .radio-opt {
+      background: none; border: none; padding: 0;
+      font-size: 12.5px;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      white-space: pre;
+    }
+    .radio-opt:hover { color: var(--app-text-strong); }
+    .radio-opt.on { color: var(--app-accent); }
+
+    .params-note { font-size: 11px; color: var(--app-text-subtle); }
+    .params-wrap { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    select.f-input { width: auto; cursor: pointer; }
+    .time-input { width: 90px; }
+    .day-chip {
+      background: var(--app-surface-subtle);
+      border: 1px solid var(--app-border-strong);
+      color: var(--app-text-subtle);
+      font-size: 11px;
+      padding: 1px 6px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .day-chip.on {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+      color: var(--app-accent);
+    }
+
+    .prompt-box {
+      width: 100%;
+      min-height: 110px;
+      resize: vertical;
+      background: var(--app-surface-subtle);
+      border: 1px solid var(--app-border-strong);
+      color: var(--app-text);
+      font: inherit;
+      font-size: 12.5px;
+      line-height: 1.55;
+      padding: 8px 10px;
+      outline: none;
+    }
+    .prompt-box:focus { border-color: var(--app-accent-border); }
+    .prompt-meta {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10.5px;
+      color: var(--app-text-subtle);
+      margin-top: 3px;
+    }
+    .link-hint {
+      background: none; border: none; padding: 0;
+      font-size: 10.5px;
+      color: var(--app-text-muted);
+      border-bottom: 1px dotted var(--app-border-strong);
+      cursor: pointer;
+    }
+    .link-hint:hover { color: var(--app-text-strong); }
+
+    .adv-fold {
+      background: none; border: none; padding: 0;
+      display: block;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      margin: 4px 0 8px;
+      user-select: none;
+    }
+    .adv-fold:hover { color: var(--app-text-strong); }
+    .adv-body { display: none; padding: 2px 0 4px; border-top: 1px dashed var(--app-border); }
+    .adv-body.open { display: block; padding-top: 10px; }
+    .stepper { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--app-text); }
+    .stepper button {
+      background: var(--app-surface-subtle);
+      border: 1px solid var(--app-border-strong);
+      color: var(--app-text-muted);
+      font-size: 12px;
+      line-height: 1;
+      padding: 2px 7px;
+      cursor: pointer;
+    }
+    .stepper button:hover { color: var(--app-accent); border-color: var(--app-accent-border); }
+    .stepper .val { min-width: 62px; text-align: center; color: var(--app-text-strong); }
+    .adv-note { font-size: 10.5px; color: var(--app-text-subtle); margin-left: 10px; }
+
+    .dialog-foot {
+      display: flex;
+      gap: 10px;
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--app-border);
+    }
+    .tui-btn {
+      background: none;
+      border: none;
+      padding: 2px 4px;
+      font-size: 12.5px;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      white-space: pre;
+      user-select: none;
+    }
+    .tui-btn:hover { color: var(--app-text-strong); background: var(--app-surface-hover); }
+    .tui-btn.accent { color: var(--app-accent); }
+    .tui-btn.accent:hover { background: var(--app-accent-bg); }
+    .dialog-foot .spacer { flex: 1 1 auto; }
+
+    /* ================================================== SCREEN 3 · RUN PAGER */
+    .pager {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px 4px 16px;
+      max-width: 780px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .run-meta { font-size: 11px; color: var(--app-text-muted); margin: 2px 0 6px; }
+    .run-meta .sep { color: var(--app-text-faint); margin: 0 6px; }
+
+    .doc-sec {
+      margin: 20px 0 8px;
+      font-size: 12.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--app-text-strong);
+      user-select: none;
+    }
+    .doc-sec::before { content: "── "; color: var(--app-accent-strong); font-weight: 400; }
+    .doc-p { margin: 0 0 10px; color: var(--app-text); line-height: 1.7; }
+    .doc-p strong { color: var(--app-text-strong); }
+    .doc-ul { margin: 0 0 10px; padding-left: 18px; }
+    .doc-ul li { margin-bottom: 4px; color: var(--app-text); }
+    .doc-ul li::marker { color: var(--app-text-subtle); }
+    .speaker { color: var(--app-accent-strong); font-weight: 600; }
+
+    /* action items — [x] / [ ] toggleable lines */
+    .todo { list-style: none; margin: 0 0 10px; padding: 0; }
+    .todo li {
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      margin-bottom: 4px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .todo .tick { white-space: pre; color: var(--app-text-subtle); }
+    .todo li.done .tick { color: var(--app-accent); }
+    .todo li.done .txt { color: var(--app-text-muted); text-decoration: line-through; text-decoration-color: var(--app-text-subtle); }
+    .todo .txt { color: var(--app-text); }
+    .todo .owner { color: var(--app-text-subtle); font-size: 11px; white-space: nowrap; }
+
+    /* ASCII-flavored AnswerBlock panels */
+    .ablock {
+      position: relative;
+      border: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+      padding: 14px 14px 12px;
+      margin: 12px 0 14px;
+    }
+    .ablock-title {
+      position: absolute;
+      top: -9px; left: 12px;
+      padding: 0 4px;
+      background: var(--app-surface-subtle);
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--app-text-muted);
+      user-select: none;
+    }
+    .ablock-title .kind { color: var(--app-text-faint); text-transform: lowercase; letter-spacing: 0.04em; }
+
+    .abar { display: grid; grid-template-columns: 60px 1fr 58px; gap: 10px; align-items: baseline; margin-bottom: 3px; }
+    .abar .al { font-size: 11.5px; color: var(--app-text); }
+    .abar .ab { color: var(--app-accent); letter-spacing: -1px; overflow: hidden; white-space: nowrap; }
+    .abar .av { font-size: 11px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    .atree { line-height: 1.8; }
+    .atree .row { display: flex; gap: 8px; white-space: nowrap; overflow: hidden; }
+    .atree .branch { color: var(--app-text-subtle); white-space: pre; }
+    .atree .time { color: var(--app-text-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+    .atree .tt { color: var(--app-text-strong); font-size: 12px; }
+    .atree .ts { color: var(--app-text-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+
+    .akv { display: grid; grid-template-columns: 130px 1fr 130px 1fr; gap: 4px 14px; }
+    .akv .k { font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--app-text-subtle); }
+    .akv .v { font-size: 12px; color: var(--app-text-strong); }
+
+    /* follow-up chat */
+    .fu-line { margin-bottom: 10px; line-height: 1.65; }
+    .fu-line.q { color: var(--app-text-strong); }
+    .fu-line.q::before { content: "> "; color: var(--app-accent); }
+    .fu-line.a { color: var(--app-text); padding-left: 16px; }
+    .fu-line.a .strong { color: var(--app-text-strong); font-weight: 600; }
+    .fu-line.a.mock { color: var(--app-text-muted); }
+
+    .composer-line {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: 780px;
+      width: 100%;
+      margin: 0 auto;
+      border-top: 1px solid var(--app-border);
+      padding: 8px 4px 4px;
+    }
+    .composer-line .prompt-char { color: var(--app-accent); user-select: none; }
+    .composer-line input {
+      flex: 1 1 auto;
+      background: transparent;
+      border: none;
+      outline: none;
+      font: inherit;
+      font-size: 12.5px;
+      color: var(--app-text-strong);
+    }
+    .composer-line input::placeholder { color: var(--app-text-faint); }
+    .composer-line .hint { font-size: 10px; color: var(--app-text-faint); user-select: none; }
+
+    /* ================================================== STATUS LINE + KEYBAR */
+    .statusline {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 26px;
+      padding: 0 18px;
+      border-top: 1px solid var(--app-border);
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      user-select: none;
+    }
+    .statusline .msg { overflow: hidden; text-overflow: ellipsis; }
+    .statusline.flash .msg { color: var(--app-accent-strong); }
+    .statusline.warn .msg { color: var(--app-warn); }
+    .statusline .yn {
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border-strong);
+      color: var(--app-text);
+      font-size: 11px;
+      padding: 0 7px;
+      cursor: pointer;
+    }
+    .statusline .yn:hover { border-color: var(--app-accent-border); color: var(--app-accent); }
+
+    .keybar {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      height: 30px;
+      padding: 0 12px;
+      border-top: 1px solid var(--app-border);
+      background: var(--app-surface-subtle);
+      overflow-x: auto;
+      user-select: none;
+    }
+    .kb {
+      background: none;
+      border: none;
+      padding: 3px 8px;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .kb b { color: var(--app-accent); font-weight: 400; margin-right: 5px; }
+    .kb:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+    .kb-sep { color: var(--app-text-faint); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="mockup-bar">
+    <span class="tag">MOCKUP · FLOW 5 of 5 — TUI</span>
+    <span>The same flow in full terminal dress: table → dialog → pager.</span>
+    <span class="spacer"></span>
+    <nav>
+      <a href="flow-1-dense-list.html">flow 1 · dense list</a>
+      <a href="flow-2-card-grid.html">flow 2 · card grid</a>
+      <a href="flow-3-master-detail.html">flow 3 · master-detail</a>
+      <a href="flow-4-wizard.html">flow 4 · wizard</a>
+      <a class="current" href="flow-5-tui.html">flow 5 · TUI</a>
+    </nav>
+  </div>
+
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+      </div>
+      <div class="wordmark">MNEMA</div>
+      <div></div>
+    </header>
+
+    <div class="tui">
+      <!-- ============================ SCREEN 1 · LIST ============================ -->
+      <section id="screen-list" class="screen">
+        <div class="tui-hd">TRIGGERS<span class="fill"></span><span class="meta">a trigger runs your prompt when its condition fires</span></div>
+        <div class="counts" id="counts"></div>
+        <div class="t-head">
+          <span>on</span><span>name</span><span>condition</span><span>last run</span><span>runs</span>
+        </div>
+        <div class="t-scroll" id="t-body"></div>
+      </section>
+
+      <!-- ============================ SCREEN 2 · FORM ============================ -->
+      <section id="screen-form" class="screen" hidden>
+        <div class="dialog" id="dialog">
+          <span class="dialog-title" id="dialog-title">┤ NEW TRIGGER ├</span>
+          <div class="import-warn">! imported — review the prompt before saving</div>
+
+          <div class="f-row">
+            <span class="f-label">name</span>
+            <input class="f-input" id="f-name" type="text" placeholder="e.g. Meeting Recap" />
+          </div>
+
+          <div class="f-row">
+            <span class="f-label">condition</span>
+            <div class="radio-row" id="f-cond">
+              <button type="button" class="radio-opt" data-type="meeting_ends"></button>
+              <button type="button" class="radio-opt" data-type="app_opened"></button>
+              <button type="button" class="radio-opt" data-type="schedule"></button>
+            </div>
+          </div>
+
+          <div class="f-row" id="params-row">
+            <span class="f-label" id="params-label"></span>
+            <div class="params-wrap" id="params-wrap"></div>
+          </div>
+
+          <div class="f-row" style="align-items:start;">
+            <span class="f-label">prompt</span>
+            <div>
+              <textarea class="prompt-box" id="f-prompt" spellcheck="false"></textarea>
+              <div class="prompt-meta">
+                <span id="char-count">0 chars</span>
+                <button type="button" class="link-hint" id="reset-tpl">reset template</button>
+              </div>
+            </div>
+          </div>
+
+          <button type="button" class="adv-fold" id="adv-fold">▸ advanced (all defaults)</button>
+          <div class="adv-body" id="adv-body">
+            <div class="f-row" id="adv-meeting">
+              <span class="f-label">min meeting</span>
+              <span class="stepper" data-adv="minMeeting" data-step="1" data-min="1">
+                <button type="button" class="minus">-</button><span class="val"></span><button type="button" class="plus">+</button>
+                <span class="adv-note">meetings shorter than this never fire</span>
+              </span>
+            </div>
+            <div class="f-row" id="adv-gap">
+              <span class="f-label">away gap</span>
+              <span class="stepper" data-adv="awayGap" data-step="5" data-min="5">
+                <button type="button" class="minus">-</button><span class="val"></span><button type="button" class="plus">+</button>
+                <span class="adv-note">fires only after this long away from the app</span>
+              </span>
+            </div>
+            <div class="f-row">
+              <span class="f-label">cooldown</span>
+              <span class="stepper" data-adv="cooldown" data-step="5" data-min="5">
+                <button type="button" class="minus">-</button><span class="val"></span><button type="button" class="plus">+</button>
+                <span class="adv-note">never fires twice within this window</span>
+              </span>
+            </div>
+          </div>
+
+          <div class="dialog-foot">
+            <button type="button" class="tui-btn accent" id="btn-save">[ create ]</button>
+            <button type="button" class="tui-btn" id="btn-cancel">[ cancel ]</button>
+            <span class="spacer"></span>
+            <button type="button" class="tui-btn" id="btn-share" title="Copy this trigger as shareable JSON">[ share json ]</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============================ SCREEN 3 · RUN PAGER ============================ -->
+      <section id="screen-run" class="screen" hidden>
+        <div class="tui-hd"><span id="run-title">RUN · MEETING RECAP — PRODUCT SYNC</span><span class="fill"></span><span class="meta">⚡ trigger run</span></div>
+        <div class="run-meta">
+          triggered by meeting ends<span class="sep">·</span>Zoom<span class="sep">·</span>today 2:03–2:47 PM<span class="sep">·</span>ran 2:49 PM
+        </div>
+
+        <div class="pager" id="pager">
+          <div class="doc-sec">Summary</div>
+          <p class="doc-p">
+            A 44-minute product sync focused on the <strong>v0.3 release scope</strong>.
+            The group agreed to ship semantic search behind a flag and to push the
+            onboarding redesign to v0.4. Most of the debate was about whether the
+            embedding backfill is safe to run on first launch.
+          </p>
+          <ul class="doc-ul">
+            <li><span class="speaker">You</span>: argued the backfill should stay opt-in until the RSS ceiling is verified on 8&nbsp;GB machines; walked through the vmmap numbers.</li>
+            <li><span class="speaker">Sarah</span>: pushed for flag-on-by-default; conceded after the memory figures, asked for a follow-up benchmark by Friday.</li>
+            <li><span class="speaker">Dev</span>: confirmed the sidecar approach reclaims memory fully; volunteered to own the Friday benchmark.</li>
+          </ul>
+
+          <div class="ablock">
+            <span class="ablock-title">Speaking time <span class="kind">· mnema-bars</span></span>
+            <div class="abar"><span class="al">You</span><span class="ab">████████████████████████</span><span class="av">18 min</span></div>
+            <div class="abar"><span class="al">Sarah</span><span class="ab">████████████████</span><span class="av">12 min</span></div>
+            <div class="abar"><span class="al">Dev</span><span class="ab">████████████</span><span class="av">9 min</span></div>
+          </div>
+
+          <div class="doc-sec">Decisions</div>
+          <ul class="doc-ul">
+            <li><strong>Semantic search ships in v0.3 behind a flag</strong>, off by default until the memory benchmark passes.</li>
+            <li><strong>Onboarding redesign moves to v0.4</strong> — no partial version in v0.3.</li>
+            <li>The backfill runs only on idle + AC power; Dev writes the gating check.</li>
+          </ul>
+
+          <div class="ablock">
+            <span class="ablock-title">Meeting flow <span class="kind">· mnema-timeline</span></span>
+            <div class="atree">
+              <div class="row"><span class="branch">├─</span><span class="time">2:03 PM</span><span class="tt">status round</span><span class="ts">— quick per-person updates, ~6 min</span></div>
+              <div class="row"><span class="branch">├─</span><span class="time">2:09 PM</span><span class="tt">v0.3 scope debate</span><span class="ts">— semantic search flag, backfill memory ceiling</span></div>
+              <div class="row"><span class="branch">├─</span><span class="time">2:34 PM</span><span class="tt">onboarding deferral</span><span class="ts">— agreed quickly; moved to v0.4</span></div>
+              <div class="row"><span class="branch">└─</span><span class="time">2:41 PM</span><span class="tt">wrap-up &amp; owners</span><span class="ts">— action items assigned, Friday checkpoint set</span></div>
+            </div>
+          </div>
+
+          <div class="doc-sec">Action items</div>
+          <ul class="todo" id="todo">
+            <li><span class="tick">[ ]</span><span class="txt">Run the 8&nbsp;GB-machine embedding benchmark and post numbers</span><span class="owner">— Dev, Fri</span></li>
+            <li><span class="tick">[ ]</span><span class="txt">Write the idle + AC gating check for the backfill</span><span class="owner">— Dev</span></li>
+            <li><span class="tick">[ ]</span><span class="txt">Draft the v0.3 flag rollout note for the changelog</span><span class="owner">— You</span></li>
+            <li class="done"><span class="tick">[x]</span><span class="txt">Move onboarding-redesign issues to the v0.4 milestone</span><span class="owner">— Sarah, done in-call</span></li>
+          </ul>
+
+          <div class="ablock">
+            <span class="ablock-title">Meeting facts <span class="kind">· mnema-dossier</span></span>
+            <div class="akv">
+              <span class="k">meeting</span><span class="v">Product Sync</span>
+              <span class="k">duration</span><span class="v">44 min</span>
+              <span class="k">app</span><span class="v">zoom.us</span>
+              <span class="k">participants</span><span class="v">3</span>
+            </div>
+          </div>
+
+          <div class="doc-sec">follow-up</div>
+          <div id="fu-log">
+            <div class="fu-line q">Did Sarah agree to the flag being off by default, or just stop pushing?</div>
+            <div class="fu-line a">She explicitly agreed — at <span class="strong">2:31 PM</span> she said
+              "fine, off by default until Friday's numbers", and then set the Friday
+              checkpoint herself. It reads as a real concession, not a stalemate.</div>
+          </div>
+        </div>
+
+        <div class="composer-line">
+          <span class="prompt-char">&gt;</span>
+          <input id="fu-input" type="text" placeholder="ask a follow-up…" />
+          <span class="hint">follow-ups continue this conversation as normal chat · read-only tools</span>
+        </div>
+      </section>
+
+      <div class="statusline" id="statusline"><span class="msg" id="status-msg">ready</span></div>
+      <div class="keybar" id="keybar"></div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const $ = (s, r = document) => r.querySelector(s);
+      const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+      const BLOCKS = "▁▂▃▄▅▆▇";
+      const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+      const APPS = ["Figma", "Slack", "Xcode", "Linear", "Notion"];
+      const TEMPLATES = {
+        meeting_ends: "Summarize the meeting that just ended: decisions, action items, open questions, and who said what.",
+        app_opened: "Log what I worked on during this session: files, topics, and anything left unfinished.",
+        schedule: "Write a wrap-up of my day: what I worked on, decisions made, and what's unfinished.",
+      };
+      const ADV_DEFAULTS = { minMeeting: 5, awayGap: 30, cooldown: 10 };
+
+      // ---------------- seed data ----------------
+      let nextId = 6;
+      const triggers = [
+        { id: 1, name: "Meeting Recap", cond: { type: "meeting_ends" }, on: true,
+          last: { kind: "ok", label: "completed", when: "today 2:14 PM" },
+          runs: [{ h: 3, s: "ok" }, { h: 5, s: "ok" }, { h: 2, s: "skip" }, { h: 7, s: "ok" }, { h: 6, s: "ok" }],
+          prompt: "Summarize the meeting that just ended: decisions, action items, open questions.",
+          adv: { ...ADV_DEFAULTS } },
+        { id: 2, name: "Standup Notes", cond: { type: "meeting_ends" }, on: true,
+          last: { kind: "skip", label: "skipped — wasn't recording", when: "yesterday 11:02 AM" },
+          runs: [{ h: 4, s: "ok" }, { h: 3, s: "ok" }, { h: 5, s: "ok" }, { h: 1, s: "skip" }],
+          prompt: "Draft my standup notes from this meeting: what I reported and any blockers raised.",
+          adv: { ...ADV_DEFAULTS } },
+        { id: 3, name: "Figma Session Log", cond: { type: "app_opened", app: "Figma" }, on: true,
+          last: { kind: "fail", label: "failed — provider returned an error", when: "Jul 17" },
+          runs: [{ h: 5, s: "ok" }, { h: 4, s: "ok" }, { h: 6, s: "fail" }],
+          prompt: "Log what I worked on during this Figma session.",
+          adv: { ...ADV_DEFAULTS } },
+        { id: 4, name: "Daily Wrap-Up", cond: { type: "schedule", time: "6:00 PM", days: [...DAYS] }, on: true,
+          last: { kind: "ok", label: "completed", when: "yesterday 6:03 PM" },
+          runs: [{ h: 4, s: "ok" }, { h: 5, s: "ok" }, { h: 4, s: "ok" }, { h: 2, s: "skip" }, { h: 5, s: "ok" }, { h: 6, s: "ok" }],
+          prompt: "Write a wrap-up of my day: what I worked on and what's unfinished.",
+          adv: { ...ADV_DEFAULTS } },
+        { id: 5, name: "1:1 Follow-Ups", cond: { type: "meeting_ends" }, on: false, needsProvider: true,
+          last: { kind: "warn", label: "needs an AI provider", when: "" },
+          runs: [{ h: 3, s: "ok" }, { h: 4, s: "ok" }],
+          prompt: "After each 1:1, list what I promised, what they promised, and anything to prepare before the next one.",
+          adv: { ...ADV_DEFAULTS } },
+      ];
+
+      let screen = "list";
+      let sel = 0;
+      let confirmDelete = null; // trigger id awaiting y/n
+      let statusTimer = null;
+
+      // form state
+      let form = null; // { mode: "new"|"edit"|"import", editId, cond, promptDirty, adv }
+
+      // ---------------- status line ----------------
+      const statusEl = $("#statusline");
+      const statusMsg = $("#status-msg");
+      function setStatus(msg, cls) {
+        clearTimeout(statusTimer);
+        confirmDelete = null;
+        statusEl.className = "statusline" + (cls ? " " + cls : "");
+        statusMsg.textContent = msg;
+        statusEl.querySelectorAll(".yn").forEach((b) => b.remove());
+        if (cls) statusTimer = setTimeout(() => { statusEl.className = "statusline"; idleStatus(); }, 2600);
+      }
+      function idleStatus() {
+        statusMsg.textContent = screen === "list" ? "ready · ↑↓ select · keys below are clickable" :
+          screen === "form" ? "editing — ⏎ saves (outside the prompt) · esc cancels" :
+          "viewing last run — esc goes back";
+      }
+      function askDelete(t) {
+        clearTimeout(statusTimer);
+        confirmDelete = t.id;
+        statusEl.className = "statusline warn";
+        statusMsg.textContent = "delete trigger '" + t.name + "'? its past runs are kept — ";
+        const y = document.createElement("button"); y.className = "yn"; y.textContent = "y yes";
+        const n = document.createElement("button"); n.className = "yn"; n.textContent = "n no";
+        y.addEventListener("click", doDelete);
+        n.addEventListener("click", () => setStatus("delete cancelled"));
+        statusEl.append(y, n);
+      }
+      function doDelete() {
+        const i = triggers.findIndex((t) => t.id === confirmDelete);
+        if (i < 0) return;
+        const name = triggers[i].name;
+        triggers.splice(i, 1);
+        sel = Math.min(sel, triggers.length - 1);
+        renderList();
+        setStatus("trigger '" + name + "' deleted", "flash");
+      }
+
+      // ---------------- keybar ----------------
+      const KEYBARS = {
+        list: [
+          ["n", "new", () => openForm("new")],
+          ["i", "import", () => openForm("import")],
+          ["e", "edit", () => selTrigger() && openForm("edit", selTrigger())],
+          ["⏎", "open run", () => openRun()],
+          ["space", "toggle", () => toggleSel()],
+          ["d", "delete", () => selTrigger() && askDelete(selTrigger())],
+        ],
+        form: [
+          ["⏎", "save", () => saveForm()],
+          ["esc", "cancel", () => closeForm()],
+          ["s", "share json", () => shareJson()],
+        ],
+        run: [
+          ["esc", "back", () => showScreen("list")],
+          ["⏎", "send follow-up", () => sendFollowup()],
+        ],
+      };
+      function renderKeybar() {
+        const bar = $("#keybar");
+        bar.innerHTML = "";
+        KEYBARS[screen].forEach(([k, label, fn], i) => {
+          if (i) { const s = document.createElement("span"); s.className = "kb-sep"; s.textContent = "·"; bar.append(s); }
+          const b = document.createElement("button");
+          b.className = "kb";
+          b.innerHTML = "<b></b>";
+          b.firstChild.textContent = k;
+          b.append(label);
+          b.addEventListener("click", fn);
+          bar.append(b);
+        });
+      }
+
+      // ---------------- screens ----------------
+      function showScreen(name) {
+        screen = name;
+        $("#screen-list").hidden = name !== "list";
+        $("#screen-form").hidden = name !== "form";
+        $("#screen-run").hidden = name !== "run";
+        renderKeybar();
+        idleStatus();
+        if (name === "list") renderList();
+      }
+
+      // ---------------- list ----------------
+      function selTrigger() { return triggers[sel]; }
+      function condLabel(t) {
+        const c = t.cond;
+        if (c.type === "meeting_ends") return "meeting ends";
+        if (c.type === "app_opened") return "app opened <span class='param'>· " + c.app + "</span>";
+        const days = c.days.length === 7 ? "daily" : c.days.join("/");
+        return "schedule <span class='param'>· " + days + " " + c.time + "</span>";
+      }
+      function sparkline(t) {
+        if (!t.runs.length) return "<span class='empty'>no runs yet</span>";
+        return t.runs.map((r) => "<span class='" + r.s + "'>" + BLOCKS[r.h - 1] + "</span>").join("");
+      }
+      const LAST_GLYPH = { ok: "✓", skip: "–", fail: "✗", warn: "!", none: "·" };
+      function renderList() {
+        const body = $("#t-body");
+        body.innerHTML = "";
+        triggers.forEach((t, i) => {
+          const row = document.createElement("div");
+          row.className = "t-row" + (i === sel ? " sel" : "") + (t.on ? "" : " off");
+          const last = t.needsProvider
+            ? { kind: "warn", label: "needs an AI provider", when: "" }
+            : t.on ? t.last : { kind: "none", label: "disabled", when: "" };
+          row.innerHTML =
+            "<span class='t-on'>" + (t.on ? "[x]" : "[ ]") + "</span>" +
+            "<span class='t-name'></span>" +
+            "<span class='t-cond'>" + condLabel(t) + "</span>" +
+            "<span class='t-last " + last.kind + "'><span class='glyph'>" + LAST_GLYPH[last.kind] + "</span>" +
+              "<span class='label'></span><span class='when'></span></span>" +
+            "<span class='t-runs'>" + sparkline(t) + "</span>";
+          row.querySelector(".t-name").textContent = t.name;
+          row.querySelector(".t-last .label").textContent = last.label;
+          row.querySelector(".t-last .when").textContent = last.when ? " · " + last.when : "";
+          row.addEventListener("click", (e) => {
+            if (e.target.closest(".t-on")) { sel = i; toggleSel(); return; }
+            if (sel === i) { openRun(); return; } // second click on the selected row opens its run
+            sel = i;
+            renderList();
+          });
+          body.append(row);
+        });
+        const on = triggers.filter((t) => t.on).length;
+        const needy = triggers.filter((t) => t.needsProvider).length;
+        $("#counts").innerHTML = "<b>" + triggers.length + " triggers</b> · " + on + " enabled" +
+          (needy ? " · <span class='warn'>" + needy + " needs provider</span>" : "");
+      }
+      function toggleSel() {
+        const t = selTrigger();
+        if (!t) return;
+        t.on = !t.on;
+        renderList();
+        setStatus("trigger '" + t.name + "' " + (t.on ? "enabled" : "disabled") +
+          (t.on && t.needsProvider ? " — still needs an AI provider" : ""), t.needsProvider && t.on ? "warn" : "flash");
+      }
+      function openRun() {
+        const t = selTrigger();
+        if (!t) return;
+        if (t.needsProvider) { setStatus("'" + t.name + "' can't run — configure an AI provider in settings → ai", "warn"); return; }
+        if (t.last.kind !== "ok") { setStatus("no completed run to open for '" + t.name + "'", "warn"); return; }
+        // ponytail: one canonical run document in the mockup; only the header follows the trigger
+        $("#run-title").textContent = "RUN · " + t.name.toUpperCase() + " — PRODUCT SYNC";
+        showScreen("run");
+      }
+
+      // ---------------- form ----------------
+      const IMPORT_SAMPLE = {
+        name: "Design Review Prep",
+        cond: { type: "app_opened", app: "Figma" },
+        prompt: "Before I start reviewing, pull together what changed since my last Figma session and any feedback I promised to give.",
+      };
+      const fName = $("#f-name");
+      const fPrompt = $("#f-prompt");
+
+      function openForm(mode, t) {
+        const src = mode === "edit" ? t : mode === "import" ? IMPORT_SAMPLE : null;
+        form = {
+          mode,
+          editId: mode === "edit" ? t.id : null,
+          cond: src ? JSON.parse(JSON.stringify(src.cond)) : { type: "meeting_ends" },
+          promptDirty: mode !== "new",
+          adv: mode === "edit" ? { ...t.adv } : { ...ADV_DEFAULTS },
+        };
+        if (form.cond.type === "schedule" && !form.cond.days) { form.cond.days = [...DAYS]; form.cond.time = "6:00 PM"; }
+        fName.value = src ? src.name : "";
+        fPrompt.value = src ? src.prompt : TEMPLATES.meeting_ends;
+        $("#dialog").classList.toggle("importing", mode === "import");
+        $("#dialog-title").textContent = "┤ " + (mode === "edit" ? "EDIT" : mode === "import" ? "IMPORT" : "NEW") + " TRIGGER ├";
+        $("#btn-save").textContent = mode === "edit" ? "[ save ]" : "[ create ]";
+        $("#adv-body").classList.remove("open");
+        $("#adv-fold").textContent = "▸ advanced (all defaults)";
+        renderCond();
+        renderAdv();
+        updateCharCount();
+        showScreen("form");
+        fName.focus();
+      }
+      function closeForm() { showScreen("list"); setStatus(form.mode === "edit" ? "edit cancelled" : "discarded"); }
+
+      function renderCond() {
+        const labels = { meeting_ends: "meeting ends", app_opened: "app opened", schedule: "schedule" };
+        $$("#f-cond .radio-opt").forEach((b) => {
+          const on = b.dataset.type === form.cond.type;
+          b.classList.toggle("on", on);
+          b.textContent = (on ? "(•) " : "( ) ") + labels[b.dataset.type];
+        });
+        // params row swaps with the condition
+        const wrap = $("#params-wrap");
+        wrap.innerHTML = "";
+        const label = $("#params-label");
+        if (form.cond.type === "meeting_ends") {
+          label.textContent = "";
+          wrap.innerHTML = "<span class='params-note'>fires when the meeting app releases the mic and stays quiet ~2 min</span>";
+        } else if (form.cond.type === "app_opened") {
+          label.textContent = "app";
+          const sl = document.createElement("select");
+          sl.className = "f-input";
+          APPS.forEach((a) => {
+            const o = document.createElement("option");
+            o.textContent = a;
+            o.selected = a === form.cond.app;
+            sl.append(o);
+          });
+          sl.addEventListener("change", () => { form.cond.app = sl.value; });
+          wrap.append(sl);
+        } else {
+          label.textContent = "at";
+          const time = document.createElement("input");
+          time.className = "f-input time-input";
+          time.value = form.cond.time || "6:00 PM";
+          time.addEventListener("input", () => { form.cond.time = time.value; });
+          wrap.append(time);
+          DAYS.forEach((d) => {
+            const c = document.createElement("button");
+            c.type = "button";
+            c.className = "day-chip" + (form.cond.days.includes(d) ? " on" : "");
+            c.textContent = "[" + d + "]";
+            c.addEventListener("click", () => {
+              const i = form.cond.days.indexOf(d);
+              if (i >= 0) form.cond.days.splice(i, 1); else form.cond.days.push(d);
+              form.cond.days.sort((a, b) => DAYS.indexOf(a) - DAYS.indexOf(b));
+              renderCond();
+            });
+            wrap.append(c);
+          });
+        }
+        // advanced rows only where they apply
+        $("#adv-meeting").style.display = form.cond.type === "meeting_ends" ? "" : "none";
+        $("#adv-gap").style.display = form.cond.type === "app_opened" ? "" : "none";
+      }
+      $$("#f-cond .radio-opt").forEach((b) => b.addEventListener("click", () => {
+        const type = b.dataset.type;
+        if (type === form.cond.type) return;
+        form.cond = type === "app_opened" ? { type, app: "Figma" }
+          : type === "schedule" ? { type, time: "6:00 PM", days: [...DAYS] }
+          : { type };
+        if (!form.promptDirty) { fPrompt.value = TEMPLATES[type]; updateCharCount(); }
+        renderCond();
+      }));
+
+      function updateCharCount() { $("#char-count").textContent = fPrompt.value.length + " chars"; }
+      fPrompt.addEventListener("input", () => { form.promptDirty = true; updateCharCount(); });
+      $("#reset-tpl").addEventListener("click", () => {
+        fPrompt.value = TEMPLATES[form.cond.type];
+        form.promptDirty = false;
+        updateCharCount();
+        setStatus("prompt reset to the " + form.cond.type.replace("_", " ") + " starter template");
+      });
+
+      function renderAdv() {
+        $$(".stepper").forEach((s) => {
+          s.querySelector(".val").textContent = form.adv[s.dataset.adv] + " min";
+        });
+      }
+      $$(".stepper").forEach((s) => {
+        const key = s.dataset.adv, step = +s.dataset.step, min = +s.dataset.min;
+        s.querySelector(".minus").addEventListener("click", () => { form.adv[key] = Math.max(min, form.adv[key] - step); renderAdv(); });
+        s.querySelector(".plus").addEventListener("click", () => { form.adv[key] += step; renderAdv(); });
+      });
+      $("#adv-fold").addEventListener("click", () => {
+        const body = $("#adv-body");
+        body.classList.toggle("open");
+        const open = body.classList.contains("open");
+        const dflt = Object.keys(ADV_DEFAULTS).every((k) => form.adv[k] === ADV_DEFAULTS[k]);
+        $("#adv-fold").textContent = (open ? "▾" : "▸") + " advanced" + (dflt ? " (all defaults)" : " (edited)");
+      });
+
+      function saveForm() {
+        const name = fName.value.trim();
+        if (!name) { setStatus("name is required", "warn"); fName.focus(); return; }
+        if (form.mode === "edit") {
+          const t = triggers.find((x) => x.id === form.editId);
+          t.name = name; t.cond = form.cond; t.prompt = fPrompt.value; t.adv = form.adv;
+          sel = triggers.indexOf(t);
+          showScreen("list");
+          setStatus("trigger '" + name + "' saved", "flash");
+        } else {
+          triggers.push({ id: nextId++, name, cond: form.cond, on: true,
+            last: { kind: "none", label: "no runs yet", when: "" }, runs: [],
+            prompt: fPrompt.value, adv: form.adv });
+          sel = triggers.length - 1;
+          showScreen("list");
+          setStatus("trigger '" + name + "' created — it runs the next time its condition fires", "flash");
+        }
+      }
+      function shareJson() {
+        const c = form.cond;
+        const params = c.type === "app_opened" ? { app: c.app }
+          : c.type === "schedule" ? { time: c.time, days: c.days } : {};
+        const json = JSON.stringify({ version: 1, name: fName.value.trim() || "untitled",
+          condition: { type: c.type, params }, prompt: fPrompt.value }, null, 2);
+        if (navigator.clipboard) navigator.clipboard.writeText(json);
+        setStatus("trigger json copied to clipboard — share it anywhere; import prefills the form", "flash");
+      }
+      $("#btn-save").addEventListener("click", saveForm);
+      $("#btn-cancel").addEventListener("click", closeForm);
+      $("#btn-share").addEventListener("click", shareJson);
+
+      // ---------------- run pager ----------------
+      $$("#todo li").forEach((li) => li.addEventListener("click", () => {
+        li.classList.toggle("done");
+        li.querySelector(".tick").textContent = li.classList.contains("done") ? "[x]" : "[ ]";
+      }));
+      const fuInput = $("#fu-input");
+      function sendFollowup() {
+        const text = fuInput.value.trim();
+        if (!text) { fuInput.focus(); return; }
+        const q = document.createElement("div"); q.className = "fu-line q"; q.textContent = text;
+        const a = document.createElement("div"); a.className = "fu-line a mock";
+        a.textContent = "(mock) In the real app the model would answer from your capture history — trigger runs use read-only tools only.";
+        $("#fu-log").append(q, a);
+        fuInput.value = "";
+        a.scrollIntoView({ behavior: "smooth", block: "end" });
+      }
+      fuInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendFollowup(); });
+
+      // ---------------- global keys ----------------
+      document.addEventListener("keydown", (e) => {
+        const inField = /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName);
+        if (e.key === "Escape") {
+          if (screen === "form") closeForm();
+          else if (screen === "run") showScreen("list");
+          if (inField) e.target.blur();
+          return;
+        }
+        if (confirmDelete !== null && !inField) {
+          if (e.key === "y") { doDelete(); return; }
+          if (e.key === "n") { setStatus("delete cancelled"); return; }
+        }
+        if (screen === "form") {
+          if (e.key === "Enter" && e.target !== fPrompt) { e.preventDefault(); saveForm(); }
+          else if (e.key === "s" && !inField) shareJson();
+          return;
+        }
+        if (inField) return;
+        if (screen === "run") return; // ⏎ handled by the composer's own listener
+        // list screen
+        switch (e.key) {
+          case "n": openForm("new"); break;
+          case "i": openForm("import"); break;
+          case "e": if (selTrigger()) openForm("edit", selTrigger()); break;
+          case "d": if (selTrigger()) askDelete(selTrigger()); break;
+          case " ": e.preventDefault(); toggleSel(); break;
+          case "Enter": openRun(); break;
+          case "ArrowDown": case "j": sel = Math.min(sel + 1, triggers.length - 1); renderList(); break;
+          case "ArrowUp": case "k": sel = Math.max(sel - 1, 0); renderList(); break;
+        }
+      });
+
+      // ---------------- boot ----------------
+      renderList();
+      renderKeybar();
+      idleStatus();
+    })();
+  </script>
+</body>
+</html>

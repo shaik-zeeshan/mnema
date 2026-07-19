@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Triggers · Document View</title>
+  <style>
+    /* ===== Tokens (dark subset from docs/user-context/mockups/tokens.css) ===== */
+    :root {
+      --app-bg: #0c0c0e;
+      --app-fg: #e2e2e8;
+      --app-titlebar-bg: #08080c;
+      --app-titlebar-border: #15151f;
+      --app-titlebar-title: #45455a;
+      --app-status-bg: #0a0a10;
+      --app-status-border: #161624;
+      --app-status-fg: #555574;
+      --app-status-dot: #2a2a3a;
+      --app-surface: #0e0e16;
+      --app-surface-subtle: #101018;
+      --app-surface-raised: #13131a;
+      --app-surface-hover: #1a1a2a;
+      --app-border: #1e1e2e;
+      --app-border-strong: #2a2a3a;
+      --app-border-hover: #3a3a5a;
+      --app-text-strong: #e2e2e8;
+      --app-text: #c0c0d0;
+      --app-text-muted: #7a7a9a;
+      --app-text-subtle: #44445a;
+      --app-text-faint: #33334a;
+      --app-accent: #3dffa0;
+      --app-accent-strong: #2a8a60;
+      --app-accent-bg: #0d1f15;
+      --app-accent-border: #1a4a30;
+      --app-accent-glow: rgba(61, 255, 160, 0.18);
+      --app-icon-fg: #8a8aaa;
+      --app-icon-fg-hover: #e2e2e8;
+      --app-icon-bg-hover: #1a1a2a;
+      --app-icon-border-hover: #2a2a3a;
+      --cat-meetings: #ff9fd0;
+      --app-source-mic: #80d0a8;
+      --app-source-screen: #c0b0ff;
+    }
+
+    /* ===== Base (from app.css) ===== */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+        "Cascadia Code", "Fira Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* mockup explainer bar (outside the app window) */
+    .mockup-bar {
+      max-width: 1180px; margin: 14px auto 0; padding: 8px 14px;
+      border: 1px dashed var(--app-border-strong); border-radius: 8px;
+      display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap;
+      font-size: 10.5px; color: var(--app-text-muted); line-height: 1.5;
+    }
+    .mockup-bar b { color: var(--app-text); font-weight: 600; letter-spacing: 0.04em; }
+    .mockup-nav { margin-left: auto; display: inline-flex; gap: 10px; white-space: nowrap; }
+    .mockup-nav a { color: var(--app-text-subtle); }
+    .mockup-nav a:hover { color: var(--app-text); }
+    .mockup-nav a.current { color: var(--app-accent-strong); }
+
+    .app-window {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1180px;
+      height: calc(100vh - 92px);
+      margin: 12px auto 16px;
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--app-bg);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      height: 36px;
+      flex: 0 0 36px;
+      padding: 0 12px;
+      background: var(--app-titlebar-bg);
+      border-bottom: 1px solid var(--app-titlebar-border);
+      user-select: none;
+    }
+    .titlebar-left { display: flex; align-items: center; gap: 12px; }
+    .traffic-lights { display: flex; align-items: center; gap: 8px; }
+    .traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .tl-close { background: #ff5f57; }
+    .tl-min { background: #febc2e; }
+    .tl-max { background: #28c840; }
+    .wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+    .titlebar-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+    .surface-toggle {
+      display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+      border: 1px solid var(--app-border); border-radius: 7px;
+      background: var(--app-surface-subtle);
+    }
+    .surface-toggle button {
+      font: inherit; font-size: 11.5px; line-height: 1; letter-spacing: 0.02em;
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 0 13px; height: 22px;
+      border: 1px solid transparent; border-radius: 5px;
+      background: transparent; color: var(--app-text-muted); cursor: pointer;
+    }
+    .surface-toggle button.active {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+      color: var(--app-accent-strong);
+    }
+
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; padding: 3px 9px;
+      border: 1px solid var(--app-status-border); border-radius: 999px;
+      background: var(--app-status-bg); color: var(--app-status-fg);
+    }
+    .status-chip .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--app-status-dot); }
+
+    .app-body { display: flex; flex: 1 1 auto; min-height: 0; }
+    .insights { display: flex; flex-direction: row; flex: 1 1 auto; min-height: 0; }
+
+    /* ===== Left rail ===== */
+    .sidebar {
+      flex: 0 0 200px; width: 200px;
+      display: flex; flex-direction: column; min-height: 0;
+      background: var(--app-surface-subtle);
+      border-right: 1px solid var(--app-border);
+    }
+    .sidebar-scroll {
+      flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0;
+      padding: 18px 16px 0;
+    }
+    .rail-nav { display: flex; flex-direction: column; gap: 1px; }
+    .rail-nav-item {
+      display: flex; align-items: center; gap: 8px; height: 28px;
+      font-size: 12px; text-transform: lowercase;
+      color: var(--app-text-muted); transition: color 0.12s ease;
+    }
+    .rail-nav-item:hover { color: var(--app-text-strong); }
+    .rail-nav-item .rail-count { margin-left: auto; font-size: 11px; color: var(--app-text-faint); }
+    .rail-newchat {
+      display: inline-flex; align-items: center; gap: 7px; margin-top: 18px;
+      font-size: 12px; text-transform: lowercase; color: var(--app-text-muted);
+      cursor: pointer;
+    }
+    .rail-newchat .plus { color: var(--app-text-subtle); }
+    .rail-newchat:hover, .rail-newchat:hover .plus { color: var(--app-accent); }
+
+    /* origin filter — same segmented look, rail-sized */
+    .origin-filter {
+      display: inline-flex; align-items: center; gap: 2px; padding: 2px;
+      margin-top: 14px;
+      border: 1px solid var(--app-border); border-radius: 7px;
+      background: var(--app-surface-subtle);
+      align-self: stretch;
+    }
+    .origin-filter button {
+      flex: 1 1 0;
+      font: inherit; font-size: 10.5px; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 20px; padding: 0 4px;
+      border: 1px solid transparent; border-radius: 5px;
+      background: transparent; color: var(--app-text-muted); cursor: pointer;
+      text-transform: lowercase;
+    }
+    .origin-filter button:hover { color: var(--app-text-strong); }
+    .origin-filter button.active {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+      color: var(--app-accent-strong);
+    }
+
+    .rail-search {
+      display: flex; align-items: center; gap: 8px; height: 30px; margin-top: 10px;
+      border-bottom: 1px solid var(--app-border);
+    }
+    .rail-search .glyph { color: var(--app-text-subtle); font-size: 12px; }
+    .rail-search input {
+      flex: 1 1 auto; min-width: 0; background: transparent; border: 0; outline: 0;
+      color: var(--app-text); font-family: inherit; font-size: 11.5px;
+    }
+    .rail-search input::placeholder { color: var(--app-text-subtle); }
+
+    .rail-history {
+      flex: 1 1 auto; min-height: 0; overflow-y: auto;
+      display: flex; flex-direction: column; padding-bottom: 16px;
+    }
+    .rail-group {
+      font-size: 9px; letter-spacing: 0.14em; text-transform: lowercase;
+      color: var(--app-text-subtle);
+      margin-top: 14px; padding-top: 11px; padding-bottom: 8px;
+      border-top: 1px solid var(--app-border);
+    }
+    .rail-group:first-child { border-top: none; margin-top: 12px; padding-top: 0; }
+    .rail-chat {
+      display: flex; flex-direction: column; gap: 1px;
+      padding: 3px 0 5px; text-decoration: none;
+    }
+    .rail-chat .row1 { display: flex; align-items: baseline; gap: 8px; }
+    .rail-chat .t {
+      flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--app-text-muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: color 0.12s ease;
+    }
+    .rail-chat:hover .t { color: var(--app-text-strong); }
+    .rail-chat .when { font-size: 9.5px; color: var(--app-text-faint); flex: 0 0 auto; }
+    .rail-chat.active .t { color: var(--app-accent-strong); }
+    /* trigger-origin badge on rail rows */
+    .origin-badge {
+      align-self: flex-start;
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 9px; letter-spacing: 0.03em;
+      padding: 0 5px; border-radius: 4px;
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg);
+      color: var(--app-accent-strong);
+      max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+    }
+    .origin-badge .zap { font-size: 8.5px; }
+
+    .rail-foot {
+      flex: 0 0 auto; border-top: 1px solid var(--app-border); padding: 12px 16px;
+      display: flex; align-items: center; gap: 6px;
+      font-size: 9.5px; color: var(--app-text-muted);
+    }
+    .rail-engine { display: inline-flex; align-items: center; gap: 6px; }
+    .rail-engine .dot { width: 5px; height: 5px; border-radius: 999px; background: var(--app-accent); }
+    .rail-engine .sep { color: var(--app-text-faint); }
+
+    /* ===== Main pane ===== */
+    .insights-main {
+      flex: 1 1 auto; min-width: 0;
+      display: flex; flex-direction: column; min-height: 0;
+      overflow: hidden; padding: 0;
+    }
+    .doc-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 26px 0 18px; }
+    .doc-col { max-width: 760px; margin: 0 auto; padding: 0 24px; }
+
+    .doc-scroll::-webkit-scrollbar, .rail-history::-webkit-scrollbar { width: 8px; }
+    .doc-scroll::-webkit-scrollbar-track, .rail-history::-webkit-scrollbar-track { background: transparent; }
+    .doc-scroll::-webkit-scrollbar-thumb, .rail-history::-webkit-scrollbar-thumb {
+      background: var(--app-border-strong);
+      border: 2px solid var(--app-bg); border-radius: 999px;
+    }
+
+    /* ---- Document header ---- */
+    .doc-head {
+      padding-bottom: 16px; margin-bottom: 20px;
+      border-bottom: 1px solid var(--app-border);
+    }
+    .doc-eyebrow {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--app-accent-strong);
+      padding: 2px 8px; border-radius: 4px;
+      border: 1px solid var(--app-accent-border); background: var(--app-accent-bg);
+      margin-bottom: 10px;
+    }
+    .doc-head-row { display: flex; align-items: flex-start; gap: 12px; }
+    .doc-title {
+      flex: 1 1 auto; min-width: 0; margin: 0;
+      font-size: 21px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+    }
+    .doc-actions { flex: 0 0 auto; display: inline-flex; gap: 4px; margin-top: 3px; }
+    .icon-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; font: inherit; font-size: 13px;
+      border: 1px solid transparent; border-radius: 6px;
+      background: transparent; color: var(--app-icon-fg); cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .icon-btn:hover {
+      color: var(--app-icon-fg-hover);
+      background: var(--app-icon-bg-hover);
+      border-color: var(--app-icon-border-hover);
+    }
+    .doc-meta { margin-top: 5px; font-size: 11px; color: var(--app-text-muted); }
+    .doc-meta .dotsep { color: var(--app-text-faint); margin: 0 6px; }
+
+    /* ---- Document body (rendered markdown) ---- */
+    .doc-body { font-size: 13px; color: var(--app-text); line-height: 1.7; }
+    .doc-body h2 {
+      margin: 26px 0 10px; font-size: 14px; font-weight: 650;
+      letter-spacing: 0.01em; color: var(--app-text-strong);
+      padding-bottom: 6px; border-bottom: 1px dashed var(--app-border);
+    }
+    .doc-body h2:first-child { margin-top: 0; }
+    .doc-body p { margin: 0 0 12px; }
+    .doc-body ul { margin: 0 0 12px; padding-left: 20px; }
+    .doc-body li { margin-bottom: 4px; }
+    .doc-body li::marker { color: var(--app-text-subtle); }
+    .doc-body b, .doc-body strong { color: var(--app-text-strong); font-weight: 600; }
+    .speaker { color: var(--app-accent-strong); font-weight: 600; }
+
+    /* action-items checklist */
+    .checklist { list-style: none; padding-left: 2px; margin: 0 0 12px; }
+    .checklist li {
+      display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px;
+    }
+    .checklist .box {
+      flex: 0 0 auto; width: 12px; height: 12px;
+      border: 1px solid var(--app-border-strong); border-radius: 3px;
+      background: var(--app-surface-raised);
+      position: relative; top: 1px; cursor: pointer;
+    }
+    .checklist .box.done { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    .checklist .box.done::after {
+      content: "✓"; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 9px; color: var(--app-accent-strong); line-height: 1;
+    }
+    .checklist .owner { color: var(--app-text-muted); font-size: 11px; white-space: nowrap; }
+
+    /* ---- Typed AnswerBlock panels ---- */
+    .answer-block {
+      margin: 14px 0 16px;
+      border: 1px solid var(--app-border); border-radius: 9px;
+      background: var(--app-surface);
+      padding: 13px 14px 14px;
+    }
+    .answer-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; margin-bottom: 12px;
+    }
+    .block-title {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase;
+      color: var(--app-text-muted);
+    }
+    .block-kind {
+      font-size: 9px; letter-spacing: 0.06em;
+      padding: 1px 6px; border-radius: 4px;
+      border: 1px solid var(--app-border-strong);
+      background: var(--app-surface-subtle);
+      color: var(--app-text-subtle);
+      text-transform: lowercase;
+    }
+    .answer-note { font-size: 10.5px; color: var(--app-text-muted); }
+
+    /* mnema-bars */
+    .barchart { display: flex; flex-direction: column; gap: 9px; }
+    .bar-row { display: grid; grid-template-columns: 76px 1fr 52px; align-items: center; gap: 10px; }
+    .bar-label { font-size: 11px; color: var(--app-text); }
+    .bar-track {
+      position: relative; height: 14px; border-radius: 3px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      overflow: hidden;
+    }
+    .bar-fill {
+      position: absolute; inset: 0 auto 0 0; height: 100%;
+      border-radius: 2px 0 0 2px;
+      background: var(--app-accent); opacity: 0.85;
+    }
+    .bar-val { font-size: 11px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* mnema-timeline */
+    .tl { display: flex; flex-direction: column; }
+    .tl-row { display: flex; gap: 12px; }
+    .tl-time {
+      flex: 0 0 62px; text-align: right;
+      font-size: 10.5px; color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums;
+      padding-top: 1px;
+    }
+    .tl-spine { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
+    .tl-dot {
+      flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+      background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow);
+      margin-top: 6px;
+    }
+    .tl-row:last-child .tl-dot { background: var(--app-text-subtle); box-shadow: none; }
+    .tl-line { flex: 1 1 auto; width: 1px; background: var(--app-border); min-height: 14px; }
+    .tl-row:last-child .tl-line { display: none; }
+    .tl-body { flex: 1 1 auto; min-width: 0; padding-bottom: 14px; }
+    .tl-row:last-child .tl-body { padding-bottom: 2px; }
+    .tl-title { font-size: 12px; color: var(--app-text-strong); }
+    .tl-sub { font-size: 10.5px; color: var(--app-text-muted); margin-top: 1px; }
+
+    /* mnema-dossier */
+    .dossier {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px;
+    }
+    .dossier .kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+    .dossier .k {
+      font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--app-text-subtle);
+    }
+    .dossier .v {
+      font-size: 12px; color: var(--app-text-strong);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+
+    /* ---- follow-up divider + chat ---- */
+    .followup-divider {
+      display: flex; align-items: center; gap: 10px;
+      margin: 28px 0 20px;
+      font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--app-text-subtle);
+    }
+    .followup-divider::before, .followup-divider::after {
+      content: ""; flex: 1 1 auto; height: 1px; background: var(--app-border);
+    }
+    .followup-caption { text-align: center; font-size: 10px; color: var(--app-text-faint); margin: -14px 0 18px; }
+    .msg { display: flex; gap: 12px; margin-bottom: 22px; }
+    .msg-user { justify-content: flex-end; }
+    .user-bubble {
+      max-width: 78%;
+      background: var(--app-surface-raised);
+      border: 1px solid var(--app-border-strong);
+      border-radius: 10px;
+      padding: 9px 13px;
+      font-size: 13px; color: var(--app-text-strong);
+    }
+    .avatar {
+      flex: 0 0 auto; width: 26px; height: 26px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 6px;
+      background: var(--app-accent-bg);
+      border: 1px solid var(--app-accent-border);
+      color: var(--app-accent-strong);
+      font-size: 13px; margin-top: 1px;
+    }
+    .msg-body { min-width: 0; flex: 1 1 auto; }
+    .msg-prose { font-size: 13px; color: var(--app-text); line-height: 1.65; }
+    .msg-prose .strong { color: var(--app-text-strong); font-weight: 600; }
+
+    /* ---- composer ---- */
+    .composer-wrap {
+      flex: 0 0 auto;
+      border-top: 1px solid var(--app-border);
+      background: var(--app-bg);
+      padding: 12px 24px 14px;
+    }
+    .composer { max-width: 760px; margin: 0 auto; }
+    .composer-row {
+      display: flex; align-items: center; gap: 9px;
+      border: 1px solid var(--app-border-strong); border-radius: 10px;
+      background: var(--app-surface);
+      padding: 7px 8px 7px 10px;
+    }
+    .composer-row:focus-within { border-color: var(--app-border-hover); }
+    .model-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font: inherit; font-size: 10.5px; padding: 3px 8px;
+      border: 1px solid var(--app-accent-border); border-radius: 6px;
+      background: var(--app-accent-bg); color: var(--app-accent-strong);
+      cursor: pointer;
+    }
+    .model-chip .mc-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent); }
+    .composer-input {
+      flex: 1 1 auto; min-width: 0; border: none; background: transparent;
+      font: inherit; font-size: 13px; color: var(--app-text-strong); outline: none;
+    }
+    .composer-input::placeholder { color: var(--app-text-faint); }
+    .send-btn {
+      flex: 0 0 auto; width: 30px; height: 30px;
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 50%;
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg); color: var(--app-accent-strong);
+      font-size: 15px; cursor: pointer;
+    }
+    .composer-hint {
+      max-width: 760px; margin: 7px auto 0;
+      font-size: 10px; color: var(--app-text-faint); text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="mockup-bar">
+    <span><b>MOCKUP · Document View — how a trigger run reads.</b>
+      A finished trigger run opens as a titled document (no chat bubbles) with charts inline;
+      follow-up questions continue below as normal chat. Opened from a notification or the Triggers page.</span>
+    <nav class="mockup-nav">
+      <a href="triggers-page-a.html">Page A</a> <a href="triggers-page-b.html">Page B</a>
+      <a href="create-edit-a.html">Create A</a> <a href="create-edit-b.html">Create B</a>
+      <a class="current" href="document-view-a.html">Document</a>
+    </nav>
+  </div>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">MNEMA</span>
+      </div>
+      <div class="surface-toggle">
+        <button type="button">Timeline</button>
+        <button type="button" class="active" aria-current="page">Insights</button>
+      </div>
+      <div class="titlebar-right">
+        <span class="status-chip"><span class="dot"></span>idle</span>
+      </div>
+    </header>
+
+    <div class="app-body">
+      <div class="insights">
+        <!-- ================= LEFT RAIL ================= -->
+        <aside class="sidebar" aria-label="Insights navigation">
+          <div class="sidebar-scroll">
+            <nav class="rail-nav">
+              <a class="rail-nav-item" href="#">overview</a>
+              <a class="rail-nav-item" href="#">subjects<span class="rail-count">12</span></a>
+              <a class="rail-nav-item" href="triggers-page-a.html" title="Back to the Triggers page">triggers<span class="rail-count">3</span></a>
+            </nav>
+            <a class="rail-newchat" href="#"><span class="plus">＋</span> new chat</a>
+
+            <!-- origin filter -->
+            <div class="origin-filter" role="group" aria-label="Filter by origin">
+              <button type="button" class="active">all</button>
+              <button type="button">chats</button>
+              <button type="button">triggers</button>
+            </div>
+
+            <div class="rail-search">
+              <span class="glyph">⌕</span>
+              <input type="text" placeholder="search…" />
+            </div>
+
+            <div class="rail-history">
+              <div class="rail-group">today</div>
+              <a class="rail-chat active" href="#">
+                <span class="row1"><span class="t">Product Sync recap</span><span class="when">2:49p</span></span>
+                <span class="origin-badge"><span class="zap">◉</span>Meeting Recap</span>
+              </a>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">Why is my DER stuck?</span><span class="when">11a</span></span>
+              </a>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">1:1 with Sarah recap</span><span class="when">10a</span></span>
+                <span class="origin-badge"><span class="zap">◉</span>Meeting Recap</span>
+              </a>
+              <div class="rail-group">yesterday</div>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">Draft release notes v0.2</span><span class="when">1d</span></span>
+              </a>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">Morning Figma session</span><span class="when">1d</span></span>
+                <span class="origin-badge"><span class="zap">◉</span>Design Kickoff</span>
+              </a>
+              <div class="rail-group">this week</div>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">What did I decide about cc?</span><span class="when">3d</span></span>
+              </a>
+              <a class="rail-chat" href="#">
+                <span class="row1"><span class="t">Compare cc thresholds</span><span class="when">4d</span></span>
+              </a>
+            </div>
+          </div>
+          <div class="rail-foot">
+            <span class="rail-engine"><span class="dot"></span>engine<span class="sep">·</span><span>Claude</span></span>
+          </div>
+        </aside>
+
+        <!-- ================= MAIN: DOCUMENT VIEW ================= -->
+        <main class="insights-main">
+          <div class="doc-scroll">
+            <div class="doc-col">
+
+              <!-- Document header — no question bubble; the run IS the document. -->
+              <header class="doc-head">
+                <span class="doc-eyebrow" title="This conversation was started by the Meeting Recap trigger, not by you">◉ trigger run</span>
+                <div class="doc-head-row">
+                  <h1 class="doc-title">Meeting Recap — Product Sync</h1>
+                  <div class="doc-actions">
+                    <button class="icon-btn" type="button" id="copy-btn" title="Copy as markdown">⧉</button>
+                    <button class="icon-btn" type="button" title="Share">⇪</button>
+                    <button class="icon-btn" type="button" title="Re-run">⟳</button>
+                  </div>
+                </div>
+                <div class="doc-meta">
+                  Triggered by Meeting Ends<span class="dotsep">·</span>Zoom<span class="dotsep">·</span>today 2:03–2:47 PM<span class="dotsep">·</span>ran 2:49 PM
+                </div>
+              </header>
+
+              <!-- Document body: rendered markdown + typed AnswerBlocks inline -->
+              <article class="doc-body">
+                <h2>Summary</h2>
+                <p>
+                  A 44-minute product sync focused on the <strong>v0.3 release scope</strong>.
+                  The group agreed to ship semantic search behind a flag and to push the
+                  onboarding redesign to v0.4. Most of the debate was about whether the
+                  embedding backfill is safe to run on first launch.
+                </p>
+                <ul>
+                  <li><span class="speaker">You</span>: argued the backfill should stay opt-in until the RSS ceiling is verified on 8&nbsp;GB machines; walked through the vmmap numbers.</li>
+                  <li><span class="speaker">Sarah</span>: pushed for flag-on-by-default; conceded after the memory figures, asked for a follow-up benchmark by Friday.</li>
+                  <li><span class="speaker">Dev</span>: confirmed the sidecar approach reclaims memory fully; volunteered to own the Friday benchmark.</li>
+                </ul>
+
+                <!-- typed AnswerBlock: mnema-bars -->
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Speaking time<span class="block-kind">mnema-bars</span></div>
+                    <span class="answer-note">2:03–2:47 PM</span>
+                  </div>
+                  <div class="barchart">
+                    <div class="bar-row">
+                      <div class="bar-label">You</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:100%;"></span></div>
+                      <div class="bar-val">18 min</div>
+                    </div>
+                    <div class="bar-row">
+                      <div class="bar-label">Sarah</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:67%;"></span></div>
+                      <div class="bar-val">12 min</div>
+                    </div>
+                    <div class="bar-row">
+                      <div class="bar-label">Dev</div>
+                      <div class="bar-track"><span class="bar-fill" style="width:50%;"></span></div>
+                      <div class="bar-val">9 min</div>
+                    </div>
+                  </div>
+                </section>
+
+                <h2>Decisions</h2>
+                <ul>
+                  <li><strong>Semantic search ships in v0.3 behind a flag</strong>, off by default until the memory benchmark passes.</li>
+                  <li><strong>Onboarding redesign moves to v0.4</strong> — no partial version in v0.3.</li>
+                  <li>The backfill runs only on idle + AC power; Dev writes the gating check.</li>
+                </ul>
+
+                <!-- typed AnswerBlock: mnema-timeline -->
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Meeting flow<span class="block-kind">mnema-timeline</span></div>
+                  </div>
+                  <div class="tl">
+                    <div class="tl-row">
+                      <div class="tl-time">2:03 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Status round</div>
+                        <div class="tl-sub">quick per-person updates, ~6 min</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:09 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">v0.3 scope debate</div>
+                        <div class="tl-sub">semantic search flag, backfill memory ceiling — the bulk of the meeting</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:34 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Onboarding deferral</div>
+                        <div class="tl-sub">agreed quickly; moved to v0.4</div>
+                      </div>
+                    </div>
+                    <div class="tl-row">
+                      <div class="tl-time">2:41 PM</div>
+                      <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                      <div class="tl-body">
+                        <div class="tl-title">Wrap-up &amp; owners</div>
+                        <div class="tl-sub">action items assigned, Friday checkpoint set</div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <h2>Action items</h2>
+                <ul class="checklist">
+                  <li><span class="box"></span><span>Run the 8&nbsp;GB-machine embedding benchmark and post numbers</span><span class="owner">— Dev, Fri</span></li>
+                  <li><span class="box"></span><span>Write the idle + AC gating check for the backfill</span><span class="owner">— Dev</span></li>
+                  <li><span class="box"></span><span>Draft the v0.3 flag rollout note for the changelog</span><span class="owner">— You</span></li>
+                  <li><span class="box done"></span><span>Move onboarding-redesign issues to the v0.4 milestone</span><span class="owner">— Sarah, done in-call</span></li>
+                </ul>
+
+                <!-- typed AnswerBlock: mnema-dossier -->
+                <section class="answer-block">
+                  <div class="answer-head">
+                    <div class="block-title">Meeting facts<span class="block-kind">mnema-dossier</span></div>
+                  </div>
+                  <div class="dossier">
+                    <div class="kv"><span class="k">Meeting</span><span class="v">Product Sync</span></div>
+                    <div class="kv"><span class="k">Duration</span><span class="v">44 min</span></div>
+                    <div class="kv"><span class="k">App</span><span class="v">zoom.us</span></div>
+                    <div class="kv"><span class="k">Participants</span><span class="v">3</span></div>
+                  </div>
+                </section>
+              </article>
+
+              <!-- Follow-ups render as normal chat beneath the document. -->
+              <div class="followup-divider">follow-up</div>
+              <div class="followup-caption">follow-ups continue this conversation as normal chat</div>
+
+              <div id="followup">
+              <div class="msg msg-user">
+                <div class="user-bubble">Did Sarah agree to the flag being off by default, or just stop pushing?</div>
+              </div>
+              <div class="msg">
+                <div class="avatar">◈</div>
+                <div class="msg-body">
+                  <div class="msg-prose">
+                    She explicitly agreed — at <span class="strong">2:31 PM</span> she said
+                    "fine, off by default until Friday's numbers", and then set the Friday
+                    checkpoint herself. It reads as a real concession, not a stalemate.
+                  </div>
+                </div>
+              </div>
+              </div>
+
+            </div>
+          </div>
+
+          <!-- Composer -->
+          <div class="composer-wrap">
+            <div class="composer">
+              <div class="composer-row">
+                <button class="model-chip" type="button"><span class="mc-dot"></span>Claude ▾</button>
+                <input class="composer-input" type="text" placeholder="Ask a follow-up about this meeting…" />
+                <button class="send-btn" type="button" aria-label="Send">↑</button>
+              </div>
+            </div>
+            <div class="composer-hint">
+              Follow-ups continue this conversation. Trigger runs use read-only tools over your own capture history.
+            </div>
+          </div>
+        </main>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      const $ = (s, r = document) => r.querySelector(s);
+      const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+      // rail: origin filter + search combine (trigger runs = rows with the condition-glyph badge)
+      const chats = $$(".rail-chat");
+      const searchInput = $(".rail-search input"); let origin = "all";
+      const applyRail = () => {
+        const q = searchInput.value.trim().toLowerCase();
+        chats.forEach((c) => {
+          const isTrigger = !!c.querySelector(".origin-badge");
+          const okOrigin = origin === "all" || (origin === "triggers" ? isTrigger : !isTrigger);
+          c.style.display = okOrigin && (!q || c.textContent.toLowerCase().includes(q)) ? "" : "none";
+        });
+      };
+      $$(".origin-filter button").forEach((b) => b.addEventListener("click", () => {
+        $$(".origin-filter button").forEach((x) => x.classList.toggle("active", x === b));
+        origin = b.textContent.trim(); applyRail();
+      }));
+      searchInput.addEventListener("input", applyRail);
+
+      // rail: clicking a row just moves the active highlight (no content swap in a mockup)
+      chats.forEach((c) => c.addEventListener("click", (e) => {
+        e.preventDefault();
+        chats.forEach((x) => x.classList.toggle("active", x === c));
+      }));
+
+      // copy the document as text, flash a "copied" state
+      const copyBtn = $("#copy-btn");
+      copyBtn.addEventListener("click", () => {
+        navigator.clipboard && navigator.clipboard.writeText($(".doc-title").textContent + "\n\n" + $(".doc-body").innerText);
+        copyBtn.textContent = "✓"; copyBtn.style.color = "var(--app-accent)";
+        setTimeout(() => { copyBtn.textContent = "⧉"; copyBtn.style.color = ""; }, 1200);
+      });
+
+      // action-items checklist: visual-only toggles
+      $$(".checklist .box").forEach((b) => b.addEventListener("click", () => b.classList.toggle("done")));
+
+      // composer: follow-ups append as normal chat
+      const input = $(".composer-input");
+      const send = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        const u = document.createElement("div"); u.className = "msg msg-user";
+        u.innerHTML = '<div class="user-bubble"></div>'; u.firstChild.textContent = text;
+        const a = document.createElement("div"); a.className = "msg";
+        a.innerHTML = '<div class="avatar">◈</div><div class="msg-body"><div class="msg-prose" style="color:var(--app-text-muted)">(mock) In the real app the model would answer from your capture history — trigger runs use read-only tools only.</div></div>';
+        $("#followup").append(u, a);
+        input.value = ""; a.scrollIntoView({ behavior: "smooth", block: "end" });
+      };
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+      $(".send-btn").addEventListener("click", send);
+    })();
+  </script>
+</body>
+</html>

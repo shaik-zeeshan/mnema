@@ -1,0 +1,771 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mnema — New Trigger (Direction A: single-page form)</title>
+<style>
+/* Tokens (dark theme, from docs/user-context/mockups/tokens.css) */
+:root {
+  --app-bg: #0c0c0e;
+  --app-fg: #e2e2e8;
+  --app-titlebar-bg: #08080c;
+  --app-titlebar-border: #15151f;
+  --app-titlebar-title: #45455a;
+
+  --app-surface: #0e0e16;
+  --app-surface-subtle: #101018;
+  --app-surface-raised: #13131a;
+  --app-surface-hover: #1a1a2a;
+
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #7a7a9a;
+  --app-text-subtle: #44445a;
+  --app-text-faint: #33334a;
+
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+  --app-warn: #d6a14a;
+  --app-warn-bg: #1a1208;
+  --app-warn-border: #7a4a18;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+    "Cascadia Code", "Fira Code", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  background: var(--app-bg);
+  color: var(--app-fg);
+}
+
+/* ---- Mockup explainer bar (outside the app window) ---- */
+.mock-note {
+  max-width: 1180px;
+  margin: 16px auto 0;
+  padding: 9px 14px;
+  border: 1px dashed var(--app-border-strong);
+  border-radius: 8px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px 24px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--app-text-muted);
+}
+.mock-note b { color: var(--app-text); font-weight: 700; }
+.mock-note .mock-copy { flex: 1 1 420px; min-width: 0; }
+.mock-nav { flex: 0 0 auto; white-space: nowrap; color: var(--app-text-faint); }
+.mock-nav a { color: var(--app-text-subtle); text-decoration: none; }
+.mock-nav a:hover { color: var(--app-text); }
+.mock-nav a.current { color: var(--app-accent); }
+
+.hidden { display: none !important; }
+
+/* ---- App window frame ---- */
+.app-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1180px;
+  height: calc(100vh - 32px);
+  margin: 16px auto;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--app-bg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+}
+
+.titlebar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: 36px;
+  flex: 0 0 36px;
+  padding: 0 12px;
+  background: var(--app-titlebar-bg);
+  border-bottom: 1px solid var(--app-titlebar-border);
+  user-select: none;
+}
+.traffic-lights { display: flex; align-items: center; gap: 8px; }
+.traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.tl-close { background: #ff5f57; }
+.tl-min { background: #febc2e; }
+.tl-max { background: #28c840; }
+.wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+
+/* ---- Form page ---- */
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  justify-content: center;
+  padding: 28px 24px 48px;
+}
+.form-panel {
+  width: 100%;
+  max-width: 640px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.page-head { display: flex; align-items: baseline; justify-content: space-between; }
+.page-head h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--app-text-strong);
+}
+.page-head .crumb { font-size: 11px; color: var(--app-text-subtle); }
+.page-head .crumb b { color: var(--app-text-muted); font-weight: 400; }
+
+/* imported-review banner */
+.import-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 12px;
+  border: 1px solid var(--app-warn-border);
+  border-radius: 6px;
+  background: var(--app-warn-bg);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--app-warn);
+}
+.import-banner svg { flex: 0 0 auto; margin-top: 3px; }
+.import-banner .sub { color: var(--app-text-muted); }
+
+/* field blocks */
+.field-block { display: flex; flex-direction: column; gap: 6px; }
+.field-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+.fl-num { color: var(--app-text-faint); margin-right: 6px; }
+.field-hint { font-size: 11px; color: var(--app-text-subtle); line-height: 1.5; }
+
+.text-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 4px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.text-input:focus {
+  border-color: var(--app-accent);
+  background: var(--app-surface-raised);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+}
+
+/* segmented control (canonical app pattern) */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--app-border);
+  border-radius: 7px;
+  background: var(--app-surface-subtle);
+  align-self: flex-start;
+}
+.seg button {
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 13px;
+  height: 22px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.seg button:hover { color: var(--app-text-strong); }
+.seg button.active {
+  background: var(--app-accent-bg);
+  border-color: var(--app-accent-border);
+  color: var(--app-accent-strong);
+}
+
+/* per-condition parameter area */
+.condition-params {
+  padding: 10px 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-subtle);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--app-text-muted);
+}
+.condition-params b { color: var(--app-text); font-weight: 600; }
+.condition-params .alt { display: block; margin-top: 4px; color: var(--app-text-subtle); font-size: 11px; }
+
+/* App Opened / Schedule parameter widgets */
+.app-picker { width: 240px; margin-bottom: 2px; }
+.sched-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+.time-input { width: 118px; flex: 0 0 auto; }
+.day-chips { display: inline-flex; gap: 4px; }
+.day-chip {
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 0 8px;
+  height: 26px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 5px;
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.day-chip:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+.day-chip.active {
+  background: var(--app-accent-bg);
+  border-color: var(--app-accent-border);
+  color: var(--app-accent-strong);
+}
+
+/* prompt hero */
+.prompt-head { display: flex; align-items: baseline; gap: 12px; }
+.prompt-head .char-count { margin-left: auto; font-size: 10.5px; color: var(--app-text-faint); }
+.quiet-btn {
+  font: inherit;
+  font-size: 11px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.quiet-btn:hover { color: var(--app-accent); }
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 280px;
+  resize: vertical;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 6px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.65;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.prompt-textarea:focus {
+  border-color: var(--app-accent);
+  background: var(--app-surface-raised);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow);
+}
+
+/* advanced disclosure */
+.advanced { border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface-subtle); }
+.advanced summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary .chev { transition: transform 0.12s ease; color: var(--app-text-subtle); display: inline-flex; }
+.advanced[open] summary .chev { transform: rotate(90deg); }
+.advanced summary .defaults-note {
+  margin-left: auto;
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--app-text-faint);
+}
+.advanced-body { border-top: 1px solid var(--app-border); padding: 4px 12px 10px; }
+
+.adv-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+.adv-row + .adv-row { border-top: 1px solid var(--app-border); }
+.adv-row .adv-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.adv-row .adv-name { font-size: 12px; color: var(--app-text); }
+.adv-row .adv-hint { font-size: 10.5px; color: var(--app-text-subtle); line-height: 1.45; }
+
+/* stepper (mirrors lib/components/Stepper.svelte) */
+.stepper { display: inline-flex; align-items: stretch; gap: 6px; flex: 0 0 auto; }
+.step-btn {
+  flex: 0 0 30px;
+  width: 30px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 4px;
+  background: var(--app-surface);
+  color: var(--app-text-muted);
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.step-btn:hover { background: var(--app-surface-hover); border-color: var(--app-border-hover); color: var(--app-text-strong); }
+.stepper .field { position: relative; display: inline-flex; width: 96px; }
+.num-input {
+  width: 100%;
+  height: 34px;
+  padding: 0 44px 0 10px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 4px;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  outline: none;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.unit-chip {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  color: var(--app-text-faint);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
+/* provider note */
+.provider-note {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  color: var(--app-text-subtle);
+}
+.provider-note .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--app-accent-strong); }
+.provider-note b { color: var(--app-text-muted); font-weight: 400; }
+
+/* footer */
+.form-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 1px solid var(--app-border);
+}
+.btn-primary {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  padding: 8px 18px;
+  border: 1px solid var(--app-accent-border);
+  border-radius: 5px;
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.btn-primary:hover { border-color: var(--app-accent-strong); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+.footer-share {
+  margin-left: auto;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.footer-share .share-hint { font-size: 10.5px; color: var(--app-text-faint); }
+</style>
+</head>
+<body>
+
+<div class="mock-note">
+  <div class="mock-copy">
+    <b>MOCKUP · Create/Edit Trigger — Variant A: single-page form.</b>
+    Pick a condition, write the prompt in plain prose, tune Advanced only if needed —
+    reached from the Triggers page via New Trigger or Import.
+  </div>
+  <nav class="mock-nav">
+    <a href="triggers-page-a.html">Page A</a> ·
+    <a href="triggers-page-b.html">Page B</a> ·
+    <a href="create-edit-a.html" class="current">Create A</a> ·
+    <a href="create-edit-b.html">Create B</a> ·
+    <a href="document-view-a.html">Document</a>
+  </nav>
+</div>
+
+<div class="app-window">
+  <header class="titlebar">
+    <div class="titlebar-left">
+      <div class="traffic-lights">
+        <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+      </div>
+    </div>
+    <div class="wordmark">MNEMA</div>
+    <div class="titlebar-right"></div>
+  </header>
+
+  <main class="app-body">
+    <form class="form-panel" onsubmit="return false">
+
+      <div class="page-head">
+        <h1 id="page-title">New Trigger</h1>
+        <span class="crumb">triggers <b id="crumb-leaf">/ new</b></span>
+      </div>
+
+      <!-- Shown only when this form was prefilled by Import (open with ?imported=1). -->
+      <div class="import-banner hidden" id="import-banner">
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M8 1.5 15 14H1L8 1.5Z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <path d="M8 6.5v3.2M8 11.6v.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        </svg>
+        <div>
+          Imported — review the prompt before saving.
+          <span class="sub">This prompt will run automatically when the condition fires. Make sure it says what you want.</span>
+        </div>
+      </div>
+
+      <div class="field-block">
+        <label class="field-label" for="trigger-name">Name</label>
+        <input class="text-input" id="trigger-name" type="text" value="Meeting Recap" />
+      </div>
+
+      <div class="field-block">
+        <span class="field-label"><span class="fl-num">01</span>Condition</span>
+        <div class="seg" role="tablist" aria-label="Condition" id="condition-seg">
+          <button type="button" class="active" data-condition="meeting_ends">Meeting Ends</button>
+          <button type="button" data-condition="app_opened">App Opened</button>
+          <button type="button" data-condition="schedule">Schedule</button>
+        </div>
+
+        <!-- Per-condition parameter area: swaps with the segmented selection. -->
+        <div class="condition-params" id="params-meeting_ends">
+          Fires when a meeting app releases the microphone and stays quiet for the
+          release grace period. Detects <b>Zoom, Teams, Slack, FaceTime</b> and
+          browser tabs on known meeting URLs.
+        </div>
+
+        <div class="condition-params hidden" id="params-app_opened">
+          <select class="text-input app-picker" id="app-picker" aria-label="App to watch">
+            <option>Figma</option>
+            <option>Xcode</option>
+            <option>Slack</option>
+            <option>Notion</option>
+            <option>Obsidian</option>
+            <option>Linear</option>
+          </select>
+          <span class="alt">Fires when this app becomes frontmost after a fresh session — at least 30 min away. Rapid window switching never counts.</span>
+        </div>
+
+        <div class="condition-params hidden" id="params-schedule">
+          <div class="sched-row">
+            <input class="text-input time-input" id="sched-time" type="time" value="18:00" aria-label="Time of day" />
+            <div class="day-chips" id="day-chips" role="group" aria-label="Days of week">
+              <button type="button" class="day-chip active" data-day="Mon">Mon</button>
+              <button type="button" class="day-chip active" data-day="Tue">Tue</button>
+              <button type="button" class="day-chip active" data-day="Wed">Wed</button>
+              <button type="button" class="day-chip active" data-day="Thu">Thu</button>
+              <button type="button" class="day-chip active" data-day="Fri">Fri</button>
+              <button type="button" class="day-chip" data-day="Sat">Sat</button>
+              <button type="button" class="day-chip" data-day="Sun">Sun</button>
+            </div>
+          </div>
+          <span class="alt" id="sched-preview">runs weekdays at 6:00 PM</span>
+        </div>
+      </div>
+
+      <div class="field-block">
+        <div class="prompt-head">
+          <label class="field-label" for="trigger-prompt"><span class="fl-num">02</span>Prompt</label>
+          <button type="button" class="quiet-btn" id="reset-template">Reset to template</button>
+          <span class="char-count" id="char-count"></span>
+        </div>
+        <textarea class="prompt-textarea" id="trigger-prompt" spellcheck="false"></textarea>
+        <span class="field-hint">Plain prose — no template variables. Mnema adds the meeting window, transcript, speakers, and what it knows about you automatically.</span>
+      </div>
+
+      <details class="advanced" id="advanced">
+        <summary>
+          <span class="chev">
+            <svg width="10" height="10" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M5.5 3l5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </span>
+          <span><span class="fl-num">03</span>Advanced</span>
+          <span class="defaults-note">all defaults</span>
+        </summary>
+        <div class="advanced-body">
+          <div class="adv-row" id="row-min-length">
+            <div class="adv-copy">
+              <span class="adv-name">Minimum meeting length</span>
+              <span class="adv-hint">Shorter mic holds don't count as a meeting.</span>
+            </div>
+            <div class="stepper" data-min="1" data-max="30">
+              <button type="button" class="step-btn" data-step="-1" aria-label="Decrease minimum meeting length"><span aria-hidden="true">−</span></button>
+              <div class="field"><input class="num-input" type="text" inputmode="numeric" value="5" aria-label="Minimum meeting length" /><span class="unit-chip">MIN</span></div>
+              <button type="button" class="step-btn" data-step="1" aria-label="Increase minimum meeting length"><span aria-hidden="true">+</span></button>
+            </div>
+          </div>
+          <div class="adv-row">
+            <div class="adv-copy">
+              <span class="adv-name">Cooldown</span>
+              <span class="adv-hint">Never fires again within this window of the last firing.</span>
+            </div>
+            <div class="stepper" data-min="0" data-max="120">
+              <button type="button" class="step-btn" data-step="-1" aria-label="Decrease cooldown"><span aria-hidden="true">−</span></button>
+              <div class="field"><input class="num-input" type="text" inputmode="numeric" value="10" aria-label="Cooldown" /><span class="unit-chip">MIN</span></div>
+              <button type="button" class="step-btn" data-step="1" aria-label="Increase cooldown"><span aria-hidden="true">+</span></button>
+            </div>
+          </div>
+          <!-- App Opened only: shown when that condition is selected. -->
+          <div class="adv-row hidden" id="row-away-gap">
+            <div class="adv-copy">
+              <span class="adv-name">Away gap</span>
+              <span class="adv-hint">How long the app must be out of front before opening it counts as a fresh session.</span>
+            </div>
+            <div class="stepper" data-min="5" data-max="240">
+              <button type="button" class="step-btn" data-step="-1" aria-label="Decrease away gap"><span aria-hidden="true">−</span></button>
+              <div class="field"><input class="num-input" type="text" inputmode="numeric" value="30" aria-label="Away gap" /><span class="unit-chip">MIN</span></div>
+              <button type="button" class="step-btn" data-step="1" aria-label="Increase away gap"><span aria-hidden="true">+</span></button>
+            </div>
+          </div>
+        </div>
+      </details>
+
+      <div class="provider-note">
+        <span class="dot"></span>
+        Runs with your <b>default AI provider</b> — change it in Settings → Intelligence.
+      </div>
+
+      <div class="form-footer">
+        <button type="button" class="btn-primary" id="create-btn">Create Trigger</button>
+        <button type="button" class="quiet-btn" id="cancel-btn">Cancel</button>
+        <div class="footer-share">
+          <button type="button" class="quiet-btn" id="share-btn">Share</button>
+          <span class="share-hint">copies this trigger as JSON — no provider or key data included</span>
+        </div>
+      </div>
+
+    </form>
+  </main>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (sel) { return document.querySelector(sel); };
+
+  var TEMPLATES = {
+    meeting_ends: "Write a recap of the meeting that just ended.\n\nStart with a one-paragraph summary of what the meeting was about and what was decided.\n\nThen go speaker by speaker: for each person, summarize what they said, the points they pushed for, and anything they committed to doing.\n\nEnd with feedback for me: how I came across, whether I talked too much or too little, and one thing I could do better in the next meeting.\n\nKeep it direct and skip the pleasantries.",
+    app_opened: "I just came back to this app after being away for a while.\n\nRemind me where I left off: what I was working on in it last time, anything I said I'd do next, and any loose ends I left hanging.\n\nKeep it to a few sentences — just enough to get back into it fast.",
+    schedule: "It's the end of my workday.\n\nWrite a short review of today: what I actually spent time on, what moved forward, and what stalled.\n\nCall out anything I said I'd do but didn't get to, and suggest the first thing to pick up tomorrow.\n\nBe honest and keep it brief."
+  };
+
+  var condition = "meeting_ends";
+  var promptDirty = false;
+  var promptEl = $("#trigger-prompt");
+  var charCount = $("#char-count");
+
+  function updateCharCount() {
+    charCount.textContent = promptEl.value.length + " chars";
+  }
+
+  function setPromptFromTemplate() {
+    promptEl.value = TEMPLATES[condition];
+    promptDirty = false;
+    updateCharCount();
+  }
+
+  promptEl.addEventListener("input", function () {
+    promptDirty = promptEl.value !== TEMPLATES[condition];
+    updateCharCount();
+  });
+
+  $("#reset-template").addEventListener("click", setPromptFromTemplate);
+
+  /* ---- condition switching ---- */
+  function setCondition(next) {
+    condition = next;
+    var btns = document.querySelectorAll("#condition-seg button");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle("active", btns[i].dataset.condition === next);
+    }
+    ["meeting_ends", "app_opened", "schedule"].forEach(function (c) {
+      $("#params-" + c).classList.toggle("hidden", c !== next);
+    });
+    $("#row-away-gap").classList.toggle("hidden", next !== "app_opened");
+    if (!promptDirty) setPromptFromTemplate();
+  }
+
+  document.querySelectorAll("#condition-seg button").forEach(function (btn) {
+    btn.addEventListener("click", function () { setCondition(btn.dataset.condition); });
+  });
+
+  /* ---- schedule preview ---- */
+  var DAY_ORDER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  function activeDays() {
+    return Array.prototype.filter.call(
+      document.querySelectorAll("#day-chips .day-chip"),
+      function (c) { return c.classList.contains("active"); }
+    ).map(function (c) { return c.dataset.day; });
+  }
+
+  function fmtTime(hhmm) {
+    var parts = hhmm.split(":");
+    var h = parseInt(parts[0], 10);
+    var ampm = h >= 12 ? "PM" : "AM";
+    var h12 = h % 12 === 0 ? 12 : h % 12;
+    return h12 + ":" + parts[1] + " " + ampm;
+  }
+
+  function updateSchedPreview() {
+    var days = activeDays();
+    var label;
+    if (days.length === 0) label = "never — pick at least one day";
+    else if (days.length === 7) label = "every day";
+    else if (days.length === 5 && days.indexOf("Sat") < 0 && days.indexOf("Sun") < 0) label = "weekdays";
+    else if (days.length === 2 && days.indexOf("Sat") >= 0 && days.indexOf("Sun") >= 0) label = "weekends";
+    else label = days.join(", ");
+    var t = fmtTime($("#sched-time").value || "18:00");
+    $("#sched-preview").textContent = days.length === 0 ? "never fires — pick at least one day" : "runs " + label + " at " + t;
+  }
+
+  document.querySelectorAll("#day-chips .day-chip").forEach(function (chip) {
+    chip.addEventListener("click", function () {
+      chip.classList.toggle("active");
+      updateSchedPreview();
+    });
+  });
+  $("#sched-time").addEventListener("input", updateSchedPreview);
+
+  /* ---- steppers ---- */
+  document.querySelectorAll(".stepper").forEach(function (stepper) {
+    var min = parseInt(stepper.dataset.min, 10);
+    var max = parseInt(stepper.dataset.max, 10);
+    var input = stepper.querySelector(".num-input");
+    function clamp(v) { return Math.min(max, Math.max(min, v)); }
+    stepper.querySelectorAll(".step-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var cur = parseInt(input.value, 10);
+        if (isNaN(cur)) cur = min;
+        input.value = clamp(cur + parseInt(btn.dataset.step, 10));
+      });
+    });
+    input.addEventListener("change", function () {
+      var v = parseInt(input.value, 10);
+      input.value = isNaN(v) ? min : clamp(v);
+    });
+  });
+
+  /* ---- URL modes: ?imported=1 and ?edit=1 ---- */
+  var params = new URLSearchParams(location.search);
+  if (params.get("imported") === "1") {
+    $("#import-banner").classList.remove("hidden");
+    $("#trigger-name").value = "Meeting Recap (imported)";
+  }
+  if (params.get("edit") === "1") {
+    $("#page-title").textContent = "Edit Trigger";
+    $("#crumb-leaf").textContent = "/ edit";
+    $("#create-btn").textContent = "Save Changes";
+  }
+
+  /* ---- footer actions ---- */
+  $("#cancel-btn").addEventListener("click", function () {
+    location.href = "triggers-page-a.html";
+  });
+
+  $("#create-btn").addEventListener("click", function () {
+    var btn = $("#create-btn");
+    btn.textContent = "Created ✓";
+    setTimeout(function () { location.href = "triggers-page-a.html"; }, 400);
+  });
+
+  function triggerJson() {
+    var condParams;
+    if (condition === "meeting_ends") {
+      condParams = { min_meeting_minutes: parseInt($("#row-min-length .num-input").value, 10) };
+    } else if (condition === "app_opened") {
+      condParams = {
+        app: $("#app-picker").value,
+        away_gap_minutes: parseInt($("#row-away-gap .num-input").value, 10)
+      };
+    } else {
+      condParams = { time: $("#sched-time").value, days: activeDays() };
+    }
+    return {
+      version: 1,
+      name: $("#trigger-name").value,
+      condition: { type: condition, params: condParams },
+      cooldown_minutes: parseInt(document.querySelectorAll(".stepper")[1].querySelector(".num-input").value, 10),
+      prompt: promptEl.value
+    };
+  }
+
+  $("#share-btn").addEventListener("click", function () {
+    var btn = $("#share-btn");
+    var json = JSON.stringify(triggerJson(), null, 2);
+    var done = function () {
+      btn.textContent = "copied";
+      setTimeout(function () { btn.textContent = "Share"; }, 900);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(done, done);
+    } else {
+      done(); /* ponytail: mockup — no clipboard fallback needed */
+    }
+  });
+
+  /* ---- init ---- */
+  setPromptFromTemplate();
+  updateSchedPreview();
+})();
+</script>
+
+</body>
+</html>
