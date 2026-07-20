@@ -186,6 +186,26 @@ jobs:
           generateReleaseNotes: true
           includeUpdaterJson: true
 
+      # Tauri does not entitle sidecars (ADR 0057): re-sign the bundled
+      # mnema-cli with its own entitlements, then the app, so the outer
+      # signature seals the new nested code (sidecar first, or it breaks).
+      # The shared keychain access group only functions with a team identity;
+      # under the current ad-hoc identity ("-") the entitlement is inert but
+      # the re-sign still succeeds. When a Developer ID identity lands, the
+      # DMG/updater artifacts must be repackaged after this step — they are
+      # built (and uploaded) before it.
+      - name: Re-sign mnema-cli sidecar with entitlements
+        run: |
+          set -euo pipefail
+          app="target/aarch64-apple-darwin/release/bundle/macos/mnema.app"
+          codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements apps/desktop/src-tauri/Entitlements.mnema-cli.plist \
+            "$app/Contents/MacOS/mnema-cli"
+          codesign --force --options runtime --sign "$APPLE_SIGNING_IDENTITY" \
+            --entitlements apps/desktop/src-tauri/Entitlements.plist \
+            "$app"
+          codesign --verify --deep --strict "$app"
+
       - name: Stage release artifacts
         id: stage_artifacts
         run: ./scripts/stage-macos-release-artifacts.sh target/aarch64-apple-darwin/release/bundle dist/macos-release

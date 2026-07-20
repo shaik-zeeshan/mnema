@@ -90,9 +90,32 @@ fi
 cd "${repo_root}/apps/desktop"
 CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- "${tauri_args[@]}"
 
+# Tauri does not entitle sidecars (ADR 0057): re-sign the bundled mnema-cli
+# with its own entitlements, then re-sign the app so the outer signature seals
+# the new nested code — sidecar first, or the app signature breaks.
+app_path="${repo_root}/target/${profile_dir}/bundle/macos/mnema.app"
+tauri_dir="${repo_root}/apps/desktop/src-tauri"
+print "Re-signing mnema-cli sidecar with entitlements…"
+codesign --force --options runtime --sign "${identity}" \
+  --entitlements "${tauri_dir}/Entitlements.mnema-cli.plist" \
+  "${app_path}/Contents/MacOS/mnema-cli"
+codesign --force --options runtime --sign "${identity}" \
+  --entitlements "${tauri_dir}/Entitlements.plist" \
+  "${app_path}"
+codesign --verify --deep --strict "${app_path}"
+
 dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
 
 if [[ -n "${dmg_path}" ]]; then
+  # Tauri built the DMG before the re-sign above, so it embeds the
+  # un-entitled app — rebuild it from the re-signed bundle.
+  print "Rebuilding DMG from re-signed app…"
+  staging="$(mktemp -d)"
+  ditto "${app_path}" "${staging}/mnema.app"
+  ln -s /Applications "${staging}/Applications"
+  hdiutil create -volname "mnema" -srcfolder "${staging}" -ov -format UDZO \
+    "${dmg_path}" >/dev/null
+  rm -rf "${staging}"
   print "Opening DMG: ${dmg_path}"
   open "${dmg_path}"
 else

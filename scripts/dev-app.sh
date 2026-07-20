@@ -26,8 +26,11 @@ fi
 export MNEMA_SAVE_DIRECTORY="${HOME}/.mnema-dev"
 export MNEMA_APP_CONFIG_DIR="${HOME}/Library/Application Support/com.shaikzeeshan.mnema.dev"
 export MNEMA_DEV_MASTER_KEY_FILE="${MNEMA_SAVE_DIRECTORY}/dev-master-key"
+# Ad-hoc dev builds can't claim the shared keychain access group (ADR 0057),
+# so the capture index key lives in a file store outside the save dir.
+export MNEMA_CAPTURE_INDEX_KEY_DIR="${MNEMA_APP_CONFIG_DIR}/capture-index-keys"
 
-mkdir -p "${MNEMA_SAVE_DIRECTORY}" "${MNEMA_APP_CONFIG_DIR}"
+mkdir -p "${MNEMA_SAVE_DIRECTORY}" "${MNEMA_APP_CONFIG_DIR}" "${MNEMA_CAPTURE_INDEX_KEY_DIR}"
 
 echo "mnema dev sandbox"
 echo "  save dir:   ${MNEMA_SAVE_DIRECTORY}"
