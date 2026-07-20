@@ -90,7 +90,10 @@ adapter; `services/fulfillment` is deleted.**
   licensegate repo, pinned to a rev (`[net] git-fetch-with-cli` in `.cargo/config.toml`; release
   CI authenticates via the `LICENSEGATE_TOKEN` secret). The crate's conformance vectors are the
   cross-repo wire truth — Mnema's old-format wire-pin tests and fixtures die with the worker.
-  Bumps are deliberate, never floating.
+  Bumps are deliberate, never floating. *(Amended 2026-07-20: `licensegate` is now published on
+  crates.io — the dep is a normal semver-pinned registry dependency; the git auth machinery,
+  `git-fetch-with-cli`, and `LICENSEGATE_TOKEN` are gone. The pin-is-the-wire-contract principle
+  stands, now enforced by the version requirement + `Cargo.lock` checksum instead of a git rev.)*
 - **Teardown.** `services/fulfillment` (worker, KV, mint/bake scripts, wire-pin tests) is deleted
   in the same cycle. Env surface shrinks to one base-URL override (`MNEMA_LICENSE_BASE_URL`,
   replacing `MNEMA_DEV_ACTIVATION_URL`/`MNEMA_ACTIVATION_URL`) plus `MNEMA_LICENSE_KID`/

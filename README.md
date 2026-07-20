@@ -39,7 +39,6 @@ docs/adr         architecture decision records
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and build steps.
 
-> Note: release builds depend on a private licensing crate (`licensegate`). Everything else in this repository is buildable and inspectable; if you hit an opaque cargo fetch error on `licensegate`, that's the cause.
 
 ## License
 

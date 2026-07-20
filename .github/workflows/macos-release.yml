@@ -56,14 +56,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # licensegate is a PRIVATE git dependency (apps/desktop/src-tauri/Cargo.toml,
-      # fetched with the git CLI per .cargo/config.toml [net]). Rewrite its URL to
-      # embed a token so cargo can fetch it on the runner. Requires the
-      # LICENSEGATE_TOKEN secret: a PAT with read access to
-      # github.com/shaik-zeeshan/licensegate.
-      - name: Configure git auth for private licensegate dependency
-        run: git config --global url."https://x-access-token:${{ secrets.LICENSEGATE_TOKEN }}@github.com/shaik-zeeshan/licensegate".insteadOf "https://github.com/shaik-zeeshan/licensegate"
-
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:

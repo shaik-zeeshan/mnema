@@ -65,17 +65,10 @@ export the matching `MNEMA_LICENSE_KID` and `MNEMA_LICENSE_PK_TOKEN` yourself.
 
 ---
 
-## 2. Cargo / git (the licensegate client crate)
+## 2. Cargo (the licensegate client crate)
 
-The `licensegate` crate is a **git dependency on a private repo**, pinned to a
-rev in `apps/desktop/src-tauri/Cargo.toml`. `.cargo/config.toml` sets
-`[net] git-fetch-with-cli = true` so cargo uses the git CLI (and your ambient
-git auth) to fetch it.
-
-| Surface | What it needs |
-|---|---|
-| Local dev | git access to `github.com/shaik-zeeshan/licensegate` (SSH key or gh auth). |
-| CI (`macos-release.yml`, type-check) | the `LICENSEGATE_TOKEN` repo secret — a PAT with read access to the licensegate repo; the workflow rewrites the URL to embed it. |
+The `licensegate` crate is a normal [crates.io dependency](https://crates.io/crates/licensegate)
+in `apps/desktop/src-tauri/Cargo.toml` — no git auth needed anywhere.
 
 ---
 
@@ -98,7 +91,6 @@ building if any is unset. Prereleases build placeholder/sandbox happily.
 
 | Secret | Required | What it is |
 |---|---|---|
-| `LICENSEGATE_TOKEN` | yes | PAT with read access to the private licensegate repo (git dep fetch). |
 | `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` | yes | Tauri updater signing key. |
 
 The workflow itself fetches the live prod CRL and exports it as
