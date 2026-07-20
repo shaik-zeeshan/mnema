@@ -20,8 +20,6 @@ bash scripts/dev-app.sh                            # run the desktop app in dev 
 
 Heads-up: the first build compiles OpenBLAS from source and is slow; later builds are incremental.
 
-**Known limitation:** `apps/desktop/src-tauri` depends on a private licensing crate (`licensegate`), so full desktop builds currently need repo-owner access. Contributions to individual crates (`cargo check -p <crate>`), the frontend, and the website don't hit this. If it blocks your contribution, open an issue.
-
 ## Checks before a PR
 
 - Frontend: `bun run check`

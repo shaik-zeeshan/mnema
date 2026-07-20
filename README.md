@@ -39,7 +39,6 @@ docs/adr         architecture decision records
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and build steps.
 
-
 ## License
 
 [AGPL-3.0](LICENSE). Mnema is open source; the packaged app is sold with a one-time purchase license at [mnema.day](https://mnema.day).
