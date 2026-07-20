@@ -2385,7 +2385,7 @@ pub fn get_capture_support() -> CaptureSupportResponse {
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,
-            system_audio: screen_support.system_audio,
+            system_audio: capture_system_audio::supports_system_audio_capture(),
         },
     };
 
@@ -2458,7 +2458,7 @@ pub fn get_system_audio_access_hint(app_handle: tauri::AppHandle) -> SystemAudio
 /// not knowable here either way.
 #[cfg(target_os = "macos")]
 async fn request_system_audio_permission() -> Result<(), String> {
-    if !capture_screen::supports_system_audio_capture() {
+    if !capture_system_audio::supports_system_audio_capture() {
         return Ok(());
     }
 

@@ -263,7 +263,7 @@ fn store_evidence(evidence: SystemAudioEvidence) {
 /// evidence is still on disk — and the frontend re-polls on focus.
 pub(crate) fn permission_state() -> CapturePermissionState {
     capture_system_audio::system_audio_permission_state(
-        capture_screen::supports_system_audio_capture(),
+        capture_system_audio::supports_system_audio_capture(),
         cached_evidence(),
     )
 }

@@ -406,7 +406,6 @@ pub struct ScreenCaptureSupport {
     pub platform: String,
     pub native_capture_supported: bool,
     pub screen: bool,
-    pub system_audio: bool,
 }
 
 fn output_files_for_session(
@@ -3844,15 +3843,6 @@ pub fn ensure_screen_permission() -> bool {
     unsafe { CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() }
 }
 
-/// The macOS runtime gate for system audio. Kept here because it also answers
-/// `CaptureSupportResponse`; the permission itself is no longer this crate's
-/// business — a Core Audio process tap has its own TCC category and never shared
-/// the screen grant (ADR 0052).
-#[cfg(target_os = "macos")]
-pub fn supports_system_audio_capture() -> bool {
-    cidre::api::version!(macos = 15.0)
-}
-
 #[cfg(target_os = "macos")]
 pub fn should_preserve_runtime_on_stop_error(error: &CaptureErrorResponse) -> bool {
     ScreenCaptureKitCaptureSession::is_stop_timeout_code(error.code.as_str())
@@ -3870,9 +3860,18 @@ pub fn take_screen_capture_session_stop_error(
     active_session.and_then(ActiveCaptureSession::take_screen_stop_error)
 }
 
-#[cfg(target_os = "macos")]
-fn supports_screen_capture_kit_backend() -> bool {
-    cidre::api::version!(macos = 15.0)
+/// The SCK recording backend needs macOS 15.0; features tied to it (e.g.
+/// non-original capture resolution) gate on this, not on other families' gates.
+pub fn supports_screen_capture_kit_backend() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        cidre::api::version!(macos = 15.0)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 pub fn supports_frame_export() -> bool {
@@ -4004,11 +4003,6 @@ pub fn ensure_screen_permission() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn supports_system_audio_capture() -> bool {
-    false
-}
-
-#[cfg(not(target_os = "macos"))]
 pub fn should_preserve_runtime_on_stop_error(_error: &CaptureErrorResponse) -> bool {
     false
 }
@@ -4025,7 +4019,6 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             platform: "macos".to_string(),
             native_capture_supported: true,
             screen: true,
-            system_audio: supports_system_audio_capture(),
         }
     }
 
@@ -4035,7 +4028,6 @@ pub fn support_for_current_platform() -> ScreenCaptureSupport {
             platform: std::env::consts::OS.to_string(),
             native_capture_supported: false,
             screen: false,
-            system_audio: false,
         }
     }
 }

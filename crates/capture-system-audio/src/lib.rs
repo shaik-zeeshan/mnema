@@ -43,6 +43,18 @@ pub use watchdog::{ZeroWatchdog, ZERO_WATCHDOG_INITIAL_DELAY, ZERO_WATCHDOG_MAX_
 #[cfg(target_os = "macos")]
 pub use writer::SystemAudioSegmentFinalization;
 
+/// The macOS runtime gate for system audio: Core Audio process taps exist from
+/// 14.2, but the product gate stays 15.0 (ADR 0052, lowering deferred).
+#[cfg(target_os = "macos")]
+pub fn supports_system_audio_capture() -> bool {
+    cidre::api::version!(macos = 15.0)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn supports_system_audio_capture() -> bool {
+    false
+}
+
 /// Greppable marker for every tap lifecycle and rebuild event in `rust.log`.
 pub const LOG_PREFIX: &str = "system-audio-tap:";
 
