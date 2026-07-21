@@ -2,26 +2,28 @@
 
 The real-keychain half of [ADR 0057](../adr/0057-capture-index-key-moves-to-a-shared-keychain-access-group.md)'s verification. The migration ordering, failure branches, and reader fallback are unit-tested through the adapter trait (`cargo test -p app-infra capture_index_key_store`); everything below needs a real Mac, a real keychain, and — critically — a build whose access-group entitlement actually validates. Nothing here is automated.
 
-> **Current status: BLOCKED.** These drills cannot pass on any build we currently produce. Release CI still signs ad-hoc (`APPLE_SIGNING_IDENTITY: "-"`), and the spike (ADR 0057, "Spike findings") proved local Apple Development signing without a provisioning profile cannot claim the group either. Run the drills once Developer ID signing lands in `macos-release.yml`; until then ADR 0057 stays Proposed.
+> **Current status: Drill 1 PASSED locally (2026-07-21)** on a `build-macos-local-sign.sh` build (Developer ID + embedded provisioning profile + helper-bundle CLI). Release CI still signs ad-hoc (`APPLE_SIGNING_IDENTITY: "-"`); ADR 0057 stays Proposed until `macos-release.yml` ships the same signing + packaging, then re-run the drills on a CI artifact.
 
 ---
 
 ## Prerequisite: a build whose entitlement validates
 
-The shared group (`RJYMY4RR97.day.mnema.capture-index`) only works when secd accepts the signing identity behind the `com.apple.security.application-groups` entitlement. That means:
+The shared group (`RJYMY4RR97.day.mnema.capture-index`) only works when secd honors the `com.apple.security.application-groups` entitlement — which requires the claim to be **authorised by an embedded provisioning profile** (ADR 0057, "Verified findings"). The signing identity alone never suffices:
 
-- **Works:** a **Developer ID**–signed build, or an Apple Development build carrying an **embedded provisioning profile** (Xcode team profile in a `.app` bundle). Both binaries — the app *and* the bundled `mnema-cli` sidecar (`mnema.app/Contents/MacOS/mnema-cli`, re-signed with `Entitlements.mnema-cli.plist` by `build-macos-local-sign.sh` / `macos-release.yml`) — must be signed this way with Team ID `RJYMY4RR97`.
-- **Does NOT work — plain local Apple Development** (`scripts/build-macos-local-sign.sh` today): the spike showed secd ignores the app-group entitlement without a profile — every SecItem call returns **−34018** (`errSecMissingEntitlement`), and secd logs the entitlement "is ignored because of invalid application signature or incorrect provisioning profile". (The `keychain-access-groups` flavor is worse: it is a restricted entitlement, and AMFI SIGKILLs the binary at exec — error −413, "No matching profile found". That is why the shipped flavor is app-groups.)
+- **Works:** a build from `scripts/build-macos-local-sign.sh` — Developer ID signature **plus** the committed profile (`apps/desktop/src-tauri/mnema.provisionprofile`, which authorises `RJYMY4RR97.*`) embedded at `Contents/embedded.provisionprofile`, **plus** the CLI packaged as a helper bundle: a profile only validates a bundle's *main* executable, so `mnema-cli` lives at `Contents/Helpers/mnema-cli.app` (own Info.plist + profile copy) and `Contents/MacOS/mnema-cli` is a symlink to it (validation follows the resolved path).
+- **Does NOT work — any signature without a profile**, including plain Developer ID: app-groups is a *validation-required* entitlement, so an unauthorised claim clears the process's entitlements-validated flag and every SecItem call in the group returns **−34018** (`errSecMissingEntitlement`). (The `keychain-access-groups` flavor is worse: restricted at exec, AMFI SIGKILLs the binary — error −413. That is why the shipped flavor is app-groups.)
 - **Does NOT work — ad-hoc** (release CI today, and every `tauri dev` rebuild): no team ID, so the group cannot be claimed. Same −34018, flat denial, no prompt.
+- **Does NOT work — a bare (non-bundled) `mnema-cli`**, even signed+profiled: it never validates, and once a group item exists it sees flat "not found" (−25300), not −34018.
 
 On a build that cannot claim the group, both binaries silently fall back to the old `/usr/bin/security` item (logged as `shared group unavailable … falling back to old key store`), so the app *works* — but the drill proves nothing. Verify before starting:
 
 ```sh
 codesign -d --entitlements - mnema.app
-codesign -d --entitlements - mnema.app/Contents/MacOS/mnema-cli
+codesign -d --entitlements - mnema.app/Contents/Helpers/mnema-cli.app
+ls -la mnema.app/Contents/embedded.provisionprofile mnema.app/Contents/MacOS/mnema-cli
 ```
 
-Both must list `com.apple.security.application-groups` containing the group, **and** the identity must be Developer ID or profile-backed — the entitlement being *printed* is not the entitlement being *honored*.
+Both must list `com.apple.security.application-groups` containing the group, the profile must be present, and the sidecar path must be a symlink into the helper bundle — the entitlement being *printed* is not the entitlement being *honored*. To check validation directly on a running process: `csops(pid, CS_OPS_STATUS)` bit `0x4000` (`CS_ENTITLEMENTS_VALIDATED`).
 
 Know your log: `rust.log` at `~/Library/Logs/day.mnema/rust.log` (`.dev` suffix for dev builds), **timestamps are UTC** (IST: +5:30). All migration lines share one prefix and are Info/Warn level, so they appear without developer options:
 
