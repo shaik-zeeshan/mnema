@@ -81,6 +81,46 @@ describe("renderMarkdown XSS hardening", () => {
   });
 });
 
+describe("renderMarkdown task lists", () => {
+  test("unchecked task item renders an enabled (not disabled) checkbox", () => {
+    const out = renderMarkdown("- [ ] follow up with Dana");
+    expect(out).toContain('class="task-item"');
+    expect(out).toContain('<input class="task-checkbox" type="checkbox">');
+    expect(out).not.toContain("disabled");
+    expect(out).not.toContain("checked");
+    expect(out).toContain("follow up with Dana");
+    expect(out).not.toContain("[ ]");
+  });
+
+  test("checked task item ([x] and [X]) renders a checked checkbox", () => {
+    for (const source of ["- [x] shipped it", "- [X] shipped it"]) {
+      const out = renderMarkdown(source);
+      expect(out).toContain('<input class="task-checkbox" type="checkbox" checked>');
+      expect(out).toContain("shipped it");
+    }
+  });
+
+  test("a plain list item is untouched", () => {
+    const out = renderMarkdown("- ordinary item");
+    expect(out).not.toContain("task-item");
+    expect(out).not.toContain("<input");
+  });
+
+  test("[ ]-looking text outside a list-item start is not a checkbox", () => {
+    expect(renderMarkdown("ship the [ ] thing")).not.toContain("<input");
+    expect(renderMarkdown("- ship the [ ] thing")).not.toContain("<input");
+  });
+
+  test("task item content stays escaped — no HTML smuggling via the checkbox path", () => {
+    const out = renderMarkdown('- [ ] <img src=x onerror="alert(1)">');
+    expect(out).not.toContain("<img");
+    expect(out).toContain("&lt;img");
+    // exactly the one static input we emit, nothing source-derived
+    expect(out.match(/<input/g)?.length).toBe(1);
+    expect(out).toContain('<input class="task-checkbox" type="checkbox">');
+  });
+});
+
 describe("highlight.js registration", () => {
   test("exactly 16 languages are registered", () => {
     expect(registeredLanguageCount()).toBe(16);

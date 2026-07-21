@@ -29,7 +29,15 @@
   // always calls `ask_ai_followup` — the backend reloads history server-side, so
   // there is no client-side resurrect.
   import { onMount, onDestroy, tick, untrack } from "svelte";
+  import { goto } from "$app/navigation";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import IconChevronLeft from "~icons/lucide/chevron-left";
+  import {
+    listTriggers,
+    CONDITION_LABEL,
+    type TriggerDefinition,
+  } from "$lib/triggers/api";
+  import { CONDITION_ICON } from "$lib/triggers/condition-icons";
   import { listen } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
@@ -60,6 +68,7 @@
     contextWindowForModel,
     defaultEngineModel,
     defaultEnginePinProvider,
+    triggerDocTurnIndex,
   } from "$lib/insights/conversation";
   import ModelPicker from "$lib/insights/ModelPicker.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
@@ -156,8 +165,30 @@
   // purely a render fork, the streaming/store paths are identical.
   let activeOrigin = $state<string | null>(null);
   let activeTriggerName = $state<string | null>(null);
+  let activeTriggerId = $state<string | null>(null);
   let activeCreatedAtMs = $state<number | null>(null);
   const isTriggerDoc = $derived(activeOrigin === "trigger");
+  // The firing trigger's live definition, looked up client-side by id (the
+  // conversation row only carries id + display name). Null when the trigger
+  // was deleted or the lookup failed — the doc header then degrades gracefully
+  // (no condition icon/metadata, plain-text name). Best-effort, never blocking.
+  let activeTrigger = $state<TriggerDefinition | null>(null);
+  $effect(() => {
+    const id = isTriggerDoc ? activeTriggerId : null;
+    activeTrigger = null;
+    if (id === null) return;
+    listTriggers()
+      .then((triggers) => {
+        if (activeTriggerId === id) {
+          activeTrigger = triggers.find((t) => t.id === id) ?? null;
+        }
+      })
+      .catch(() => {});
+  });
+  function openTriggerEdit(): void {
+    const id = activeTriggerId;
+    if (id !== null) void goto(`/triggers?edit=${encodeURIComponent(id)}`);
+  }
   // "ran Jul 20, 2:49 PM" — the document header's metadata line.
   const docRanAt = $derived(
     activeCreatedAtMs !== null
@@ -184,6 +215,11 @@
     )?.title ?? activeTitle,
   );
   let turns = $state<ChatTurn[]>([]);
+  // The transcript index that renders as the trigger Document header, or -1 for
+  // a normal chat (and for a trigger run whose every attempt errored). Keyed off
+  // the first non-error turn so a retried/Run-Again report keeps its document
+  // chrome instead of leaking the firing prompt as a user bubble.
+  const docTurnIndex = $derived(isTriggerDoc ? triggerDocTurnIndex(turns) : -1);
   let loadingConversation = $state(false);
   // Set when opening a thread from the rail/handoff throws — so a failed load
   // renders a recoverable error state (with Retry) instead of silently dropping
@@ -380,6 +416,7 @@
     activeTitle = "";
     activeOrigin = null;
     activeTriggerName = null;
+    activeTriggerId = null;
     activeCreatedAtMs = null;
     turns = [];
     conversationLoadError = null;
@@ -429,6 +466,7 @@
     activeTitle = "";
     activeOrigin = null;
     activeTriggerName = null;
+    activeTriggerId = null;
     activeCreatedAtMs = null;
     turns = [];
     streaming = false;
@@ -470,6 +508,7 @@
     activeTitle = convo.title;
     activeOrigin = convo.origin;
     activeTriggerName = convo.triggerName ?? null;
+    activeTriggerId = convo.triggerId ?? null;
     activeCreatedAtMs = convo.createdAtMs;
     activePinProvider = convo.provider ?? null;
     activePinModel = convo.model ?? null;
@@ -1376,14 +1415,16 @@
         </div>
       {:else}
         {#each turns as turn, ti (ti)}
-          <!-- Document View render fork (ADR 0058): the FIRST turn of an
-               origin=trigger conversation renders as a titled document — no
-               question bubble (the "question" is the automated firing prompt,
-               not user text). An errored first run falls back to the plain
-               chat turn (honest error, no special document-error chrome). -->
-          {@const docTurn =
-            isTriggerDoc && turn.turnIndex === 0 && turn.phase !== "error"}
-          {#if isTriggerDoc && ti === 1 && turns[0]?.phase !== "error"}
+          <!-- Document View render fork (ADR 0058): the FIRST non-errored turn
+               of an origin=trigger conversation renders as a titled document —
+               no question bubble (the "question" is the automated firing
+               prompt, not user text). A transient first-attempt failure (or a
+               manual Run Again) lands the successful report at turnIndex > 0,
+               so the document is the first non-error turn, not always turn 0.
+               Errored attempts before it fall back to the plain chat turn
+               (honest error, no special document-error chrome). -->
+          {@const docTurn = docTurnIndex === ti}
+          {#if isTriggerDoc && docTurnIndex >= 0 && ti === docTurnIndex + 1}
             <!-- Follow-ups continue the same conversation as normal chat. -->
             <div class="followup-divider" role="presentation">follow-up</div>
           {/if}
@@ -1392,16 +1433,58 @@
               <!-- Document header: eyebrow (trigger identity), title, ran-at
                    metadata, accent rule — per the final Triggers design. -->
               <header class="doc-head">
+                <!-- Context-aware back link. Arrival provenance isn't carried
+                     on the selection bus, so this is always the plain Triggers
+                     list (never /triggers?runs=…). -->
+                <button
+                  type="button"
+                  class="doc-back"
+                  onclick={() => void goto("/triggers")}
+                >
+                  <IconChevronLeft aria-hidden="true" />
+                  Triggers
+                </button>
                 <div class="doc-eyebrow">
+                  {#if activeTrigger}
+                    {@const CondIcon = CONDITION_ICON[activeTrigger.condition.type]}
+                    <span class="doc-cond-glyph" aria-hidden="true"><CondIcon /></span>
+                  {/if}
                   <span>trigger run</span>
                   {#if activeTriggerName}
                     <span class="doc-sep" aria-hidden="true">·</span>
-                    <span class="doc-tname">{activeTriggerName}</span>
+                    {#if activeTrigger}
+                      <!-- The trigger still exists: its name opens the edit
+                           wizard. A deleted trigger renders plain text. -->
+                      <button
+                        type="button"
+                        class="doc-tname doc-tname--link"
+                        use:tip={"Edit this trigger"}
+                        onclick={openTriggerEdit}
+                      >
+                        {activeTriggerName}
+                      </button>
+                    {:else}
+                      <span class="doc-tname">{activeTriggerName}</span>
+                    {/if}
                   {/if}
                 </div>
                 <h1 class="doc-title">{displayTitle}</h1>
-                {#if docRanAt}
-                  <div class="doc-meta">ran {docRanAt}</div>
+                {#if activeTrigger || docRanAt}
+                  <div class="doc-meta">
+                    {#if activeTrigger}
+                      <span>{CONDITION_LABEL[activeTrigger.condition.type]}</span>
+                      {#if activeTrigger.condition.type === "app_opened"}
+                        <span class="doc-sep" aria-hidden="true">·</span>
+                        <span>{activeTrigger.condition.appName}</span>
+                      {/if}
+                      {#if docRanAt}
+                        <span class="doc-sep" aria-hidden="true">·</span>
+                      {/if}
+                    {/if}
+                    {#if docRanAt}
+                      <span>ran {docRanAt}</span>
+                    {/if}
+                  </div>
                 {/if}
                 <hr class="doc-rule" />
               </header>
@@ -1782,6 +1865,14 @@
           </button>
         </div>
       </div>
+      {#if isTriggerDoc}
+        <!-- Sealed Toolbox reminder (ADR 0058): follow-ups on a trigger run get
+             read-only, inward-facing tools only. -->
+        <p class="composer-hint">
+          Follow-ups use read-only tools over your capture history — no web
+          access.
+        </p>
+      {/if}
     </div>
   {:else}
     <div class="composer-wrap">
@@ -1986,6 +2077,42 @@
   .doc-head {
     margin-bottom: 2px;
   }
+  /* Quiet back link to the Triggers list, above the eyebrow. */
+  .doc-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin: 0 0 12px -4px;
+    padding: 2px 6px 2px 2px;
+    font: inherit;
+    font-size: 11px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    transition: color 0.12s ease, background 0.12s ease;
+  }
+  .doc-back:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+  }
+  .doc-back:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+  .doc-back :global(svg) {
+    width: 12px;
+    height: 12px;
+  }
+  /* Condition glyph leading the eyebrow (lucide, from CONDITION_ICON). */
+  .doc-cond-glyph {
+    display: inline-flex;
+  }
+  .doc-cond-glyph :global(svg) {
+    width: 11px;
+    height: 11px;
+  }
   .doc-eyebrow {
     display: inline-flex;
     align-items: center;
@@ -1999,6 +2126,30 @@
   .doc-tname {
     color: var(--app-text-muted);
   }
+  /* The trigger name as a link into its edit wizard: same eyebrow type, a
+     dotted underline carries the "clickable" signal. */
+  .doc-tname--link {
+    font: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+    text-decoration: underline dotted;
+    text-underline-offset: 3px;
+    text-decoration-color: var(--app-border-strong);
+    transition: color 0.12s ease, text-decoration-color 0.12s ease;
+  }
+  .doc-tname--link:hover {
+    color: var(--app-accent-strong);
+    text-decoration-color: var(--app-accent);
+  }
+  .doc-tname--link:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
   .doc-sep {
     color: var(--app-text-faint);
   }
@@ -2011,6 +2162,9 @@
     color: var(--app-text-strong);
   }
   .doc-meta {
+    display: flex;
+    align-items: center;
+    gap: 7px;
     font-size: 11px;
     color: var(--app-text-muted);
   }
@@ -2019,7 +2173,7 @@
     background: var(--app-accent);
     opacity: 0.7;
     border: 0;
-    margin: 16px 0 0;
+    margin: 16px 0 22px;
   }
   /* Report typography for the document body: h2 reads as an uppercase section
      header with a dashed rule (the mockup's .doc-body h2). Scoped under the
@@ -2583,6 +2737,15 @@
   }
   .composer-send--stop:focus-visible {
     box-shadow: var(--app-ring-danger);
+  }
+
+  /* Sealed-toolbox hint under the document view's follow-up composer. */
+  .composer-hint {
+    max-width: 760px;
+    margin: 6px auto 0;
+    font-size: 10.5px;
+    color: var(--app-text-subtle);
+    line-height: 1.5;
   }
 
   /* Engine-off quiet card (replaces the composer block, same centered width). */

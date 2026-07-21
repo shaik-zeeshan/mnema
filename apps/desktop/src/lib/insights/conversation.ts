@@ -71,6 +71,17 @@ export interface Conversation {
  *  automated Trigger Run (ADR 0058 — backend-created, never sent by the UI). */
 export type ConversationOrigin = "chat" | "quick_recall" | "trigger";
 
+/** Document View (ADR 0058): for an `origin === "trigger"` conversation, the
+ *  array index of the turn that renders as the titled document — the FIRST
+ *  non-errored turn (the completed report, or the in-flight run while it
+ *  streams). Errored attempts BEFORE it (a transient first-attempt failure that
+ *  the internal retry — or a manual "Run Again" — later recovered) persist as
+ *  their own turns, so the successful report is NOT always turn 0. Returns -1
+ *  when every turn errored, so no turn takes the document chrome. */
+export function triggerDocTurnIndex(turns: readonly { phase: string }[]): number {
+  return turns.findIndex((turn) => turn.phase !== "error");
+}
+
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
 // The BACKEND-OWNED render model for a streaming Ask AI turn, mirroring the Rust
 // types in `crates/capture-types/src/conversation.rs`. The backend decides what

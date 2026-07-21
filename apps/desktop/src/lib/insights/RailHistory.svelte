@@ -17,11 +17,25 @@
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
+  import { listTriggers, type ConditionType } from "$lib/triggers/api";
+  import { CONDITION_ICON } from "$lib/triggers/condition-icons";
   import {
     conversationStore,
     relativeTime,
     type OriginFilter,
   } from "$lib/insights/conversationStore.svelte";
+
+  // triggerId → condition type, for the origin badge's condition icon.
+  // Resolved client-side once per mount (best-effort; a deleted trigger just
+  // misses the map and the badge renders without an icon).
+  let conditionByTriggerId = $state<Record<string, ConditionType>>({});
+  void listTriggers()
+    .then((triggers) => {
+      conditionByTriggerId = Object.fromEntries(
+        triggers.map((t) => [t.id, t.condition.type]),
+      );
+    })
+    .catch(() => {});
 
   // The rail's origin filter (issue #179) — All / Chats / Triggers, per the
   // final Triggers design (docs/triggers/mockups/final/DESIGN.md). Applied
@@ -168,6 +182,10 @@
                   class="origin-badge"
                   use:tip={`Run by trigger: ${c.triggerName || "unknown"}`}
                 >
+                  {#if c.triggerId && conditionByTriggerId[c.triggerId]}
+                    {@const CondIcon = CONDITION_ICON[conditionByTriggerId[c.triggerId]]}
+                    <span class="badge-glyph" aria-hidden="true"><CondIcon /></span>
+                  {/if}
                   {c.triggerName || "trigger run"}
                 </span>
               {/if}
@@ -330,6 +348,7 @@
     align-self: flex-start;
     display: inline-flex;
     align-items: center;
+    gap: 4px;
     max-width: 100%;
     margin-bottom: 4px;
     font-size: 9px;
@@ -343,6 +362,14 @@
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .badge-glyph {
+    display: inline-flex;
+    flex: 0 0 auto;
+  }
+  .badge-glyph :global(svg) {
+    width: 9px;
+    height: 9px;
   }
 
   /* chat history — ultra-compact single-line rows, no chrome. */
