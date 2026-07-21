@@ -350,7 +350,8 @@
     align-items: center;
     gap: 4px;
     max-width: 100%;
-    margin-bottom: 4px;
+    /* Vertical inset comes from the row's own padding now. */
+    margin-bottom: 1px;
     font-size: 9px;
     letter-spacing: 0.03em;
     line-height: 14px;
@@ -398,11 +399,13 @@
   }
   .sk-row {
     display: flex;
+    padding: 0 8px;
   }
   .rail-empty {
     font-size: 11px;
     color: var(--app-text-subtle);
     margin-top: 16px;
+    padding: 0 8px;
     line-height: 1.5;
   }
 
@@ -414,8 +417,10 @@
     text-transform: uppercase;
     color: var(--app-text-subtle);
     margin-top: 14px;
-    padding-top: 11px;
-    padding-bottom: 8px;
+    /* 8px horizontal inset puts the eyebrow on the same 24px content guide as
+       the row titles / nav labels (it used to sit flush at the gutter edge,
+       reading as "touching the border"); the hairline still spans full width. */
+    padding: 11px 8px 8px;
     border-top: 1px solid var(--app-border);
   }
   /* first group: sits clean below the search's bottom hairline — no double
@@ -433,9 +438,13 @@
     position: relative;
     display: flex;
     align-items: center;
-    /* Reserve room for the active row's 3px inset bar on EVERY row so toggling
-       the active state never shifts the title horizontally. */
-    padding-left: 8px;
+    /* Same 8px horizontal inset as the nav rows (keeps title/badge on the 24px
+       content guide and stops the timestamp touching the tint's right edge),
+       plus a small vertical inset so the active tint never hugs the content.
+       The left 8px also reserves room for the active row's 3px inset bar so
+       toggling active never shifts the title horizontally. */
+    padding: 3px 8px;
+    border-radius: 5px;
     /* The inner `.rail-chat` is a fixed 24px tall, so the row height matches it
        without an explicit `min-height` — and dropping the min-height lets the
        removal slide collapse smoothly to 0 instead of snapping at 24px. */
@@ -503,7 +512,6 @@
      primary nav's multi-signal active treatment). */
   .rail-chat-row.active {
     background: var(--app-accent-bg);
-    border-radius: 5px;
   }
   .rail-chat-row.active::before {
     content: "";
@@ -527,7 +535,8 @@
   .rail-actions {
     position: absolute;
     top: 0;
-    right: 0;
+    /* Matches the row's own right inset so the ✕ never touches the tint edge. */
+    right: 4px;
     bottom: 0;
     display: flex;
     align-items: center;

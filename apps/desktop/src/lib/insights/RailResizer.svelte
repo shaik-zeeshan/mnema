@@ -108,18 +108,18 @@
 </div>
 
 <style>
-  /* A thin flex gutter that owns the rail/main divider. It is painted with the
-     rail's own surface (NOT transparent): the strip adds 7px between the rail and
-     main, and a see-through strip leaks the window background — which against the
-     Chat tab's white main pane reads as the rail's cream spilling past the line.
-     With the strip carrying the rail surface and the hairline flush to its RIGHT
-     (main-facing) edge, the boundary lands cleanly at the cream→main seam. */
+  /* The grab strip that owns the rail/main divider. It takes NO layout width:
+     the negative margin folds the 7px hit area back over the rail's right-edge
+     gutter (it is a later sibling, so it paints/hits above the rail), and the
+     hairline sits flush at the strip's right edge — exactly the rail→main seam.
+     When the strip occupied its own 7px of flex space it widened the rail's
+     visual right gutter to 23px vs the 16px left one, which read as dead space. */
   .rail-resizer {
     position: relative;
     flex: 0 0 auto;
     width: 7px;
+    margin-left: -7px;
     align-self: stretch;
-    background: var(--app-surface-subtle);
     cursor: col-resize;
     /* Don't let a quick drag select sub-surface text. */
     touch-action: none;
