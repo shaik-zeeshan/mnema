@@ -239,7 +239,7 @@ jobs:
           # Poll instead of `submit --wait`: a single network blip during the
           # long wait killed a run even though Apple accepted the submission.
           status=""
-          for _ in $(seq 1 60); do
+          for _ in $(seq 1 180); do
             status="$(xcrun notarytool info "$submission_id" \
               --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
               --team-id RJYMY4RR97 --output-format json 2>/dev/null \
@@ -254,7 +254,7 @@ jobs:
               *) sleep 60 ;;
             esac
           done
-          [[ "$status" == "Accepted" ]] || { echo "notarization did not reach Accepted within 60min (last status: '$status')" >&2; exit 1; }
+          [[ "$status" == "Accepted" ]] || { echo "notarization did not reach Accepted within 3h (last status: '$status')" >&2; exit 1; }
           xcrun stapler staple "$app"
           rm mnema-notarize.zip
 
