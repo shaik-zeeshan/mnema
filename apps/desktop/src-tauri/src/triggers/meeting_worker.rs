@@ -21,6 +21,7 @@ use super::meeting::{
     conferencing_display_name, conferencing_holders, trigger_floor_ms, EndedHold, MeetingDetector,
     MeetingEvent, MEETING_LOG_PREFIX,
 };
+use super::meeting_browser::{BrowserMeetingTracker, MeetingUrlEvidence};
 use super::readiness::{self, ReadinessOutcome, ReadinessSnapshot};
 use super::run::MeetingFiringContext;
 use super::{FiringDecision, TriggerCondition, TriggerDefinition};
@@ -67,13 +68,20 @@ pub fn spawn_meeting_detector_worker(
     crate::native_capture::debug_log::log_info("starting meeting detector worker");
     let handle = tauri::async_runtime::spawn(async move {
         let mut detector = MeetingDetector::new(DEFAULT_RELEASE_GRACE_MINUTES * 60_000);
+        let mut browser_tracker = BrowserMeetingTracker::new();
         let mut last_tick_ms: Option<i64> = None;
         loop {
             if *shutdown_rx.borrow() {
                 break;
             }
-            let sleep_for =
-                detector_tick(&mut detector, &mut last_tick_ms, &infra, &app_handle).await;
+            let sleep_for = detector_tick(
+                &mut detector,
+                &mut browser_tracker,
+                &mut last_tick_ms,
+                &infra,
+                &app_handle,
+            )
+            .await;
             if shutdown_aware_sleep(&mut shutdown_rx, sleep_for).await {
                 break;
             }
@@ -88,6 +96,7 @@ pub fn spawn_meeting_detector_worker(
 /// boundary ([`gap_observation_ms`]); a failed snapshot read leaves it alone.
 async fn detector_tick(
     detector: &mut MeetingDetector,
+    browser_tracker: &mut BrowserMeetingTracker,
     last_tick_ms: &mut Option<i64>,
     infra: &AppInfraState,
     app_handle: &tauri::AppHandle,
@@ -99,8 +108,9 @@ async fn detector_tick(
         })
         .collect();
     if meeting_triggers.is_empty() {
-        // No Core Audio read at all with nobody to fire.
+        // No Core Audio read (and no browser probes) at all with nobody to fire.
         detector.reset();
+        browser_tracker.reset();
         return IDLE_POLL;
     }
 
@@ -122,7 +132,7 @@ async fn detector_tick(
                 "{MEETING_LOG_PREFIX} mic snapshot failed, skipping tick: {}",
                 error.message
             );
-            return if detector.is_tracking() {
+            return if detector.is_tracking() || browser_tracker.is_tracking() {
                 TRACKING_POLL
             } else {
                 IDLE_POLL
@@ -135,23 +145,78 @@ async fn detector_tick(
         // Sleep/suspend gap: end knowledge at the last tick BEFORE the real
         // observation, so a meeting window never absorbs the sleep. The state
         // machine handles the rest (rejoin within grace stays one meeting; an
-        // ongoing hold at wake re-holds fresh).
+        // ongoing hold at wake re-holds fresh). Pre-evidence browser hold
+        // starts are stale across the gap and cleared; evidence-backed ones
+        // follow the detector's gap semantics like any conferencing hold.
         tauri_plugin_log::log::info!(
             "{MEETING_LOG_PREFIX} tick gap of {}s (sleep?); injecting empty observation at last tick {gap_stamp_ms}",
             now.saturating_sub(gap_stamp_ms) / 1000
         );
+        browser_tracker.clear_pre_evidence_holds();
         let events = detector.observe(&BTreeSet::new(), gap_stamp_ms);
-        process_meeting_events(events, infra, app_handle, &meeting_triggers).await;
+        process_meeting_events(events, browser_tracker, infra, app_handle, &meeting_triggers)
+            .await;
     }
     *last_tick_ms = Some(now);
 
-    let events = detector.observe(&conferencing_holders(&holders), now);
-    process_meeting_events(events, infra, app_handle, &meeting_triggers).await;
+    // Browser holds: probe the front tab of every known browser currently
+    // holding the mic without evidence yet (issue #180). One sighting of a
+    // meeting URL marks the whole hold — evidence is sticky, so a marked hold
+    // is never probed again.
+    for bundle_id in browser_tracker.observe_raw_holders(&holders, now) {
+        let Some(raw_url) = probe_front_tab_url(&bundle_id).await else {
+            // A failed probe (browser busy, no AppleScript/AX access, no front
+            // window) is no evidence this tick, not an error.
+            continue;
+        };
+        if let Some(service) = browser_tracker.record_sighting(&bundle_id, &raw_url) {
+            tauri_plugin_log::log::info!(
+                "{MEETING_LOG_PREFIX} meeting URL sighted app={bundle_id} service={service}; \
+hold marked as meeting (sticky)"
+            );
+        }
+    }
 
-    if detector.is_tracking() {
+    // Evidence-backed browsers join the allowlist-filtered set, seeded with
+    // their TRUE hold start so the meeting window is the whole mic hold, not
+    // evidence-onward.
+    let mut detector_set = conferencing_holders(&holders);
+    for bundle_id in browser_tracker.evidence_backed_holders(&holders) {
+        if let Some(start_ms) = browser_tracker.hold_start_ms(&bundle_id) {
+            detector.seed_hold(&bundle_id, start_ms);
+        }
+        detector_set.insert(bundle_id);
+    }
+
+    let events = detector.observe(&detector_set, now);
+    process_meeting_events(events, browser_tracker, infra, app_handle, &meeting_triggers).await;
+
+    if detector.is_tracking() || browser_tracker.is_tracking() {
         TRACKING_POLL
     } else {
         IDLE_POLL
+    }
+}
+
+/// Front-tab URL probe for one browser, off the async runtime (osascript can
+/// block up to ~1s, a Gecko AX read up to ~1.4s). Reuses the metadata layer's
+/// strategy dispatch (Chromium/WebKit AppleScript, Gecko Accessibility) but
+/// never fires the Accessibility prompt.
+async fn probe_front_tab_url(bundle_id: &str) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let bundle_id = bundle_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            crate::native_capture::metadata::probe_browser_front_tab_url(&bundle_id)
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = bundle_id;
+        None
     }
 }
 
@@ -160,6 +225,7 @@ async fn detector_tick(
 /// meetings fire exactly like tick-ended ones.
 async fn process_meeting_events(
     events: Vec<MeetingEvent>,
+    browser_tracker: &mut BrowserMeetingTracker,
     infra: &AppInfraState,
     app_handle: &tauri::AppHandle,
     triggers: &[TriggerDefinition],
@@ -182,14 +248,22 @@ async fn process_meeting_events(
                 );
             }
             MeetingEvent::Ended(ended) => {
+                // A browser hold's sticky evidence ends with the hold — taken
+                // here so the NEXT hold needs a fresh sighting. `None` for
+                // conferencing apps (the tracker never sees them).
+                let evidence = browser_tracker.take_ended(&ended.bundle_id);
                 tauri_plugin_log::log::info!(
-                    "{MEETING_LOG_PREFIX} meeting ended app={} window={}..{} ({}s)",
+                    "{MEETING_LOG_PREFIX} meeting ended app={} window={}..{} ({}s){}",
                     ended.bundle_id,
                     ended.start_ms,
                     ended.end_ms,
-                    ended.duration_ms() / 1000
+                    ended.duration_ms() / 1000,
+                    evidence
+                        .as_ref()
+                        .map(|evidence| format!(" service={}", evidence.service))
+                        .unwrap_or_default()
                 );
-                handle_meeting_ended(infra, app_handle, triggers, ended).await;
+                handle_meeting_ended(infra, app_handle, triggers, ended, evidence).await;
             }
         }
     }
@@ -202,6 +276,7 @@ async fn handle_meeting_ended(
     app_handle: &tauri::AppHandle,
     triggers: &[TriggerDefinition],
     ended: EndedHold,
+    evidence: Option<MeetingUrlEvidence>,
 ) {
     let now = now_ms();
     for trigger in triggers {
@@ -277,6 +352,7 @@ async fn handle_meeting_ended(
                     app_handle.clone(),
                     trigger.clone(),
                     ended.clone(),
+                    evidence.clone(),
                     now,
                 );
             }
@@ -294,6 +370,7 @@ fn spawn_meeting_firing(
     app_handle: tauri::AppHandle,
     trigger: TriggerDefinition,
     ended: EndedHold,
+    evidence: Option<MeetingUrlEvidence>,
     fired_at_ms: i64,
 ) {
     tauri::async_runtime::spawn(async move {
@@ -332,12 +409,12 @@ fn spawn_meeting_firing(
                     .flatten()
                     .map(|minutes| minutes as i32)
                     .unwrap_or(0);
+                let (app_display_name, meeting_url) = meeting_display(&ended.bundle_id, evidence);
                 let context = super::run::EventFiringContext::Meeting(MeetingFiringContext {
-                    app_display_name: conferencing_display_name(&ended.bundle_id)
-                        .unwrap_or(&ended.bundle_id)
-                        .to_string(),
+                    app_display_name,
                     start_ms: ended.start_ms,
                     end_ms: ended.end_ms,
+                    meeting_url,
                     coverage_note,
                 });
                 super::run::run_trigger_fire(
@@ -352,6 +429,30 @@ fn spawn_meeting_firing(
             }
         }
     });
+}
+
+/// The firing display for an ended hold: "Zoom" for an allowlisted app;
+/// "Google Meet (Google Chrome)" plus the sighted URL for an evidence-backed
+/// browser meeting (issue #180).
+fn meeting_display(
+    bundle_id: &str,
+    evidence: Option<MeetingUrlEvidence>,
+) -> (String, Option<String>) {
+    if let Some(evidence) = evidence {
+        let browser = capture_metadata::known_browser_app(bundle_id)
+            .map(|browser| browser.display_name)
+            .unwrap_or(bundle_id);
+        return (
+            format!("{} ({browser})", evidence.service),
+            Some(evidence.url),
+        );
+    }
+    (
+        conferencing_display_name(bundle_id)
+            .unwrap_or(bundle_id)
+            .to_string(),
+        None,
+    )
 }
 
 /// The real readiness probe: audio segments (mic + system audio) overlapping
@@ -454,6 +555,32 @@ mod tests {
             super::super::FiringDecision::Fire {
                 occurrence_ms: later
             }
+        );
+    }
+
+    #[test]
+    fn meeting_display_names_service_with_browser_and_falls_back_to_the_allowlist() {
+        // Evidence-backed browser hold: service (browser) + URL.
+        let evidence = MeetingUrlEvidence {
+            url: "https://meet.google.com/abc-defg-hij".to_string(),
+            service: "Google Meet",
+        };
+        assert_eq!(
+            meeting_display("com.google.Chrome", Some(evidence)),
+            (
+                "Google Meet (Google Chrome)".to_string(),
+                Some("https://meet.google.com/abc-defg-hij".to_string())
+            )
+        );
+        // Conferencing app: allowlist display name, no URL.
+        assert_eq!(
+            meeting_display("us.zoom.xos", None),
+            ("Zoom".to_string(), None)
+        );
+        // Unknown bundle id degrades to the raw id.
+        assert_eq!(
+            meeting_display("com.unknown.app", None),
+            ("com.unknown.app".to_string(), None)
         );
     }
 

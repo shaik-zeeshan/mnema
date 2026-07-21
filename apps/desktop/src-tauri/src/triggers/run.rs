@@ -84,9 +84,13 @@ fn schedule_label(cadence: ScheduleCadence, time: &str, weekday: Option<Schedule
 /// only partially covers the meeting or the catch-up was cut at the cap.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct MeetingFiringContext {
+    /// "Zoom" for a conferencing app; "Google Meet (Google Chrome)" for an
+    /// evidence-backed browser meeting (issue #180).
     pub app_display_name: String,
     pub start_ms: i64,
     pub end_ms: i64,
+    /// The sighted meeting URL for a browser meeting; `None` for app holds.
+    pub meeting_url: Option<String>,
     pub coverage_note: Option<String>,
 }
 
@@ -130,6 +134,11 @@ fn build_firing_question(
     event: Option<&EventFiringContext>,
 ) -> String {
     if let Some(EventFiringContext::Meeting(meeting)) = event {
+        let url_note = meeting
+            .meeting_url
+            .as_deref()
+            .map(|url| format!(" Meeting URL: {url}."))
+            .unwrap_or_default();
         let coverage = meeting
             .coverage_note
             .as_deref()
@@ -138,14 +147,15 @@ fn build_firing_question(
         return format!(
             "[Automated Trigger Run] The user's trigger \"{name}\" (meeting ends) fired: a meeting \
 in {app} just ended. Meeting window: {start} to {end} local time (about {minutes} minutes).\
-{coverage} Apply the standing instruction below to that meeting unless it says otherwise, and \
-write the report document now.\n\n\
+{url_note}{coverage} Apply the standing instruction below to that meeting unless it says \
+otherwise, and write the report document now.\n\n\
 Standing instruction:\n{prompt}",
             name = trigger.name,
             app = meeting.app_display_name,
             start = format_local_ymd_hm(meeting.start_ms, offset_minutes),
             end = format_local_ymd_hm(meeting.end_ms, offset_minutes),
             minutes = (meeting.end_ms - meeting.start_ms).max(0) / 60_000,
+            url_note = url_note,
             coverage = coverage,
             prompt = trigger.prompt.trim(),
         );
@@ -557,6 +567,7 @@ mod tests {
             app_display_name: "Zoom".to_string(),
             start_ms: end_ms - 42 * 60_000,
             end_ms,
+            meeting_url: None,
             coverage_note: Some("The recording covers only part of the meeting window.".to_string()),
         };
         let question = build_firing_question(
@@ -577,10 +588,13 @@ mod tests {
         // ...and the standing instruction still closes the question verbatim.
         assert!(question.ends_with("Recap the meeting."));
 
+        // App holds carry no URL — no dangling "Meeting URL:".
+        assert!(!question.contains("Meeting URL:"));
+
         // Without a note there is no dangling "Note:".
         let quiet = MeetingFiringContext {
             coverage_note: None,
-            ..meeting
+            ..meeting.clone()
         };
         let question = build_firing_question(
             &trigger,
@@ -590,6 +604,24 @@ mod tests {
             Some(&EventFiringContext::Meeting(quiet)),
         );
         assert!(!question.contains("Note:"));
+
+        // A browser meeting (issue #180) names the service + browser and rides
+        // the sighted meeting URL along.
+        let browser_meeting = MeetingFiringContext {
+            app_display_name: "Google Meet (Google Chrome)".to_string(),
+            meeting_url: Some("https://meet.google.com/abc-defg-hij".to_string()),
+            ..meeting
+        };
+        let question = build_firing_question(
+            &trigger,
+            end_ms,
+            end_ms + 5 * 60_000,
+            IST,
+            Some(&EventFiringContext::Meeting(browser_meeting)),
+        );
+        assert!(question.contains("a meeting in Google Meet (Google Chrome) just ended"));
+        assert!(question.contains("Meeting URL: https://meet.google.com/abc-defg-hij."));
+        assert!(question.ends_with("Recap the meeting."));
     }
 
     #[test]

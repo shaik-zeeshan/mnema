@@ -32,7 +32,8 @@ const DEFAULT_MIN_MEETING_MINUTES: u32 = 5;
 // ── Conferencing Allowlist (ADR 0057: app-curated, not user-editable) ────────
 
 /// `(bundle id, display name)`. Browsers are deliberately absent — browser
-/// meetings (Meet in Chrome) are #180's slice, gated on URL evidence.
+/// meetings (Meet in Chrome) are gated on URL evidence instead
+/// ([`super::meeting_browser`]).
 pub(crate) const CONFERENCING_ALLOWLIST: &[(&str, &str)] = &[
     ("us.zoom.xos", "Zoom"),
     ("com.microsoft.teams2", "Microsoft Teams"),
@@ -51,8 +52,9 @@ pub(crate) fn conferencing_display_name(bundle_id: &str) -> Option<&'static str>
 }
 
 /// The allowlist filter between a raw mic-holder snapshot and the detector.
-/// #180 extends exactly here: a browser bundle id joins the returned set only
-/// while meeting-URL evidence marks its hold.
+/// The browser path (#180) extends exactly here: the worker unions in browser
+/// bundle ids whose current mic hold carries meeting-URL evidence
+/// ([`super::meeting_browser::BrowserMeetingTracker`]).
 pub(crate) fn conferencing_holders(holders: &BTreeSet<String>) -> BTreeSet<String> {
     holders
         .iter()
@@ -131,6 +133,18 @@ impl MeetingDetector {
     /// mid-hold: with nobody to fire, a half-tracked meeting is noise).
     pub fn reset(&mut self) {
         self.holds.clear();
+    }
+
+    /// Pre-seed a hold with its TRUE start before an observe tick — the #180
+    /// browser path: meeting-URL evidence may appear minutes into a mic hold,
+    /// but the meeting window is the whole hold, so the worker seeds the
+    /// browser's real hold start the first time evidence admits it into the
+    /// filtered set. No-op when the app is already tracked (a live hold or a
+    /// released-within-grace one keeps its own state).
+    pub fn seed_hold(&mut self, bundle_id: &str, since_ms: i64) {
+        self.holds
+            .entry(bundle_id.to_string())
+            .or_insert(HoldState::Holding { since_ms });
     }
 
     /// Feed one snapshot. `holders` must already be allowlist-filtered.
@@ -220,10 +234,12 @@ impl MeetingDetector {
 
 /// The per-trigger Meeting floor in ms — `None` for non-meeting conditions.
 /// Sub-floor holds (dictation, a voice memo, a 2-minute call) never fire.
+/// Clamped to ≥1 minute: a zero floor would let the one-tick evidence-less
+/// phantom hold after a post-grace rejoin fire as a "meeting".
 pub(crate) fn trigger_floor_ms(trigger: &TriggerDefinition) -> Option<i64> {
     match trigger.condition {
         TriggerCondition::MeetingEnds { min_meeting_minutes } => Some(
-            i64::from(min_meeting_minutes.unwrap_or(DEFAULT_MIN_MEETING_MINUTES)) * 60_000,
+            i64::from(min_meeting_minutes.unwrap_or(DEFAULT_MIN_MEETING_MINUTES).max(1)) * 60_000,
         ),
         _ => None,
     }
@@ -440,6 +456,57 @@ mod tests {
         );
     }
 
+    // ── Seeded holds (the #180 browser path) ─────────────────────────────────
+
+    #[test]
+    fn seeded_hold_backdates_the_meeting_window_to_the_true_start() {
+        const CHROME: &str = "com.google.Chrome";
+        let mut detector = MeetingDetector::new(GRACE_MS);
+        // Evidence appeared at minute 2 of a hold that started at minute 0: the
+        // worker seeds the true start before the first observe that includes it.
+        detector.seed_hold(CHROME, 0);
+        // No HoldStarted event — the seed already established the hold.
+        assert_eq!(detector.observe(&holders(&[CHROME]), 2 * MIN_MS), vec![]);
+        detector.observe(&holders(&[]), 10 * MIN_MS);
+        assert_eq!(
+            ended_events(detector.observe(&holders(&[]), 12 * MIN_MS)),
+            vec![EndedHold {
+                bundle_id: CHROME.to_string(),
+                start_ms: 0,
+                end_ms: 10 * MIN_MS
+            }]
+        );
+    }
+
+    #[test]
+    fn seed_hold_never_clobbers_an_existing_hold_state() {
+        const CHROME: &str = "com.google.Chrome";
+        let mut detector = MeetingDetector::new(GRACE_MS);
+        // Live hold from minute 0; a redundant later seed must not move it.
+        detector.seed_hold(CHROME, 0);
+        detector.observe(&holders(&[CHROME]), MIN_MS);
+        detector.seed_hold(CHROME, 5 * MIN_MS);
+        // Released-within-grace state must survive a seed too (drop-and-rejoin
+        // keeps the original start).
+        detector.observe(&holders(&[]), 10 * MIN_MS);
+        detector.seed_hold(CHROME, 11 * MIN_MS);
+        assert_eq!(
+            detector.observe(&holders(&[CHROME]), 11 * MIN_MS),
+            vec![MeetingEvent::HoldRejoined {
+                bundle_id: CHROME.to_string()
+            }]
+        );
+        detector.observe(&holders(&[]), 20 * MIN_MS);
+        assert_eq!(
+            ended_events(detector.observe(&holders(&[]), 22 * MIN_MS)),
+            vec![EndedHold {
+                bundle_id: CHROME.to_string(),
+                start_ms: 0,
+                end_ms: 20 * MIN_MS
+            }]
+        );
+    }
+
     // ── Floor (per-trigger) ──────────────────────────────────────────────────
 
     #[test]
@@ -473,6 +540,9 @@ mod tests {
             Some(15 * MIN_MS)
         );
         assert_eq!(trigger_floor_ms(&super::super::tests::sample_daily()), None);
+        // A zero override clamps to one minute: the post-grace-rejoin phantom
+        // hold (one poll tick wide) must never clear the floor.
+        assert_eq!(trigger_floor_ms(&meeting_trigger(Some(0))), Some(MIN_MS));
     }
 
     // ── Sleep gaps (the worker injects an empty observation at the last tick

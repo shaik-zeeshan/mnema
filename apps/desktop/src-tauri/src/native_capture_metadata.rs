@@ -612,6 +612,36 @@ fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
     }
 }
 
+/// Front-tab URL probe for the meeting detector (triggers issue #180). Same
+/// strategy dispatch as [`active_browser_url`], with two differences: it
+/// resolves the browser's pid itself (the Core Audio mic snapshot only carries
+/// bundle ids), and it never fires the Gecko Accessibility prompt — a mic hold
+/// must not raise a permission dialog, so without trust the read quietly
+/// yields no evidence. Blocking (osascript ≤1s, AX ≤~1.4s): call off the async
+/// runtime.
+#[cfg(target_os = "macos")]
+pub(crate) fn probe_browser_front_tab_url(bundle_id: &str) -> Option<String> {
+    match browser_url_strategy(bundle_id) {
+        Some(BrowserUrlStrategy::AppleScript(_)) => active_browser_url_applescript(bundle_id),
+        Some(BrowserUrlStrategy::Accessibility) => running_app_pid(bundle_id)
+            .and_then(crate::native_capture::browser_url_ax::read_active_tab_url),
+        None => None,
+    }
+}
+
+/// The pid of the running app with this bundle id, if any.
+#[cfg(target_os = "macos")]
+fn running_app_pid(bundle_id: &str) -> Option<i32> {
+    cidre::ns::Workspace::shared()
+        .running_apps()
+        .iter()
+        .find(|app| {
+            app.bundle_id()
+                .is_some_and(|id| id.to_string() == bundle_id)
+        })
+        .map(|app| app.pid())
+}
+
 #[cfg(target_os = "macos")]
 fn active_browser_url_applescript(bundle_id: &str) -> Option<String> {
     let script = browser_url_applescript(bundle_id)?;
