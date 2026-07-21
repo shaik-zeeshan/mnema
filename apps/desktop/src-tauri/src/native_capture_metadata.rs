@@ -615,17 +615,73 @@ fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
 /// Front-tab URL probe for the meeting detector (triggers issue #180). Same
 /// strategy dispatch as [`active_browser_url`], with two differences: it
 /// resolves the browser's pid itself (the Core Audio mic snapshot only carries
-/// bundle ids), and it never fires the Gecko Accessibility prompt — a mic hold
-/// must not raise a permission dialog, so without trust the read quietly
-/// yields no evidence. Blocking (osascript ≤1s, AX ≤~1.4s): call off the async
-/// runtime.
+/// bundle ids), and it never raises a permission dialog — a mic hold must not
+/// pop a prompt mid-call (ADR 0057 amendment 2026-07-21). The Gecko path skips
+/// the Accessibility prompt; the AppleScript path pre-checks Automation
+/// consent without asking. Either way, without a grant the read quietly yields
+/// no evidence — permission is earned on the capture prober's foreground path.
+/// Blocking (osascript ≤1s, AX ≤~1.4s): call off the async runtime.
 #[cfg(target_os = "macos")]
 pub(crate) fn probe_browser_front_tab_url(bundle_id: &str) -> Option<String> {
     match browser_url_strategy(bundle_id) {
-        Some(BrowserUrlStrategy::AppleScript(_)) => active_browser_url_applescript(bundle_id),
+        Some(BrowserUrlStrategy::AppleScript(_)) => automation_permission_granted(bundle_id)
+            .then(|| active_browser_url_applescript(bundle_id))
+            .flatten(),
         Some(BrowserUrlStrategy::Accessibility) => running_app_pid(bundle_id)
             .and_then(crate::native_capture::browser_url_ax::read_active_tab_url),
         None => None,
+    }
+}
+
+/// Whether Automation (Apple Events) consent for `bundle_id` is already
+/// granted, checked WITHOUT prompting (`AEDeterminePermissionToAutomateTarget`
+/// with `askUserIfNeeded = false`). Not-yet-asked, denied, and not-running all
+/// read as `false`.
+#[cfg(target_os = "macos")]
+fn automation_permission_granted(bundle_id: &str) -> bool {
+    // FourCharCodes: 'bund' addresses an app by bundle id; '****' = any event.
+    const TYPE_APPLICATION_BUNDLE_ID: u32 = u32::from_be_bytes(*b"bund");
+    const TYPE_WILD_CARD: u32 = u32::from_be_bytes(*b"****");
+    #[repr(C)]
+    struct AEDesc {
+        descriptor_type: u32,
+        data_handle: *mut std::ffi::c_void,
+    }
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn AECreateDesc(
+            type_code: u32,
+            data_ptr: *const std::ffi::c_void,
+            data_size: isize,
+            result: *mut AEDesc,
+        ) -> i16;
+        fn AEDisposeDesc(desc: *mut AEDesc) -> i16;
+        fn AEDeterminePermissionToAutomateTarget(
+            target: *const AEDesc,
+            the_ae_event_class: u32,
+            the_ae_event_id: u32,
+            ask_user_if_needed: bool,
+        ) -> i32;
+    }
+    let bytes = bundle_id.as_bytes();
+    let mut desc = AEDesc {
+        descriptor_type: 0,
+        data_handle: std::ptr::null_mut(),
+    };
+    unsafe {
+        if AECreateDesc(
+            TYPE_APPLICATION_BUNDLE_ID,
+            bytes.as_ptr().cast(),
+            bytes.len() as isize,
+            &mut desc,
+        ) != 0
+        {
+            return false;
+        }
+        let status =
+            AEDeterminePermissionToAutomateTarget(&desc, TYPE_WILD_CARD, TYPE_WILD_CARD, false);
+        AEDisposeDesc(&mut desc);
+        status == 0
     }
 }
 

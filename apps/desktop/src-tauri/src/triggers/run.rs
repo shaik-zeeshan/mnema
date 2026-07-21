@@ -410,6 +410,33 @@ pub(crate) async fn run_trigger_fire(
     );
 
     let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes, event);
+    run_attempts_and_record(
+        app_handle,
+        infra,
+        trigger,
+        &conversation_id,
+        &question,
+        &title,
+        offset_minutes,
+        fired_at,
+    )
+    .await;
+}
+
+/// The attempt loop + outcome ledger row + good-news notification for one
+/// firing's existing conversation — shared by [`run_trigger_fire`] and Run
+/// Again ([`run_trigger_again`]).
+#[allow(clippy::too_many_arguments)]
+async fn run_attempts_and_record(
+    app_handle: &tauri::AppHandle,
+    infra: &AppInfraState,
+    trigger: &TriggerDefinition,
+    conversation_id: &str,
+    question: &str,
+    title: &str,
+    offset_minutes: i32,
+    fired_at: i64,
+) {
     // Context Assembly (issue #183): the personalization block for this firing
     // — non-sensitive User-Context conclusions + past-run excerpts. Gathered
     // ONCE (best-effort, never blocks the run) and appended to the ephemeral
@@ -422,9 +449,9 @@ pub(crate) async fn run_trigger_fire(
     // report and history).
     let attempt = || {
         let app_handle = app_handle.clone();
-        let conversation_id = conversation_id.clone();
-        let question = question.clone();
-        let title = title.clone();
+        let conversation_id = conversation_id.to_string();
+        let question = question.to_string();
+        let title = title.to_string();
         let personalization = personalization.clone();
         async move {
             let clock = crate::ask_ai::ClientClock {
@@ -473,10 +500,10 @@ pub(crate) async fn run_trigger_fire(
                 fired_at,
                 TriggerFiringOutcome::Completed,
                 None,
-                Some(&conversation_id),
+                Some(conversation_id),
             )
             .await;
-            deliver_run_notification(app_handle, &title, &conversation_id);
+            deliver_run_notification(app_handle, title, conversation_id);
         }
         AttemptOutcome::Aborted => {
             tauri_plugin_log::log::warn!(
@@ -489,7 +516,7 @@ pub(crate) async fn run_trigger_fire(
                 fired_at,
                 TriggerFiringOutcome::Failed,
                 Some("run cancelled by the user"),
-                Some(&conversation_id),
+                Some(conversation_id),
             )
             .await;
         }
@@ -498,17 +525,93 @@ pub(crate) async fn run_trigger_fire(
                 "triggers: run for trigger '{}' failed after {attempts} attempts; no notification delivered",
                 trigger.id
             );
+            // The conversation (with its errored turns) IS linked: it's what
+            // Run Again retries, and what a curious user can open.
             record_ledger(
                 infra,
                 &trigger.id,
                 fired_at,
                 TriggerFiringOutcome::Failed,
                 Some(&format!("AI run did not complete after {attempts} attempts")),
-                None,
+                Some(conversation_id),
             )
             .await;
         }
     }
+}
+
+// ── Run Again (retry a failed firing) ────────────────────────────────────────
+
+/// Conversation ids with a Run Again retry currently in flight — a second
+/// click while one is running is refused instead of stacking turns.
+static RETRIES_INFLIGHT: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+
+fn retries_inflight() -> &'static Mutex<std::collections::HashSet<String>> {
+    RETRIES_INFLIGHT.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Run Again (docs/triggers/CONTEXT.md): retry a FAILED firing as a fresh
+/// sealed turn re-running the persisted question in the same conversation —
+/// never a synthetic new firing. Bypasses Cooldown (a deliberate click isn't
+/// flapping); the Provider Gate still applies. Appends a new ledger row and
+/// notifies on completion like any run. Returns as soon as the retry is
+/// started — the outcome lands in the ledger.
+#[tauri::command]
+pub async fn run_trigger_again(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppInfraState>,
+    trigger_id: String,
+    conversation_id: String,
+    offset_minutes: i32,
+) -> Result<(), String> {
+    let trigger = super::load_triggers(&app_handle)
+        .into_iter()
+        .find(|trigger| trigger.id == trigger_id)
+        .ok_or_else(|| "this trigger no longer exists".to_string())?;
+    crate::ask_ai::ensure_ask_ai_access_ready(&app_handle)
+        .await
+        .map_err(|_| "an AI provider needs to be configured first".to_string())?;
+    let conversation = state
+        .conversation()
+        .get_conversation(&conversation_id)
+        .await
+        .map_err(|error| format!("could not read the failed run: {error}"))?
+        .ok_or_else(|| "the failed run's conversation no longer exists".to_string())?;
+    if conversation.trigger_id.as_deref() != Some(trigger_id.as_str()) {
+        return Err("that run does not belong to this trigger".to_string());
+    }
+    let question = conversation
+        .turns
+        .first()
+        .map(|turn| turn.question.clone())
+        .ok_or_else(|| "the failed run has nothing to re-run".to_string())?;
+    {
+        let mut inflight = retries_inflight()
+            .lock()
+            .map_err(|_| "retry state poisoned".to_string())?;
+        if !inflight.insert(conversation_id.clone()) {
+            return Err("this run is already being retried".to_string());
+        }
+    }
+    let infra = std::sync::Arc::clone(&*state);
+    let title = conversation.title.clone();
+    tauri::async_runtime::spawn(async move {
+        run_attempts_and_record(
+            &app_handle,
+            &infra,
+            &trigger,
+            &conversation_id,
+            &question,
+            &title,
+            offset_minutes,
+            now_ms(),
+        )
+        .await;
+        if let Ok(mut inflight) = retries_inflight().lock() {
+            inflight.remove(&conversation_id);
+        }
+    });
+    Ok(())
 }
 
 #[cfg(test)]

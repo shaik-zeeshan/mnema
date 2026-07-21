@@ -212,3 +212,16 @@ export function deleteTrigger(triggerId: string): Promise<void> {
 export function triggersProviderReady(): Promise<boolean> {
   return invoke<boolean>("triggers_provider_ready");
 }
+
+/**
+ * Run Again (docs/triggers/CONTEXT.md): retry a FAILED firing — a fresh sealed
+ * turn re-running the persisted question in the same conversation. Resolves as
+ * soon as the retry is started; the outcome lands as a new ledger row.
+ */
+export function runTriggerAgain(triggerId: string, conversationId: string): Promise<void> {
+  return invoke<void>("run_trigger_again", {
+    triggerId,
+    conversationId,
+    offsetMinutes: -new Date().getTimezoneOffset(),
+  });
+}

@@ -163,14 +163,29 @@ async fn detector_tick(
     // Browser holds: probe the front tab of every known browser currently
     // holding the mic without evidence yet (issue #180). One sighting of a
     // meeting URL marks the whole hold — evidence is sticky, so a marked hold
-    // is never probed again.
+    // is never probed again. The probe obeys the capture privacy gates (ADR
+    // 0057 amendment 2026-07-21): browser-URL `Off` disables it, privacy-
+    // excluded browsers are never probed, stored evidence is sanitized per the
+    // user's mode.
+    let recording_settings =
+        crate::native_capture::current_recording_settings_from_app_handle(app_handle);
+    let policy = probe_policy(&recording_settings.metadata, &recording_settings.privacy);
     for bundle_id in browser_tracker.observe_raw_holders(&holders, now) {
+        if !policy.enabled || policy.excluded.contains(&bundle_id) {
+            continue;
+        }
         let Some(raw_url) = probe_front_tab_url(&bundle_id).await else {
             // A failed probe (browser busy, no AppleScript/AX access, no front
             // window) is no evidence this tick, not an error.
             continue;
         };
-        if let Some(service) = browser_tracker.record_sighting(&bundle_id, &raw_url) {
+        // Match on host + path (query never matters to the allowlist), store
+        // sanitized: in the default Sanitized mode this strips e.g. Zoom's
+        // `?pwd=` before the URL can reach the firing context.
+        let Some(url) = capture_metadata::sanitize_url(&raw_url, policy.url_mode) else {
+            continue;
+        };
+        if let Some(service) = browser_tracker.record_sighting(&bundle_id, &url) {
             tauri_plugin_log::log::info!(
                 "{MEETING_LOG_PREFIX} meeting URL sighted app={bundle_id} service={service}; \
 hold marked as meeting (sticky)"
@@ -192,10 +207,40 @@ hold marked as meeting (sticky)"
     let events = detector.observe(&detector_set, now);
     process_meeting_events(events, browser_tracker, infra, app_handle, &meeting_triggers).await;
 
-    if detector.is_tracking() || browser_tracker.is_tracking() {
+    // With probing disabled a pre-evidence browser hold can never become a
+    // meeting — no point ticking at probe cadence for it.
+    if detector.is_tracking() || (policy.enabled && browser_tracker.is_tracking()) {
         TRACKING_POLL
     } else {
         IDLE_POLL
+    }
+}
+
+/// The tick's probe policy, derived from the SAME gates as the capture-
+/// metadata prober (ADR 0057 amendment 2026-07-21): `enabled` mirrors
+/// `collect_browser_url_for_metadata` (metadata on AND mode != Off), and
+/// `excluded` is the enabled privacy exclude list.
+struct ProbePolicy {
+    enabled: bool,
+    url_mode: capture_metadata::BrowserUrlMode,
+    excluded: BTreeSet<String>,
+}
+
+fn probe_policy(
+    metadata: &capture_metadata::MetadataSettings,
+    privacy: &capture_metadata::PrivacySettings,
+) -> ProbePolicy {
+    ProbePolicy {
+        enabled: capture_metadata::metadata_collection_plan(metadata)
+            .collect_browser_url_for_metadata,
+        url_mode: metadata.browser_url_mode,
+        excluded: capture_metadata::evaluate_privacy(
+            privacy,
+            &capture_metadata::MetadataContext::default(),
+        )
+        .excluded_bundle_ids
+        .into_iter()
+        .collect(),
     }
 }
 
@@ -600,5 +645,48 @@ mod tests {
         );
         // Clock stepped backwards: no gap, and never a stamp past `now`.
         assert_eq!(gap_observation_ms(Some(2_000_000), 1_000_000), None);
+    }
+
+    #[test]
+    fn probe_policy_mirrors_the_capture_gates() {
+        use capture_metadata::{
+            BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings,
+        };
+        let metadata = MetadataSettings::default(); // enabled, Sanitized
+        let privacy = PrivacySettings {
+            excluded_apps: vec![
+                ExcludedAppEntry {
+                    id: "1".into(),
+                    enabled: true,
+                    bundle_id: "com.google.Chrome".into(),
+                    display_name: "Chrome".into(),
+                },
+                ExcludedAppEntry {
+                    id: "2".into(),
+                    enabled: false, // disabled entries don't exclude
+                    bundle_id: "com.apple.Safari".into(),
+                    display_name: "Safari".into(),
+                },
+            ],
+            ..PrivacySettings::default()
+        };
+        let policy = probe_policy(&metadata, &privacy);
+        assert!(policy.enabled);
+        assert_eq!(policy.url_mode, BrowserUrlMode::Sanitized);
+        assert!(policy.excluded.contains("com.google.Chrome"));
+        assert!(!policy.excluded.contains("com.apple.Safari"));
+
+        // Browser-URL mode Off disables probing entirely.
+        let off = MetadataSettings {
+            browser_url_mode: BrowserUrlMode::Off,
+            ..MetadataSettings::default()
+        };
+        assert!(!probe_policy(&off, &privacy).enabled);
+        // Metadata collection disabled does too (same plan gate as capture).
+        let disabled = MetadataSettings {
+            enabled: false,
+            ..MetadataSettings::default()
+        };
+        assert!(!probe_policy(&disabled, &privacy).enabled);
     }
 }

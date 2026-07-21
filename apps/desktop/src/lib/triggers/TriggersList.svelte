@@ -26,6 +26,9 @@
     ondelete: (trigger: TriggerDefinition) => void;
     onadd: (cond: ConditionType) => void;
     onopenrun: (conversationId: string) => void;
+    onrunagain: (trigger: TriggerDefinition, conversationId: string) => void;
+    /** Trigger ids with a Run Again retry in flight (shows "retrying…"). */
+    retryingIds: ReadonlySet<string>;
     onsetupprovider: () => void;
   }
 
@@ -40,6 +43,8 @@
     ondelete,
     onadd,
     onopenrun,
+    onrunagain,
+    retryingIds,
     onsetupprovider,
   }: Props = $props();
 
@@ -102,8 +107,10 @@
       kind: "fail",
       word: "failed",
       rest: `${firing.reason ? `— ${firing.reason} ` : ""}· ${when}`,
-      title: "The run started but did not complete — it will try again next time the condition fires",
-      conversationId: null,
+      title: firing.conversationId
+        ? "The run started but did not complete — run again retries this exact firing"
+        : "The run started but did not complete — it will try again next time the condition fires",
+      conversationId: firing.conversationId ?? null,
     };
   }
 </script>
@@ -169,6 +176,17 @@
                 <span class="word">{status.word}</span>
                 <span class="rest">{status.rest}</span>
               </button>
+              {#if status.kind === "fail"}
+                <button
+                  type="button"
+                  class="run-again"
+                  disabled={retryingIds.has(trigger.id)}
+                  title="Retry this exact firing — same meeting or window, a fresh attempt"
+                  onclick={() => {
+                    if (status.conversationId !== null) onrunagain(trigger, status.conversationId);
+                  }}
+                >{retryingIds.has(trigger.id) ? "retrying…" : "run again"}</button>
+              {/if}
             {:else}
               <span class="trow-status st-{status.kind}" title={status.title}>
                 <span class="dot" aria-hidden="true">●</span>
@@ -300,6 +318,26 @@
   }
   .trow-status--openable {
     cursor: pointer;
+  }
+  .run-again {
+    font: inherit;
+    font-size: 10.5px;
+    background: none;
+    border: 0;
+    padding: 0;
+    color: var(--app-danger-text);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .run-again:hover:not(:disabled) {
+    color: var(--app-text-strong);
+  }
+  .run-again:disabled {
+    color: var(--app-text-subtle);
+    text-decoration: none;
+    cursor: default;
   }
   .trow-status--openable:hover .rest {
     color: var(--app-text-strong);

@@ -223,6 +223,9 @@
   .wiz-panel .cond-params .hint.no-top {
     margin-top: 0;
   }
+  .wiz-panel .cond-params .hint.browser-url-off {
+    color: var(--app-warn);
+  }
   .wiz-panel .field {
     display: flex;
     flex-direction: column;

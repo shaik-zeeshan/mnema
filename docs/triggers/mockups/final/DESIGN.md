@@ -30,7 +30,8 @@ Domain language: [`../../CONTEXT.md`](../../CONTEXT.md). Contract for runs-as-co
   - Name click → the trigger's **Runs** screen. Completed status click → the run's document.
   - Hover reveals quiet row actions: **edit · share · delete** (share copies Trigger JSON with a
     "copied ✓" flash; delete confirms; delete is danger-styled).
-  - The **six lifecycle states** are all shown: completed / skipped — reason / failed — reason /
+  - The **six lifecycle states** are all shown: completed / skipped — reason / failed — reason
+    (+ a "run again" retry link when the failed run's conversation exists — see Screen 2) /
     running — waiting for the transcript (Readiness Wait, pulsing dot) / no runs yet /
     needs an AI provider (Provider Gate: dimmed row, warn chip, "Set up provider" link,
     switch disabled). Every status has an explanatory tooltip.
@@ -44,6 +45,12 @@ Domain language: [`../../CONTEXT.md`](../../CONTEXT.md). Contract for runs-as-co
 - Sub-line sets expectations: skips and failures never notify — they only show up here.
 - One row per firing: status word + (completed → document title, clickable, "open ↗" hover hint;
   skipped/failed → "— reason") + relative time, newest first.
+- Failed rows carry a **run again** action (added 2026-07-21 — the original mockup's omission was
+  an oversight; issue #182 asked for it). It retries *that* firing: a fresh sealed turn re-running
+  the persisted question in the same conversation. Cooldown does not gate the click (it guards
+  flapping detectors, not deliberate retries); the Provider Gate does. The retry appends a new
+  ledger row (never amends the failed one) and notifies on completion like any run. No button on
+  the one failed variant with no conversation to retry into (conversation creation itself failed).
 - Empty states: "No runs yet — it hasn't fired…" and a provider-gate variant.
 - Footer note: runs are ordinary conversations, also in the chat rail under the Triggers filter.
 

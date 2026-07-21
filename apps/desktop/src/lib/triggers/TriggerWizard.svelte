@@ -164,6 +164,23 @@
     }
   }
 
+  // Meeting Ends disclosure (ADR 0057 amendment 2026-07-21): the meeting-URL
+  // probe obeys the capture browser-URL setting, so with it off, browser
+  // meetings can't be detected — say so where the trigger is created.
+  let browserUrlOff = $state(false);
+  $effect(() => {
+    void (async () => {
+      try {
+        const settings = await invoke<{
+          metadata: { enabled: boolean; browserUrlMode: "off" | "sanitized" | "full" };
+        }>("get_recording_settings");
+        browserUrlOff = !settings.metadata.enabled || settings.metadata.browserUrlMode === "off";
+      } catch {
+        browserUrlOff = false;
+      }
+    })();
+  });
+
   // ── Step navigation ───────────────────────────────────────────────────────
   function goStep(n: number): void {
     step = n;
@@ -446,8 +463,15 @@
                 <p class="hint no-top">
                   Detection is automatic — nothing to configure. Mnema watches which app holds the
                   microphone (the macOS "orange dot" signal); a browser counts when a meeting URL
-                  was seen during the call. Drop/rejoin gaps are absorbed.
+                  was seen during the call. Drop/rejoin gaps are absorbed. Privacy-excluded
+                  browsers are never checked.
                 </p>
+                {#if browserUrlOff}
+                  <p class="hint browser-url-off" role="note">
+                    Browser-URL collection is turned off in Settings, so meetings in a browser
+                    (Google Meet, browser Zoom…) won't be detected — only conferencing apps will.
+                  </p>
+                {/if}
               {:else if card.cond === "app_opened"}
                 <p class="params-lbl">Which app?</p>
                 <div class="field">

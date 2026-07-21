@@ -14,6 +14,7 @@
     deleteTrigger,
     listTriggers,
     listTriggersStatus,
+    runTriggerAgain,
     triggersProviderReady,
     updateTrigger,
     type ConditionType,
@@ -47,6 +48,12 @@
   let view = $state<View>({ mode: "list" });
   let wizardNonce = 0;
 
+  // Run Again in flight: trigger id → the failed firing's firedAtMs at click
+  // time. A refresh showing a DIFFERENT last firing means the retry's ledger
+  // row landed — the retry is over.
+  let retrying = $state<Map<string, number>>(new Map());
+  const retryingIds = $derived(new Set(retrying.keys()));
+
   async function refresh(): Promise<void> {
     try {
       const [defs, statusRows, ready] = await Promise.all([
@@ -58,12 +65,44 @@
       statuses = new Map(statusRows.map((row) => [row.id, row]));
       providerReady = ready;
       loadError = null;
+      if (retrying.size > 0) {
+        const settled = new Map(retrying);
+        for (const [id, firedAtMs] of settled) {
+          if (statuses.get(id)?.lastFiring?.firedAtMs !== firedAtMs) settled.delete(id);
+        }
+        if (settled.size !== retrying.size) retrying = settled;
+      }
     } catch (error) {
       loadError = String(error);
     } finally {
       loaded = true;
     }
   }
+
+  async function onRunAgain(trigger: TriggerDefinition, conversationId: string): Promise<void> {
+    const firedAtMs = statuses.get(trigger.id)?.lastFiring?.firedAtMs;
+    if (firedAtMs === undefined || retrying.has(trigger.id)) return;
+    retrying = new Map(retrying).set(trigger.id, firedAtMs);
+    try {
+      await runTriggerAgain(trigger.id, conversationId);
+    } catch (error) {
+      const next = new Map(retrying);
+      next.delete(trigger.id);
+      retrying = next;
+      await message(`Could not run "${trigger.name}" again: ${error}`, {
+        title: "Triggers",
+        kind: "error",
+      });
+    }
+  }
+
+  // While a retry is in flight, poll faster than the ambient 30s so the
+  // outcome row shows up promptly.
+  $effect(() => {
+    if (retrying.size === 0) return;
+    const interval = setInterval(() => void refresh(), 5_000);
+    return () => clearInterval(interval);
+  });
 
   // Load on mount, refresh on focus/visibility, and poll quietly while the
   // page is open so a firing's ledger row shows up without a manual reload.
@@ -208,6 +247,8 @@
             ondelete={(trigger) => void onDelete(trigger)}
             onadd={(cond) => openWizard("create", { presetCond: cond })}
             onopenrun={onOpenRun}
+            onrunagain={(trigger, conversationId) => void onRunAgain(trigger, conversationId)}
+            {retryingIds}
             onsetupprovider={onSetupProvider}
           />
         {/if}

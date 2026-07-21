@@ -741,6 +741,7 @@ pub fn run() {
             triggers::store::triggers_provider_ready,
             triggers::store::get_meeting_release_grace_minutes,
             triggers::store::set_meeting_release_grace_minutes,
+            triggers::run::run_trigger_again,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
             ask_ai::mcp::oauth_flow::mcp_oauth_begin,

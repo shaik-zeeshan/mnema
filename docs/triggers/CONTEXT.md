@@ -64,6 +64,9 @@ A macOS notification (new: Tauri notification plugin) announcing a finished Trig
 **Skipped Run**:
 A firing that produced no Trigger Run because there was nothing to work with (e.g. Meeting detected but Mnema wasn't recording). Never notifies; shown quietly as the trigger's last-run status in the management UI. Notifications are only ever good news.
 
+**Run Again**:
+The retry affordance on a failed run's ledger row: re-runs *that* firing (the persisted question, as a fresh sealed turn in the same conversation) — never a synthetic new firing. Bypasses Cooldown (a deliberate click isn't flapping), respects the Provider Gate, appends a new ledger row, and notifies on completion like any run.
+
 **Readiness Wait**:
 Between a Condition firing and the AI run: the trigger waits (bounded, ~15 min cap) for the processing pipeline to finish transcription/diarization over the firing window. Delivery is simply a little later — never a partial-data run before the cap.
 
@@ -75,6 +78,7 @@ Triggers cannot be created without a configured AI provider, and flip to a visib
 - A **Trigger** references exactly one **Condition** type (plus per-type parameters).
 - **Meeting** detection is evidence-sticky: one meeting-URL sighting during a mic hold marks the whole hold as a Meeting, because the meeting tab may be backgrounded while the browser still holds the mic.
 - **Meeting Ends** depends on capture-system-audio's existing Core Audio process-object enumeration (`crates/capture-system-audio/src/exclude.rs`) and the existing browser-URL probe.
+- The meeting-evidence URL probe obeys the same privacy gates as capture metadata: browser-URL mode `Off` disables it, privacy-excluded browsers are never probed, stored evidence is sanitized per mode, and it never raises a permission dialog (ADR 0057, amendment 2026-07-21).
 
 ## Flagged ambiguities
 
