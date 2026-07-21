@@ -42,6 +42,7 @@ use tauri::{Listener, Manager};
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
 use crate::user_context::worker::now_ms;
 
+pub(crate) mod app_opened;
 pub(crate) mod meeting;
 pub(crate) mod meeting_worker;
 pub(crate) mod readiness;
@@ -125,6 +126,35 @@ pub enum TriggerCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         min_meeting_minutes: Option<u32>,
     },
+    /// `{"type":"app_opened","bundleId":"com.figma.Desktop","appName":"Figma"}`
+    /// — fires when the chosen app becomes frontmost after ≥ the away gap of
+    /// not being frontmost (a fresh session). Evaluated by the app-opened
+    /// worker ([`app_opened`]) fed from the NSWorkspace activation observer,
+    /// not the schedule tick.
+    #[serde(rename = "app_opened", rename_all = "camelCase")]
+    AppOpened {
+        bundle_id: String,
+        /// Display name for the firing context and #182 UI — the definition
+        /// carries it so firing never needs an installed-apps lookup.
+        app_name: String,
+        /// Per-trigger away gap in minutes ("Advanced Options"); 30 when
+        /// absent. Shorter absences never fire this trigger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        away_gap_minutes: Option<u32>,
+    },
+}
+
+/// The event-condition cooldown anchor (Meeting Ends, App Opened): an event
+/// firing may write its ledger row well after claim time (the meeting path
+/// waits up to 15 min on readiness; every path runs the multi-minute AI turn),
+/// but the `trigger_state` claim cursor is written at claim time — so take the
+/// newest of both, and a second event inside the cooldown of a still-in-flight
+/// firing is suppressed.
+pub(crate) fn event_cooldown_anchor_ms(
+    ledger_ms: Option<i64>,
+    claim_cursor_ms: Option<i64>,
+) -> Option<i64> {
+    ledger_ms.max(claim_cursor_ms)
 }
 
 /// Read + parse `triggers.json` from the app config dir. A missing file is the
@@ -523,6 +553,58 @@ pub(crate) mod tests {
         );
         let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, with_floor);
+    }
+
+    #[test]
+    fn app_opened_condition_serde_round_trips_and_pins_the_wire_shape() {
+        // Minimal form (issue #178): bundle id + display name, away gap absent
+        // on the wire (shareable JSON stays minimal).
+        let trigger = TriggerDefinition {
+            condition: TriggerCondition::AppOpened {
+                bundle_id: "com.figma.Desktop".to_string(),
+                app_name: "Figma".to_string(),
+                away_gap_minutes: None,
+            },
+            ..sample_daily()
+        };
+        let value = serde_json::to_value(&trigger).unwrap();
+        assert_eq!(
+            value["condition"],
+            json!({ "type": "app_opened", "bundleId": "com.figma.Desktop", "appName": "Figma" })
+        );
+        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, trigger);
+
+        // The per-trigger gap rides as `awayGapMinutes` ("Advanced Options").
+        let with_gap = TriggerDefinition {
+            condition: TriggerCondition::AppOpened {
+                bundle_id: "com.figma.Desktop".to_string(),
+                app_name: "Figma".to_string(),
+                away_gap_minutes: Some(120),
+            },
+            ..sample_daily()
+        };
+        let value = serde_json::to_value(&with_gap).unwrap();
+        assert_eq!(
+            value["condition"],
+            json!({
+                "type": "app_opened",
+                "bundleId": "com.figma.Desktop",
+                "appName": "Figma",
+                "awayGapMinutes": 120
+            })
+        );
+        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, with_gap);
+    }
+
+    #[test]
+    fn event_cooldown_anchor_is_the_newest_of_ledger_and_claim_cursor() {
+        assert_eq!(event_cooldown_anchor_ms(None, None), None);
+        assert_eq!(event_cooldown_anchor_ms(Some(5), None), Some(5));
+        assert_eq!(event_cooldown_anchor_ms(None, Some(7)), Some(7));
+        assert_eq!(event_cooldown_anchor_ms(Some(5), Some(7)), Some(7));
+        assert_eq!(event_cooldown_anchor_ms(Some(9), Some(7)), Some(9));
     }
 
     #[test]

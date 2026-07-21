@@ -259,12 +259,40 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
         }));
     }
 
+    // App Opened triggers (issue #178): one extra `did_activate_app` guard on
+    // the SAME notification center, fanning the activated bundle id into the
+    // triggers channel. A dedicated guard (rather than branching inside the
+    // shared privacy-refresh closure above) keeps the capture path untouched
+    // while observer lifecycle stays in this one registration.
+    guards.push(center.add_observer_guard(
+        ns::workspace::notification::did_activate_app(),
+        None,
+        None,
+        |notification| {
+            crate::triggers::app_opened::publish_activation(activated_app_bundle_id(notification));
+        },
+    ));
+
     replace_metadata_notifier_guards(
         app_handle
             .state::<crate::native_capture::MetadataNotifierState>()
             .inner(),
         guards,
     );
+}
+
+/// The activated app's bundle id from a `did_activate_app` notification's
+/// `NSWorkspaceApplicationKey` — authoritative for WHICH app activated, unlike
+/// re-reading the frontmost app (which can already have moved on under churn).
+#[cfg(target_os = "macos")]
+fn activated_app_bundle_id(notification: &cidre::ns::Notification) -> Option<String> {
+    use cidre::objc::Obj;
+    let user_info = notification.user_info()?;
+    let value = user_info.get(cidre::ns::workspace::notification::app_key().as_id_ref())?;
+    let app = value.try_cast(cidre::ns::RunningApp::cls())?;
+    app.bundle_id()
+        .map(|bundle_id| bundle_id.to_string())
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]

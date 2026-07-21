@@ -54,17 +54,6 @@ fn gap_observation_ms(last_tick_ms: Option<i64>, now_ms: i64) -> Option<i64> {
     (now_ms.saturating_sub(last) > GAP_THRESHOLD.as_millis() as i64).then_some(last.min(now_ms))
 }
 
-/// The meeting cooldown anchor: a meeting firing writes its ledger row only
-/// AFTER the Readiness Wait (up to 15 min) + run, but the `trigger_state`
-/// cursor is written at claim time — so take the newest of both, and a second
-/// Ended event inside the cooldown of a still-in-flight firing is suppressed.
-fn meeting_cooldown_anchor_ms(
-    ledger_ms: Option<i64>,
-    claim_cursor_ms: Option<i64>,
-) -> Option<i64> {
-    ledger_ms.max(claim_cursor_ms)
-}
-
 /// Spawn the meeting detector worker: its own poll loop (the triggers tick is
 /// too coarse for grace precision), same shutdown pattern as
 /// [`super::spawn_triggers_worker`]. macOS-only in effect — elsewhere every
@@ -241,7 +230,7 @@ async fn handle_meeting_ended(
             .await
             .ok()
             .flatten();
-        let last_firing_ms = meeting_cooldown_anchor_ms(ledger_ms, claim_cursor_ms);
+        let last_firing_ms = super::event_cooldown_anchor_ms(ledger_ms, claim_cursor_ms);
         let provider_ready = crate::ask_ai::ensure_ask_ai_access_ready(app_handle)
             .await
             .is_ok();
@@ -343,14 +332,14 @@ fn spawn_meeting_firing(
                     .flatten()
                     .map(|minutes| minutes as i32)
                     .unwrap_or(0);
-                let context = MeetingFiringContext {
+                let context = super::run::EventFiringContext::Meeting(MeetingFiringContext {
                     app_display_name: conferencing_display_name(&ended.bundle_id)
                         .unwrap_or(&ended.bundle_id)
                         .to_string(),
                     start_ms: ended.start_ms,
                     end_ms: ended.end_ms,
                     coverage_note,
-                };
+                });
                 super::run::run_trigger_fire(
                     &app_handle,
                     &infra,
@@ -445,7 +434,7 @@ mod tests {
         assert_eq!(
             super::super::firing_decision(
                 Some(now),
-                meeting_cooldown_anchor_ms(None, Some(claim)),
+                super::super::event_cooldown_anchor_ms(None, Some(claim)),
                 10 * MIN_MS,
                 true,
                 now,
@@ -457,7 +446,7 @@ mod tests {
         assert_eq!(
             super::super::firing_decision(
                 Some(later),
-                meeting_cooldown_anchor_ms(None, Some(claim)),
+                super::super::event_cooldown_anchor_ms(None, Some(claim)),
                 10 * MIN_MS,
                 true,
                 later,
@@ -466,15 +455,6 @@ mod tests {
                 occurrence_ms: later
             }
         );
-    }
-
-    #[test]
-    fn cooldown_anchor_is_the_newest_of_ledger_and_claim_cursor() {
-        assert_eq!(meeting_cooldown_anchor_ms(None, None), None);
-        assert_eq!(meeting_cooldown_anchor_ms(Some(5), None), Some(5));
-        assert_eq!(meeting_cooldown_anchor_ms(None, Some(7)), Some(7));
-        assert_eq!(meeting_cooldown_anchor_ms(Some(5), Some(7)), Some(7));
-        assert_eq!(meeting_cooldown_anchor_ms(Some(9), Some(7)), Some(9));
     }
 
     #[test]

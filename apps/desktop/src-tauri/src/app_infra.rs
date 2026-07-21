@@ -1932,6 +1932,16 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // App Opened triggers (issue #178): consumes frontmost-app activations
+    // fanned out from the workspace metadata notifier and fires app_opened
+    // triggers on a fresh session (≥ away gap of not being frontmost).
+    // Idle-cheap: no activation events, no work.
+    crate::triggers::app_opened::spawn_app_opened_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     // Semantic Search startup reconciliation (self-heal): if a past model switch
     // left the vec0 table at a dimension that disagrees with the selected model
     // (e.g. a rebuild that failed under DB contention), every search degrades to

@@ -90,6 +90,33 @@ pub(crate) struct MeetingFiringContext {
     pub coverage_note: Option<String>,
 }
 
+/// The App Opened firing context (issue #178): which app started a fresh
+/// session and when it was last frontmost (`None` = first session observed).
+/// The away window is `last_frontmost_end_ms → occurrence_ms`.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct AppOpenedFiringContext {
+    pub app_display_name: String,
+    pub last_frontmost_end_ms: Option<i64>,
+}
+
+/// What an event condition hands to [`run_trigger_fire`]; Schedule firings
+/// pass `None` and describe their window from the cadence instead.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum EventFiringContext {
+    Meeting(MeetingFiringContext),
+    AppOpened(AppOpenedFiringContext),
+}
+
+/// Human away span for the app-opened firing context.
+fn format_away_duration(away_ms: i64) -> String {
+    let minutes = (away_ms / 60_000).max(0);
+    if minutes < 120 {
+        format!("about {minutes} minutes")
+    } else {
+        format!("about {} hours", minutes / 60)
+    }
+}
+
 /// The **Context Assembly** for this slice: the firing context prepended to the
 /// user's Prompt. Names the trigger and what fired it — the schedule and its
 /// natural-period window, or the detected meeting's window and app — then the
@@ -100,9 +127,9 @@ fn build_firing_question(
     occurrence_ms: i64,
     now_ms: i64,
     offset_minutes: i32,
-    meeting: Option<&MeetingFiringContext>,
+    event: Option<&EventFiringContext>,
 ) -> String {
-    if let Some(meeting) = meeting {
+    if let Some(EventFiringContext::Meeting(meeting)) = event {
         let coverage = meeting
             .coverage_note
             .as_deref()
@@ -123,17 +150,44 @@ Standing instruction:\n{prompt}",
             prompt = trigger.prompt.trim(),
         );
     }
+    if let Some(EventFiringContext::AppOpened(opened)) = event {
+        let session = match opened.last_frontmost_end_ms {
+            Some(since_ms) => format!(
+                "the user just opened {app} after {away} away. Window since the last {app} \
+session: {since} to {now} local time",
+                app = opened.app_display_name,
+                away = format_away_duration(occurrence_ms.saturating_sub(since_ms)),
+                since = format_local_ymd_hm(since_ms, offset_minutes),
+                now = format_local_ymd_hm(occurrence_ms, offset_minutes),
+            ),
+            None => format!(
+                "the user just opened {app} at {now} local time (the first {app} session \
+observed; no previous session on record)",
+                app = opened.app_display_name,
+                now = format_local_ymd_hm(occurrence_ms, offset_minutes),
+            ),
+        };
+        return format!(
+            "[Automated Trigger Run] The user's trigger \"{name}\" (app opened) fired: {session}. \
+Apply the standing instruction below — the time since the user last used the app is the natural \
+window to consider — and write the report document now.\n\n\
+Standing instruction:\n{prompt}",
+            name = trigger.name,
+            session = session,
+            prompt = trigger.prompt.trim(),
+        );
+    }
     let TriggerCondition::Schedule {
         cadence,
         time,
         weekday,
     } = &trigger.condition
     else {
-        // Only the meeting worker fires MeetingEnds triggers, and it always
-        // passes the context; keep an honest fallback rather than a panic.
+        // Only the event workers fire event conditions, and they always pass
+        // the context; keep an honest fallback rather than a panic.
         return format!(
-            "[Automated Trigger Run] The user's trigger \"{name}\" (meeting ends) fired: a meeting \
-just ended. Apply the standing instruction below to it and write the report document now.\n\n\
+            "[Automated Trigger Run] The user's trigger \"{name}\" fired. Apply the standing \
+instruction below and write the report document now.\n\n\
 Standing instruction:\n{prompt}",
             name = trigger.name,
             prompt = trigger.prompt.trim(),
@@ -310,7 +364,7 @@ pub(crate) async fn run_trigger_fire(
     trigger: &TriggerDefinition,
     occurrence_ms: i64,
     offset_minutes: i32,
-    meeting: Option<&MeetingFiringContext>,
+    event: Option<&EventFiringContext>,
 ) {
     let fired_at = now_ms();
     // The firing's stable conversation id: trigger id + occurrence instant, so
@@ -344,7 +398,7 @@ pub(crate) async fn run_trigger_fire(
         (),
     );
 
-    let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes, meeting);
+    let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes, event);
     // Each attempt is a fresh sealed turn in the SAME conversation (an errored
     // attempt persists as an errored turn; only a completed one becomes the
     // report and history).
@@ -505,8 +559,13 @@ mod tests {
             end_ms,
             coverage_note: Some("The recording covers only part of the meeting window.".to_string()),
         };
-        let question =
-            build_firing_question(&trigger, end_ms, end_ms + 5 * 60_000, IST, Some(&meeting));
+        let question = build_firing_question(
+            &trigger,
+            end_ms,
+            end_ms + 5 * 60_000,
+            IST,
+            Some(&EventFiringContext::Meeting(meeting.clone())),
+        );
         assert!(question.starts_with("[Automated Trigger Run]"));
         assert!(question.contains("\"Meeting Recap\""));
         assert!(question.contains("a meeting in Zoom just ended"));
@@ -523,9 +582,62 @@ mod tests {
             coverage_note: None,
             ..meeting
         };
-        let question =
-            build_firing_question(&trigger, end_ms, end_ms + 5 * 60_000, IST, Some(&quiet));
+        let question = build_firing_question(
+            &trigger,
+            end_ms,
+            end_ms + 5 * 60_000,
+            IST,
+            Some(&EventFiringContext::Meeting(quiet)),
+        );
         assert!(!question.contains("Note:"));
+    }
+
+    #[test]
+    fn app_opened_firing_question_carries_app_away_window_and_prompt() {
+        let trigger = TriggerDefinition {
+            id: "figma-session".to_string(),
+            name: "Figma Session".to_string(),
+            condition: super::super::TriggerCondition::AppOpened {
+                bundle_id: "com.figma.Desktop".to_string(),
+                app_name: "Figma".to_string(),
+                away_gap_minutes: None,
+            },
+            prompt: "Recap where I left off.".to_string(),
+            ..sample_daily()
+        };
+        // Opened at 13:00 UTC on 2026-07-20 (18:30 IST) after 2h away.
+        let opened_ms = 1_784_505_600_000 + 13 * 3_600_000;
+        let context = EventFiringContext::AppOpened(AppOpenedFiringContext {
+            app_display_name: "Figma".to_string(),
+            last_frontmost_end_ms: Some(opened_ms - 2 * 3_600_000),
+        });
+        let question = build_firing_question(&trigger, opened_ms, opened_ms, IST, Some(&context));
+        assert!(question.starts_with("[Automated Trigger Run]"));
+        assert!(question.contains("\"Figma Session\""));
+        assert!(question.contains("(app opened)"));
+        assert!(question.contains("just opened Figma after about 2 hours away"));
+        // The away window (last-frontmost-end → now) in LOCAL time.
+        assert!(question.contains("2026-07-20 16:30 to 2026-07-20 18:30"));
+        assert!(question.ends_with("Recap where I left off."));
+
+        // First observed session: no away window, an honest first-session note.
+        let first = EventFiringContext::AppOpened(AppOpenedFiringContext {
+            app_display_name: "Figma".to_string(),
+            last_frontmost_end_ms: None,
+        });
+        let question = build_firing_question(&trigger, opened_ms, opened_ms, IST, Some(&first));
+        assert!(question.contains("the first Figma session observed"));
+        assert!(question.contains("2026-07-20 18:30"));
+        assert!(!question.contains(" away"));
+        assert!(question.ends_with("Recap where I left off."));
+    }
+
+    #[test]
+    fn away_duration_formats_minutes_then_whole_hours() {
+        assert_eq!(format_away_duration(35 * 60_000), "about 35 minutes");
+        assert_eq!(format_away_duration(119 * 60_000), "about 119 minutes");
+        assert_eq!(format_away_duration(125 * 60_000), "about 2 hours");
+        assert_eq!(format_away_duration(-5), "about 0 minutes");
     }
 
     #[test]
