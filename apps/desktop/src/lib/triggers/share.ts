@@ -153,14 +153,13 @@ function parseCondition(cond: Record<string, unknown>): TriggerCondition | strin
         return 'A schedule needs a "time" like "18:30".';
       }
       if (cond.cadence === "weekly") {
-        if (!WEEKDAYS.includes(cond.weekday as ScheduleWeekday)) {
-          return 'A weekly schedule needs a "weekday" (e.g. "friday").';
-        }
+        const weekdays = parseWeekdaySet(cond);
+        if (typeof weekdays === "string") return weekdays;
         return {
           type: "schedule",
           cadence: "weekly",
           time: cond.time,
-          weekday: cond.weekday as ScheduleWeekday,
+          weekdays,
         };
       }
       return { type: "schedule", cadence: "daily", time: cond.time };
@@ -168,6 +167,31 @@ function parseCondition(cond: Record<string, unknown>): TriggerCondition | strin
     default:
       return `Unknown condition type ${JSON.stringify(cond.type ?? null)} — expected "meeting_ends", "app_opened" or "schedule".`;
   }
+}
+
+/** A weekly schedule's weekday set — the current `weekdays` array form, with
+ *  the legacy single-`weekday` string (version-1 payloads shared before
+ *  multi-day) still importing as a one-day set. Returns the clean set in
+ *  canonical Mon→Sun order, or a readable error message. */
+function parseWeekdaySet(cond: Record<string, unknown>): ScheduleWeekday[] | string {
+  const invalid =
+    'A weekly schedule needs a "weekdays" list of days (e.g. ["monday","friday"]).';
+  if (cond.weekdays !== undefined) {
+    if (
+      !Array.isArray(cond.weekdays) ||
+      cond.weekdays.length === 0 ||
+      !cond.weekdays.every((day) => WEEKDAYS.includes(day as ScheduleWeekday))
+    ) {
+      return invalid;
+    }
+    const selected = cond.weekdays as ScheduleWeekday[];
+    return WEEKDAYS.filter((day) => selected.includes(day));
+  }
+  // Legacy single-weekday form.
+  if (WEEKDAYS.includes(cond.weekday as ScheduleWeekday)) {
+    return [cond.weekday as ScheduleWeekday];
+  }
+  return invalid;
 }
 
 function isValidTime(hm: string): boolean {

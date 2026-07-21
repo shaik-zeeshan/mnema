@@ -104,6 +104,34 @@ impl TriggerDefinition {
     pub fn cooldown_ms(&self) -> i64 {
         i64::from(self.cooldown_minutes.unwrap_or(DEFAULT_COOLDOWN_MINUTES)) * 60_000
     }
+
+    /// Fold the legacy single-`weekday` Schedule form into the `weekdays` set.
+    /// Applied at every read seam (evaluator load, CRUD read, CRUD write
+    /// input), so the rest of the module only ever sees `weekdays`.
+    pub(crate) fn normalized(mut self) -> Self {
+        if let TriggerCondition::Schedule {
+            weekday, weekdays, ..
+        } = &mut self.condition
+        {
+            if weekdays.is_none() {
+                *weekdays = weekday.take().map(|day| vec![day]);
+            } else {
+                *weekday = None;
+            }
+        }
+        self
+    }
+}
+
+impl TriggerCondition {
+    /// The effective weekday set of a `Schedule` condition (empty for
+    /// daily/non-schedule conditions or an unnormalized legacy payload).
+    pub(crate) fn schedule_weekdays(&self) -> &[ScheduleWeekday] {
+        match self {
+            TriggerCondition::Schedule { weekdays, .. } => weekdays.as_deref().unwrap_or(&[]),
+            _ => &[],
+        }
+    }
 }
 
 /// The Condition menu, tagged on `type`.
@@ -111,13 +139,20 @@ impl TriggerDefinition {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TriggerCondition {
     /// `{"type":"schedule","cadence":"daily","time":"18:30"}` — weekly adds
-    /// `"weekday":"friday"`.
+    /// `"weekdays":["monday","friday"]` (a SET: fires on each selected day).
     Schedule {
         cadence: ScheduleCadence,
         /// Local time-of-day, `"HH:MM"`.
         time: String,
+        /// Legacy single-weekday form (pre-multi-day payloads and old shared
+        /// Trigger JSON). Read-compat only: [`TriggerCondition::normalized`]
+        /// folds it into `weekdays` on every load, so it is `None` everywhere
+        /// past the read seam and never serializes as the current shape.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weekday: Option<ScheduleWeekday>,
+        /// The selected weekday set for `weekly` (any selected day fires).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        weekdays: Option<Vec<ScheduleWeekday>>,
     },
     /// `{"type":"meeting_ends"}` — fires when a Meeting (ADR 0057: an
     /// allowlisted conferencing app's mic hold) ends. Evaluated by the meeting
@@ -177,7 +212,10 @@ fn load_triggers(app_handle: &tauri::AppHandle) -> Vec<TriggerDefinition> {
         }
     };
     match serde_json::from_str::<Vec<TriggerDefinition>>(&contents) {
-        Ok(triggers) => triggers,
+        Ok(triggers) => triggers
+            .into_iter()
+            .map(TriggerDefinition::normalized)
+            .collect(),
         Err(error) => {
             tauri_plugin_log::log::warn!(
                 "triggers: {path:?} is not a valid trigger definition array: {error}"
@@ -256,9 +294,7 @@ async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
         // Meeting Ends is event-driven, evaluated by the meeting detector
         // worker — the schedule tick only handles Schedule conditions.
         let TriggerCondition::Schedule {
-            cadence,
-            ref time,
-            weekday,
+            cadence, ref time, ..
         } = trigger.condition
         else {
             continue;
@@ -280,7 +316,7 @@ async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
         let due = schedule::due_occurrence_ms(
             cadence,
             time_minutes,
-            weekday,
+            trigger.condition.schedule_weekdays(),
             now,
             offset_minutes,
             last_fired,
@@ -419,6 +455,11 @@ pub struct TriggerStatus {
     /// Engine is unconfigured — the trigger is visibly disabled ("needs an AI
     /// provider") and the evaluator will not start runs.
     pub needs_provider: bool,
+    /// Readiness-Wait / Running state (DESIGN.md's sixth lifecycle state): the
+    /// UTC-ms instant the in-flight firing started, when one is running right
+    /// now. In-memory only — ledger rows still land post-run, unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running_since_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_firing: Option<TriggerLastFiring>,
 }
@@ -454,6 +495,7 @@ pub async fn list_triggers_status(
                 conversation_id: firing.conversation_id,
             });
         statuses.push(TriggerStatus {
+            running_since_ms: run::trigger_running_since_ms(&trigger.id),
             id: trigger.id,
             name: trigger.name,
             enabled: trigger.enabled,
@@ -464,228 +506,31 @@ pub async fn list_triggers_status(
     Ok(statuses)
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use serde_json::json;
-
-    pub(crate) fn sample_daily() -> TriggerDefinition {
-        TriggerDefinition {
-            id: "evening-review".to_string(),
-            name: "Evening Review".to_string(),
-            condition: TriggerCondition::Schedule {
-                cadence: ScheduleCadence::Daily,
-                time: "18:30".to_string(),
-                weekday: None,
-            },
-            prompt: "Summarize what I worked on today.".to_string(),
-            enabled: true,
-            cooldown_minutes: None,
-            version: 1,
-        }
-    }
-
-    #[test]
-    fn trigger_definition_serde_round_trips_and_pins_the_wire_shape() {
-        // The exact Trigger JSON shape (docs/triggers/CONTEXT.md): this is the
-        // shareable form, so the wire shape is pinned, not just round-tripped.
-        let trigger = sample_daily();
-        let value = serde_json::to_value(&trigger).unwrap();
-        assert_eq!(
-            value,
-            json!({
-                "id": "evening-review",
-                "name": "Evening Review",
-                "condition": { "type": "schedule", "cadence": "daily", "time": "18:30" },
-                "prompt": "Summarize what I worked on today.",
-                "enabled": true,
-                "version": 1
-            })
-        );
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, trigger);
-
-        // Weekly carries its weekday tag; a Cooldown override rides as
-        // `cooldownMinutes` ("Advanced Options").
-        let weekly = TriggerDefinition {
-            condition: TriggerCondition::Schedule {
-                cadence: ScheduleCadence::Weekly,
-                time: "09:00".to_string(),
-                weekday: Some(ScheduleWeekday::Friday),
-            },
-            cooldown_minutes: Some(30),
-            ..sample_daily()
-        };
-        let value = serde_json::to_value(&weekly).unwrap();
-        assert_eq!(
-            value["condition"],
-            json!({ "type": "schedule", "cadence": "weekly", "time": "09:00", "weekday": "friday" })
-        );
-        assert_eq!(value["cooldownMinutes"], json!(30));
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, weekly);
-    }
-
-    #[test]
-    fn meeting_ends_condition_serde_round_trips_and_pins_the_wire_shape() {
-        // Minimal form: `{"type":"meeting_ends"}` (issue #177). The absent
-        // floor stays absent on the wire (shareable JSON stays minimal).
-        let trigger = TriggerDefinition {
-            condition: TriggerCondition::MeetingEnds {
-                min_meeting_minutes: None,
-            },
-            ..sample_daily()
-        };
-        let value = serde_json::to_value(&trigger).unwrap();
-        assert_eq!(value["condition"], json!({ "type": "meeting_ends" }));
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, trigger);
-
-        // The per-trigger floor rides as `minMeetingMinutes` ("Advanced
-        // Options").
-        let with_floor = TriggerDefinition {
-            condition: TriggerCondition::MeetingEnds {
-                min_meeting_minutes: Some(10),
-            },
-            ..sample_daily()
-        };
-        let value = serde_json::to_value(&with_floor).unwrap();
-        assert_eq!(
-            value["condition"],
-            json!({ "type": "meeting_ends", "minMeetingMinutes": 10 })
-        );
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, with_floor);
-    }
-
-    #[test]
-    fn app_opened_condition_serde_round_trips_and_pins_the_wire_shape() {
-        // Minimal form (issue #178): bundle id + display name, away gap absent
-        // on the wire (shareable JSON stays minimal).
-        let trigger = TriggerDefinition {
-            condition: TriggerCondition::AppOpened {
-                bundle_id: "com.figma.Desktop".to_string(),
-                app_name: "Figma".to_string(),
-                away_gap_minutes: None,
-            },
-            ..sample_daily()
-        };
-        let value = serde_json::to_value(&trigger).unwrap();
-        assert_eq!(
-            value["condition"],
-            json!({ "type": "app_opened", "bundleId": "com.figma.Desktop", "appName": "Figma" })
-        );
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, trigger);
-
-        // The per-trigger gap rides as `awayGapMinutes` ("Advanced Options").
-        let with_gap = TriggerDefinition {
-            condition: TriggerCondition::AppOpened {
-                bundle_id: "com.figma.Desktop".to_string(),
-                app_name: "Figma".to_string(),
-                away_gap_minutes: Some(120),
-            },
-            ..sample_daily()
-        };
-        let value = serde_json::to_value(&with_gap).unwrap();
-        assert_eq!(
-            value["condition"],
-            json!({
-                "type": "app_opened",
-                "bundleId": "com.figma.Desktop",
-                "appName": "Figma",
-                "awayGapMinutes": 120
-            })
-        );
-        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
-        assert_eq!(round_tripped, with_gap);
-    }
-
-    #[test]
-    fn event_cooldown_anchor_is_the_newest_of_ledger_and_claim_cursor() {
-        assert_eq!(event_cooldown_anchor_ms(None, None), None);
-        assert_eq!(event_cooldown_anchor_ms(Some(5), None), Some(5));
-        assert_eq!(event_cooldown_anchor_ms(None, Some(7)), Some(7));
-        assert_eq!(event_cooldown_anchor_ms(Some(5), Some(7)), Some(7));
-        assert_eq!(event_cooldown_anchor_ms(Some(9), Some(7)), Some(9));
-    }
-
-    #[test]
-    fn trigger_definition_defaults_enabled_version_and_cooldown() {
-        // A minimal hand-authored file omits `enabled`/`version`/`cooldownMinutes`.
-        let parsed: TriggerDefinition = serde_json::from_value(json!({
-            "id": "t",
-            "name": "T",
-            "condition": { "type": "schedule", "cadence": "daily", "time": "08:00" },
-            "prompt": "p"
-        }))
-        .unwrap();
-        assert!(parsed.enabled);
-        assert_eq!(parsed.version, 1);
-        assert_eq!(parsed.cooldown_minutes, None);
-        assert_eq!(parsed.cooldown_ms(), 10 * 60_000);
-
-        // The per-trigger override wins.
-        let overridden = TriggerDefinition {
-            cooldown_minutes: Some(30),
-            ..sample_daily()
-        };
-        assert_eq!(overridden.cooldown_ms(), 30 * 60_000);
-    }
-
-    // ── firing_decision: due → cooldown → provider gate → fire ───────────────
-
-    const MIN_MS: i64 = 60_000;
-
-    #[test]
-    fn decision_is_not_due_without_an_occurrence() {
-        assert_eq!(
-            firing_decision(None, None, 10 * MIN_MS, true, 1_000_000),
-            FiringDecision::NotDue
-        );
-    }
-
-    #[test]
-    fn decision_cooldown_suppresses_a_second_firing_within_the_window() {
-        let now = 100 * MIN_MS;
-        // The last ledger firing (ANY outcome) 5 min ago holds a 10-min
-        // cooldown — the ledger is persisted, so this is exactly the state a
-        // fresh process reads after a restart.
-        assert_eq!(
-            firing_decision(Some(now), Some(now - 5 * MIN_MS), 10 * MIN_MS, true, now),
-            FiringDecision::CooldownSuppressed
-        );
-        // At the window's edge (exactly 10 min elapsed) it fires again.
-        assert_eq!(
-            firing_decision(Some(now), Some(now - 10 * MIN_MS), 10 * MIN_MS, true, now),
-            FiringDecision::Fire { occurrence_ms: now }
-        );
-        // No prior firing → no cooldown.
-        assert_eq!(
-            firing_decision(Some(now), None, 10 * MIN_MS, true, now),
-            FiringDecision::Fire { occurrence_ms: now }
-        );
-    }
-
-    #[test]
-    fn decision_provider_gate_holds_the_occurrence_instead_of_failing() {
-        let now = 100 * MIN_MS;
-        // Provider gone → NeedsProvider: the evaluator claims the occurrence
-        // and writes ledger rows ONLY on `Fire`, so the occurrence is not
-        // burned and no `failed` row appears; the same call next tick (after
-        // the provider returns) fires.
-        assert_eq!(
-            firing_decision(Some(now), None, 10 * MIN_MS, false, now),
-            FiringDecision::NeedsProvider
-        );
-        assert_eq!(
-            firing_decision(Some(now), None, 10 * MIN_MS, true, now),
-            FiringDecision::Fire { occurrence_ms: now }
-        );
-        // Cooldown outranks the gate (nothing would fire either way).
-        assert_eq!(
-            firing_decision(Some(now), Some(now - MIN_MS), 10 * MIN_MS, false, now),
-            FiringDecision::CooldownSuppressed
-        );
-    }
+/// The per-trigger runs ledger (DESIGN.md Screen 2): the trigger's recent
+/// firings, ALL outcomes, newest first, capped at 50.
+#[tauri::command]
+pub async fn list_trigger_firings(
+    state: tauri::State<'_, AppInfraState>,
+    trigger_id: String,
+) -> Result<Vec<TriggerLastFiring>, String> {
+    let infra = Arc::clone(&*state);
+    let firings = infra
+        .trigger_firings()
+        .recent_firings(&trigger_id, 50)
+        .await
+        .map_err(|error| {
+            format!("failed to read the firing ledger for trigger '{trigger_id}': {error}")
+        })?;
+    Ok(firings
+        .into_iter()
+        .map(|firing| TriggerLastFiring {
+            fired_at_ms: firing.fired_at_ms,
+            outcome: firing.outcome.as_str().to_string(),
+            reason: firing.reason,
+            conversation_id: firing.conversation_id,
+        })
+        .collect())
 }
+
+#[cfg(test)]
+pub(crate) mod tests;

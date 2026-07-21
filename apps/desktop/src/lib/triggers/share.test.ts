@@ -60,16 +60,74 @@ describe("share → import round-trip", () => {
     });
   });
 
-  test("weekly schedule with weekday + cooldown", () => {
+  test("weekly schedule with a weekday set + cooldown", () => {
     const trigger = def({
-      condition: { type: "schedule", cadence: "weekly", time: "9:30", weekday: "friday" },
+      condition: {
+        type: "schedule",
+        cadence: "weekly",
+        time: "9:30",
+        weekdays: ["monday", "friday"],
+      },
       cooldownMinutes: 60,
     });
     expect(roundTrip(trigger)).toEqual({
       name: "My Trigger",
-      condition: { type: "schedule", cadence: "weekly", time: "9:30", weekday: "friday" },
+      condition: {
+        type: "schedule",
+        cadence: "weekly",
+        time: "9:30",
+        weekdays: ["monday", "friday"],
+      },
       prompt: "Write a recap.",
       cooldownMinutes: 60,
+    });
+  });
+
+  test("weekday set imports in canonical Mon→Sun order, deduplicated", () => {
+    const parsed = parseTriggerJson(
+      JSON.stringify({
+        version: 1,
+        name: "N",
+        prompt: "P",
+        condition: {
+          type: "schedule",
+          cadence: "weekly",
+          time: "18:00",
+          weekdays: ["friday", "monday", "friday"],
+        },
+      }),
+    );
+    expect(parsed).toEqual({
+      ok: true,
+      draft: {
+        name: "N",
+        prompt: "P",
+        condition: {
+          type: "schedule",
+          cadence: "weekly",
+          time: "18:00",
+          weekdays: ["monday", "friday"],
+        },
+      },
+    });
+  });
+
+  test("legacy single-weekday payload (pre-multi-day, still version 1) imports as a one-day set", () => {
+    const parsed = parseTriggerJson(
+      JSON.stringify({
+        version: 1,
+        name: "N",
+        prompt: "P",
+        condition: { type: "schedule", cadence: "weekly", time: "9:30", weekday: "friday" },
+      }),
+    );
+    expect(parsed).toEqual({
+      ok: true,
+      draft: {
+        name: "N",
+        prompt: "P",
+        condition: { type: "schedule", cadence: "weekly", time: "9:30", weekdays: ["friday"] },
+      },
     });
   });
 
@@ -199,7 +257,7 @@ describe("import rejection", () => {
     ).toContain('"appName"');
   });
 
-  test("schedule bad cadence / bad time / weekly without weekday", () => {
+  test("schedule bad cadence / bad time / weekly without weekdays", () => {
     const base = { version: 1, name: "N", prompt: "P" };
     expect(
       errorOf(JSON.stringify({ ...base, condition: { type: "schedule", cadence: "hourly", time: "18:00" } })),
@@ -207,9 +265,31 @@ describe("import rejection", () => {
     expect(
       errorOf(JSON.stringify({ ...base, condition: { type: "schedule", cadence: "daily", time: "25:99" } })),
     ).toContain('"time"');
+    // No days at all / empty set / junk entries / bad legacy weekday.
     expect(
       errorOf(JSON.stringify({ ...base, condition: { type: "schedule", cadence: "weekly", time: "18:00" } })),
-    ).toContain('"weekday"');
+    ).toContain('"weekdays"');
+    expect(
+      errorOf(
+        JSON.stringify({
+          ...base,
+          condition: { type: "schedule", cadence: "weekly", time: "18:00", weekdays: [] },
+        }),
+      ),
+    ).toContain('"weekdays"');
+    expect(
+      errorOf(
+        JSON.stringify({
+          ...base,
+          condition: {
+            type: "schedule",
+            cadence: "weekly",
+            time: "18:00",
+            weekdays: ["friday", "someday"],
+          },
+        }),
+      ),
+    ).toContain('"weekdays"');
     expect(
       errorOf(
         JSON.stringify({
@@ -217,7 +297,7 @@ describe("import rejection", () => {
           condition: { type: "schedule", cadence: "weekly", time: "18:00", weekday: "someday" },
         }),
       ),
-    ).toContain('"weekday"');
+    ).toContain('"weekdays"');
   });
 
   test("wrong-type minute fields", () => {

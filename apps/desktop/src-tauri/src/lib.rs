@@ -734,6 +734,7 @@ pub fn run() {
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
             triggers::list_triggers_status,
+            triggers::list_trigger_firings,
             triggers::store::list_triggers,
             triggers::store::create_trigger,
             triggers::store::update_trigger,

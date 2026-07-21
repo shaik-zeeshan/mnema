@@ -23,7 +23,10 @@ export type TriggerCondition =
       cadence: "daily" | "weekly";
       /** Local time-of-day, "HH:MM". */
       time: string;
-      weekday?: ScheduleWeekday;
+      /** The selected weekday SET for `weekly` — fires on each selected day.
+       *  (The legacy single-`weekday` form is import-compat only, folded into
+       *  this set by the backend and by `parseTriggerJson`.) */
+      weekdays?: ScheduleWeekday[];
     }
   | { type: "meeting_ends"; minMeetingMinutes?: number }
   | {
@@ -55,6 +58,9 @@ export interface TriggerStatus {
   name: string;
   enabled: boolean;
   needsProvider: boolean;
+  /** Running / Readiness-Wait (the sixth lifecycle state): the UTC-ms instant
+   *  the in-flight firing started, present only while one is running. */
+  runningSinceMs?: number;
   lastFiring?: TriggerLastFiring;
 }
 
@@ -71,10 +77,11 @@ export const DEFAULT_MIN_MEETING_MINUTES = 5;
 export const DEFAULT_AWAY_GAP_MINUTES = 30;
 export const DEFAULT_COOLDOWN_MINUTES = 10;
 
-// ── Condition sections (list grouping + wizard cards; glyphs per DESIGN.md) ─
+// ── Condition sections (list grouping + wizard cards) ───────────────────────
+// Condition ICONS live in `./condition-icons` (lucide components; this module
+// stays icon-free so the pure share/import logic runs under plain `bun test`).
 export interface ConditionSection {
   cond: ConditionType;
-  glyph: string;
   title: string;
   blurb: string;
   addLabel: string;
@@ -83,7 +90,6 @@ export interface ConditionSection {
 export const CONDITION_SECTIONS: readonly ConditionSection[] = [
   {
     cond: "meeting_ends",
-    glyph: "◉",
     title: "When a meeting ends",
     blurb:
       "A conferencing app held your mic for at least 5 minutes, then released it and stayed quiet ~2 minutes.",
@@ -91,7 +97,6 @@ export const CONDITION_SECTIONS: readonly ConditionSection[] = [
   },
   {
     cond: "app_opened",
-    glyph: "▣",
     title: "When an app opens",
     blurb:
       "A chosen app comes to the front after 30+ minutes away — a fresh session, not window switching.",
@@ -99,7 +104,6 @@ export const CONDITION_SECTIONS: readonly ConditionSection[] = [
   },
   {
     cond: "schedule",
-    glyph: "◷",
     title: "On a schedule",
     blurb: "At a fixed local time on the days you pick.",
     addLabel: "add a scheduled trigger",
@@ -111,10 +115,6 @@ export const CONDITION_LABEL: Record<ConditionType, string> = {
   app_opened: "App Opened",
   schedule: "Schedule",
 };
-
-export function conditionGlyph(cond: ConditionType): string {
-  return CONDITION_SECTIONS.find((s) => s.cond === cond)?.glyph ?? "◈";
-}
 
 // ── Starter templates (the wizard's per-condition prompt starters) ──────────
 export const STARTERS: Record<ConditionType, string> = {
@@ -138,6 +138,40 @@ const WEEKDAY_LABEL: Record<ScheduleWeekday, string> = {
   sunday: "Sundays",
 };
 
+export const WEEKDAY_ORDER: readonly ScheduleWeekday[] = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+];
+
+const WEEKDAY_SHORT: Record<ScheduleWeekday, string> = {
+  monday: "Mon",
+  tuesday: "Tue",
+  wednesday: "Wed",
+  thursday: "Thu",
+  friday: "Fri",
+  saturday: "Sat",
+  sunday: "Sun",
+};
+
+/** Human phrase for a weekly weekday SET (mockup: "Runs weekdays at 6:00 PM"):
+ *  "every day" / "weekdays" / "weekends" / "Fridays" / "Mon, Wed, Fri". */
+export function weekdaySetLabel(weekdays: readonly ScheduleWeekday[]): string {
+  // Canonical Mon→Sun order, deduplicated, whatever order the set arrived in.
+  const days = WEEKDAY_ORDER.filter((day) => weekdays.includes(day));
+  if (days.length === 0) return "weekly";
+  if (days.length === 7) return "every day";
+  if (days.length === 1) return WEEKDAY_LABEL[days[0]];
+  const weekend = days.filter((day) => day === "saturday" || day === "sunday");
+  if (days.length === 5 && weekend.length === 0) return "weekdays";
+  if (days.length === 2 && weekend.length === 2) return "weekends";
+  return days.map((day) => WEEKDAY_SHORT[day]).join(", ");
+}
+
 /** "18:00" → "6:00 PM". Malformed input comes back unchanged. */
 export function fmtTime(hm: string): string {
   const match = /^(\d{1,2}):(\d{2})$/.exec(hm.trim());
@@ -148,14 +182,10 @@ export function fmtTime(hm: string): string {
   return `${h % 12 || 12}:${match[2]} ${ap}`;
 }
 
-/** "every day at 6:00 PM" / "Fridays at 9:00 AM". */
+/** "every day at 6:00 PM" / "weekdays at 6:00 PM" / "Fridays at 9:00 AM". */
 export function scheduleLabel(condition: Extract<TriggerCondition, { type: "schedule" }>): string {
   const days =
-    condition.cadence === "daily"
-      ? "every day"
-      : condition.weekday
-        ? WEEKDAY_LABEL[condition.weekday]
-        : "weekly";
+    condition.cadence === "daily" ? "every day" : weekdaySetLabel(condition.weekdays ?? []);
   return `${days} at ${fmtTime(condition.time)}`;
 }
 
@@ -195,6 +225,12 @@ export function listTriggers(): Promise<TriggerDefinition[]> {
 
 export function listTriggersStatus(): Promise<TriggerStatus[]> {
   return invoke<TriggerStatus[]>("list_triggers_status");
+}
+
+/** The per-trigger runs ledger (DESIGN.md Screen 2): recent firings, ALL
+ *  outcomes, newest first, capped backend-side at 50. */
+export function listTriggerFirings(triggerId: string): Promise<TriggerLastFiring[]> {
+  return invoke<TriggerLastFiring[]>("list_trigger_firings", { triggerId });
 }
 
 export function createTrigger(draft: TriggerDraft): Promise<TriggerDefinition> {

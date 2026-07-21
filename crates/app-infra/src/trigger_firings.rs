@@ -143,6 +143,32 @@ impl TriggerFiringsStore {
             .collect())
     }
 
+    /// The trigger's newest ledger rows, ANY outcome, newest first, capped at
+    /// `limit`. Feeds the per-trigger runs ledger screen (issue #182): every
+    /// firing — completed, skipped, failed — with its honest reason.
+    pub async fn recent_firings(&self, trigger_id: &str, limit: u32) -> Result<Vec<TriggerFiring>> {
+        let rows: Vec<(i64, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT fired_at_ms, outcome, reason, conversation_id FROM trigger_firings \
+             WHERE trigger_id = ?1 ORDER BY fired_at_ms DESC, rowid DESC LIMIT ?2",
+        )
+        .bind(trigger_id)
+        .bind(limit)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(fired_at_ms, outcome, reason, conversation_id)| TriggerFiring {
+                    trigger_id: trigger_id.to_string(),
+                    fired_at_ms,
+                    outcome: TriggerFiringOutcome::parse(&outcome),
+                    reason,
+                    conversation_id,
+                },
+            )
+            .collect())
+    }
+
     /// Drop every ledger row for a deleted trigger (the no-FK contract's
     /// delete-by-id half; the management UI arrives with issue #182).
     pub async fn delete_firings(&self, trigger_id: &str) -> Result<()> {
@@ -354,6 +380,68 @@ mod tests {
                 .expect("read");
             assert_eq!(capped.len(), 1);
             assert_eq!(capped[0].conversation_id.as_deref(), Some("conv-new"));
+        });
+    }
+
+    #[test]
+    fn recent_firings_returns_every_outcome_newest_first_with_a_cap() {
+        block_on(async {
+            let pool = test_pool().await;
+            let store = TriggerFiringsStore::new(CaptureDb::single(pool));
+            store
+                .record_firing(
+                    "evening",
+                    1_000,
+                    TriggerFiringOutcome::Completed,
+                    None,
+                    Some("conv-1"),
+                )
+                .await
+                .expect("row");
+            store
+                .record_firing(
+                    "evening",
+                    2_000,
+                    TriggerFiringOutcome::Skipped,
+                    Some("not recording"),
+                    None,
+                )
+                .await
+                .expect("row");
+            store
+                .record_firing(
+                    "evening",
+                    3_000,
+                    TriggerFiringOutcome::Failed,
+                    Some("AI run did not complete"),
+                    Some("conv-1"),
+                )
+                .await
+                .expect("row");
+            // Another trigger's rows never bleed in.
+            store
+                .record_firing("weekly", 4_000, TriggerFiringOutcome::Completed, None, None)
+                .await
+                .expect("row");
+
+            let runs = store.recent_firings("evening", 50).await.expect("read");
+            assert_eq!(
+                runs.iter()
+                    .map(|run| (run.fired_at_ms, run.outcome))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (3_000, TriggerFiringOutcome::Failed),
+                    (2_000, TriggerFiringOutcome::Skipped),
+                    (1_000, TriggerFiringOutcome::Completed),
+                ]
+            );
+            assert_eq!(runs[0].reason.as_deref(), Some("AI run did not complete"));
+            assert_eq!(runs[0].conversation_id.as_deref(), Some("conv-1"));
+
+            // The cap holds.
+            let capped = store.recent_firings("evening", 2).await.expect("read");
+            assert_eq!(capped.len(), 2);
+            assert_eq!(capped[0].fired_at_ms, 3_000);
         });
     }
 

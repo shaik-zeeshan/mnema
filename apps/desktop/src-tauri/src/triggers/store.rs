@@ -50,9 +50,16 @@ fn read_strict(path: &Path) -> Result<Vec<TriggerDefinition>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(format!("failed to read {path:?}: {error}")),
     };
-    serde_json::from_str(&contents).map_err(|error| {
-        format!("{path:?} is not a valid trigger definition array ({error}) — fix or remove it, then retry")
-    })
+    serde_json::from_str::<Vec<TriggerDefinition>>(&contents)
+        .map(|triggers| {
+            triggers
+                .into_iter()
+                .map(TriggerDefinition::normalized)
+                .collect()
+        })
+        .map_err(|error| {
+            format!("{path:?} is not a valid trigger definition array ({error}) — fix or remove it, then retry")
+        })
 }
 
 /// Atomic replace: write a temp file beside the target, then rename over it.
@@ -122,16 +129,14 @@ fn validate(name: &str, condition: &TriggerCondition, prompt: &str) -> Result<()
         return Err("a trigger needs a prompt".to_string());
     }
     match condition {
-        TriggerCondition::Schedule {
-            cadence,
-            time,
-            weekday,
-        } => {
+        TriggerCondition::Schedule { cadence, time, .. } => {
             if schedule::parse_time_minutes(time).is_none() {
                 return Err(format!("{time:?} is not a valid HH:MM time"));
             }
-            if *cadence == ScheduleCadence::Weekly && weekday.is_none() {
-                return Err("a weekly schedule needs a weekday".to_string());
+            // Inputs are normalized before validation, so the legacy single
+            // `weekday` has already been folded into the set.
+            if *cadence == ScheduleCadence::Weekly && condition.schedule_weekdays().is_empty() {
+                return Err("a weekly schedule needs at least one weekday".to_string());
             }
         }
         TriggerCondition::AppOpened {
@@ -163,7 +168,6 @@ pub struct TriggerDraft {
 // ── Path-level ops (pure file I/O — unit-tested against a temp dir) ─────────
 
 fn create_at(path: &Path, draft: TriggerDraft) -> Result<TriggerDefinition, String> {
-    validate(&draft.name, &draft.condition, &draft.prompt)?;
     let mut all = read_strict(path)?;
     let trigger = TriggerDefinition {
         id: generate_trigger_id(&draft.name, &all),
@@ -173,13 +177,16 @@ fn create_at(path: &Path, draft: TriggerDraft) -> Result<TriggerDefinition, Stri
         enabled: true,
         cooldown_minutes: draft.cooldown_minutes,
         version: 1,
-    };
+    }
+    .normalized();
+    validate(&trigger.name, &trigger.condition, &trigger.prompt)?;
     all.push(trigger.clone());
     write_atomic(path, &all)?;
     Ok(trigger)
 }
 
-fn update_at(path: &Path, mut trigger: TriggerDefinition) -> Result<TriggerDefinition, String> {
+fn update_at(path: &Path, trigger: TriggerDefinition) -> Result<TriggerDefinition, String> {
+    let mut trigger = trigger.normalized();
     validate(&trigger.name, &trigger.condition, &trigger.prompt)?;
     trigger.name = trigger.name.trim().to_string();
     let mut all = read_strict(path)?;
@@ -443,16 +450,22 @@ mod tests {
             cadence: ScheduleCadence::Daily,
             time: "25:99".to_string(),
             weekday: None,
+            weekdays: None,
         };
         assert!(create_at(&path, bad_time).is_err());
 
-        let mut weekless = draft("X");
-        weekless.condition = TriggerCondition::Schedule {
-            cadence: ScheduleCadence::Weekly,
-            time: "09:00".to_string(),
-            weekday: None,
-        };
-        assert!(create_at(&path, weekless).is_err());
+        // A weekly schedule with no selected days is rejected — whether the
+        // set is absent or explicitly empty.
+        for weekdays in [None, Some(Vec::new())] {
+            let mut weekless = draft("X");
+            weekless.condition = TriggerCondition::Schedule {
+                cadence: ScheduleCadence::Weekly,
+                time: "09:00".to_string(),
+                weekday: None,
+                weekdays,
+            };
+            assert!(create_at(&path, weekless).is_err());
+        }
 
         let mut appless = draft("X");
         appless.condition = TriggerCondition::AppOpened {
@@ -462,15 +475,31 @@ mod tests {
         };
         assert!(create_at(&path, appless).is_err());
 
-        // A valid weekly draft passes.
+        // A valid multi-day weekly draft passes.
         let mut weekly = draft("X");
         weekly.condition = TriggerCondition::Schedule {
             cadence: ScheduleCadence::Weekly,
             time: "09:00".to_string(),
-            weekday: Some(ScheduleWeekday::Friday),
+            weekday: None,
+            weekdays: Some(vec![ScheduleWeekday::Monday, ScheduleWeekday::Friday]),
         };
         assert!(create_at(&path, weekly).is_ok());
         assert!(read_strict(&path).expect("read").iter().all(|t| t.id == "x"));
+
+        // A LEGACY single-weekday weekly draft (old shared Trigger JSON /
+        // hand-authored file shape) normalizes into the set and passes.
+        let mut legacy = draft("Legacy");
+        legacy.condition = TriggerCondition::Schedule {
+            cadence: ScheduleCadence::Weekly,
+            time: "09:00".to_string(),
+            weekday: Some(ScheduleWeekday::Friday),
+            weekdays: None,
+        };
+        let created = create_at(&path, legacy).expect("legacy weekly creates");
+        assert_eq!(
+            created.condition.schedule_weekdays(),
+            &[ScheduleWeekday::Friday]
+        );
     }
 
     #[test]

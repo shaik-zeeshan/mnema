@@ -70,13 +70,18 @@ fn run_title(trigger_name: &str, occurrence_ms: i64, offset_minutes: i32) -> Str
 }
 
 /// One-line human description of the schedule, for the firing context.
-fn schedule_label(cadence: ScheduleCadence, time: &str, weekday: Option<ScheduleWeekday>) -> String {
+fn schedule_label(cadence: ScheduleCadence, time: &str, weekdays: &[ScheduleWeekday]) -> String {
     match cadence {
         ScheduleCadence::Daily => format!("daily at {time}"),
-        ScheduleCadence::Weekly => match weekday {
-            Some(day) => format!("weekly on {day:?} at {time}"),
-            None => format!("weekly at {time}"),
-        },
+        ScheduleCadence::Weekly if weekdays.is_empty() => format!("weekly at {time}"),
+        ScheduleCadence::Weekly => {
+            let days = weekdays
+                .iter()
+                .map(|day| format!("{day:?}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("weekly on {days} at {time}")
+        }
     }
 }
 
@@ -188,12 +193,7 @@ Standing instruction:\n{prompt}",
             prompt = trigger.prompt.trim(),
         );
     }
-    let TriggerCondition::Schedule {
-        cadence,
-        time,
-        weekday,
-    } = &trigger.condition
-    else {
+    let TriggerCondition::Schedule { cadence, time, .. } = &trigger.condition else {
         // Only the event workers fire event conditions, and they always pass
         // the context; keep an honest fallback rather than a panic.
         return format!(
@@ -204,24 +204,39 @@ Standing instruction:\n{prompt}",
             prompt = trigger.prompt.trim(),
         );
     };
-    let period = match cadence {
-        ScheduleCadence::Daily => "the day so far",
-        ScheduleCadence::Weekly => "the week so far (Monday-start)",
-    };
-    let window_start_ms = match cadence {
+    let weekdays = trigger.condition.schedule_weekdays();
+    let (period, window_start_ms) = match cadence {
         ScheduleCadence::Daily => {
             let local = local_datetime(occurrence_ms, offset_minutes);
             let midnight = local.replace_time(time::Time::MIDNIGHT);
-            (midnight.unix_timestamp_nanos() / 1_000_000) as i64
-                - i64::from(offset_minutes) * 60_000
+            let start = (midnight.unix_timestamp_nanos() / 1_000_000) as i64
+                - i64::from(offset_minutes) * 60_000;
+            ("the day so far", start)
         }
         ScheduleCadence::Weekly => {
             let local = local_datetime(occurrence_ms, offset_minutes);
-            let days_back = local.weekday().number_days_from_monday();
-            let monday = local.replace_time(time::Time::MIDNIGHT)
-                - time::Duration::days(i64::from(days_back));
-            (monday.unix_timestamp_nanos() / 1_000_000) as i64
-                - i64::from(offset_minutes) * 60_000
+            let occurrence_index = i64::from(local.weekday().number_days_from_monday());
+            // With a multi-day set, the natural window runs from the PREVIOUS
+            // selected occurrence this week (e.g. weekdays at 18:00: Tuesday's
+            // run covers Monday 18:00 → now, not the whole week again).
+            let previous_index = weekdays
+                .iter()
+                .map(|day| day.week_index())
+                .filter(|index| *index < occurrence_index)
+                .max();
+            match previous_index {
+                Some(previous) => (
+                    "since this trigger's previous scheduled run",
+                    occurrence_ms - (occurrence_index - previous) * 86_400_000,
+                ),
+                None => {
+                    let monday = local.replace_time(time::Time::MIDNIGHT)
+                        - time::Duration::days(occurrence_index);
+                    let start = (monday.unix_timestamp_nanos() / 1_000_000) as i64
+                        - i64::from(offset_minutes) * 60_000;
+                    ("the week so far (Monday-start)", start)
+                }
+            }
         }
     };
     format!(
@@ -230,12 +245,52 @@ Covering window: {period} — {start} to {now} local time. Apply the standing in
 to that window unless it says otherwise, and write the report document now.\n\n\
 Standing instruction:\n{prompt}",
         name = trigger.name,
-        schedule = schedule_label(*cadence, time, *weekday),
+        schedule = schedule_label(*cadence, time, weekdays),
         period = period,
         start = format_local_ymd_hm(window_start_ms, offset_minutes),
         now = format_local_ymd_hm(now_ms, offset_minutes),
         prompt = trigger.prompt.trim(),
     )
+}
+
+// ── Running / Readiness-Wait registry (the sixth lifecycle state) ────────────
+
+/// In-flight firings: trigger id → the UTC-ms instant the firing started
+/// (entering the Readiness Wait or the run itself). In-memory only — the
+/// ledger's post-wait semantics are unchanged; this exists so
+/// `list_triggers_status` can surface "running — waiting for the transcript"
+/// while a firing is between claim and ledger row. Marked at every firing
+/// entry point, cleared in [`record_ledger`] — the one seam every outcome
+/// (completed/skipped/failed) passes through.
+/// ponytail: one slot per trigger id; a rare overlapping Run-Again + scheduled
+/// fire shares it and clears on the first ledger row — the status self-heals
+/// on the next poll.
+static RUNNING_FIRINGS: OnceLock<Mutex<std::collections::HashMap<String, i64>>> = OnceLock::new();
+
+fn running_firings() -> &'static Mutex<std::collections::HashMap<String, i64>> {
+    RUNNING_FIRINGS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Mark a firing in flight. Keeps the earliest start when already marked (a
+/// Readiness Wait that proceeds into the run keeps its wait start).
+pub(crate) fn mark_trigger_running(trigger_id: &str) {
+    if let Ok(mut running) = running_firings().lock() {
+        running.entry(trigger_id.to_string()).or_insert_with(now_ms);
+    }
+}
+
+/// When the trigger's in-flight firing started, if one is running right now.
+pub(crate) fn trigger_running_since_ms(trigger_id: &str) -> Option<i64> {
+    running_firings()
+        .lock()
+        .ok()
+        .and_then(|running| running.get(trigger_id).copied())
+}
+
+fn clear_trigger_running(trigger_id: &str) {
+    if let Ok(mut running) = running_firings().lock() {
+        running.remove(trigger_id);
+    }
 }
 
 // ── Delivery (notification + pending open) ───────────────────────────────────
@@ -353,6 +408,9 @@ pub(crate) async fn record_ledger(
     reason: Option<&str>,
     conversation_id: Option<&str>,
 ) {
+    // The ledger row landing ends the in-flight "running" state, whatever the
+    // outcome (and even if the write itself fails — never wedge the status).
+    clear_trigger_running(trigger_id);
     if let Err(error) = infra
         .trigger_firings()
         .record_firing(trigger_id, fired_at_ms, outcome, reason, conversation_id)
@@ -377,6 +435,7 @@ pub(crate) async fn run_trigger_fire(
     offset_minutes: i32,
     event: Option<&EventFiringContext>,
 ) {
+    mark_trigger_running(&trigger.id);
     let fired_at = now_ms();
     // The firing's stable conversation id: trigger id + occurrence instant, so
     // one occurrence maps to one conversation even across a re-fire attempt.
@@ -595,6 +654,7 @@ pub async fn run_trigger_again(
     }
     let infra = std::sync::Arc::clone(&*state);
     let title = conversation.title.clone();
+    mark_trigger_running(&trigger_id);
     tauri::async_runtime::spawn(async move {
         run_attempts_and_record(
             &app_handle,
@@ -615,274 +675,4 @@ pub async fn run_trigger_again(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::sample_daily;
-    use super::*;
-    use std::cell::{Cell, RefCell};
-
-    const IST: i32 = 330;
-
-    fn block_on<F: std::future::Future>(future: F) -> F::Output {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime should build")
-            .block_on(future)
-    }
-
-    #[test]
-    fn run_title_is_name_dash_abbreviated_local_date() {
-        // 2026-07-24 09:00 UTC is a Friday; IST stays the same date.
-        let friday_utc_ms = 1_784_505_600_000 + 4 * 86_400_000 + 9 * 3_600_000;
-        assert_eq!(
-            run_title("Evening Review", friday_utc_ms, IST),
-            "Evening Review — Fri Jul 24"
-        );
-        // A negative offset that crosses local midnight shifts the date.
-        let just_past_utc_midnight = 1_784_505_600_000 + 30 * 60_000; // Mon 00:30 UTC
-        assert_eq!(
-            run_title("Recap", just_past_utc_midnight, -480),
-            "Recap — Sun Jul 19"
-        );
-    }
-
-    #[test]
-    fn firing_question_carries_context_window_and_prompt() {
-        let trigger = sample_daily();
-        // Fired at 18:30 IST on 2026-07-20 (13:00 UTC), evaluated at 13:05 UTC.
-        let occurrence_ms = 1_784_505_600_000 + 13 * 3_600_000;
-        let now_ms = occurrence_ms + 5 * 60_000;
-        let question = build_firing_question(&trigger, occurrence_ms, now_ms, IST, None);
-        assert!(question.starts_with("[Automated Trigger Run]"));
-        assert!(question.contains("\"Evening Review\""));
-        assert!(question.contains("daily at 18:30"));
-        // Day-so-far window: local midnight → now, in local time.
-        assert!(question.contains("2026-07-20 00:00"));
-        assert!(question.contains("2026-07-20 18:35"));
-        // The user's standing instruction rides verbatim at the end.
-        assert!(question.ends_with("Summarize what I worked on today."));
-    }
-
-    #[test]
-    fn meeting_firing_question_carries_window_app_and_coverage_note() {
-        let trigger = TriggerDefinition {
-            id: "meeting-recap".to_string(),
-            name: "Meeting Recap".to_string(),
-            condition: super::super::TriggerCondition::MeetingEnds {
-                min_meeting_minutes: None,
-            },
-            prompt: "Recap the meeting.".to_string(),
-            ..sample_daily()
-        };
-        // A 42-minute Zoom call ending 13:00 UTC on 2026-07-20 (18:30 IST).
-        let end_ms = 1_784_505_600_000 + 13 * 3_600_000;
-        let meeting = MeetingFiringContext {
-            app_display_name: "Zoom".to_string(),
-            start_ms: end_ms - 42 * 60_000,
-            end_ms,
-            meeting_url: None,
-            coverage_note: Some("The recording covers only part of the meeting window.".to_string()),
-        };
-        let question = build_firing_question(
-            &trigger,
-            end_ms,
-            end_ms + 5 * 60_000,
-            IST,
-            Some(&EventFiringContext::Meeting(meeting.clone())),
-        );
-        assert!(question.starts_with("[Automated Trigger Run]"));
-        assert!(question.contains("\"Meeting Recap\""));
-        assert!(question.contains("a meeting in Zoom just ended"));
-        // The meeting window in LOCAL time, with its duration.
-        assert!(question.contains("2026-07-20 17:48 to 2026-07-20 18:30"));
-        assert!(question.contains("about 42 minutes"));
-        // The Readiness Wait's honesty note rides along...
-        assert!(question.contains("Note: The recording covers only part of the meeting window."));
-        // ...and the standing instruction still closes the question verbatim.
-        assert!(question.ends_with("Recap the meeting."));
-
-        // App holds carry no URL — no dangling "Meeting URL:".
-        assert!(!question.contains("Meeting URL:"));
-
-        // Without a note there is no dangling "Note:".
-        let quiet = MeetingFiringContext {
-            coverage_note: None,
-            ..meeting.clone()
-        };
-        let question = build_firing_question(
-            &trigger,
-            end_ms,
-            end_ms + 5 * 60_000,
-            IST,
-            Some(&EventFiringContext::Meeting(quiet)),
-        );
-        assert!(!question.contains("Note:"));
-
-        // A browser meeting (issue #180) names the service + browser and rides
-        // the sighted meeting URL along.
-        let browser_meeting = MeetingFiringContext {
-            app_display_name: "Google Meet (Google Chrome)".to_string(),
-            meeting_url: Some("https://meet.google.com/abc-defg-hij".to_string()),
-            ..meeting
-        };
-        let question = build_firing_question(
-            &trigger,
-            end_ms,
-            end_ms + 5 * 60_000,
-            IST,
-            Some(&EventFiringContext::Meeting(browser_meeting)),
-        );
-        assert!(question.contains("a meeting in Google Meet (Google Chrome) just ended"));
-        assert!(question.contains("Meeting URL: https://meet.google.com/abc-defg-hij."));
-        assert!(question.ends_with("Recap the meeting."));
-    }
-
-    #[test]
-    fn app_opened_firing_question_carries_app_away_window_and_prompt() {
-        let trigger = TriggerDefinition {
-            id: "figma-session".to_string(),
-            name: "Figma Session".to_string(),
-            condition: super::super::TriggerCondition::AppOpened {
-                bundle_id: "com.figma.Desktop".to_string(),
-                app_name: "Figma".to_string(),
-                away_gap_minutes: None,
-            },
-            prompt: "Recap where I left off.".to_string(),
-            ..sample_daily()
-        };
-        // Opened at 13:00 UTC on 2026-07-20 (18:30 IST) after 2h away.
-        let opened_ms = 1_784_505_600_000 + 13 * 3_600_000;
-        let context = EventFiringContext::AppOpened(AppOpenedFiringContext {
-            app_display_name: "Figma".to_string(),
-            last_frontmost_end_ms: Some(opened_ms - 2 * 3_600_000),
-        });
-        let question = build_firing_question(&trigger, opened_ms, opened_ms, IST, Some(&context));
-        assert!(question.starts_with("[Automated Trigger Run]"));
-        assert!(question.contains("\"Figma Session\""));
-        assert!(question.contains("(app opened)"));
-        assert!(question.contains("just opened Figma after about 2 hours away"));
-        // The away window (last-frontmost-end → now) in LOCAL time.
-        assert!(question.contains("2026-07-20 16:30 to 2026-07-20 18:30"));
-        assert!(question.ends_with("Recap where I left off."));
-
-        // First observed session: no away window, an honest first-session note.
-        let first = EventFiringContext::AppOpened(AppOpenedFiringContext {
-            app_display_name: "Figma".to_string(),
-            last_frontmost_end_ms: None,
-        });
-        let question = build_firing_question(&trigger, opened_ms, opened_ms, IST, Some(&first));
-        assert!(question.contains("the first Figma session observed"));
-        assert!(question.contains("2026-07-20 18:30"));
-        assert!(!question.contains(" away"));
-        assert!(question.ends_with("Recap where I left off."));
-    }
-
-    #[test]
-    fn away_duration_formats_minutes_then_whole_hours() {
-        assert_eq!(format_away_duration(35 * 60_000), "about 35 minutes");
-        assert_eq!(format_away_duration(119 * 60_000), "about 119 minutes");
-        assert_eq!(format_away_duration(125 * 60_000), "about 2 hours");
-        assert_eq!(format_away_duration(-5), "about 0 minutes");
-    }
-
-    #[test]
-    fn pending_notification_open_expires_after_ttl_and_is_take_once() {
-        set_pending_notification_open("conv-fresh");
-        assert_eq!(
-            take_recent_notification_conversation().as_deref(),
-            Some("conv-fresh")
-        );
-        // Take-once: the slot is consumed.
-        assert_eq!(take_recent_notification_conversation(), None);
-
-        // An expired delivery is dropped, not returned.
-        if let Ok(mut slot) = pending_notification_open().lock() {
-            *slot = Some((
-                "conv-stale".to_string(),
-                now_ms() - NOTIFICATION_OPEN_TTL_MS - 1,
-            ));
-        }
-        assert_eq!(take_recent_notification_conversation(), None);
-    }
-
-    #[test]
-    fn retry_exhausts_the_backoff_schedule_then_reports_failed() {
-        block_on(async {
-            let calls = Cell::new(0usize);
-            let sleeps = RefCell::new(Vec::new());
-            let (outcome, attempts) = attempt_with_retries(
-                &RUN_RETRY_BACKOFF,
-                || {
-                    calls.set(calls.get() + 1);
-                    std::future::ready(AttemptOutcome::Failed)
-                },
-                |delay| {
-                    sleeps.borrow_mut().push(delay);
-                    std::future::ready(())
-                },
-            )
-            .await;
-            // Transient failure retried twice with backoff, then gave up: the
-            // caller records exactly one `failed` ledger row from this.
-            assert_eq!(outcome, AttemptOutcome::Failed);
-            assert_eq!(attempts, 3);
-            assert_eq!(calls.get(), 3);
-            assert_eq!(
-                *sleeps.borrow(),
-                vec![Duration::from_secs(30), Duration::from_secs(60)]
-            );
-        });
-    }
-
-    #[test]
-    fn retry_stops_at_the_first_success() {
-        block_on(async {
-            let calls = Cell::new(0usize);
-            let sleeps = RefCell::new(Vec::new());
-            let (outcome, attempts) = attempt_with_retries(
-                &RUN_RETRY_BACKOFF,
-                || {
-                    calls.set(calls.get() + 1);
-                    std::future::ready(if calls.get() == 2 {
-                        AttemptOutcome::Completed
-                    } else {
-                        AttemptOutcome::Failed
-                    })
-                },
-                |delay| {
-                    sleeps.borrow_mut().push(delay);
-                    std::future::ready(())
-                },
-            )
-            .await;
-            assert_eq!(outcome, AttemptOutcome::Completed);
-            assert_eq!(attempts, 2);
-            assert_eq!(*sleeps.borrow(), vec![Duration::from_secs(30)]);
-        });
-    }
-
-    #[test]
-    fn retry_never_reruns_a_user_cancelled_attempt() {
-        block_on(async {
-            let calls = Cell::new(0usize);
-            let sleeps = RefCell::new(Vec::new());
-            let (outcome, attempts) = attempt_with_retries(
-                &RUN_RETRY_BACKOFF,
-                || {
-                    calls.set(calls.get() + 1);
-                    std::future::ready(AttemptOutcome::Aborted)
-                },
-                |delay| {
-                    sleeps.borrow_mut().push(delay);
-                    std::future::ready(())
-                },
-            )
-            .await;
-            // A deliberate cancel stops the firing cold: one attempt, no sleeps.
-            assert_eq!(outcome, AttemptOutcome::Aborted);
-            assert_eq!(attempts, 1);
-            assert_eq!(calls.get(), 1);
-            assert!(sleeps.borrow().is_empty());
-        });
-    }
-}
+mod tests;

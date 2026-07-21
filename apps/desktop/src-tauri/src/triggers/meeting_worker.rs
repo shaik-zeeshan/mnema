@@ -420,6 +420,9 @@ fn spawn_meeting_firing(
     fired_at_ms: i64,
 ) {
     tauri::async_runtime::spawn(async move {
+        // The Readiness Wait IS the running state's start (DESIGN.md: "running
+        // — waiting for the transcript"); the ledger row landing clears it.
+        super::run::mark_trigger_running(&trigger.id);
         let window = (ended.start_ms, ended.end_ms);
         let outcome = readiness::wait_for_readiness(
             window,

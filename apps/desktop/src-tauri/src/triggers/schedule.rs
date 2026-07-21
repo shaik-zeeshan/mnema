@@ -17,7 +17,8 @@
 const MINUTE_MS: i64 = 60_000;
 const DAY_MS: i64 = 86_400_000;
 
-/// How often a Schedule condition recurs. Weekly requires a `weekday`.
+/// How often a Schedule condition recurs. Weekly requires a non-empty
+/// weekday set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ScheduleCadence {
@@ -69,8 +70,8 @@ pub fn parse_time_minutes(time: &str) -> Option<i64> {
 /// unix-ms instant — or `None` when there is nothing to fire right now.
 ///
 /// - `time_minutes`: minutes since local midnight (from [`parse_time_minutes`]).
-/// - `weekday`: required for `Weekly` (a weekly schedule without one never
-///   fires); ignored for `Daily`.
+/// - `weekdays`: the selected weekday SET for `Weekly` (a weekly schedule with
+///   an empty set never fires); ignored for `Daily`.
 /// - `offset_minutes`: minutes to ADD to UTC to reach the user's local wall
 ///   clock (the same convention as Ask AI's temporal grounding).
 /// - `last_fired_ms`: the trigger's persisted last-fired instant (UTC ms).
@@ -79,11 +80,14 @@ pub fn parse_time_minutes(time: &str) -> Option<i64> {
 /// (due — including hours later after a missed-time wake, as long as the local
 /// period has not rolled over) AND `last_fired_ms` predates it (unfired). A
 /// previous period's missed occurrence is structurally unreachable: only the
-/// CURRENT local day/week's occurrence is ever computed.
+/// CURRENT local day/week's occurrences are ever computed. With a multi-day
+/// set, only the NEWEST due selected occurrence this week is considered — a
+/// machine that slept through several selected days catches up exactly once,
+/// never once per missed day.
 pub fn due_occurrence_ms(
     cadence: ScheduleCadence,
     time_minutes: i64,
-    weekday: Option<ScheduleWeekday>,
+    weekdays: &[ScheduleWeekday],
     now_ms: i64,
     offset_minutes: i32,
     last_fired_ms: Option<i64>,
@@ -98,11 +102,18 @@ pub fn due_occurrence_ms(
     let occurrence_local_ms = match cadence {
         ScheduleCadence::Daily => local_day * DAY_MS + time_minutes * MINUTE_MS,
         ScheduleCadence::Weekly => {
-            let weekday = weekday?;
             // 1970-01-01 was a Thursday: index 3 in the Monday-start week.
             let day_of_week = (local_day + 3).rem_euclid(7);
             let week_start_day = local_day - day_of_week;
-            (week_start_day + weekday.week_index()) * DAY_MS + time_minutes * MINUTE_MS
+            // The newest selected occurrence this week that is already due
+            // (local). Selected days later this week are not due yet.
+            weekdays
+                .iter()
+                .map(|weekday| {
+                    (week_start_day + weekday.week_index()) * DAY_MS + time_minutes * MINUTE_MS
+                })
+                .filter(|occurrence_local| occurrence_local - offset_ms <= now_ms)
+                .max()?
         }
     };
     let occurrence_utc_ms = occurrence_local_ms - offset_ms;
@@ -149,7 +160,7 @@ mod tests {
         // Schedule 18:30 UTC-local; now is 18:29 UTC.
         let now = at(MON_2026_07_20_UTC, 18, 29);
         assert_eq!(
-            due_occurrence_ms(ScheduleCadence::Daily, 18 * 60 + 30, None, now, 0, None),
+            due_occurrence_ms(ScheduleCadence::Daily, 18 * 60 + 30, &[], now, 0, None),
             None
         );
     }
@@ -161,7 +172,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 18 * 60 + 30,
-                None,
+                &[],
                 occurrence,
                 0,
                 None
@@ -176,7 +187,7 @@ mod tests {
         let occurrence = at(MON_2026_07_20_UTC, 18, 30);
         let wake = at(MON_2026_07_20_UTC, 22, 47);
         assert_eq!(
-            due_occurrence_ms(ScheduleCadence::Daily, 18 * 60 + 30, None, wake, 0, None),
+            due_occurrence_ms(ScheduleCadence::Daily, 18 * 60 + 30, &[], wake, 0, None),
             Some(occurrence)
         );
         // …including when the last fire was YESTERDAY's occurrence.
@@ -184,7 +195,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 18 * 60 + 30,
-                None,
+                &[],
                 wake,
                 0,
                 Some(occurrence - DAY_MS)
@@ -202,7 +213,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 18 * 60 + 30,
-                None,
+                &[],
                 later,
                 0,
                 Some(occurrence)
@@ -213,7 +224,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 18 * 60 + 30,
-                None,
+                &[],
                 later,
                 0,
                 Some(occurrence + 5 * MINUTE_MS)
@@ -232,7 +243,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 18 * 60 + 30,
-                None,
+                &[],
                 tuesday_9am,
                 0,
                 None
@@ -247,7 +258,7 @@ mod tests {
         // 2026-07-21 00:00 — a NEW local day whose 23:30 has not come yet.
         let now = at(MON_2026_07_20_UTC, 18, 30);
         assert_eq!(
-            due_occurrence_ms(ScheduleCadence::Daily, 23 * 60 + 30, None, now, IST, None),
+            due_occurrence_ms(ScheduleCadence::Daily, 23 * 60 + 30, &[], now, IST, None),
             None
         );
         // But the just-ended IST day's 23:30 (18:00 UTC) fired if unclaimed…
@@ -257,7 +268,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 23 * 60 + 30,
-                None,
+                &[],
                 just_before_midnight,
                 IST,
                 None
@@ -268,7 +279,7 @@ mod tests {
         // Negative offset: 07:00 PST on Monday = 15:00 UTC.
         let now = at(MON_2026_07_20_UTC, 15, 0);
         assert_eq!(
-            due_occurrence_ms(ScheduleCadence::Daily, 7 * 60, None, now, PST, None),
+            due_occurrence_ms(ScheduleCadence::Daily, 7 * 60, &[], now, PST, None),
             Some(now)
         );
         // One minute earlier (UTC) it is 06:59 PST → not due.
@@ -276,7 +287,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Daily,
                 7 * 60,
-                None,
+                &[],
                 now - MINUTE_MS,
                 PST,
                 None
@@ -295,7 +306,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 9 * 60,
-                Some(ScheduleWeekday::Friday),
+                &[ScheduleWeekday::Friday],
                 friday_9,
                 0,
                 None
@@ -308,7 +319,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 9 * 60,
-                Some(ScheduleWeekday::Friday),
+                &[ScheduleWeekday::Friday],
                 sunday_20,
                 0,
                 None
@@ -325,7 +336,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 9 * 60,
-                Some(ScheduleWeekday::Friday),
+                &[ScheduleWeekday::Friday],
                 wednesday,
                 0,
                 None
@@ -339,7 +350,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 9 * 60,
-                Some(ScheduleWeekday::Friday),
+                &[ScheduleWeekday::Friday],
                 next_monday,
                 0,
                 None
@@ -356,16 +367,126 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 9 * 60,
-                Some(ScheduleWeekday::Friday),
+                &[ScheduleWeekday::Friday],
                 saturday,
                 0,
                 Some(friday_9)
             ),
             None
         );
-        // A weekly schedule without a weekday can never fire.
+        // A weekly schedule with no selected days can never fire.
         assert_eq!(
-            due_occurrence_ms(ScheduleCadence::Weekly, 9 * 60, None, saturday, 0, None),
+            due_occurrence_ms(ScheduleCadence::Weekly, 9 * 60, &[], saturday, 0, None),
+            None
+        );
+    }
+
+    // ── Weekly, multi-day set ────────────────────────────────────────────────
+
+    #[test]
+    fn multi_day_fires_on_each_selected_weekday_once() {
+        let weekdays = [
+            ScheduleWeekday::Monday,
+            ScheduleWeekday::Wednesday,
+            ScheduleWeekday::Friday,
+        ];
+        let monday_18 = at(MON_2026_07_20_UTC, 18, 0);
+        // Monday 18:00 fires Monday's occurrence.
+        assert_eq!(
+            due_occurrence_ms(ScheduleCadence::Weekly, 18 * 60, &weekdays, monday_18, 0, None),
+            Some(monday_18)
+        );
+        // Tuesday: Monday already fired, Wednesday not due yet → nothing.
+        let tuesday = at(MON_2026_07_20_UTC + DAY_MS, 12, 0);
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                18 * 60,
+                &weekdays,
+                tuesday,
+                0,
+                Some(monday_18)
+            ),
+            None
+        );
+        // Wednesday 18:00 fires Wednesday's occurrence.
+        let wednesday_18 = at(MON_2026_07_20_UTC + 2 * DAY_MS, 18, 0);
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                18 * 60,
+                &weekdays,
+                wednesday_18,
+                0,
+                Some(monday_18)
+            ),
+            Some(wednesday_18)
+        );
+    }
+
+    #[test]
+    fn multi_day_catch_up_is_only_the_newest_missed_selected_day() {
+        // Machine off Monday through Thursday; wakes Thursday noon. Monday's
+        // AND Wednesday's occurrences were missed — only Wednesday's (the
+        // newest due one) fires, exactly once.
+        let weekdays = [
+            ScheduleWeekday::Monday,
+            ScheduleWeekday::Wednesday,
+            ScheduleWeekday::Friday,
+        ];
+        let wednesday_18 = at(MON_2026_07_20_UTC + 2 * DAY_MS, 18, 0);
+        let thursday_noon = at(MON_2026_07_20_UTC + 3 * DAY_MS, 12, 0);
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                18 * 60,
+                &weekdays,
+                thursday_noon,
+                0,
+                None
+            ),
+            Some(wednesday_18)
+        );
+        // After that catch-up fires, nothing more until Friday.
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                18 * 60,
+                &weekdays,
+                thursday_noon,
+                0,
+                Some(wednesday_18)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn multi_day_respects_the_local_offset() {
+        // Weekdays at 07:00 PST: Monday 07:00 PST = Monday 15:00 UTC.
+        let weekdays = [ScheduleWeekday::Monday, ScheduleWeekday::Tuesday];
+        let monday_15_utc = at(MON_2026_07_20_UTC, 15, 0);
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                7 * 60,
+                &weekdays,
+                monday_15_utc,
+                PST,
+                None
+            ),
+            Some(monday_15_utc)
+        );
+        // A minute earlier it is 06:59 PST Monday → not due.
+        assert_eq!(
+            due_occurrence_ms(
+                ScheduleCadence::Weekly,
+                7 * 60,
+                &weekdays,
+                monday_15_utc - MINUTE_MS,
+                PST,
+                None
+            ),
             None
         );
     }
@@ -379,7 +500,7 @@ mod tests {
             due_occurrence_ms(
                 ScheduleCadence::Weekly,
                 17 * 60,
-                Some(ScheduleWeekday::Sunday),
+                &[ScheduleWeekday::Sunday],
                 sunday_18,
                 0,
                 None
