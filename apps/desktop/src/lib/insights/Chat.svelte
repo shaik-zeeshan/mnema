@@ -148,6 +148,25 @@
   // The active thread id. null when no conversation open.
   let activeConversationId = $state<string | null>(null);
   let activeTitle = $state<string>("");
+  // Origin metadata of the active thread (ADR 0058): `origin === "trigger"`
+  // flips the FIRST turn into Document View (titled page, no question bubble);
+  // follow-ups render as normal chat beneath. Hydrated from get_conversation —
+  // purely a render fork, the streaming/store paths are identical.
+  let activeOrigin = $state<string | null>(null);
+  let activeTriggerName = $state<string | null>(null);
+  let activeCreatedAtMs = $state<number | null>(null);
+  const isTriggerDoc = $derived(activeOrigin === "trigger");
+  // "ran Jul 20, 2:49 PM" — the document header's metadata line.
+  const docRanAt = $derived(
+    activeCreatedAtMs !== null
+      ? new Date(activeCreatedAtMs).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "numeric",
+          minute: "2-digit",
+        })
+      : null,
+  );
   // Mirror the active id UP to the store so the (future) rail can highlight the
   // open row. One-way: the store value is only READ by the rail, never read back
   // into Chat's state, so there is no loop.
@@ -357,6 +376,9 @@
     // and arm a fresh id.
     activeConversationId = crypto.randomUUID();
     activeTitle = "";
+    activeOrigin = null;
+    activeTriggerName = null;
+    activeCreatedAtMs = null;
     turns = [];
     conversationLoadError = null;
     streaming = false;
@@ -403,6 +425,9 @@
     conversationLoadError = null;
     activeConversationId = id;
     activeTitle = "";
+    activeOrigin = null;
+    activeTriggerName = null;
+    activeCreatedAtMs = null;
     turns = [];
     streaming = false;
     liveActivity = null;
@@ -441,6 +466,9 @@
   async function hydrateConversation(convo: Conversation): Promise<void> {
     const conversationId = convo.conversationId;
     activeTitle = convo.title;
+    activeOrigin = convo.origin;
+    activeTriggerName = convo.triggerName ?? null;
+    activeCreatedAtMs = convo.createdAtMs;
     activePinProvider = convo.provider ?? null;
     activePinModel = convo.model ?? null;
     turns = convo.turns.map(hydrateTurn);
@@ -1306,17 +1334,47 @@
         </div>
       {:else}
         {#each turns as turn, ti (ti)}
+          <!-- Document View render fork (ADR 0058): the FIRST turn of an
+               origin=trigger conversation renders as a titled document — no
+               question bubble (the "question" is the automated firing prompt,
+               not user text). An errored first run falls back to the plain
+               chat turn (honest error, no special document-error chrome). -->
+          {@const docTurn =
+            isTriggerDoc && turn.turnIndex === 0 && turn.phase !== "error"}
+          {#if isTriggerDoc && ti === 1 && turns[0]?.phase !== "error"}
+            <!-- Follow-ups continue the same conversation as normal chat. -->
+            <div class="followup-divider" role="presentation">follow-up</div>
+          {/if}
           <article class="turn">
-            <!-- USER question: right-aligned bubble -->
-            <div class="msg msg-user">
-              <div class="user-bubble" use:tip={turn.question}>
-                {turn.question}
+            {#if docTurn}
+              <!-- Document header: eyebrow (trigger identity), title, ran-at
+                   metadata, accent rule — per the final Triggers design. -->
+              <header class="doc-head">
+                <div class="doc-eyebrow">
+                  <span>trigger run</span>
+                  {#if activeTriggerName}
+                    <span class="doc-sep" aria-hidden="true">·</span>
+                    <span class="doc-tname">{activeTriggerName}</span>
+                  {/if}
+                </div>
+                <h1 class="doc-title">{displayTitle}</h1>
+                {#if docRanAt}
+                  <div class="doc-meta">ran {docRanAt}</div>
+                {/if}
+                <hr class="doc-rule" />
+              </header>
+            {:else}
+              <!-- USER question: right-aligned bubble -->
+              <div class="msg msg-user">
+                <div class="user-bubble" use:tip={turn.question}>
+                  {turn.question}
+                </div>
               </div>
-            </div>
+            {/if}
 
             <!-- ASSISTANT answer: left-aligned -->
             <div class="msg msg-assistant">
-              <div class="answer-col">
+              <div class="answer-col" class:answer-col--doc={docTurn}>
                 {#if turn.phase === "error"}
                   <div class="turn-error" role="alert">
                     <p class="state state--error">
@@ -1614,8 +1672,12 @@
           bind:value={composerInput}
           class="composer-input"
           rows="1"
-          placeholder="Ask about your activity…"
-          aria-label="Ask about your activity"
+          placeholder={isTriggerDoc
+            ? "Ask a follow-up about this run…"
+            : "Ask about your activity…"}
+          aria-label={isTriggerDoc
+            ? "Ask a follow-up about this run"
+            : "Ask about your activity"}
           disabled={streaming}
           onkeydown={onComposerKeydown}
         ></textarea>
@@ -1867,6 +1929,87 @@
   .example-q:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
+  }
+
+  /* ── Document View (ADR 0058): origin=trigger first turn ─────────────────
+     Titled full-width page per the final Triggers design (triggers-ui.html
+     Screen 4): accent uppercase eyebrow, 26px title, ran-at metadata, 2px
+     accent rule, then the answer body with report typography. */
+  .doc-head {
+    margin-bottom: 2px;
+  }
+  .doc-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 9.5px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--app-accent-strong);
+    margin-bottom: 10px;
+  }
+  .doc-tname {
+    color: var(--app-text-muted);
+  }
+  .doc-sep {
+    color: var(--app-text-faint);
+  }
+  .doc-title {
+    margin: 0 0 6px;
+    font-size: 26px;
+    line-height: 1.25;
+    font-weight: 650;
+    letter-spacing: -0.02em;
+    color: var(--app-text-strong);
+  }
+  .doc-meta {
+    font-size: 11px;
+    color: var(--app-text-muted);
+  }
+  .doc-rule {
+    height: 2px;
+    background: var(--app-accent);
+    opacity: 0.7;
+    border: 0;
+    margin: 16px 0 0;
+  }
+  /* Report typography for the document body: h2 reads as an uppercase section
+     header with a dashed rule (the mockup's .doc-body h2). Scoped under the
+     doc modifier so normal chat prose is untouched. */
+  .answer-col--doc :global(.answer-prose) {
+    line-height: 1.7;
+  }
+  .answer-col--doc :global(.answer-prose h2) {
+    margin: 26px 0 10px;
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--app-text-strong);
+    padding-bottom: 6px;
+    border-bottom: 1px dashed var(--app-border);
+  }
+  .answer-col--doc :global(.answer-prose > h2:first-child) {
+    margin-top: 0;
+  }
+
+  /* "FOLLOW-UP" divider between the document and the chat turns beneath it. */
+  .followup-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 4px 0 -4px;
+    font-size: 9.5px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+  .followup-divider::before,
+  .followup-divider::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    background: var(--app-border);
   }
 
   /* One transcript turn: a user bubble (right) then the AI answer (left). */

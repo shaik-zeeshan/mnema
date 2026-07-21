@@ -1356,6 +1356,18 @@ beliefs about the user) and recent activities relevant to the instruction. Groun
 what the tools return; never invent details. If the covered window holds nothing relevant, say \
 so briefly.\n",
     );
+    // Document View contract (ADR 0058): the run renders as a titled page, so
+    // the answer must read as a report, not a chat reply.
+    preamble.push_str(
+        "The answer renders as a standalone titled page, so shape it like one: no chat \
+pleasantries, no greetings, no \"Here is…\" lead-in, no closing offer to help — start directly \
+with the first section. Do NOT add a top-level title (the page already has one); organize the \
+body into `##` section headings chosen for the instruction (e.g. Summary, Decisions, Action \
+items for a meeting; Highlights, Where the time went for a review). Keep sections short and \
+scannable. When the instruction concerns a meeting and speaker turns exist, include a \
+speaking-time breakdown as a bars block; when there are follow-ups or commitments, end with an \
+Action items section as a bullet list, one item per line ending with `— owner` when known.\n",
+    );
     // The same graphical-answer affordances interactive Ask AI documents: the
     // Chat surface renders these fenced blocks inline in the document view.
     preamble.push_str(
@@ -2748,8 +2760,16 @@ mod tests {
                 "sealed preamble must not mention `{absent}`"
             );
         }
-        // The Document View contract: the model is asked for a report document.
+        // The Document View contract: the model is asked for a report document…
         assert!(preamble.to_lowercase().contains("document"));
+        // …structured into sections, with no chat pleasantries and no duplicate
+        // top-level title (the page renders its own), ending in action items
+        // where they apply (issue #181).
+        assert!(preamble.contains("`##` section headings"));
+        assert!(preamble.contains("no chat pleasantries"));
+        assert!(preamble.contains("Do NOT add a top-level title"));
+        assert!(preamble.contains("Action items"));
+        assert!(preamble.contains("speaking-time breakdown"));
         // The graphical block affordances still render in the document view.
         assert!(preamble.contains("mnema-bars"));
         assert!(preamble.contains("mnema-timeline"));
