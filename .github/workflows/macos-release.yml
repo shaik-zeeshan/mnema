@@ -25,7 +25,10 @@ jobs:
     environment: macos-release
 
     env:
-      APPLE_SIGNING_IDENTITY: "-"
+      # Developer ID signing (ADR 0057): the shared keychain group only works
+      # on a Developer ID build with the provisioning profile embedded and the
+      # CLI packaged as a helper bundle — see scripts/entitle-macos-app.sh.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       CI: true
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -174,7 +177,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "-"
+          # The Tauri CLI imports the certificate into a temporary keychain and
+          # signs with it. Notarization env vars are deliberately NOT set here:
+          # the bundles get repackaged below, which would void a notarization
+          # done at build time — we notarize the final artifacts ourselves.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           CI: true
         with:
           projectPath: apps/desktop
@@ -185,6 +194,71 @@ jobs:
           prerelease: ${{ steps.release_channel.outputs.prerelease }}
           generateReleaseNotes: true
           includeUpdaterJson: true
+
+      # Profile embed + helper-bundle CLI + re-sign (ADR 0057). This changes
+      # the .app AFTER tauri-action built and uploaded the DMG/updater
+      # artifacts, so everything downstream is rebuilt from the entitled app
+      # and re-uploaded over the stale draft-release assets.
+      - name: Entitle app (profile + helper-bundle CLI) and re-sign
+        run: ./scripts/entitle-macos-app.sh target/aarch64-apple-darwin/release/bundle/macos/mnema.app "$APPLE_SIGNING_IDENTITY"
+
+      - name: Notarize and staple app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          app="target/aarch64-apple-darwin/release/bundle/macos/mnema.app"
+          ditto -c -k --keepParent "$app" mnema-notarize.zip
+          xcrun notarytool submit mnema-notarize.zip \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id RJYMY4RR97 --wait
+          xcrun stapler staple "$app"
+          rm mnema-notarize.zip
+
+      # The DMG and updater tar.gz built by tauri-action embed the pre-entitled
+      # app — rebuild both from the stapled app. The updater archive must be
+      # re-signed with the Tauri updater key (latest.json carries that
+      # signature), and latest.json patched to match.
+      - name: Rebuild DMG and updater archive from entitled app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bundle="target/aarch64-apple-darwin/release/bundle"
+          app="$bundle/macos/mnema.app"
+          tar_gz="$(ls "$bundle"/macos/*.app.tar.gz)"
+          tar -czf "$tar_gz" -C "$bundle/macos" mnema.app
+          bun run tauri -- signer sign \
+            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
+            "$tar_gz"
+          dmg="$(ls "$bundle"/dmg/*.dmg)"
+          staging="$(mktemp -d)"
+          ditto "$app" "$staging/mnema.app"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "mnema" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          rm -rf "$staging"
+
+      - name: Replace stale draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bundle="target/aarch64-apple-darwin/release/bundle"
+          tag="${{ steps.release_version.outputs.tag }}"
+          sig="$(cat "$bundle"/macos/*.app.tar.gz.sig)"
+          gh release download "$tag" --pattern latest.json --output "$bundle/latest.json"
+          jq --arg sig "$sig" '.platforms["darwin-aarch64"].signature = $sig' \
+            "$bundle/latest.json" > "$bundle/latest.json.tmp"
+          mv "$bundle/latest.json.tmp" "$bundle/latest.json"
+          gh release upload "$tag" \
+            "$bundle/latest.json" \
+            "$bundle"/dmg/*.dmg \
+            "$bundle"/macos/*.app.tar.gz \
+            "$bundle"/macos/*.app.tar.gz.sig \
+            --clobber
 
       - name: Stage release artifacts
         id: stage_artifacts

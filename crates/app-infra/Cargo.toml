@@ -46,7 +46,10 @@ url = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cidre = { version = "0.15", default-features = false, features = ["vn", "blocks", "cm", "cv", "macos_15_0"] }
-security-framework = "3.7"
+# OSX_10_15 unlocks the data-protection-keychain password options
+# (`kSecUseDataProtectionKeychain`) used by the capture-index shared-group store.
+security-framework = { version = "3.7", features = ["OSX_10_15"] }
+core-foundation = "0.10"
 libc = "0.2"
 
 [dev-dependencies]

@@ -9,7 +9,7 @@ fn main() {
     let identifier = fs::read_to_string(config_path)
         .ok()
         .and_then(|raw| extract_identifier(&raw))
-        .unwrap_or_else(|| "com.shaikzeeshan.mnema".to_string());
+        .unwrap_or_else(|| "day.mnema".to_string());
     println!("cargo:rustc-env=MNEMA_APP_IDENTIFIER={identifier}");
 }
 

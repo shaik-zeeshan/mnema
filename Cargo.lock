@@ -230,6 +230,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "cidre",
+ "core-foundation 0.10.1",
  "dirs",
  "fs2",
  "image",

@@ -264,7 +264,7 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
     insert_privacy_app_candidate(
         &mut candidates,
         PrivacyAppCandidate {
-            bundle_id: "com.shaikzeeshan.mnema".to_string(),
+            bundle_id: "day.mnema".to_string(),
             display_name: "Mnema".to_string(),
             running: true,
             icon_path: None,
@@ -564,7 +564,7 @@ fn main_bundle_path() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
     macos_application_bundle_path_for_bundle_id(bundle_id).or_else(|| {
-        (bundle_id == "com.shaikzeeshan.mnema")
+        (bundle_id == "day.mnema")
             .then(main_bundle_path)
             .flatten()
     })

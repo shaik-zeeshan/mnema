@@ -13,7 +13,7 @@ use sqlx::{
 
 use crate::capture_index_key_store::{
     resolve_capture_index_database_key_for_current_process, CaptureIndexDatabaseKey,
-    CAPTURE_INDEX_DATABASE_DIR_NAME,
+    CaptureIndexKeyRole, CAPTURE_INDEX_DATABASE_DIR_NAME,
 };
 use crate::error::Result;
 
@@ -119,8 +119,12 @@ impl Database {
     /// use `BEGIN IMMEDIATE` (see [`CaptureDb::begin_write`]).
     pub async fn initialize(base_dir: &Path) -> Result<Self> {
         let database_path = prepare_database_path(base_dir)?;
-        let encryption =
-            resolve_capture_index_database_key_for_current_process(base_dir, &database_path)?;
+        let mut resolved = resolve_capture_index_database_key_for_current_process(
+            base_dir,
+            &database_path,
+            CaptureIndexKeyRole::Owner,
+        )?;
+        let encryption = resolved.key();
 
         let write_pool =
             connect_pool(&database_path, encryption.clone(), PoolConfig::owner_writer()).await?;
@@ -130,6 +134,10 @@ impl Database {
         let migrations_ran = has_pending_migrations(&write_pool).await?;
 
         MIGRATOR.run(&write_pool).await?;
+
+        // The database opened (and migrated) with the resolved key; a pending
+        // key migration may now delete the old silent keychain item (ADR 0057).
+        resolved.database_opened();
 
         Ok(Self {
             write_pool,
@@ -147,8 +155,12 @@ impl Database {
     /// Owner is folded in.
     pub async fn initialize_brokered_reader(base_dir: &Path) -> Result<Self> {
         let database_path = prepare_database_path(base_dir)?;
-        let encryption =
-            resolve_capture_index_database_key_for_current_process(base_dir, &database_path)?;
+        let encryption = resolve_capture_index_database_key_for_current_process(
+            base_dir,
+            &database_path,
+            CaptureIndexKeyRole::Reader,
+        )?
+        .key();
 
         // Observability: a non-empty `-wal` sidecar at open time implies the
         // Owner exited uncleanly (it would otherwise have checkpointed and
