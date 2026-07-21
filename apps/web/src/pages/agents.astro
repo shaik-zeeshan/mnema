@@ -21,6 +21,15 @@ const usageLines = [
   "mnema open <result-id>",
 ];
 
+const mcpConfig = `{
+  "mcpServers": {
+    "mnema": {
+      "command": "/Users/<you>/.local/bin/mnema",
+      "args": ["--client", "Claude Desktop", "mcp"]
+    }
+  }
+}`;
+
 const pageTitle = "mnema — agent access";
 const pageDescription =
   "Give your local AI agents and CLI tools read-only, brokered access to your redacted Mnema history. Setup, privacy guarantees, and example commands.";
@@ -264,6 +273,38 @@ const guarantees = [
             </dd>
           </div>
         </dl>
+      </section>
+
+      <!-- 7.5b Chat apps via MCP -->
+      <section class="docs-section" aria-labelledby="mcp-server">
+        <p class="kicker">// chat apps</p>
+        <h2 class="section-heading" id="mcp-server">
+          No terminal? Ask from a chat app.
+        </h2>
+        <p class="prose">
+          The same brokered access works from desktop chat apps that speak MCP —
+          like the Claude desktop app. Run <code>mnema mcp</code> and the CLI
+          becomes a local MCP server exposing the same four read-only tools:
+          search, timeline, full text, and open-in-Mnema. Same approval dialog,
+          same grants, same redaction — nothing new to trust.
+        </p>
+        <p class="prose prose-dense">
+          Add this to your chat app's MCP configuration (for Claude Desktop:
+          <strong>Settings &rarr; Developer &rarr; Edit Config</strong>),
+          replacing <code>&lt;you&gt;</code> with your macOS username:
+        </p>
+        <div class="terminal-panel" aria-label="MCP server configuration">
+          <div class="terminal-top">
+            <span class="terminal-dot" aria-hidden="true"></span>
+            <span>claude_desktop_config.json</span>
+          </div>
+          <pre class="config-pre"><code>{mcpConfig}</code></pre>
+        </div>
+        <p class="step-aside step-aside-muted">
+          The first question that needs your history pauses while Mnema shows
+          its approval dialog — approve once and the grant covers the rest of
+          its window.
+        </p>
       </section>
 
       <!-- 7.6 The other direction: MCP into Ask AI -->
@@ -563,6 +604,21 @@ const guarantees = [
 
   .prompt {
     color: var(--accent);
+  }
+
+  .config-pre {
+    margin: 0;
+    padding: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    line-height: 1.6;
+    overflow-x: auto;
+  }
+
+  .config-pre code {
+    font-family: inherit;
+    color: inherit;
   }
 
   .command-list code {
