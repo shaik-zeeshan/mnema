@@ -3256,23 +3256,34 @@ pub(crate) fn persist_semantic_search_settings(
 }
 
 #[tauri::command]
-pub fn start_native_capture(
+pub async fn start_native_capture(
     request: StartNativeCaptureRequest,
-    state: tauri::State<'_, NativeCaptureState>,
-    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
-    recording_settings_state: tauri::State<'_, RecordingSettingsState>,
-    app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = start_native_capture_inner(
-        "command",
-        request,
-        state,
-        microphone_controller_preferences_state,
-        recording_settings_state,
-        app_notifications_state,
-        app_handle.clone(),
-    )?;
+    // Starting blocks on AVFoundation's `startRunning` for the microphone
+    // session — ~100-500ms even in the happy path, and indefinitely when
+    // coreaudiod wedges (observed on macOS 26). A sync command runs on the main
+    // thread, so run the start on the blocking pool and await it — keeping the
+    // UI responsive while preserving the error contract (mirrors
+    // `stop_native_capture`). The tray/shortcut/auto-start entry points already
+    // call the sync seam from their own background threads.
+    let handle = app_handle.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        start_native_capture_inner(
+            "command",
+            request,
+            handle.state::<NativeCaptureState>(),
+            handle.state::<MicrophoneControllerPreferencesState>(),
+            handle.state::<RecordingSettingsState>(),
+            handle.state::<AppNotificationsState>(),
+            handle.clone(),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "start_native_capture_join".to_string(),
+        message: format!("start native capture task failed: {error}"),
+    })??;
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)
