@@ -7,9 +7,11 @@ Proposed (2026-07-20). Amends the **Capture Index Key Store** mechanics of
 (fail closed, keys outside `saveDirectory`, brokered CLI runs without the app) are
 unchanged.
 
-Implementation landed 2026-07-20; acceptance (the validation drill,
-`docs/agents/capture-index-key-drills.md`) is blocked pending Developer ID signing
-in release CI.
+Implementation landed 2026-07-20. Drill 1 (`docs/agents/capture-index-key-drills.md`)
+passed end-to-end 2026-07-21 on a local Developer ID + embedded-profile build, and
+`macos-release.yml` now ships the same signing + profile + helper-bundle packaging;
+the remaining acceptance gate is re-running the drill on the first real CI release
+artifact.
 
 ## Context
 
@@ -145,5 +147,6 @@ app + CLI. Two spike assumptions corrected:
 Acceptance: Drill 1 (owner migration) passed end-to-end on the local
 Developer ID + profile build — migrate, proof-gated delete of the old item, then a
 silent no-prompt `mnema-cli` group read through the symlink. Release CI
-(`macos-release.yml`) still signs ad-hoc; the ADR stays Proposed until CI ships the
-same signing + profile + helper-bundle packaging.
+(`macos-release.yml`) now ships the same signing + profile + helper-bundle
+packaging; the ADR stays Proposed until the drill passes on a real CI release
+artifact.
