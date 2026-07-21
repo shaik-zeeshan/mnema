@@ -1,9 +1,11 @@
-//! Triggers — definitions + evaluator (issues #175/#176, ADRs 0057/0058).
+//! Triggers — definitions + evaluator (issues #175/#176/#177, ADRs 0057/0058).
 //!
 //! A **Trigger** is Condition + Prompt + Delivery (docs/triggers/CONTEXT.md).
 //! This module owns the definition shape and the evaluator worker; the firing →
 //! sealed Ask AI run path (retries, ledger rows, delivery) lives in
-//! [`run`](self::run).
+//! [`run`](self::run). The Meeting Ends condition is event-driven and lives in
+//! its own worker ([`meeting`](self::meeting), with the Readiness Wait in
+//! [`readiness`](self::readiness)) — the schedule tick below skips it.
 //!
 //! - Definitions are CONFIG, not DB (ADR 0058): `triggers.json` in the app
 //!   config dir, hand-edited until the #182 management UI. It is re-read on
@@ -40,6 +42,9 @@ use tauri::{Listener, Manager};
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
 use crate::user_context::worker::now_ms;
 
+pub(crate) mod meeting;
+pub(crate) mod meeting_worker;
+pub(crate) mod readiness;
 pub(crate) mod run;
 pub(crate) mod schedule;
 
@@ -97,7 +102,7 @@ impl TriggerDefinition {
     }
 }
 
-/// The Condition menu, tagged on `type`. v1 walking skeleton: Schedule only.
+/// The Condition menu, tagged on `type`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TriggerCondition {
@@ -109,6 +114,16 @@ pub enum TriggerCondition {
         time: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         weekday: Option<ScheduleWeekday>,
+    },
+    /// `{"type":"meeting_ends"}` — fires when a Meeting (ADR 0057: an
+    /// allowlisted conferencing app's mic hold) ends. Evaluated by the meeting
+    /// detector worker ([`meeting`]), not the schedule tick.
+    #[serde(rename = "meeting_ends", rename_all = "camelCase")]
+    MeetingEnds {
+        /// Per-trigger minimum meeting length in minutes ("Advanced Options");
+        /// 5 when absent. Shorter mic holds never fire this trigger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_meeting_minutes: Option<u32>,
     },
 }
 
@@ -205,11 +220,16 @@ async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
         .unwrap_or(0);
 
     for trigger in triggers.into_iter().filter(|trigger| trigger.enabled) {
+        // Meeting Ends is event-driven, evaluated by the meeting detector
+        // worker — the schedule tick only handles Schedule conditions.
         let TriggerCondition::Schedule {
             cadence,
             ref time,
             weekday,
-        } = trigger.condition;
+        } = trigger.condition
+        else {
+            continue;
+        };
         let Some(time_minutes) = schedule::parse_time_minutes(time) else {
             tauri_plugin_log::log::warn!(
                 "triggers: trigger '{}' has an invalid time {time:?}; skipping",
@@ -284,8 +304,15 @@ async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
                     trigger.id
                 );
                 // ponytail: firings run inline, one at a time.
-                run::run_trigger_fire(app_handle, infra, &trigger, occurrence_ms, offset_minutes)
-                    .await;
+                run::run_trigger_fire(
+                    app_handle,
+                    infra,
+                    &trigger,
+                    occurrence_ms,
+                    offset_minutes,
+                    None,
+                )
+                .await;
             }
         }
     }
@@ -464,6 +491,38 @@ pub(crate) mod tests {
         assert_eq!(value["cooldownMinutes"], json!(30));
         let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, weekly);
+    }
+
+    #[test]
+    fn meeting_ends_condition_serde_round_trips_and_pins_the_wire_shape() {
+        // Minimal form: `{"type":"meeting_ends"}` (issue #177). The absent
+        // floor stays absent on the wire (shareable JSON stays minimal).
+        let trigger = TriggerDefinition {
+            condition: TriggerCondition::MeetingEnds {
+                min_meeting_minutes: None,
+            },
+            ..sample_daily()
+        };
+        let value = serde_json::to_value(&trigger).unwrap();
+        assert_eq!(value["condition"], json!({ "type": "meeting_ends" }));
+        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, trigger);
+
+        // The per-trigger floor rides as `minMeetingMinutes` ("Advanced
+        // Options").
+        let with_floor = TriggerDefinition {
+            condition: TriggerCondition::MeetingEnds {
+                min_meeting_minutes: Some(10),
+            },
+            ..sample_daily()
+        };
+        let value = serde_json::to_value(&with_floor).unwrap();
+        assert_eq!(
+            value["condition"],
+            json!({ "type": "meeting_ends", "minMeetingMinutes": 10 })
+        );
+        let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, with_floor);
     }
 
     #[test]

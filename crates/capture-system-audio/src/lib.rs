@@ -6,6 +6,7 @@
 
 mod activity;
 mod exclude;
+mod mic_activity;
 mod permission;
 #[cfg(target_os = "macos")]
 mod process;
@@ -27,6 +28,7 @@ pub use permission::{
     system_audio_permission_state, SystemAudioEvidence, SILENT_SESSION_AFTER_MS,
 };
 pub use exclude::{compute_exclude_list, AudioProcess, ExcludeList};
+pub use mic_activity::snapshot_mic_holding_bundle_ids;
 #[cfg(target_os = "macos")]
 pub use exclude::{read_audio_processes, SystemAudioExcludeWatcher};
 #[cfg(target_os = "macos")]

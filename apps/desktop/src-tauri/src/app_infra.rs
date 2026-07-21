@@ -1922,6 +1922,16 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Meeting detector (issue #177, ADR 0057): polls Core Audio per-process
+    // mic-in-use state and fires Meeting Ends triggers. macOS-only in effect —
+    // elsewhere every snapshot read fails and the loop idles. Idle-cheap: no
+    // Core Audio read at all unless a meeting_ends trigger is defined.
+    crate::triggers::meeting_worker::spawn_meeting_detector_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     // Semantic Search startup reconciliation (self-heal): if a past model switch
     // left the vec0 table at a dimension that disagrees with the selected model
     // (e.g. a rebuild that failed under DB contention), every search degrades to

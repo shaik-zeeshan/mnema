@@ -15,6 +15,11 @@ use crate::Result;
 
 const LAST_FIRED_KEY_PREFIX: &str = "triggers.last_fired.";
 
+/// The GLOBAL Meeting release grace (docs/triggers/CONTEXT.md: not per-trigger
+/// — it belongs to the one detector). Written by the #182 Settings knob; read
+/// here. Absent = the caller's default (2 minutes).
+const MEETING_RELEASE_GRACE_KEY: &str = "triggers.meeting_release_grace_minutes";
+
 fn last_fired_key(trigger_id: &str) -> String {
     format!("{LAST_FIRED_KEY_PREFIX}{trigger_id}")
 }
@@ -36,6 +41,18 @@ impl TriggerStateStore {
         let value: Option<String> =
             sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
                 .bind(last_fired_key(trigger_id))
+                .fetch_optional(self.db.read())
+                .await?;
+        Ok(value.and_then(|value| value.trim().parse::<i64>().ok()))
+    }
+
+    /// The global Meeting release grace in minutes, or `None` when never set
+    /// (caller applies the 2-minute default). An unparseable value degrades to
+    /// `None`, never an error.
+    pub async fn meeting_release_grace_minutes(&self) -> Result<Option<i64>> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(MEETING_RELEASE_GRACE_KEY)
                 .fetch_optional(self.db.read())
                 .await?;
         Ok(value.and_then(|value| value.trim().parse::<i64>().ok()))
@@ -122,6 +139,28 @@ mod tests {
             assert_eq!(
                 store.last_fired_ms("evening").await.expect("read"),
                 Some(5_000)
+            );
+        });
+    }
+
+    #[test]
+    fn meeting_release_grace_reads_the_kv_or_none() {
+        block_on(async {
+            let store = test_store().await;
+            // Never set → None (the caller applies the 2-minute default).
+            assert_eq!(
+                store.meeting_release_grace_minutes().await.expect("read"),
+                None
+            );
+            // The #182 Settings knob writes the same kv row.
+            sqlx::query("INSERT INTO app_settings (key, value) VALUES (?1, '5')")
+                .bind(super::MEETING_RELEASE_GRACE_KEY)
+                .execute(store.db.write())
+                .await
+                .expect("insert grace row");
+            assert_eq!(
+                store.meeting_release_grace_minutes().await.expect("read"),
+                Some(5)
             );
         });
     }

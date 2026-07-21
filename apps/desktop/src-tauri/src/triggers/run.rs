@@ -79,9 +79,20 @@ fn schedule_label(cadence: ScheduleCadence, time: &str, weekday: Option<Schedule
     }
 }
 
+/// The Meeting half of the firing context (issue #177): the detected mic-hold
+/// window and app, plus the Readiness Wait's honesty note when the recording
+/// only partially covers the meeting or the catch-up was cut at the cap.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct MeetingFiringContext {
+    pub app_display_name: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub coverage_note: Option<String>,
+}
+
 /// The **Context Assembly** for this slice: the firing context prepended to the
-/// user's Prompt. Names the trigger and its schedule, states the natural-period
-/// window the run covers (day so far / week so far, in local time), then the
+/// user's Prompt. Names the trigger and what fired it — the schedule and its
+/// natural-period window, or the detected meeting's window and app — then the
 /// standing instruction verbatim. This whole string is the sealed turn's
 /// "question", so it persists on the turn row and stays in follow-up history.
 fn build_firing_question(
@@ -89,12 +100,45 @@ fn build_firing_question(
     occurrence_ms: i64,
     now_ms: i64,
     offset_minutes: i32,
+    meeting: Option<&MeetingFiringContext>,
 ) -> String {
+    if let Some(meeting) = meeting {
+        let coverage = meeting
+            .coverage_note
+            .as_deref()
+            .map(|note| format!(" Note: {note}"))
+            .unwrap_or_default();
+        return format!(
+            "[Automated Trigger Run] The user's trigger \"{name}\" (meeting ends) fired: a meeting \
+in {app} just ended. Meeting window: {start} to {end} local time (about {minutes} minutes).\
+{coverage} Apply the standing instruction below to that meeting unless it says otherwise, and \
+write the report document now.\n\n\
+Standing instruction:\n{prompt}",
+            name = trigger.name,
+            app = meeting.app_display_name,
+            start = format_local_ymd_hm(meeting.start_ms, offset_minutes),
+            end = format_local_ymd_hm(meeting.end_ms, offset_minutes),
+            minutes = (meeting.end_ms - meeting.start_ms).max(0) / 60_000,
+            coverage = coverage,
+            prompt = trigger.prompt.trim(),
+        );
+    }
     let TriggerCondition::Schedule {
         cadence,
         time,
         weekday,
-    } = &trigger.condition;
+    } = &trigger.condition
+    else {
+        // Only the meeting worker fires MeetingEnds triggers, and it always
+        // passes the context; keep an honest fallback rather than a panic.
+        return format!(
+            "[Automated Trigger Run] The user's trigger \"{name}\" (meeting ends) fired: a meeting \
+just ended. Apply the standing instruction below to it and write the report document now.\n\n\
+Standing instruction:\n{prompt}",
+            name = trigger.name,
+            prompt = trigger.prompt.trim(),
+        );
+    };
     let period = match cadence {
         ScheduleCadence::Daily => "the day so far",
         ScheduleCadence::Weekly => "the week so far (Monday-start)",
@@ -234,8 +278,9 @@ where
 
 /// Write the firing's ledger row. Best-effort at this seam: the firing already
 /// happened, so a failed ledger write logs loudly but never un-notifies or
-/// re-runs anything.
-async fn record_ledger(
+/// re-runs anything. `pub(crate)` because the meeting path records its
+/// Skipped Runs (Readiness Wait: not recording) without entering a run.
+pub(crate) async fn record_ledger(
     infra: &AppInfraState,
     trigger_id: &str,
     fired_at_ms: i64,
@@ -265,6 +310,7 @@ pub(crate) async fn run_trigger_fire(
     trigger: &TriggerDefinition,
     occurrence_ms: i64,
     offset_minutes: i32,
+    meeting: Option<&MeetingFiringContext>,
 ) {
     let fired_at = now_ms();
     // The firing's stable conversation id: trigger id + occurrence instant, so
@@ -298,7 +344,7 @@ pub(crate) async fn run_trigger_fire(
         (),
     );
 
-    let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes);
+    let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes, meeting);
     // Each attempt is a fresh sealed turn in the SAME conversation (an errored
     // attempt persists as an errored turn; only a completed one becomes the
     // report and history).
@@ -429,7 +475,7 @@ mod tests {
         // Fired at 18:30 IST on 2026-07-20 (13:00 UTC), evaluated at 13:05 UTC.
         let occurrence_ms = 1_784_505_600_000 + 13 * 3_600_000;
         let now_ms = occurrence_ms + 5 * 60_000;
-        let question = build_firing_question(&trigger, occurrence_ms, now_ms, IST);
+        let question = build_firing_question(&trigger, occurrence_ms, now_ms, IST, None);
         assert!(question.starts_with("[Automated Trigger Run]"));
         assert!(question.contains("\"Evening Review\""));
         assert!(question.contains("daily at 18:30"));
@@ -438,6 +484,48 @@ mod tests {
         assert!(question.contains("2026-07-20 18:35"));
         // The user's standing instruction rides verbatim at the end.
         assert!(question.ends_with("Summarize what I worked on today."));
+    }
+
+    #[test]
+    fn meeting_firing_question_carries_window_app_and_coverage_note() {
+        let trigger = TriggerDefinition {
+            id: "meeting-recap".to_string(),
+            name: "Meeting Recap".to_string(),
+            condition: super::super::TriggerCondition::MeetingEnds {
+                min_meeting_minutes: None,
+            },
+            prompt: "Recap the meeting.".to_string(),
+            ..sample_daily()
+        };
+        // A 42-minute Zoom call ending 13:00 UTC on 2026-07-20 (18:30 IST).
+        let end_ms = 1_784_505_600_000 + 13 * 3_600_000;
+        let meeting = MeetingFiringContext {
+            app_display_name: "Zoom".to_string(),
+            start_ms: end_ms - 42 * 60_000,
+            end_ms,
+            coverage_note: Some("The recording covers only part of the meeting window.".to_string()),
+        };
+        let question =
+            build_firing_question(&trigger, end_ms, end_ms + 5 * 60_000, IST, Some(&meeting));
+        assert!(question.starts_with("[Automated Trigger Run]"));
+        assert!(question.contains("\"Meeting Recap\""));
+        assert!(question.contains("a meeting in Zoom just ended"));
+        // The meeting window in LOCAL time, with its duration.
+        assert!(question.contains("2026-07-20 17:48 to 2026-07-20 18:30"));
+        assert!(question.contains("about 42 minutes"));
+        // The Readiness Wait's honesty note rides along...
+        assert!(question.contains("Note: The recording covers only part of the meeting window."));
+        // ...and the standing instruction still closes the question verbatim.
+        assert!(question.ends_with("Recap the meeting."));
+
+        // Without a note there is no dangling "Note:".
+        let quiet = MeetingFiringContext {
+            coverage_note: None,
+            ..meeting
+        };
+        let question =
+            build_firing_question(&trigger, end_ms, end_ms + 5 * 60_000, IST, Some(&quiet));
+        assert!(!question.contains("Note:"));
     }
 
     #[test]
