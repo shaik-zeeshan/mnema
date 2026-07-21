@@ -39,21 +39,22 @@ jobs:
       # older CPUs.
       OPENBLAS_DYNAMIC_ARCH: "1"
       # Buy-button checkout links, baked into the frontend bundle by Vite
-      # (apps/desktop/src/lib/licensing.ts). Set repo variables
-      # LICENSE_CHECKOUT_URL / RENEWAL_CHECKOUT_URL to the LIVE Polar links
-      # before a real release; unset arrives as "" and the code (`||`) falls
-      # back to the sandbox defaults.
-      VITE_LICENSE_CHECKOUT_URL: ${{ vars.LICENSE_CHECKOUT_URL }}
-      VITE_RENEWAL_CHECKOUT_URL: ${{ vars.RENEWAL_CHECKOUT_URL }}
+      # (apps/desktop/src/lib/licensing.ts). Set repo secrets
+      # VITE_LICENSE_CHECKOUT_URL / VITE_RENEWAL_CHECKOUT_URL to the LIVE Polar
+      # links before a real release; unset arrives as "" and the code (`||`)
+      # falls back to the sandbox defaults.
+      VITE_LICENSE_CHECKOUT_URL: ${{ secrets.VITE_LICENSE_CHECKOUT_URL }}
+      VITE_RENEWAL_CHECKOUT_URL: ${{ secrets.VITE_RENEWAL_CHECKOUT_URL }}
       # Prod licensing config baked at compile time (option_env! in
       # licensing/adapter.rs). Unset falls back to an all-zero placeholder key
       # that verifies NOTHING — a release built without these ships a dead
-      # license gate that rejects every real key. Set repo variables
-      # LICENSE_PUBLIC_KEY / LICENSE_KID / LICENSE_PK_TOKEN from the licensegate
-      # console before a real release (verifying/publishable values, not secrets).
-      MNEMA_LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
-      MNEMA_LICENSE_KID: ${{ vars.LICENSE_KID }}
-      MNEMA_LICENSE_PK_TOKEN: ${{ vars.LICENSE_PK_TOKEN }}
+      # license gate that rejects every real key. Set repo secrets
+      # MNEMA_LICENSE_PUBLIC_KEY / MNEMA_LICENSE_KID / MNEMA_LICENSE_PK_TOKEN
+      # from the licensegate console before a real release (publishable values,
+      # kept as secrets only so they live beside the other release config).
+      MNEMA_LICENSE_PUBLIC_KEY: ${{ secrets.MNEMA_LICENSE_PUBLIC_KEY }}
+      MNEMA_LICENSE_KID: ${{ secrets.MNEMA_LICENSE_KID }}
+      MNEMA_LICENSE_PK_TOKEN: ${{ secrets.MNEMA_LICENSE_PK_TOKEN }}
 
     steps:
       - name: Checkout
@@ -125,7 +126,7 @@ jobs:
             exit 1
           fi
 
-      # A stable release built without the licensing repo variables silently
+      # A stable release built without the licensing repo secrets silently
       # bakes the all-zero placeholder key (dead gate) and sandbox checkout
       # links — fail loudly instead. Prereleases stay placeholder-friendly.
       - name: Require licensing config for stable releases
@@ -133,13 +134,13 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          [[ -n "${MNEMA_LICENSE_PUBLIC_KEY}" ]] || missing+=(LICENSE_PUBLIC_KEY)
-          [[ -n "${MNEMA_LICENSE_KID}" ]] || missing+=(LICENSE_KID)
-          [[ -n "${MNEMA_LICENSE_PK_TOKEN}" ]] || missing+=(LICENSE_PK_TOKEN)
-          [[ -n "${VITE_LICENSE_CHECKOUT_URL}" ]] || missing+=(LICENSE_CHECKOUT_URL)
-          [[ -n "${VITE_RENEWAL_CHECKOUT_URL}" ]] || missing+=(RENEWAL_CHECKOUT_URL)
+          [[ -n "${MNEMA_LICENSE_PUBLIC_KEY}" ]] || missing+=(MNEMA_LICENSE_PUBLIC_KEY)
+          [[ -n "${MNEMA_LICENSE_KID}" ]] || missing+=(MNEMA_LICENSE_KID)
+          [[ -n "${MNEMA_LICENSE_PK_TOKEN}" ]] || missing+=(MNEMA_LICENSE_PK_TOKEN)
+          [[ -n "${VITE_LICENSE_CHECKOUT_URL}" ]] || missing+=(VITE_LICENSE_CHECKOUT_URL)
+          [[ -n "${VITE_RENEWAL_CHECKOUT_URL}" ]] || missing+=(VITE_RENEWAL_CHECKOUT_URL)
           if (( ${#missing[@]} )); then
-            echo "stable release requires repo variables: ${missing[*]} (Settings → Secrets and variables → Actions → Variables)" >&2
+            echo "stable release requires repo secrets: ${missing[*]} (Settings → Secrets and variables → Actions → Secrets)" >&2
             exit 1
           fi
 

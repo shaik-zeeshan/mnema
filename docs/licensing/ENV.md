@@ -60,8 +60,8 @@ export the matching `MNEMA_LICENSE_KID` and `MNEMA_LICENSE_PK_TOKEN` yourself.
 
 | Env | Who sets it | Effect |
 |---|---|---|
-| `VITE_LICENSE_CHECKOUT_URL` | release CI (`vars.LICENSE_CHECKOUT_URL`) | Live Polar checkout link for the Buy button. Unset → the sandbox link baked as the code default (`apps/desktop/src/lib/licensing.ts`) — fine for prereleases, wrong for real buyers. |
-| `VITE_RENEWAL_CHECKOUT_URL` | release CI (`vars.RENEWAL_CHECKOUT_URL`) | Live Polar renewal checkout link. Same sandbox fallback caveat. |
+| `VITE_LICENSE_CHECKOUT_URL` | release CI (secret, same name) | Live Polar checkout link for the Buy button. Unset → the sandbox link baked as the code default (`apps/desktop/src/lib/licensing.ts`) — fine for prereleases, wrong for real buyers. |
+| `VITE_RENEWAL_CHECKOUT_URL` | release CI (secret, same name) | Live Polar renewal checkout link. Same sandbox fallback caveat. |
 
 ---
 
@@ -74,23 +74,20 @@ in `apps/desktop/src-tauri/Cargo.toml` — no git auth needed anywhere.
 
 ## 3. Release workflow (`.github/workflows/macos-release.yml`)
 
-### Repository variables — Settings → Secrets and variables → Actions → **Variables**
+### Repository secrets — Settings → Secrets and variables → Actions → **Secrets**
 
-All five are enforced for **stable** releases: the workflow fails before
-building if any is unset. Prereleases build placeholder/sandbox happily.
-
-| Variable | Required | Effect |
-|---|---|---|
-| `LICENSE_CHECKOUT_URL` | before selling | Live Polar checkout link → `VITE_LICENSE_CHECKOUT_URL`. |
-| `RENEWAL_CHECKOUT_URL` | before selling | Live Polar renewal link → `VITE_RENEWAL_CHECKOUT_URL`. |
-| `LICENSE_PUBLIC_KEY` | before selling | Prod verifying key (hex/base64) → `MNEMA_LICENSE_PUBLIC_KEY`. Unset → the all-zero placeholder is baked and the released gate verifies **nothing**. |
-| `LICENSE_KID` | before selling | Prod key id → `MNEMA_LICENSE_KID`. Same placeholder caveat. |
-| `LICENSE_PK_TOKEN` | before selling | Prod publishable token → `MNEMA_LICENSE_PK_TOKEN`. Same placeholder caveat. |
-
-### Repository secrets
+All five licensing secrets are enforced for **stable** releases: the workflow
+fails before building if any is unset. Prereleases build placeholder/sandbox
+happily. (Publishable values, kept as secrets so they live beside the other
+release config — secret names match the env vars 1:1.)
 
 | Secret | Required | What it is |
 |---|---|---|
+| `VITE_LICENSE_CHECKOUT_URL` | before selling | Live Polar checkout link. |
+| `VITE_RENEWAL_CHECKOUT_URL` | before selling | Live Polar renewal link. |
+| `MNEMA_LICENSE_PUBLIC_KEY` | before selling | Prod verifying key (hex/base64). Unset → the all-zero placeholder is baked and the released gate verifies **nothing**. |
+| `MNEMA_LICENSE_KID` | before selling | Prod key id. Same placeholder caveat. |
+| `MNEMA_LICENSE_PK_TOKEN` | before selling | Prod publishable token. Same placeholder caveat. |
 | `TAURI_SIGNING_PRIVATE_KEY` / `_PASSWORD` | yes | Tauri updater signing key. |
 
 The workflow itself fetches the live prod CRL and exports it as
