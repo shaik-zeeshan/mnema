@@ -165,7 +165,15 @@ where
     fn load_key(&self, index_id: &str) -> Result<Option<String>> {
         match self.new.load_key(index_id) {
             Ok(Some(key)) => Ok(Some(key)),
-            Ok(None) => self.old.load_key(index_id),
+            Ok(None) => match self.old.load_key(index_id)? {
+                Some(key) => Ok(Some(key)),
+                // Both items missed. The owner only deletes the old item after
+                // its group write proved out (delete is gated on the database
+                // opening with the migrated key), so if the old item vanished
+                // in the gap between our two reads, a group re-read resolves
+                // it. Closes the migration-window TOCTOU (ADR 0057).
+                None => self.new.load_key(index_id),
+            },
             Err(error) => {
                 log::warn!(
                     "capture-index-key: shared group unavailable for reader ({error}); falling back to old key store"
@@ -203,6 +211,10 @@ mod tests {
         deletes: Cell<usize>,
         fail_store: Cell<bool>,
         fail_load: Cell<bool>,
+        /// Fails loads only once a store has happened: lets the migration's
+        /// first load return `Ok(None)` while the read-back errors.
+        fail_load_after_store: Cell<bool>,
+        fail_delete: Cell<bool>,
         /// Simulates a corrupted read-back: loads return the stored value mangled.
         mangle_loads: Cell<bool>,
     }
@@ -223,7 +235,9 @@ mod tests {
 
     impl CaptureIndexKeyStoreAdapter for &FakeKeyStore {
         fn load_key(&self, index_id: &str) -> Result<Option<String>> {
-            if self.fail_load.get() {
+            if self.fail_load.get()
+                || (self.fail_load_after_store.get() && self.writes.get() > 0)
+            {
                 return Err(AppInfraError::CaptureIndexEncryption(
                     "this build cannot access Mnema's keychain group (errSecMissingEntitlement)"
                         .to_string(),
@@ -256,6 +270,11 @@ mod tests {
         }
 
         fn delete_key(&self, index_id: &str) -> Result<()> {
+            if self.fail_delete.get() {
+                return Err(AppInfraError::CaptureIndexEncryption(
+                    "keychain delete failed".to_string(),
+                ));
+            }
             self.deletes.set(self.deletes.get() + 1);
             self.keys.borrow_mut().remove(index_id);
             Ok(())
@@ -466,5 +485,142 @@ mod tests {
         assert_eq!(key, KEY);
         assert_eq!(new.writes.get() + old.writes.get(), 0);
         assert_eq!(new.deletes.get() + old.deletes.get(), 0);
+    }
+
+    #[test]
+    fn reader_rechecks_new_after_old_miss_during_owner_migration_window() {
+        // Migration-window interleaving (ADR 0057): the reader reads the group
+        // item absent, is preempted, and the owner completes migration in that
+        // gap — writes the group item, opens the database, deletes the old
+        // silent item. The reader's old-read then misses too, even though the
+        // key exists in the group. The old item can only vanish after the
+        // owner's group write, so a group re-read must resolve it.
+        struct MigratingOldStore<'a> {
+            new: &'a FakeKeyStore,
+            migrated: Cell<bool>,
+        }
+        impl CaptureIndexKeyStoreAdapter for MigratingOldStore<'_> {
+            fn load_key(&self, index_id: &str) -> Result<Option<String>> {
+                if !self.migrated.get() {
+                    self.migrated.set(true);
+                    self.new
+                        .store_key(index_id, KEY)
+                        .expect("owner writes the group item during the window");
+                }
+                Ok(None)
+            }
+            fn store_key(&self, _index_id: &str, _key: &str) -> Result<()> {
+                Ok(())
+            }
+            fn missing_key_error(&self, index_id: &str) -> AppInfraError {
+                AppInfraError::CaptureIndexEncryption(format!("missing {index_id}"))
+            }
+        }
+
+        let new = FakeKeyStore::default();
+        let old = MigratingOldStore {
+            new: &new,
+            migrated: Cell::new(false),
+        };
+        let reader = ReaderFallbackAdapter::new(&new, old);
+
+        let key = reader
+            .load_key(INDEX_ID)
+            .expect("resolution should succeed")
+            .expect("reader must resolve the key the owner just migrated in the window");
+
+        assert_eq!(key, KEY);
+    }
+
+    #[test]
+    fn owner_new_install_stores_in_group_and_never_touches_old() {
+        let new = FakeKeyStore::default();
+        let old = FakeKeyStore::default();
+        let owner = OwnerMigratingAdapter::new(&new, &old);
+
+        owner
+            .store_key(INDEX_ID, KEY)
+            .expect("group store should succeed");
+
+        assert_eq!(new.key(INDEX_ID).as_deref(), Some(KEY));
+        assert!(old.key(INDEX_ID).is_none());
+        assert_eq!(old.writes.get(), 0);
+        assert_eq!(old.deletes.get(), 0);
+    }
+
+    #[test]
+    fn owner_new_only_resolves_without_scheduling_delete() {
+        let new = FakeKeyStore::with_key(INDEX_ID, KEY);
+        let old = FakeKeyStore::default();
+        let owner = OwnerMigratingAdapter::new(&new, &old);
+
+        let key = owner
+            .load_key(INDEX_ID)
+            .expect("resolution should succeed")
+            .expect("new key should resolve");
+
+        assert_eq!(key, KEY);
+        assert_eq!(new.writes.get(), 0);
+        assert!(!owner.has_pending_old_delete());
+
+        // Post-migration steady state must not attempt a phantom old delete.
+        owner.delete_old_item_after_open();
+        assert_eq!(old.deletes.get(), 0);
+    }
+
+    #[test]
+    fn owner_delete_old_failure_is_non_fatal_and_clears_pending() {
+        let new = FakeKeyStore::default();
+        let old = FakeKeyStore::with_key(INDEX_ID, KEY);
+        old.fail_delete.set(true);
+        let owner = OwnerMigratingAdapter::new(&new, &old);
+
+        owner
+            .load_key(INDEX_ID)
+            .expect("resolution should succeed")
+            .expect("old key should resolve");
+        assert!(owner.has_pending_old_delete());
+
+        // A failed delete must not panic or propagate; the pending marker is
+        // cleared and the retry happens on the next launch's migration pass,
+        // which re-detects both items present.
+        owner.delete_old_item_after_open();
+        assert!(!owner.has_pending_old_delete());
+        assert_eq!(old.key(INDEX_ID).as_deref(), Some(KEY));
+    }
+
+    #[test]
+    fn owner_stays_on_old_path_when_read_back_errors() {
+        let new = FakeKeyStore::default();
+        new.fail_load_after_store.set(true);
+        let old = FakeKeyStore::with_key(INDEX_ID, KEY);
+        let owner = OwnerMigratingAdapter::new(&new, &old);
+
+        let key = owner
+            .load_key(INDEX_ID)
+            .expect("resolution should succeed")
+            .expect("old key should still resolve");
+
+        assert_eq!(key, KEY);
+        assert_eq!(old.deletes.get(), 0);
+        assert!(!owner.has_pending_old_delete());
+        // The freshly-written group item is left in place; the next launch's
+        // migration pass re-verifies it via the both-present path.
+        assert_eq!(new.key(INDEX_ID).as_deref(), Some(KEY));
+    }
+
+    #[test]
+    fn reader_stores_fresh_key_in_old_store_and_never_writes_group() {
+        let new = FakeKeyStore::default();
+        let old = FakeKeyStore::default();
+        let reader = ReaderFallbackAdapter::new(&new, &old);
+
+        reader
+            .store_key(INDEX_ID, KEY)
+            .expect("fresh key creation should succeed");
+
+        assert_eq!(old.key(INDEX_ID).as_deref(), Some(KEY));
+        assert!(new.key(INDEX_ID).is_none());
+        assert_eq!(new.writes.get(), 0);
     }
 }
