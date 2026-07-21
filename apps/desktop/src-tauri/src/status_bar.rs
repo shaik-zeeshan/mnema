@@ -602,7 +602,7 @@ fn handle_exclude_current_app(app: &tauri::AppHandle) {
         let snapshot = crate::native_capture::metadata::collect_native_active_window_snapshot();
         let bundle_id = snapshot.bundle_id.unwrap_or_default();
         let display_name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
-        if bundle_id.trim().is_empty() || bundle_id == "com.shaikzeeshan.mnema" {
+        if bundle_id.trim().is_empty() || bundle_id == "day.mnema" {
             app.dialog()
                 .message("Mnema could not identify a frontmost app to exclude from screen capture.")
                 .kind(MessageDialogKind::Info)

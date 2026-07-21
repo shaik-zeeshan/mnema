@@ -20,7 +20,9 @@ pub(crate) const CAPTURE_INDEX_DATABASE_DIR_NAME: &str = "db";
 
 const INDEX_IDENTITY_FILE_NAME: &str = "capture-index.json";
 const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.capture-index";
-const APP_ID: &str = "com.shaikzeeshan.mnema";
+// Written into new identity files only; existing files keep the pre-rename
+// com.shaikzeeshan.mnema value and nothing compares against it.
+const APP_ID: &str = "day.mnema";
 const ENCRYPTION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
