@@ -13,6 +13,14 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 
 ---
 
+## Timeline Handoff (`open_capture_result_in_main_window`)
+
+- The audio payload's `spanStartMs` is an **offset within the segment** (matches `AudioSearchResult.span_start_ms`), NOT an absolute epoch timestamp. The drawer seeks `audio.currentTime` to it, clamped to the clip duration — passing an evidence ref's absolute `capturedAtMs` silently seeks to the segment's end (bit Subjects/SubjectDetail once). An audio evidence ref's `capturedAtMs` *is* the segment start, so the correct value for "play from the start" is `null`/`0`.
+- `alignedFrameId: null` (or a retention-deleted aligned frame) does not leave the stage on its previous frame: `+page.svelte`'s `jumpToFrameNearAudioMoment` resolves the latest frame at-or-before `segmentStart + spanStartMs` via `get_latest_frame_in_range` (5-min lookback, 10s forward fallback). Callers don't need to precompute an aligned frame; only pass `alignedFrameId` when you have a *better* frame than nearest-in-time (e.g. a search hit's OCR match).
+- The cold-mount path (`initializeTimeline`'s pending-focus audio branch) mirrors this jump; if you add a new audio-open entry point, route it through `openBrokerCaptureResult` / the pending-focus queue rather than setting `selectedAudioSegmentId` directly, or the stage won't follow.
+
+---
+
 ## Settings Persistence
 
 - Recording settings → `recording-settings.json` under `app_config_dir()`.
