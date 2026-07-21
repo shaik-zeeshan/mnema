@@ -114,6 +114,35 @@ impl TriggerFiringsStore {
         ))
     }
 
+    /// The trigger's newest `completed` firings that carry a conversation link,
+    /// newest first, capped at `limit`. Feeds the Context Assembly (issue #183):
+    /// previous run reports the next run of the same trigger compounds on.
+    pub async fn recent_completed_firings(
+        &self,
+        trigger_id: &str,
+        limit: u32,
+    ) -> Result<Vec<TriggerFiring>> {
+        let rows: Vec<(i64, Option<String>, String)> = sqlx::query_as(
+            "SELECT fired_at_ms, reason, conversation_id FROM trigger_firings \
+             WHERE trigger_id = ?1 AND outcome = 'completed' AND conversation_id IS NOT NULL \
+             ORDER BY fired_at_ms DESC, rowid DESC LIMIT ?2",
+        )
+        .bind(trigger_id)
+        .bind(limit)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(fired_at_ms, reason, conversation_id)| TriggerFiring {
+                trigger_id: trigger_id.to_string(),
+                fired_at_ms,
+                outcome: TriggerFiringOutcome::Completed,
+                reason,
+                conversation_id: Some(conversation_id),
+            })
+            .collect())
+    }
+
     /// Drop every ledger row for a deleted trigger (the no-FK contract's
     /// delete-by-id half; the management UI arrives with issue #182).
     pub async fn delete_firings(&self, trigger_id: &str) -> Result<()> {
@@ -252,6 +281,79 @@ mod tests {
                 .expect("row survives");
             assert_eq!(last.fired_at_ms, 50_000);
             assert_eq!(last.outcome, TriggerFiringOutcome::Completed);
+        });
+    }
+
+    #[test]
+    fn recent_completed_firings_returns_only_linked_completed_rows_newest_first() {
+        block_on(async {
+            let pool = test_pool().await;
+            let store = TriggerFiringsStore::new(CaptureDb::single(pool));
+
+            // A completed-with-conversation, a skip, a failure, a completed
+            // WITHOUT a conversation link, and a newer completed-with-conversation.
+            store
+                .record_firing(
+                    "evening",
+                    1_000,
+                    TriggerFiringOutcome::Completed,
+                    None,
+                    Some("conv-old"),
+                )
+                .await
+                .expect("row");
+            store
+                .record_firing("evening", 2_000, TriggerFiringOutcome::Skipped, Some("r"), None)
+                .await
+                .expect("row");
+            store
+                .record_firing("evening", 3_000, TriggerFiringOutcome::Failed, Some("r"), None)
+                .await
+                .expect("row");
+            store
+                .record_firing("evening", 4_000, TriggerFiringOutcome::Completed, None, None)
+                .await
+                .expect("row");
+            store
+                .record_firing(
+                    "evening",
+                    5_000,
+                    TriggerFiringOutcome::Completed,
+                    None,
+                    Some("conv-new"),
+                )
+                .await
+                .expect("row");
+            // Another trigger's rows never bleed in.
+            store
+                .record_firing(
+                    "weekly",
+                    6_000,
+                    TriggerFiringOutcome::Completed,
+                    None,
+                    Some("conv-other"),
+                )
+                .await
+                .expect("row");
+
+            let runs = store
+                .recent_completed_firings("evening", 10)
+                .await
+                .expect("read");
+            let ids: Vec<&str> = runs
+                .iter()
+                .filter_map(|run| run.conversation_id.as_deref())
+                .collect();
+            // Only completed rows WITH a conversation link, newest first.
+            assert_eq!(ids, vec!["conv-new", "conv-old"]);
+
+            // The limit caps the window.
+            let capped = store
+                .recent_completed_firings("evening", 1)
+                .await
+                .expect("read");
+            assert_eq!(capped.len(), 1);
+            assert_eq!(capped[0].conversation_id.as_deref(), Some("conv-new"));
         });
     }
 

@@ -561,7 +561,7 @@ pub(crate) async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) ->
 /// (`execute_for_ask_ai`) with redaction/audit attributed to the "Ask AI"
 /// identity. `open`/`open_in_mnema` never reach here — they are rejected by
 /// `broker_request_from_tool` before this is called.
-async fn execute_ask_ai_broker_request(
+pub(crate) async fn execute_ask_ai_broker_request(
     app_handle: tauri::AppHandle,
     request: BrokeredCaptureRequest,
 ) -> Result<BrokeredCaptureResponse, String> {
@@ -1339,7 +1339,14 @@ fn build_sealed_trigger_tools() -> Vec<ai_engine::AgentTool> {
 /// (ADR 0058's Document View contract) rather than chat. Never mentions
 /// app-control, `fetch_url`, MCP, `show_text`, or `reference_captures` — none
 /// of them exist on a sealed turn.
-fn build_trigger_preamble() -> String {
+///
+/// `personalization` is the Context Assembly block (issue #183,
+/// `triggers::context_assembly`): non-sensitive User-Context conclusions and
+/// past-run excerpts, appended verbatim. It rides the EPHEMERAL preamble — not
+/// the persisted firing question — so personalization data never lands in
+/// conversation rows or follow-up history. `None` degrades to the exact
+/// pre-#183 preamble plus the standing speaker-identity instruction.
+fn build_trigger_preamble(personalization: Option<&str>) -> String {
     let mut preamble = String::new();
     preamble.push_str(
         "You are Mnema's automated trigger assistant. This run was started by a schedule the \
@@ -1381,6 +1388,25 @@ include ONE fenced ```mnema-timeline block whose body is JSON \
 real intervals (`app` must be the exact captured app name, verbatim). Otherwise use plain \
 markdown.\n",
     );
+    // Speaker identity (issue #183): there is no self person-profile concept in
+    // the app, so the honest, always-true identity signal is the capture source
+    // — microphone audio is the user's own voice, system audio is everyone else
+    // (mirrors ADR 0050's you/other split). Static instruction, no data.
+    preamble.push_str(
+        "Audio captured from the microphone is the user's OWN voice; system audio is the other \
+participants (the `timeline` tool labels these `audio_microphone` and `audio_system`). Address \
+the user directly as \"you\", and aim any feedback about speaking, communication, or \
+commitments at the user's own microphone turns — never critique the user for something another \
+participant said.\n",
+    );
+    // Context Assembly (issue #183): the personalization block assembled
+    // on-device around this firing — already guardrailed and capped upstream.
+    if let Some(block) = personalization {
+        preamble.push_str(block);
+        if !block.ends_with('\n') {
+            preamble.push('\n');
+        }
+    }
     preamble
 }
 
@@ -1692,6 +1718,9 @@ pub(crate) async fn run_ask_ai_turn(
     clock: ClientClock,
     cancel: Arc<AtomicBool>,
     sealed: bool,
+    // Context Assembly block for a sealed run (issue #183); appended to the
+    // ephemeral trigger preamble, never persisted. Ignored when not sealed.
+    sealed_personalization: Option<String>,
 ) -> bool {
     // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
     // ownership checks (apply/remove) can tell THIS turn apart from a newer turn
@@ -2028,7 +2057,10 @@ pub(crate) async fn run_ask_ai_turn(
     // the await. A SEALED turn never consults MCP at all (no connector tools, no
     // discovery wait).
     let (tools, preamble) = if sealed {
-        (build_sealed_trigger_tools(), build_trigger_preamble())
+        (
+            build_sealed_trigger_tools(),
+            build_trigger_preamble(sealed_personalization.as_deref()),
+        )
     } else {
         let mcp_manager = (*app_handle.state::<mcp::McpManager>()).clone();
         let (mcp_tools, mcp_notes) = mcp_manager.tools_for_turn(&app_handle).await;
@@ -2579,6 +2611,7 @@ pub async fn ask_ai_start(
         clock,
         cancel,
         false,
+        None,
     ));
 
     Ok(())
@@ -2632,6 +2665,7 @@ pub async fn ask_ai_followup(
         clock,
         cancel,
         false,
+        None,
     ));
 
     Ok(())
@@ -2739,7 +2773,7 @@ mod tests {
 
     #[test]
     fn trigger_preamble_documents_only_sealed_tools_and_asks_for_a_document() {
-        let preamble = build_trigger_preamble();
+        let preamble = build_trigger_preamble(None);
         // The three sealed tools are described…
         assert!(preamble.contains("`search`"));
         assert!(preamble.contains("`timeline`"));
@@ -2773,6 +2807,25 @@ mod tests {
         // The graphical block affordances still render in the document view.
         assert!(preamble.contains("mnema-bars"));
         assert!(preamble.contains("mnema-timeline"));
+    }
+
+    #[test]
+    fn trigger_preamble_carries_speaker_identity_and_appends_personalization() {
+        // Speaker identity (issue #183): with no self person-profile concept in
+        // the app, the standing instruction anchors "the user's own voice" to
+        // the microphone source, unconditionally.
+        let bare = build_trigger_preamble(None);
+        assert!(bare.contains("microphone is the user's OWN voice"));
+        assert!(bare.contains("audio_microphone"));
+        // No personalization → the preamble ends exactly where it used to (no
+        // empty scaffolding text confusing the model).
+        assert!(!bare.contains("Personalization"));
+
+        // A Context Assembly block is appended verbatim, newline-terminated.
+        let block = "Personalization for this run:\n- prefers Rust";
+        let personalized = build_trigger_preamble(Some(block));
+        assert!(personalized.starts_with(&bare));
+        assert!(personalized.ends_with("Personalization for this run:\n- prefers Rust\n"));
     }
 
     #[test]

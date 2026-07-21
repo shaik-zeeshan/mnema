@@ -40,7 +40,8 @@ fn local_datetime(utc_ms: i64, offset_minutes: i32) -> time::OffsetDateTime {
 }
 
 /// Short local date for the self-generated run title, e.g. "Fri Jul 24".
-fn format_short_local_date(utc_ms: i64, offset_minutes: i32) -> String {
+/// `pub(crate)` for the Context Assembly's past-run labels (issue #183).
+pub(crate) fn format_short_local_date(utc_ms: i64, offset_minutes: i32) -> String {
     let local = local_datetime(utc_ms, offset_minutes);
     let weekday = local.weekday().to_string();
     let month = local.date().month().to_string();
@@ -409,6 +410,13 @@ pub(crate) async fn run_trigger_fire(
     );
 
     let question = build_firing_question(trigger, occurrence_ms, fired_at, offset_minutes, event);
+    // Context Assembly (issue #183): the personalization block for this firing
+    // — non-sensitive User-Context conclusions + past-run excerpts. Gathered
+    // ONCE (best-effort, never blocks the run) and appended to the ephemeral
+    // sealed preamble, so it stays out of the persisted question and history.
+    let personalization =
+        super::context_assembly::gather_personalization(app_handle, infra, trigger, offset_minutes)
+            .await;
     // Each attempt is a fresh sealed turn in the SAME conversation (an errored
     // attempt persists as an errored turn; only a completed one becomes the
     // report and history).
@@ -417,6 +425,7 @@ pub(crate) async fn run_trigger_fire(
         let conversation_id = conversation_id.clone();
         let question = question.clone();
         let title = title.clone();
+        let personalization = personalization.clone();
         async move {
             let clock = crate::ask_ai::ClientClock {
                 utc_offset_minutes: Some(offset_minutes),
@@ -433,6 +442,7 @@ pub(crate) async fn run_trigger_fire(
                 clock,
                 cancel.clone(),
                 /* sealed = */ true,
+                personalization,
             )
             .await;
             if completed {

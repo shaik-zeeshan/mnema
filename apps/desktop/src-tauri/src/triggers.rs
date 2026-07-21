@@ -43,6 +43,7 @@ use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersSta
 use crate::user_context::worker::now_ms;
 
 pub(crate) mod app_opened;
+pub(crate) mod context_assembly;
 pub(crate) mod meeting;
 pub(crate) mod meeting_browser;
 pub(crate) mod meeting_worker;
