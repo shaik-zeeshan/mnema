@@ -233,9 +233,28 @@ jobs:
           set -euo pipefail
           app="target/aarch64-apple-darwin/release/bundle/macos/mnema.app"
           ditto -c -k --keepParent "$app" mnema-notarize.zip
-          xcrun notarytool submit mnema-notarize.zip \
+          submission_id="$(xcrun notarytool submit mnema-notarize.zip \
             --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
-            --team-id RJYMY4RR97 --wait
+            --team-id RJYMY4RR97 --output-format json | jq -r '.id')"
+          # Poll instead of `submit --wait`: a single network blip during the
+          # long wait killed a run even though Apple accepted the submission.
+          status=""
+          for _ in $(seq 1 60); do
+            status="$(xcrun notarytool info "$submission_id" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id RJYMY4RR97 --output-format json 2>/dev/null \
+              | jq -r '.status' || true)"
+            case "$status" in
+              Accepted) break ;;
+              Invalid|Rejected)
+                xcrun notarytool log "$submission_id" \
+                  --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+                  --team-id RJYMY4RR97 || true
+                exit 1 ;;
+              *) sleep 60 ;;
+            esac
+          done
+          [[ "$status" == "Accepted" ]] || { echo "notarization did not reach Accepted within 60min (last status: '$status')" >&2; exit 1; }
           xcrun stapler staple "$app"
           rm mnema-notarize.zip
 
