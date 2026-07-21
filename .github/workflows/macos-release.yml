@@ -275,7 +275,7 @@ jobs:
           # Key/password come from the TAURI_SIGNING_* env vars the CLI reads
           # natively; passing them as flags broke when the empty password
           # argument was dropped by the bun→turbo script chain.
-          bun run tauri -- signer sign "$tar_gz"
+          bun run tauri -- signer sign "$PWD/$tar_gz"
           dmg="$(ls "$bundle"/dmg/*.dmg)"
           staging="$(mktemp -d)"
           ditto "$app" "$staging/mnema.app"
