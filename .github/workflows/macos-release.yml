@@ -272,10 +272,10 @@ jobs:
           app="$bundle/macos/mnema.app"
           tar_gz="$(ls "$bundle"/macos/*.app.tar.gz)"
           tar -czf "$tar_gz" -C "$bundle/macos" mnema.app
-          bun run tauri -- signer sign \
-            --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
-            --password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD" \
-            "$tar_gz"
+          # Key/password come from the TAURI_SIGNING_* env vars the CLI reads
+          # natively; passing them as flags broke when the empty password
+          # argument was dropped by the bun→turbo script chain.
+          bun run tauri -- signer sign "$tar_gz"
           dmg="$(ls "$bundle"/dmg/*.dmg)"
           staging="$(mktemp -d)"
           ditto "$app" "$staging/mnema.app"
