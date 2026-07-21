@@ -31,7 +31,15 @@
 <div class="group">
   {#each rows as row (row.key)}
     {@const value = controller.permissions?.[row.key]}
-    {@const action = controller.permissionAction(value)}
+    <!-- System audio's grant is unreadable (ADR 0052): once the prompt has been
+         raised this session the row reads "Requested" (still pending — a real
+         recording that hears sound is what proves it) and the request button
+         goes away (macOS never re-prompts the same dialog). -->
+    {@const sysAudioRequested =
+      row.key === "systemAudio" &&
+      controller.sysAudioPromptRaised &&
+      value === "not_determined"}
+    {@const action = sysAudioRequested ? null : controller.permissionAction(value)}
     <div class="perm">
       <div class="pn">
         <div class="t">{row.title}</div>
@@ -39,7 +47,7 @@
       </div>
       <div class="pr">
         <span class="pill {pillClass(controller.permissionTone(value))}">
-          <span class="d"></span>{controller.permissionLabel(value)}
+          <span class="d"></span>{sysAudioRequested ? "Requested" : controller.permissionLabel(value)}
         </span>
         {#if action}
           <button

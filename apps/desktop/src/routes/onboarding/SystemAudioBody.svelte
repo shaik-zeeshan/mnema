@@ -27,7 +27,16 @@
   // delivering sound ("assumed_working" → no action).
   const setLockCallout = useLockCalloutSlot();
   const sysAction = $derived(controller.permissionAction(controller.permissions?.systemAudio));
-  const showGrant = $derived(controller.draftCaptureSystemAudio && sysAction !== null);
+  // Once the prompt has been raised this session, the "get it out of the way"
+  // offer is served — re-requesting is a macOS no-op and the callout would
+  // wrongly read as still-ungranted (the grant itself is unreadable, ADR 0052).
+  // `possibly_blocked` keeps the callout: that copy routes to System Settings.
+  const promptServed = $derived(
+    controller.sysAudioPromptRaised && controller.permissions?.systemAudio === "not_determined",
+  );
+  const showGrant = $derived(
+    controller.draftCaptureSystemAudio && sysAction !== null && !promptServed,
+  );
   $effect(() => {
     setLockCallout(showGrant ? lockCallout : null);
     return () => setLockCallout(null);

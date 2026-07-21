@@ -172,6 +172,7 @@ export class OnboardingController {
   set permissions(value: Record<PermissionKey, PermissionValue> | null) { this.permsStore.permissions = value; }
   get requestingPerm() { return this.permsStore.requestingPerm; }
   get refreshingPerms() { return this.permsStore.refreshingPerms; }
+  get sysAudioPromptRaised() { return this.permsStore.sysAudioPromptRaised; }
   get geckoUrlAccess() { return this.permsStore.geckoUrlAccess; }
   get requestingGeckoAccess() { return this.permsStore.requestingGeckoAccess; }
   get recheckingGeckoAccess() { return this.permsStore.recheckingGeckoAccess; }
