@@ -14,8 +14,6 @@
     deleteTrigger,
     listTriggers,
     listTriggersStatus,
-    parseTriggerJson,
-    shareTriggerJson,
     triggersProviderReady,
     updateTrigger,
     type ConditionType,
@@ -23,6 +21,7 @@
     type TriggerDraft,
     type TriggerStatus,
   } from "$lib/triggers/api";
+  import { parseTriggerJson, shareTriggerJson } from "$lib/triggers/share";
 
   const REFRESH_INTERVAL_MS = 30_000;
 
@@ -31,6 +30,7 @@
   let providerReady = $state(true);
   let loaded = $state(false);
   let loadError = $state<string | null>(null);
+  let importError = $state<string | null>(null);
   let flashId = $state<string | null>(null);
 
   type View =
@@ -90,6 +90,7 @@
     extra: { presetCond?: ConditionType; editing?: TriggerDefinition; imported?: TriggerDraft } = {},
   ): void {
     wizardNonce += 1;
+    importError = null;
     view = { mode: "wizard", wizardMode, nonce: wizardNonce, ...extra };
   }
 
@@ -144,17 +145,15 @@
     try {
       text = await readText();
     } catch {
-      // fall through to the shared error below
+      // Empty clipboard reads as empty text; the parser explains it inline.
     }
-    const draft = text ? parseTriggerJson(text) : null;
-    if (!draft) {
-      await message(
-        "Copy a shared Trigger JSON first — Import reads it from your clipboard and prefills the wizard for review.",
-        { title: "Import trigger", kind: "warning" },
-      );
+    const parsed = parseTriggerJson(text);
+    if (!parsed.ok) {
+      importError = parsed.error;
       return;
     }
-    openWizard("import", { imported: draft });
+    importError = null;
+    openWizard("import", { imported: parsed.draft });
   }
 
   function onOpenRun(conversationId: string): void {
@@ -187,6 +186,13 @@
             onclick={() => void onImport()}
           >Import</button>
         </div>
+        {#if importError}
+          <p class="import-error" role="alert">
+            Import failed: {importError}
+            <button type="button" class="dismiss" onclick={() => (importError = null)}
+              >dismiss</button>
+          </p>
+        {/if}
         {#if loadError}
           <p class="load-error" role="alert">{loadError}</p>
         {/if}
@@ -277,6 +283,29 @@
     margin: 0 0 14px;
     font-size: 11px;
     color: var(--app-danger-text);
+  }
+
+  .import-error {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin: 0 0 14px;
+    padding: 7px 10px;
+    font-size: 11.5px;
+    color: var(--app-danger-text);
+    border: 1px solid var(--app-danger-border, var(--app-border));
+    border-radius: 6px;
+  }
+  .import-error .dismiss {
+    margin-left: auto;
+    font: inherit;
+    font-size: 11px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    text-decoration: underline;
   }
 
   .btn {

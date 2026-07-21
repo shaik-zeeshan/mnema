@@ -185,49 +185,7 @@ export function fmtWhen(ms: number): string {
 }
 
 // ── Trigger JSON (Share / Import) ───────────────────────────────────────────
-// The shareable form is the stored wire shape minus the machine-local fields
-// (id, enabled): { version, name, condition, prompt, cooldownMinutes? }. It
-// never carries provider/model config (docs/triggers/CONTEXT.md).
-
-export function shareTriggerJson(trigger: TriggerDefinition): string {
-  return JSON.stringify(
-    {
-      version: 1,
-      name: trigger.name,
-      condition: trigger.condition,
-      prompt: trigger.prompt,
-      ...(trigger.cooldownMinutes !== undefined
-        ? { cooldownMinutes: trigger.cooldownMinutes }
-        : {}),
-    },
-    null,
-    2,
-  );
-}
-
-/** Parse pasted Trigger JSON into a wizard prefill, or null when it isn't one. */
-export function parseTriggerJson(text: string): TriggerDraft | null {
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (typeof raw !== "object" || raw === null) return null;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.name !== "string" || typeof obj.prompt !== "string") return null;
-  const condition = obj.condition;
-  if (typeof condition !== "object" || condition === null) return null;
-  const type = (condition as Record<string, unknown>).type;
-  if (type !== "meeting_ends" && type !== "app_opened" && type !== "schedule") return null;
-  const cooldown = obj.cooldownMinutes;
-  return {
-    name: obj.name,
-    condition: condition as TriggerCondition,
-    prompt: obj.prompt,
-    ...(typeof cooldown === "number" ? { cooldownMinutes: cooldown } : {}),
-  };
-}
+// Pure share/import logic lives in `./share` (dependency-free, bun-tested).
 
 // ── Invoke wrappers ─────────────────────────────────────────────────────────
 

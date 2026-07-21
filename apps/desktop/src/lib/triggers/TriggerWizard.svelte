@@ -18,7 +18,6 @@
     STARTERS,
     createTrigger,
     fmtTime,
-    shareTriggerJson,
     updateTrigger,
     type ConditionType,
     type ScheduleWeekday,
@@ -26,6 +25,7 @@
     type TriggerDefinition,
     type TriggerDraft,
   } from "$lib/triggers/api";
+  import { shareTriggerJson } from "$lib/triggers/share";
 
   interface Props {
     mode: "create" | "edit" | "import";
