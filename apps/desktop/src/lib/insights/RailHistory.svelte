@@ -20,7 +20,27 @@
   import {
     conversationStore,
     relativeTime,
+    type OriginFilter,
   } from "$lib/insights/conversationStore.svelte";
+
+  // The rail's origin filter (issue #179) — All / Chats / Triggers, per the
+  // final Triggers design (docs/triggers/mockups/final/DESIGN.md). Applied
+  // client-side in the store so it composes with backend text search.
+  const ORIGIN_FILTERS: { id: OriginFilter; label: string }[] = [
+    { id: "all", label: "all" },
+    { id: "chats", label: "chats" },
+    { id: "triggers", label: "triggers" },
+  ];
+
+  const emptyMessage = $derived.by((): string => {
+    if (conversationStore.searchQuery.trim().length > 0)
+      return "No conversations match.";
+    if (conversationStore.conversations.length > 0)
+      return conversationStore.originFilter === "triggers"
+        ? "No trigger runs yet."
+        : "No chats yet.";
+    return "No conversations yet.";
+  });
 
   function autofocusSelect(node: HTMLInputElement): void {
     node.focus();
@@ -38,6 +58,22 @@
     }
   }
 </script>
+
+<!-- origin filter — rail-sized segmented control (All / Chats / Triggers),
+     per the final Triggers design. Narrows the list to trigger runs (or plain
+     chats) and back; text search keeps working inside a filtered view. -->
+<div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+  {#each ORIGIN_FILTERS as f (f.id)}
+    <button
+      type="button"
+      class:active={conversationStore.originFilter === f.id}
+      aria-pressed={conversationStore.originFilter === f.id}
+      onclick={() => (conversationStore.originFilter = f.id)}
+    >
+      {f.label}
+    </button>
+  {/each}
+</div>
 
 <!-- search — borderless; a clear magnifier glyph carries the "this is search"
      signal (the app's own search SVG). Focus brightens the glyph to the accent
@@ -78,12 +114,8 @@
         </div>
       {/each}
     </div>
-  {:else if conversationStore.conversations.length === 0}
-    <p class="rail-empty">
-      {conversationStore.searchQuery.trim().length > 0
-        ? "No conversations match."
-        : "No conversations yet."}
-    </p>
+  {:else if conversationStore.filteredConversations.length === 0}
+    <p class="rail-empty">{emptyMessage}</p>
   {:else}
     {#each conversationStore.historyGroups as group (group.label)}
       <div class="rail-group" role="presentation">{group.label}</div>
@@ -123,10 +155,22 @@
                 ? "true"
                 : undefined}
             >
-              <span class="t" use:tip={c.title || c.preview}>
-                {c.title || c.preview || "Untitled chat"}
+              <span class="row1">
+                <span class="t" use:tip={c.title || c.preview}>
+                  {c.title || c.preview || "Untitled chat"}
+                </span>
+                <span class="when">{relativeTime(c.updatedAtMs)}</span>
               </span>
-              <span class="when">{relativeTime(c.updatedAtMs)}</span>
+              {#if c.origin === "trigger"}
+                <!-- trigger-origin badge: accent-bordered chip with the firing
+                     trigger's display name (final Triggers design). -->
+                <span
+                  class="origin-badge"
+                  use:tip={`Run by trigger: ${c.triggerName || "unknown"}`}
+                >
+                  {c.triggerName || "trigger run"}
+                </span>
+              {/if}
             </button>
             <!-- Quiet row actions: hidden until the row is hovered or holds
                  keyboard focus (`:focus-within`) — pure hover would lock
@@ -233,6 +277,74 @@
     appearance: none;
   }
 
+  /* origin filter — the mockup's rail-sized segmented control (All / Chats /
+     Triggers). Same quiet chrome as the rest of the rail: 1px border, tint-on-
+     active, lowercase labels. */
+  .origin-filter {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    margin-top: 14px;
+    border: 1px solid var(--app-border);
+    border-radius: 7px;
+    background: var(--app-surface-subtle);
+  }
+  .origin-filter button {
+    flex: 1 1 0;
+    font: inherit;
+    font-size: 10.5px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    height: 20px;
+    padding: 0 4px;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    text-transform: lowercase;
+    transition:
+      color 0.12s ease,
+      background 0.12s ease;
+  }
+  .origin-filter button:hover {
+    color: var(--app-text-strong);
+  }
+  .origin-filter button:focus-visible {
+    outline: none;
+    color: var(--app-accent);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
+  }
+  .origin-filter button.active {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+
+  /* trigger-origin badge — accent-bordered chip with the firing trigger's
+     display name, sitting under the row title (final Triggers design). */
+  .origin-badge {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    margin-bottom: 4px;
+    font-size: 9px;
+    letter-spacing: 0.03em;
+    line-height: 14px;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--app-accent-border);
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
   /* chat history — ultra-compact single-line rows, no chrome. */
   .rail-history {
     flex: 1 1 auto;
@@ -305,9 +417,9 @@
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 24px;
+    flex-direction: column;
+    align-items: stretch;
+    min-height: 24px;
     background: transparent;
     border: 0;
     padding: 0;
@@ -315,6 +427,15 @@
     cursor: pointer;
     text-align: left;
     font: inherit;
+  }
+  /* First line — the old single-line row geometry (title + timestamp); a
+     trigger row grows a second badge line below it. */
+  .rail-chat .row1 {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 24px;
+    min-width: 0;
   }
   .rail-chat .t {
     flex: 1 1 auto;
