@@ -20,6 +20,8 @@ use tokio::{
 };
 use uuid::Uuid;
 
+mod mcp;
+
 const APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 #[cfg(unix)]
 const AUTHORIZATION_TIMEOUT: Duration = Duration::from_secs(120);
@@ -65,6 +67,8 @@ enum CommandKind {
         #[command(subcommand)]
         command: AccessCommand,
     },
+    /// Run as a local MCP server over stdio (for Claude Desktop, Cursor, etc.)
+    Mcp,
 }
 
 #[derive(Subcommand, Debug)]
@@ -365,6 +369,12 @@ async fn run(cli: Cli) -> Result<(), CliError> {
             }
             run_access_command(command, &identity, cli.no_prompt).await
         }
+        CommandKind::Mcp => {
+            if cli.format.is_some() {
+                return Err(usage_error("--format is only supported for data commands"));
+            }
+            mcp::serve(identity).await
+        }
     }
 }
 
@@ -376,6 +386,22 @@ async fn run_data_command(
     no_prompt: bool,
 ) -> Result<(), CliError> {
     let format = format.unwrap_or(OutputFormat::Json);
+    let allow_prompt = !no_prompt && can_prompt_for_authorization();
+    match execute_data_request(command, identity, request, allow_prompt).await {
+        Ok(value) => print_envelope(command, identity, format, &value),
+        Err(error) => print_structured_error(command, identity, format, error),
+    }
+}
+
+/// Shared broker path for the CLI data commands and the MCP server: execute,
+/// run the app-approval flow once if the broker asks for it, and map the
+/// response to the stable output shape.
+async fn execute_data_request(
+    command: &str,
+    identity: &BrokerClientIdentity,
+    request: BrokeredCaptureRequest,
+    allow_prompt: bool,
+) -> Result<serde_json::Value, CliError> {
     let access =
         BrokeredCaptureAccess::from_app_identifier(APP_IDENTIFIER).map_err(broker_error)?;
     let mut response = access
@@ -384,8 +410,8 @@ async fn run_data_command(
         .map_err(broker_error)?;
 
     if response_requires_authorization(&response) {
-        if no_prompt || !can_prompt_for_authorization() {
-            return print_structured_error(command, identity, format, auth_required_error());
+        if !allow_prompt {
+            return Err(auth_required_error());
         }
         request_authorization(
             command,
@@ -400,55 +426,35 @@ async fn run_data_command(
             .map_err(broker_error)?;
     }
 
-    if let BrokeredCaptureResponse::Error(error) = response {
-        let cli_error = map_broker_response_error(error);
-        return print_structured_error(command, identity, format, cli_error);
-    }
-
-    match command {
-        "search" => {
-            let BrokeredCaptureResponse::Search(response) = response else {
-                return Err(broker_failure("unexpected search response"));
-            };
-            print_envelope(command, identity, format, &map_search_data(response))
+    let value = match response {
+        BrokeredCaptureResponse::Error(error) => return Err(map_broker_response_error(error)),
+        BrokeredCaptureResponse::Search(response) if command == "search" => {
+            serde_json::to_value(map_search_data(response))
         }
-        "timeline" => {
-            let BrokeredCaptureResponse::Timeline(response) = response else {
-                return Err(broker_failure("unexpected timeline response"));
-            };
-            print_envelope(command, identity, format, &map_timeline_data(response))
+        BrokeredCaptureResponse::Timeline(response) if command == "timeline" => {
+            serde_json::to_value(map_timeline_data(response))
         }
-        "show-text" => {
-            let BrokeredCaptureResponse::ShowText(response) = response else {
-                return Err(broker_failure("unexpected show-text response"));
-            };
-            print_envelope(
-                command,
-                identity,
-                format,
-                &ShowTextData {
-                    id: response.opaque_id,
-                    kind: map_kind(&response.kind),
-                    text: response.text,
-                },
-            )
+        BrokeredCaptureResponse::ShowText(response) if command == "show-text" => {
+            serde_json::to_value(ShowTextData {
+                id: response.opaque_id,
+                kind: map_kind(&response.kind),
+                text: response.text,
+            })
         }
-        "open" => {
-            let BrokeredCaptureResponse::OpenInMnema(response) = response else {
-                return Err(broker_failure("unexpected open response"));
-            };
-            print_envelope(
-                command,
-                identity,
-                format,
-                &OpenData {
-                    id: response.opaque_id,
-                    opened: response.opened,
-                },
-            )
+        BrokeredCaptureResponse::OpenInMnema(response) if command == "open" => {
+            serde_json::to_value(OpenData {
+                id: response.opaque_id,
+                opened: response.opened,
+            })
         }
-        _ => Err(broker_failure("unsupported command")),
-    }
+        _ => return Err(broker_failure(format!("unexpected {command} response"))),
+    };
+    value.map_err(|error| CliError {
+        exit: 21,
+        code: "output_serialization_failed",
+        message: error.to_string(),
+        retryable: false,
+    })
 }
 
 async fn run_access_command(
@@ -1015,6 +1021,7 @@ mod tests {
         .unwrap();
         Cli::try_parse_from(["mnema", "show-text", "f1.deadbeef"]).unwrap();
         Cli::try_parse_from(["mnema", "open", "f1.deadbeef"]).unwrap();
+        Cli::try_parse_from(["mnema", "--client", "Claude Desktop", "mcp"]).unwrap();
     }
 
     #[test]
