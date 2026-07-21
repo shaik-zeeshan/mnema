@@ -49,6 +49,7 @@ pub(crate) mod meeting_worker;
 pub(crate) mod readiness;
 pub(crate) mod run;
 pub(crate) mod schedule;
+pub(crate) mod store;
 
 pub(crate) use run::take_recent_notification_conversation;
 use schedule::{ScheduleCadence, ScheduleWeekday};

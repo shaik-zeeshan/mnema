@@ -37,8 +37,9 @@ const TRACKING_POLL: Duration = Duration::from_secs(5);
 /// and it keeps the synchronous coreaudiod round-trip off a 5s treadmill.
 const IDLE_POLL: Duration = Duration::from_secs(15);
 
-/// Default global release grace (docs/triggers/CONTEXT.md).
-const DEFAULT_RELEASE_GRACE_MINUTES: i64 = 2;
+/// Default global release grace (docs/triggers/CONTEXT.md). Also the default
+/// the #182 Settings knob (`store::get_meeting_release_grace_minutes`) reports.
+pub(crate) const DEFAULT_RELEASE_GRACE_MINUTES: i64 = 2;
 
 /// A tick gap far beyond both poll cadences means the machine slept (or the
 /// process was suspended): mic state was last actually known at the previous

@@ -71,6 +71,7 @@
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
+  const isTriggersRoute = $derived(normalizedPathname.startsWith("/triggers"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -80,10 +81,11 @@
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
-  // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
-  // Insights (`/insights`). The shared main titlebar (record controls, source
-  // pills, settings, the Timeline⇄Insights surface toggle) renders on both.
-  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
+  // The Main window hosts three top-level Surfaces — Timeline (`/`), Insights
+  // (`/insights`), and Triggers (`/triggers`, issue #182). The shared main
+  // titlebar (record controls, source pills, settings, the surface toggle)
+  // renders on all of them.
+  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute || isTriggersRoute);
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -639,32 +641,44 @@
     }
   }
 
-  // ── Main surface toggle (Timeline ⇄ Insights) ─────────────────────────
-  // "dashboard" is retired: the Main window hosts two switchable Surfaces.
+  // ── Main surface toggle (Timeline ⇄ Insights ⇄ Triggers) ──────────────
+  // "dashboard" is retired: the Main window hosts three switchable Surfaces.
   // The active segment reflects the current route (the static `/index.html`
   // production entry normalizes to `/` = Timeline).
-  function goToSurface(surface: "timeline" | "insights"): void {
-    const target = surface === "insights" ? "/insights" : "/";
+  function goToSurface(surface: "timeline" | "insights" | "triggers"): void {
+    const target =
+      surface === "insights" ? "/insights" : surface === "triggers" ? "/triggers" : "/";
     if (normalizeAppPathname($page.url.pathname) === target) return;
     void goto(target);
   }
 
-  // On the Settings route neither surface is the current page, so the toggle has
+  // On the Settings route no surface is the current page, so the toggle has
   // no active segment. Rather than leaving it blank we de-emphasize it and mark
   // the surface "Back to app" will return to (visually only — no `aria-current`,
   // since Settings is the page).
   const settingsReturnsToInsights = $derived(
     isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/insights"),
   );
-  const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
+  const settingsReturnsToTriggers = $derived(
+    isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/triggers"),
+  );
+  const settingsReturnsToTimeline = $derived(
+    isSettingsRoute && !settingsReturnsToInsights && !settingsReturnsToTriggers,
+  );
 
   // The gear is a real toggle: opening Settings from a surface, then clicking
-  // the gear again returns to the surface it was opened from (Timeline or
-  // Insights) instead of being a no-op with no obvious exit.
+  // the gear again returns to the surface it was opened from (Timeline,
+  // Insights, or Triggers) instead of being a no-op with no obvious exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      const returnsToInsights = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
-      goToSurface(returnsToInsights ? "insights" : "timeline");
+      const last = normalizeAppPathname(getLastMainSurface());
+      goToSurface(
+        last.startsWith("/insights")
+          ? "insights"
+          : last.startsWith("/triggers")
+            ? "triggers"
+            : "timeline",
+      );
       return;
     }
     void openSettings();
@@ -1198,6 +1212,15 @@
           onclick={() => goToSurface("insights")}
         >
           Insights
+        </button>
+        <button
+          type="button"
+          class:active={isTriggersRoute}
+          class:return-target={settingsReturnsToTriggers}
+          aria-current={isTriggersRoute ? "page" : undefined}
+          onclick={() => goToSurface("triggers")}
+        >
+          Triggers
         </button>
       </div>
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space

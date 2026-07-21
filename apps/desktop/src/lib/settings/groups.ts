@@ -34,6 +34,7 @@ export type SettingsSectionId =
   | "privacy"
   | "intelligence"
   | "askAi"
+  | "triggers"
   | "userContext"
   | "ocr"
   | "transcription"
@@ -171,6 +172,12 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         anchor: "settings-section-askAi",
         label: "Ask AI",
         keywords: ["chat", "quick recall", "tool calls", "model override"],
+      },
+      {
+        id: "triggers",
+        anchor: "settings-section-triggers",
+        label: "Triggers",
+        keywords: ["meeting release grace", "meeting ends", "automation", "trigger"],
       },
       {
         id: "userContext",
@@ -315,6 +322,8 @@ export function resolveTabDeeplink(
     case "ai":
     case "ai-runtime":
       return "intelligence";
+    case "triggers":
+      return "triggers";
     case "user-context":
     case "userContext":
       return "userContext";

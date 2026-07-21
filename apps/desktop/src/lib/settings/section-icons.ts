@@ -22,6 +22,7 @@ import IconAudio from "~icons/lucide/audio-lines";
 import IconPrivacy from "~icons/lucide/shield";
 import IconIntelligence from "~icons/lucide/brain";
 import IconAskAi from "~icons/lucide/sparkles";
+import IconTriggers from "~icons/lucide/zap";
 import IconUserContext from "~icons/lucide/user";
 import IconOcr from "~icons/lucide/scan-text";
 import IconTranscription from "~icons/lucide/mic";
@@ -47,6 +48,7 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   privacy: IconPrivacy,
   intelligence: IconIntelligence,
   askAi: IconAskAi,
+  triggers: IconTriggers,
   userContext: IconUserContext,
   ocr: IconOcr,
   transcription: IconTranscription,

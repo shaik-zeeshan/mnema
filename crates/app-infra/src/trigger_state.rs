@@ -70,6 +70,29 @@ impl TriggerStateStore {
         .await?;
         Ok(())
     }
+
+    /// Drop a deleted trigger's evaluator cursor (the delete-by-id half of the
+    /// no-FK file/DB contract, alongside `trigger_firings::delete_firings`).
+    pub async fn clear_last_fired(&self, trigger_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM app_settings WHERE key = ?1")
+            .bind(last_fired_key(trigger_id))
+            .execute(self.db.write())
+            .await?;
+        Ok(())
+    }
+
+    /// Write the global Meeting release grace (the #182 Settings knob).
+    pub async fn set_meeting_release_grace_minutes(&self, minutes: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(MEETING_RELEASE_GRACE_KEY)
+        .bind(minutes.to_string())
+        .execute(self.db.write())
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +184,49 @@ mod tests {
             assert_eq!(
                 store.meeting_release_grace_minutes().await.expect("read"),
                 Some(5)
+            );
+        });
+    }
+
+    #[test]
+    fn clear_last_fired_removes_only_that_triggers_cursor() {
+        block_on(async {
+            let store = test_store().await;
+            store.set_last_fired_ms("evening", 1_000).await.expect("write");
+            store.set_last_fired_ms("weekly", 2_000).await.expect("write");
+
+            store.clear_last_fired("evening").await.expect("clear");
+
+            assert_eq!(store.last_fired_ms("evening").await.expect("read"), None);
+            assert_eq!(
+                store.last_fired_ms("weekly").await.expect("read"),
+                Some(2_000)
+            );
+            // Clearing a never-fired trigger is a quiet no-op.
+            store.clear_last_fired("missing").await.expect("no-op clear");
+        });
+    }
+
+    #[test]
+    fn meeting_release_grace_round_trips_via_the_setter() {
+        block_on(async {
+            let store = test_store().await;
+            store
+                .set_meeting_release_grace_minutes(4)
+                .await
+                .expect("write");
+            assert_eq!(
+                store.meeting_release_grace_minutes().await.expect("read"),
+                Some(4)
+            );
+            // Last write wins.
+            store
+                .set_meeting_release_grace_minutes(2)
+                .await
+                .expect("rewrite");
+            assert_eq!(
+                store.meeting_release_grace_minutes().await.expect("read"),
+                Some(2)
             );
         });
     }
