@@ -1324,6 +1324,13 @@ repeat call replaces the prior set). This does NOT count against the tool-call b
 /// outward tool even if the model hallucinates one.
 pub(crate) const SEALED_TRIGGER_TOOLS: &[&str] = &["search", "timeline", "recall_context"];
 
+/// The call-time half of the seal: whether `tool` may execute on this turn.
+/// Kept as a named predicate so the enforcement branch itself is unit-tested,
+/// not just the offered tool list.
+fn sealed_tool_allowed(sealed: bool, tool: &str) -> bool {
+    !sealed || SEALED_TRIGGER_TOOLS.contains(&tool)
+}
+
 /// The sealed trigger toolset: the full Ask AI builder filtered down to
 /// [`SEALED_TRIGGER_TOOLS`], so the tool contracts (schemas/descriptions) stay
 /// identical to interactive Ask AI with zero duplication.
@@ -1971,7 +1978,7 @@ pub(crate) async fn run_ask_ai_turn(
                 // — before the reference intercept, before routing — regardless
                 // of what the model asked for. Offer-time filtering already
                 // hides everything else; this makes the seal structural.
-                if sealed && !SEALED_TRIGGER_TOOLS.contains(&tool.as_str()) {
+                if !sealed_tool_allowed(sealed, &tool) {
                     return Err(format!(
                         "tool `{tool}` is not available in automated trigger runs"
                     ));
@@ -2769,6 +2776,28 @@ mod tests {
         let tools = build_sealed_trigger_tools();
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, vec!["search", "timeline", "recall_context"]);
+    }
+
+    #[test]
+    fn sealed_turn_rejects_outward_tools_at_call_time_unsealed_allows_them() {
+        // The CALL-TIME half of the "enforced twice" seal (ADR 0058): even if
+        // the model hallucinates a tool that was never offered, a sealed turn
+        // must refuse to execute it. Pinned on the predicate the executor
+        // branches on, so deleting or inverting the guard fails this test —
+        // the offered-list test above cannot catch that.
+        for outward in ["stop_capture", "fetch_url", "show_text", "mcp__github__create_issue"] {
+            assert!(
+                !sealed_tool_allowed(true, outward),
+                "sealed turn must reject `{outward}`"
+            );
+            assert!(
+                sealed_tool_allowed(false, outward),
+                "unsealed turn must still allow `{outward}`"
+            );
+        }
+        for inward in SEALED_TRIGGER_TOOLS {
+            assert!(sealed_tool_allowed(true, inward));
+        }
     }
 
     #[test]

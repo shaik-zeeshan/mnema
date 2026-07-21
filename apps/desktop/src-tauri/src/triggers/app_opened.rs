@@ -470,37 +470,8 @@ mod tests {
         assert_eq!(fresh_session(Some(t2), t4, GAP), None);
     }
 
-    #[test]
-    fn cooldown_on_top_suppresses_a_crash_looping_app() {
-        // A crash-looping watched app (with a tiny/zero gap) produces fresh
-        // sessions back to back; the FIRST claims (`set_last_fired_ms`) while
-        // its run is still in flight (no ledger row yet), so the second
-        // activation 3 min later must be suppressed via the claim cursor.
-        let claim = 1_000_000_i64;
-        let second = claim + 3 * MIN_MS;
-        assert_eq!(
-            super::super::firing_decision(
-                Some(second),
-                super::super::event_cooldown_anchor_ms(None, Some(claim)),
-                10 * MIN_MS,
-                true,
-                second,
-            ),
-            FiringDecision::CooldownSuppressed
-        );
-        // Past the cooldown the next fresh session fires again.
-        let later = claim + 11 * MIN_MS;
-        assert_eq!(
-            super::super::firing_decision(
-                Some(later),
-                super::super::event_cooldown_anchor_ms(None, Some(claim)),
-                10 * MIN_MS,
-                true,
-                later,
-            ),
-            FiringDecision::Fire {
-                occurrence_ms: later
-            }
-        );
-    }
+    // The claim-cursor cooldown composition (second event suppressed while the
+    // first firing's ledger row is still pending) is pinned once, in
+    // meeting_worker::tests::claim_cursor_suppresses_second_ended_event_before_ledger_row_lands
+    // — both event workers share the exact same firing_decision + anchor path.
 }
