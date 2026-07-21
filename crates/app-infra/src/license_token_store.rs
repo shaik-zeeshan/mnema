@@ -3,7 +3,12 @@ use std::path::PathBuf;
 
 use crate::error::{AppInfraError, Result};
 
-const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.licensing";
+const KEYCHAIN_SERVICE: &str = "day.mnema.licensing";
+// Pre-rename service (installs before the day.mnema bundle-id change): each
+// account is read once, migrated to the new service, then deleted — preserving
+// the anti-reset stamps (first-seen, trial-issuance) across the rename.
+#[cfg(target_os = "macos")]
+const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.licensing";
 
 // licensegate-era accounts (2026-07-16 migration). Old accounts (`license_key`,
 // `trial_record`, `activation_receipt`, `activation_state`) held old-format
@@ -192,8 +197,8 @@ const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 // `/usr/bin/security` (see `ai_provider_key_store` for the rationale — the CLI's
 // `-w` prompt hangs on a tty, and the API adds this app to the item ACL).
 #[cfg(target_os = "macos")]
-fn load_platform_token(account: &str) -> Result<Option<String>> {
-    match security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, account) {
+fn read_service_token(service: &str, account: &str) -> Result<Option<String>> {
+    match security_framework::passwords::get_generic_password(service, account) {
         Ok(bytes) => {
             let token = String::from_utf8_lossy(&bytes).trim().to_string();
             Ok((!token.is_empty()).then_some(token))
@@ -201,6 +206,19 @@ fn load_platform_token(account: &str) -> Result<Option<String>> {
         Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
         Err(error) => Err(AppInfraError::LicenseTokenStore(error.to_string())),
     }
+}
+
+#[cfg(target_os = "macos")]
+fn load_platform_token(account: &str) -> Result<Option<String>> {
+    if let Some(token) = read_service_token(KEYCHAIN_SERVICE, account)? {
+        return Ok(Some(token));
+    }
+    let Some(token) = read_service_token(LEGACY_KEYCHAIN_SERVICE, account)? else {
+        return Ok(None);
+    };
+    store_platform_token(account, &token)?;
+    let _ = security_framework::passwords::delete_generic_password(LEGACY_KEYCHAIN_SERVICE, account);
+    Ok(Some(token))
 }
 
 #[cfg(target_os = "macos")]

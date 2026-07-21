@@ -321,7 +321,14 @@ fn parse_snapshot(
 /// excluded from the capture window: otherwise the app OCRs its own generated
 /// insights/digests and re-ingests them as activity evidence (a self-capture
 /// feedback loop).
-const SELF_APP_BUNDLE_IDS: &[&str] = &["com.shaikzeeshan.mnema", "com.shaikzeeshan.mnema.dev"];
+// Legacy com.shaikzeeshan.* ids stay: snapshots captured before the day.mnema
+// rename carry them, and self-capture filtering must still match those rows.
+const SELF_APP_BUNDLE_IDS: &[&str] = &[
+    "day.mnema",
+    "day.mnema.dev",
+    "com.shaikzeeshan.mnema",
+    "com.shaikzeeshan.mnema.dev",
+];
 const SELF_APP_NAMES: &[&str] = &["mnema", "mnema-dev"];
 
 /// True when a frame's metadata snapshot identifies Mnema itself: exact bundle-id
@@ -843,7 +850,9 @@ mod tests {
         assert!(is_self_capture(&snap(Some("mnema"), None)));
         assert!(is_self_capture(&snap(Some("Mnema"), None)));
         assert!(is_self_capture(&snap(Some("MNEMA-DEV"), None)));
-        // Bundle-id-only variants (no app name).
+        // Bundle-id-only variants (no app name), current and pre-rename legacy.
+        assert!(is_self_capture(&snap(None, Some("day.mnema"))));
+        assert!(is_self_capture(&snap(None, Some("day.mnema.dev"))));
         assert!(is_self_capture(&snap(None, Some("com.shaikzeeshan.mnema"))));
         assert!(is_self_capture(&snap(
             None,

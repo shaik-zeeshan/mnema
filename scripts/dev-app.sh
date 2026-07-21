@@ -4,9 +4,9 @@ set -euo pipefail
 # Launch the mnema desktop app in a "dev profile" sandbox that is fully
 # isolated from an installed production build. Lets dev + prod run together.
 #
-#   - Separate bundle identifier (com.shaikzeeshan.mnema.dev) and product name
+#   - Separate bundle identifier (day.mnema.dev) and product name
 #   - Separate data root:   ~/.mnema-dev            (DB, recordings, OCR models)
-#   - Separate config root: ~/Library/Application Support/com.shaikzeeshan.mnema.dev
+#   - Separate config root: ~/Library/Application Support/day.mnema.dev
 #   - Separate deep-link scheme: mnema-dev://
 #   - Separate secret vault (secrets.vault lives in the dev save dir), with a
 #     file-based master key so ad-hoc dev builds never hit the keychain.
@@ -24,7 +24,7 @@ if [[ -f "${repo_root}/.env" ]]; then
 fi
 
 export MNEMA_SAVE_DIRECTORY="${HOME}/.mnema-dev"
-export MNEMA_APP_CONFIG_DIR="${HOME}/Library/Application Support/com.shaikzeeshan.mnema.dev"
+export MNEMA_APP_CONFIG_DIR="${HOME}/Library/Application Support/day.mnema.dev"
 export MNEMA_DEV_MASTER_KEY_FILE="${MNEMA_SAVE_DIRECTORY}/dev-master-key"
 # Ad-hoc dev builds can't claim the shared keychain access group (ADR 0057),
 # so the capture index key lives in a file store outside the save dir.

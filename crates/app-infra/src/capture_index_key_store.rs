@@ -19,8 +19,15 @@ mod shared_group;
 pub(crate) const CAPTURE_INDEX_DATABASE_DIR_NAME: &str = "db";
 
 const INDEX_IDENTITY_FILE_NAME: &str = "capture-index.json";
-const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.capture-index";
-const APP_ID: &str = "com.shaikzeeshan.mnema";
+const KEYCHAIN_SERVICE: &str = "day.mnema.capture-index";
+/// Pre-rename service for the silent `/usr/bin/security` item (installs before
+/// the day.mnema bundle-id change): read as a fallback, deleted alongside the
+/// new service by the ADR 0057 migrate-and-delete pass.
+#[cfg(target_os = "macos")]
+const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.capture-index";
+// Written into new identity files only; existing files keep the pre-rename
+// com.shaikzeeshan.mnema value and nothing compares against it.
+const APP_ID: &str = "day.mnema";
 const ENCRYPTION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -356,25 +363,19 @@ fn random_hex(byte_count: usize) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn load_platform_key(index_id: &str) -> Result<Option<String>> {
-    let lookup = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            index_id,
-            "-w",
-        ])
-        .output()?;
-    if !lookup.status.success() {
-        return Ok(None);
+    for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+        let lookup = Command::new("security")
+            .args(["find-generic-password", "-s", service, "-a", index_id, "-w"])
+            .output()?;
+        if !lookup.status.success() {
+            continue;
+        }
+        let key = String::from_utf8_lossy(&lookup.stdout).trim().to_string();
+        if !key.is_empty() {
+            return Ok(Some(key));
+        }
     }
-
-    let key = String::from_utf8_lossy(&lookup.stdout).trim().to_string();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(key))
+    Ok(None)
 }
 
 // The interpolated values are wrapped in plain double quotes for security's stdin
@@ -423,15 +424,19 @@ fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
 
 #[cfg(target_os = "macos")]
 fn delete_platform_key(index_id: &str) -> Result<()> {
-    let output = Command::new("/usr/bin/security")
-        .args(["delete-generic-password", "-s", KEYCHAIN_SERVICE, "-a", index_id])
-        .output()?;
-    if !output.status.success() {
-        return Err(AppInfraError::CaptureIndexEncryption(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+    // The item lives under exactly one of the two services (new, or pre-rename
+    // legacy); deleting is done when either delete lands.
+    let mut last_error = String::new();
+    for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+        let output = Command::new("/usr/bin/security")
+            .args(["delete-generic-password", "-s", service, "-a", index_id])
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
     }
-    Ok(())
+    Err(AppInfraError::CaptureIndexEncryption(last_error))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -649,7 +654,7 @@ mod tests {
 
         assert_eq!(
             command,
-            "add-generic-password -U -s \"com.shaikzeeshan.mnema.capture-index\" -a \"mnema-index-0123456789abcdef\" -w \"deadbeefdeadbeefdeadbeefdeadbeef\"\n"
+            "add-generic-password -U -s \"day.mnema.capture-index\" -a \"mnema-index-0123456789abcdef\" -w \"deadbeefdeadbeefdeadbeefdeadbeef\"\n"
         );
     }
 

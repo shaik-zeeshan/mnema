@@ -112,3 +112,38 @@ wrong as written — dev-signed builds need an embedded provisioning profile (Xc
 team profile in an .app bundle), so `MNEMA_CAPTURE_INDEX_KEY_DIR` is the dev path,
 period. Developer ID release signing is the expected working path (untestable on
 this machine: no Developer ID cert, no profiles present); verify in CI before ship.
+
+## Verified findings (2026-07-21, amendment)
+
+Developer ID cert obtained (Team `RJYMY4RR97`); tested on macOS 26.5 with the real
+app + CLI. Two spike assumptions corrected:
+
+- **Developer ID signing alone also fails.** Flavor B under a Developer ID
+  signature (entitlement present and verified in the signature) still returns
+  −34018. `com.apple.security.application-groups` is a *validation-required*
+  entitlement: an unauthorised claim clears the process's entitlements-validated
+  flag (`csops` `CS_ENTITLEMENTS_VALIDATED`), and the data-protection keychain
+  refuses to honor entitlements while that flag is cleared (Quinn, DevForums
+  thread 721701). The signing identity never mattered — profile authorisation did.
+- **The fix is an embedded provisioning profile.** Portal: macOS-style
+  `TEAMID.*` groups cannot be registered explicitly; enabling the App Groups
+  capability on the App ID (`day.mnema`) makes every generated Mac provisioning
+  profile authorise `RJYMY4RR97.*` automatically (for both `application-groups`
+  and `keychain-access-groups`). The Developer ID profile is committed at
+  `apps/desktop/src-tauri/mnema.provisionprofile` (not a secret) and embedded as
+  `Contents/embedded.provisionprofile` by `build-macos-local-sign.sh`.
+- **A profile validates only the bundle's *main* executable.** The bare
+  `mnema-cli` Mach-O in `Contents/MacOS/` stayed unvalidated (flag clear; the
+  group item is invisible to it — −25300, not −34018). A minimal probe bundle
+  proved: a bundle main executable validates even when exec'd directly from a
+  terminal, with any `CFBundleIdentifier` (profile matching keys off the team's
+  group grant, not the Info.plist id), and validation follows a symlink to the
+  real executable. So `mnema-cli` ships as a helper bundle
+  (`Contents/Helpers/mnema-cli.app`, `Info.mnema-cli.plist`, own profile copy)
+  with the documented sidecar path `Contents/MacOS/mnema-cli` kept as a symlink.
+
+Acceptance: Drill 1 (owner migration) passed end-to-end on the local
+Developer ID + profile build — migrate, proof-gated delete of the old item, then a
+silent no-prompt `mnema-cli` group read through the symlink. Release CI
+(`macos-release.yml`) still signs ad-hoc; the ADR stays Proposed until CI ships the
+same signing + profile + helper-bundle packaging.

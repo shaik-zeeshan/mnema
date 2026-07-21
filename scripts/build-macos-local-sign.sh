@@ -95,14 +95,12 @@ CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- "${tauri_args[@]}"
 # the new nested code — sidecar first, or the app signature breaks.
 app_path="${repo_root}/target/${profile_dir}/bundle/macos/mnema.app"
 tauri_dir="${repo_root}/apps/desktop/src-tauri"
-print "Re-signing mnema-cli sidecar with entitlements…"
-codesign --force --options runtime --sign "${identity}" \
-  --entitlements "${tauri_dir}/Entitlements.mnema-cli.plist" \
-  "${app_path}/Contents/MacOS/mnema-cli"
-codesign --force --options runtime --sign "${identity}" \
-  --entitlements "${tauri_dir}/Entitlements.plist" \
-  "${app_path}"
-codesign --verify --deep --strict "${app_path}"
+# The app-groups entitlement is validation-required: without a provisioning
+# profile authorising the group, secd clears the entitlements-validated flag
+# and the shared keychain group fails with errSecMissingEntitlement (-34018) —
+# even under Developer ID. Embed before signing so the seal covers it.
+print "Entitling app (profile embed + helper-bundle CLI) and re-signing…"
+bash "${repo_root}/scripts/entitle-macos-app.sh" "${app_path}" "${identity}"
 
 dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
 
