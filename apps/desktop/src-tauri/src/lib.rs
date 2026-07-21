@@ -702,6 +702,7 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
+            triggers::list_triggers_status,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
             ask_ai::mcp::oauth_flow::mcp_oauth_begin,

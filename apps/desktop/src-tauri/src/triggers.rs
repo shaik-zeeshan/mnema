@@ -1,11 +1,12 @@
-//! Triggers — walking skeleton (issue #175, ADRs 0057/0058).
+//! Triggers — definitions + evaluator (issues #175/#176, ADRs 0057/0058).
 //!
 //! A **Trigger** is Condition + Prompt + Delivery (docs/triggers/CONTEXT.md).
-//! This slice ships the thinnest end-to-end path with the simplest Condition,
-//! **Schedule**:
+//! This module owns the definition shape and the evaluator worker; the firing →
+//! sealed Ask AI run path (retries, ledger rows, delivery) lives in
+//! [`run`](self::run).
 //!
 //! - Definitions are CONFIG, not DB (ADR 0058): `triggers.json` in the app
-//!   config dir, hand-edited in this slice (no management UI). It is re-read on
+//!   config dir, hand-edited until the #182 management UI. It is re-read on
 //!   every evaluator tick, so edits hot-reload within one tick.
 //! - A background evaluator worker (the user-context worker's poll-loop
 //!   pattern) fires due Schedule occurrences: daily/weekly at a chosen local
@@ -14,31 +15,35 @@
 //!   (`app_infra::trigger_state`) — expired occurrences quietly missed. The
 //!   existing `system_did_wake` notifier nudges the loop so a wake catches up
 //!   immediately instead of waiting out the tick.
-//! - A **Firing** runs one **sealed-toolbox** Ask AI turn (ADR 0058:
-//!   `search`/`timeline`/`recall_context` only, global default model) through
-//!   the SAME `run_ask_ai_turn` driver interactive Ask AI uses, persisting a
-//!   self-titled conversation with `origin = 'trigger'` + trigger id/name.
-//!   Follow-ups continue the conversation through the normal chat path.
-//! - **Delivery** is a macOS notification on a COMPLETED run only; clicking it
-//!   activates the app, and the pending-open slot below routes an activation
-//!   with no open window onto that conversation.
+//! - Every firing decision is accountable (issue #176): one `trigger_firings`
+//!   ledger row per firing (completed/skipped/failed with an honest reason),
+//!   a persisted per-trigger **Cooldown** (default 10 min) enforced from the
+//!   ledger so it survives restarts, and a run-time **Provider Gate** — a run
+//!   never starts unconfigured; needs-provider is a trigger state (visible via
+//!   [`list_triggers_status`]), not a run failure.
+//! - **Delivery** is good-news-only: a macOS notification on a COMPLETED run
+//!   only; skips and failures surface quietly as last-run status.
 //!
-//! ponytail: firings run inline on the evaluator loop (one at a time) and the
-//! firing ledger/last-run status is issue #176 — this slice persists only the
-//! last-fired cursor.
+//! The per-trigger firing state machine ([`firing_decision`], pure):
+//! due occurrence → cooldown → provider gate → claim → run+retries → ledger
+//! row → notify (completed only).
+//!
+//! ponytail: firings run inline on the evaluator loop (one at a time);
+//! parallel firings can arrive once something actually needs them.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Listener, Manager};
-use tauri_plugin_notification::NotificationExt;
 
 use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
 use crate::user_context::worker::now_ms;
 
+pub(crate) mod run;
 pub(crate) mod schedule;
 
+pub(crate) use run::take_recent_notification_conversation;
 use schedule::{ScheduleCadence, ScheduleWeekday};
 
 /// The trigger definitions file inside the app config dir (ADR 0058).
@@ -49,10 +54,9 @@ pub const TRIGGERS_FILE_NAME: &str = "triggers.json";
 /// tick rate.
 const TRIGGERS_TICK: Duration = Duration::from_secs(30);
 
-/// How long a delivered notification's pending-open slot stays valid. An
-/// activation later than this opens the app normally instead of routing onto a
-/// stale trigger conversation.
-const NOTIFICATION_OPEN_TTL_MS: i64 = 15 * 60 * 1000;
+/// Default per-trigger Cooldown (docs/triggers/CONTEXT.md): a Trigger never
+/// fires again within this window of its last firing, regardless of Condition.
+const DEFAULT_COOLDOWN_MINUTES: u32 = 10;
 
 // ── Trigger JSON (the shareable definition shape) ────────────────────────────
 
@@ -78,8 +82,19 @@ pub struct TriggerDefinition {
     pub prompt: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// Per-trigger Cooldown override in minutes ("Advanced Options");
+    /// [`DEFAULT_COOLDOWN_MINUTES`] when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooldown_minutes: Option<u32>,
     #[serde(default = "default_version")]
     pub version: u32,
+}
+
+impl TriggerDefinition {
+    /// The trigger's Cooldown window in milliseconds.
+    pub fn cooldown_ms(&self) -> i64 {
+        i64::from(self.cooldown_minutes.unwrap_or(DEFAULT_COOLDOWN_MINUTES)) * 60_000
+    }
 }
 
 /// The Condition menu, tagged on `type`. v1 walking skeleton: Schedule only.
@@ -124,233 +139,54 @@ fn load_triggers(app_handle: &tauri::AppHandle) -> Vec<TriggerDefinition> {
     }
 }
 
-// ── Local-time display helpers ───────────────────────────────────────────────
+// ── The firing decision (pure) ───────────────────────────────────────────────
 
-/// The instant as the user's local wall clock.
-fn local_datetime(utc_ms: i64, offset_minutes: i32) -> time::OffsetDateTime {
-    let local_ms = utc_ms + i64::from(offset_minutes) * 60_000;
-    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(local_ms) * 1_000_000)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
+/// What the evaluator should do about one trigger this tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FiringDecision {
+    /// No due occurrence this period.
+    NotDue,
+    /// Due, but inside the Cooldown window of the last ledger firing. A
+    /// suppression, NOT a Skipped Run: no occurrence claim and no ledger row,
+    /// so the occurrence stays due and fires once the window passes (still
+    /// within its natural period).
+    CooldownSuppressed,
+    /// Due, but the Reasoning Engine is unconfigured (Provider Gate). Do NOT
+    /// claim the occurrence and do NOT write a ledger row — unconfigured is a
+    /// trigger state (surfaced by [`list_triggers_status`]), not a run
+    /// failure. Configuring a provider later within the same period still
+    /// catches up.
+    NeedsProvider,
+    /// Claim the occurrence and run the firing.
+    Fire { occurrence_ms: i64 },
 }
 
-/// Short local date for the self-generated run title, e.g. "Fri Jul 24".
-fn format_short_local_date(utc_ms: i64, offset_minutes: i32) -> String {
-    let local = local_datetime(utc_ms, offset_minutes);
-    let weekday = local.weekday().to_string();
-    let month = local.date().month().to_string();
-    format!("{} {} {}", &weekday[..3], &month[..3], local.day())
-}
-
-/// `YYYY-MM-DD HH:MM` local, for the firing-context window bounds.
-fn format_local_ymd_hm(utc_ms: i64, offset_minutes: i32) -> String {
-    let local = local_datetime(utc_ms, offset_minutes);
-    format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}",
-        local.year(),
-        u8::from(local.month()),
-        local.day(),
-        local.hour(),
-        local.minute(),
-    )
-}
-
-/// The run's conversation title: `"<Trigger Name> — <abbrev date>"`.
-fn run_title(trigger_name: &str, occurrence_ms: i64, offset_minutes: i32) -> String {
-    format!(
-        "{trigger_name} — {}",
-        format_short_local_date(occurrence_ms, offset_minutes)
-    )
-}
-
-/// One-line human description of the schedule, for the firing context.
-fn schedule_label(cadence: ScheduleCadence, time: &str, weekday: Option<ScheduleWeekday>) -> String {
-    match cadence {
-        ScheduleCadence::Daily => format!("daily at {time}"),
-        ScheduleCadence::Weekly => match weekday {
-            Some(day) => format!("weekly on {day:?} at {time}"),
-            None => format!("weekly at {time}"),
-        },
-    }
-}
-
-/// The **Context Assembly** for this slice: the firing context prepended to the
-/// user's Prompt. Names the trigger and its schedule, states the natural-period
-/// window the run covers (day so far / week so far, in local time), then the
-/// standing instruction verbatim. This whole string is the sealed turn's
-/// "question", so it persists on the turn row and stays in follow-up history.
-fn build_firing_question(
-    trigger: &TriggerDefinition,
-    occurrence_ms: i64,
+/// The per-trigger firing state machine, pure over its already-read inputs:
+/// due occurrence → Cooldown (from the ledger's newest row, ANY outcome — so
+/// it survives restarts) → Provider Gate → fire.
+pub(crate) fn firing_decision(
+    due_occurrence_ms: Option<i64>,
+    last_firing_ms: Option<i64>,
+    cooldown_ms: i64,
+    provider_ready: bool,
     now_ms: i64,
-    offset_minutes: i32,
-) -> String {
-    let TriggerCondition::Schedule {
-        cadence,
-        time,
-        weekday,
-    } = &trigger.condition;
-    let period = match cadence {
-        ScheduleCadence::Daily => "the day so far",
-        ScheduleCadence::Weekly => "the week so far (Monday-start)",
+) -> FiringDecision {
+    let Some(occurrence_ms) = due_occurrence_ms else {
+        return FiringDecision::NotDue;
     };
-    let window_start_ms = match cadence {
-        ScheduleCadence::Daily => {
-            let local = local_datetime(occurrence_ms, offset_minutes);
-            let midnight = local.replace_time(time::Time::MIDNIGHT);
-            (midnight.unix_timestamp_nanos() / 1_000_000) as i64
-                - i64::from(offset_minutes) * 60_000
-        }
-        ScheduleCadence::Weekly => {
-            let local = local_datetime(occurrence_ms, offset_minutes);
-            let days_back = local.weekday().number_days_from_monday();
-            let monday = local.replace_time(time::Time::MIDNIGHT)
-                - time::Duration::days(i64::from(days_back));
-            (monday.unix_timestamp_nanos() / 1_000_000) as i64
-                - i64::from(offset_minutes) * 60_000
-        }
-    };
-    format!(
-        "[Automated Trigger Run] The user's trigger \"{name}\" ({schedule}, local time) fired. \
-Covering window: {period} — {start} to {now} local time. Apply the standing instruction below \
-to that window unless it says otherwise, and write the report document now.\n\n\
-Standing instruction:\n{prompt}",
-        name = trigger.name,
-        schedule = schedule_label(*cadence, time, *weekday),
-        period = period,
-        start = format_local_ymd_hm(window_start_ms, offset_minutes),
-        now = format_local_ymd_hm(now_ms, offset_minutes),
-        prompt = trigger.prompt.trim(),
-    )
-}
-
-// ── Delivery (notification + pending open) ───────────────────────────────────
-
-/// The conversation a just-delivered notification should open, with its
-/// delivery instant. One slot, latest wins — only the newest completed run
-/// deserves the next activation.
-static PENDING_NOTIFICATION_OPEN: OnceLock<Mutex<Option<(String, i64)>>> = OnceLock::new();
-
-fn pending_notification_open() -> &'static Mutex<Option<(String, i64)>> {
-    PENDING_NOTIFICATION_OPEN.get_or_init(|| Mutex::new(None))
-}
-
-fn set_pending_notification_open(conversation_id: &str) {
-    if let Ok(mut slot) = pending_notification_open().lock() {
-        *slot = Some((conversation_id.to_string(), now_ms()));
+    if last_firing_ms.is_some_and(|fired| now_ms.saturating_sub(fired) < cooldown_ms) {
+        return FiringDecision::CooldownSuppressed;
     }
-}
-
-/// Take the pending notification conversation if one was delivered recently
-/// (within [`NOTIFICATION_OPEN_TTL_MS`]). The desktop notification plugin has
-/// no click callback on macOS, so app ACTIVATION with no open window is the
-/// click signal we route on; the TTL keeps a long-ignored notification from
-/// hijacking an unrelated later activation.
-pub(crate) fn take_recent_notification_conversation() -> Option<String> {
-    let mut slot = pending_notification_open().lock().ok()?;
-    let (conversation_id, delivered_at_ms) = slot.take()?;
-    if now_ms().saturating_sub(delivered_at_ms) > NOTIFICATION_OPEN_TTL_MS {
-        return None;
+    if !provider_ready {
+        return FiringDecision::NeedsProvider;
     }
-    Some(conversation_id)
-}
-
-/// Deliver the good-news notification for a COMPLETED run (ADR 0058: skips and
-/// failures never notify) and arm the pending-open slot. Best-effort — a
-/// denied/unavailable notification never fails the run.
-fn deliver_run_notification(app_handle: &tauri::AppHandle, title: &str, conversation_id: &str) {
-    let notifications = app_handle.notification();
-    // macOS prompts on first use; ask explicitly when not yet granted so the
-    // prompt appears at the first delivery rather than never.
-    match notifications.permission_state() {
-        Ok(tauri_plugin_notification::PermissionState::Granted) => {}
-        _ => {
-            let _ = notifications.request_permission();
-        }
-    }
-    let shown = notifications
-        .builder()
-        .title(title)
-        .body("Your trigger finished — open Mnema to read the report.")
-        .show();
-    match shown {
-        Ok(()) => set_pending_notification_open(conversation_id),
-        Err(error) => {
-            tauri_plugin_log::log::warn!(
-                "triggers: failed to deliver run notification for {conversation_id}: {error}"
-            );
-        }
-    }
-}
-
-// ── Firing → sealed Ask AI run ───────────────────────────────────────────────
-
-/// Run one Firing end-to-end: persist the origin-tagged conversation, run the
-/// sealed-toolbox turn through the shared Ask AI driver, and deliver the
-/// notification on a completed run. Returns whether the run completed.
-async fn run_trigger_fire(
-    app_handle: &tauri::AppHandle,
-    infra: &AppInfraState,
-    trigger: &TriggerDefinition,
-    occurrence_ms: i64,
-    offset_minutes: i32,
-) -> bool {
-    let now = now_ms();
-    // The firing's stable conversation id: trigger id + occurrence instant, so
-    // one occurrence maps to one conversation even across a re-fire attempt.
-    let conversation_id = format!("trigger-{}-{}", trigger.id, occurrence_ms);
-    let title = run_title(&trigger.name, occurrence_ms, offset_minutes);
-
-    if let Err(error) = infra
-        .conversation()
-        .create_trigger_conversation(&conversation_id, &title, &trigger.id, &trigger.name, now)
-        .await
-    {
-        tauri_plugin_log::log::warn!(
-            "triggers: failed to create run conversation for trigger '{}': {error}",
-            trigger.id
-        );
-        return false;
-    }
-    let _ = tauri::Emitter::emit(
-        app_handle,
-        crate::conversation::commands::CONVERSATION_CHANGED_EVENT,
-        (),
-    );
-
-    let question = build_firing_question(trigger, occurrence_ms, now, offset_minutes);
-    let clock = crate::ask_ai::ClientClock {
-        utc_offset_minutes: Some(offset_minutes),
-        time_zone: None,
-    };
-    let cancel = crate::ask_ai::register_inflight(&conversation_id);
-    let completed = crate::ask_ai::run_ask_ai_turn(
-        app_handle.clone(),
-        conversation_id.clone(),
-        question,
-        None,
-        "trigger".to_string(),
-        title.clone(),
-        clock,
-        cancel,
-        /* sealed = */ true,
-    )
-    .await;
-
-    if completed {
-        deliver_run_notification(app_handle, &title, &conversation_id);
-    } else {
-        tauri_plugin_log::log::warn!(
-            "triggers: run for trigger '{}' did not complete; no notification delivered",
-            trigger.id
-        );
-    }
-    completed
+    FiringDecision::Fire { occurrence_ms }
 }
 
 // ── Evaluator worker ─────────────────────────────────────────────────────────
 
-/// One evaluator pass: hot-reload `triggers.json`, then fire every enabled
-/// Schedule trigger whose current-period occurrence is due and unfired.
+/// One evaluator pass: hot-reload `triggers.json`, then decide + fire every
+/// enabled Schedule trigger whose current-period occurrence is due.
 async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
     let triggers = load_triggers(app_handle);
     if triggers.is_empty() {
@@ -388,47 +224,70 @@ async fn evaluator_tick(infra: &AppInfraState, app_handle: &tauri::AppHandle) {
             .ok()
             .flatten();
         let now = now_ms();
-        let Some(occurrence_ms) = schedule::due_occurrence_ms(
+        let due = schedule::due_occurrence_ms(
             cadence,
             time_minutes,
             weekday,
             now,
             offset_minutes,
             last_fired,
-        ) else {
-            continue;
-        };
-
-        // Provider Gate (docs/triggers/CONTEXT.md): a run never starts
-        // unconfigured. NOT marking it fired keeps the occurrence retrying each
-        // tick, so configuring the engine later within the same period still
-        // catches up; the period rolling over quietly misses it.
-        if let Err(reason) = crate::ask_ai::ensure_ask_ai_access_ready(app_handle).await {
-            tauri_plugin_log::log::debug!(
-                "triggers: trigger '{}' is due but the engine is not ready ({reason}); will retry",
-                trigger.id
-            );
-            continue;
-        }
-
-        // Durably claim the occurrence BEFORE running: a crash/error mid-run
-        // quietly misses it (the ledger with retry semantics is issue #176)
-        // rather than re-billing the model every tick.
-        if let Err(error) = infra.trigger_state().set_last_fired_ms(&trigger.id, now).await {
-            tauri_plugin_log::log::warn!(
-                "triggers: failed to record firing for trigger '{}': {error}; not running",
-                trigger.id
-            );
-            continue;
-        }
-
-        tauri_plugin_log::log::info!(
-            "triggers: firing trigger '{}' for occurrence {occurrence_ms}",
-            trigger.id
         );
-        // ponytail: firings run inline, one at a time — parallel firings need
-        // the #176 ledger to attribute outcomes first.
-        run_trigger_fire(app_handle, infra, &trigger, occurrence_ms, offset_minutes).await;
+        if due.is_none() {
+            continue;
+        }
+
+        // The reads the pure decision needs, gathered only once something is
+        // due: the Cooldown anchor (newest ledger row, any outcome) and the
+        // Provider Gate.
+        let last_firing_ms = infra
+            .trigger_firings()
+            .last_firing(&trigger.id)
+            .await
+            .ok()
+            .flatten()
+            .map(|firing| firing.fired_at_ms);
+        let provider_ready = crate::ask_ai::ensure_ask_ai_access_ready(app_handle)
+            .await
+            .is_ok();
+
+        match firing_decision(due, last_firing_ms, trigger.cooldown_ms(), provider_ready, now) {
+            FiringDecision::NotDue => continue,
+            FiringDecision::CooldownSuppressed => {
+                tauri_plugin_log::log::debug!(
+                    "triggers: trigger '{}' is due but cooling down; will retry",
+                    trigger.id
+                );
+                continue;
+            }
+            FiringDecision::NeedsProvider => {
+                tauri_plugin_log::log::debug!(
+                    "triggers: trigger '{}' is due but the engine is not configured; will retry",
+                    trigger.id
+                );
+                continue;
+            }
+            FiringDecision::Fire { occurrence_ms } => {
+                // Durably claim the occurrence BEFORE running: retries happen
+                // WITHIN this one firing (run.rs), never as a re-fire — a
+                // crash mid-run quietly misses the occurrence rather than
+                // re-billing the model every tick.
+                if let Err(error) = infra.trigger_state().set_last_fired_ms(&trigger.id, now).await
+                {
+                    tauri_plugin_log::log::warn!(
+                        "triggers: failed to record firing for trigger '{}': {error}; not running",
+                        trigger.id
+                    );
+                    continue;
+                }
+                tauri_plugin_log::log::info!(
+                    "triggers: firing trigger '{}' for occurrence {occurrence_ms}",
+                    trigger.id
+                );
+                // ponytail: firings run inline, one at a time.
+                run::run_trigger_fire(app_handle, infra, &trigger, occurrence_ms, offset_minutes)
+                    .await;
+            }
+        }
     }
 }
 
@@ -473,14 +332,84 @@ pub fn spawn_triggers_worker(
     background_workers.track(handle);
 }
 
+// ── Status (the #182 management-UI seam) ─────────────────────────────────────
+
+/// The newest ledger row for a trigger, as last-run status.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerLastFiring {
+    pub fired_at_ms: i64,
+    /// `completed` / `skipped` / `failed`.
+    pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_id: Option<String>,
+}
+
+/// One trigger's runtime status: definition basics, the Provider Gate state,
+/// and its last firing from the ledger.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriggerStatus {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    /// Provider Gate (docs/triggers/CONTEXT.md): `true` when the Reasoning
+    /// Engine is unconfigured — the trigger is visibly disabled ("needs an AI
+    /// provider") and the evaluator will not start runs.
+    pub needs_provider: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_firing: Option<TriggerLastFiring>,
+}
+
+/// List every defined trigger with its runtime status. Derived fresh on every
+/// call: `needs_provider` runs the SAME gate the evaluator does, so the UI and
+/// the evaluator can never disagree about "needs a provider".
+#[tauri::command]
+pub async fn list_triggers_status(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<TriggerStatus>, String> {
+    let infra = Arc::clone(&*state);
+    let needs_provider = crate::ask_ai::ensure_ask_ai_access_ready(&app_handle)
+        .await
+        .is_err();
+    let mut statuses = Vec::new();
+    for trigger in load_triggers(&app_handle) {
+        let last_firing = infra
+            .trigger_firings()
+            .last_firing(&trigger.id)
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to read the firing ledger for trigger '{}': {error}",
+                    trigger.id
+                )
+            })?
+            .map(|firing| TriggerLastFiring {
+                fired_at_ms: firing.fired_at_ms,
+                outcome: firing.outcome.as_str().to_string(),
+                reason: firing.reason,
+                conversation_id: firing.conversation_id,
+            });
+        statuses.push(TriggerStatus {
+            id: trigger.id,
+            name: trigger.name,
+            enabled: trigger.enabled,
+            needs_provider,
+            last_firing,
+        });
+    }
+    Ok(statuses)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use serde_json::json;
 
-    const IST: i32 = 330;
-
-    fn sample_daily() -> TriggerDefinition {
+    pub(crate) fn sample_daily() -> TriggerDefinition {
         TriggerDefinition {
             id: "evening-review".to_string(),
             name: "Evening Review".to_string(),
@@ -491,6 +420,7 @@ mod tests {
             },
             prompt: "Summarize what I worked on today.".to_string(),
             enabled: true,
+            cooldown_minutes: None,
             version: 1,
         }
     }
@@ -515,13 +445,15 @@ mod tests {
         let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, trigger);
 
-        // Weekly carries its weekday tag.
+        // Weekly carries its weekday tag; a Cooldown override rides as
+        // `cooldownMinutes` ("Advanced Options").
         let weekly = TriggerDefinition {
             condition: TriggerCondition::Schedule {
                 cadence: ScheduleCadence::Weekly,
                 time: "09:00".to_string(),
                 weekday: Some(ScheduleWeekday::Friday),
             },
+            cooldown_minutes: Some(30),
             ..sample_daily()
         };
         let value = serde_json::to_value(&weekly).unwrap();
@@ -529,13 +461,14 @@ mod tests {
             value["condition"],
             json!({ "type": "schedule", "cadence": "weekly", "time": "09:00", "weekday": "friday" })
         );
+        assert_eq!(value["cooldownMinutes"], json!(30));
         let round_tripped: TriggerDefinition = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, weekly);
     }
 
     #[test]
-    fn trigger_definition_defaults_enabled_and_version() {
-        // A minimal hand-authored file omits `enabled`/`version`.
+    fn trigger_definition_defaults_enabled_version_and_cooldown() {
+        // A minimal hand-authored file omits `enabled`/`version`/`cooldownMinutes`.
         let parsed: TriggerDefinition = serde_json::from_value(json!({
             "id": "t",
             "name": "T",
@@ -545,58 +478,70 @@ mod tests {
         .unwrap();
         assert!(parsed.enabled);
         assert_eq!(parsed.version, 1);
+        assert_eq!(parsed.cooldown_minutes, None);
+        assert_eq!(parsed.cooldown_ms(), 10 * 60_000);
+
+        // The per-trigger override wins.
+        let overridden = TriggerDefinition {
+            cooldown_minutes: Some(30),
+            ..sample_daily()
+        };
+        assert_eq!(overridden.cooldown_ms(), 30 * 60_000);
+    }
+
+    // ── firing_decision: due → cooldown → provider gate → fire ───────────────
+
+    const MIN_MS: i64 = 60_000;
+
+    #[test]
+    fn decision_is_not_due_without_an_occurrence() {
+        assert_eq!(
+            firing_decision(None, None, 10 * MIN_MS, true, 1_000_000),
+            FiringDecision::NotDue
+        );
     }
 
     #[test]
-    fn run_title_is_name_dash_abbreviated_local_date() {
-        // 2026-07-24 09:00 UTC is a Friday; IST stays the same date.
-        let friday_utc_ms = 1_784_505_600_000 + 4 * 86_400_000 + 9 * 3_600_000;
+    fn decision_cooldown_suppresses_a_second_firing_within_the_window() {
+        let now = 100 * MIN_MS;
+        // The last ledger firing (ANY outcome) 5 min ago holds a 10-min
+        // cooldown — the ledger is persisted, so this is exactly the state a
+        // fresh process reads after a restart.
         assert_eq!(
-            run_title("Evening Review", friday_utc_ms, IST),
-            "Evening Review — Fri Jul 24"
+            firing_decision(Some(now), Some(now - 5 * MIN_MS), 10 * MIN_MS, true, now),
+            FiringDecision::CooldownSuppressed
         );
-        // A negative offset that crosses local midnight shifts the date.
-        let just_past_utc_midnight = 1_784_505_600_000 + 30 * 60_000; // Mon 00:30 UTC
+        // At the window's edge (exactly 10 min elapsed) it fires again.
         assert_eq!(
-            run_title("Recap", just_past_utc_midnight, -480),
-            "Recap — Sun Jul 19"
+            firing_decision(Some(now), Some(now - 10 * MIN_MS), 10 * MIN_MS, true, now),
+            FiringDecision::Fire { occurrence_ms: now }
+        );
+        // No prior firing → no cooldown.
+        assert_eq!(
+            firing_decision(Some(now), None, 10 * MIN_MS, true, now),
+            FiringDecision::Fire { occurrence_ms: now }
         );
     }
 
     #[test]
-    fn firing_question_carries_context_window_and_prompt() {
-        let trigger = sample_daily();
-        // Fired at 18:30 IST on 2026-07-20 (13:00 UTC), evaluated at 13:05 UTC.
-        let occurrence_ms = 1_784_505_600_000 + 13 * 3_600_000;
-        let now_ms = occurrence_ms + 5 * 60_000;
-        let question = build_firing_question(&trigger, occurrence_ms, now_ms, IST);
-        assert!(question.starts_with("[Automated Trigger Run]"));
-        assert!(question.contains("\"Evening Review\""));
-        assert!(question.contains("daily at 18:30"));
-        // Day-so-far window: local midnight → now, in local time.
-        assert!(question.contains("2026-07-20 00:00"));
-        assert!(question.contains("2026-07-20 18:35"));
-        // The user's standing instruction rides verbatim at the end.
-        assert!(question.ends_with("Summarize what I worked on today."));
-    }
-
-    #[test]
-    fn pending_notification_open_expires_after_ttl_and_is_take_once() {
-        set_pending_notification_open("conv-fresh");
+    fn decision_provider_gate_holds_the_occurrence_instead_of_failing() {
+        let now = 100 * MIN_MS;
+        // Provider gone → NeedsProvider: the evaluator claims the occurrence
+        // and writes ledger rows ONLY on `Fire`, so the occurrence is not
+        // burned and no `failed` row appears; the same call next tick (after
+        // the provider returns) fires.
         assert_eq!(
-            take_recent_notification_conversation().as_deref(),
-            Some("conv-fresh")
+            firing_decision(Some(now), None, 10 * MIN_MS, false, now),
+            FiringDecision::NeedsProvider
         );
-        // Take-once: the slot is consumed.
-        assert_eq!(take_recent_notification_conversation(), None);
-
-        // An expired delivery is dropped, not returned.
-        if let Ok(mut slot) = pending_notification_open().lock() {
-            *slot = Some((
-                "conv-stale".to_string(),
-                now_ms() - NOTIFICATION_OPEN_TTL_MS - 1,
-            ));
-        }
-        assert_eq!(take_recent_notification_conversation(), None);
+        assert_eq!(
+            firing_decision(Some(now), None, 10 * MIN_MS, true, now),
+            FiringDecision::Fire { occurrence_ms: now }
+        );
+        // Cooldown outranks the gate (nothing would fire either way).
+        assert_eq!(
+            firing_decision(Some(now), Some(now - MIN_MS), 10 * MIN_MS, false, now),
+            FiringDecision::CooldownSuppressed
+        );
     }
 }

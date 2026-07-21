@@ -29,6 +29,7 @@ mod secret_vault_migration;
 mod semantic_search;
 pub mod status;
 pub mod system_audio_evidence;
+pub mod trigger_firings;
 pub mod trigger_state;
 pub mod usage_charts;
 pub mod user_context;
@@ -316,6 +317,7 @@ pub struct AppInfra {
     user_context: UserContextStore,
     system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
     trigger_state: trigger_state::TriggerStateStore,
+    trigger_firings: trigger_firings::TriggerFiringsStore,
     subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -400,6 +402,7 @@ impl AppInfra {
         let system_audio_evidence =
             system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
         let trigger_state = trigger_state::TriggerStateStore::new(database.handle().clone());
+        let trigger_firings = trigger_firings::TriggerFiringsStore::new(database.handle().clone());
         let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -430,6 +433,7 @@ impl AppInfra {
             user_context,
             system_audio_evidence,
             trigger_state,
+            trigger_firings,
             subject_vectors,
             conversation,
             captured_frame_equivalence,
@@ -543,9 +547,16 @@ impl AppInfra {
 
     /// Per-trigger last-fired persistence for the Triggers evaluator (issue
     /// #175) — the durable cursor that makes schedule catch-up survive an app
-    /// restart. The full firing ledger is issue #176.
+    /// restart.
     pub fn trigger_state(&self) -> &trigger_state::TriggerStateStore {
         &self.trigger_state
+    }
+
+    /// The Trigger firing ledger (issue #176, ADR 0058): one row per Firing
+    /// decision (completed/skipped/failed), the source of last-run status and
+    /// the restart-surviving Cooldown.
+    pub fn trigger_firings(&self) -> &trigger_firings::TriggerFiringsStore {
+        &self.trigger_firings
     }
 
     /// The **Subject Vector** store seam (migration `0043`): embedding-free

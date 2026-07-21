@@ -7,8 +7,8 @@
 //! double-fires. One row per trigger in the `app_settings` kv table (migration
 //! `0001`, reused exactly as `system_audio_evidence` does — no new schema).
 //!
-//! ponytail: the full firing ledger (`trigger_firings`: outcome, reason,
-//! conversation link) is issue #176; this kv row is only the evaluator's cursor.
+//! The full firing ledger (outcome, reason, conversation link, cooldown) lives
+//! in [`crate::trigger_firings`]; this kv row is only the evaluator's cursor.
 
 use crate::db::CaptureDb;
 use crate::Result;
