@@ -14,7 +14,7 @@ use std::os::raw::c_void;
 use super::{CaptureIndexKeyStoreAdapter, KEYCHAIN_SERVICE};
 use crate::error::{AppInfraError, Result};
 
-pub(super) const SHARED_ACCESS_GROUP: &str = "RJYMY4RR97.com.shaikzeeshan.mnema.capture-index";
+pub(super) const SHARED_ACCESS_GROUP: &str = "RJYMY4RR97.day.mnema.capture-index";
 const APP_GROUPS_ENTITLEMENT: &str = "com.apple.security.application-groups";
 
 /// `errSecItemNotFound`: nothing matched — genuinely absent, or invisible

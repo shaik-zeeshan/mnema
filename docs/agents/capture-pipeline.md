@@ -9,7 +9,7 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 - SPA-only: `apps/desktop/src/routes/+layout.ts` sets `ssr = false`; `svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: "index.html"`.
 - In production packaging the SPA entry can arrive as `"/index.html"` — normalize static-entry paths in the shell before route-gating.
 - Tauri expects Vite on port `1420` with HMR on `1421`; `vite.config.js` hard-pins these and ignores `src-tauri/**`.
-- Bundle identifier is `day.mnema` (pre-2026-07 builds were `com.shaikzeeshan.mnema`; a one-time config-dir rename in `lib.rs` migrates old installs). Changing it changes the app identity for Tauri/macOS config and cache dirs, and resets TCC permissions. Keychain service names deliberately keep the old `com.shaikzeeshan.mnema.*` strings — they are storage keys, not bundle-id-derived.
+- Bundle identifier is `day.mnema` (pre-2026-07 builds were `com.shaikzeeshan.mnema`; a one-time config-dir rename in `lib.rs` migrates old installs). Changing it changes the app identity for Tauri/macOS config and cache dirs, and resets TCC permissions. Keychain services renamed with it (`day.mnema.{vault,licensing,capture-index}`); each store reads its `LEGACY_KEYCHAIN_SERVICE` (`com.shaikzeeshan.mnema.*`) as a fallback and migrates the item to the new service — don't remove those fallbacks while pre-rename installs exist.
 
 ---
 

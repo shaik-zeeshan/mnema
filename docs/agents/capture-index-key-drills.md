@@ -8,7 +8,7 @@ The real-keychain half of [ADR 0057](../adr/0057-capture-index-key-moves-to-a-sh
 
 ## Prerequisite: a build whose entitlement validates
 
-The shared group (`RJYMY4RR97.com.shaikzeeshan.mnema.capture-index`) only works when secd accepts the signing identity behind the `com.apple.security.application-groups` entitlement. That means:
+The shared group (`RJYMY4RR97.day.mnema.capture-index`) only works when secd accepts the signing identity behind the `com.apple.security.application-groups` entitlement. That means:
 
 - **Works:** a **Developer ID**–signed build, or an Apple Development build carrying an **embedded provisioning profile** (Xcode team profile in a `.app` bundle). Both binaries — the app *and* the bundled `mnema-cli` sidecar (`mnema.app/Contents/MacOS/mnema-cli`, re-signed with `Entitlements.mnema-cli.plist` by `build-macos-local-sign.sh` / `macos-release.yml`) — must be signed this way with Team ID `RJYMY4RR97`.
 - **Does NOT work — plain local Apple Development** (`scripts/build-macos-local-sign.sh` today): the spike showed secd ignores the app-group entitlement without a profile — every SecItem call returns **−34018** (`errSecMissingEntitlement`), and secd logs the entitlement "is ignored because of invalid application signature or incorrect provisioning profile". (The `keychain-access-groups` flavor is worse: it is a restricted entitlement, and AMFI SIGKILLs the binary at exec — error −413, "No matching profile found". That is why the shipped flavor is app-groups.)
@@ -23,10 +23,10 @@ codesign -d --entitlements - mnema.app/Contents/MacOS/mnema-cli
 
 Both must list `com.apple.security.application-groups` containing the group, **and** the identity must be Developer ID or profile-backed — the entitlement being *printed* is not the entitlement being *honored*.
 
-Know your log: `rust.log` at `~/Library/Logs/com.shaikzeeshan.mnema/rust.log` (`.dev` suffix for dev builds), **timestamps are UTC** (IST: +5:30). All migration lines share one prefix and are Info/Warn level, so they appear without developer options:
+Know your log: `rust.log` at `~/Library/Logs/day.mnema/rust.log` (`.dev` suffix for dev builds), **timestamps are UTC** (IST: +5:30). All migration lines share one prefix and are Info/Warn level, so they appear without developer options:
 
 ```sh
-grep 'capture-index-key:' ~/Library/Logs/com.shaikzeeshan.mnema/rust.log
+grep 'capture-index-key:' ~/Library/Logs/day.mnema/rust.log
 ```
 
 ---
@@ -37,7 +37,7 @@ The migrate-and-delete path, gated on proof: read old item → write group item 
 
 1. Start from an install with **pre-existing data**: an encrypted index and a key in the old silent store. Verify the old item exists:
    ```sh
-   security find-generic-password -s com.shaikzeeshan.mnema.capture-index -w
+   security find-generic-password -s day.mnema.capture-index -w
    ```
    (prints the key — that promiscuous read *is* the problem being fixed).
 2. Launch the entitled app build. Let it open the dashboard.
@@ -52,7 +52,7 @@ The migrate-and-delete path, gated on proof: read old item → write group item 
    ```
 5. Confirm the old item is gone:
    ```sh
-   security find-generic-password -s com.shaikzeeshan.mnema.capture-index -w
+   security find-generic-password -s day.mnema.capture-index -w
    ```
    **Expected: nothing** (`could not be found`). The group item is invisible to `security` by design — an out-of-group process gets flat "not found", which is the whole point.
 

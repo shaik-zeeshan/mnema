@@ -9,7 +9,7 @@
        Entitlements.plist). -->
   <key>com.apple.security.application-groups</key>
   <array>
-    <string>RJYMY4RR97.com.shaikzeeshan.mnema.capture-index</string>
+    <string>RJYMY4RR97.day.mnema.capture-index</string>
   </array>
 </dict>
 </plist>
