@@ -57,14 +57,20 @@ describe("frameIndexForMs", () => {
 
 describe("receiptViewState", () => {
   it("frames whenever any frame is on disk", () => {
-    expect(receiptViewState(5, 0)).toBe("frames");
-    expect(receiptViewState(5, 3)).toBe("frames");
+    expect(receiptViewState(5, 0, false, 0)).toBe("frames");
+    expect(receiptViewState(5, 3, false, 4)).toBe("frames");
   });
-  it("audio-only when no frames but audio was cited", () => {
-    expect(receiptViewState(0, 2)).toBe("audio-only");
+  it("audio-only when no frames but cited audio hydrated to live turns", () => {
+    expect(receiptViewState(0, 2, false, 4)).toBe("audio-only");
+  });
+  it("audio-only (optimistic) while cited-audio hydration is still pending", () => {
+    expect(receiptViewState(0, 2, true, 0)).toBe("audio-only");
+  });
+  it("expired when cited audio hydrates to zero live turns (retention orphans, ADR 0029)", () => {
+    expect(receiptViewState(0, 2, false, 0)).toBe("expired");
   });
   it("expired when neither frames nor audio remain", () => {
-    expect(receiptViewState(0, 0)).toBe("expired");
+    expect(receiptViewState(0, 0, false, 0)).toBe("expired");
   });
 });
 
