@@ -99,29 +99,8 @@ tauri_dir="${repo_root}/apps/desktop/src-tauri"
 # profile authorising the group, secd clears the entitlements-validated flag
 # and the shared keychain group fails with errSecMissingEntitlement (-34018) —
 # even under Developer ID. Embed before signing so the seal covers it.
-print "Embedding provisioning profile…"
-cp "${tauri_dir}/mnema.provisionprofile" "${app_path}/Contents/embedded.provisionprofile"
-
-# The profile only validates a bundle's MAIN executable — a bare sidecar
-# binary keeps its entitlements-validated flag cleared and secd refuses its
-# shared-group claim (verified empirically, ADR 0057). Repackage mnema-cli as
-# a helper bundle with its own profile copy; the documented sidecar path
-# becomes a symlink (validation follows the resolved executable path).
-print "Repackaging mnema-cli as an entitled helper bundle…"
-helper="${app_path}/Contents/Helpers/mnema-cli.app"
-mkdir -p "${helper}/Contents/MacOS"
-mv "${app_path}/Contents/MacOS/mnema-cli" "${helper}/Contents/MacOS/mnema-cli"
-cp "${tauri_dir}/Info.mnema-cli.plist" "${helper}/Contents/Info.plist"
-cp "${tauri_dir}/mnema.provisionprofile" "${helper}/Contents/embedded.provisionprofile"
-ln -sfh "../Helpers/mnema-cli.app/Contents/MacOS/mnema-cli" \
-  "${app_path}/Contents/MacOS/mnema-cli"
-codesign --force --options runtime --sign "${identity}" \
-  --entitlements "${tauri_dir}/Entitlements.mnema-cli.plist" \
-  "${helper}"
-codesign --force --options runtime --sign "${identity}" \
-  --entitlements "${tauri_dir}/Entitlements.plist" \
-  "${app_path}"
-codesign --verify --deep --strict "${app_path}"
+print "Entitling app (profile embed + helper-bundle CLI) and re-signing…"
+bash "${repo_root}/scripts/entitle-macos-app.sh" "${app_path}" "${identity}"
 
 dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
 
