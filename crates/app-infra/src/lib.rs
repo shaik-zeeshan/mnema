@@ -14,6 +14,7 @@ mod frame_batch_runtime;
 mod frame_batch_store;
 mod hidden_segment_workspace;
 pub mod jobs;
+mod keychain_service_migration;
 mod lexical;
 mod license_token_store;
 mod licensing_state;

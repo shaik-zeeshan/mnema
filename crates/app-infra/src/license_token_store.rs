@@ -210,15 +210,17 @@ fn read_service_token(service: &str, account: &str) -> Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 fn load_platform_token(account: &str) -> Result<Option<String>> {
-    if let Some(token) = read_service_token(KEYCHAIN_SERVICE, account)? {
-        return Ok(Some(token));
-    }
-    let Some(token) = read_service_token(LEGACY_KEYCHAIN_SERVICE, account)? else {
-        return Ok(None);
-    };
-    store_platform_token(account, &token)?;
-    let _ = security_framework::passwords::delete_generic_password(LEGACY_KEYCHAIN_SERVICE, account);
-    Ok(Some(token))
+    crate::keychain_service_migration::read_with_legacy_migration(
+        || read_service_token(KEYCHAIN_SERVICE, account),
+        || read_service_token(LEGACY_KEYCHAIN_SERVICE, account),
+        |token| store_platform_token(account, token),
+        || {
+            let _ = security_framework::passwords::delete_generic_password(
+                LEGACY_KEYCHAIN_SERVICE,
+                account,
+            );
+        },
+    )
 }
 
 #[cfg(target_os = "macos")]

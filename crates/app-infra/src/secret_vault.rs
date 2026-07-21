@@ -69,20 +69,19 @@ fn read_master_key_item(service: &str) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
 #[cfg(target_os = "macos")]
 impl MasterKeySource for KeychainMasterKeySource {
     fn load(&self) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
-        if let Some(key) = read_master_key_item(KEYCHAIN_SERVICE)? {
-            return Ok(Some(key));
-        }
-        // A read failure on the legacy item (e.g. a denied prompt) propagates as
+        // A read failure on either item (e.g. a denied prompt) propagates as
         // Err so unlock maps it to Denied and never mints a replacement key.
-        let Some(key) = read_master_key_item(LEGACY_KEYCHAIN_SERVICE)? else {
-            return Ok(None);
-        };
-        self.store(&key)?;
-        let _ = security_framework::passwords::delete_generic_password(
-            LEGACY_KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        );
-        Ok(Some(key))
+        crate::keychain_service_migration::read_with_legacy_migration(
+            || read_master_key_item(KEYCHAIN_SERVICE),
+            || read_master_key_item(LEGACY_KEYCHAIN_SERVICE),
+            |key| self.store(key),
+            || {
+                let _ = security_framework::passwords::delete_generic_password(
+                    LEGACY_KEYCHAIN_SERVICE,
+                    KEYCHAIN_ACCOUNT,
+                );
+            },
+        )
     }
 
     fn store(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<()> {
