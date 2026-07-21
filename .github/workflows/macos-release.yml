@@ -296,7 +296,7 @@ jobs:
           mv "$bundle"/macos/mnema.app.tar.gz "$bundle"/macos/mnema_aarch64.app.tar.gz
           mv "$bundle"/macos/mnema.app.tar.gz.sig "$bundle"/macos/mnema_aarch64.app.tar.gz.sig
           sig="$(cat "$bundle"/macos/mnema_aarch64.app.tar.gz.sig)"
-          gh release download "$tag" --pattern latest.json --output "$bundle/latest.json"
+          gh release download "$tag" --pattern latest.json --output "$bundle/latest.json" --clobber
           # Patch every platform entry (darwin-aarch64 AND darwin-aarch64-app) —
           # they all reference the same archive.
           jq --arg sig "$sig" '(.platforms[].signature) = $sig' \
