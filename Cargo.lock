@@ -4690,7 +4690,7 @@ dependencies = [
 
 [[package]]
 name = "mnema"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "ai-runtime",
  "app-infra",
