@@ -230,6 +230,7 @@ dependencies = [
  "chacha20poly1305",
  "chrono",
  "cidre",
+ "core-foundation 0.10.1",
  "dirs",
  "fs2",
  "image",
@@ -4388,7 +4389,8 @@ checksum = "2e126dda6f34391ab7b444f9922055facc83c07a910da3eb16f1e4d9c45dc777"
 [[package]]
 name = "licensegate"
 version = "0.2.0"
-source = "git+https://github.com/shaik-zeeshan/licensegate.git?rev=1c27b6bdf91ec1ce564150c3a8bdb143e29b1737#1c27b6bdf91ec1ce564150c3a8bdb143e29b1737"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ec8a16a20ef952662c4ae2bac1950b6c5ed61f86fa2070febc82ff1941856a5"
 dependencies = [
  "base64 0.22.1",
  "ed25519-dalek",
@@ -4702,7 +4704,7 @@ dependencies = [
 
 [[package]]
 name = "mnema"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "ai-runtime",
  "app-infra",

@@ -11,11 +11,23 @@ use std::process::Command;
 
 use crate::error::{AppInfraError, Result};
 
+#[cfg(any(target_os = "macos", test))]
+mod resolution;
+#[cfg(target_os = "macos")]
+mod shared_group;
+
 pub(crate) const CAPTURE_INDEX_DATABASE_DIR_NAME: &str = "db";
 
 const INDEX_IDENTITY_FILE_NAME: &str = "capture-index.json";
-const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.capture-index";
-const APP_ID: &str = "com.shaikzeeshan.mnema";
+const KEYCHAIN_SERVICE: &str = "day.mnema.capture-index";
+/// Pre-rename service for the silent `/usr/bin/security` item (installs before
+/// the day.mnema bundle-id change): read as a fallback, deleted alongside the
+/// new service by the ADR 0057 migrate-and-delete pass.
+#[cfg(target_os = "macos")]
+const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.capture-index";
+// Written into new identity files only; existing files keep the pre-rename
+// com.shaikzeeshan.mnema value and nothing compares against it.
+const APP_ID: &str = "day.mnema";
 const ENCRYPTION_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -46,6 +58,12 @@ trait CaptureIndexKeyStoreAdapter {
     fn load_key(&self, index_id: &str) -> Result<Option<String>>;
     fn store_key(&self, index_id: &str, key: &str) -> Result<()>;
     fn missing_key_error(&self, index_id: &str) -> AppInfraError;
+    /// Removes the stored key. Only the owner-migration path deletes anything
+    /// (the old silent item, after the database opened on the new path), so the
+    /// default is a no-op.
+    fn delete_key(&self, _index_id: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 struct CaptureIndexKeyStore<A> {
@@ -171,23 +189,109 @@ impl CaptureIndexKeyStoreAdapter for PlatformKeychainCaptureIndexKeyStoreAdapter
             "capture index key for {index_id} is missing from Keychain"
         ))
     }
+
+    fn delete_key(&self, index_id: &str) -> Result<()> {
+        delete_platform_key(index_id)
+    }
+}
+
+/// Which role of the Encrypted Capture Index is asking for the key (ADR 0041):
+/// only the Owner (the app) migrates the key into the shared access group; the
+/// Brokered Reader (the CLI) resolves new-then-old and never writes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CaptureIndexKeyRole {
+    Owner,
+    Reader,
+}
+
+/// A resolved key plus an optional post-open step: the owner migration only
+/// deletes the old silent keychain item once the database has actually opened
+/// with the migrated key (ADR 0057, migrate-and-delete gated on proof).
+pub(crate) struct ResolvedCaptureIndexKey {
+    key: Option<CaptureIndexDatabaseKey>,
+    on_open_success: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl ResolvedCaptureIndexKey {
+    fn plain(key: Option<CaptureIndexDatabaseKey>) -> Self {
+        Self {
+            key,
+            on_open_success: None,
+        }
+    }
+
+    pub(crate) fn key(&self) -> Option<CaptureIndexDatabaseKey> {
+        self.key.clone()
+    }
+
+    /// Call once the database has successfully opened with the resolved key.
+    pub(crate) fn database_opened(&mut self) {
+        if let Some(cleanup) = self.on_open_success.take() {
+            cleanup();
+        }
+    }
 }
 
 pub(crate) fn resolve_capture_index_database_key_for_current_process(
     base_dir: &Path,
     database_path: &Path,
-) -> Result<Option<CaptureIndexDatabaseKey>> {
+    role: CaptureIndexKeyRole,
+) -> Result<ResolvedCaptureIndexKey> {
     if test_process_allows_plaintext_index() {
-        return Ok(None);
+        return Ok(ResolvedCaptureIndexKey::plain(None));
     }
 
     if let Ok(key_dir) = std::env::var("MNEMA_CAPTURE_INDEX_KEY_DIR") {
-        return CaptureIndexKeyStore::new(FileCaptureIndexKeyStoreAdapter::new(key_dir))
-            .resolve_database_key(base_dir, database_path);
+        let key = CaptureIndexKeyStore::new(FileCaptureIndexKeyStoreAdapter::new(key_dir))
+            .resolve_database_key(base_dir, database_path)?;
+        return Ok(ResolvedCaptureIndexKey::plain(key));
     }
 
-    CaptureIndexKeyStore::new(PlatformKeychainCaptureIndexKeyStoreAdapter)
-        .resolve_database_key(base_dir, database_path)
+    resolve_platform_key_for_role(base_dir, database_path, role)
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_platform_key_for_role(
+    base_dir: &Path,
+    database_path: &Path,
+    role: CaptureIndexKeyRole,
+) -> Result<ResolvedCaptureIndexKey> {
+    match role {
+        CaptureIndexKeyRole::Owner => {
+            let store = CaptureIndexKeyStore::new(resolution::OwnerMigratingAdapter::new(
+                shared_group::SharedGroupKeychainAdapter,
+                PlatformKeychainCaptureIndexKeyStoreAdapter,
+            ));
+            let key = store.resolve_database_key(base_dir, database_path)?;
+            let pending = store.adapter.has_pending_old_delete();
+            Ok(ResolvedCaptureIndexKey {
+                key,
+                on_open_success: pending.then(|| {
+                    Box::new(move || store.adapter.delete_old_item_after_open())
+                        as Box<dyn FnOnce() + Send>
+                }),
+            })
+        }
+        CaptureIndexKeyRole::Reader => {
+            let key = CaptureIndexKeyStore::new(resolution::ReaderFallbackAdapter::new(
+                shared_group::SharedGroupKeychainAdapter,
+                PlatformKeychainCaptureIndexKeyStoreAdapter,
+            ))
+            .resolve_database_key(base_dir, database_path)?;
+            Ok(ResolvedCaptureIndexKey::plain(key))
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn resolve_platform_key_for_role(
+    base_dir: &Path,
+    database_path: &Path,
+    _role: CaptureIndexKeyRole,
+) -> Result<ResolvedCaptureIndexKey> {
+    let key = CaptureIndexKeyStore::new(PlatformKeychainCaptureIndexKeyStoreAdapter)
+        .resolve_database_key(base_dir, database_path)?;
+    Ok(ResolvedCaptureIndexKey::plain(key))
 }
 
 fn test_process_allows_plaintext_index() -> bool {
@@ -259,25 +363,19 @@ fn random_hex(byte_count: usize) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn load_platform_key(index_id: &str) -> Result<Option<String>> {
-    let lookup = Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            KEYCHAIN_SERVICE,
-            "-a",
-            index_id,
-            "-w",
-        ])
-        .output()?;
-    if !lookup.status.success() {
-        return Ok(None);
+    for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+        let lookup = Command::new("security")
+            .args(["find-generic-password", "-s", service, "-a", index_id, "-w"])
+            .output()?;
+        if !lookup.status.success() {
+            continue;
+        }
+        let key = String::from_utf8_lossy(&lookup.stdout).trim().to_string();
+        if !key.is_empty() {
+            return Ok(Some(key));
+        }
     }
-
-    let key = String::from_utf8_lossy(&lookup.stdout).trim().to_string();
-    if key.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(key))
+    Ok(None)
 }
 
 // The interpolated values are wrapped in plain double quotes for security's stdin
@@ -324,6 +422,30 @@ fn store_platform_key(index_id: &str, key: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn delete_platform_key(index_id: &str) -> Result<()> {
+    // The item lives under exactly one of the two services (new, or pre-rename
+    // legacy); deleting is done when either delete lands.
+    let mut last_error = String::new();
+    for service in [KEYCHAIN_SERVICE, LEGACY_KEYCHAIN_SERVICE] {
+        let output = Command::new("/usr/bin/security")
+            .args(["delete-generic-password", "-s", service, "-a", index_id])
+            .output()?;
+        if output.status.success() {
+            return Ok(());
+        }
+        last_error = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    }
+    Err(AppInfraError::CaptureIndexEncryption(last_error))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_platform_key(_index_id: &str) -> Result<()> {
+    Err(AppInfraError::CaptureIndexEncryption(
+        "capture index key store is unsupported on this platform".to_string(),
+    ))
+}
+
 #[cfg(not(target_os = "macos"))]
 fn load_platform_key(_index_id: &str) -> Result<Option<String>> {
     Err(AppInfraError::CaptureIndexEncryption(
@@ -344,12 +466,12 @@ mod tests {
 
     use super::*;
 
-    struct TestDir {
+    pub(super) struct TestDir {
         path: PathBuf,
     }
 
     impl TestDir {
-        fn new(label: &str) -> Self {
+        pub(super) fn new(label: &str) -> Self {
             let unique = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("system time should be after unix epoch")
@@ -362,7 +484,7 @@ mod tests {
             Self { path }
         }
 
-        fn path(&self) -> &Path {
+        pub(super) fn path(&self) -> &Path {
             &self.path
         }
     }
@@ -373,13 +495,13 @@ mod tests {
         }
     }
 
-    fn database_path(base_dir: &Path) -> PathBuf {
+    pub(super) fn database_path(base_dir: &Path) -> PathBuf {
         base_dir
             .join(CAPTURE_INDEX_DATABASE_DIR_NAME)
             .join("app.sqlite3")
     }
 
-    fn write_identity(base_dir: &Path, index_id: &str) {
+    pub(super) fn write_identity(base_dir: &Path, index_id: &str) {
         let identity_path = capture_index_identity_path(base_dir);
         fs::create_dir_all(identity_path.parent().expect("identity should have parent"))
             .expect("identity parent should exist");
@@ -532,7 +654,7 @@ mod tests {
 
         assert_eq!(
             command,
-            "add-generic-password -U -s \"com.shaikzeeshan.mnema.capture-index\" -a \"mnema-index-0123456789abcdef\" -w \"deadbeefdeadbeefdeadbeefdeadbeef\"\n"
+            "add-generic-password -U -s \"day.mnema.capture-index\" -a \"mnema-index-0123456789abcdef\" -w \"deadbeefdeadbeefdeadbeefdeadbeef\"\n"
         );
     }
 

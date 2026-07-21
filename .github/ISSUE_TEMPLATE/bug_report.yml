@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in Mnema isn't working
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For security or privacy issues (data leaving the device, exclusion-list failures), please use [private reporting](https://github.com/shaik-zeeshan/mnema/security/advisories/new) instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Mnema version
+      description: From the menu bar icon or Settings → About
+      placeholder: "0.1.13"
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: "macOS 15.5, MacBook Pro M2"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: If relevant, paste recent lines from the app log (timestamps in logs are UTC).
+      render: text

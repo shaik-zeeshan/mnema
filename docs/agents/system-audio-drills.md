@@ -9,10 +9,10 @@ The hardware-in-the-loop half of [ADR 0052](../adr/0052-system-audio-is-an-indep
 ## Setup (once)
 
 1. **Turn on verbose logging.** Settings → About → *Developer & Logs* → **Enable developer options**. Nearly every `system-audio-tap:` line — including all the ones below — is Debug-level, so a release build logs none of them without this. A `bun run tauri -- dev` build always logs verbosely.
-2. **Know your log.** `rust.log` lives at `~/Library/Logs/<bundle-id>/rust.log` — `com.shaikzeeshan.mnema` for a packaged build, `com.shaikzeeshan.mnema.dev` for a dev build. **Its timestamps are UTC**, so add your offset before correlating with anything you observed on the clock (IST: +5:30).
+2. **Know your log.** `rust.log` lives at `~/Library/Logs/<bundle-id>/rust.log` — `day.mnema` for a packaged build, `day.mnema.dev` for a dev build. **Its timestamps are UTC**, so add your offset before correlating with anything you observed on the clock (IST: +5:30).
 3. **Know your grep.** One prefix covers every tap event: `capture_system_audio::LOG_PREFIX` = `system-audio-tap:`.
    ```sh
-   tail -f ~/Library/Logs/com.shaikzeeshan.mnema/rust.log | grep 'system-audio-tap:'
+   tail -f ~/Library/Logs/day.mnema/rust.log | grep 'system-audio-tap:'
    ```
 4. **Know your output.** System-audio segments land at
    `~/.mnema/recordings/YYYY/MM/DD/audio/sysaudio_<uuid>-segment-####.m4a`
@@ -45,7 +45,7 @@ Compare against the Slice 1 baseline recorded under SCK before the swap. If that
 
 **Log:**
 ```sh
-grep 'system-audio-tap: started tap generation' ~/Library/Logs/com.shaikzeeshan.mnema/rust.log
+grep 'system-audio-tap: started tap generation' ~/Library/Logs/day.mnema/rust.log
 ```
 `excluding N process object(s)` — `N` must cover Mnema's own process **plus** the excluded browser's audio processes (so `N ≥ 2` with one excluded browser playing audio).
 
@@ -93,7 +93,7 @@ The device-death path, and the one most likely to produce a rebuild *storm*.
 
 **Watch for:** more than a couple of rebuilds per transition. A flapping device that out-paces the listener → rebuild cycle is the storm risk the ADR flagged; the fix (debouncing device-change events) is deliberately **not** implemented until observed. Count them:
 ```sh
-grep -c 'system-audio-tap: rebuilding tap generation' ~/Library/Logs/com.shaikzeeshan.mnema/rust.log
+grep -c 'system-audio-tap: rebuilding tap generation' ~/Library/Logs/day.mnema/rust.log
 ```
 
 ---
@@ -120,9 +120,9 @@ Process taps have their own TCC category and **no API to query it**, so the app 
 1. Quit Mnema.
 2. Reset the grant:
    ```sh
-   tccutil reset SystemAudioCaptureRequests com.shaikzeeshan.mnema
+   tccutil reset SystemAudioCaptureRequests day.mnema
    ```
-   (Use `com.shaikzeeshan.mnema.dev` for a dev build. If that service name is rejected by your macOS version, `tccutil reset All <bundle-id>` works but also resets screen/mic — expect to re-grant those too.)
+   (Use `day.mnema.dev` for a dev build. If that service name is rejected by your macOS version, `tccutil reset All <bundle-id>` works but also resets screen/mic — expect to re-grant those too.)
 3. Launch Mnema and start a recording with system audio on — **or** use onboarding's system-audio **Grant** button, which runs a throwaway tap purely to raise the prompt.
    **Expected:** the macOS "Screen & System Audio Recording" prompt appears.
 4. **Deny it.**
@@ -164,7 +164,7 @@ The decoupling itself. Cheap, and it is what three of the ADR's user stories are
 Record normally for several days on macOS 26 with system audio on and developer options enabled, then read the log. The point is not that a rebuild happened — rebuilds are the design — but that they stayed **bounded** and that audio was never silently lost.
 
 ```sh
-LOG=~/Library/Logs/com.shaikzeeshan.mnema/rust.log
+LOG=~/Library/Logs/day.mnema/rust.log
 
 # Total rebuilds, and the breakdown by reason.
 grep -c 'rebuilding tap generation' "$LOG"

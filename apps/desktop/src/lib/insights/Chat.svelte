@@ -41,6 +41,7 @@
   import AnswerProse from "$lib/AnswerProse.svelte";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
+  import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
@@ -64,6 +65,7 @@
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
   import type {
+    Activity,
     AiRuntimeModel,
     AiRuntimeModelsResult,
     AiRuntimeSettings,
@@ -903,11 +905,9 @@
     }
   }
 
-  // In-place frame peek (FrameDetailModal). A frame source — or an audio source
-  // that carries an aligned frame — opens the modal instead of hopping to the raw
-  // Timeline window; the old timeline hand-off survives only as the modal's
-  // demoted escape hatch (`onOpenInTimeline`) and as the fallback for audio with
-  // no frame to peek.
+  // In-place frame peek (FrameDetailModal) for frame sources; the old timeline
+  // hand-off survives only as the modal's demoted escape hatch
+  // (`onOpenInTimeline`) and as the fallback for an unplayable source.
   let frameModalOpen = $state(false);
   let frameModalId = $state<number | null>(null);
   let frameModalApp = $state<string | null>(null);
@@ -915,11 +915,53 @@
   let frameModalCapturedAt = $state<string | null>(null);
   let frameModalOpenInTimeline = $state<(() => void) | null>(null);
 
-  // Select an Answer Source: peek a frame in place when one is available, else
-  // keep the old raw-Timeline hand-off (audio with no aligned frame).
+  // Audio-source playback: an audio source opens the ActivityReceipt player over
+  // its segment's span (frame timelapse clocked by the real audio + synced
+  // transcript, or the bounded audio-only player when no frames survive) via a
+  // synthetic Activity — the receipt derives everything from span + evidence.
+  let receiptActivity = $state<Activity | null>(null);
+
+  // Select an Answer Source: an audio source plays in the receipt, a frame
+  // source peeks in place; the raw-Timeline hand-off remains the fallback for a
+  // source that can't be played here.
   function selectSource(source: AskAiSource): void {
-    const frameId =
-      source.kind === "frame" ? source.frameId : (source.alignedFrameId ?? null);
+    if (source.kind === "audio") {
+      const startedAtMs = Date.parse(source.startedAt);
+      const endedAtMs = Date.parse(source.endedAt);
+      if (
+        source.audioSegmentId == null ||
+        !Number.isFinite(startedAtMs) ||
+        !Number.isFinite(endedAtMs) ||
+        endedAtMs <= startedAtMs
+      ) {
+        void openSourceInTimeline(source);
+        return;
+      }
+      receiptActivity = {
+        id: source.audioSegmentId,
+        title:
+          source.sourceKind === "system"
+            ? "System audio"
+            : source.sourceKind === "microphone"
+              ? "Microphone audio"
+              : "Spoken audio",
+        summary: "",
+        category: null,
+        startedAtMs,
+        endedAtMs,
+        createdAtMs: startedAtMs,
+        evidence: [
+          {
+            subjectType: "audio_segment",
+            subjectId: source.audioSegmentId,
+            capturedAtMs: startedAtMs,
+            isHeadline: true,
+          },
+        ],
+      };
+      return;
+    }
+    const frameId = source.frameId;
     if (frameId == null) {
       void openSourceInTimeline(source);
       return;
@@ -1769,6 +1811,12 @@
   onClose={() => (frameModalOpen = false)}
   onOpenInTimeline={frameModalOpenInTimeline ?? undefined}
 />
+
+<!-- Audio-source playback: the Journal's Activity Receipt over the cited
+     segment's span (audible timelapse / audio-only player). -->
+{#if receiptActivity}
+  <ActivityReceipt activity={receiptActivity} onClose={() => (receiptActivity = null)} />
+{/if}
 
 <style>
   /* The conversation pane filling the insights surface. Mirrors the terminal/

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- mnema-cli ships as a helper *bundle*, not a bare sidecar binary: an
+       embedded provisioning profile only validates a bundle's main executable,
+       and without validation the shared keychain group read fails (ADR 0057).
+       The documented path Contents/MacOS/mnema-cli stays as a symlink here. -->
+  <key>CFBundleIdentifier</key>
+  <string>day.mnema.cli</string>
+  <key>CFBundleExecutable</key>
+  <string>mnema-cli</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleName</key>
+  <string>mnema-cli</string>
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

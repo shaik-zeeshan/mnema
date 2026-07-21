@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "mnema",
-  "version": "0.1.13",
-  "identifier": "com.shaikzeeshan.mnema",
+  "version": "0.1.14",
+  "identifier": "day.mnema",
   "build": {
     "beforeDevCommand": "../../scripts/prepare-mnema-cli-sidecar.sh debug && bun run dev",
     "devUrl": "http://localhost:1420",

@@ -264,7 +264,7 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
     insert_privacy_app_candidate(
         &mut candidates,
         PrivacyAppCandidate {
-            bundle_id: "com.shaikzeeshan.mnema".to_string(),
+            bundle_id: "day.mnema".to_string(),
             display_name: "Mnema".to_string(),
             running: true,
             icon_path: None,
@@ -564,7 +564,7 @@ fn main_bundle_path() -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
     macos_application_bundle_path_for_bundle_id(bundle_id).or_else(|| {
-        (bundle_id == "com.shaikzeeshan.mnema")
+        (bundle_id == "day.mnema")
             .then(main_bundle_path)
             .flatten()
     })
@@ -2385,7 +2385,7 @@ pub fn get_capture_support() -> CaptureSupportResponse {
         supported_sources: CaptureSources {
             screen: screen_support.screen,
             microphone: microphone_supported,
-            system_audio: screen_support.system_audio,
+            system_audio: capture_system_audio::supports_system_audio_capture(),
         },
     };
 
@@ -2458,7 +2458,7 @@ pub fn get_system_audio_access_hint(app_handle: tauri::AppHandle) -> SystemAudio
 /// not knowable here either way.
 #[cfg(target_os = "macos")]
 async fn request_system_audio_permission() -> Result<(), String> {
-    if !capture_screen::supports_system_audio_capture() {
+    if !capture_system_audio::supports_system_audio_capture() {
         return Ok(());
     }
 

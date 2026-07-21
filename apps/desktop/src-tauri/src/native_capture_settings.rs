@@ -646,7 +646,7 @@ fn is_original_screen_resolution(value: &ScreenResolution) -> bool {
 }
 
 fn supports_non_original_screen_resolution() -> bool {
-    capture_screen::support_for_current_platform().system_audio
+    capture_screen::supports_screen_capture_kit_backend()
 }
 
 pub(crate) fn validate_recording_settings(

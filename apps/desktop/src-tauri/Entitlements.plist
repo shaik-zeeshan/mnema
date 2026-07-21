@@ -4,5 +4,14 @@
 <dict>
   <key>com.apple.security.device.audio-input</key>
   <true/>
+  <!-- Shared keychain access group for the capture index key (ADR 0057).
+       App-group flavor, NOT keychain-access-groups: the latter is a restricted
+       entitlement that gets the binary SIGKILLed at exec without a provisioning
+       profile. App groups are unrestricted at exec; keychain ops just fail with
+       errSecMissingEntitlement (-34018) on non-team-signed builds. -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>RJYMY4RR97.day.mnema.capture-index</string>
+  </array>
 </dict>
 </plist>

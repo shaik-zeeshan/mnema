@@ -25,7 +25,10 @@ jobs:
     environment: macos-release
 
     env:
-      APPLE_SIGNING_IDENTITY: "-"
+      # Developer ID signing (ADR 0057): the shared keychain group only works
+      # on a Developer ID build with the provisioning profile embedded and the
+      # CLI packaged as a helper bundle — see scripts/entitle-macos-app.sh.
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       CI: true
       CARGO_TERM_COLOR: always
       RUST_BACKTRACE: 1
@@ -36,33 +39,26 @@ jobs:
       # older CPUs.
       OPENBLAS_DYNAMIC_ARCH: "1"
       # Buy-button checkout links, baked into the frontend bundle by Vite
-      # (apps/desktop/src/lib/licensing.ts). Set repo variables
-      # LICENSE_CHECKOUT_URL / RENEWAL_CHECKOUT_URL to the LIVE Polar links
-      # before a real release; unset arrives as "" and the code (`||`) falls
-      # back to the sandbox defaults.
-      VITE_LICENSE_CHECKOUT_URL: ${{ vars.LICENSE_CHECKOUT_URL }}
-      VITE_RENEWAL_CHECKOUT_URL: ${{ vars.RENEWAL_CHECKOUT_URL }}
+      # (apps/desktop/src/lib/licensing.ts). Set repo secrets
+      # VITE_LICENSE_CHECKOUT_URL / VITE_RENEWAL_CHECKOUT_URL to the LIVE Polar
+      # links before a real release; unset arrives as "" and the code (`||`)
+      # falls back to the sandbox defaults.
+      VITE_LICENSE_CHECKOUT_URL: ${{ secrets.VITE_LICENSE_CHECKOUT_URL }}
+      VITE_RENEWAL_CHECKOUT_URL: ${{ secrets.VITE_RENEWAL_CHECKOUT_URL }}
       # Prod licensing config baked at compile time (option_env! in
       # licensing/adapter.rs). Unset falls back to an all-zero placeholder key
       # that verifies NOTHING — a release built without these ships a dead
-      # license gate that rejects every real key. Set repo variables
-      # LICENSE_PUBLIC_KEY / LICENSE_KID / LICENSE_PK_TOKEN from the licensegate
-      # console before a real release (verifying/publishable values, not secrets).
-      MNEMA_LICENSE_PUBLIC_KEY: ${{ vars.LICENSE_PUBLIC_KEY }}
-      MNEMA_LICENSE_KID: ${{ vars.LICENSE_KID }}
-      MNEMA_LICENSE_PK_TOKEN: ${{ vars.LICENSE_PK_TOKEN }}
+      # license gate that rejects every real key. Set repo secrets
+      # MNEMA_LICENSE_PUBLIC_KEY / MNEMA_LICENSE_KID / MNEMA_LICENSE_PK_TOKEN
+      # from the licensegate console before a real release (publishable values,
+      # kept as secrets only so they live beside the other release config).
+      MNEMA_LICENSE_PUBLIC_KEY: ${{ secrets.MNEMA_LICENSE_PUBLIC_KEY }}
+      MNEMA_LICENSE_KID: ${{ secrets.MNEMA_LICENSE_KID }}
+      MNEMA_LICENSE_PK_TOKEN: ${{ secrets.MNEMA_LICENSE_PK_TOKEN }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      # licensegate is a PRIVATE git dependency (apps/desktop/src-tauri/Cargo.toml,
-      # fetched with the git CLI per .cargo/config.toml [net]). Rewrite its URL to
-      # embed a token so cargo can fetch it on the runner. Requires the
-      # LICENSEGATE_TOKEN secret: a PAT with read access to
-      # github.com/shaik-zeeshan/licensegate.
-      - name: Configure git auth for private licensegate dependency
-        run: git config --global url."https://x-access-token:${{ secrets.LICENSEGATE_TOKEN }}@github.com/shaik-zeeshan/licensegate".insteadOf "https://github.com/shaik-zeeshan/licensegate"
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -130,7 +126,7 @@ jobs:
             exit 1
           fi
 
-      # A stable release built without the licensing repo variables silently
+      # A stable release built without the licensing repo secrets silently
       # bakes the all-zero placeholder key (dead gate) and sandbox checkout
       # links — fail loudly instead. Prereleases stay placeholder-friendly.
       - name: Require licensing config for stable releases
@@ -138,13 +134,13 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          [[ -n "${MNEMA_LICENSE_PUBLIC_KEY}" ]] || missing+=(LICENSE_PUBLIC_KEY)
-          [[ -n "${MNEMA_LICENSE_KID}" ]] || missing+=(LICENSE_KID)
-          [[ -n "${MNEMA_LICENSE_PK_TOKEN}" ]] || missing+=(LICENSE_PK_TOKEN)
-          [[ -n "${VITE_LICENSE_CHECKOUT_URL}" ]] || missing+=(LICENSE_CHECKOUT_URL)
-          [[ -n "${VITE_RENEWAL_CHECKOUT_URL}" ]] || missing+=(RENEWAL_CHECKOUT_URL)
+          [[ -n "${MNEMA_LICENSE_PUBLIC_KEY}" ]] || missing+=(MNEMA_LICENSE_PUBLIC_KEY)
+          [[ -n "${MNEMA_LICENSE_KID}" ]] || missing+=(MNEMA_LICENSE_KID)
+          [[ -n "${MNEMA_LICENSE_PK_TOKEN}" ]] || missing+=(MNEMA_LICENSE_PK_TOKEN)
+          [[ -n "${VITE_LICENSE_CHECKOUT_URL}" ]] || missing+=(VITE_LICENSE_CHECKOUT_URL)
+          [[ -n "${VITE_RENEWAL_CHECKOUT_URL}" ]] || missing+=(VITE_RENEWAL_CHECKOUT_URL)
           if (( ${#missing[@]} )); then
-            echo "stable release requires repo variables: ${missing[*]} (Settings → Secrets and variables → Actions → Variables)" >&2
+            echo "stable release requires repo secrets: ${missing[*]} (Settings → Secrets and variables → Actions → Secrets)" >&2
             exit 1
           fi
 
@@ -182,7 +178,13 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: "-"
+          # The Tauri CLI imports the certificate into a temporary keychain and
+          # signs with it. Notarization env vars are deliberately NOT set here:
+          # the bundles get repackaged below, which would void a notarization
+          # done at build time — we notarize the final artifacts ourselves.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           CI: true
         with:
           projectPath: apps/desktop
@@ -193,6 +195,112 @@ jobs:
           prerelease: ${{ steps.release_channel.outputs.prerelease }}
           generateReleaseNotes: true
           includeUpdaterJson: true
+
+      # The Tauri CLI's temporary keychain is deleted when the build step
+      # ends, so the re-sign below needs the certificate imported into a
+      # keychain that outlives that step.
+      - name: Import signing certificate for re-sign
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/entitle-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 24)"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+
+      # Profile embed + helper-bundle CLI + re-sign (ADR 0057). This changes
+      # the .app AFTER tauri-action built and uploaded the DMG/updater
+      # artifacts, so everything downstream is rebuilt from the entitled app
+      # and re-uploaded over the stale draft-release assets.
+      - name: Entitle app (profile + helper-bundle CLI) and re-sign
+        run: ./scripts/entitle-macos-app.sh target/aarch64-apple-darwin/release/bundle/macos/mnema.app "$APPLE_SIGNING_IDENTITY"
+
+      - name: Notarize and staple app
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          app="target/aarch64-apple-darwin/release/bundle/macos/mnema.app"
+          ditto -c -k --keepParent "$app" mnema-notarize.zip
+          submission_id="$(xcrun notarytool submit mnema-notarize.zip \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id RJYMY4RR97 --output-format json | jq -r '.id')"
+          # Poll instead of `submit --wait`: a single network blip during the
+          # long wait killed a run even though Apple accepted the submission.
+          status=""
+          for _ in $(seq 1 180); do
+            status="$(xcrun notarytool info "$submission_id" \
+              --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+              --team-id RJYMY4RR97 --output-format json 2>/dev/null \
+              | jq -r '.status' || true)"
+            case "$status" in
+              Accepted) break ;;
+              Invalid|Rejected)
+                xcrun notarytool log "$submission_id" \
+                  --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+                  --team-id RJYMY4RR97 || true
+                exit 1 ;;
+              *) sleep 60 ;;
+            esac
+          done
+          [[ "$status" == "Accepted" ]] || { echo "notarization did not reach Accepted within 3h (last status: '$status')" >&2; exit 1; }
+          xcrun stapler staple "$app"
+          rm mnema-notarize.zip
+
+      # The DMG and updater tar.gz built by tauri-action embed the pre-entitled
+      # app — rebuild both from the stapled app. The updater archive must be
+      # re-signed with the Tauri updater key (latest.json carries that
+      # signature), and latest.json patched to match.
+      - name: Rebuild DMG and updater archive from entitled app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          bundle="target/aarch64-apple-darwin/release/bundle"
+          app="$bundle/macos/mnema.app"
+          tar_gz="$(ls "$bundle"/macos/*.app.tar.gz)"
+          tar -czf "$tar_gz" -C "$bundle/macos" mnema.app
+          # Key/password come from the TAURI_SIGNING_* env vars the CLI reads
+          # natively; passing them as flags broke when the empty password
+          # argument was dropped by the bun→turbo script chain.
+          bun run tauri -- signer sign "$tar_gz"
+          dmg="$(ls "$bundle"/dmg/*.dmg)"
+          staging="$(mktemp -d)"
+          ditto "$app" "$staging/mnema.app"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname "mnema" -srcfolder "$staging" -ov -format UDZO "$dmg"
+          rm -rf "$staging"
+
+      - name: Replace stale draft release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bundle="target/aarch64-apple-darwin/release/bundle"
+          tag="${{ steps.release_version.outputs.tag }}"
+          sig="$(cat "$bundle"/macos/*.app.tar.gz.sig)"
+          gh release download "$tag" --pattern latest.json --output "$bundle/latest.json"
+          jq --arg sig "$sig" '.platforms["darwin-aarch64"].signature = $sig' \
+            "$bundle/latest.json" > "$bundle/latest.json.tmp"
+          mv "$bundle/latest.json.tmp" "$bundle/latest.json"
+          gh release upload "$tag" \
+            "$bundle/latest.json" \
+            "$bundle"/dmg/*.dmg \
+            "$bundle"/macos/*.app.tar.gz \
+            "$bundle"/macos/*.app.tar.gz.sig \
+            --clobber
 
       - name: Stage release artifacts
         id: stage_artifacts

@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Entitlements for the bundled mnema-cli sidecar (ADR 0057). Tauri does
+       not entitle sidecars, so the build scripts re-sign it with this file.
+       The headless CLI only needs the shared keychain access group to read the
+       capture index key; app-group flavor, not keychain-access-groups (see
+       Entitlements.plist). -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>RJYMY4RR97.day.mnema.capture-index</string>
+  </array>
+</dict>
+</plist>

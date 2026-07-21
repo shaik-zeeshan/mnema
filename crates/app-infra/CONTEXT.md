@@ -80,8 +80,8 @@ A future ADR-backed storage protection for Mnema's SQLite-backed searchable and 
 _Avoid_: encrypted capture store, media encryption, secure erase
 
 **Capture Index Key Store**:
-The platform-owned secret storage boundary that holds **Encrypted Capture Index** keys outside the recording save directory.
-_Avoid_: key file, save-directory secret, hard-coded key
+The platform-owned secret storage boundary that holds **Encrypted Capture Index** keys outside the recording save directory. On macOS this is a data-protection keychain item in the team-shared access group readable only by the entitled app and `mnema-cli` binaries — not the secret vault (app-only by invariant) and not the legacy silently-readable `/usr/bin/security` item, which is migrated away and deleted (ADR 0057). Unsigned dev builds use the `MNEMA_CAPTURE_INDEX_KEY_DIR` file store instead.
+_Avoid_: key file, save-directory secret, hard-coded key, vault key
 
 **Capture Index Owner**:
 The single process — the desktop app — that is allowed to write the **Encrypted Capture Index** and to run migrations against it. Inside the owner, all writes go through the **Writer Pool** while reads use a separate **Reader Pool**, so SQLite's single-writer rule is satisfied with `BEGIN IMMEDIATE` (not by serializing every write onto one connection).
@@ -303,7 +303,8 @@ _Avoid_: open-in-browser tool, agent URL navigation, raw URL field, broker open,
 - A **Brokered Reader** opens a read-write OS handle guarded by `PRAGMA query_only=ON` rather than a strict `SQLITE_OPEN_READONLY` handle, because a brokered read must still succeed when the desktop app is closed after a crash (dirty `-wal`), where a strict read-only handle cannot recover the WAL sidecars and fails to open. `mnema` data commands run against an on-disk grant and do not require the app to be running.
 - Inside the **Capture Index Owner**, writes use the **Writer Pool** and reads use a separate **Reader Pool** (preserving WAL read/write concurrency). Writer-writer lock-upgrade deadlocks are prevented by beginning every write transaction with `BEGIN IMMEDIATE` (`CaptureDb::begin_write`), not by limiting the writer to one connection — a single writer connection was tried first but starved under capture load and surfaced as `pool timed out` on stop (see ADR 0041 amendment).
 - An **Encrypted Capture Index** may expose non-secret index identity metadata through a readable header or sidecar so the app and broker can locate the corresponding **Capture Index Key Store** entry.
-- If an **Encrypted Capture Index** key is missing or inaccessible, Mnema treats the index as undecryptable unless an explicit future backup/export key flow exists; fallback keys must not live in `saveDirectory`.
+- If an **Encrypted Capture Index** key is missing or inaccessible, Mnema treats the index as undecryptable unless an explicit future backup/export key flow exists; fallback keys must not live in `saveDirectory`. The data-protection keychain cannot distinguish "denied" from "missing", so before reporting a missing key against an existing index the binary checks its own access-group entitlement and names an unsigned/dev build as the likely cause (ADR 0057).
+- Only the **Capture Index Owner** migrates the key store (old silent item → shared-group item, deleted only after read-back + successful DB open); a **Brokered Reader** reads new-then-old and never writes or deletes key items (ADR 0057).
 - V1 does not change default browser URL metadata settings.
 - **OCR Admission Budget** is not a privacy layer and does not skip **Captured Frame** values based on inferred sensitive content in V1.
 - **App Privacy Exclusion** is app-based rather than website-, title-, private-browser-, or private-window-based.

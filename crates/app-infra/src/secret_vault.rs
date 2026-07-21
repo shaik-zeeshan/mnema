@@ -17,7 +17,11 @@ const AEAD_TAG_LEN: usize = 16;
 const MASTER_KEY_LEN: usize = 32;
 
 #[cfg(target_os = "macos")]
-const KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.vault";
+const KEYCHAIN_SERVICE: &str = "day.mnema.vault";
+/// Pre-rename service (installs before the day.mnema bundle-id change): read
+/// once, migrated to the new service, then deleted.
+#[cfg(target_os = "macos")]
+const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.vault";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "master-key";
 // errSecItemNotFound: the keychain has no entry for this service/account.
@@ -44,26 +48,40 @@ pub trait MasterKeySource {
 pub struct KeychainMasterKeySource;
 
 #[cfg(target_os = "macos")]
+fn read_master_key_item(service: &str) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
+    match security_framework::passwords::get_generic_password(service, KEYCHAIN_ACCOUNT) {
+        Ok(bytes) => {
+            let key: [u8; MASTER_KEY_LEN] = bytes.as_slice().try_into().map_err(|_| {
+                vault_error(format!(
+                    "vault master key has unexpected length {}",
+                    bytes.len()
+                ))
+            })?;
+            Ok(Some(key))
+        }
+        Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+        Err(error) => Err(vault_error(format!(
+            "keychain read of the vault master key failed: {error}"
+        ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
 impl MasterKeySource for KeychainMasterKeySource {
     fn load(&self) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
-        match security_framework::passwords::get_generic_password(
-            KEYCHAIN_SERVICE,
-            KEYCHAIN_ACCOUNT,
-        ) {
-            Ok(bytes) => {
-                let key: [u8; MASTER_KEY_LEN] = bytes.as_slice().try_into().map_err(|_| {
-                    vault_error(format!(
-                        "vault master key has unexpected length {}",
-                        bytes.len()
-                    ))
-                })?;
-                Ok(Some(key))
-            }
-            Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
-            Err(error) => Err(vault_error(format!(
-                "keychain read of the vault master key failed: {error}"
-            ))),
-        }
+        // A read failure on either item (e.g. a denied prompt) propagates as
+        // Err so unlock maps it to Denied and never mints a replacement key.
+        crate::keychain_service_migration::read_with_legacy_migration(
+            || read_master_key_item(KEYCHAIN_SERVICE),
+            || read_master_key_item(LEGACY_KEYCHAIN_SERVICE),
+            |key| self.store(key),
+            || {
+                let _ = security_framework::passwords::delete_generic_password(
+                    LEGACY_KEYCHAIN_SERVICE,
+                    KEYCHAIN_ACCOUNT,
+                );
+            },
+        )
     }
 
     fn store(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<()> {

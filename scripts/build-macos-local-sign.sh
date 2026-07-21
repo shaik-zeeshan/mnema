@@ -90,9 +90,30 @@ fi
 cd "${repo_root}/apps/desktop"
 CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- "${tauri_args[@]}"
 
+# Tauri does not entitle sidecars (ADR 0057): re-sign the bundled mnema-cli
+# with its own entitlements, then re-sign the app so the outer signature seals
+# the new nested code — sidecar first, or the app signature breaks.
+app_path="${repo_root}/target/${profile_dir}/bundle/macos/mnema.app"
+tauri_dir="${repo_root}/apps/desktop/src-tauri"
+# The app-groups entitlement is validation-required: without a provisioning
+# profile authorising the group, secd clears the entitlements-validated flag
+# and the shared keychain group fails with errSecMissingEntitlement (-34018) —
+# even under Developer ID. Embed before signing so the seal covers it.
+print "Entitling app (profile embed + helper-bundle CLI) and re-signing…"
+bash "${repo_root}/scripts/entitle-macos-app.sh" "${app_path}" "${identity}"
+
 dmg_path="$(ls -t "${dmg_dir}"/*.dmg 2>/dev/null | head -n 1 || true)"
 
 if [[ -n "${dmg_path}" ]]; then
+  # Tauri built the DMG before the re-sign above, so it embeds the
+  # un-entitled app — rebuild it from the re-signed bundle.
+  print "Rebuilding DMG from re-signed app…"
+  staging="$(mktemp -d)"
+  ditto "${app_path}" "${staging}/mnema.app"
+  ln -s /Applications "${staging}/Applications"
+  hdiutil create -volname "mnema" -srcfolder "${staging}" -ov -format UDZO \
+    "${dmg_path}" >/dev/null
+  rm -rf "${staging}"
   print "Opening DMG: ${dmg_path}"
   open "${dmg_path}"
 else

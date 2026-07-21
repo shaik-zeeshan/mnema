@@ -45,7 +45,7 @@ overlap-included number is penalized on overlapping speech — track both.
 
 You need the diarization models installed — the simplest path is to run the
 desktop app once and let it download a preset, which lands them at
-`~/Library/Application Support/com.shaikzeeshan.mnema/speaker-analysis-models`
+`~/Library/Application Support/day.mnema/speaker-analysis-models`
 (the binary's default `--models-dir`).
 
 1. Build the Rust binary (macOS; no `mnema-cli` sidecar required since this targets

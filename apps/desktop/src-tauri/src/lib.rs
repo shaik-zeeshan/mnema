@@ -570,6 +570,37 @@ fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
 
+/// One-time move of the pre-rename config root (settings, models, caches) so
+/// installs from before the `com.shaikzeeshan.mnema` → `day.mnema` identifier
+/// change keep their data. Runs before anything reads the config dir; a no-op
+/// once the new dir exists.
+#[cfg(target_os = "macos")]
+fn migrate_legacy_app_config_dir(app_handle: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Ok(new_dir) = app_handle.path().app_config_dir() else {
+        return;
+    };
+    if new_dir.exists() {
+        return;
+    }
+    let Some(name) = new_dir.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    let Some(parent) = new_dir.parent() else {
+        return;
+    };
+    let legacy_dir = parent.join(name.replacen("day.mnema", "com.shaikzeeshan.mnema", 1));
+    if legacy_dir != new_dir && legacy_dir.is_dir() {
+        if let Err(error) = std::fs::rename(&legacy_dir, &new_dir) {
+            tauri_plugin_log::log::warn!(
+                "failed to migrate legacy config dir {} -> {}: {error}",
+                legacy_dir.display(),
+                new_dir.display()
+            );
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -900,6 +931,8 @@ pub fn run() {
             open_conversation_in_chat,
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            migrate_legacy_app_config_dir(app.handle());
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {

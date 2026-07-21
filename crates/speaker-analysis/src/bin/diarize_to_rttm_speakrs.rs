@@ -44,7 +44,7 @@
 //! ```
 //!
 //! `--models-dir` defaults to the desktop app's installed model store
-//! (`~/Library/Application Support/com.shaikzeeshan.mnema/speaker-analysis-models`).
+//! (`~/Library/Application Support/day.mnema/speaker-analysis-models`).
 
 use std::{
     fs,
@@ -89,7 +89,7 @@ fn default_models_dir() -> PathBuf {
     // speaker-analysis model store).
     let home = std::env::var("HOME").unwrap_or_default();
     PathBuf::from(home)
-        .join("Library/Application Support/com.shaikzeeshan.mnema")
+        .join("Library/Application Support/day.mnema")
         .join(MODEL_STORE_DIR_NAME)
 }
 
