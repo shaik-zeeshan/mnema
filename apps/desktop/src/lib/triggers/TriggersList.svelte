@@ -1,9 +1,14 @@
 <script lang="ts">
   // The /triggers list (Screen 1 of docs/triggers/mockups/final/DESIGN.md):
-  // triggers grouped by condition, each row = enable switch · name · condition
-  // detail · honest last-run status, hover actions edit · share · delete, and a
-  // dashed ghost add-row per section. Pure presentation — the route page owns
-  // the data and the handlers.
+  // triggers grouped by condition, each row = enable switch · name (opens the
+  // per-trigger Runs view) · condition detail · honest last-run status, hover
+  // actions edit · share · delete, and a dashed ghost add-row per section.
+  // Pure presentation — the route page owns the data and the handlers.
+  import IconArrowUpRight from "~icons/lucide/arrow-up-right";
+  import IconCheck from "~icons/lucide/check";
+  import IconPlus from "~icons/lucide/plus";
+  import IconTriangleAlert from "~icons/lucide/triangle-alert";
+  import { tip } from "$lib/components/tooltip";
   import {
     CONDITION_SECTIONS,
     conditionDetail,
@@ -12,6 +17,7 @@
     type TriggerDefinition,
     type TriggerStatus,
   } from "$lib/triggers/api";
+  import { CONDITION_ICON } from "$lib/triggers/condition-icons";
 
   interface Props {
     triggers: TriggerDefinition[];
@@ -22,10 +28,13 @@
     flashId: string | null;
     ontoggle: (trigger: TriggerDefinition) => void;
     onedit: (trigger: TriggerDefinition) => void;
-    onshare: (trigger: TriggerDefinition) => void;
+    /** Copies Trigger JSON; the "copied" flash waits for this to resolve. */
+    onshare: (trigger: TriggerDefinition) => Promise<void>;
     ondelete: (trigger: TriggerDefinition) => void;
     onadd: (cond: ConditionType) => void;
     onopenrun: (conversationId: string) => void;
+    /** Name click → the trigger's Runs view (DESIGN.md Screen 2). */
+    onopenruns: (trigger: TriggerDefinition) => void;
     onrunagain: (trigger: TriggerDefinition, conversationId: string) => void;
     /** Trigger ids with a Run Again retry in flight (shows "retrying…"). */
     retryingIds: ReadonlySet<string>;
@@ -43,19 +52,30 @@
     ondelete,
     onadd,
     onopenrun,
+    onopenruns,
     onrunagain,
     retryingIds,
     onsetupprovider,
   }: Props = $props();
 
-  // "copied ✓" flash per row.
+  // "copied" / "copy failed" flash per row — success only once the clipboard
+  // write actually resolved.
   let copiedId = $state<string | null>(null);
-  function share(trigger: TriggerDefinition): void {
-    onshare(trigger);
-    copiedId = trigger.id;
+  let copyFailedId = $state<string | null>(null);
+  async function share(trigger: TriggerDefinition): Promise<void> {
+    const id = trigger.id;
+    try {
+      await onshare(trigger);
+      copiedId = id;
+      copyFailedId = null;
+    } catch {
+      copyFailedId = id;
+      copiedId = null;
+    }
     setTimeout(() => {
-      if (copiedId === trigger.id) copiedId = null;
-    }, 1100);
+      if (copiedId === id) copiedId = null;
+      if (copyFailedId === id) copyFailedId = null;
+    }, 1500);
   }
 
   function sectionTriggers(cond: ConditionType): TriggerDefinition[] {
@@ -63,7 +83,7 @@
   }
 
   interface RowStatus {
-    kind: "ok" | "skip" | "fail" | "none";
+    kind: "ok" | "skip" | "fail" | "none" | "running";
     word: string;
     rest: string;
     title: string;
@@ -71,7 +91,19 @@
   }
 
   function rowStatus(trigger: TriggerDefinition): RowStatus {
-    const firing = statuses.get(trigger.id)?.lastFiring;
+    const status = statuses.get(trigger.id);
+    // Running / Readiness Wait — the sixth lifecycle state, outranks the
+    // last-firing display while a firing is in flight.
+    if (status?.runningSinceMs !== undefined) {
+      return {
+        kind: "running",
+        word: "running",
+        rest: `· ${fmtWhen(status.runningSinceMs)}`,
+        title: "waiting for transcription… can take up to ~15 min",
+        conversationId: null,
+      };
+    }
+    const firing = status?.lastFiring;
     if (!firing) {
       return {
         kind: "none",
@@ -118,10 +150,11 @@
 <div class="sections">
   {#each CONDITION_SECTIONS as section (section.cond)}
     {@const rows = sectionTriggers(section.cond)}
+    {@const SectionIcon = CONDITION_ICON[section.cond]}
     <section class="cond-section">
       <div class="cond-section-head">
         <div class="cond-section-title">
-          <span class="glyph" aria-hidden="true">{section.glyph}</span>
+          <span class="glyph" aria-hidden="true"><SectionIcon /></span>
           <span>{section.title}</span>
         </div>
         <p class="cond-section-blurb">{section.blurb}</p>
@@ -150,7 +183,12 @@
               disabled={gated}
               onclick={() => ontoggle(trigger)}
             ></button>
-            <span class="trow-name">{trigger.name}</span>
+            <button
+              type="button"
+              class="trow-name"
+              use:tip={"See every run of this trigger, including skips and failures"}
+              onclick={() => onopenruns(trigger)}
+            >{trigger.name}</button>
             {#if detail}
               <span class="trow-detail">{detail}</span>
             {/if}
@@ -158,8 +196,11 @@
             {#if gated}
               <span
                 class="gate-chip"
-                title="This trigger can't run until an AI provider is configured — its condition is ignored until then"
-              >▲ needs an AI provider</span>
+                use:tip={"This trigger can't run until an AI provider is configured — its condition is ignored until then"}
+              >
+                <IconTriangleAlert aria-hidden="true" />
+                needs an AI provider
+              </span>
               <button type="button" class="gate-link" onclick={onsetupprovider}>
                 Set up provider
               </button>
@@ -167,29 +208,30 @@
               <button
                 type="button"
                 class="trow-status st-{status.kind} trow-status--openable"
-                title={status.title}
+                use:tip={status.title}
                 onclick={() => {
                   if (status.conversationId !== null) onopenrun(status.conversationId);
                 }}
               >
-                <span class="dot" aria-hidden="true">●</span>
+                <span class="dot" aria-hidden="true"></span>
                 <span class="word">{status.word}</span>
                 <span class="rest">{status.rest}</span>
+                <span class="open-ind" aria-hidden="true"><IconArrowUpRight /></span>
               </button>
               {#if status.kind === "fail"}
                 <button
                   type="button"
                   class="run-again"
                   disabled={retryingIds.has(trigger.id)}
-                  title="Retry this exact firing — same meeting or window, a fresh attempt"
+                  use:tip={"Retry this exact firing — same meeting or window, a fresh attempt"}
                   onclick={() => {
                     if (status.conversationId !== null) onrunagain(trigger, status.conversationId);
                   }}
                 >{retryingIds.has(trigger.id) ? "retrying…" : "run again"}</button>
               {/if}
             {:else}
-              <span class="trow-status st-{status.kind}" title={status.title}>
-                <span class="dot" aria-hidden="true">●</span>
+              <span class="trow-status st-{status.kind}" use:tip={status.title}>
+                <span class="dot" aria-hidden="true"></span>
                 <span class="word">{status.word}</span>
                 <span class="rest">{status.rest}</span>
               </span>
@@ -199,9 +241,18 @@
               <button
                 type="button"
                 class="row-act"
-                title="Copies this trigger as JSON — never carries provider or model config"
-                onclick={() => share(trigger)}
-              >{copiedId === trigger.id ? "copied ✓" : "share"}</button>
+                class:row-act--fail={copyFailedId === trigger.id}
+                use:tip={"Copies this trigger as JSON — never carries provider or model config"}
+                onclick={() => void share(trigger)}
+              >
+                {#if copiedId === trigger.id}
+                  copied <IconCheck aria-hidden="true" />
+                {:else if copyFailedId === trigger.id}
+                  copy failed
+                {:else}
+                  share
+                {/if}
+              </button>
               <button
                 type="button"
                 class="row-act row-act--danger"
@@ -211,7 +262,7 @@
           </div>
         {/each}
         <button type="button" class="add-row" onclick={() => onadd(section.cond)}>
-          <span class="plus" aria-hidden="true">＋</span>
+          <span class="plus" aria-hidden="true"><IconPlus /></span>
           <span>{section.addLabel}</span>
         </button>
       </div>
@@ -230,7 +281,7 @@
   }
   .cond-section-title {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 9px;
     font-size: 12px;
     letter-spacing: 0.05em;
@@ -238,11 +289,15 @@
     color: var(--app-text);
   }
   .cond-section-title .glyph {
+    display: inline-flex;
     color: var(--app-accent-strong);
-    font-size: 11px;
+  }
+  .cond-section-title .glyph :global(svg) {
+    width: 12px;
+    height: 12px;
   }
   .cond-section-blurb {
-    margin: 1px 0 0 20px;
+    margin: 1px 0 0 21px;
     font-size: 11px;
     line-height: 1.55;
     color: var(--app-text-subtle);
@@ -269,16 +324,31 @@
     background: var(--app-surface-subtle);
   }
   .trow-name {
+    font: inherit;
     font-size: 12.5px;
+    background: none;
+    border: 0;
+    padding: 0;
+    text-align: left;
     color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    flex: 0 0 auto;
+    max-width: 50%;
+    cursor: pointer;
+  }
+  .trow-name:hover {
+    color: var(--app-accent);
   }
   .trow-detail {
     font-size: 10.5px;
     color: var(--app-text-subtle);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 0 1 auto;
   }
   .spacer {
     flex: 1 1 auto;
@@ -295,7 +365,12 @@
     font-family: inherit;
   }
   .trow-status .dot {
-    font-size: 10px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: currentColor;
+    align-self: center;
+    flex: 0 0 auto;
   }
   .trow-status .rest {
     color: var(--app-text-muted);
@@ -316,8 +391,41 @@
   .st-none .word {
     color: var(--app-text-subtle);
   }
+  .st-running .dot,
+  .st-running .word {
+    color: var(--app-accent-strong);
+  }
+  .st-running .dot {
+    animation: pulseDot 1.2s ease-in-out infinite;
+  }
+  @keyframes pulseDot {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.25;
+    }
+  }
   .trow-status--openable {
     cursor: pointer;
+  }
+  /* rest-state affordance: the openable status reads as a link */
+  .trow-status--openable .word {
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  .trow-status--openable .open-ind {
+    display: inline-flex;
+    align-self: center;
+    color: var(--app-text-subtle);
+  }
+  .trow-status--openable .open-ind :global(svg) {
+    width: 10px;
+    height: 10px;
+  }
+  .trow-status--openable:hover .open-ind {
+    color: var(--app-text-strong);
   }
   .run-again {
     font: inherit;
@@ -360,6 +468,9 @@
     display: inline-flex;
   }
   .row-act {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
     font: inherit;
     font-size: 10.5px;
     background: none;
@@ -370,6 +481,10 @@
     cursor: pointer;
     transition: color 0.12s ease, background 0.12s ease;
   }
+  .row-act :global(svg) {
+    width: 10px;
+    height: 10px;
+  }
   .row-act:hover {
     color: var(--app-text-strong);
     background: var(--app-surface-hover);
@@ -377,6 +492,21 @@
   .row-act--danger:hover {
     color: var(--app-danger-text);
     background: var(--app-danger-bg);
+  }
+  .row-act--fail,
+  .row-act--fail:hover {
+    color: var(--app-danger-text);
+  }
+
+  /* shared keyboard-focus affordance (B5) */
+  .row-act:focus-visible,
+  .run-again:focus-visible,
+  .gate-link:focus-visible,
+  .trow-status--openable:focus-visible,
+  .trow-name:focus-visible,
+  .add-row:focus-visible {
+    outline: 2px solid var(--app-accent-border);
+    outline-offset: 1px;
   }
 
   /* newly created/saved row flash (success feedback) */
@@ -416,6 +546,11 @@
     background: var(--app-warn-bg);
     color: var(--app-warn);
     white-space: nowrap;
+  }
+  .gate-chip :global(svg) {
+    width: 10px;
+    height: 10px;
+    flex: 0 0 auto;
   }
   .gate-link {
     font: inherit;
@@ -458,8 +593,13 @@
     background: var(--app-surface-subtle);
   }
   .add-row .plus {
+    display: inline-flex;
     color: var(--app-text-faint);
     transition: color 0.12s ease;
+  }
+  .add-row .plus :global(svg) {
+    width: 11px;
+    height: 11px;
   }
   .add-row:hover .plus {
     color: var(--app-accent);

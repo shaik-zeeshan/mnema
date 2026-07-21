@@ -9,6 +9,10 @@
   // extracted to keep this file under the repo's 800-line ceiling.
   import "./wizard.css";
   import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+  import IconCheck from "~icons/lucide/check";
+  import IconChevronLeft from "~icons/lucide/chevron-left";
+  import IconChevronRight from "~icons/lucide/chevron-right";
+  import IconTriangleAlert from "~icons/lucide/triangle-alert";
   import type { PrivacyAppCandidateDto } from "$lib/app-privacy-exclusion";
   import {
     CONDITION_SECTIONS,
@@ -16,8 +20,9 @@
     DEFAULT_COOLDOWN_MINUTES,
     DEFAULT_MIN_MEETING_MINUTES,
     STARTERS,
+    WEEKDAY_ORDER,
     createTrigger,
-    fmtTime,
+    scheduleLabel,
     updateTrigger,
     type ConditionType,
     type ScheduleWeekday,
@@ -25,6 +30,7 @@
     type TriggerDefinition,
     type TriggerDraft,
   } from "$lib/triggers/api";
+  import { CONDITION_ICON } from "$lib/triggers/condition-icons";
   import { shareTriggerJson } from "$lib/triggers/share";
 
   interface Props {
@@ -81,11 +87,15 @@
   );
   let appName = $state(seed?.condition.type === "app_opened" ? seed.condition.appName : "");
   let time = $state(seed?.condition.type === "schedule" ? seed.condition.time : "18:00");
-  // "daily" or a single weekday — the backend's cadence model (daily | weekly).
-  let schedDay = $state<"daily" | ScheduleWeekday>(
-    seed?.condition.type === "schedule" && seed.condition.cadence === "weekly"
-      ? (seed.condition.weekday ?? "monday")
-      : "daily",
+  // Multi-select weekday set (DESIGN.md Screen 3: Mon–Sun chips). All 7 on
+  // maps to the wire's `daily` cadence, any subset to `weekly` + the set.
+  // New schedule triggers default to weekdays (Mon–Fri, the mockup's preview).
+  let schedDays = $state<ScheduleWeekday[]>(
+    seed?.condition.type === "schedule"
+      ? seed.condition.cadence === "daily"
+        ? [...WEEKDAY_ORDER]
+        : [...(seed.condition.weekdays ?? [])]
+      : WEEKDAY_ORDER.slice(0, 5),
   );
   let adv = $state({
     minlen:
@@ -103,7 +113,7 @@
   let saveError = $state<string | null>(null);
   let saving = $state(false);
   let previewExpanded = $state(false);
-  let shareFlash = $state(false);
+  let shareState = $state<"idle" | "copied" | "failed">("idle");
   let nameInput = $state<HTMLInputElement | null>(null);
 
   // Edit lands on Review with every step unlocked; Import lands on the prompt.
@@ -195,22 +205,30 @@
     if (!dirty) prompt = STARTERS[next];
   }
 
-  const DAY_CHIPS: ReadonlyArray<{ key: "daily" | ScheduleWeekday; label: string }> = [
-    { key: "daily", label: "every day" },
-    { key: "monday", label: "Mon" },
-    { key: "tuesday", label: "Tue" },
-    { key: "wednesday", label: "Wed" },
-    { key: "thursday", label: "Thu" },
-    { key: "friday", label: "Fri" },
-    { key: "saturday", label: "Sat" },
-    { key: "sunday", label: "Sun" },
-  ];
-  const schedPreview = $derived(
-    `Runs ${schedDay === "daily" ? "every day" : dayFull(schedDay)} at ${fmtTime(time || "18:00")}.`,
-  );
-  function dayFull(day: ScheduleWeekday): string {
-    return `${day.charAt(0).toUpperCase()}${day.slice(1)}s`;
+  // Mon…Sun toggle chips ("monday" → "Mon").
+  const DAY_CHIPS = WEEKDAY_ORDER.map((day) => ({
+    day,
+    label: `${day.charAt(0).toUpperCase()}${day.slice(1, 3)}`,
+  }));
+  function toggleDay(day: ScheduleWeekday): void {
+    schedDays = schedDays.includes(day)
+      ? schedDays.filter((d) => d !== day)
+      : [...schedDays, day];
   }
+  // Backend rule mirrored: "a weekly schedule needs at least one weekday".
+  const schedInvalid = $derived(cond === "schedule" && schedDays.length === 0);
+  const schedCondition = $derived.by(
+    (): Extract<TriggerCondition, { type: "schedule" }> =>
+      schedDays.length === 7
+        ? { type: "schedule", cadence: "daily", time: time || "18:00" }
+        : {
+            type: "schedule",
+            cadence: "weekly",
+            time: time || "18:00",
+            weekdays: WEEKDAY_ORDER.filter((day) => schedDays.includes(day)),
+          },
+  );
+  const schedPreview = $derived(`Runs ${scheduleLabel(schedCondition)}.`);
 
   // ── Step 2: prompt ────────────────────────────────────────────────────────
   function onPromptInput(event: Event): void {
@@ -238,7 +256,7 @@
     }
     return {
       main: "Schedule",
-      sub: `runs ${schedDay === "daily" ? "every day" : dayFull(schedDay)} at ${fmtTime(time || "18:00")}`,
+      sub: `runs ${scheduleLabel(schedCondition)}`,
     };
   });
 
@@ -271,6 +289,19 @@
   function bumpAdv(key: "minlen" | "awaygap" | "cooldown", delta: number, min: number, max: number): void {
     adv[key] = Math.min(max, Math.max(min, adv[key] + delta));
   }
+  // Spinbutton keyboard support for the Advanced steppers.
+  function advKeydown(
+    event: KeyboardEvent,
+    row: { key: "minlen" | "awaygap" | "cooldown"; step: number; min: number; max: number },
+  ): void {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      bumpAdv(row.key, row.step, row.min, row.max);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      bumpAdv(row.key, -row.step, row.min, row.max);
+    }
+  }
 
   // ── Save ──────────────────────────────────────────────────────────────────
   function buildCondition(): TriggerCondition {
@@ -288,9 +319,7 @@
         ...(adv.awaygap !== DEFAULT_AWAY_GAP_MINUTES ? { awayGapMinutes: adv.awaygap } : {}),
       };
     }
-    return schedDay === "daily"
-      ? { type: "schedule", cadence: "daily", time: time || "18:00" }
-      : { type: "schedule", cadence: "weekly", time: time || "18:00", weekday: schedDay };
+    return schedCondition;
   }
 
   async function save(): Promise<void> {
@@ -346,11 +375,12 @@
     if (adv.cooldown !== DEFAULT_COOLDOWN_MINUTES) shareable.cooldownMinutes = adv.cooldown;
     try {
       await writeText(shareTriggerJson(shareable));
-      shareFlash = true;
-      setTimeout(() => (shareFlash = false), 1100);
+      shareState = "copied";
     } catch {
-      // Clipboard unavailable — quietly do nothing.
+      // Clipboard unavailable — say so instead of flashing a false success.
+      shareState = "failed";
     }
+    setTimeout(() => (shareState = "idle"), 1400);
   }
 
   function onNext(): void {
@@ -371,7 +401,7 @@
 
   {#if mode === "import"}
     <div class="warn-banner" role="status">
-      <span class="glyph" aria-hidden="true">▲</span>
+      <span class="glyph" aria-hidden="true"><IconTriangleAlert /></span>
       <span>
         Imported — review this prompt before saving. It will run automatically, with read-only
         access to your capture history, whenever the condition fires.
@@ -381,7 +411,7 @@
 
   {#if createBlocked}
     <div class="warn-banner" role="status">
-      <span class="glyph" aria-hidden="true">▲</span>
+      <span class="glyph" aria-hidden="true"><IconTriangleAlert /></span>
       <span>
         Triggers need an AI provider before they can be created — nothing can run without one.
         <button type="button" class="banner-link" onclick={onsetupprovider}>Set up provider</button>
@@ -419,43 +449,31 @@
           kinds.
         </span>
       </p>
-      <div class="cond-pick" role="radiogroup" aria-label="Condition">
+      <div class="cond-pick" role="group" aria-label="Condition">
         {#each CONDITION_SECTIONS as card (card.cond)}
-          <div
+          {@const Icon = CONDITION_ICON[card.cond]}
+          <button
+            type="button"
             class="cond-card"
             class:selected={cond === card.cond}
-            role="radio"
-            tabindex="0"
-            aria-checked={cond === card.cond}
+            aria-pressed={cond === card.cond}
             onclick={() => selectCond(card.cond)}
-            onkeydown={(event) => {
-              if (event.key === " " || event.key === "Enter") {
-                event.preventDefault();
-                selectCond(card.cond);
-              }
-            }}
           >
             <span class="radio" aria-hidden="true"></span>
-            {#if card.cond === "meeting_ends"}
-              <span class="cond-name">When a meeting ends</span>
-              <span class="cond-desc">
+            <span class="cond-name"><Icon aria-hidden="true" />{card.title}</span>
+            <span class="cond-desc">
+              {#if card.cond === "meeting_ends"}
                 A conferencing app (Zoom, Teams, Meet in a browser…) held your mic for at least 5
                 minutes, then released it and stayed quiet for ~2 minutes.
-              </span>
-            {:else if card.cond === "app_opened"}
-              <span class="cond-name">When an app opens</span>
-              <span class="cond-desc">
+              {:else if card.cond === "app_opened"}
                 A chosen app comes to the front after you've been away from it for 30 minutes or
                 more — a fresh working session, not window switching.
-              </span>
-            {:else}
-              <span class="cond-name">On a schedule</span>
-              <span class="cond-desc">
-                At a fixed local time, daily or on a weekday you pick — good for daily wrap-ups and
-                weekly reviews.
-              </span>
-            {/if}
-          </div>
+              {:else}
+                At a fixed local time on the days you pick — good for daily wrap-ups and weekly
+                reviews.
+              {/if}
+            </span>
+          </button>
           {#if cond === card.cond}
             <div class="cond-params">
               {#if card.cond === "meeting_ends"}
@@ -504,21 +522,24 @@
                   </div>
                   <div class="field">
                     <span class="field-lbl">Days</span>
-                    <div class="day-chips" role="radiogroup" aria-label="Days">
-                      {#each DAY_CHIPS as chip (chip.key)}
+                    <div class="day-chips" role="group" aria-label="Days">
+                      {#each DAY_CHIPS as chip (chip.day)}
                         <button
                           type="button"
                           class="day-chip"
-                          class:on={schedDay === chip.key}
-                          role="radio"
-                          aria-checked={schedDay === chip.key}
-                          onclick={() => (schedDay = chip.key)}
+                          class:on={schedDays.includes(chip.day)}
+                          aria-pressed={schedDays.includes(chip.day)}
+                          onclick={() => toggleDay(chip.day)}
                         >{chip.label}</button>
                       {/each}
                     </div>
                   </div>
                 </div>
-                <p class="sched-preview">{schedPreview}</p>
+                {#if schedInvalid}
+                  <p class="sched-err" role="alert">A schedule needs at least one day.</p>
+                {:else}
+                  <p class="sched-preview">{schedPreview}</p>
+                {/if}
               {/if}
             </div>
           {/if}
@@ -609,10 +630,10 @@
         <div class="review-sec">
           <p class="review-lbl">What Mnema adds automatically</p>
           <ul class="auto-list">
-            <li><span class="tick">✓</span> the firing window — condition, time span, app</li>
-            <li><span class="tick">✓</span> your User Context — what Mnema has learned about your work</li>
-            <li><span class="tick">✓</span> speaker identity — which voice in the audio is you</li>
-            <li><span class="tick">✓</span> previous runs of this trigger, so results compound</li>
+            <li><span class="tick" aria-hidden="true"><IconCheck /></span> the firing window — condition, time span, app</li>
+            <li><span class="tick" aria-hidden="true"><IconCheck /></span> your User Context — what Mnema has learned about your work</li>
+            <li><span class="tick" aria-hidden="true"><IconCheck /></span> speaker identity — which voice in the audio is you</li>
+            <li><span class="tick" aria-hidden="true"><IconCheck /></span> previous runs of this trigger, so results compound</li>
           </ul>
           <p class="auto-note">
             Assembled on every run. Nothing to configure — want a generic result? Just say so in
@@ -623,22 +644,36 @@
         <div class="review-sec">
           <details class="disclosure" bind:open={advOpen}>
             <summary>
-              <span class="caret" aria-hidden="true">▸</span> Advanced
+              <span class="caret" aria-hidden="true"><IconChevronRight /></span> Advanced
               <span class="default-note">{allDefaults ? "all defaults" : "modified"}</span>
             </summary>
             <div class="disc-body">
               {#each ADV_ROWS as row (row.key)}
                 <div class="stepper-row">
                   <span class="stepper-lbl">{row.label}</span>
-                  <span class="stepper">
+                  <span
+                    class="stepper"
+                    role="spinbutton"
+                    tabindex="0"
+                    aria-label={row.label}
+                    aria-valuenow={adv[row.key]}
+                    aria-valuemin={row.min}
+                    aria-valuemax={row.max}
+                    aria-valuetext={`${adv[row.key]} min`}
+                    onkeydown={(event) => advKeydown(event, row)}
+                  >
                     <button
                       type="button"
+                      tabindex="-1"
+                      disabled={adv[row.key] <= row.min}
                       aria-label={`Decrease ${row.label}`}
                       onclick={() => bumpAdv(row.key, -row.step, row.min, row.max)}
                     >−</button>
                     <span class="val">{adv[row.key]} min</span>
                     <button
                       type="button"
+                      tabindex="-1"
+                      disabled={adv[row.key] >= row.max}
                       aria-label={`Increase ${row.label}`}
                       onclick={() => bumpAdv(row.key, row.step, row.min, row.max)}
                     >+</button>
@@ -657,25 +692,40 @@
 
   <div class="wiz-nav">
     {#if step > 1}
-      <button class="btn" type="button" onclick={() => goStep(step - 1)}>◀ Back</button>
+      <button class="btn" type="button" onclick={() => goStep(step - 1)}>
+        <IconChevronLeft aria-hidden="true" /> Back
+      </button>
     {/if}
     <span class="spacer"></span>
     {#if step === 3}
       <span class="note">saved to triggers.json — runs stay on this Mac</span>
       <button
         class="btn btn--ghost"
+        class:btn--fail={shareState === "failed"}
         type="button"
         title="Copies Trigger JSON — never carries provider or model config"
         onclick={() => void shareJson()}
-      >{shareFlash ? "copied ✓" : "Share as JSON"}</button>
+      >
+        {#if shareState === "copied"}
+          copied <IconCheck aria-hidden="true" />
+        {:else if shareState === "failed"}
+          copy failed
+        {:else}
+          Share as JSON
+        {/if}
+      </button>
     {/if}
     <button
       class="btn btn--accent"
       type="button"
-      disabled={saving || (step === 3 && createBlocked)}
+      disabled={saving || schedInvalid || (step === 3 && createBlocked)}
       onclick={onNext}
     >
-      {step < 3 ? "Next ▶" : mode === "edit" ? "Save Changes" : "Create Trigger"}
+      {#if step < 3}
+        Next <IconChevronRight aria-hidden="true" />
+      {:else}
+        {saving ? "Saving…" : mode === "edit" ? "Save Changes" : "Create Trigger"}
+      {/if}
     </button>
   </div>
 </div>

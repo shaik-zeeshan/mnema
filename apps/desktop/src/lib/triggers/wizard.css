@@ -50,6 +50,11 @@
   }
   .wiz-panel .warn-banner .glyph {
     flex: 0 0 auto;
+    display: inline-flex;
+  }
+  .wiz-panel .warn-banner .glyph svg {
+    width: 13px;
+    height: 13px;
   }
   .wiz-panel .banner-link {
     font: inherit;
@@ -157,6 +162,11 @@
     background: var(--app-surface);
     cursor: pointer;
     transition: border-color 0.12s ease, background 0.12s ease;
+    /* it's a <button> (aria-pressed toggle) — undo the UA button styles */
+    font: inherit;
+    text-align: left;
+    width: 100%;
+    color: inherit;
   }
   .wiz-panel .cond-card:hover {
     border-color: var(--app-border-hover);
@@ -175,9 +185,21 @@
     border: 1px solid var(--app-border-strong);
   }
   .wiz-panel .cond-card .cond-name {
+    display: flex;
+    align-items: center;
+    gap: 7px;
     font-size: 13px;
     color: var(--app-text-strong);
     padding-right: 22px;
+  }
+  .wiz-panel .cond-card .cond-name svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    color: var(--app-text-muted);
+  }
+  .wiz-panel .cond-card.selected .cond-name svg {
+    color: var(--app-accent);
   }
   .wiz-panel .cond-card .cond-desc {
     font-size: 11px;
@@ -256,9 +278,22 @@
   .wiz-panel select.text-input {
     appearance: none;
     cursor: pointer;
+    /* replacement chevron for the stripped native one (mid-gray reads in both
+       themes) */
+    padding-right: 26px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
   }
-  .wiz-panel input[type="time"].text-input {
+  /* Native control chrome (time spinner, select popup) follows the app theme —
+     dark is the app's base, [data-theme="light"] the override. */
+  .wiz-panel input[type="time"].text-input,
+  .wiz-panel select.text-input {
     color-scheme: dark;
+  }
+  [data-theme="light"] .wiz-panel input[type="time"].text-input,
+  [data-theme="light"] .wiz-panel select.text-input {
+    color-scheme: light;
   }
   .wiz-panel .sched-grid {
     display: flex;
@@ -300,6 +335,11 @@
     font-size: 11px;
     color: var(--app-accent-strong);
   }
+  .wiz-panel .sched-err {
+    margin: 8px 0 0;
+    font-size: 11px;
+    color: var(--app-danger-text);
+  }
 
   /* step 2: prompt */
   .wiz-panel .prompt-pane {
@@ -309,6 +349,10 @@
     border-radius: 8px;
     background: var(--app-surface);
     overflow: hidden;
+    transition: border-color 0.12s ease;
+  }
+  .wiz-panel .prompt-pane:focus-within {
+    border-color: var(--app-accent-border);
   }
   .wiz-panel .prompt-head {
     display: flex;
@@ -461,6 +505,12 @@
   .wiz-panel .auto-list li .tick {
     color: var(--app-accent-strong);
     flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+  }
+  .wiz-panel .auto-list li .tick svg {
+    width: 12px;
+    height: 12px;
   }
   .wiz-panel .auto-note {
     margin: 8px 0 0;
@@ -485,8 +535,12 @@
     display: none;
   }
   .wiz-panel .disclosure summary .caret {
-    font-size: 10px;
+    display: inline-flex;
     transition: transform 0.12s ease;
+  }
+  .wiz-panel .disclosure summary .caret svg {
+    width: 11px;
+    height: 11px;
   }
   .wiz-panel .disclosure[open] summary .caret {
     transform: rotate(90deg);
@@ -535,6 +589,12 @@
   .wiz-panel .stepper button:hover {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
+  }
+  .wiz-panel .stepper button:disabled {
+    opacity: 0.4;
+    cursor: default;
+    background: transparent;
+    color: var(--app-text-muted);
   }
   .wiz-panel .stepper .val {
     min-width: 52px;
@@ -611,4 +671,24 @@
     opacity: 0.45;
     cursor: default;
     pointer-events: none;
+  }
+  .wiz-panel .btn svg {
+    width: 12px;
+    height: 12px;
+  }
+  .wiz-panel .btn--fail {
+    color: var(--app-danger-text);
+  }
+
+  /* one shared keyboard-focus treatment for the quiet text-style controls and
+     the Advanced spinbuttons (chips, cards, and .btn carry their own) */
+  .wiz-panel .quiet-action:focus-visible,
+  .wiz-panel .preview-more:focus-visible,
+  .wiz-panel .banner-link:focus-visible,
+  .wiz-panel .wiz-crumb .back:focus-visible,
+  .wiz-panel .step-tab:focus-visible,
+  .wiz-panel .stepper:focus-visible,
+  .wiz-panel .stepper button:focus-visible {
+    outline: 2px solid var(--app-accent-border);
+    outline-offset: 1px;
   }
