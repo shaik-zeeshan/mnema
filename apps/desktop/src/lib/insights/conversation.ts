@@ -11,8 +11,13 @@
 export interface ConversationSummary {
   conversationId: string;
   title: string;
-  /** The door that created it: `"quick_recall"` | `"chat"`. */
+  /** The door that created it: `"quick_recall"` | `"chat"` | `"trigger"`. */
   origin: string;
+  /** For `origin === "trigger"`: the firing trigger's id (from triggers.json).
+   *  Absent/undefined on non-trigger conversations (Rust skips the key). */
+  triggerId?: string | null;
+  /** For `origin === "trigger"`: the trigger's display name at fire time. */
+  triggerName?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
   turnCount: number;
@@ -48,6 +53,10 @@ export interface Conversation {
   conversationId: string;
   title: string;
   origin: string;
+  /** For `origin === "trigger"`: the firing trigger's id (from triggers.json). */
+  triggerId?: string | null;
+  /** For `origin === "trigger"`: the trigger's display name at fire time. */
+  triggerName?: string | null;
   createdAtMs: number;
   updatedAtMs: number;
   /** Pinned engine provider id, or null/absent when unpinned (global default). */
@@ -57,9 +66,10 @@ export interface Conversation {
   turns: ConversationTurn[];
 }
 
-/** The conversation door that owns a saved turn: the Insights Chat workspace or
- *  the Quick Recall launcher (both now persist to the shared store — #111). */
-export type ConversationOrigin = "chat" | "quick_recall";
+/** The conversation door that owns a saved turn: the Insights Chat workspace,
+ *  the Quick Recall launcher (both persist to the shared store — #111), or an
+ *  automated Trigger Run (ADR 0058 — backend-created, never sent by the UI). */
+export type ConversationOrigin = "chat" | "quick_recall" | "trigger";
 
 // ── Render-ready chat view model (issue #110, Slice 1) ───────────────────────
 // The BACKEND-OWNED render model for a streaming Ask AI turn, mirroring the Rust

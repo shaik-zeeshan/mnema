@@ -1913,6 +1913,15 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Triggers evaluator (issue #175): fires due Schedule triggers from
+    // `triggers.json` into sealed Ask AI runs. Idle-cheap: a tick with no
+    // definitions file does nothing but sleep.
+    crate::triggers::spawn_triggers_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     // Semantic Search startup reconciliation (self-heal): if a past model switch
     // left the vec0 table at a dimension that disagrees with the selected model
     // (e.g. a rebuild that failed under DB contention), every search degrades to

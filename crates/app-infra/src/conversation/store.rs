@@ -69,6 +69,34 @@ impl ConversationStore {
         Ok(row.get("id"))
     }
 
+    /// Create (or refresh) a **Trigger Run** conversation (ADR 0058): a normal
+    /// conversation row with `origin = 'trigger'` plus the firing trigger's id
+    /// and display name. Same conflict semantics as [`Self::upsert_conversation`]
+    /// (first non-empty title wins; an existing row's origin is preserved); the
+    /// trigger identity is (re)stamped unconditionally — every caller passing it
+    /// agrees, since the conversation id encodes the firing.
+    pub async fn create_trigger_conversation(
+        &self,
+        conversation_id: &str,
+        title: &str,
+        trigger_id: &str,
+        trigger_name: &str,
+        now_ms: i64,
+    ) -> Result<()> {
+        self.upsert_conversation(conversation_id, title, "trigger", now_ms)
+            .await?;
+        sqlx::query(
+            "UPDATE conversations SET trigger_id = ?2, trigger_name = ?3 \
+             WHERE conversation_id = ?1",
+        )
+        .bind(conversation_id)
+        .bind(trigger_id)
+        .bind(trigger_name)
+        .execute(self.db.write())
+        .await?;
+        Ok(())
+    }
+
     /// Upsert one turn of a conversation. The conversation row is ensured first
     /// (mirroring [`Self::upsert_conversation`], which also bumps its activity
     /// stamps), then the turn is inserted or — on conflict with an existing
@@ -181,6 +209,7 @@ impl ConversationStore {
             "SELECT c.conversation_id AS conversation_id, c.title AS title, \
                     c.user_title AS user_title, c.generated_title AS generated_title, \
                     c.origin AS origin, \
+                    c.trigger_id AS trigger_id, c.trigger_name AS trigger_name, \
                     c.created_at_ms AS created_at_ms, c.updated_at_ms AS updated_at_ms, \
                     (SELECT COUNT(*) FROM conversation_turns t WHERE t.conversation_row_id = c.id) AS turn_count, \
                     (SELECT t.question FROM conversation_turns t \
@@ -204,6 +233,7 @@ impl ConversationStore {
     pub async fn get_conversation(&self, conversation_id: &str) -> Result<Option<Conversation>> {
         let row = sqlx::query(
             "SELECT id, conversation_id, title, user_title, generated_title, origin, \
+                    trigger_id, trigger_name, \
                     created_at_ms, updated_at_ms, provider, model \
              FROM conversations WHERE conversation_id = ?1",
         )
@@ -229,6 +259,8 @@ impl ConversationStore {
                 &preview,
             ),
             origin: row.get("origin"),
+            trigger_id: row.get("trigger_id"),
+            trigger_name: row.get("trigger_name"),
             created_at_ms: row.get("created_at_ms"),
             updated_at_ms: row.get("updated_at_ms"),
             provider: row.get("provider"),
@@ -372,6 +404,7 @@ impl ConversationStore {
             "SELECT c.conversation_id AS conversation_id, c.title AS title, \
                     c.user_title AS user_title, c.generated_title AS generated_title, \
                     c.origin AS origin, \
+                    c.trigger_id AS trigger_id, c.trigger_name AS trigger_name, \
                     c.created_at_ms AS created_at_ms, c.updated_at_ms AS updated_at_ms, \
                     (SELECT COUNT(*) FROM conversation_turns t WHERE t.conversation_row_id = c.id) AS turn_count, \
                     (SELECT t.question FROM conversation_turns t \
@@ -522,6 +555,8 @@ fn map_summary(row: SqliteRow) -> ConversationSummary {
             &preview,
         ),
         origin: row.get("origin"),
+        trigger_id: row.get("trigger_id"),
+        trigger_name: row.get("trigger_name"),
         created_at_ms: row.get("created_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
         turn_count: row.get("turn_count"),
@@ -568,7 +603,9 @@ mod tests {
                 provider TEXT,
                 model TEXT,
                 generated_title TEXT,
-                user_title TEXT
+                user_title TEXT,
+                trigger_id TEXT,
+                trigger_name TEXT
             )",
             "CREATE TABLE conversation_turns (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1335,6 +1372,85 @@ mod tests {
                 .expect("search");
             assert_eq!(by_user.len(), 1);
             assert_eq!(by_user[0].conversation_id, "c2");
+        });
+    }
+
+    #[test]
+    fn trigger_conversation_round_trips_origin_and_identity() {
+        block_on(async {
+            let store = test_store().await;
+
+            // A Trigger Run conversation is created up front (before any turn).
+            store
+                .create_trigger_conversation(
+                    "trigger-evening-1",
+                    "Evening Review — Fri Jul 24",
+                    "evening-review",
+                    "Evening Review",
+                    1_000,
+                )
+                .await
+                .expect("trigger conversation creates");
+
+            // The turn saved by the Ask AI driver must preserve origin/identity
+            // (save_turn's upsert never overwrites origin, and the trigger
+            // columns are only written by create_trigger_conversation).
+            store
+                .save_turn(
+                    "trigger-evening-1",
+                    "Evening Review — Fri Jul 24",
+                    "trigger",
+                    0,
+                    "recap my evening",
+                    "you reviewed PRs",
+                    None,
+                    Some(&[]),
+                    "[]",
+                    "[]",
+                    "done",
+                    None,
+                    None,
+                    2_000,
+                )
+                .await
+                .expect("trigger turn saves");
+
+            let conversation = store
+                .get_conversation("trigger-evening-1")
+                .await
+                .expect("get succeeds")
+                .expect("conversation exists");
+            assert_eq!(conversation.origin, "trigger");
+            assert_eq!(conversation.trigger_id.as_deref(), Some("evening-review"));
+            assert_eq!(conversation.trigger_name.as_deref(), Some("Evening Review"));
+            assert_eq!(conversation.title, "Evening Review — Fri Jul 24");
+
+            // The rail summary carries the same identity; a plain conversation
+            // reads None for both.
+            store
+                .save_turn(
+                    "plain-chat", "t", "chat", 0, "q", "a", None, None, "[]", "[]", "done",
+                    None, None, 3_000,
+                )
+                .await
+                .expect("plain turn saves");
+            let summaries = store.list_conversations(50, 0).await.expect("list");
+            let trigger_summary = summaries
+                .iter()
+                .find(|s| s.conversation_id == "trigger-evening-1")
+                .expect("trigger row listed");
+            assert_eq!(trigger_summary.origin, "trigger");
+            assert_eq!(trigger_summary.trigger_id.as_deref(), Some("evening-review"));
+            assert_eq!(
+                trigger_summary.trigger_name.as_deref(),
+                Some("Evening Review")
+            );
+            let plain_summary = summaries
+                .iter()
+                .find(|s| s.conversation_id == "plain-chat")
+                .expect("plain row listed");
+            assert_eq!(plain_summary.trigger_id, None);
+            assert_eq!(plain_summary.trigger_name, None);
         });
     }
 

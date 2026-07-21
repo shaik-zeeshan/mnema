@@ -29,6 +29,7 @@ mod secret_vault_migration;
 mod semantic_search;
 pub mod status;
 pub mod system_audio_evidence;
+pub mod trigger_state;
 pub mod usage_charts;
 pub mod user_context;
 
@@ -314,6 +315,7 @@ pub struct AppInfra {
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
     system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
+    trigger_state: trigger_state::TriggerStateStore,
     subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -397,6 +399,7 @@ impl AppInfra {
         let user_context = UserContextStore::new(database.handle().clone());
         let system_audio_evidence =
             system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
+        let trigger_state = trigger_state::TriggerStateStore::new(database.handle().clone());
         let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -426,6 +429,7 @@ impl AppInfra {
             usage_charts,
             user_context,
             system_audio_evidence,
+            trigger_state,
             subject_vectors,
             conversation,
             captured_frame_equivalence,
@@ -535,6 +539,13 @@ impl AppInfra {
     /// authorization.
     pub fn system_audio_evidence(&self) -> &system_audio_evidence::SystemAudioEvidenceStore {
         &self.system_audio_evidence
+    }
+
+    /// Per-trigger last-fired persistence for the Triggers evaluator (issue
+    /// #175) — the durable cursor that makes schedule catch-up survive an app
+    /// restart. The full firing ledger is issue #176.
+    pub fn trigger_state(&self) -> &trigger_state::TriggerStateStore {
+        &self.trigger_state
     }
 
     /// The **Subject Vector** store seam (migration `0043`): embedding-free
