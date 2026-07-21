@@ -83,8 +83,26 @@ impl ConversationStore {
         trigger_name: &str,
         now_ms: i64,
     ) -> Result<()> {
-        self.upsert_conversation(conversation_id, title, "trigger", now_ms)
-            .await?;
+        // Both writes run in ONE transaction (mirroring [`Self::save_turn`]) so
+        // a crash/error between the origin upsert and the identity stamp can
+        // never leave an orphan `origin='trigger'` row with a NULL trigger
+        // identity — the failed ledger row records `conversation_id=None`, so
+        // such an orphan would be un-labelable and un-Run-Again-able.
+        let mut tx = self.db.begin_write().await?;
+        sqlx::query(
+            "INSERT INTO conversations \
+                (conversation_id, title, origin, created_at_ms, updated_at_ms, last_activity_at_ms) \
+             VALUES (?1, ?2, 'trigger', ?3, ?3, ?3) \
+             ON CONFLICT(conversation_id) DO UPDATE SET \
+                title = CASE WHEN conversations.title = '' THEN excluded.title ELSE conversations.title END, \
+                updated_at_ms = excluded.updated_at_ms, \
+                last_activity_at_ms = excluded.last_activity_at_ms",
+        )
+        .bind(conversation_id)
+        .bind(title)
+        .bind(now_ms)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "UPDATE conversations SET trigger_id = ?2, trigger_name = ?3 \
              WHERE conversation_id = ?1",
@@ -92,8 +110,9 @@ impl ConversationStore {
         .bind(conversation_id)
         .bind(trigger_id)
         .bind(trigger_name)
-        .execute(self.db.write())
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1451,6 +1470,62 @@ mod tests {
                 .expect("plain row listed");
             assert_eq!(plain_summary.trigger_id, None);
             assert_eq!(plain_summary.trigger_name, None);
+        });
+    }
+
+    #[test]
+    fn create_trigger_conversation_is_atomic_on_partial_failure() {
+        block_on(async {
+            // A conversations table missing the trigger_id/trigger_name columns
+            // stands in for ANY runtime failure of the identity-stamp statement
+            // (disk full, I/O error, lock timeout) AFTER the row upsert has
+            // already succeeded. The two writes must be ONE transaction: when
+            // the stamp fails, the run conversation must NOT be left behind with
+            // origin='trigger' and a NULL identity — an orphan the failed ledger
+            // row (recorded with conversation_id=None) can never Run-Again.
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db");
+            sqlx::query(
+                "CREATE TABLE conversations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL UNIQUE,
+                    title TEXT NOT NULL DEFAULT '',
+                    origin TEXT NOT NULL DEFAULT 'quick_recall',
+                    created_at_ms INTEGER NOT NULL,
+                    updated_at_ms INTEGER NOT NULL,
+                    last_activity_at_ms INTEGER NOT NULL
+                )",
+            )
+            .execute(&pool)
+            .await
+            .expect("legacy conversations table");
+            let store = ConversationStore::new(CaptureDb::single(pool.clone()));
+
+            let result = store
+                .create_trigger_conversation(
+                    "trigger-evening-1",
+                    "Evening Review",
+                    "evening-review",
+                    "Evening Review",
+                    1_000,
+                )
+                .await;
+            assert!(result.is_err(), "the identity-stamp write must fail");
+
+            // The upsert must have rolled back with it — no orphan row.
+            let count: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM conversations WHERE conversation_id = 'trigger-evening-1'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("count");
+            assert_eq!(
+                count, 0,
+                "partial write left an orphan trigger conversation with a NULL identity"
+            );
         });
     }
 
