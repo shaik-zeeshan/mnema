@@ -4,72 +4,78 @@ import TopBar from "../../components/TopBar.astro";
 import Footer from "../../components/Footer.astro";
 import { DOWNLOAD_URL, PLATFORM_LABEL } from "../../config";
 
-const pageTitle = "Rewind AI alternative for Mac — Mnema";
+const pageTitle = "Limitless alternative — Mnema";
 const pageDescription =
-  "Rewind AI shut down in December 2025. Mnema is a Rewind AI alternative for Mac: private, on-device screen and audio memory you can search, scrub, and ask an AI about.";
+  "Meta acquired Limitless in December 2025 and Pendant sales stopped. Mnema is a Limitless alternative for Mac: private, on-device memory of your screen and audio — no wearable, no cloud, no subscription.";
 
 const criteria = [
   {
-    label: "Stays on your Mac",
+    label: "No cloud dependency",
     detail:
-      "Capture, text extraction, transcription, and search should all run on-device, with the record encrypted at rest. If a company can read your history, an acquisition can too.",
+      "Limitless stored your conversations in its cloud — which is why an acquisition could shut the service off in whole regions overnight. A local-first tool keeps working no matter who buys whom.",
   },
   {
-    label: "Captures everything you'd want back",
+    label: "No extra hardware",
     detail:
-      "Screen, audio, and activity — not just screenshots. The moments you need to recall are as often something said in a call as something on screen.",
+      "A pendant captures what's said around you. Your Mac already sees your meetings, calls, documents, and browsing — software can remember all of it without another device to charge.",
   },
   {
-    label: "Search plus ask-AI",
+    label: "More than conversations",
     detail:
-      "Keyword search finds what you can name; asking an AI about your own past finds what you can only half-describe.",
+      "Meeting transcripts are half the story. The other half is what was on screen: the doc you had open, the numbers you saw, the page you can't find again.",
   },
   {
     label: "You control retention and deletion",
     detail:
-      "Keep history forever or auto-delete on a schedule, and delete any stretch of it in one click. Your record, your rules.",
+      "Keep history forever or auto-delete on a schedule, and delete any stretch of it in one click. Your record, your rules — enforced on your machine, not by a service.",
   },
 ];
 
 const comparison = {
-  columns: ["Mnema", "Screenpipe", "ScreenMemory", "OpenRecall"],
+  columns: ["Mnema", "Limitless Pendant", "Screenpipe"],
   rows: [
     {
-      label: "Platform",
-      cells: ["macOS (Apple Silicon)", "Cross-platform", "macOS", "Cross-platform"],
-    },
-    {
-      label: "Open source",
-      cells: ["Yes", "Source-available", "No", "Yes"],
-    },
-    {
-      label: "Local-first",
-      cells: ["Yes — on-device, encrypted at rest", "Yes", "Yes", "Yes"],
-    },
-    {
-      label: "Audio transcription",
+      label: "Status",
       cells: [
-        "Yes — on-device, with speaker labels",
-        "Yes",
-        "Screen-focused",
-        "Screen-focused",
+        "Actively developed",
+        "Acquired by Meta — sales ended Dec 2025",
+        "Active (agent-focused)",
+      ],
+    },
+    {
+      label: "Form factor",
+      cells: ["Mac app", "Wearable + cloud app", "Cross-platform app"],
+    },
+    {
+      label: "Where your data lives",
+      cells: [
+        "On your Mac, encrypted at rest",
+        "Limitless / Meta cloud",
+        "On your machine",
+      ],
+    },
+    {
+      label: "What it captures",
+      cells: [
+        "Screen, audio, and activity",
+        "Spoken conversations",
+        "Screen and audio",
       ],
     },
     {
       label: "Ask-AI / chat",
-      cells: ["Yes — over your own history", "Yes (via plugins)", "Varies", "Search-focused"],
-    },
-    {
-      label: "Agent / CLI access",
-      cells: ["Yes — brokered, read-only CLI", "Yes (API)", "—", "—"],
+      cells: [
+        "Yes — over your own history",
+        "Yes (cloud)",
+        "Agent-focused (bring your own)",
+      ],
     },
     {
       label: "Price",
       cells: [
         "$69 once, 30-day free trial",
+        "Hardware discontinued",
         "$25/mo (personal use free)",
-        "Paid",
-        "Free (open source)",
       ],
     },
   ],
@@ -77,20 +83,20 @@ const comparison = {
 
 const faqs = [
   {
-    q: "Is Rewind AI still available?",
-    a: "No. The Rewind Mac app shut down on December 19, 2025, after Meta acquired Limitless (the company Rewind became). Pendant sales stopped, service was discontinued in the EU and UK, and remaining support winds down through 2026.",
+    q: "What happened to Limitless?",
+    a: "Meta acquired Limitless on December 5, 2025. Pendant sales stopped the same day, the service was discontinued in the EU, UK, and several other regions, and the Rewind Mac app was shut down. Existing Pendant owners keep working service for at least a year, with the team folded into Meta's Reality Labs.",
   },
   {
-    q: "What is the best Rewind AI alternative for Mac?",
-    a: "If you want what Rewind originally promised — a private, searchable record of everything on your Mac — Mnema is the closest match: it captures screen, audio, and activity on-device, encrypts it at rest, and lets you search it, scrub back to any moment, and ask an AI about it. Screenpipe and OpenRecall are open-source, cross-platform options worth a look too.",
+    q: "What is the best Limitless alternative?",
+    a: "It depends on what you used it for. If you want a private memory of your work — meetings, calls, documents, everything you saw and heard on your Mac — Mnema covers it on-device with no wearable and no cloud: transcription with speaker labels, timeline scrubbing, search, and ask-AI, encrypted at rest. If you specifically want a wearable for in-person conversations away from your desk, no Mac app replaces that.",
+  },
+  {
+    q: "Does Mnema record meetings like Limitless did?",
+    a: "Yes — Mnema records microphone and system audio on your Mac and transcribes it on-device with speaker labels, so calls and meetings become searchable alongside what was on screen at the time. Nothing is uploaded anywhere.",
   },
   {
     q: "Does Mnema send my recordings to the cloud?",
-    a: "No. Capture, text extraction, transcription, and search all run on-device — there's no account, no servers, no telemetry, and no Mnema cloud to send anything to. The one exception is opt-in: you can use your own Deepgram account for higher-accuracy transcripts, and audio leaves your Mac only if you turn that on.",
-  },
-  {
-    q: "Can I still use my Rewind data?",
-    a: "Rewind stored its recordings locally, so the files may still be on your Mac — but Mnema does not import Rewind archives. Starting with Mnema means starting a fresh record from the day you install it.",
+    a: "No. Capture, text extraction, transcription, and search all run on-device — there's no account, no servers, and no telemetry. The one exception is opt-in: you can use your own Deepgram account for higher-accuracy transcripts, and audio leaves your Mac only if you turn that on.",
   },
 ];
 
@@ -111,16 +117,16 @@ const faqJsonLd = JSON.stringify({
     <article class="docs-col">
       <!-- Hero -->
       <header class="docs-hero">
-        <p class="kicker">// rewind ai alternative</p>
+        <p class="kicker">// limitless alternative</p>
         <h1 class="docs-title">
-          A private Rewind AI alternative that stays on your Mac.
+          A Limitless alternative that no acquisition can switch off.
         </h1>
         <p class="docs-sub">
-          Rewind is gone — the Mac app shut down in December 2025. Mnema picks
-          up where it left off: a local-first screen memory that quietly records
-          your screen, audio, and activity, then lets you search it, scrub back
-          to any moment, and ask an AI about your own past. None of it leaves
-          your Mac.
+          Limitless sold a memory that lived in its cloud — and when Meta
+          bought the company, whole regions lost it overnight. Mnema is the
+          same promise kept differently: a private memory of everything you
+          see, hear, and do on your Mac, stored on your Mac, encrypted at
+          rest. No wearable, no account, no subscription.
         </p>
         <p class="docs-meta">// reading time ~4 min · macOS · Apple Silicon</p>
       </header>
@@ -129,28 +135,25 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section" aria-labelledby="what-happened">
         <p class="kicker">// the short version</p>
         <h2 class="section-heading" id="what-happened">
-          What happened to Rewind AI
+          What happened to Limitless
         </h2>
         <p class="prose">
-          Rewind launched in late 2022 as a Mac app that recorded your screen
-          and audio locally and made it searchable — "the search engine for
-          your life." For a while it was the reference point for personal
-          screen memory on the Mac.
+          Limitless began life as Rewind, the Mac app that made "a search
+          engine for your life" a real product category. In 2024 it pivoted
+          to hardware: the Limitless Pendant, a wearable that recorded your
+          conversations and summarized them through a cloud service.
         </p>
         <p class="prose">
-          In 2024 the company rebranded to Limitless and pivoted to a
-          cloud-based wearable, the Limitless Pendant. The Mac app stopped
-          being the focus.
+          On December 5, 2025, Meta acquired the company. Pendant sales ended
+          that day. The service was discontinued in the EU, UK, Brazil, and
+          several other regions, the old Rewind app was shut down, and
+          existing Pendant owners were promised support for at least a year
+          while the team joined Meta's Reality Labs.
         </p>
         <p class="prose">
-          In December 2025, Meta acquired Limitless. The Rewind Mac app shut
-          down on December 19, 2025, Pendant sales stopped, and service was
-          discontinued in the EU and UK, with remaining support winding down
-          through 2026.
-        </p>
-        <p class="prose">
-          If you relied on Rewind, you're now looking for a replacement — and
-          the shutdown itself is a useful lesson in what to look for next.
+          The lesson isn't that Limitless was a bad product — it's that a
+          memory kept in someone else's cloud is only yours until their plans
+          change. If you're replacing it, that's the property to fix first.
         </p>
       </section>
 
@@ -161,9 +164,8 @@ const faqJsonLd = JSON.stringify({
           What to look for in a replacement
         </h2>
         <p class="prose">
-          A tool that records everything you see and hear is only as good as
-          its answer to one question: who else can see it? Four things worth
-          insisting on.
+          A tool that remembers your conversations and your work holds the
+          most personal data you have. Four things worth insisting on.
         </p>
         <ul class="criteria-list">
           {
@@ -186,11 +188,11 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section" aria-labelledby="comparison">
         <p class="kicker">// the field</p>
         <h2 class="section-heading" id="comparison">
-          Mnema vs Screenpipe vs ScreenMemory vs OpenRecall
+          Mnema vs Limitless vs Screenpipe
         </h2>
         <p class="prose">
-          These are the main tools people move to after Rewind. All of them
-          keep your data local — the differences are in scope and platform.
+          The core difference isn't features — it's where your memory lives
+          and who can take it away.
         </p>
         <div class="table-scroll">
           <table class="compare-table">
@@ -242,7 +244,7 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section cta" aria-labelledby="cta-heading">
         <p class="kicker">// get started</p>
         <h2 class="section-heading" id="cta-heading">
-          Start a record you actually own.
+          A memory nobody can acquire.
         </h2>
         <p class="prose">
           Download Mnema and build a private, searchable memory of your work —
@@ -273,7 +275,7 @@ const faqJsonLd = JSON.stringify({
 </Base>
 
 <style>
-  /* ---- Docs layout shell (same pattern as agents.astro) ---- */
+  /* ---- Docs layout shell (same pattern as rewind-ai.astro) ---- */
   .docs {
     padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
   }
@@ -346,7 +348,7 @@ const faqJsonLd = JSON.stringify({
     margin-top: var(--space-md);
   }
 
-  /* ---- Criteria (check-marker list, lifted from agents.astro) ---- */
+  /* ---- Criteria ---- */
   .criteria-list {
     list-style: none;
     display: grid;
@@ -484,7 +486,7 @@ const faqJsonLd = JSON.stringify({
     max-width: 62ch;
   }
 
-  /* ---- CTA (button pattern from FinalCta.astro) ---- */
+  /* ---- CTA ---- */
   .cta .prose {
     margin-bottom: var(--space-md);
   }
