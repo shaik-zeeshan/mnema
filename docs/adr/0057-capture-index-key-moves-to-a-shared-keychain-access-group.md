@@ -31,7 +31,7 @@ would lock out the CLI.
 ## Decision
 
 The key moves to the **data-protection keychain** under a **team-prefixed shared
-keychain access group** (`$(TeamID).com.shaikzeeshan.mnema.capture-index`). Both the
+keychain access group** (`$(TeamID).day.mnema.capture-index`). Both the
 app and the bundled `mnema-cli` sidecar carry the access-group entitlement and read
 the item silently; every other process gets "not found" — flatly denied, with no
 click-through-able prompt to social-engineer past.
@@ -86,7 +86,7 @@ Mechanics:
   promise.
 - The validation drill doubles as the acceptance test: signed build → app launch
   migrates → `mnema-cli` search succeeds → `security find-generic-password -s
-  com.shaikzeeshan.mnema.capture-index -w` returns nothing.
+  day.mnema.capture-index -w` returns nothing.
 
 ## Spike findings (2026-07-20)
 
