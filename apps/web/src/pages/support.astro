@@ -1,0 +1,243 @@
+---
+import Base from "../layouts/Base.astro";
+import TopBar from "../components/TopBar.astro";
+import Footer from "../components/Footer.astro";
+import { GITHUB_URL } from "../config";
+
+const pageTitle = "mnema — support";
+const pageDescription =
+  "Get help with Mnema. Email support@mnema.day, report bugs on GitHub, or manage your license and devices yourself.";
+
+const channels = [
+  {
+    label: "Bug or crash?",
+    detail:
+      "Open an issue on GitHub — it's the fastest way to get a fix into a release, and other users can find it too.",
+    href: `${GITHUB_URL}/issues`,
+    cta: "Open a GitHub issue",
+    external: true,
+  },
+  {
+    label: "New Mac refused — device limit reached?",
+    detail:
+      "Your license works on up to 3 Macs at a time. If a new one was refused because all 3 are used, you can free them up yourself from inside the app.",
+    href: "/license/devices",
+    cta: "Free up your devices",
+    external: false,
+  },
+];
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <TopBar />
+  <main class="docs">
+    <article class="docs-col">
+      <header class="docs-hero">
+        <p class="kicker">// support</p>
+        <h1 class="docs-title">Need a hand?</h1>
+        <p class="docs-sub">
+          A real person reads every email. Purchases, refunds, licenses, or
+          anything you can't figure out — write to us and we'll sort it out.
+        </p>
+        <p class="docs-meta">// replies from a human, usually within a day</p>
+      </header>
+
+      <section class="docs-section" aria-labelledby="email">
+        <div class="support-card">
+          <p class="kicker">// email us</p>
+          <a class="support-email" href="mailto:support@mnema.day"
+            >support@mnema.day</a
+          >
+          <p class="support-hint">
+            Include your macOS version and the Mnema version (shown in
+            <span class="path">Settings → About</span>) — it saves a round
+            trip.
+          </p>
+        </div>
+      </section>
+
+      <section class="docs-section" aria-labelledby="other-channels">
+        <p class="kicker">// or go direct</p>
+        <h2 class="section-heading" id="other-channels">
+          Some things are faster elsewhere
+        </h2>
+        <div class="channel-list">
+          {
+            channels.map((c) => (
+              <div class="channel-item">
+                <div class="channel-text">
+                  <span class="channel-label">{c.label}</span>
+                  <span class="channel-detail">{c.detail}</span>
+                </div>
+                <a
+                  class="channel-cta"
+                  href={c.href}
+                  {...(c.external
+                    ? { target: "_blank", rel: "noopener noreferrer" }
+                    : {})}
+                >
+                  {c.cta} →
+                </a>
+              </div>
+            ))
+          }
+        </div>
+      </section>
+    </article>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  /* ---- Docs layout shell (lifted pattern) ---- */
+  .docs {
+    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  }
+
+  .docs-col {
+    max-width: 44rem;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .docs-hero {
+    padding-bottom: var(--space-xl);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .docs-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-3xl);
+    margin-bottom: var(--space-sm);
+    max-width: 22ch;
+  }
+
+  .docs-sub {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.7;
+    max-width: 60ch;
+    margin-bottom: var(--space-md);
+  }
+
+  .docs-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .docs-section {
+    margin-bottom: var(--space-2xl);
+  }
+
+  .section-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-sm);
+    max-width: 26ch;
+  }
+
+  /* ---- Email card ---- */
+  .support-card {
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: var(--space-lg);
+    display: grid;
+    gap: var(--space-sm);
+  }
+
+  .support-email {
+    font-family: var(--font-mono);
+    font-size: var(--text-xl);
+    color: var(--fg);
+    text-decoration: none;
+    width: max-content;
+    max-width: 100%;
+    word-break: break-all;
+    border-bottom: 1px solid var(--accent);
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .support-email:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .support-hint {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    max-width: 52ch;
+  }
+
+  .path {
+    font-family: var(--font-mono);
+    font-size: 0.85em;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  /* ---- Channel list ---- */
+  .channel-list {
+    display: grid;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+
+  .channel-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: var(--space-md) var(--space-lg);
+  }
+
+  .channel-text {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 16rem;
+    flex: 1 1 16rem;
+  }
+
+  .channel-label {
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .channel-detail {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .channel-cta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .channel-cta:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+</style>
