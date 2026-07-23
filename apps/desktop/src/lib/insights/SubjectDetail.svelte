@@ -325,7 +325,9 @@
           kind: "audio",
           frameId: null,
           audioSegmentId: ref.subjectId,
-          spanStartMs: ref.capturedAtMs ?? null,
+          // spanStartMs is an offset WITHIN the segment; ref.capturedAtMs is the
+          // segment's absolute start, i.e. offset 0 — passing it seeked to the end.
+          spanStartMs: null,
           alignedFrameId: null,
         });
         return;

@@ -160,7 +160,9 @@
 
   // Which viewer to render: frames win; else audio if any spoken evidence
   // survives; else the honest expired panel.
-  const viewState = $derived(receiptViewState(strip.length, audioEvidence.length));
+  const viewState = $derived(
+    receiptViewState(strip.length, audioEvidence.length, turnsPending, turns.length),
+  );
   const isAudioOnly = $derived(viewState === "audio-only");
 
   const stripMs = $derived(strip.map((f) => f.ms));

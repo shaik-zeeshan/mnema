@@ -4,71 +4,73 @@ import TopBar from "../../components/TopBar.astro";
 import Footer from "../../components/Footer.astro";
 import { DOWNLOAD_URL, PLATFORM_LABEL } from "../../config";
 
-const pageTitle = "Rewind AI alternative for Mac — Mnema";
+const pageTitle = "Screenpipe alternative for Mac — Mnema";
 const pageDescription =
-  "Rewind AI shut down in December 2025. Mnema is a Rewind AI alternative for Mac: private, on-device screen and audio memory you can search, scrub, and ask an AI about.";
+  "Looking for a Screenpipe alternative? Mnema is a fully open-source, one-time-purchase screen memory for Mac: on-device capture, transcription, search, and ask-AI — no subscription.";
 
 const criteria = [
   {
+    label: "Built for recall, not agent plumbing",
+    detail:
+      "If what you want is to find that thing you saw last Tuesday, you want a polished timeline, search, and ask-AI out of the box — not an API you wire agents into first.",
+  },
+  {
+    label: "Actually open source",
+    detail:
+      "Source-available licenses let you read the code but restrict what you can do with it. A genuinely open-source license means the community can fork, audit, and keep the project alive.",
+  },
+  {
+    label: "Predictable price",
+    detail:
+      "A subscription for software that runs entirely on your own machine adds up forever. A one-time purchase means the copy you bought keeps working, whatever happens to the company.",
+  },
+  {
     label: "Stays on your Mac",
     detail:
-      "Capture, text extraction, transcription, and search should all run on-device, with the record encrypted at rest. If a company can read your history, an acquisition can too.",
-  },
-  {
-    label: "Captures everything you'd want back",
-    detail:
-      "Screen, audio, and activity — not just screenshots. The moments you need to recall are as often something said in a call as something on screen.",
-  },
-  {
-    label: "Search plus ask-AI",
-    detail:
-      "Keyword search finds what you can name; asking an AI about your own past finds what you can only half-describe.",
-  },
-  {
-    label: "You control retention and deletion",
-    detail:
-      "Keep history forever or auto-delete on a schedule, and delete any stretch of it in one click. Your record, your rules.",
+      "Capture, text extraction, transcription, and search should all run on-device, with the record encrypted at rest. No account, no servers, no telemetry.",
   },
 ];
 
 const comparison = {
-  columns: ["Mnema", "Screenpipe", "ScreenMemory", "OpenRecall"],
+  columns: ["Mnema", "Screenpipe", "OpenRecall"],
   rows: [
     {
       label: "Platform",
-      cells: ["macOS (Apple Silicon)", "Cross-platform", "macOS", "Cross-platform"],
+      cells: ["macOS (Apple Silicon)", "Cross-platform", "Cross-platform"],
     },
     {
-      label: "Open source",
-      cells: ["Yes", "Source-available", "No", "Yes"],
-    },
-    {
-      label: "Local-first",
-      cells: ["Yes — on-device, encrypted at rest", "Yes", "Yes", "Yes"],
-    },
-    {
-      label: "Audio transcription",
+      label: "License",
       cells: [
-        "Yes — on-device, with speaker labels",
-        "Yes",
-        "Screen-focused",
-        "Screen-focused",
+        "Open source",
+        "Source-available (commercial license)",
+        "Open source",
       ],
     },
     {
+      label: "Local-first",
+      cells: ["Yes — on-device, encrypted at rest", "Yes", "Yes"],
+    },
+    {
+      label: "Audio transcription",
+      cells: ["Yes — on-device, with speaker labels", "Yes", "Screen-focused"],
+    },
+    {
       label: "Ask-AI / chat",
-      cells: ["Yes — over your own history", "Yes (via plugins)", "Varies", "Search-focused"],
+      cells: [
+        "Yes — over your own history",
+        "Agent-focused (bring your own)",
+        "Search-focused",
+      ],
     },
     {
       label: "Agent / CLI access",
-      cells: ["Yes — brokered, read-only CLI", "Yes (API)", "—", "—"],
+      cells: ["Yes — brokered, read-only CLI", "Yes (API)", "—"],
     },
     {
       label: "Price",
       cells: [
         "$69 once, 30-day free trial",
         "$25/mo (personal use free)",
-        "Paid",
         "Free (open source)",
       ],
     },
@@ -77,20 +79,20 @@ const comparison = {
 
 const faqs = [
   {
-    q: "Is Rewind AI still available?",
-    a: "No. The Rewind Mac app shut down on December 19, 2025, after Meta acquired Limitless (the company Rewind became). Pendant sales stopped, service was discontinued in the EU and UK, and remaining support winds down through 2026.",
+    q: "Is Screenpipe still open source?",
+    a: "Not in the usual sense. Screenpipe launched under the MIT license but later moved to a source-available commercial license: personal, non-commercial use stays free, but commercial use requires a paid license, and the signed desktop app is a subscription starting at $25/month. Mnema is open source, and the app is a one-time $69 purchase.",
   },
   {
-    q: "What is the best Rewind AI alternative for Mac?",
-    a: "If you want what Rewind originally promised — a private, searchable record of everything on your Mac — Mnema is the closest match: it captures screen, audio, and activity on-device, encrypts it at rest, and lets you search it, scrub back to any moment, and ask an AI about it. Screenpipe and OpenRecall are open-source, cross-platform options worth a look too.",
+    q: "What is the best Screenpipe alternative for Mac?",
+    a: "If you want personal recall — a private, searchable record of what you've seen, heard, and done — Mnema is built exactly for that on the Mac: on-device capture, transcription with speaker labels, timeline scrubbing, search, and ask-AI, with the record encrypted at rest. If you mainly want raw screen data piped into your own agents, Screenpipe's API-first approach may still fit better.",
+  },
+  {
+    q: "How is Mnema different from Screenpipe?",
+    a: "Screenpipe has evolved into a context layer for AI agents — you record everything and plug the data into agents and integrations. Mnema is a finished personal-memory app: recording, timeline, search, and ask-AI work out of the box with nothing to assemble, and agents are still served through a brokered, read-only CLI when you want them.",
   },
   {
     q: "Does Mnema send my recordings to the cloud?",
-    a: "No. Capture, text extraction, transcription, and search all run on-device — there's no account, no servers, no telemetry, and no Mnema cloud to send anything to. The one exception is opt-in: you can use your own Deepgram account for higher-accuracy transcripts, and audio leaves your Mac only if you turn that on.",
-  },
-  {
-    q: "Can I still use my Rewind data?",
-    a: "Rewind stored its recordings locally, so the files may still be on your Mac — but Mnema does not import Rewind archives. Starting with Mnema means starting a fresh record from the day you install it.",
+    a: "No. Capture, text extraction, transcription, and search all run on-device — there's no account, no servers, and no telemetry. The one exception is opt-in: you can use your own Deepgram account for higher-accuracy transcripts, and audio leaves your Mac only if you turn that on.",
   },
 ];
 
@@ -111,46 +113,43 @@ const faqJsonLd = JSON.stringify({
     <article class="docs-col">
       <!-- Hero -->
       <header class="docs-hero">
-        <p class="kicker">// rewind ai alternative</p>
+        <p class="kicker">// screenpipe alternative</p>
         <h1 class="docs-title">
-          A private Rewind AI alternative that stays on your Mac.
+          A Screenpipe alternative that's built for recall, not plumbing.
         </h1>
         <p class="docs-sub">
-          Rewind is gone — the Mac app shut down in December 2025. Mnema picks
-          up where it left off: a local-first screen memory that quietly records
-          your screen, audio, and activity, then lets you search it, scrub back
-          to any moment, and ask an AI about your own past. None of it leaves
-          your Mac.
+          Screenpipe records everything and hands you the data to build with.
+          Mnema records everything and hands you the answers: a Mac-native
+          timeline you can scrub, search, and ask an AI about — on-device,
+          encrypted at rest, open source, and yours for a one-time purchase.
         </p>
         <p class="docs-meta">// reading time ~4 min · macOS · Apple Silicon</p>
       </header>
 
-      <!-- What happened -->
-      <section class="docs-section" aria-labelledby="what-happened">
+      <!-- Where Screenpipe landed -->
+      <section class="docs-section" aria-labelledby="what-changed">
         <p class="kicker">// the short version</p>
-        <h2 class="section-heading" id="what-happened">
-          What happened to Rewind AI
+        <h2 class="section-heading" id="what-changed">
+          Where Screenpipe has landed
         </h2>
         <p class="prose">
-          Rewind launched in late 2022 as a Mac app that recorded your screen
-          and audio locally and made it searchable — "the search engine for
-          your life." For a while it was the reference point for personal
-          screen memory on the Mac.
+          Screenpipe earned its following as an open-source, cross-platform
+          engine for 24/7 screen and mic capture — the raw material for a
+          personal AI, with a plugin system to build on top.
         </p>
         <p class="prose">
-          In 2024 the company rebranded to Limitless and pivoted to a
-          cloud-based wearable, the Limitless Pendant. The Mac app stopped
-          being the focus.
+          It has since repositioned around AI agents: the pitch today is a
+          local-first context layer you plug into agent frameworks and
+          integrations. Along the way the license moved from MIT to a
+          source-available commercial license, and the signed desktop app
+          became a subscription starting at $25/month (personal,
+          non-commercial use stays free).
         </p>
         <p class="prose">
-          In December 2025, Meta acquired Limitless. The Rewind Mac app shut
-          down on December 19, 2025, Pendant sales stopped, and service was
-          discontinued in the EU and UK, with remaining support winding down
-          through 2026.
-        </p>
-        <p class="prose">
-          If you relied on Rewind, you're now looking for a replacement — and
-          the shutdown itself is a useful lesson in what to look for next.
+          None of that is wrong — it's just a different product than a
+          personal memory. If what you wanted was the recall part — find that
+          page, replay that meeting, ask what you worked on last week — you're
+          assembling it yourself from parts. That's the gap Mnema fills.
         </p>
       </section>
 
@@ -158,12 +157,11 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section" aria-labelledby="criteria">
         <p class="kicker">// choosing a replacement</p>
         <h2 class="section-heading" id="criteria">
-          What to look for in a replacement
+          What to look for in an alternative
         </h2>
         <p class="prose">
-          A tool that records everything you see and hear is only as good as
-          its answer to one question: who else can see it? Four things worth
-          insisting on.
+          A tool that records everything you see and hear is a serious
+          commitment. Four things worth insisting on.
         </p>
         <ul class="criteria-list">
           {
@@ -186,11 +184,11 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section" aria-labelledby="comparison">
         <p class="kicker">// the field</p>
         <h2 class="section-heading" id="comparison">
-          Mnema vs Screenpipe vs ScreenMemory vs OpenRecall
+          Mnema vs Screenpipe vs OpenRecall
         </h2>
         <p class="prose">
-          These are the main tools people move to after Rewind. All of them
-          keep your data local — the differences are in scope and platform.
+          All three keep your data local — the differences are in what you get
+          out of the box, the license, and the price.
         </p>
         <div class="table-scroll">
           <table class="compare-table">
@@ -242,7 +240,7 @@ const faqJsonLd = JSON.stringify({
       <section class="docs-section cta" aria-labelledby="cta-heading">
         <p class="kicker">// get started</p>
         <h2 class="section-heading" id="cta-heading">
-          Start a record you actually own.
+          Recall that works out of the box.
         </h2>
         <p class="prose">
           Download Mnema and build a private, searchable memory of your work —
@@ -273,7 +271,7 @@ const faqJsonLd = JSON.stringify({
 </Base>
 
 <style>
-  /* ---- Docs layout shell (same pattern as agents.astro) ---- */
+  /* ---- Docs layout shell (same pattern as rewind-ai.astro) ---- */
   .docs {
     padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
   }
@@ -346,7 +344,7 @@ const faqJsonLd = JSON.stringify({
     margin-top: var(--space-md);
   }
 
-  /* ---- Criteria (check-marker list, lifted from agents.astro) ---- */
+  /* ---- Criteria ---- */
   .criteria-list {
     list-style: none;
     display: grid;
@@ -484,7 +482,7 @@ const faqJsonLd = JSON.stringify({
     max-width: 62ch;
   }
 
-  /* ---- CTA (button pattern from FinalCta.astro) ---- */
+  /* ---- CTA ---- */
   .cta .prose {
     margin-bottom: var(--space-md);
   }

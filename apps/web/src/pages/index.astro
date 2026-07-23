@@ -12,9 +12,28 @@ import MoreFeatures from "../components/MoreFeatures.astro";
 import AgentsPointer from "../components/AgentsPointer.astro";
 import FinalCta from "../components/FinalCta.astro";
 import Footer from "../components/Footer.astro";
+import { DOWNLOAD_URL } from "../config";
+
+const appJsonLd = JSON.stringify({
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Mnema",
+  operatingSystem: "macOS",
+  applicationCategory: "UtilitiesApplication",
+  description:
+    "Mnema records your screen, audio, and activity into a private, searchable record you can scrub, search, and ask an AI about — all on your Mac.",
+  url: "https://mnema.day",
+  downloadUrl: DOWNLOAD_URL,
+  offers: {
+    "@type": "Offer",
+    price: "69",
+    priceCurrency: "USD",
+  },
+});
 ---
 
 <Base>
+  <script type="application/ld+json" set:html={appJsonLd} is:inline />
   <TopBar />
   <main>
     <Hero />

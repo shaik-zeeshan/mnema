@@ -52,13 +52,21 @@ export function frameIndexForMs(sortedMs: number[], targetMs: number): number {
 export type ReceiptViewState = "frames" | "audio-only" | "expired";
 
 /** Which viewer the receipt renders (ADR 0049): frames win; else audio if any
- *  spoken evidence survives; else the honest "footage expired" panel. */
+ *  spoken evidence survives; else the honest "footage expired" panel.
+ *
+ *  Cited-audio evidence refs deliberately outlive retention (ADR 0029), so a
+ *  ref alone doesn't prove playable audio: once span hydration lands with zero
+ *  live turns the refs are orphans, and the honest panel is "expired" — never
+ *  a dead audio player. While hydration is pending the refs are trusted so the
+ *  viewer doesn't flash expired before the turns arrive. */
 export function receiptViewState(
   frameCount: number,
   audioEvidenceCount: number,
+  turnsPending: boolean,
+  turnCount: number,
 ): ReceiptViewState {
   if (frameCount > 0) return "frames";
-  if (audioEvidenceCount > 0) return "audio-only";
+  if (audioEvidenceCount > 0 && (turnsPending || turnCount > 0)) return "audio-only";
   return "expired";
 }
 

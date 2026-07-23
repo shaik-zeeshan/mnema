@@ -4174,6 +4174,36 @@
     };
   }
 
+  // Jump the timeline to the frame nearest an audio moment when the caller
+  // didn't precompute an aligned frame (Subjects, SubjectDetail, sources with
+  // no aligned hit) — otherwise the stage keeps showing whatever frame it was
+  // on before the drawer opened. Latest frame at-or-before the moment within a
+  // segment-length lookback, with a short forward fallback for audio that
+  // starts just before the first frame. Leaves the timeline untouched (returns
+  // false) when no frame exists near the moment — an audio-only stretch with
+  // the screen off has nothing honest to show.
+  const AUDIO_MOMENT_FRAME_LOOKBACK_MS = 5 * 60_000; // capture-segment cap
+  const AUDIO_MOMENT_FRAME_LOOKAHEAD_MS = 10_000; // matches backend alignment window
+  async function jumpToFrameNearAudioMoment(momentUnixMs: number): Promise<boolean> {
+    const latestInRange = (startMs: number, endMs: number) =>
+      invoke<FrameDto | null>("get_latest_frame_in_range", {
+        request: {
+          capturedAtStart: new Date(startMs).toISOString(),
+          capturedAtEnd: new Date(endMs).toISOString(),
+        },
+      });
+    try {
+      const frame =
+        (await latestInRange(momentUnixMs - AUDIO_MOMENT_FRAME_LOOKBACK_MS, momentUnixMs)) ??
+        (await latestInRange(momentUnixMs, momentUnixMs + AUDIO_MOMENT_FRAME_LOOKAHEAD_MS));
+      if (!frame) return false;
+      await jumpToFrameWithBanner(frame);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function openBrokerCaptureResult(payload: BrokerOpenCaptureResultPayload): Promise<void> {
     if (payload.kind === "frame" && payload.frameId != null) {
       const frame = await invoke<FrameDto | null>("get_frame", {
@@ -4203,11 +4233,20 @@
       // jump the timeline to the aligned frame so mid-segment / out-of-window
       // matches land correctly.
       pendingAudioSeekMs = payload.spanStartMs ?? 0;
+      let jumped = false;
       if (payload.alignedFrameId != null) {
         const alignedFrame = await invoke<FrameDto | null>("get_frame", {
           request: { frameId: payload.alignedFrameId },
         });
-        if (alignedFrame) await jumpToFrameWithBanner(alignedFrame);
+        if (alignedFrame) {
+          await jumpToFrameWithBanner(alignedFrame);
+          jumped = true;
+        }
+      }
+      // No aligned frame precomputed (or it was retention-deleted) — resolve one
+      // from the audio moment so the stage doesn't keep showing the previous frame.
+      if (!jumped) {
+        await jumpToFrameNearAudioMoment(mapped.startUnixMs + (payload.spanStartMs ?? 0));
       }
     }
   }
@@ -5562,8 +5601,10 @@
       }
     } else if (focus && "audioSegmentId" in focus) {
       // Mirror the audio branch of `openBrokerCaptureResult`: open the drawer on
-      // the segment, then fall through so the normal latest load renders frames
-      // behind it.
+      // the segment and land the stage on the frame nearest the segment's start
+      // (falling through to the normal latest load only when no frame exists
+      // near the moment — otherwise the stage would show the newest frame while
+      // the drawer plays an older segment).
       try {
         const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", {
           request: { audioSegmentId: focus.audioSegmentId } as GetAudioSegmentRequest,
@@ -5575,6 +5616,7 @@
           }
           selectedAudioSegmentPinned = mapped;
           selectedAudioSegmentId = mapped.id;
+          if (await jumpToFrameNearAudioMoment(mapped.startUnixMs)) return;
         }
       } catch {
         /* fall through to normal init */

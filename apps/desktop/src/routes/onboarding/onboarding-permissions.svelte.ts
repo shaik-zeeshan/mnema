@@ -31,6 +31,13 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
   let requestingPerm = $state<PermissionKey | null>(null);
   let refreshingPerms = $state(false);
 
+  // System audio's grant is unreadable (ADR 0052): the request raises the macOS
+  // prompt but the inferred state stays "not_determined" until a real recording
+  // hears sound, so without this flag the row still read "Not requested" right
+  // after the user granted — the reported bug. Session-only on purpose: there is
+  // no OS state to re-read, and persisting it could go stale across TCC resets.
+  let sysAudioPromptRaised = $state(false);
+
   // Optional Gecko (Firefox/Zen) browser-URL access via the macOS Accessibility
   // API. Shown only when a Gecko browser is installed; the status is non-fatal (a
   // null probe simply hides the row) and never gates onboarding progression.
@@ -88,6 +95,7 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
       } else {
         const response = await invoke<GetPermissionsResponse>("request_capture_permission", { kind: key });
         permissions = response.permissions as Record<PermissionKey, PermissionValue>;
+        if (key === "systemAudio") sysAudioPromptRaised = true;
       }
     } catch (err) {
       deps.setError(serializeError(err));
@@ -165,6 +173,9 @@ export function createOnboardingPermissionsStore(deps: OnboardingPermissionsDeps
     },
     get refreshingPerms() {
       return refreshingPerms;
+    },
+    get sysAudioPromptRaised() {
+      return sysAudioPromptRaised;
     },
     get geckoUrlAccess() {
       return geckoUrlAccess;

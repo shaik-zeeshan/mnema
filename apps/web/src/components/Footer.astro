@@ -25,6 +25,9 @@ import { DOWNLOAD_URL, GITHUB_URL } from "../config";
         <a href="/agents">Agents</a>
         <a href="/alternatives/rewind-ai">Rewind alternative</a>
         <a href="/alternatives/microsoft-recall-mac">Recall for Mac</a>
+        <a href="/alternatives/screenpipe">Screenpipe alternative</a>
+        <a href="/alternatives/limitless">Limitless alternative</a>
+        <a href="/support">Support</a>
         <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer">GitHub</a>
         <a
           href={`${GITHUB_URL}/blob/main/LICENSE`}
@@ -104,10 +107,13 @@ import { DOWNLOAD_URL, GITHUB_URL } from "../config";
 
   .footer-links {
     display: flex;
-    gap: var(--space-lg);
+    flex-wrap: wrap;
+    row-gap: var(--space-sm);
+    column-gap: var(--space-lg);
   }
 
   .footer-links a {
+    white-space: nowrap;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--fg-muted);
