@@ -162,10 +162,15 @@ pub enum AppearanceSetting {
     System,
     Light,
     Dark,
+    /// Legacy dark-terminal identity, kept selectable until Warm Paper Dark
+    /// reaches parity (see docs/mockups/unified-shell/DESIGN.md).
+    Terminal,
 }
 
+/// Warm Paper light is the app's default face (Track B retheme); `System`
+/// remains selectable and resolves to the Warm Paper light/dark pair.
 pub fn default_appearance() -> AppearanceSetting {
-    AppearanceSetting::System
+    AppearanceSetting::Light
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]

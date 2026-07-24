@@ -4108,7 +4108,7 @@ async fn delete_recent_capture_inner(
     let should_resume_after_boundary =
         should_resume_delete_recent_capture_boundary(&session_before_delete);
     if should_resume_after_boundary {
-        crate::native_capture::pause_native_capture_from_app_handle(app_handle).map_err(
+        crate::native_capture::pause_native_capture_from_app_handle(app_handle, None).map_err(
             |error| {
                 format!(
                     "failed to create recording boundary before deletion: {}",
@@ -5528,6 +5528,7 @@ mod tests {
             is_inactivity_paused: true,
             is_user_paused: false,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -5543,6 +5544,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: true,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,

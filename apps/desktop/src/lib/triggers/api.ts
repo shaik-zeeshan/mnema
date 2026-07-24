@@ -119,12 +119,37 @@ export const CONDITION_LABEL: Record<ConditionType, string> = {
 // ── Starter templates (the wizard's per-condition prompt starters) ──────────
 export const STARTERS: Record<ConditionType, string> = {
   meeting_ends:
-    "Write a recap of the meeting that just ended.\n\nOpen with a one-paragraph summary of what the meeting was about and where it landed. Then give a speaker-labeled rundown: for each person, the main points they raised and anything they committed to. Call out decisions that were made, and list open questions separately.\n\nClose with short feedback for me: where I was clear, where I rambled, and anything I said I would follow up on. Plain prose throughout.",
+    "Write a recap of the meeting that just ended.\n\nOpen with a one-paragraph summary of what the meeting was about and where it landed. Then give a speaker-labeled rundown: for each person, the main points they raised and anything they committed to. Call out decisions that were made, and list open questions separately.\n\nUnder an \"Action items\" heading, list what I need to follow up on as a markdown checklist — one `- [ ] ` line per item, each starting with the verb.\n\nClose with short feedback for me: where I was clear, where I rambled, and anything I said I would follow up on. Plain prose otherwise.",
   app_opened:
     "Catch me up on this app.\n\nSummarize what I was doing the last time I had it open — the files, boards or documents I touched, where I left off, and anything I said I would do next. Note anything relevant that happened elsewhere since (messages, decisions) that changes what I should do here.\n\nEnd with a one-line suggestion for what to pick up first. Plain prose, short.",
   schedule:
     "Write an end-of-day review.\n\nSummarize what I worked on today across apps: the main threads of work and where each one stands. Note anything I started but did not finish, and any commitments I made in meetings or messages.\n\nClose with a short plan for tomorrow — three items at most. Plain prose, no fluff.",
 };
+
+/** The Advanced steppers visible for a condition (wizard Review step). */
+export function advRows(
+  cond: ConditionType,
+): { key: "minlen" | "awaygap" | "cooldown"; label: string; min: number; max: number; step: number }[] {
+  return [
+    {
+      key: "minlen" as const,
+      label: "Minimum meeting length",
+      min: 1,
+      max: 30,
+      step: 1,
+      visible: cond === "meeting_ends",
+    },
+    {
+      key: "awaygap" as const,
+      label: "Away gap",
+      min: 5,
+      max: 120,
+      step: 5,
+      visible: cond === "app_opened",
+    },
+    { key: "cooldown" as const, label: "Cooldown", min: 0, max: 120, step: 5, visible: true },
+  ].filter((row) => row.visible);
+}
 
 // ── Formatting helpers ──────────────────────────────────────────────────────
 

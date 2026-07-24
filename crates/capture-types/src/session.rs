@@ -77,6 +77,11 @@ pub struct NativeCaptureSession {
     pub is_inactivity_paused: bool,
     pub is_user_paused: bool,
     pub is_low_disk_suspended: bool,
+    /// Timed off-the-record: the wall-clock moment capture auto-resumes.
+    /// `None` for an indefinite pause and while on the record. Can be set with
+    /// `is_running == false`: a deadline re-armed at startup holds capture off
+    /// the record until it passes, without a live session to pause.
+    pub off_record_deadline_unix_ms: Option<i64>,
     pub requested_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,

@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — Main Surface Concept · One Vertical Spine · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction-2-warm-paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --rec: #b0483b;            /* warm record red — allowed exception */
+    --rec-tint: #f7e7e1;
+    --rec-border: #e6c4b8;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+    --cat-creating: #2a8a60;
+    --cat-communication: #3a6ea8;
+    --cat-meetings: #8a5a2a;
+    --cat-research: #6d5a8a;
+    --cat-organizing: #9a6b1f;
+    --cat-uncat: #9a927e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    padding: 72px 48px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    position: relative;
+  }
+
+  /* ============ titlebar (app-wide chrome) ============ */
+  .tb {
+    flex: none; height: 48px;
+    background: var(--rail-bg);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 14px 0 18px;
+    position: relative; z-index: 4;
+  }
+  .traffic { display: flex; gap: 8px; margin-right: 16px; flex: none; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+  .tb-left { display: flex; align-items: center; gap: 8px; flex: none; }
+  .tb-right { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; }
+  .tb-center {
+    position: absolute; left: 50%; top: 0; height: 100%;
+    transform: translateX(-50%);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .status {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .03em;
+    padding: 4px 11px 4px 9px; border-radius: 999px;
+  }
+  .status--running { color: #8a3629; background: var(--rec-tint); border: 1px solid var(--rec-border); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .status--running .status-dot { background: var(--rec); box-shadow: 0 0 0 3px rgba(176,72,59,.16); animation: pulse 2.4s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { box-shadow: 0 0 0 3px rgba(176,72,59,.16); } 50% { box-shadow: 0 0 0 5px rgba(176,72,59,.07); } }
+  .tbtn {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--sans); font-size: 12.5px; font-weight: 500;
+    border-radius: 8px; padding: 5px 13px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--ink-2);
+    transition: border-color .12s, background .12s, color .12s;
+  }
+  .tbtn:hover { border-color: var(--border-strong); color: var(--ink); }
+  .tbtn--stop .glyph { width: 8px; height: 8px; border-radius: 2px; background: var(--rec); }
+  .lanes-chips { display: flex; align-items: center; gap: 4px; margin-left: 4px; }
+  .src {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border-radius: 7px;
+    border: 1px solid transparent; color: var(--ink-2);
+    background: transparent; cursor: default;
+  }
+  .src svg { width: 13px; height: 13px; stroke: currentColor; }
+  .src--live { color: var(--accent-deep); background: var(--tint-2); border-color: var(--tint-border); }
+  .src--live .st { width: 6px; height: 6px; border-radius: 50%; background: var(--accent-2); }
+  .tb-search {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 5px 8px 5px 11px; cursor: pointer;
+    transition: border-color .12s;
+  }
+  .tb-search:hover { border-color: var(--border-strong); }
+  .tb-search svg { width: 12px; height: 12px; stroke: currentColor; opacity: .75; }
+  .tb-search kbd {
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+    background: var(--card-deep);
+  }
+  /* the raw-timeline vestige: one quiet clock button */
+  .tb-raw {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .05em;
+    color: var(--ink-3); background: transparent;
+    border: 0; border-radius: 8px; padding: 5px 9px; cursor: pointer;
+  }
+  .tb-raw:hover { background: #ece8da; color: var(--ink-2); }
+  .tb-raw .cl { font-size: 13px; line-height: 1; }
+  .icon-btn {
+    width: 30px; height: 30px; border-radius: 8px; border: 0; background: transparent;
+    color: var(--ink-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; position: relative;
+    transition: background .12s, color .12s;
+  }
+  .icon-btn:hover { background: #ece8da; color: var(--ink); }
+  .icon-btn svg { width: 16px; height: 16px; stroke: currentColor; }
+
+  /* ============ left rail (InsightsRail on warm paper) ============ */
+  .body-split { flex: 1; display: flex; overflow: hidden; }
+  .rail {
+    width: 264px; flex: none;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 18px 0 0;
+  }
+  .brand {
+    font-family: var(--serif);
+    font-size: 19px; letter-spacing: .01em;
+    padding: 0 22px 16px;
+    color: var(--ink);
+  }
+  .brand .leaf { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 7px; }
+  .nav { padding: 0 12px; display: flex; flex-direction: column; gap: 2px; }
+  .nav a {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--ink-2); text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background .12s, color .12s;
+  }
+  .nav a svg { width: 15px; height: 15px; stroke: currentColor; flex: none; opacity: .8; }
+  .nav a:hover { background: #ece8da; color: var(--ink); }
+  .nav a.active { background: var(--tint); color: var(--accent-deep); box-shadow: inset 2px 0 0 var(--accent); }
+  .nav a.active svg { opacity: 1; }
+  .rail-newchat {
+    display: flex; align-items: center; gap: 10px;
+    margin: 14px 12px 0; padding: 8px 10px;
+    border-radius: 8px; color: var(--ink-2);
+    font-size: 13.5px; font-weight: 500; text-decoration: none;
+  }
+  .rail-newchat:hover { background: #ece8da; color: var(--ink); }
+  .rail-newchat .plus { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+  .rail-sec {
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 20px 22px 6px;
+  }
+  .recents { padding: 0 12px; overflow: hidden; }
+  .recents--grow { flex: 1; }
+  .recents a {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-radius: 8px;
+    text-decoration: none; color: var(--ink-2);
+    font-size: 13px; line-height: 1.35;
+  }
+  .recents a:hover { background: #ece8da; color: var(--ink); }
+  .recents .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recents .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
+  .rail-foot {
+    border-top: 1px solid var(--border);
+    padding: 12px 20px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .rail-foot .line { display: flex; align-items: center; gap: 8px; }
+  .engine-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.16); flex: none; }
+  .rail-foot .stat { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); line-height: 1.5; }
+  .rail-foot .stat b { color: var(--accent-deep); font-weight: 600; }
+  .rail-foot .stat .dim { color: var(--ink-3); }
+
+  /* ============ main pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .main-scroll { flex: 1; overflow: hidden; padding: 22px 0 0; }
+  .col { max-width: 1040px; margin: 0 auto; padding: 0 40px; }
+  .ov-header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .ov-header .titles { flex: 1 1 auto; min-width: 0; }
+  .ov-header h1 { font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -.01em; color: var(--ink); }
+  .ov-header .subtitle { margin-top: 5px; font-size: 14px; color: var(--ink-2); }
+  .ov-controls { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; padding-top: 8px; }
+  .date-stepper { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+  .date-stepper .snav {
+    width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+    color: var(--ink-3); cursor: pointer; font: inherit;
+  }
+  .date-stepper .snav.disabled { opacity: .4; cursor: default; }
+  .date-stepper .day-label {
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    letter-spacing: .02em; padding: 2px 4px;
+    border-bottom: 1px dotted var(--border-strong); cursor: pointer;
+  }
+
+  /* ============ the vertical spine ============ */
+  /* grid: hour-ruler gutter | spine | story block | evidence filmstrip lane */
+  .spine-river { margin-top: 16px; display: flex; flex-direction: column; }
+  .srow {
+    display: grid;
+    grid-template-columns: 64px 20px 1fr 148px;
+    gap: 0 14px;
+  }
+  .srow + .srow { margin-top: 10px; }
+  .srow .when {
+    padding-top: 16px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .srow .when .dur { display: block; font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+  .vline { position: relative; }
+  .vline::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: -12px;
+    width: 1px; background: var(--border);
+  }
+  .spine-river > .srow:last-child .vline::before { bottom: 12px; }
+  .vline .node {
+    position: absolute; left: 50%; top: 19px; transform: translate(-50%, 0);
+    width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--shell-bg);
+    z-index: 1;
+  }
+  /* hour ruler row — the continuous mono time marks */
+  .srow--hour { margin-top: 14px; }
+  .srow--hour + .srow { margin-top: 9px; }
+  .srow--hour .hmark {
+    text-align: right;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding-top: 1px;
+  }
+  .srow--hour .vline .tick {
+    position: absolute; left: 50%; top: 7px; transform: translate(-50%,-50%);
+    width: 7px; height: 1px; background: var(--border-strong);
+  }
+  .srow--hour .hrule { grid-column: 3 / -1; height: 1px; background: var(--border-soft); margin-top: 7px; }
+
+  /* activity card (journal card anatomy, edge-bar via --cat) */
+  .jcard {
+    position: relative; display: block; width: 100%; text-align: left;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--cat, var(--border-strong));
+    border-radius: 10px; padding: 13px 16px 11px;
+    cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .jcard:hover { border-color: var(--tint-border); box-shadow: 0 2px 12px rgba(31,111,74,.07); transform: translateY(-1px); }
+  .jcard-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .cat-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 600; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2px 9px;
+  }
+  .cat-chip .swatch { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .focus-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-3); }
+  .focus-chip i { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+  .focus-deep i { background: var(--accent-2); }
+  .focus-mixed i { background: #c9a24a; }
+  .focus-scattered i { background: #c07a5a; }
+  .jcard h3 { font-family: var(--serif); font-size: 16.5px; font-weight: 500; letter-spacing: -.005em; color: var(--ink); }
+  .jcard p { font-family: var(--serif); font-size: 13.5px; line-height: 1.55; color: #55503e; margin-top: 4px; }
+  .jcard-foot { margin-top: 9px; display: flex; align-items: center; gap: 14px; }
+  .receipt { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--ink-3); }
+  .jcard:hover .receipt { color: var(--accent-deep); }
+  .expand-hint { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .jcard:hover .expand-hint { color: var(--accent-deep); }
+
+  /* meeting block — ◉, speaker chips, recap link */
+  .jcard--meeting .mtitle { display: flex; align-items: baseline; gap: 8px; }
+  .jcard--meeting .mdot { color: var(--cat-meetings); font-size: 13px; }
+  .speakers { display: flex; align-items: center; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .spk {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 500; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2px 9px 2px 3px;
+  }
+  .spk i {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--tint); border: 1px solid var(--tint-border);
+    font-family: var(--mono); font-size: 8px; font-weight: 600; color: var(--accent-deep);
+    display: inline-flex; align-items: center; justify-content: center; font-style: normal;
+  }
+  .recap-link {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11.5px; font-weight: 600; color: var(--accent-deep);
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 6px; padding: 2px 9px; cursor: pointer;
+  }
+  .recap-link:hover { background: var(--tint); }
+  .recap-link .g { font-family: var(--mono); font-size: 10px; }
+
+  /* trigger-run row — ◷, quiet tinted one-liner */
+  .trigger-run {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--tint-2); border: 1px dashed var(--tint-border);
+    border-radius: 9px; padding: 7px 12px;
+  }
+  .trigger-run .tglyph { font-family: var(--mono); font-size: 12px; color: var(--accent-deep); }
+  .trigger-run .tt { font-size: 12.5px; color: var(--ink-2); }
+  .trigger-run .tt b { color: var(--accent-deep); font-weight: 600; }
+  .trigger-run .doc {
+    margin-left: auto; font-family: var(--mono); font-size: 10px;
+    color: var(--accent-deep); cursor: pointer; white-space: nowrap;
+  }
+  .trigger-run .doc:hover { text-decoration: underline; }
+  .srow--thin .when { padding-top: 8px; }
+  .srow--thin .node { top: 11px; width: 7px; height: 7px; }
+  .node--trigger { background: var(--accent-2); }
+
+  /* compact one-line rows for <5m activities */
+  .srow--compact .when { padding-top: 7px; }
+  .srow--compact .node { top: 10px; }
+  .row-compact {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .row-compact:hover { background: #f3efe2; }
+  .row-compact .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .row-compact .row-title { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-compact:hover .row-title { color: var(--ink); }
+  .row-compact .row-dur { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+
+  /* away gap — italic ruled note */
+  .gap-note-row .vline::before { border-left: 1px dashed var(--border); background: transparent; width: 0; }
+  .gap-txt { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--ink-3); padding: 5px 0; }
+  .gap-txt .m { font-family: var(--mono); font-style: normal; font-size: 11px; }
+
+  /* ============ the evidence filmstrip lane ============ */
+  .film { padding-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+  .thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+  .th {
+    height: 30px; border-radius: 4px;
+    background: #eae5d6; border: 1px solid #ddd6c3;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 8px; font-weight: 600; color: #b3ab96;
+    position: relative; overflow: hidden;
+  }
+  .th::before {
+    content: ""; position: absolute; left: 4px; right: 4px; top: 5px;
+    height: 2px; border-radius: 1px; background: #ded7c4;
+    box-shadow: 0 5px 0 #e2dbc9, 0 10px 0 #e2dbc9;
+  }
+  .th span { position: relative; z-index: 1; background: #eae5d6; padding: 0 2px; border-radius: 2px; }
+  .av { display: flex; align-items: center; gap: 7px; }
+  .av .lbl { font-family: var(--mono); font-size: 8.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); width: 20px; }
+  .av .tks { display: flex; gap: 3px; flex: 1; }
+  .av .tk { height: 3px; border-radius: 2px; flex: 1; background: var(--border-soft); }
+  .av--mic .tk.on { background: #9ec4ab; }
+  .av--sys .tk.on { background: #d4bd8b; }
+  .film-cap { font-family: var(--mono); font-size: 9px; color: var(--ink-3); letter-spacing: .04em; }
+
+  /* ============ live edge ============ */
+  .jcard--live {
+    border-left: 3px solid var(--rec-border);
+    background: linear-gradient(to right, var(--rec-tint), var(--card) 55%);
+    cursor: default;
+  }
+  .jcard--live:hover { transform: none; box-shadow: none; border-color: var(--border); border-left-color: var(--rec-border); }
+  .jcard--live .pt { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .jcard--live .pt .m { font-family: var(--mono); font-size: 11px; color: #8a3629; font-weight: 500; }
+  .jcard--live .sub { font-size: 12px; color: var(--ink-3); margin-top: 4px; line-height: 1.5; }
+  .breath {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--rec); flex: none;
+    animation: breathe 2.2s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%,100% { box-shadow: 0 0 0 3px rgba(176,72,59,.18); }
+    50% { box-shadow: 0 0 0 7px rgba(176,72,59,.05); }
+  }
+  .node--live { background: var(--rec); animation: breathe 2.2s ease-in-out infinite; }
+  .spin {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; border: 1.5px solid var(--border-strong); border-top-color: var(--accent-2);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ============ expanded-in-place evidence panel ============ */
+  .srow--open .jcard { grid-column: 3 / -1; border-color: var(--tint-border); box-shadow: 0 2px 16px rgba(31,111,74,.08); cursor: default; }
+  .srow--open .jcard:hover { transform: none; }
+  .collapse-btn {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+    color: var(--ink-2); background: var(--card-deep);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 9px; cursor: pointer;
+  }
+  .collapse-btn:hover { color: var(--accent-deep); border-color: var(--tint-border); background: var(--tint-2); }
+  .evidence {
+    margin-top: 14px; padding-top: 14px;
+    border-top: 1px solid var(--border-soft);
+    display: grid; grid-template-columns: 1fr 292px; gap: 16px;
+  }
+  .ev-label {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px;
+  }
+  /* frame stage — mini version of the timeline stage */
+  .stage {
+    position: relative;
+    background: #eae5d6; border: 1px solid var(--border);
+    border-radius: 10px; height: 336px;
+    display: flex; align-items: center; justify-content: center;
+    overflow: hidden;
+  }
+  .stage-actions { position: absolute; top: 9px; right: 9px; z-index: 6; display: flex; gap: 5px; }
+  .stage-act {
+    height: 24px; border-radius: 6px; padding: 0 9px;
+    border: 1px solid var(--border-strong); background: var(--card);
+    color: var(--ink-2); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .04em;
+    box-shadow: 0 1px 3px rgba(60,52,32,.08);
+  }
+  .stage-act:hover { color: var(--accent-deep); border-color: var(--tint-border); }
+  .shot {
+    width: 508px; height: 302px;
+    background: #f2f0ec; border: 1px solid #d8d2c2; border-radius: 6px;
+    box-shadow: 0 2px 8px rgba(60,52,32,.10), 0 10px 30px rgba(60,52,32,.10);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  .shot-tb {
+    flex: none; height: 20px; background: #e6e3dc; border-bottom: 1px solid #d5d1c6;
+    display: flex; align-items: center; gap: 4px; padding: 0 8px;
+  }
+  .shot-tb i { width: 6px; height: 6px; border-radius: 50%; background: #cbc6ba; }
+  .shot-tb .t { font-family: var(--mono); font-size: 8.5px; color: #8d887b; margin-left: 6px; }
+  .shot-body { flex: 1; display: flex; overflow: hidden; }
+  .shot-side { width: 96px; flex: none; background: #ecebe6; border-right: 1px solid #dedbd1; padding: 8px 8px 0; }
+  .shot-main { flex: 1; padding: 10px 14px 0; }
+  .ln { height: 5px; border-radius: 2px; background: #d9d5c9; margin-bottom: 6px; }
+  .ln.hd { background: #c4bfae; height: 7px; }
+  .ln.g { background: #b9cfc0; }
+  .ln.b { background: #c6cdd6; }
+  .ln.dim { background: #e3e0d6; }
+  .ocr-box {
+    position: absolute; border: 1px dashed var(--accent-2);
+    background: rgba(42,138,96,.06); border-radius: 3px;
+  }
+  .readout {
+    position: absolute; left: 50%; bottom: 9px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 9px;
+    background: var(--card); border: 1px solid var(--border-strong);
+    border-radius: 9px; padding: 5px 12px 5px 6px;
+    box-shadow: 0 2px 12px rgba(60,52,32,.12);
+    z-index: 5; white-space: nowrap;
+  }
+  .readout .app-ic {
+    width: 24px; height: 24px; border-radius: 6px; flex: none;
+    background: var(--card-deep); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 9.5px; font-weight: 600; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .readout .app-name { font-family: var(--serif); font-size: 13.5px; color: var(--ink); line-height: 1.1; }
+  .readout .meta { font-family: var(--mono); font-size: 9px; color: var(--ink-3); margin-top: 1px; letter-spacing: .03em; }
+  .readout .meta b { color: var(--accent-deep); font-weight: 600; }
+  /* scoped scrubber under the stage */
+  .scrub { margin-top: 10px; }
+  .scrub-rail {
+    position: relative; height: 26px;
+    border: 1px solid var(--border); border-radius: 7px;
+    background: var(--card-deep); overflow: hidden;
+  }
+  .app-group { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--border-strong); }
+  .app-group .ic {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+    width: 15px; height: 15px; border-radius: 4px;
+    background: var(--card); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 7px; font-weight: 600; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cursor { position: absolute; top: 0; height: 100%; width: 2px; background: var(--accent); z-index: 3; }
+  .cursor::after {
+    content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    border: 3px solid transparent; border-top-color: var(--accent);
+  }
+  .scrub-cap {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 9px; color: var(--ink-3);
+    margin-top: 4px; letter-spacing: .04em;
+  }
+  .scrub-cap .g { color: var(--accent-deep); }
+  /* big filmstrip inside the panel */
+  .strip { display: flex; gap: 5px; margin-top: 10px; }
+  .strip .th { flex: 1; height: 38px; cursor: pointer; }
+  .strip .th.sel { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2); }
+  /* transcript side */
+  .turns { display: flex; flex-direction: column; gap: 10px; }
+  .turn {
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 9px; padding: 9px 12px;
+  }
+  .turn-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .turn-who { font-size: 11.5px; font-weight: 600; color: var(--ink-2); }
+  .turn-who.me { color: var(--accent-deep); }
+  .turn-at { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); }
+  .turn-src { margin-left: auto; font-family: var(--mono); font-size: 8.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+  .turn p { font-family: var(--serif); font-size: 12.5px; line-height: 1.5; color: #45412f; }
+  .turns-more { font-family: var(--mono); font-size: 10px; color: var(--accent-deep); cursor: pointer; padding: 2px 0; }
+  .turns-more:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · MORNING → NOON stretch of the spine                     -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 1</b> · One vertical spine — morning to noon · meeting block + mixed densities · Wed Jul 23 2026</p>
+  <div class="window">
+
+    <header class="tb">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="tb-left">
+        <span class="status status--running"><span class="status-dot"></span>Recording</span>
+        <button class="tbtn">Pause</button>
+        <button class="tbtn tbtn--stop"><span class="glyph"></span>Stop</button>
+        <div class="lanes-chips">
+          <span class="src src--live" title="Screen — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="Microphone — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3.5M9 21h6"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="System audio — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+            <span class="st"></span>
+          </span>
+        </div>
+      </div>
+      <div class="tb-center">
+        <button class="tb-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          Search <kbd>⌥Space</kbd>
+        </button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-raw" title="Raw timeline — every frame, no story"><span class="cl">◷</span> raw timeline</button>
+        <button class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="body-split">
+      <aside class="rail">
+        <div class="brand"><span class="leaf">❦</span>Mnema</div>
+        <nav class="nav">
+          <a href="#" class="active">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+            Today
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+            Meetings
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13.5h4M6.5 11.5C6.5 9.5 4 8.8 4 6a4 4 0 1 1 8 0c0 2.8-2.5 3.5-2.5 5.5z"/></svg>
+            Subjects
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+            Triggers
+          </a>
+        </nav>
+        <a href="#" class="rail-newchat"><span class="plus">＋</span> New chat</a>
+        <div class="rail-sec">Today</div>
+        <div class="recents">
+          <a href="#"><span class="t">Digest — Wed Jul 23</span><span class="when">08:00</span></a>
+          <a href="#"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></a>
+          <a href="#"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        </div>
+        <div class="rail-sec">Yesterday</div>
+        <div class="recents recents--grow">
+          <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Figma warm-palette tokens — where saved?</span><span class="when">Tue</span></a>
+        </div>
+        <div class="rail-foot">
+          <div class="line"><span class="engine-dot"></span><span class="stat"><b>Engine on</b> · claude-sonnet-4-5</span></div>
+          <span class="stat dim"><span class="dim">recording · today 5h 12m · 2.1 GB</span></span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-scroll">
+          <div class="col">
+
+            <div class="ov-header">
+              <div class="titles">
+                <h1>Today</h1>
+                <p class="subtitle">The whole day on one spine — story on the left, raw capture riding alongside.</p>
+              </div>
+              <div class="ov-controls">
+                <div class="date-stepper">
+                  <span class="snav">‹</span>
+                  <span class="day-label">Wed, Jul 23</span>
+                  <span class="snav disabled">›</span>
+                </div>
+              </div>
+            </div>
+
+            <section class="spine-river">
+
+              <!-- 8 AM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">8 AM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- trigger run: morning digest -->
+              <div class="srow srow--thin">
+                <div class="when">8:00 AM</div>
+                <div class="vline"><span class="node node--trigger"></span></div>
+                <div class="trigger-run" style="grid-column: 3 / -1;">
+                  <span class="tglyph">◷</span>
+                  <span class="tt"><b>Morning digest</b> delivered — “A maker morning, a paper afternoon.”</span>
+                  <span class="doc">view document ›</span>
+                </div>
+              </div>
+
+              <!-- compact: triage -->
+              <div class="srow srow--compact">
+                <div class="when">8:52 AM</div>
+                <div class="vline"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact" style="grid-column: 3 / -1;">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+                  <span class="row-dur">4m · ▣ 9</span>
+                </div>
+              </div>
+
+              <!-- 9 AM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">9 AM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- heavy: runs ledger -->
+              <div class="srow">
+                <div class="when">9:04 AM <span class="dur">47m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                    <span class="focus-chip focus-deep"><i></i>Deep</span>
+                  </div>
+                  <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                  <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                     queries, the running-state badge, and a cargo test pass that stayed
+                     green. Brief detours into the sqlx migration folder.</p>
+                  <div class="jcard-foot">
+                    <span class="receipt">▣ 214 frames · receipt</span>
+                    <span class="expand-hint">expand evidence ▾</span>
+                  </div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>tm</span></span>
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>gh</span></span>
+                    <span class="th"><span>zd</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk on"></span><span class="tk on"></span><span class="tk"></span><span class="tk"></span><span class="tk on"></span><span class="tk"></span></span></div>
+                  <span class="film-cap">▣ 214 · every 13s</span>
+                </div>
+              </div>
+
+              <!-- compact: HN skim -->
+              <div class="srow srow--compact">
+                <div class="when">9:51 AM</div>
+                <div class="vline"><span class="node" style="background:var(--cat-research);"></span></div>
+                <div class="row-compact" style="grid-column: 3 / -1;">
+                  <span class="swatch" style="background:var(--cat-research);"></span>
+                  <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+                  <span class="row-dur">3m · ▣ 7</span>
+                </div>
+              </div>
+
+              <!-- 10 AM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">10 AM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- meeting block -->
+              <div class="srow">
+                <div class="when">10:00 AM <span class="dur">47m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-meetings);"></span></div>
+                <div class="jcard jcard--meeting" style="--cat:var(--cat-meetings);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meeting</span>
+                    <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                  </div>
+                  <div class="mtitle"><span class="mdot">◉</span><h3>Weekly product sync over Zoom</h3></div>
+                  <p>The unified left rail was approved for v0.2, recap jobs get their own
+                     queue lane, and you took the trigger-gallery wizard as an action item.</p>
+                  <div class="speakers">
+                    <span class="spk"><i>YO</i>You</span>
+                    <span class="spk"><i>PR</i>Priya</span>
+                    <span class="spk"><i>DA</i>Daniel</span>
+                    <span class="spk"><i>MK</i>Mika</span>
+                  </div>
+                  <div class="jcard-foot">
+                    <span class="receipt">◉ 47 min · 4 voices · ▣ 96 frames</span>
+                    <span class="recap-link"><span class="g">◷</span> recap ready ›</span>
+                    <span class="expand-hint">expand evidence ▾</span>
+                  </div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>zm</span></span>
+                    <span class="th"><span>zm</span></span>
+                    <span class="th"><span>nt</span></span>
+                    <span class="th"><span>zm</span></span>
+                    <span class="th"><span>zm</span></span>
+                    <span class="th"><span>sl</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span></span></div>
+                  <span class="film-cap">▣ 96 · mic + sys live</span>
+                </div>
+              </div>
+
+              <!-- heavy: warm-paper mockups -->
+              <div class="srow">
+                <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                    <span class="focus-chip focus-deep"><i></i>Deep</span>
+                  </div>
+                  <h3>Warm-paper mockup pass on the unified shell</h3>
+                  <p>Deep session across Figma and the browser preview — cream surface
+                     tokens, the serif display scale, and the meetings list card anatomy.
+                     Copied hex values back into direction-2-warm-paper.html.</p>
+                  <div class="jcard-foot">
+                    <span class="receipt">▣ 318 frames · receipt</span>
+                    <span class="expand-hint">expand evidence ▾</span>
+                  </div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>fg</span></span>
+                    <span class="th"><span>fg</span></span>
+                    <span class="th"><span>sf</span></span>
+                    <span class="th"><span>fg</span></span>
+                    <span class="th"><span>sf</span></span>
+                    <span class="th"><span>fg</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk on"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <span class="film-cap">▣ 318 · every 13s</span>
+                </div>
+              </div>
+
+              <!-- 12 PM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">12 PM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- away gap -->
+              <div class="srow gap-note-row">
+                <div class="when"></div>
+                <div class="vline"></div>
+                <div class="gap-txt" style="grid-column: 3 / -1;"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+              </div>
+
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · AFTERNOON stretch, live recording edge at bottom        -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 2</b> · One vertical spine — afternoon, live edge at the bottom · Wed Jul 23 2026 · 2:47 PM</p>
+  <div class="window">
+
+    <header class="tb">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="tb-left">
+        <span class="status status--running"><span class="status-dot"></span>Recording</span>
+        <button class="tbtn">Pause</button>
+        <button class="tbtn tbtn--stop"><span class="glyph"></span>Stop</button>
+        <div class="lanes-chips">
+          <span class="src src--live" title="Screen — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="Microphone — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3.5M9 21h6"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="System audio — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+            <span class="st"></span>
+          </span>
+        </div>
+      </div>
+      <div class="tb-center">
+        <button class="tb-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          Search <kbd>⌥Space</kbd>
+        </button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-raw" title="Raw timeline — every frame, no story"><span class="cl">◷</span> raw timeline</button>
+        <button class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="body-split">
+      <aside class="rail">
+        <div class="brand"><span class="leaf">❦</span>Mnema</div>
+        <nav class="nav">
+          <a href="#" class="active">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+            Today
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+            Meetings
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13.5h4M6.5 11.5C6.5 9.5 4 8.8 4 6a4 4 0 1 1 8 0c0 2.8-2.5 3.5-2.5 5.5z"/></svg>
+            Subjects
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+            Triggers
+          </a>
+        </nav>
+        <a href="#" class="rail-newchat"><span class="plus">＋</span> New chat</a>
+        <div class="rail-sec">Today</div>
+        <div class="recents">
+          <a href="#"><span class="t">Digest — Wed Jul 23</span><span class="when">08:00</span></a>
+          <a href="#"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></a>
+          <a href="#"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        </div>
+        <div class="rail-sec">Yesterday</div>
+        <div class="recents recents--grow">
+          <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Figma warm-palette tokens — where saved?</span><span class="when">Tue</span></a>
+        </div>
+        <div class="rail-foot">
+          <div class="line"><span class="engine-dot"></span><span class="stat"><b>Engine on</b> · claude-sonnet-4-5</span></div>
+          <span class="stat dim"><span class="dim">recording · today 5h 12m · 2.1 GB</span></span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-scroll">
+          <div class="col">
+
+            <div class="ov-header">
+              <div class="titles">
+                <h1>Today</h1>
+                <p class="subtitle">The whole day on one spine — story on the left, raw capture riding alongside.</p>
+              </div>
+              <div class="ov-controls">
+                <div class="date-stepper">
+                  <span class="snav">‹</span>
+                  <span class="day-label">Wed, Jul 23</span>
+                  <span class="snav disabled">›</span>
+                </div>
+              </div>
+            </div>
+
+            <section class="spine-river">
+
+              <!-- 1 PM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">1 PM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- inbox sweep -->
+              <div class="srow">
+                <div class="when">1:08 PM <span class="dur">26m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-communication);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-communication);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-communication);"></span>Communication</span>
+                    <span class="focus-chip focus-scattered"><i></i>Scattered</span>
+                  </div>
+                  <h3>Inbox sweep and licensing follow-ups</h3>
+                  <p>Batched replies in Mail and the Polar dashboard — the webhook
+                     signature thread got its closing message, and two license-reset
+                     requests were approved.</p>
+                  <div class="jcard-foot">
+                    <span class="receipt">▣ 61 frames · receipt</span>
+                    <span class="expand-hint">expand evidence ▾</span>
+                  </div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>ml</span></span>
+                    <span class="th"><span>sf</span></span>
+                    <span class="th"><span>ml</span></span>
+                    <span class="th"><span>sf</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <span class="film-cap">▣ 61 · silent block</span>
+                </div>
+              </div>
+
+              <!-- retention GC -->
+              <div class="srow">
+                <div class="when">1:34 PM <span class="dur">58m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                    <span class="focus-chip focus-deep"><i></i>Deep</span>
+                  </div>
+                  <h3>Retention GC index migration and its regression test</h3>
+                  <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                     new speaker_turns index, with a test pinning the hoisted GC. One long
+                     cargo check against the desktop manifest to finish.</p>
+                  <div class="jcard-foot">
+                    <span class="receipt">▣ 247 frames · receipt</span>
+                    <span class="expand-hint">expand evidence ▾</span>
+                  </div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>tm</span></span>
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>sl</span></span>
+                    <span class="th"><span>zd</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk on"></span><span class="tk on"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk on"></span><span class="tk on"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <span class="film-cap">▣ 247 · huddle 2:04–2:11</span>
+                </div>
+              </div>
+
+              <!-- 2 PM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">2 PM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- trigger run: focus check -->
+              <div class="srow srow--thin">
+                <div class="when">2:30 PM</div>
+                <div class="vline"><span class="node node--trigger"></span></div>
+                <div class="trigger-run" style="grid-column: 3 / -1;">
+                  <span class="tglyph">◷</span>
+                  <span class="tt"><b>Focus check</b> ran — deep stretch intact, no nudge sent.</span>
+                  <span class="doc">view run ›</span>
+                </div>
+              </div>
+
+              <!-- compact: PR review -->
+              <div class="srow srow--compact">
+                <div class="when">2:32 PM</div>
+                <div class="vline"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact" style="grid-column: 3 / -1;">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Filed review comments on the triggers PR</span>
+                  <span class="row-dur">4m · ▣ 11</span>
+                </div>
+              </div>
+
+              <!-- live edge -->
+              <div class="srow">
+                <div class="when">2:36 PM <span class="dur">now</span></div>
+                <div class="vline"><span class="node node--live"></span></div>
+                <div class="jcard jcard--live">
+                  <div class="pt"><span class="breath"></span>recording <span class="m">· 2:47 PM</span> <span class="spin" style="margin-left:6px;"></span> summarizing this window…</div>
+                  <div class="sub">The story trails live capture by up to 30 minutes — the frames
+                       below are already on the spine as they land.</div>
+                </div>
+                <div class="film">
+                  <div class="thumbs">
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>zd</span></span>
+                    <span class="th"><span>sf</span></span>
+                  </div>
+                  <div class="av av--mic"><span class="lbl">mic</span><span class="tks"><span class="tk"></span><span class="tk"></span><span class="tk on"></span></span></div>
+                  <div class="av av--sys"><span class="lbl">sys</span><span class="tks"><span class="tk on"></span><span class="tk"></span><span class="tk"></span></span></div>
+                  <span class="film-cap">▣ 42 so far · live</span>
+                </div>
+              </div>
+
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 3 · SAME AFTERNOON — one block expanded in place            -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 3</b> · One vertical spine — 1:34 PM block expanded in place into its evidence panel · Wed Jul 23 2026</p>
+  <div class="window">
+
+    <header class="tb">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="tb-left">
+        <span class="status status--running"><span class="status-dot"></span>Recording</span>
+        <button class="tbtn">Pause</button>
+        <button class="tbtn tbtn--stop"><span class="glyph"></span>Stop</button>
+        <div class="lanes-chips">
+          <span class="src src--live" title="Screen — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="Microphone — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5v3.5M9 21h6"/></svg>
+            <span class="st"></span>
+          </span>
+          <span class="src src--live" title="System audio — recording">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6.5 9H3v6h3.5L11 19z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/></svg>
+            <span class="st"></span>
+          </span>
+        </div>
+      </div>
+      <div class="tb-center">
+        <button class="tb-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          Search <kbd>⌥Space</kbd>
+        </button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-raw" title="Raw timeline — every frame, no story"><span class="cl">◷</span> raw timeline</button>
+        <button class="icon-btn" aria-label="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="body-split">
+      <aside class="rail">
+        <div class="brand"><span class="leaf">❦</span>Mnema</div>
+        <nav class="nav">
+          <a href="#" class="active">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.5"/></svg>
+            Today
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+            Meetings
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13.5h4M6.5 11.5C6.5 9.5 4 8.8 4 6a4 4 0 1 1 8 0c0 2.8-2.5 3.5-2.5 5.5z"/></svg>
+            Subjects
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+            Triggers
+          </a>
+        </nav>
+        <a href="#" class="rail-newchat"><span class="plus">＋</span> New chat</a>
+        <div class="rail-sec">Today</div>
+        <div class="recents">
+          <a href="#"><span class="t">Digest — Wed Jul 23</span><span class="when">08:00</span></a>
+          <a href="#"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></a>
+          <a href="#"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        </div>
+        <div class="rail-sec">Yesterday</div>
+        <div class="recents recents--grow">
+          <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">Figma warm-palette tokens — where saved?</span><span class="when">Tue</span></a>
+        </div>
+        <div class="rail-foot">
+          <div class="line"><span class="engine-dot"></span><span class="stat"><b>Engine on</b> · claude-sonnet-4-5</span></div>
+          <span class="stat dim"><span class="dim">recording · today 5h 12m · 2.1 GB</span></span>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-scroll">
+          <div class="col">
+
+            <div class="ov-header">
+              <div class="titles">
+                <h1>Today</h1>
+                <p class="subtitle">The whole day on one spine — story on the left, raw capture riding alongside.</p>
+              </div>
+              <div class="ov-controls">
+                <div class="date-stepper">
+                  <span class="snav">‹</span>
+                  <span class="day-label">Wed, Jul 23</span>
+                  <span class="snav disabled">›</span>
+                </div>
+              </div>
+            </div>
+
+            <section class="spine-river">
+
+              <!-- 1 PM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">1 PM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- inbox sweep, collapsed to compact while a sibling is open -->
+              <div class="srow srow--compact">
+                <div class="when">1:08 PM</div>
+                <div class="vline"><span class="node" style="background:var(--cat-communication);"></span></div>
+                <div class="row-compact" style="grid-column: 3 / -1;">
+                  <span class="swatch" style="background:var(--cat-communication);"></span>
+                  <span class="row-title">Inbox sweep and licensing follow-ups</span>
+                  <span class="row-dur">26m · ▣ 61</span>
+                </div>
+              </div>
+
+              <!-- retention GC — EXPANDED IN PLACE -->
+              <div class="srow srow--open">
+                <div class="when">1:34 PM <span class="dur">58m</span></div>
+                <div class="vline"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jcard-top">
+                    <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                    <span class="focus-chip focus-deep"><i></i>Deep</span>
+                    <span class="collapse-btn">collapse ▴</span>
+                  </div>
+                  <h3>Retention GC index migration and its regression test</h3>
+                  <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                     new speaker_turns index, with a test pinning the hoisted GC.</p>
+
+                  <div class="evidence">
+                    <!-- left: frame stage + scoped scrubber + filmstrip -->
+                    <div>
+                      <p class="ev-label">Evidence · 1:34 PM – 2:32 PM · ▣ 247 frames</p>
+                      <div class="stage">
+                        <div class="stage-actions">
+                          <span class="stage-act">▶ play at 2:07 PM</span>
+                          <span class="stage-act">ocr on</span>
+                        </div>
+                        <div class="shot">
+                          <div class="shot-tb"><i></i><i></i><i></i><span class="t">retention.rs — mnema — Zed</span></div>
+                          <div class="shot-body">
+                            <div class="shot-side">
+                              <div class="ln hd" style="width:70%"></div>
+                              <div class="ln" style="width:88%"></div>
+                              <div class="ln dim" style="width:64%"></div>
+                              <div class="ln" style="width:74%"></div>
+                              <div class="ln dim" style="width:58%"></div>
+                              <div class="ln dim" style="width:80%"></div>
+                              <div class="ln" style="width:60%"></div>
+                              <div class="ln dim" style="width:72%"></div>
+                              <div class="ln dim" style="width:54%"></div>
+                              <div class="ln" style="width:68%"></div>
+                            </div>
+                            <div class="shot-main">
+                              <div class="ln g" style="width:34%"></div>
+                              <div class="ln" style="width:78%"></div>
+                              <div class="ln" style="width:64%"></div>
+                              <div class="ln b" style="width:52%"></div>
+                              <div class="ln" style="width:83%"></div>
+                              <div class="ln dim" style="width:41%"></div>
+                              <div class="ln" style="width:70%"></div>
+                              <div class="ln b" style="width:57%"></div>
+                              <div class="ln" style="width:76%"></div>
+                              <div class="ln dim" style="width:30%"></div>
+                              <div class="ln g" style="width:46%"></div>
+                              <div class="ln" style="width:68%"></div>
+                              <div class="ln" style="width:81%"></div>
+                              <div class="ln b" style="width:38%"></div>
+                              <div class="ln dim" style="width:55%"></div>
+                              <div class="ln" style="width:73%"></div>
+                            </div>
+                          </div>
+                          <span class="ocr-box" style="left:24%; top:14%; width:32%; height:5%"></span>
+                          <span class="ocr-box" style="left:24%; top:33%; width:44%; height:5%"></span>
+                          <span class="ocr-box" style="left:24%; top:58%; width:26%; height:5%"></span>
+                        </div>
+                        <div class="readout">
+                          <span class="app-ic">zd</span>
+                          <span>
+                            <span class="app-name">Zed</span>
+                            <div class="meta"><b>2:07:41 PM</b> · WED JUL 23 · frame 6,201 of 9,412</div>
+                          </span>
+                        </div>
+                      </div>
+                      <div class="scrub">
+                        <div class="scrub-rail">
+                          <div class="app-group" style="left:0%;  width:44%"><span class="ic">zd</span></div>
+                          <div class="app-group" style="left:44%; width:9%"><span class="ic">tm</span></div>
+                          <div class="app-group" style="left:53%; width:12%"><span class="ic">sl</span></div>
+                          <div class="app-group" style="left:65%; width:35%"><span class="ic">zd</span></div>
+                          <div class="cursor" style="left:57%"></div>
+                        </div>
+                        <div class="scrub-cap">
+                          <span>1:34 PM</span>
+                          <span><span class="g">scoped to this block</span> · 2:32 PM</span>
+                        </div>
+                      </div>
+                      <div class="strip">
+                        <span class="th"><span>zd</span></span>
+                        <span class="th"><span>zd</span></span>
+                        <span class="th"><span>tm</span></span>
+                        <span class="th sel"><span>sl</span></span>
+                        <span class="th"><span>zd</span></span>
+                        <span class="th"><span>zd</span></span>
+                      </div>
+                    </div>
+
+                    <!-- right: heard here — transcript turns -->
+                    <div>
+                      <p class="ev-label">Heard here · 2:04–2:11 PM</p>
+                      <div class="turns">
+                        <div class="turn">
+                          <div class="turn-head"><span class="turn-who me">You</span><span class="turn-at">2:04:52 PM</span><span class="turn-src">mic</span></div>
+                          <p>The orphan-cluster delete was scanning speaker turns on every
+                             batch — that's the whole lock storm right there.</p>
+                        </div>
+                        <div class="turn">
+                          <div class="turn-head"><span class="turn-who">Priya</span><span class="turn-at">2:05:18 PM</span><span class="turn-src">sys</span></div>
+                          <p>So the index lands in migration 0049 and the GC gets hoisted out
+                             of the batch loop? Ship it with the regression test.</p>
+                        </div>
+                        <div class="turn">
+                          <div class="turn-head"><span class="turn-who me">You</span><span class="turn-at">2:06:03 PM</span><span class="turn-src">mic</span></div>
+                          <p>Yes — one pass after the batches, and the writers stop starving.
+                             I'll pin it with the eight-second sample from the storm.</p>
+                        </div>
+                        <div class="turns-more">all 14 turns ›</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 2 PM ruler -->
+              <div class="srow srow--hour">
+                <div class="hmark">2 PM</div>
+                <div class="vline"><span class="tick"></span></div>
+                <div class="hrule"></div>
+              </div>
+
+              <!-- trigger run pushed down -->
+              <div class="srow srow--thin">
+                <div class="when">2:30 PM</div>
+                <div class="vline"><span class="node node--trigger"></span></div>
+                <div class="trigger-run" style="grid-column: 3 / -1;">
+                  <span class="tglyph">◷</span>
+                  <span class="tt"><b>Focus check</b> ran — deep stretch intact, no nudge sent.</span>
+                  <span class="doc">view run ›</span>
+                </div>
+              </div>
+
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

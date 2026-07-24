@@ -423,6 +423,14 @@ pub(crate) async fn record_ledger(
     }
 }
 
+/// The firing's stable conversation id: trigger id + occurrence instant, so
+/// one occurrence maps to one conversation even across a re-fire attempt.
+/// `pub(crate)` because the meeting ledger stores it at claim time to resolve
+/// the eventual outcome row (the meetings surface, Slice 1).
+pub(crate) fn firing_conversation_id(trigger_id: &str, occurrence_ms: i64) -> String {
+    format!("trigger-{trigger_id}-{occurrence_ms}")
+}
+
 /// Run one Firing end-to-end: persist the origin-tagged conversation, run the
 /// sealed-toolbox turn through the shared Ask AI driver with retries, write
 /// exactly ONE ledger row for the outcome, and deliver the notification on a
@@ -437,9 +445,7 @@ pub(crate) async fn run_trigger_fire(
 ) {
     mark_trigger_running(&trigger.id);
     let fired_at = now_ms();
-    // The firing's stable conversation id: trigger id + occurrence instant, so
-    // one occurrence maps to one conversation even across a re-fire attempt.
-    let conversation_id = format!("trigger-{}-{}", trigger.id, occurrence_ms);
+    let conversation_id = firing_conversation_id(&trigger.id, occurrence_ms);
     let title = run_title(&trigger.name, occurrence_ms, offset_minutes);
 
     if let Err(error) = infra

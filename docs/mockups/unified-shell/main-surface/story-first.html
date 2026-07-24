@@ -1,0 +1,1399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — Main Surface · Story-First, Evidence-on-Demand · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction-2-warm-paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --rec: #b0483b;
+    --rec-tint: #f7e7e1;
+    --rec-border: #e6c4b8;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+    --cat-creating: #2a8a60;
+    --cat-communication: #3a6ea8;
+    --cat-meetings: #8a5a2a;
+    --cat-research: #6d5a8a;
+    --cat-organizing: #9a6b1f;
+    --cat-uncat: #9a927e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body { font-family: var(--sans); color: var(--ink); padding: 72px 48px 120px; -webkit-font-smoothing: antialiased; }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden; display: flex; position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail — real InsightsRail affordances, slimmed nav ============ */
+  .rail {
+    width: 240px; flex: none;
+    background: var(--rail-bg);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .rail-scroll { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 44px 16px 0; }
+  .rail-header { display: flex; justify-content: flex-end; align-items: center; height: 24px; margin-bottom: 4px; }
+  .rail-collapse {
+    width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-3); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .rail-collapse:hover { color: var(--accent); background: #ece8da; }
+  .rail-collapse svg { width: 15px; height: 15px; }
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail-nav-item {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--ink-2); font-family: var(--sans);
+    font-size: 13px; text-align: left; cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  .rail-nav-item svg { flex: none; width: 15px; height: 15px; stroke: currentColor; opacity: .85; }
+  .rail-nav-item:hover { color: var(--ink); background: #ece8da; }
+  .rail-nav-item.active { color: var(--accent); font-weight: 600; background: var(--tint); }
+  .rail-nav-item.active svg { opacity: 1; }
+  .rail-nav-item.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  .rail-newchat {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    width: 100%; height: 28px; margin-top: 16px; padding: 0 8px;
+    border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-2); font-family: var(--sans); font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .rail-newchat .plus { flex: none; width: 15px; display: inline-flex; justify-content: center; font-size: 14px; color: var(--ink-3); }
+  .rail-newchat:hover { color: var(--accent); background: #ece8da; }
+  .origin-filter {
+    display: flex; align-items: center; gap: 2px; padding: 2px; margin-top: 14px;
+    border: 1px solid var(--border); border-radius: 7px; background: var(--rail-bg);
+  }
+  .origin-filter button {
+    flex: 1 1 0; height: 20px; font-family: var(--sans); font-size: 10.5px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 5px; background: transparent;
+    color: var(--ink-2); cursor: pointer; text-transform: lowercase;
+  }
+  .origin-filter button:hover { color: var(--ink); }
+  .origin-filter button.active { background: var(--tint); border-color: var(--tint-border); color: var(--accent-deep); }
+  .rail-search { display: flex; align-items: center; gap: 8px; height: 28px; margin-top: 8px; padding: 0 8px; border-radius: 6px; }
+  .rail-search svg { flex: none; width: 13px; height: 13px; stroke: var(--ink-3); }
+  .rail-search .ph { font-size: 12.5px; color: var(--ink-3); }
+  .rail-history { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding-bottom: 16px; }
+  .rail-group {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); margin-top: 14px; padding: 11px 8px 8px; border-top: 1px solid var(--border-soft);
+  }
+  .rail-group:first-child { border-top: none; margin-top: 12px; padding-top: 0; }
+  .rail-chat-row { position: relative; display: flex; align-items: center; padding: 3px 8px; border-radius: 5px; cursor: pointer; }
+  .rail-chat-row:hover { background: #ece8da; }
+  .rail-chat { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .rail-chat .row1 { display: flex; align-items: center; gap: 8px; height: 24px; min-width: 0; }
+  .rail-chat .t {
+    flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .rail-chat-row:hover .t { color: var(--ink); }
+  .rail-chat .when { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); flex: none; }
+  .origin-badge {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 4px;
+    margin-bottom: 1px; font-family: var(--mono); font-size: 9px; letter-spacing: .03em; line-height: 14px;
+    padding: 0 5px; border-radius: 4px;
+    border: 1px solid var(--tint-border); background: var(--tint-2); color: var(--accent-deep);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  .origin-badge svg { width: 9px; height: 9px; stroke: currentColor; flex: none; }
+  .rail-foot {
+    flex: none; border-top: 1px solid var(--border);
+    padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 4px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .rail-foot .line { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .rail-foot .dot { width: 5px; height: 5px; border-radius: 999px; background: var(--accent-2); flex: none; box-shadow: 0 0 0 2px rgba(42,138,96,.14); }
+  .rail-foot .rec-dot { width: 5px; height: 5px; border-radius: 999px; background: var(--rec); flex: none; box-shadow: 0 0 0 2px rgba(176,72,59,.14); }
+  .rail-foot .sep { color: var(--ink-3); }
+  .rail-foot .dim { color: var(--ink-3); font-size: 10px; }
+  .rail-resizer { width: 1px; flex: none; background: var(--border); position: relative; cursor: col-resize; }
+  .rail-resizer::after {
+    content: ""; position: absolute; top: 50%; left: -1.5px; width: 4px; height: 36px;
+    border-radius: 2px; background: var(--border-strong); transform: translateY(-50%); opacity: .55;
+  }
+
+  /* ============ main pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .main-scroll { flex: 1; overflow: hidden; padding: 46px 0 0; }
+  .col { max-width: 860px; margin: 0 auto; padding: 0 40px; }
+
+  /* ============ front page — the lede above the river ============ */
+  .front { padding-top: 6px; }
+  .front-date { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
+  .front-greet { font-family: var(--serif); font-size: 33px; font-weight: 400; letter-spacing: -.01em; color: var(--ink); margin-top: 10px; }
+  .front-digest { font-family: var(--serif); font-size: 15.5px; line-height: 1.6; color: #45412f; margin-top: 8px; max-width: 640px; }
+  .front-meets { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .meet-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 13px 4px 10px; cursor: pointer;
+    transition: border-color .12s, color .12s;
+  }
+  .meet-chip:hover { border-color: var(--tint-border); color: var(--accent-deep); }
+  .meet-chip .cm { font-family: var(--mono); font-size: 11px; color: var(--cat-meetings); }
+  .meet-chip .tm { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+  .meet-chip--ready { border-color: var(--tint-border); background: var(--tint-2); color: var(--accent-deep); }
+  .meet-chip--ready .cm { color: var(--accent); }
+  .meet-chip--ready b { font-weight: 600; }
+
+  /* composer — the one front door (real Chat composer idiom) */
+  .composer {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.04), 0 6px 24px rgba(60,52,32,.05);
+    margin-top: 18px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.10), 0 6px 24px rgba(60,52,32,.05); }
+  .composer textarea {
+    width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+    font-family: var(--sans); font-size: 14.5px; color: var(--ink);
+    padding: 14px 18px 0; height: 46px; line-height: 1.5;
+  }
+  .composer textarea::placeholder { color: var(--ink-3); }
+  .composer-bar { display: flex; align-items: center; gap: 12px; padding: 6px 9px 9px 13px; }
+  .model-pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    border: 1px solid var(--border); background: var(--card-deep);
+    border-radius: 6px; padding: 4px 9px; cursor: pointer;
+  }
+  .model-pick:hover { border-color: var(--border-strong); color: var(--ink); }
+  .model-pick .caret { font-size: 8px; color: var(--ink-3); }
+  .composer-send {
+    margin-left: auto; width: 29px; height: 29px; border-radius: 9px; border: 0;
+    background: var(--accent); color: #f6faf6; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .composer-send:hover { background: var(--accent-deep); }
+  .composer-send:disabled { background: var(--border-strong); cursor: default; }
+  .front-chips { display: flex; gap: 9px; margin-top: 12px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--sans); font-size: 12.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 15px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .chip:hover { border-color: var(--accent-2); color: var(--accent-deep); background: var(--tint-2); }
+  .chip .cm { font-family: var(--mono); font-size: 10.5px; color: var(--accent); margin-right: 7px; }
+
+  /* ============ journal river (real JournalRiver anatomy) ============ */
+  .river { margin-top: 30px; display: flex; flex-direction: column; padding-bottom: 72px; }
+  .day-rule {
+    display: flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); padding: 4px 0 6px; margin: 2px 0 8px;
+  }
+  .day-rule:not(:first-child) { margin-top: 18px; }
+  .day-rule .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .slot, .gap-note {
+    display: grid;
+    grid-template-columns: 68px 20px 1fr;
+    gap: 0 12px;
+  }
+  .slot + .slot, .gap-note + .slot, .slot + .gap-note { margin-top: 12px; }
+  .slot .when {
+    padding-top: 16px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .slot .when .dur { display: block; font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+  .spine { position: relative; }
+  .spine::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: -12px;
+    width: 1px; background: var(--border);
+  }
+  .river > .slot:last-child .spine::before { bottom: 12px; }
+  .spine .node {
+    position: absolute; left: 50%; top: 19px; transform: translate(-50%, 0);
+    width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--shell-bg);
+  }
+  .spine .node--pending { background: var(--ink-3); }
+  .gap-note { margin-top: 12px; }
+  .gap-note .spine::before { border-left: 1px dashed var(--border); background: transparent; width: 0; }
+  .gap-note .txt { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--ink-3); padding: 5px 0; }
+  .gap-note .txt .m { font-family: var(--mono); font-style: normal; font-size: 11px; }
+
+  .jcard {
+    position: relative; display: block; width: 100%; text-align: left;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--cat, var(--border-strong));
+    border-radius: 10px; padding: 13px 16px 11px;
+    cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .jcard:hover { border-color: var(--tint-border); box-shadow: 0 2px 12px rgba(31,111,74,.07); transform: translateY(-1px); }
+  .jcard-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .cat-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 600; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2px 9px;
+  }
+  .cat-chip .swatch { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .focus-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-3); }
+  .focus-chip i { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+  .focus-deep i { background: var(--accent-2); }
+  .focus-mixed i { background: #c9a24a; }
+  .focus-scattered i { background: #c07a5a; }
+  .jcard h3 { font-family: var(--serif); font-size: 16.5px; font-weight: 500; letter-spacing: -.005em; color: var(--ink); }
+  .jcard p { font-family: var(--serif); font-size: 13.5px; line-height: 1.55; color: #55503e; margin-top: 4px; }
+  .jcard-foot { margin-top: 9px; display: flex; align-items: center; gap: 14px; }
+  .receipt { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--ink-3); }
+  .jcard:hover .receipt { color: var(--accent-deep); }
+
+  /* recap-ready ◉ row — inline trigger-run door on a meeting card */
+  .recap-row {
+    display: flex; align-items: center; gap: 9px;
+    margin-top: 10px; padding: 7px 12px;
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 8px; font-size: 12.5px; color: var(--accent-deep); cursor: pointer;
+    transition: background .12s;
+  }
+  .recap-row:hover { background: var(--tint); }
+  .recap-row .cm { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .recap-row b { font-weight: 600; }
+  .recap-row .meta { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .recap-row .open { margin-left: auto; font-size: 12px; font-weight: 600; }
+
+  .slot--compact .when { padding-top: 7px; }
+  .slot--compact .node { top: 10px; }
+  .row-compact {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .row-compact:hover { background: #f3efe2; }
+  .row-compact .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .row-compact .row-title { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-compact:hover .row-title { color: var(--ink); }
+
+  .jcard--pending { border-left: 3px solid var(--border-strong); background: var(--card-deep); cursor: default; }
+  .jcard--pending:hover { transform: none; box-shadow: none; border-color: var(--border); border-left-color: var(--border-strong); }
+  .jcard--pending .pt { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .jcard--pending .sub { font-size: 12px; color: var(--ink-3); margin-top: 4px; line-height: 1.5; }
+  .spin {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; border: 1.5px solid var(--border-strong); border-top-color: var(--accent-2);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* frame-2 scroll simulation */
+  .col--scrolled { margin-top: -940px; }
+
+  /* ============ receipt drawer — evidence on demand ============ */
+  .scrim { position: absolute; inset: 0; background: rgba(43,42,36,.34); z-index: 8; }
+  .drawer {
+    position: absolute; left: 50%; bottom: 0; transform: translateX(-50%);
+    width: 1280px; height: 800px; z-index: 9;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong); border-bottom: 0;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -6px 60px rgba(43,42,36,.30);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .drawer-head {
+    flex: none; display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px 13px; border-bottom: 1px solid var(--border);
+  }
+  .drawer-titles { flex: 1; min-width: 0; }
+  .drawer-eyebrow {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .drawer-eyebrow .g { color: var(--accent); }
+  .drawer-title { font-family: var(--serif); font-size: 21px; font-weight: 500; color: var(--ink); margin-top: 3px; }
+  .drawer-span { font-family: var(--mono); font-size: 11px; color: var(--ink-2); margin-top: 4px; letter-spacing: .03em; }
+  .drawer-span .sw { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--cat-creating); margin-right: 6px; vertical-align: 0; }
+  .drawer-span .dim { color: var(--ink-3); }
+  .drawer-close {
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
+    border: 1px solid var(--border); background: var(--card);
+    color: var(--ink-2); cursor: pointer; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .drawer-close:hover { color: var(--ink); border-color: var(--border-strong); }
+  .drawer-body { flex: 1; display: flex; gap: 16px; padding: 16px 24px 14px; min-height: 0; }
+  .dr-left { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* frame stage (real Dashboard stage anatomy, scoped) */
+  .dr-stage {
+    flex: 1; position: relative;
+    background: #eae5d6; border: 1px solid var(--border); border-radius: 12px;
+    display: flex; align-items: center; justify-content: center; overflow: hidden;
+  }
+  .stage-actions { position: absolute; top: 12px; right: 12px; z-index: 6; display: flex; gap: 6px; }
+  .stage-act {
+    width: 30px; height: 26px; border-radius: 7px;
+    border: 1px solid var(--border-strong); background: var(--card);
+    color: var(--ink-2); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 1px 3px rgba(60,52,32,.08);
+    transition: color .12s, border-color .12s;
+  }
+  .stage-act:hover { color: var(--accent-deep); border-color: var(--tint-border); }
+  .stage-act svg { width: 13px; height: 13px; stroke: currentColor; }
+  .shot {
+    width: 780px; height: 428px;
+    background: #f2f0ec; border: 1px solid #d8d2c2; border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(60,52,32,.10), 0 14px 44px rgba(60,52,32,.12);
+    overflow: hidden; position: relative;
+    display: flex; flex-direction: column;
+  }
+  .shot-tb {
+    flex: none; height: 28px; background: #e6e3dc; border-bottom: 1px solid #d5d1c6;
+    display: flex; align-items: center; gap: 6px; padding: 0 12px;
+  }
+  .shot-tb i { width: 9px; height: 9px; border-radius: 50%; background: #cbc6ba; }
+  .shot-tb .t { font-family: var(--mono); font-size: 10px; color: #8d887b; margin-left: 8px; }
+  .shot-body { flex: 1; display: flex; overflow: hidden; }
+  .shot-side { width: 150px; flex: none; background: #ecebe6; border-right: 1px solid #dedbd1; padding: 12px 12px 0; }
+  .ln { height: 8px; border-radius: 3px; background: #d9d5c9; margin-bottom: 10px; }
+  .ln.hd { background: #c4bfae; height: 11px; }
+  .ln.g { background: #b9cfc0; }
+  .ln.dim { background: #e3e0d6; }
+  .canvas { flex: 1; background: #edecea; position: relative; }
+  .art {
+    position: absolute; border-radius: 6px;
+    background: #f8f7f4; border: 1px solid #d8d4c8;
+    box-shadow: 0 2px 8px rgba(60,52,32,.07);
+    padding: 4.5% 3.5% 0;
+  }
+  .art--sel { outline: 1.5px solid #7fa9d8; outline-offset: 1px; }
+  .art .hero-h { height: 15px; border-radius: 3px; background: #b8b2a0; margin-bottom: 9px; }
+  .art .hero-h.two { width: 62%; }
+  .art .hero-s { height: 8px; border-radius: 3px; background: #d9d5c9; margin-bottom: 8px; }
+  .art .hero-btn { width: 88px; height: 20px; border-radius: 5px; background: #9fc0ac; margin-top: 4px; }
+  .ocr-box {
+    position: absolute; border: 1px dashed var(--accent-2);
+    background: rgba(42,138,96,.06); border-radius: 3px;
+  }
+  .ocr-hint {
+    position: absolute; left: 12px; bottom: 10px;
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    background: rgba(255,253,247,.9); border: 1px solid var(--border);
+    border-radius: 5px; padding: 2px 8px;
+  }
+  .readout {
+    position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 11px;
+    background: var(--card); border: 1px solid var(--border-strong);
+    border-radius: 11px; padding: 7px 15px 7px 8px;
+    box-shadow: 0 2px 12px rgba(60,52,32,.12); z-index: 5;
+  }
+  .readout .app-ic {
+    width: 28px; height: 28px; border-radius: 8px; flex: none;
+    background: var(--card-deep); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .readout .app-name { font-family: var(--serif); font-size: 15px; color: var(--ink); line-height: 1.1; }
+  .readout .meta { font-family: var(--mono); font-size: 10px; color: var(--ink-3); margin-top: 2px; letter-spacing: .03em; }
+  .readout .meta b { color: var(--accent-deep); font-weight: 600; }
+
+  /* scoped scrubber + audio lanes (real Dashboard rail anatomy, this span only) */
+  .scrub-wrap { flex: none; margin-top: 10px; }
+  .scrub {
+    position: relative; height: 36px;
+    border: 1px solid var(--border); border-bottom: 0;
+    border-radius: 10px 10px 0 0;
+    background:
+      repeating-linear-gradient(to right, transparent 0 5px, #d9d2bf 5px 6px, transparent 6px 7px) 0 100% / 100% 14px no-repeat,
+      var(--card-deep);
+    overflow: hidden;
+  }
+  .app-group { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--border-strong); }
+  .app-group .ic {
+    position: absolute; top: 4px; left: 50%; transform: translateX(-50%);
+    width: 17px; height: 17px; border-radius: 5px;
+    background: var(--card); border: 1px solid var(--border);
+    font-family: var(--mono); font-size: 8px; font-weight: 600; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .cursor { position: absolute; top: 0; height: 100%; width: 2px; background: var(--accent); z-index: 3; }
+  .cursor::after {
+    content: ""; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    border: 4px solid transparent; border-top-color: var(--accent);
+  }
+  .lanes {
+    display: flex; align-items: stretch;
+    border: 1px solid var(--border); border-radius: 0 0 10px 10px;
+    background: var(--card-deep);
+  }
+  .lane-labels {
+    flex: none; width: 34px; display: flex; flex-direction: column; justify-content: space-around;
+    border-right: 1px solid var(--border-soft); padding: 3px 0;
+  }
+  .lane-labels span {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: .08em;
+    color: var(--ink-3); text-align: center; text-transform: uppercase;
+  }
+  .lane-rows { flex: 1; display: flex; flex-direction: column; gap: 4px; padding: 5px 0; }
+  .lane-row { position: relative; height: 9px; }
+  .abar { position: absolute; top: 0; height: 100%; border-radius: 3px; }
+  .abar--mic { background: #bcd8c6; border: 1px solid #9ec4ab; }
+  .abar--sys { background: #ead9b4; border: 1px solid #d4bd8b; }
+  .scrub-caption {
+    display: flex; justify-content: space-between;
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    margin-top: 6px; letter-spacing: .04em;
+  }
+  .scrub-caption .g { color: var(--accent-deep); }
+
+  /* scoped transcript strip */
+  .dr-right {
+    flex: none; width: 306px; display: flex; flex-direction: column;
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    overflow: hidden;
+  }
+  .tr-head {
+    flex: none; font-family: var(--mono); font-size: 10px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding: 13px 16px 10px; border-bottom: 1px solid var(--border-soft);
+  }
+  .tr-scroll { flex: 1; overflow: hidden; padding: 4px 0; }
+  .tr-item { padding: 10px 16px 11px; border-bottom: 1px solid var(--border-soft); cursor: pointer; }
+  .tr-item:hover { background: var(--tint-2); }
+  .tr-item:last-child { border-bottom: 0; }
+  .tr-meta { display: flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); }
+  .tr-meta .src { color: var(--accent-deep); }
+  .tr-meta .play { margin-left: auto; color: var(--ink-3); }
+  .tr-item:hover .play { color: var(--accent-deep); }
+  .tr-quote { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: #45412f; margin-top: 5px; }
+  .tr-note {
+    font-family: var(--serif); font-style: italic; font-size: 12px; color: var(--ink-3);
+    padding: 12px 16px; line-height: 1.5;
+  }
+  .tr-note .m { font-family: var(--mono); font-style: normal; font-size: 10px; }
+  .drawer-foot {
+    flex: none; display: flex; align-items: center; gap: 14px;
+    padding: 11px 24px 13px; border-top: 1px solid var(--border);
+  }
+  .browse-link {
+    font-family: var(--sans); font-size: 12.5px; color: var(--ink-2);
+    background: transparent; border: 0; cursor: pointer; padding: 0;
+  }
+  .browse-link:hover { color: var(--accent-deep); }
+  .browse-link .sub { font-family: var(--mono); font-size: 10px; color: var(--ink-3); margin-left: 8px; }
+  .drawer-keys { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: .04em; }
+  .drawer-keys kbd {
+    font-family: var(--mono); font-size: 9.5px; color: var(--ink-2);
+    border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px;
+    background: var(--card-deep); margin: 0 2px;
+  }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · THE NEW HOME — front page lede + river · morning       -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f1">
+  <p class="frame-label"><b>Frame 1</b> · Today — the new home surface: front-page lede + journal river · Wed Jul 23 2026 · 2:47 PM</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Main surfaces">
+          <button class="rail-nav-item active">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+            Today
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+            Meetings
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+            Subjects
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+            Triggers
+          </button>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <span class="ph">Search chats…</span>
+        </div>
+
+        <div class="rail-history">
+          <div class="rail-group">Today</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Daily digest — Wed Jul 23</span><span class="when">08:00</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Daily digest</span>
+            </div>
+          </div>
+          <div class="rail-group">Yesterday</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-group">This week</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Weekly review</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="line"><span class="dot"></span>engine <span class="sep">·</span> claude-sonnet-4-5</span>
+        <span class="line"><span class="rec-dot"></span><span class="dim">recording · 5h 12m · 2.1 GB</span></span>
+      </div>
+    </aside>
+
+    <div class="rail-resizer" aria-hidden="true"></div>
+
+    <main class="main">
+      <div class="main-scroll">
+        <div class="col">
+
+          <!-- front page lede: chat, journal, meetings share one door -->
+          <header class="front">
+            <div class="front-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+            <h1 class="front-greet">Good afternoon, Zeeshan.</h1>
+            <p class="front-digest">A deep morning in the triggers ledger, one meeting already recapped —
+               and the marketing site finally has its headline.</p>
+
+            <div class="front-meets">
+              <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">10:00</span> Weekly product sync <b>· recap ready</b></span>
+              <span class="meet-chip"><span class="cm">◉</span><span class="tm">3:00</span> Design review · upcoming</span>
+            </div>
+
+            <div class="composer">
+              <textarea placeholder="Ask Mnema about your day…"></textarea>
+              <div class="composer-bar">
+                <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+                <button class="composer-send" disabled aria-label="Send">↑</button>
+              </div>
+            </div>
+            <div class="front-chips">
+              <button class="chip"><span class="cm">◉</span>Catch me up on the product sync</button>
+              <button class="chip"><span class="cm">▣</span>Where did the marketing hero copy land?</button>
+            </div>
+          </header>
+
+          <!-- the river -->
+          <section class="river">
+            <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+            <div class="slot slot--compact">
+              <div class="when">8:52 AM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">9:04 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                   queries, the running-state badge, and a cargo test pass that stayed
+                   green. Brief detours into the sqlx migration folder.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">9:51 AM <span class="dur">3m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-research);"></span>
+                <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:00 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-meetings);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meetings</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Weekly product sync over Zoom</h3>
+                <p>Four voices separated. The story-first home was approved for v0.2,
+                   recap jobs get their own queue lane, and you took the trigger-gallery
+                   wizard as an action item.</p>
+                <div class="recap-row">
+                  <span class="cm">◉</span><b>Recap ready</b>
+                  <span class="meta">Meeting recap trigger · ran 11:02 AM · 4 voices</span>
+                  <span class="open">Open document ›</span>
+                </div>
+                <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Figma — mnema marketing site</h3>
+                <p>Hero section and pricing band on the mnema.day landing page — wrote
+                   the “Recall everything. Keep it local.” headline, then checked it
+                   against the live preview in Safari. Spotify carried the whole stretch.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 318 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="gap-note">
+              <div class="when"></div>
+              <div class="spine"></div>
+              <div class="txt"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+            </div>
+
+            <div class="day-rule"><span>Afternoon</span><span class="rule"></span></div>
+
+            <div class="slot">
+              <div class="when">1:08 PM <span class="dur">26m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-communication);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-communication);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-communication);"></span>Communication</span>
+                  <span class="focus-chip focus-scattered"><i></i>Scattered</span>
+                </div>
+                <h3>Inbox sweep and licensing follow-ups</h3>
+                <p>Batched replies in Mail and the Polar dashboard — the webhook
+                   signature thread got its closing message, and two license-reset
+                   requests were approved.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 61 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">1:34 PM <span class="dur">58m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Retention GC index migration and its regression test</h3>
+                <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                   new speaker_turns index, with a test pinning the hoisted GC. One long
+                   cargo check against the desktop manifest to finish.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 247 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">2:32 PM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Filed review comments on the triggers PR</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">2:36 PM <span class="dur">now</span></div>
+              <div class="spine"><span class="node node--pending"></span></div>
+              <div class="jcard jcard--pending">
+                <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+                <div class="sub">The journal trails live capture by up to 30 minutes —
+                     every frame is already saved, and one click away in any receipt.</div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · SAME HOME, SCROLLED TO AFTERNOON — meeting prominent   -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f2">
+  <p class="frame-label"><b>Frame 2</b> · Today — scrolled to the afternoon · design review recap-ready inline · Wed Jul 23 2026 · 4:24 PM</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Main surfaces">
+          <button class="rail-nav-item active">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+            Today
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+            Meetings
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+            Subjects
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+            Triggers
+          </button>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <span class="ph">Search chats…</span>
+        </div>
+
+        <div class="rail-history">
+          <div class="rail-group">Today</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Design review</span><span class="when">3:47</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Daily digest — Wed Jul 23</span><span class="when">08:00</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Daily digest</span>
+            </div>
+          </div>
+          <div class="rail-group">Yesterday</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="line"><span class="dot"></span>engine <span class="sep">·</span> claude-sonnet-4-5</span>
+        <span class="line"><span class="rec-dot"></span><span class="dim">recording · 6h 41m · 2.7 GB</span></span>
+      </div>
+    </aside>
+
+    <div class="rail-resizer" aria-hidden="true"></div>
+
+    <main class="main">
+      <div class="main-scroll">
+        <div class="col col--scrolled">
+
+          <header class="front">
+            <div class="front-date">WEDNESDAY · JULY 23 2026 · 4:24 PM</div>
+            <h1 class="front-greet">Good afternoon, Zeeshan.</h1>
+            <p class="front-digest">A deep morning in the triggers ledger, both meetings recapped —
+               and the marketing site finally has its headline.</p>
+            <div class="front-meets">
+              <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">10:00</span> Weekly product sync <b>· recap ready</b></span>
+              <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">3:00</span> Design review <b>· recap ready</b></span>
+            </div>
+            <div class="composer">
+              <textarea placeholder="Ask Mnema about your day…"></textarea>
+              <div class="composer-bar">
+                <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+                <button class="composer-send" disabled aria-label="Send">↑</button>
+              </div>
+            </div>
+            <div class="front-chips">
+              <button class="chip"><span class="cm">◉</span>What did I commit to in the design review?</button>
+              <button class="chip"><span class="cm">▣</span>Where did the marketing hero copy land?</button>
+            </div>
+          </header>
+
+          <section class="river">
+            <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+            <div class="slot slot--compact">
+              <div class="when">8:52 AM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">9:04 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                   queries, the running-state badge, and a cargo test pass that stayed
+                   green. Brief detours into the sqlx migration folder.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">9:51 AM <span class="dur">3m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-research);"></span>
+                <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:00 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-meetings);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meetings</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Weekly product sync over Zoom</h3>
+                <p>Four voices separated. The story-first home was approved for v0.2,
+                   recap jobs get their own queue lane, and you took the trigger-gallery
+                   wizard as an action item.</p>
+                <div class="recap-row">
+                  <span class="cm">◉</span><b>Recap ready</b>
+                  <span class="meta">Meeting recap trigger · ran 11:02 AM · 4 voices</span>
+                  <span class="open">Open document ›</span>
+                </div>
+                <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Figma — mnema marketing site</h3>
+                <p>Hero section and pricing band on the mnema.day landing page — wrote
+                   the “Recall everything. Keep it local.” headline, then checked it
+                   against the live preview in Safari. Spotify carried the whole stretch.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 318 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="gap-note">
+              <div class="when"></div>
+              <div class="spine"></div>
+              <div class="txt"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+            </div>
+
+            <div class="day-rule"><span>Afternoon</span><span class="rule"></span></div>
+
+            <div class="slot">
+              <div class="when">1:08 PM <span class="dur">26m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-communication);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-communication);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-communication);"></span>Communication</span>
+                  <span class="focus-chip focus-scattered"><i></i>Scattered</span>
+                </div>
+                <h3>Inbox sweep and licensing follow-ups</h3>
+                <p>Batched replies in Mail and the Polar dashboard — the webhook
+                   signature thread got its closing message, and two license-reset
+                   requests were approved.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 61 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">1:34 PM <span class="dur">58m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Retention GC index migration and its regression test</h3>
+                <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                   new speaker_turns index, with a test pinning the hoisted GC. One long
+                   cargo check against the desktop manifest to finish.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 247 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">2:32 PM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Filed review comments on the triggers PR</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">2:36 PM <span class="dur">22m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-research);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-research);"></span>Research</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Read through the trigger-gallery wizard PR before the review</h3>
+                <p>Walked the diff in GitHub and pulled the branch locally — mostly the
+                   step-validation state machine, with the mockups open in a second
+                   window for reference.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 58 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">3:00 PM <span class="dur">42m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-meetings);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meetings</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Design review — story-first mockups walkthrough</h3>
+                <p>You presented the three warm-paper frames over Zoom. Sarah pushed on
+                   the receipt drawer’s scoping — agreed it opens on the activity’s span,
+                   never the whole day. Two voices, screen shared for 31 of 42 minutes.
+                   You committed to a keyboard path for the drawer by Friday.</p>
+                <div class="recap-row">
+                  <span class="cm">◉</span><b>Recap ready</b>
+                  <span class="meta">Meeting recap trigger · ran 3:47 PM · 2 voices</span>
+                  <span class="open">Open document ›</span>
+                </div>
+                <div class="jcard-foot"><span class="receipt">▸ 118 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="gap-note">
+              <div class="when"></div>
+              <div class="spine"></div>
+              <div class="txt"><span class="m">3:42 PM – 3:55 PM</span> · away — no capture</div>
+            </div>
+
+            <div class="slot">
+              <div class="when">3:55 PM <span class="dur">23m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Applied review feedback to the receipt drawer mockup</h3>
+                <p>Straight from the meeting into Zed — scoped the scrubber to the
+                   activity span, added the “Browse full timeline” footer door Sarah
+                   asked for, and re-rendered the frames.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 84 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">4:18 PM <span class="dur">now</span></div>
+              <div class="spine"><span class="node node--pending"></span></div>
+              <div class="jcard jcard--pending">
+                <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+                <div class="sub">The journal trails live capture by up to 30 minutes —
+                     every frame is already saved, and one click away in any receipt.</div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 3 · RECEIPT DRAWER — scoped to “Figma — mnema marketing site” -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f3">
+  <p class="frame-label"><b>Frame 3</b> · Evidence on demand — receipt drawer scoped to “Figma — mnema marketing site” · 10:49 AM – 12:01 PM</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Main surfaces">
+          <button class="rail-nav-item active">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+            Today
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+            Meetings
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+            Subjects
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+            Triggers
+          </button>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <span class="ph">Search chats…</span>
+        </div>
+
+        <div class="rail-history">
+          <div class="rail-group">Today</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Daily digest — Wed Jul 23</span><span class="when">08:00</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Daily digest</span>
+            </div>
+          </div>
+          <div class="rail-group">Yesterday</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="line"><span class="dot"></span>engine <span class="sep">·</span> claude-sonnet-4-5</span>
+        <span class="line"><span class="rec-dot"></span><span class="dim">recording · 5h 12m · 2.1 GB</span></span>
+      </div>
+    </aside>
+
+    <div class="rail-resizer" aria-hidden="true"></div>
+
+    <main class="main">
+      <div class="main-scroll">
+        <div class="col">
+
+          <header class="front">
+            <div class="front-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+            <h1 class="front-greet">Good afternoon, Zeeshan.</h1>
+            <p class="front-digest">A deep morning in the triggers ledger, one meeting already recapped —
+               and the marketing site finally has its headline.</p>
+            <div class="front-meets">
+              <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">10:00</span> Weekly product sync <b>· recap ready</b></span>
+              <span class="meet-chip"><span class="cm">◉</span><span class="tm">3:00</span> Design review · upcoming</span>
+            </div>
+            <div class="composer">
+              <textarea placeholder="Ask Mnema about your day…"></textarea>
+              <div class="composer-bar">
+                <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+                <button class="composer-send" disabled aria-label="Send">↑</button>
+              </div>
+            </div>
+            <div class="front-chips">
+              <button class="chip"><span class="cm">◉</span>Catch me up on the product sync</button>
+              <button class="chip"><span class="cm">▣</span>Where did the marketing hero copy land?</button>
+            </div>
+          </header>
+
+          <section class="river">
+            <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+            <div class="slot slot--compact">
+              <div class="when">8:52 AM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">9:04 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                   queries, the running-state badge, and a cargo test pass that stayed
+                   green. Brief detours into the sqlx migration folder.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:00 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-meetings);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meetings</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Weekly product sync over Zoom</h3>
+                <p>Four voices separated. The story-first home was approved for v0.2,
+                   recap jobs get their own queue lane.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+
+    <!-- evidence on demand -->
+    <div class="scrim"></div>
+    <section class="drawer" aria-label="Receipt — Figma, mnema marketing site">
+      <header class="drawer-head">
+        <div class="drawer-titles">
+          <div class="drawer-eyebrow"><span class="g">▣</span> Receipt · scoped to this activity</div>
+          <div class="drawer-title">Figma — mnema marketing site</div>
+          <div class="drawer-span"><span class="sw"></span>10:49 AM – 12:01 PM · 1h 12m · 318 frames <span class="dim">· screen + mic + system audio</span></div>
+        </div>
+        <button class="drawer-close" aria-label="Close receipt">✕</button>
+      </header>
+
+      <div class="drawer-body">
+        <div class="dr-left">
+          <div class="dr-stage">
+            <div class="stage-actions">
+              <button class="stage-act" title="Play audio at this moment (P)">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14v-3a9 9 0 0 1 18 0v3"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+              </button>
+              <button class="stage-act" title="Frame actions (C copy, D download)">
+                <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>
+              </button>
+            </div>
+
+            <!-- captured frame: Figma canvas, hero artboard -->
+            <div class="shot">
+              <div class="shot-tb"><i></i><i></i><i></i><span class="t">mnema.day — marketing · Figma</span></div>
+              <div class="shot-body">
+                <div class="shot-side">
+                  <div class="ln hd" style="width:58%"></div>
+                  <div class="ln dim" style="width:80%"></div>
+                  <div class="ln dim" style="width:64%"></div>
+                  <div class="ln" style="width:72%"></div>
+                  <div class="ln dim" style="width:54%"></div>
+                  <div class="ln dim" style="width:68%"></div>
+                  <div class="ln" style="width:60%"></div>
+                  <div class="ln dim" style="width:76%"></div>
+                  <div class="ln dim" style="width:50%"></div>
+                </div>
+                <div class="canvas">
+                  <div class="art art--sel" style="left:6%; top:8%; width:56%; height:62%">
+                    <div class="hero-h" style="width:84%"></div>
+                    <div class="hero-h two"></div>
+                    <div class="hero-s" style="width:70%; margin-top:12px"></div>
+                    <div class="hero-s" style="width:58%"></div>
+                    <div class="hero-btn"></div>
+                  </div>
+                  <div class="art" style="left:68%; top:14%; width:26%; height:46%">
+                    <div class="hero-s" style="width:74%"></div>
+                    <div class="hero-s" style="width:60%"></div>
+                    <div class="hero-s" style="width:66%"></div>
+                  </div>
+                  <div class="art" style="left:10%; top:76%; width:34%; height:18%"></div>
+                </div>
+              </div>
+              <!-- OCR overlay: recognized hero copy -->
+              <span class="ocr-box" style="left:26%; top:16%; width:38%; height:5%"></span>
+              <span class="ocr-box" style="left:26%; top:24%; width:26%; height:5%"></span>
+              <span class="ocr-box" style="left:26%; top:36%; width:31%; height:3.6%"></span>
+              <span class="ocr-hint">ocr · “Recall everything. Keep it local.” · copy all in ⋯</span>
+            </div>
+
+            <div class="readout">
+              <span class="app-ic">fg</span>
+              <span>
+                <span class="app-name">Figma</span>
+                <div class="meta"><b>11:22:41 AM</b> · WED JUL 23 · frame 148 of 318 in this span</div>
+              </span>
+            </div>
+          </div>
+
+          <!-- scrubber + audio lanes, scoped to 10:49 – 12:01 only -->
+          <div class="scrub-wrap">
+            <div class="scrub">
+              <div class="app-group" style="left:0%;  width:52%"><span class="ic">fg</span></div>
+              <div class="app-group" style="left:52%; width:11%"><span class="ic">sf</span></div>
+              <div class="app-group" style="left:63%; width:37%"><span class="ic">fg</span></div>
+              <div class="cursor" style="left:46%"></div>
+            </div>
+            <div class="lanes">
+              <div class="lane-labels"><span>mic</span><span>sys</span></div>
+              <div class="lane-rows">
+                <div class="lane-row">
+                  <span class="abar abar--mic" style="left:5%;  width:1.6%"></span>
+                  <span class="abar abar--mic" style="left:45.4%; width:1.8%"></span>
+                  <span class="abar abar--mic" style="left:80%; width:1.4%"></span>
+                </div>
+                <div class="lane-row">
+                  <span class="abar abar--sys" style="left:1.5%; width:49%"></span>
+                  <span class="abar abar--sys" style="left:64%;  width:34%"></span>
+                </div>
+              </div>
+            </div>
+            <div class="scrub-caption">
+              <span>10:49 AM</span>
+              <span><span class="g">▣</span> 318 frames in this span</span>
+              <span>12:01 PM</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- scoped transcript strip -->
+        <aside class="dr-right">
+          <div class="tr-head">Heard in this span</div>
+          <div class="tr-scroll">
+            <div class="tr-item">
+              <div class="tr-meta"><span class="src">mic</span><span>10:53 AM</span><span class="play">◉ play</span></div>
+              <p class="tr-quote">“Hero first, pricing later — keep the nav to three links.”</p>
+            </div>
+            <div class="tr-item">
+              <div class="tr-meta"><span class="src">mic</span><span>11:22 AM</span><span class="play">◉ play</span></div>
+              <p class="tr-quote">“Recall everything… keep it local. That’s the line.”</p>
+            </div>
+            <div class="tr-item">
+              <div class="tr-meta"><span class="src">mic</span><span>11:47 AM</span><span class="play">◉ play</span></div>
+              <p class="tr-quote">“Screenshots need the warm shell, not the dark one.”</p>
+            </div>
+            <p class="tr-note">System audio · Spotify — Deep Focus mix, 1h 04m ·
+               <span class="m">no speech detected</span></p>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="drawer-foot">
+        <button class="browse-link">Browse full timeline ›<span class="sub">opens the raw Timeline at 10:49 AM</span></button>
+        <span class="drawer-keys"><kbd>esc</kbd> close · <kbd>←</kbd><kbd>→</kbd> step frames · <kbd>P</kbd> play audio</span>
+      </footer>
+    </section>
+  </div>
+</div>
+
+<!-- ponytail: no JS — all three frames are static states; the drawer is shown
+     statically open in frame 3, which is the whole point of that frame. -->
+
+</body>
+</html>

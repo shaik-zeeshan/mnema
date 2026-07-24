@@ -17,7 +17,7 @@
 >
   <SettingRow
     label="Theme"
-    description="System follows your OS setting; pick Light or Dark to override it."
+    description="System follows your OS setting; pick Light or Dark to override it. Terminal is the legacy dark look."
     full
   >
     {#snippet control()}

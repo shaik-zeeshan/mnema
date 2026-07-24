@@ -20,7 +20,9 @@ mod license_token_store;
 mod licensing_state;
 mod machine_id;
 mod mcp_server_secret_store;
+pub mod meetings;
 mod ocr_budget;
+pub mod off_record;
 pub mod processing;
 pub mod retry_policy;
 mod search;
@@ -317,8 +319,10 @@ pub struct AppInfra {
     usage_charts: UsageChartsStore,
     user_context: UserContextStore,
     system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
+    off_record: off_record::OffRecordStore,
     trigger_state: trigger_state::TriggerStateStore,
     trigger_firings: trigger_firings::TriggerFiringsStore,
+    meetings: meetings::MeetingsStore,
     subject_vectors: SubjectVectorStore,
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
@@ -402,8 +406,10 @@ impl AppInfra {
         let user_context = UserContextStore::new(database.handle().clone());
         let system_audio_evidence =
             system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
+        let off_record = off_record::OffRecordStore::new(database.handle().clone());
         let trigger_state = trigger_state::TriggerStateStore::new(database.handle().clone());
         let trigger_firings = trigger_firings::TriggerFiringsStore::new(database.handle().clone());
+        let meetings = meetings::MeetingsStore::new(database.handle().clone());
         let subject_vectors = SubjectVectorStore::new(database.handle().clone());
         let conversation = ConversationStore::new(database.handle().clone());
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
@@ -433,8 +439,10 @@ impl AppInfra {
             usage_charts,
             user_context,
             system_audio_evidence,
+            off_record,
             trigger_state,
             trigger_firings,
+            meetings,
             subject_vectors,
             conversation,
             captured_frame_equivalence,
@@ -546,6 +554,12 @@ impl AppInfra {
         &self.system_audio_evidence
     }
 
+    /// The persisted timed off-the-record deadline, so a 15-minute pause
+    /// neither becomes permanent nor resumes early across an app restart.
+    pub fn off_record(&self) -> &off_record::OffRecordStore {
+        &self.off_record
+    }
+
     /// Per-trigger last-fired persistence for the Triggers evaluator (issue
     /// #175) — the durable cursor that makes schedule catch-up survive an app
     /// restart.
@@ -558,6 +572,13 @@ impl AppInfra {
     /// the restart-surviving Cooldown.
     pub fn trigger_firings(&self) -> &trigger_firings::TriggerFiringsStore {
         &self.trigger_firings
+    }
+
+    /// The detected-meetings ledger (Warm Paper Slice 1, migration `0052`):
+    /// one row per ADR 0057 mic-hold meeting, written whether or not a recap
+    /// trigger fires — the Meetings surface's query seam.
+    pub fn meetings(&self) -> &meetings::MeetingsStore {
+        &self.meetings
     }
 
     /// The **Subject Vector** store seam (migration `0043`): embedding-free

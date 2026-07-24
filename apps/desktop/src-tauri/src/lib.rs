@@ -14,6 +14,7 @@ mod general_app_log;
 mod keyboard_bindings;
 mod licensing;
 mod managed_storage_layout;
+mod meetings;
 mod native_capture;
 mod ocr_budget;
 mod ocr_models;
@@ -743,6 +744,10 @@ pub fn run() {
             triggers::store::get_meeting_release_grace_minutes,
             triggers::store::set_meeting_release_grace_minutes,
             triggers::run::run_trigger_again,
+            meetings::list_meetings,
+            meetings::get_meeting,
+            meetings::set_meeting_notes,
+            meetings::set_meeting_checklist,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
             ask_ai::mcp::oauth_flow::mcp_oauth_begin,
@@ -912,6 +917,7 @@ pub fn run() {
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
             native_capture::stop_native_capture,
+            native_capture::get_native_capture_session,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
             windows::request_app_relaunch,

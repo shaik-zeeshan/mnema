@@ -129,12 +129,6 @@ impl MeetingDetector {
         !self.holds.is_empty()
     }
 
-    /// Forget everything (e.g. the last meeting_ends trigger was deleted
-    /// mid-hold: with nobody to fire, a half-tracked meeting is noise).
-    pub fn reset(&mut self) {
-        self.holds.clear();
-    }
-
     /// Pre-seed a hold with its TRUE start before an observe tick — the #180
     /// browser path: meeting-URL evidence may appear minutes into a mic hold,
     /// but the meeting window is the whole hold, so the worker seeds the

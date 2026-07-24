@@ -56,6 +56,11 @@ const DISPLAY_UNAVAILABLE_RECOVERY_INTERVAL: Duration = Duration::from_secs(2);
 // responsive without spinning `statvfs` on every 1s poll.
 #[cfg(target_os = "macos")]
 const LOW_DISK_RECOVERY_INTERVAL: Duration = Duration::from_secs(10);
+// When a timed off-the-record deadline has elapsed but the resume failed (e.g.
+// no drawable display at that exact moment), retry on this cadence rather than
+// on every 1s poll — restarting sources is real work.
+#[cfg(target_os = "macos")]
+const OFF_RECORD_RESUME_RETRY_INTERVAL: Duration = Duration::from_secs(10);
 // Stable id for the low-disk suspension warning notification, pushed when a
 // Low-Disk Suspension is entered and cleared on resume.
 #[cfg(target_os = "macos")]
@@ -4615,6 +4620,9 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         // forwards them once more than it needs to. Harmless: the watcher diffs
         // the resulting process-object list and only rebuilds when it moves.
         let mut last_system_audio_excluded_bundle_ids: Vec<String> = Vec::new();
+        let mut last_off_record_resume_attempt = Instant::now()
+            .checked_sub(OFF_RECORD_RESUME_RETRY_INTERVAL)
+            .unwrap_or_else(Instant::now);
         loop {
             let sleep_duration = {
                 let capture_state = app_handle.state::<NativeCaptureState>();
@@ -4680,6 +4688,30 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
 
             if !runtime.runtime().is_running || worker_control.stop.load(Ordering::Relaxed) {
                 break;
+            }
+
+            // Timed off-the-record auto-resume: while a user pause holds a
+            // deadline, compare the wall clock on every tick — never a
+            // monotonic timer — so sleeping through the deadline still resumes
+            // on the first tick after wake. The resume goes through the same
+            // seam as a manual "back on the record" (it emits + refreshes the
+            // tray and disarms the persisted deadline); a failed resume keeps
+            // the deadline and retries on a calm cadence.
+            if runtime.off_record_deadline_elapsed(now_unix_ms() as i64)
+                && last_off_record_resume_attempt.elapsed() >= OFF_RECORD_RESUME_RETRY_INTERVAL
+            {
+                last_off_record_resume_attempt = Instant::now();
+                drop(runtime);
+                super::debug_log::log(
+                    "off-the-record window ended; resuming capture (back on the record)",
+                );
+                if let Err(error) = super::resume_native_capture_from_app_handle(&app_handle) {
+                    super::debug_log::log(format!(
+                        "failed to resume capture when the off-the-record window ended; will retry: [{}] {}",
+                        error.code, error.message
+                    ));
+                }
+                continue;
             }
 
             if system_audio_excludes_moved {

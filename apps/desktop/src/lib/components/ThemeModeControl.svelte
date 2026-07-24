@@ -6,6 +6,7 @@
   import IconSystem from "~icons/lucide/monitor";
   import IconLight from "~icons/lucide/sun";
   import IconDark from "~icons/lucide/moon";
+  import IconTerminal from "~icons/lucide/square-terminal";
 
   let {
     value = $bindable<AppearanceSetting>("system"),
@@ -25,6 +26,7 @@
     { value: "system", label: "System theme", shortLabel: "System" },
     { value: "light", label: "Light theme", shortLabel: "Light" },
     { value: "dark", label: "Dark theme", shortLabel: "Dark" },
+    { value: "terminal", label: "Terminal theme (legacy dark)", shortLabel: "Terminal" },
   ];
 
   // In the compact (titlebar) variant we show icons only; otherwise icon + label.
@@ -81,8 +83,10 @@
         <IconSystem aria-hidden="true" />
       {:else if optionValue === "light"}
         <IconLight aria-hidden="true" />
-      {:else}
+      {:else if optionValue === "dark"}
         <IconDark aria-hidden="true" />
+      {:else}
+        <IconTerminal aria-hidden="true" />
       {/if}
     {/snippet}
   </Segmented>

@@ -144,6 +144,13 @@ pub struct NativeCaptureRuntime {
     pub runtime_state: RuntimeState,
     pub inactivity: InactivityState,
     pub user_capture_paused: bool,
+    /// Timed off-the-record: the wall-clock deadline (unix ms) at which a user
+    /// pause auto-resumes. `None` = indefinite pause (or no pause). Wall-clock
+    /// on purpose — a monotonic timer would stretch across system sleep, and
+    /// the deadline must not (the check compares against `now_unix_ms` on each
+    /// tick). May also be set with `is_running == false`: a deadline re-armed
+    /// at startup holds capture off until it passes.
+    pub off_record_deadline_unix_ms: Option<i64>,
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
@@ -297,6 +304,7 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
         is_inactivity_paused: runtime.inactivity.is_paused,
         is_user_paused: runtime.user_capture_paused,
         is_low_disk_suspended,
+        off_record_deadline_unix_ms: runtime.off_record_deadline_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -341,6 +349,7 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
         is_inactivity_paused: false,
         is_user_paused: false,
         is_low_disk_suspended: false,
+        off_record_deadline_unix_ms: runtime.off_record_deadline_unix_ms,
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
@@ -383,6 +392,9 @@ pub(super) fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
+    // A stopped session's off-the-record window is meaningless: the record is
+    // off until the user starts it again, not until a timer fires.
+    runtime.off_record_deadline_unix_ms = None;
     runtime.microphone_vad = MicrophoneVadRuntime::default();
     runtime.segment_loop_control = None;
     runtime.capture_clock = None;

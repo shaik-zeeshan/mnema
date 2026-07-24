@@ -1135,7 +1135,9 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
         let result = if session.is_user_paused {
             crate::native_capture::resume_native_capture_from_app_handle(&app_handle).map(|_| ())
         } else {
-            crate::native_capture::pause_native_capture_from_app_handle(&app_handle).map(|_| ())
+            // The shortcut is the indefinite off-the-record (no deadline).
+            crate::native_capture::pause_native_capture_from_app_handle(&app_handle, None)
+                .map(|_| ())
         };
 
         if let Err(error) = result {

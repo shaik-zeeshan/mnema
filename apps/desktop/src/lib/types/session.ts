@@ -66,6 +66,13 @@ export interface CaptureSession {
 	isInactivityPaused: boolean;
 	isUserPaused: boolean;
 	isLowDiskSuspended: boolean;
+	/**
+	 * Timed off-the-record: wall-clock unix ms when capture auto-resumes.
+	 * `null` while on the record or for an indefinite pause. Can be set with
+	 * `isRunning === false` (a deadline re-armed at startup holds capture off
+	 * the record without a live session).
+	 */
+	offRecordDeadlineUnixMs: number | null;
 }
 
 export interface GetPermissionsResponse {

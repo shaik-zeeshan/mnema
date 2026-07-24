@@ -151,7 +151,8 @@ export async function finishOnboarding(
         request: buildStartCaptureRequest(target),
       });
     }
-    await goto("/");
+    // Land on the story-first home (Warm Paper Slice 2), not the raw timeline.
+    await goto("/insights");
   } catch (err) {
     target.errorMessage = serializeError(err);
     target.completing = false;

@@ -186,11 +186,6 @@ impl BrowserMeetingTracker {
     pub fn is_tracking(&self) -> bool {
         !self.hold_starts.is_empty()
     }
-
-    pub fn reset(&mut self) {
-        self.hold_starts.clear();
-        self.evidence.clear();
-    }
 }
 
 #[cfg(test)]

@@ -1,12 +1,16 @@
 <script lang="ts">
   // /triggers — the Triggers management surface (issue #182; final design in
-  // docs/triggers/mockups/final/DESIGN.md). This page owns the data (list +
-  // status + provider gate) and swaps between the list, the per-trigger Runs
-  // view (Screen 2, driven by `?runs=<id>`), and the 3-step wizard
-  // (`?edit=<id>` deep-links into edit); TriggersList / TriggerWizard are
-  // presentation.
+  // docs/triggers/mockups/final/DESIGN.md). Renders inside the shared
+  // <InsightsShell> (rail + main column, Slice 2) as the rail's fourth nav
+  // item — it keeps its own route so the `?runs=` / `?edit=` URL contract
+  // stays put. This page owns the data (list + status + provider gate) and
+  // swaps between the list, the per-trigger Runs view (Screen 2, driven by
+  // `?runs=<id>`), and the 3-step wizard (`?edit=<id>` deep-links into edit);
+  // TriggersList / TriggerWizard are presentation.
   import { goto } from "$app/navigation";
   import { page } from "$app/stores";
+  import InsightsShell from "$lib/insights/InsightsShell.svelte";
+  import { type RailTab } from "$lib/insights/InsightsRail.svelte";
   import { confirm, message } from "@tauri-apps/plugin-dialog";
   import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
   import IconArrowUpRight from "~icons/lucide/arrow-up-right";
@@ -257,9 +261,29 @@
     openWizard("import", { imported: parsed.draft });
   }
 
+  // ── Shell nav ──────────────────────────────────────────────────────────────
+  // The rail's other surfaces live on /insights as local tabs; navigate there
+  // with the destination in the URL. Chat requests (a history-row click, "new
+  // chat", or Open Run below) ride the conversation store's selection bus — the
+  // watcher below turns any bus bump while this route is showing into a
+  // `/insights?tab=chat` navigation, where Chat's own watcher picks the
+  // request up on mount. The nonce is snapshotted at mount so a stale
+  // pre-mount request never navigates away on its own.
+  function openTab(tab: RailTab): void {
+    void goto(tab === "triggers" ? "/triggers" : `/insights?tab=${tab}`);
+  }
+
+  let lastBusNonce = conversationStore.pendingOpen.nonce;
+  $effect(() => {
+    const pending = conversationStore.pendingOpen;
+    if (pending.nonce === lastBusNonce) return;
+    lastBusNonce = pending.nonce;
+    void goto("/insights?tab=chat");
+  });
+
   function onOpenRun(conversationId: string): void {
+    // The bus watcher above does the navigation.
     conversationStore.requestOpen(conversationId);
-    void goto("/insights");
   }
 
   function onOpenRuns(trigger: TriggerDefinition): void {
@@ -282,6 +306,7 @@
   };
 </script>
 
+<InsightsShell view="triggers" onOpenTab={openTab} bare>
 <div class="triggers-page">
   {#if view.mode === "wizard"}
     <div class="wiz-scroll">
@@ -395,6 +420,12 @@
             use:tip={"Paste shared Trigger JSON — it prefills the wizard for review, never saves directly"}
             onclick={() => void onImport()}
           >Import</button>
+          <button
+            class="btn btn--accent"
+            type="button"
+            use:tip={"Start from a template — or from scratch"}
+            onclick={() => openWizard("create")}
+          >＋ New Trigger</button>
         </div>
         {#if importError}
           <p class="import-error" role="alert">
@@ -430,6 +461,7 @@
     </div>
   {/if}
 </div>
+</InsightsShell>
 
 <style>
   /* WKWebView flex trap: fill via flex on a flex-column parent, not height:100%. */
@@ -535,6 +567,17 @@
   }
   .btn:active {
     transform: translateY(1px);
+  }
+  .btn--accent {
+    white-space: nowrap;
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent-border);
+    color: var(--app-accent-strong);
+  }
+  .btn--accent:hover {
+    background: var(--app-accent-bg);
+    border-color: var(--app-accent);
+    color: var(--app-accent);
   }
 
   /* ── Runs view (DESIGN.md Screen 2) ─────────────────────────────────────── */

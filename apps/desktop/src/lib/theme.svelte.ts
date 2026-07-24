@@ -23,10 +23,12 @@ import type {
   RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
 
-export type ResolvedTheme = "light" | "dark";
+// "terminal" is the legacy dark-terminal token set; "light"/"dark" are the
+// Warm Paper pair. Warm Paper light is the default face.
+export type ResolvedTheme = "light" | "dark" | "terminal";
 
-const DEFAULT_APPEARANCE: AppearanceSetting = "system";
-const DEFAULT_RESOLVED: ResolvedTheme = "dark";
+const DEFAULT_APPEARANCE: AppearanceSetting = "light";
+const DEFAULT_RESOLVED: ResolvedTheme = "light";
 const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
 
 const _state = $state<{
@@ -55,7 +57,7 @@ export const theme: {
 
 function systemPrefersDark(): boolean {
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
-    return true; // safe default — keep dark chrome if we can't detect.
+    return false; // safe default — the Warm Paper light face if we can't detect.
   }
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
 }
@@ -63,6 +65,7 @@ function systemPrefersDark(): boolean {
 function resolve(appearance: AppearanceSetting): ResolvedTheme {
   if (appearance === "light") return "light";
   if (appearance === "dark") return "dark";
+  if (appearance === "terminal") return "terminal";
   return systemPrefersDark() ? "dark" : "light";
 }
 
@@ -71,8 +74,9 @@ function applyToDocument(resolved: ResolvedTheme): void {
   const root = document.documentElement;
   root.setAttribute("data-theme", resolved);
   // `color-scheme` lets the browser style native form controls and
-  // scrollbars to match the active theme without extra CSS.
-  root.style.colorScheme = resolved;
+  // scrollbars to match the active theme without extra CSS. Terminal is a
+  // dark theme as far as the browser is concerned.
+  root.style.colorScheme = resolved === "terminal" ? "dark" : resolved;
 }
 
 function recompute(): void {

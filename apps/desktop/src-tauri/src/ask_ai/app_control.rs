@@ -106,9 +106,12 @@ fn run_control_seam(
         "stop_capture" => crate::native_capture::stop_native_capture_from_app_handle(app_handle)
             .map(|response| response.session)
             .map_err(|error| error.message),
-        "pause_capture" => crate::native_capture::pause_native_capture_from_app_handle(app_handle)
-            .map(|response| response.session)
-            .map_err(|error| error.message),
+        "pause_capture" => {
+            // Ask AI's app-control pause is the indefinite off-the-record.
+            crate::native_capture::pause_native_capture_from_app_handle(app_handle, None)
+                .map(|response| response.session)
+                .map_err(|error| error.message)
+        }
         "resume_capture" => {
             crate::native_capture::resume_native_capture_from_app_handle(app_handle)
                 .map(|response| response.session)
@@ -166,6 +169,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: true,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: Some(CaptureSources {
                 screen: true,
                 microphone: false,
@@ -237,6 +241,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: false,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,

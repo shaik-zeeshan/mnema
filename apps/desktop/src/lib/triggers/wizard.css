@@ -145,6 +145,49 @@
     margin-top: 1px;
   }
 
+  /* step 0: template gallery (Slice 6) — the gallery itself is
+     TemplateGallery.svelte (scoped styles); the panel just widens under it. */
+  .wiz-panel.at-gallery {
+    max-width: 960px;
+  }
+
+  /* the review step's "from template" chip */
+  .wiz-panel .tpl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10.5px;
+    letter-spacing: 0.02em;
+    padding: 3px 10px;
+    margin-bottom: 12px;
+    border: 1px solid var(--app-accent-border);
+    border-radius: 999px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+  }
+  .wiz-panel .tpl-chip svg {
+    width: 11px;
+    height: 11px;
+    color: var(--app-accent);
+  }
+  .wiz-panel .tpl-chip .x {
+    font: inherit;
+    background: none;
+    border: 0;
+    padding: 0 0 0 2px;
+    color: var(--app-text-subtle);
+    cursor: pointer;
+    transition: color 0.12s ease;
+  }
+  .wiz-panel .tpl-chip .x:hover {
+    color: var(--app-danger-text);
+  }
+  .wiz-panel .tpl-chip .x:focus-visible {
+    outline: 2px solid var(--app-accent-border);
+    outline-offset: 1px;
+    border-radius: 3px;
+  }
+
   /* step 1: condition cards */
   .wiz-panel .cond-pick {
     display: flex;

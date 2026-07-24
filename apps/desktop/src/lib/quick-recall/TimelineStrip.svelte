@@ -412,10 +412,10 @@
     border-radius: 5px;
     overflow: hidden;
     border: 1px solid var(--app-border);
-    background: #101014;
+    background: var(--app-thumb-stage);
     display: grid;
     place-items: center;
-    color: #6a6a74;
+    color: var(--app-thumb-stage-fg);
   }
 
   .timeline-strip__pimg {

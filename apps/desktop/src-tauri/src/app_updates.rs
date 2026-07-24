@@ -1047,6 +1047,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: false,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,

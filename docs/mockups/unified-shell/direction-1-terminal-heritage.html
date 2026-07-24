@@ -1,0 +1,1339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — Unified Shell · Direction 1 · Terminal Heritage</title>
+<style>
+  :root {
+    --bg: #0c0c0e;
+    --surface: #0e0e16;
+    --raised: #13131a;
+    --border: #1e1e2e;
+    --border-strong: #2a2a3a;
+    --text-strong: #e2e2e8;
+    --text: #c0c0d0;
+    --muted: #9696ae;
+    --subtle: #7e7e98;
+    --faint: #33334a;
+    --accent: #3dffa0;
+    --accent-glow: rgba(61,255,160,.18);
+    --accent-strong: #2a8a60;
+    --accent-bg: #0d1f15;
+    --accent-border: #1a4a30;
+    --warn: #d6a14a;
+    --danger: #ff6b7a;
+    --info: #60b0ff;
+    --record: #ff3148;
+    --mono: ui-monospace, "Berkeley Mono", "SF Mono", SFMono-Regular, Menlo, Monaco, "Cascadia Mono", monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #060608;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 64px 40px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- gallery scaffolding ---------- */
+  .spec-head {
+    max-width: 1440px;
+    margin: 0 auto 48px;
+  }
+  .spec-head h1 {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-strong);
+    letter-spacing: .04em;
+  }
+  .spec-head p { color: var(--subtle); font-size: 12px; margin-top: 8px; max-width: 720px; }
+  .spec-head .dir-tag {
+    display: inline-block;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    border-radius: 3px;
+    padding: 3px 8px;
+    margin-bottom: 12px;
+  }
+  .page-label {
+    max-width: 1440px;
+    margin: 72px auto 16px;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+  }
+  .page-label .num {
+    font-size: 11px;
+    color: var(--accent);
+    letter-spacing: .12em;
+  }
+  .page-label h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-strong);
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .page-label .note { font-size: 11px; color: var(--subtle); }
+
+  /* ---------- app window frame ---------- */
+  .app-window {
+    width: 1440px;
+    height: 900px;
+    margin: 0 auto;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: 0 24px 80px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.4);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .titlebar {
+    height: 40px;
+    flex: 0 0 40px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    gap: 8px;
+  }
+  .traffic { display: flex; gap: 8px; }
+  .traffic i { width: 11px; height: 11px; border-radius: 50%; background: #2c2c38; display: block; }
+  .titlebar .win-title {
+    flex: 1;
+    text-align: center;
+    font-size: 11px;
+    color: var(--subtle);
+    letter-spacing: .08em;
+  }
+  .titlebar .win-right { width: 52px; text-align: right; font-size: 11px; color: var(--faint); }
+  .app-body { flex: 1 1 auto; display: flex; min-height: 0; }
+
+  /* ---------- left rail ---------- */
+  .rail {
+    width: 248px;
+    flex: 0 0 248px;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .rail-brand {
+    padding: 16px 16px 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .rail-brand .mark {
+    width: 20px; height: 20px;
+    border: 1px solid var(--accent-border);
+    background: var(--accent-bg);
+    border-radius: 4px;
+    color: var(--accent);
+    font-size: 11px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .rail-brand .name {
+    font-size: 11px;
+    letter-spacing: .22em;
+    color: var(--text-strong);
+    text-transform: uppercase;
+  }
+  .rail-nav { padding: 4px 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .rail-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    cursor: default;
+    border: 1px solid transparent;
+    text-decoration: none;
+  }
+  .rail-item:hover { background: var(--raised); color: var(--text-strong); }
+  .rail-item.active {
+    background: var(--accent-bg);
+    border-color: var(--accent-border);
+    color: var(--accent);
+  }
+  .rail-item .glyph {
+    width: 16px;
+    text-align: center;
+    color: var(--subtle);
+    font-size: 12px;
+  }
+  .rail-item.active .glyph { color: var(--accent); }
+  .rail-item .kbd {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--faint);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 5px;
+    line-height: 16px;
+  }
+  .rail-item:hover .kbd { color: var(--subtle); border-color: var(--border-strong); }
+
+  .rail-sect {
+    padding: 14px 18px 6px;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .rail-sect .count { color: var(--faint); letter-spacing: 0; }
+  .rail-recents {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 0 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-height: 0;
+  }
+  .recent {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: default;
+  }
+  .recent:hover { background: var(--raised); }
+  .recent .r-title {
+    flex: 1;
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .recent:hover .r-title { color: var(--text-strong); }
+  .recent .r-origin {
+    flex: 0 0 auto;
+    font-size: 11px;
+    color: var(--accent-strong);
+  }
+  .recent .r-time { flex: 0 0 auto; font-size: 10px; color: var(--faint); }
+  .recent.sel { background: var(--raised); border: 1px solid var(--border); padding: 5px 9px; }
+
+  .rail-foot {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--border);
+    padding: 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .cap-line { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); }
+  .cap-line .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--record);
+    box-shadow: 0 0 6px rgba(255,49,72,.55);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .45; } }
+  .cap-line strong { color: var(--text); font-weight: 500; }
+  .cap-sub { font-size: 10px; color: var(--subtle); padding-left: 15px; }
+
+  /* ---------- main pane generic ---------- */
+  .main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    min-height: 0;
+  }
+  .main-head {
+    flex: 0 0 auto;
+    padding: 20px 32px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .main-head h3 {
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--text-strong);
+  }
+  .main-head .crumb { font-size: 11px; color: var(--subtle); }
+  .main-scroll { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+
+  /* ---------- PAGE 1: insights home ---------- */
+  .home-center {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 120px 32px 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .home-clock {
+    font-size: 11px;
+    letter-spacing: .16em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    margin-bottom: 12px;
+  }
+  .home-clock .tick { color: var(--accent-strong); }
+  .home-greet {
+    font-size: 24px;
+    font-weight: 500;
+    color: var(--text-strong);
+    letter-spacing: -.01em;
+    margin-bottom: 6px;
+  }
+  .home-sub { font-size: 13px; color: var(--muted); margin-bottom: 32px; }
+
+  .composer {
+    background: var(--raised);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    padding: 16px 16px 12px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer:hover, .composer:focus-within {
+    border-color: var(--accent-strong);
+    box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+  .composer .ask-row { display: flex; align-items: flex-start; gap: 10px; }
+  .composer .prompt-char { color: var(--accent); font-size: 14px; line-height: 22px; }
+  .composer textarea {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    resize: none;
+    color: var(--text-strong);
+    font-family: var(--mono);
+    font-size: 14px;
+    line-height: 22px;
+    height: 44px;
+    caret-color: var(--accent);
+  }
+  .composer textarea::placeholder { color: var(--subtle); }
+  .composer-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+  .comp-scope {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--subtle);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    padding: 3px 8px;
+    cursor: default;
+  }
+  .comp-scope:hover { border-color: var(--border-strong); color: var(--muted); }
+  .comp-scope .g { color: var(--accent-strong); }
+  .comp-send {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .06em;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .comp-send:hover { box-shadow: 0 0 12px var(--accent-glow); border-color: var(--accent-strong); }
+  .comp-send .k { font-size: 10px; color: var(--accent-strong); }
+
+  .chips-label {
+    margin: 32px 0 10px;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chips-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .chips { display: flex; flex-direction: column; gap: 8px; }
+  .chip {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12.5px;
+    color: var(--text);
+    cursor: default;
+    transition: border-color .12s, background .12s;
+  }
+  .chip:hover { border-color: var(--accent-border); background: var(--raised); color: var(--text-strong); }
+  .chip .c-glyph { color: var(--accent-strong); font-size: 12px; width: 14px; text-align: center; }
+  .chip:hover .c-glyph { color: var(--accent); }
+  .chip .c-src { margin-left: auto; font-size: 10px; color: var(--faint); letter-spacing: .04em; }
+  .chip:hover .c-src { color: var(--subtle); }
+
+  /* ---------- PAGE 2: meetings list ---------- */
+  .day-group { padding: 0 32px; }
+  .day-head {
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    padding: 20px 0 8px;
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    z-index: 2;
+  }
+  .day-head .d-strong { color: var(--text); }
+  .day-head::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .day-head .d-count { color: var(--faint); letter-spacing: 0; }
+  .mtg-list { display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+  .mtg-row {
+    display: grid;
+    grid-template-columns: 96px 1fr auto auto;
+    align-items: center;
+    gap: 20px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 8px;
+    cursor: default;
+    transition: border-color .12s, background .12s;
+  }
+  .mtg-row:hover { border-color: var(--border-strong); background: var(--raised); }
+  .mtg-time { display: flex; flex-direction: column; gap: 2px; }
+  .mtg-time .t { font-size: 12px; color: var(--text); }
+  .mtg-time .dur { font-size: 10px; color: var(--subtle); }
+  .mtg-main { min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+  .mtg-title-row { display: flex; align-items: center; gap: 8px; }
+  .mtg-title {
+    font-size: 13px;
+    color: var(--text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .app-glyph {
+    flex: 0 0 auto;
+    font-size: 10px;
+    letter-spacing: .06em;
+    color: var(--subtle);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    text-transform: uppercase;
+  }
+  .app-glyph .ag { color: var(--info); margin-right: 4px; }
+  .mtg-meta { font-size: 11px; color: var(--subtle); display: flex; align-items: center; gap: 6px; }
+  .spk-chips { display: flex; align-items: center; gap: 6px; }
+  .spk {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    border-radius: 999px;
+    padding: 2px 9px 2px 4px;
+  }
+  .spk .ava {
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    background: var(--faint);
+    color: var(--text);
+    font-size: 8px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    letter-spacing: 0;
+  }
+  .spk.you .ava { background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border); }
+  .spk-more { font-size: 11px; color: var(--subtle); }
+  .mtg-state {
+    justify-self: end;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 3px 9px;
+    border: 1px solid var(--border);
+    color: var(--subtle);
+  }
+  .mtg-state.recap { color: var(--accent); border-color: var(--accent-border); background: var(--accent-bg); }
+  .mtg-state.transcript { color: var(--muted); }
+  .mtg-state.processing { color: var(--warn); border-color: rgba(214,161,74,.35); background: rgba(214,161,74,.07); }
+  .mtg-state .sg { font-size: 11px; }
+  .mtg-state.processing .sg { display: inline-block; animation: spin 1.6s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .meetings-note {
+    margin: 20px 32px 32px;
+    padding: 10px 14px;
+    border: 1px dashed var(--faint);
+    border-radius: 8px;
+    font-size: 11px;
+    color: var(--subtle);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .meetings-note .g { color: var(--accent-strong); }
+
+  /* ---------- PAGE 3: meeting detail ---------- */
+  .det-head { padding: 24px 40px 0; border-bottom: 1px solid var(--border); }
+  .det-back { font-size: 11px; color: var(--subtle); margin-bottom: 12px; cursor: default; }
+  .det-back:hover { color: var(--muted); }
+  .det-title-row { display: flex; align-items: flex-start; gap: 16px; }
+  .det-title { font-size: 20px; font-weight: 500; color: var(--text-strong); letter-spacing: -.01em; }
+  .det-actions { margin-left: auto; display: flex; gap: 8px; }
+  .btn-ghost {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    color: var(--muted);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .btn-ghost:hover { color: var(--text-strong); border-color: var(--border-strong); background: var(--raised); }
+  .btn-accent {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    border-radius: 6px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  .btn-accent:hover { box-shadow: 0 0 10px var(--accent-glow); border-color: var(--accent-strong); }
+  .det-meta {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin: 12px 0 6px;
+    font-size: 12px;
+    color: var(--muted);
+    flex-wrap: wrap;
+  }
+  .det-meta .sep { color: var(--faint); }
+  .det-prov {
+    font-size: 10.5px;
+    color: var(--subtle);
+    margin: 8px 0 16px;
+    letter-spacing: .03em;
+  }
+  .det-prov .pg { color: var(--accent-strong); }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 8px 14px 10px;
+    cursor: pointer;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab .tcount { color: var(--faint); margin-left: 6px; letter-spacing: 0; }
+  .tabpane { display: none; }
+  .tabpane.active { display: block; }
+
+  .recap-doc {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 32px 40px 64px;
+    font-family: var(--sans);
+    font-size: 14.5px;
+    line-height: 1.65;
+    color: var(--text);
+  }
+  .recap-doc .doc-kicker {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+    margin-bottom: 16px;
+  }
+  .recap-doc h4 {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--text-strong);
+    margin: 28px 0 10px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .recap-doc h4:first-of-type { margin-top: 0; }
+  .recap-doc p { margin-bottom: 12px; }
+  .recap-doc strong { color: var(--text-strong); font-weight: 600; }
+  .recap-doc ul { list-style: none; margin-bottom: 12px; }
+  .recap-doc ul li { padding-left: 20px; position: relative; margin-bottom: 8px; }
+  .recap-doc ul li::before {
+    content: "–";
+    position: absolute;
+    left: 2px;
+    color: var(--accent-strong);
+    font-family: var(--mono);
+  }
+  .decision-card {
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent-strong);
+    background: var(--surface);
+    border-radius: 0 6px 6px 0;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+    font-size: 13.5px;
+  }
+  .decision-card .who { font-family: var(--mono); font-size: 10.5px; color: var(--subtle); margin-top: 4px; }
+  .action-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13.5px;
+  }
+  .action-row:last-child { border-bottom: none; }
+  .action-row .cb { font-family: var(--mono); color: var(--faint); }
+  .action-row .owner {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--info);
+    margin-left: auto;
+    white-space: nowrap;
+  }
+  .recap-foot {
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+  }
+  .recap-link { color: var(--accent); text-decoration: none; cursor: pointer; }
+  .recap-link:hover { text-shadow: 0 0 10px var(--accent-glow); text-decoration: underline; text-underline-offset: 3px; }
+  .recap-foot .gen { color: var(--faint); font-size: 10px; margin-left: auto; }
+
+  .tr-doc { max-width: 860px; margin: 0 auto; padding: 28px 40px 64px; }
+  .tr-turn { display: grid; grid-template-columns: 64px 130px 1fr; gap: 16px; padding: 9px 0; border-bottom: 1px solid #12121c; }
+  .tr-turn:hover { background: var(--surface); }
+  .tr-ts { font-size: 11px; color: var(--faint); padding-top: 1px; }
+  .tr-spk { font-size: 11.5px; letter-spacing: .02em; padding-top: 1px; }
+  .tr-spk.s1 { color: var(--info); }
+  .tr-spk.s2 { color: var(--warn); }
+  .tr-spk.s3 { color: var(--accent); }
+  .tr-text { font-family: var(--sans); font-size: 13.5px; color: var(--text); }
+
+  .notes-doc { max-width: 760px; margin: 0 auto; padding: 28px 40px 64px; }
+  .notes-area {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    padding: 18px 20px;
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--text);
+    min-height: 220px;
+  }
+  .notes-area:hover { border-color: var(--border-strong); }
+  .notes-hint { font-size: 10.5px; color: var(--faint); margin-top: 10px; }
+
+  /* ---------- PAGE 4: trigger gallery ---------- */
+  .wiz-head { padding: 24px 40px 20px; border-bottom: 1px solid var(--border); }
+  .wiz-top { display: flex; align-items: center; gap: 16px; }
+  .wiz-top h3 { font-size: 15px; font-weight: 500; color: var(--text-strong); letter-spacing: .02em; }
+  .wiz-steps { margin-left: auto; display: flex; align-items: center; gap: 0; }
+  .wstep { display: flex; align-items: center; gap: 8px; }
+  .wstep .sdot {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    border: 1px solid var(--border-strong);
+    color: var(--subtle);
+    font-size: 10px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .wstep .sname { font-size: 10px; letter-spacing: .14em; text-transform: uppercase; color: var(--subtle); }
+  .wstep.land .sdot {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-bg);
+    box-shadow: 0 0 10px var(--accent-glow);
+  }
+  .wstep.land .sname { color: var(--accent); }
+  .wstep-sep { width: 32px; height: 1px; background: var(--faint); margin: 0 10px; }
+  .wiz-sub { font-size: 12px; color: var(--muted); margin-top: 10px; }
+  .wiz-sub .hl { color: var(--accent); }
+
+  .gallery { padding: 28px 40px 8px; }
+  .gal-sect {
+    font-size: 10px;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .gal-sect::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .gal-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 28px;
+  }
+  .tcard {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 10px;
+    padding: 18px 18px 16px;
+    cursor: default;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    transition: border-color .12s, background .12s, transform .12s;
+    position: relative;
+  }
+  .tcard:hover {
+    border-color: var(--accent-border);
+    background: var(--raised);
+    transform: translateY(-1px);
+  }
+  .tcard:hover .tc-cta { opacity: 1; }
+  .tc-top { display: flex; align-items: center; gap: 10px; }
+  .tc-glyph {
+    width: 30px; height: 30px;
+    border: 1px solid var(--border-strong);
+    border-radius: 7px;
+    background: var(--bg);
+    color: var(--accent);
+    font-size: 14px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .tcard:hover .tc-glyph { border-color: var(--accent-border); box-shadow: 0 0 10px var(--accent-glow); }
+  .tc-name { font-size: 13px; color: var(--text-strong); }
+  .tc-cond {
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+  }
+  .tc-desc { font-size: 12px; color: var(--muted); line-height: 1.55; }
+  .tc-cta {
+    font-size: 10.5px;
+    color: var(--accent);
+    letter-spacing: .06em;
+    opacity: 0;
+    transition: opacity .12s;
+    margin-top: 2px;
+  }
+  .tcard.featured { border-color: var(--accent-border); }
+  .tcard.featured .tc-badge {
+    position: absolute;
+    top: -8px;
+    right: 12px;
+    font-size: 9px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid var(--accent-border);
+    border-radius: 3px;
+    padding: 1px 7px;
+  }
+
+  .scratch-row {
+    margin: 0 40px 36px;
+    border: 1px dashed var(--border-strong);
+    border-radius: 10px;
+    padding: 16px 20px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    cursor: default;
+    transition: border-color .12s, background .12s;
+  }
+  .scratch-row:hover { border-color: var(--accent-strong); background: var(--surface); }
+  .scratch-glyph {
+    width: 30px; height: 30px;
+    border: 1px dashed var(--faint);
+    border-radius: 7px;
+    color: var(--muted);
+    font-size: 15px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .scratch-row:hover .scratch-glyph { color: var(--accent); border-color: var(--accent-border); }
+  .scratch-body { display: flex; flex-direction: column; gap: 2px; }
+  .scratch-title { font-size: 13px; color: var(--text-strong); }
+  .scratch-sub { font-size: 11.5px; color: var(--subtle); }
+  .scratch-arrow { margin-left: auto; color: var(--faint); font-size: 14px; }
+  .scratch-row:hover .scratch-arrow { color: var(--accent); }
+
+  /* trigger rail active tweak for pages 2-4 */
+  .rail-mini-note { padding: 10px 18px 0; font-size: 10px; color: var(--faint); line-height: 1.6; }
+</style>
+</head>
+<body>
+
+<div class="spec-head">
+  <div class="dir-tag">Direction 1 / Terminal Heritage</div>
+  <h1>Mnema — Unified Shell Mockups</h1>
+  <p>Faithful evolution of the current identity: dark instrument panel, monospace chrome, hairline borders, green reserved for meaning. Four pages: Insights home, Meetings list, Meeting detail, Trigger gallery.</p>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 1 — INSIGHTS HOME (EMPTY STATE)                              -->
+<!-- ================================================================ -->
+<div class="page-label">
+  <span class="num">01</span>
+  <h2>Insights Home — Empty State</h2>
+  <span class="note">unified rail · warm greeting · composer · activity-derived suggestions</span>
+</div>
+
+<div class="app-window">
+  <div class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <div class="win-title">mnema</div>
+    <div class="win-right">v0.2.1</div>
+  </div>
+  <div class="app-body">
+    <aside class="rail">
+      <div class="rail-brand"><span class="mark">◆</span><span class="name">Mnema</span></div>
+      <nav class="rail-nav">
+        <a class="rail-item active"><span class="glyph">+</span>New Chat<span class="kbd">⌘N</span></a>
+        <a class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></a>
+        <a class="rail-item"><span class="glyph">▤</span>Meetings</a>
+        <a class="rail-item"><span class="glyph">◉</span>Triggers</a>
+      </nav>
+      <div class="rail-sect">Recents <span class="count">12</span></div>
+      <div class="rail-recents">
+        <div class="recent"><span class="r-title">Sprint 14 planning recap</span><span class="r-origin" title="Created by trigger: Meeting Recap">◉</span><span class="r-time">10:52</span></div>
+        <div class="recent"><span class="r-title">What did I ship yesterday?</span><span class="r-time">09:14</span></div>
+        <div class="recent"><span class="r-title">Daily digest — Tue Jul 22</span><span class="r-origin" title="Created by trigger: Daily Digest">◷</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Figma brief — tokens file opened</span><span class="r-origin" title="Created by trigger: app open">▣</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Deepgram invoice line items</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">1:1 with Marcus recap</span><span class="r-origin" title="Created by trigger: Meeting Recap">◉</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Where did I see that Stripe error?</span><span class="r-time">Mon</span></div>
+        <div class="recent"><span class="r-title">Weekly review — Jul 14–18</span><span class="r-origin" title="Created by trigger: Weekly Review">◷</span><span class="r-time">Mon</span></div>
+        <div class="recent"><span class="r-title">Compare retention proposals</span><span class="r-time">Mon</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="cap-line"><span class="dot"></span><strong>Recording</strong><span>· screen + mic + sys</span></div>
+        <div class="cap-sub">2h 41m captured today · disk ok</div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="main-scroll">
+        <div class="home-center">
+          <div class="home-clock"><span class="tick">▪</span> Wednesday, July 23 2026 · 14:36</div>
+          <div class="home-greet">Good afternoon.</div>
+          <div class="home-sub">Everything you've seen, heard, and done today is ready to recall.</div>
+
+          <div class="composer">
+            <div class="ask-row">
+              <span class="prompt-char">›</span>
+              <textarea placeholder="Ask about anything you've seen, heard, or done…"></textarea>
+            </div>
+            <div class="composer-bar">
+              <span class="comp-scope"><span class="g">◫</span> All activity</span>
+              <span class="comp-scope"><span class="g">◷</span> Today</span>
+              <button class="comp-send">Ask <span class="k">⏎</span></button>
+            </div>
+          </div>
+
+          <div class="chips-label">From your recent activity</div>
+          <div class="chips">
+            <div class="chip"><span class="c-glyph">▤</span>Summarize my 10:00 meeting with Sarah<span class="c-src">zoom · 45m · ended 10:47</span></div>
+            <div class="chip"><span class="c-glyph">▣</span>What was I doing in Figma before lunch?<span class="c-src">figma · 11:20–12:05</span></div>
+            <div class="chip"><span class="c-glyph">⌕</span>Find the Stripe webhook error I saw this morning<span class="c-src">terminal · 08:52</span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 2 — MEETINGS LIST                                            -->
+<!-- ================================================================ -->
+<div class="page-label">
+  <span class="num">02</span>
+  <h2>Meetings — Auto-detected List</h2>
+  <span class="note">no calendar · grouped by day · inferred titles · voice-identified speakers</span>
+</div>
+
+<div class="app-window">
+  <div class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <div class="win-title">mnema — meetings</div>
+    <div class="win-right">v0.2.1</div>
+  </div>
+  <div class="app-body">
+    <aside class="rail">
+      <div class="rail-brand"><span class="mark">◆</span><span class="name">Mnema</span></div>
+      <nav class="rail-nav">
+        <a class="rail-item"><span class="glyph">+</span>New Chat<span class="kbd">⌘N</span></a>
+        <a class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></a>
+        <a class="rail-item active"><span class="glyph">▤</span>Meetings</a>
+        <a class="rail-item"><span class="glyph">◉</span>Triggers</a>
+      </nav>
+      <div class="rail-sect">Recents <span class="count">12</span></div>
+      <div class="rail-recents">
+        <div class="recent"><span class="r-title">Sprint 14 planning recap</span><span class="r-origin">◉</span><span class="r-time">10:52</span></div>
+        <div class="recent"><span class="r-title">What did I ship yesterday?</span><span class="r-time">09:14</span></div>
+        <div class="recent"><span class="r-title">Daily digest — Tue Jul 22</span><span class="r-origin">◷</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Figma brief — tokens file opened</span><span class="r-origin">▣</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Deepgram invoice line items</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">1:1 with Marcus recap</span><span class="r-origin">◉</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Where did I see that Stripe error?</span><span class="r-time">Mon</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="cap-line"><span class="dot"></span><strong>Recording</strong><span>· screen + mic + sys</span></div>
+        <div class="cap-sub">2h 41m captured today · disk ok</div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="main-head">
+        <h3>Meetings</h3>
+        <span class="crumb">detected from mic-hold + system audio — no calendar connected</span>
+      </div>
+      <div class="main-scroll">
+        <div class="day-group">
+          <div class="day-head"><span class="d-strong">Today</span> Wednesday, Jul 23 <span class="d-count">2 meetings</span></div>
+          <div class="mtg-list">
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">14:30</span><span class="dur">22m · ongoing → done</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">Design tokens sync — dark surface ramp</span>
+                  <span class="app-glyph"><span class="ag">◍</span>Meet</span>
+                </div>
+                <div class="mtg-meta">ended 14:52 · 2 voices identified</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">PN</span>Priya</span>
+                <span class="spk you"><span class="ava">Y</span>You</span>
+              </div>
+              <span class="mtg-state processing"><span class="sg">◌</span>Processing</span>
+            </div>
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">10:02</span><span class="dur">45m</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">Sprint 14 Planning — capture pipeline &amp; retention</span>
+                  <span class="app-glyph"><span class="ag">◈</span>Zoom</span>
+                </div>
+                <div class="mtg-meta">ended 10:47 · 3 voices identified</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">SL</span>Sarah</span>
+                <span class="spk-more">+2</span>
+              </div>
+              <span class="mtg-state recap"><span class="sg">▪</span>Recap</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="day-group">
+          <div class="day-head"><span class="d-strong">Yesterday</span> Tuesday, Jul 22 <span class="d-count">2 meetings</span></div>
+          <div class="mtg-list">
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">16:00</span><span class="dur">31m</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">1:1 with Marcus — Q3 roadmap &amp; on-call rotation</span>
+                  <span class="app-glyph"><span class="ag">◈</span>Zoom</span>
+                </div>
+                <div class="mtg-meta">ended 16:31 · 2 voices identified</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">MW</span>Marcus</span>
+                <span class="spk you"><span class="ava">Y</span>You</span>
+              </div>
+              <span class="mtg-state recap"><span class="sg">▪</span>Recap</span>
+            </div>
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">11:05</span><span class="dur">18m</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">Deepgram vendor call — usage tiers</span>
+                  <span class="app-glyph"><span class="ag">◎</span>Safari</span>
+                </div>
+                <div class="mtg-meta">ended 11:23 · 1 voice + 1 unknown</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">?</span>Unknown</span>
+                <span class="spk you"><span class="ava">Y</span>You</span>
+              </div>
+              <span class="mtg-state transcript"><span class="sg">≡</span>Transcript</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="day-group">
+          <div class="day-head"><span class="d-strong">Monday</span> Jul 21 <span class="d-count">2 meetings</span></div>
+          <div class="mtg-list">
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">15:12</span><span class="dur">14m</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">Support escalation huddle — v0.1.9 launch crash</span>
+                  <span class="app-glyph"><span class="ag">◍</span>Meet</span>
+                </div>
+                <div class="mtg-meta">ended 15:26 · 3 voices identified</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">TK</span>Tom</span>
+                <span class="spk-more">+2</span>
+              </div>
+              <span class="mtg-state transcript"><span class="sg">≡</span>Transcript</span>
+            </div>
+            <div class="mtg-row">
+              <div class="mtg-time"><span class="t">09:30</span><span class="dur">26m</span></div>
+              <div class="mtg-main">
+                <div class="mtg-title-row">
+                  <span class="mtg-title">Weekly kickoff — launch checklist review</span>
+                  <span class="app-glyph"><span class="ag">◈</span>Zoom</span>
+                </div>
+                <div class="mtg-meta">ended 09:56 · 4 voices identified</div>
+              </div>
+              <div class="spk-chips">
+                <span class="spk"><span class="ava">SL</span>Sarah</span>
+                <span class="spk-more">+3</span>
+              </div>
+              <span class="mtg-state recap"><span class="sg">▪</span>Recap</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="meetings-note"><span class="g">◉</span>Meetings are detected on-device from microphone activity and call apps. Nothing here came from a calendar.</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 3 — MEETING DETAIL                                           -->
+<!-- ================================================================ -->
+<div class="page-label">
+  <span class="num">03</span>
+  <h2>Meeting Detail — Summary / Transcript / Notes</h2>
+  <span class="note">tabs are live — click to switch</span>
+</div>
+
+<div class="app-window">
+  <div class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <div class="win-title">mnema — sprint 14 planning</div>
+    <div class="win-right">v0.2.1</div>
+  </div>
+  <div class="app-body">
+    <aside class="rail">
+      <div class="rail-brand"><span class="mark">◆</span><span class="name">Mnema</span></div>
+      <nav class="rail-nav">
+        <a class="rail-item"><span class="glyph">+</span>New Chat<span class="kbd">⌘N</span></a>
+        <a class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></a>
+        <a class="rail-item active"><span class="glyph">▤</span>Meetings</a>
+        <a class="rail-item"><span class="glyph">◉</span>Triggers</a>
+      </nav>
+      <div class="rail-sect">Recents <span class="count">12</span></div>
+      <div class="rail-recents">
+        <div class="recent sel"><span class="r-title">Sprint 14 planning recap</span><span class="r-origin">◉</span><span class="r-time">10:52</span></div>
+        <div class="recent"><span class="r-title">What did I ship yesterday?</span><span class="r-time">09:14</span></div>
+        <div class="recent"><span class="r-title">Daily digest — Tue Jul 22</span><span class="r-origin">◷</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Figma brief — tokens file opened</span><span class="r-origin">▣</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Deepgram invoice line items</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">1:1 with Marcus recap</span><span class="r-origin">◉</span><span class="r-time">Tue</span></div>
+      </div>
+      <div class="rail-foot">
+        <div class="cap-line"><span class="dot"></span><strong>Recording</strong><span>· screen + mic + sys</span></div>
+        <div class="cap-sub">2h 41m captured today · disk ok</div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="det-head">
+        <div class="det-back">‹ Meetings</div>
+        <div class="det-title-row">
+          <div>
+            <div class="det-title">Sprint 14 Planning — capture pipeline &amp; retention</div>
+            <div class="det-meta">
+              <span>Wed, Jul 23 2026</span><span class="sep">·</span>
+              <span>10:02 – 10:47</span><span class="sep">·</span>
+              <span>45m</span><span class="sep">·</span>
+              <span class="spk-chips">
+                <span class="spk"><span class="ava">SL</span>Sarah Lin</span>
+                <span class="spk"><span class="ava">MW</span>Marcus Webb</span>
+                <span class="spk you"><span class="ava">Y</span>You</span>
+              </span>
+            </div>
+            <div class="det-prov"><span class="pg">◉</span> detected via mic-hold · Zoom · recap generated 10:52 by trigger “Meeting Recap”</div>
+          </div>
+          <div class="det-actions">
+            <button class="btn-ghost">Copy recap</button>
+            <button class="btn-accent">Ask about this meeting</button>
+          </div>
+        </div>
+        <div class="tabs" id="mtg-tabs">
+          <button class="tab active" data-pane="pane-summary">Summary</button>
+          <button class="tab" data-pane="pane-transcript">Transcript<span class="tcount">128 turns</span></button>
+          <button class="tab" data-pane="pane-notes">Notes<span class="tcount">1</span></button>
+        </div>
+      </div>
+      <div class="main-scroll">
+
+        <!-- SUMMARY -->
+        <div class="tabpane active" id="pane-summary">
+          <div class="recap-doc">
+            <div class="doc-kicker">AI Recap · generated from 45m of audio</div>
+            <h4>Overview</h4>
+            <p>Sarah ran planning for Sprint 14 with the goal of closing out the capture-pipeline reliability track before the July 31 release cut. The bulk of the discussion (roughly the first twenty minutes) centered on the <strong>system-audio rebuild backlog</strong> — Marcus reported the zero-watchdog now recovers Bluetooth renegotiations cleanly in his week of dogfooding. The second half covered <strong>retention cleanup pacing</strong> and whether the orphan-cluster GC change needs a follow-up index before the release.</p>
+            <h4>Decisions</h4>
+            <div class="decision-card">Ship the retention GC index migration in this sprint; do not hold the release for the batch-size tuning experiment.<div class="who">agreed · Sarah, Marcus — 10:26</div></div>
+            <div class="decision-card">Sprint 14 scope is frozen after today; the Figma token-sync work moves to Sprint 15 unless design unblocks by Friday.<div class="who">called by Sarah — 10:41</div></div>
+            <h4>Action items</h4>
+            <div class="action-row"><span class="cb">[ ]</span>Land the migration + hoisted GC behind a soak flag and post benchmarks in #eng-capture<span class="owner">Marcus · by Jul 25</span></div>
+            <div class="action-row"><span class="cb">[ ]</span>Write the release-notes draft covering the audio recovery work<span class="owner">You · by Jul 28</span></div>
+            <div class="action-row"><span class="cb">[ ]</span>Confirm with design whether the token file lands before Friday standup<span class="owner">Sarah · by Jul 24</span></div>
+            <h4>Open questions</h4>
+            <ul>
+              <li>Does the GC index change the p95 write-stall numbers on the 30-day retention profile? Marcus to measure before the soak flag flips.</li>
+              <li>Whether the release cut moves if the Deepgram usage-tier change (from Tuesday's vendor call) affects transcription costs.</li>
+            </ul>
+            <div class="recap-foot">
+              <a class="recap-link">Open recap conversation →</a>
+              <span class="gen">recap v1 · model: local · 10:52:14</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- TRANSCRIPT -->
+        <div class="tabpane" id="pane-transcript">
+          <div class="tr-doc">
+            <div class="tr-turn"><span class="tr-ts">10:02:11</span><span class="tr-spk s1">Sarah Lin</span><span class="tr-text">Okay, we're all here — let's keep this to forty-five. Two tracks today: the capture reliability work and retention. Marcus, you first.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:02:39</span><span class="tr-spk s2">Marcus Webb</span><span class="tr-text">So the good news is the watchdog rebuild has been solid all week. I flipped my AirPods between calls maybe thirty times and every renegotiation came back within a segment boundary.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:03:18</span><span class="tr-spk s3">You</span><span class="tr-text">Same on my machine. The one thing I still see is the first segment after a rebuild starting a beat late — under a second, but it's visible in the timeline.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:03:52</span><span class="tr-spk s2">Marcus Webb</span><span class="tr-text">That's the writer open cost, it's known. I'd rather not chase sub-second gaps this sprint.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:04:07</span><span class="tr-spk s1">Sarah Lin</span><span class="tr-text">Agreed, park it. Retention — where are we on the GC stall?</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:04:31</span><span class="tr-spk s2">Marcus Webb</span><span class="tr-text">The unindexed orphan-cluster delete was scanning speaker turns for close to nine seconds per batch. The fix is an index plus hoisting the GC out of the per-batch loop. It's written; it needs the migration and a soak.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:05:14</span><span class="tr-spk s1">Sarah Lin</span><span class="tr-text">Can it land this sprint without risking the cut?</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:05:26</span><span class="tr-spk s2">Marcus Webb</span><span class="tr-text">Yes, if we don't couple it to the batch-size tuning. That one's an experiment, not a fix.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:05:58</span><span class="tr-spk s3">You</span><span class="tr-text">I can take the release-notes side of it — the audio recovery story is the headline anyway.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:06:20</span><span class="tr-spk s1">Sarah Lin</span><span class="tr-text">Good. Decision then: index migration ships in fourteen, tuning experiment does not block. Writing that down.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:06:47</span><span class="tr-spk s2">Marcus Webb</span><span class="tr-text">One more thing — the Deepgram tier change from yesterday's call could move our transcription cost model. Might matter for the cut.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:07:15</span><span class="tr-spk s1">Sarah Lin</span><span class="tr-text">Flag it as an open question, I don't want to decide that in this meeting.</span></div>
+            <div class="tr-turn"><span class="tr-ts">10:07:41</span><span class="tr-spk s3">You</span><span class="tr-text">Noted. I'll pull the usage numbers before Friday so we're not guessing.</span></div>
+          </div>
+        </div>
+
+        <!-- NOTES -->
+        <div class="tabpane" id="pane-notes">
+          <div class="notes-doc">
+            <div class="notes-area">
+              <p>Push back next sprint on the sub-second rebuild gap — Marcus is right that it's cosmetic, but it shows up in every demo recording.</p>
+              <p><br>Remember: pull Deepgram usage CSV before Friday standup. Tier change kicks in Aug 1.</p>
+            </div>
+            <div class="notes-hint">Notes are yours alone — never sent to a model unless you ask.</div>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 4 — TRIGGER CREATION, GALLERY-FIRST                          -->
+<!-- ================================================================ -->
+<div class="page-label">
+  <span class="num">04</span>
+  <h2>Create Trigger — Template Gallery</h2>
+  <span class="note">gallery-first · picking a card prefills the wizard and lands on Review</span>
+</div>
+
+<div class="app-window">
+  <div class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <div class="win-title">mnema — new trigger</div>
+    <div class="win-right">v0.2.1</div>
+  </div>
+  <div class="app-body">
+    <aside class="rail">
+      <div class="rail-brand"><span class="mark">◆</span><span class="name">Mnema</span></div>
+      <nav class="rail-nav">
+        <a class="rail-item"><span class="glyph">+</span>New Chat<span class="kbd">⌘N</span></a>
+        <a class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></a>
+        <a class="rail-item"><span class="glyph">▤</span>Meetings</a>
+        <a class="rail-item active"><span class="glyph">◉</span>Triggers</a>
+      </nav>
+      <div class="rail-sect">Recents <span class="count">12</span></div>
+      <div class="rail-recents">
+        <div class="recent"><span class="r-title">Sprint 14 planning recap</span><span class="r-origin">◉</span><span class="r-time">10:52</span></div>
+        <div class="recent"><span class="r-title">What did I ship yesterday?</span><span class="r-time">09:14</span></div>
+        <div class="recent"><span class="r-title">Daily digest — Tue Jul 22</span><span class="r-origin">◷</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Figma brief — tokens file opened</span><span class="r-origin">▣</span><span class="r-time">Tue</span></div>
+        <div class="recent"><span class="r-title">Deepgram invoice line items</span><span class="r-time">Tue</span></div>
+      </div>
+      <div class="rail-mini-note">◉ meeting-end &nbsp;▣ app event &nbsp;◷ schedule — glyphs mark conversations a trigger started.</div>
+      <div class="rail-foot">
+        <div class="cap-line"><span class="dot"></span><strong>Recording</strong><span>· screen + mic + sys</span></div>
+        <div class="cap-sub">2h 41m captured today · disk ok</div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="wiz-head">
+        <div class="wiz-top">
+          <h3>New trigger</h3>
+          <div class="wiz-steps">
+            <div class="wstep"><span class="sdot">1</span><span class="sname">Condition</span></div>
+            <span class="wstep-sep"></span>
+            <div class="wstep"><span class="sdot">2</span><span class="sname">Prompt</span></div>
+            <span class="wstep-sep"></span>
+            <div class="wstep land"><span class="sdot">3</span><span class="sname">Review</span></div>
+          </div>
+        </div>
+        <div class="wiz-sub">Start from a template — it fills in the condition and the prompt, and drops you straight on <span class="hl">Review</span>. Every step stays editable.</div>
+      </div>
+      <div class="main-scroll">
+        <div class="gallery">
+          <div class="gal-sect">Meetings</div>
+          <div class="gal-grid">
+            <div class="tcard featured">
+              <span class="tc-badge">Popular</span>
+              <div class="tc-top"><span class="tc-glyph">◉</span><span class="tc-name">Meeting Recap</span><span class="tc-cond">on meeting end</span></div>
+              <div class="tc-desc">When a meeting ends, write a recap — overview, decisions, action items — into a new conversation.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">◉</span><span class="tc-name">Pre-meeting Brief</span><span class="tc-cond">on meeting start</span></div>
+              <div class="tc-desc">When a call starts, pull what you last discussed with these voices and surface open action items.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">◉</span><span class="tc-name">Action-item Chaser</span><span class="tc-cond">on meeting end</span></div>
+              <div class="tc-desc">After each meeting, list every commitment you made out loud, with who it's owed to.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+          </div>
+
+          <div class="gal-sect">Schedules</div>
+          <div class="gal-grid">
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">◷</span><span class="tc-name">Daily Digest</span><span class="tc-cond">every day 17:30</span></div>
+              <div class="tc-desc">Each evening, a short digest of what you worked on, who you talked to, and what's left hanging.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">◷</span><span class="tc-name">Weekly Review</span><span class="tc-cond">fridays 16:00</span></div>
+              <div class="tc-desc">Every Friday, a week-in-review: themes, time split by app, decisions made, and loose ends for Monday.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">◷</span><span class="tc-name">Morning Warm-up</span><span class="tc-cond">weekdays 09:00</span></div>
+              <div class="tc-desc">At the start of the day, replay where you left off yesterday and the first thing you meant to do.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+          </div>
+
+          <div class="gal-sect">App events</div>
+          <div class="gal-grid">
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">▣</span><span class="tc-name">“When I open Figma, brief me”</span><span class="tc-cond">on app open</span></div>
+              <div class="tc-desc">The moment Figma comes to front, summarize what you did in it last session and any related discussion.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">▣</span><span class="tc-name">Terminal Error Log</span><span class="tc-cond">on app close</span></div>
+              <div class="tc-desc">When you close the terminal, collect any error output seen on screen into a searchable note.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+            <div class="tcard">
+              <div class="tc-top"><span class="tc-glyph">▣</span><span class="tc-name">Deep-work Ledger</span><span class="tc-cond">on 45m in one app</span></div>
+              <div class="tc-desc">After 45 uninterrupted minutes in one app, log what the session produced while it's still fresh.</div>
+              <div class="tc-cta">Use template → lands on Review</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scratch-row">
+          <span class="scratch-glyph">+</span>
+          <div class="scratch-body">
+            <div class="scratch-title">Start from scratch</div>
+            <div class="scratch-sub">Blank wizard — pick a condition, write your own prompt, review. Nothing prefilled.</div>
+          </div>
+          <span class="scratch-arrow">→</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // Tab switching (page 3 only)
+  document.getElementById('mtg-tabs').addEventListener('click', function (e) {
+    var btn = e.target.closest('.tab');
+    if (!btn) return;
+    var tabs = this.querySelectorAll('.tab');
+    tabs.forEach(function (t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    var win = this.closest('.app-window');
+    win.querySelectorAll('.tabpane').forEach(function (p) {
+      p.classList.toggle('active', p.id === btn.dataset.pane);
+    });
+  });
+</script>
+
+</body>
+</html>

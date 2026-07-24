@@ -41,6 +41,11 @@ const IDLE_POLL: Duration = Duration::from_secs(15);
 /// the #182 Settings knob (`store::get_meeting_release_grace_minutes`) reports.
 pub(crate) const DEFAULT_RELEASE_GRACE_MINUTES: i64 = 2;
 
+/// The meetings-ledger floor when no trigger configures a lower one: the same
+/// 5-minute default minimum as the Meeting Ends condition. Shorter mic grabs
+/// (dictation, a quick call) are not meetings.
+const DEFAULT_MEETING_RECORD_FLOOR_MS: i64 = 5 * 60_000;
+
 /// A tick gap far beyond both poll cadences means the machine slept (or the
 /// process was suspended): mic state was last actually known at the previous
 /// tick, so knowledge must end there rather than letting a meeting window
@@ -102,18 +107,15 @@ async fn detector_tick(
     infra: &AppInfraState,
     app_handle: &tauri::AppHandle,
 ) -> Duration {
+    // Detection runs whether or not any meeting trigger exists: every detected
+    // meeting lands in the meetings ledger (the Meetings surface, Slice 1), a
+    // firing-less one as transcript-only.
     let meeting_triggers: Vec<TriggerDefinition> = super::load_triggers(app_handle)
         .into_iter()
         .filter(|trigger| {
             trigger.enabled && matches!(trigger.condition, TriggerCondition::MeetingEnds { .. })
         })
         .collect();
-    if meeting_triggers.is_empty() {
-        // No Core Audio read (and no browser probes) at all with nobody to fire.
-        detector.reset();
-        browser_tracker.reset();
-        return IDLE_POLL;
-    }
 
     let grace_minutes = infra
         .trigger_state()
@@ -315,8 +317,11 @@ async fn process_meeting_events(
     }
 }
 
-/// Decide + fire every meeting trigger for one ended hold: floor, then the
-/// shared cooldown/provider-gate decision, then claim and spawn the firing.
+/// Record the ended hold in the meetings ledger (whether or not anything
+/// fires), then decide + fire every meeting trigger: floor, then the shared
+/// cooldown/provider-gate decision, then claim and spawn the firing — linking
+/// each decision back onto the meeting row so the Meetings surface can show
+/// recap/processing/skipped/transcript-only honestly.
 async fn handle_meeting_ended(
     infra: &AppInfraState,
     app_handle: &tauri::AppHandle,
@@ -325,6 +330,34 @@ async fn handle_meeting_ended(
     evidence: Option<MeetingUrlEvidence>,
 ) {
     let now = now_ms();
+
+    // The ledger floor: the 5-min default, or any configured trigger's lower
+    // floor — a hold that can fire a trigger is by definition a meeting.
+    let record_floor_ms = triggers
+        .iter()
+        .filter_map(trigger_floor_ms)
+        .chain(std::iter::once(DEFAULT_MEETING_RECORD_FLOOR_MS))
+        .min()
+        .unwrap_or(DEFAULT_MEETING_RECORD_FLOOR_MS);
+    let recorded = ended.duration_ms() >= record_floor_ms;
+    let meeting_id = format!("meeting-{}-{}", ended.start_ms, ended.bundle_id);
+    if recorded {
+        let (app_display_name, meeting_url) = meeting_display(&ended.bundle_id, evidence.clone());
+        let meeting = ::app_infra::meetings::NewMeeting {
+            id: meeting_id.clone(),
+            bundle_id: ended.bundle_id.clone(),
+            app_display_name,
+            meeting_url,
+            start_ms: ended.start_ms,
+            end_ms: ended.end_ms,
+        };
+        if let Err(error) = infra.meetings().record_meeting(&meeting).await {
+            tauri_plugin_log::log::warn!(
+                "{MEETING_LOG_PREFIX} failed to record meeting {meeting_id}: {error}"
+            );
+        }
+    }
+
     for trigger in triggers {
         let Some(floor_ms) = trigger_floor_ms(trigger) else {
             continue;
@@ -371,12 +404,28 @@ async fn handle_meeting_ended(
                     "{MEETING_LOG_PREFIX} trigger '{}' cooling down; meeting event dropped",
                     trigger.id
                 );
+                mark_meeting_skipped(
+                    infra,
+                    &meeting_id,
+                    recorded,
+                    &trigger.id,
+                    "the recap trigger was cooling down",
+                )
+                .await;
             }
             FiringDecision::NeedsProvider => {
                 tauri_plugin_log::log::info!(
                     "{MEETING_LOG_PREFIX} trigger '{}' needs an AI provider; meeting event dropped",
                     trigger.id
                 );
+                mark_meeting_skipped(
+                    infra,
+                    &meeting_id,
+                    recorded,
+                    &trigger.id,
+                    "no AI provider was configured",
+                )
+                .await;
             }
             FiringDecision::Fire { .. } => {
                 if let Err(error) = infra.trigger_state().set_last_fired_ms(&trigger.id, now).await
@@ -393,6 +442,22 @@ async fn handle_meeting_ended(
                     ended.start_ms,
                     ended.end_ms
                 );
+                if recorded {
+                    // Link the claim onto the meeting row: the eventual ledger
+                    // row resolves it to recap-ready/skipped at read time.
+                    // Pending beats a decision-time skip by another trigger.
+                    let conversation_id =
+                        super::run::firing_conversation_id(&trigger.id, ended.end_ms);
+                    if let Err(error) = infra
+                        .meetings()
+                        .link_recap_pending(&meeting_id, &trigger.id, now, &conversation_id)
+                        .await
+                    {
+                        tauri_plugin_log::log::warn!(
+                            "{MEETING_LOG_PREFIX} failed to link firing to meeting {meeting_id}: {error}"
+                        );
+                    }
+                }
                 spawn_meeting_firing(
                     Arc::clone(infra),
                     app_handle.clone(),
@@ -403,6 +468,29 @@ async fn handle_meeting_ended(
                 );
             }
         }
+    }
+}
+
+/// Best-effort decision-time skip on the meeting row (cooldown / provider):
+/// never downgrades a pending link, never fails the tick.
+async fn mark_meeting_skipped(
+    infra: &AppInfraState,
+    meeting_id: &str,
+    recorded: bool,
+    trigger_id: &str,
+    reason: &str,
+) {
+    if !recorded {
+        return;
+    }
+    if let Err(error) = infra
+        .meetings()
+        .mark_recap_skipped(meeting_id, trigger_id, reason)
+        .await
+    {
+        tauri_plugin_log::log::warn!(
+            "{MEETING_LOG_PREFIX} failed to mark meeting {meeting_id} skipped: {error}"
+        );
     }
 }
 
@@ -548,14 +636,14 @@ async fn readiness_snapshot(
     Ok(snapshot)
 }
 
-fn rfc3339_from_ms(unix_ms: i64) -> String {
+pub(crate) fn rfc3339_from_ms(unix_ms: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
         .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn ms_from_rfc3339(value: &str) -> Option<i64> {
+pub(crate) fn ms_from_rfc3339(value: &str) -> Option<i64> {
     time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
         .ok()
         .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)

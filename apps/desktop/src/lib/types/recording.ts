@@ -3,7 +3,9 @@ export type ActivityMode =
 	| "system_input_or_screen"
 	| "system_input_or_screen_or_audio";
 
-export type AppearanceSetting = "system" | "light" | "dark";
+// "terminal" is the legacy dark-terminal identity, selectable until Warm
+// Paper Dark reaches parity (Track B retheme).
+export type AppearanceSetting = "system" | "light" | "dark" | "terminal";
 export type AudioSpeechDetector = "silero" | "webrtc" | "off";
 export type MicrophoneVadAdapter = AudioSpeechDetector;
 export type RetentionPolicy = "never" | "days_7" | "days_14" | "days_30";

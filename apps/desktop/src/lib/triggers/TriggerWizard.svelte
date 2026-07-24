@@ -3,7 +3,10 @@
   // 01 Condition → 02 Prompt → 03 Review. Visited steps are clickable, forward
   // jumps past unvisited steps are not. Create lands on step 1, Import on step 2
   // (the prompt is what needs review), Edit on Review with all steps unlocked.
-  import { untrack } from "svelte";
+  // Slice 6 adds a Template step 0 (TemplateGallery) for plain creates (no
+  // presetCond): a pick prefills everything and lands on Review with a
+  // removable "from template" chip; Start from scratch begins at 01.
+  import { tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   // Plain (unscoped) styles, every selector prefixed with the .wiz-panel root —
   // extracted to keep this file under the repo's 800-line ceiling.
@@ -21,6 +24,7 @@
     DEFAULT_MIN_MEETING_MINUTES,
     STARTERS,
     WEEKDAY_ORDER,
+    advRows,
     createTrigger,
     scheduleLabel,
     updateTrigger,
@@ -32,6 +36,8 @@
   } from "$lib/triggers/api";
   import { CONDITION_ICON } from "$lib/triggers/condition-icons";
   import { shareTriggerJson } from "$lib/triggers/share";
+  import TemplateGallery from "$lib/triggers/TemplateGallery.svelte";
+  import { templatePrefill, type TriggerTemplate } from "$lib/triggers/templates";
 
   interface Props {
     mode: "create" | "edit" | "import";
@@ -76,8 +82,12 @@
     () => seed?.condition.type ?? presetCond ?? "meeting_ends",
   );
 
-  let step = $state(1);
-  let maxStep = $state(1);
+  // Plain creates (no condition preset from an add-row) start on the template
+  // gallery — step 0. Edit/import/preset creates keep their existing landing.
+  const hasGallery: boolean = untrack(() => mode === "create" && presetCond === undefined);
+
+  let step = $state(hasGallery ? 0 : 1);
+  let maxStep = $state(hasGallery ? 0 : 1);
   let cond = $state<ConditionType>(initialCond);
   let name = $state(seed?.name ?? "");
   let prompt = $state(seed ? seed.prompt : STARTERS[initialCond]);
@@ -115,6 +125,9 @@
   let previewExpanded = $state(false);
   let shareState = $state<"idle" | "copied" | "failed">("idle");
   let nameInput = $state<HTMLInputElement | null>(null);
+  let panelEl = $state<HTMLDivElement | null>(null);
+  /** Template identity for the Review chip — values survive its removal. */
+  let template = $state<TriggerTemplate | null>(null);
 
   // Edit lands on Review with every step unlocked; Import lands on the prompt.
   untrack(() => {
@@ -198,6 +211,47 @@
     if (n === 3) previewExpanded = false;
   }
 
+  const STEP_TABS = $derived([
+    ...(hasGallery ? [{ n: 0, label: "Template" }] : []),
+    { n: 1, label: "Condition" },
+    { n: 2, label: "Prompt" },
+    { n: 3, label: "Review" },
+  ]);
+
+  // ── Step 0: template gallery ──────────────────────────────────────────────
+  // Picking a card prefills everything and lands on Review; the picked card's
+  // button leaves the DOM, so focus moves to the Name field (a11y).
+  function applyTemplate(tpl: TriggerTemplate): void {
+    template = tpl;
+    const fill = templatePrefill(tpl);
+    cond = fill.cond;
+    name = fill.name;
+    prompt = fill.prompt;
+    dirty = fill.prompt !== STARTERS[fill.cond];
+    if (fill.appBundleId !== undefined) appBundleId = fill.appBundleId;
+    if (fill.appName !== undefined) appName = fill.appName;
+    if (fill.awayGap !== undefined) adv.awaygap = fill.awayGap;
+    if (fill.minLen !== undefined) adv.minlen = fill.minLen;
+    if (fill.time !== undefined) time = fill.time;
+    if (fill.schedDays !== undefined) schedDays = fill.schedDays;
+    goStep(3);
+    void tick().then(() => nameInput?.focus());
+  }
+
+  // Removing the chip keeps every prefilled value — only the identity clears.
+  function clearTemplate(): void {
+    template = null;
+    void tick().then(() => nameInput?.focus());
+  }
+
+  function startScratch(): void {
+    template = null;
+    goStep(1);
+    void tick().then(() =>
+      panelEl?.querySelector<HTMLButtonElement>(".cond-card")?.focus(),
+    );
+  }
+
   // ── Step 1: condition ─────────────────────────────────────────────────────
   function selectCond(next: ConditionType): void {
     cond = next;
@@ -260,27 +314,7 @@
     };
   });
 
-  const ADV_ROWS = $derived.by(() =>
-    [
-      {
-        key: "minlen" as const,
-        label: "Minimum meeting length",
-        min: 1,
-        max: 30,
-        step: 1,
-        visible: cond === "meeting_ends",
-      },
-      {
-        key: "awaygap" as const,
-        label: "Away gap",
-        min: 5,
-        max: 120,
-        step: 5,
-        visible: cond === "app_opened",
-      },
-      { key: "cooldown" as const, label: "Cooldown", min: 0, max: 120, step: 5, visible: true },
-    ].filter((row) => row.visible),
-  );
+  const ADV_ROWS = $derived(advRows(cond));
   const allDefaults = $derived(
     adv.minlen === DEFAULT_MIN_MEETING_MINUTES &&
       adv.awaygap === DEFAULT_AWAY_GAP_MINUTES &&
@@ -392,7 +426,7 @@
   }
 </script>
 
-<div class="wiz-panel">
+<div class="wiz-panel" class:at-gallery={step === 0} bind:this={panelEl}>
   <nav class="wiz-crumb">
     <button class="back" type="button" onclick={oncancel}>triggers</button>
     <span class="sep">/</span>
@@ -420,7 +454,7 @@
   {/if}
 
   <div class="steps">
-    {#each [{ n: 1, label: "Condition" }, { n: 2, label: "Prompt" }, { n: 3, label: "Review" }] as tab, index (tab.n)}
+    {#each STEP_TABS as tab, index (tab.n)}
       {#if index > 0}
         <span class="step-rule" class:done={tab.n <= step}></span>
       {/if}
@@ -434,10 +468,15 @@
           if (tab.n !== step && tab.n <= maxStep) goStep(tab.n);
         }}
       >
-        <span class="num">0{tab.n}</span>{tab.label}
+        <span class="num">{tab.n === 0 ? (step > 0 ? "✓" : "✦") : `0${tab.n}`}</span>{tab.label}
       </button>
     {/each}
   </div>
+
+  <!-- STEP 0 — template gallery -->
+  {#if step === 0}
+    <TemplateGallery onpick={applyTemplate} onscratch={startScratch} />
+  {/if}
 
   <!-- STEP 1 — condition -->
   {#if step === 1}
@@ -581,11 +620,30 @@
   <!-- STEP 3 — review -->
   {#if step === 3}
     <div class="wiz-step">
+      {#if template !== null}
+        {@const ChipIcon = CONDITION_ICON[template.condition.type]}
+        <span class="tpl-chip">
+          <ChipIcon aria-hidden="true" />
+          from template · {template.name}
+          <button
+            type="button"
+            class="x"
+            aria-label="Remove template"
+            title="Clear the template — keeps everything it filled in"
+            onclick={clearTemplate}
+          >✕</button>
+        </span>
+      {/if}
       <p class="wiz-lead">
         <span class="q">{mode === "edit" ? "Review and save." : "Review and create."}</span>
         <span class="hint">
-          Name it, check the pieces, tune Advanced only if you must — the defaults are right for
-          almost everyone.
+          {#if template !== null}
+            The template filled everything in — steps 01 and 02 are unlocked if you want to
+            change the condition or reword the prompt.
+          {:else}
+            Name it, check the pieces, tune Advanced only if you must — the defaults are right
+            for almost everyone.
+          {/if}
         </span>
       </p>
       <div class="review-card">
@@ -690,8 +748,9 @@
     </div>
   {/if}
 
+  {#if step > 0}
   <div class="wiz-nav">
-    {#if step > 1}
+    {#if step > (hasGallery ? 0 : 1)}
       <button class="btn" type="button" onclick={() => goStep(step - 1)}>
         <IconChevronLeft aria-hidden="true" /> Back
       </button>
@@ -728,4 +787,5 @@
       {/if}
     </button>
   </div>
+  {/if}
 </div>

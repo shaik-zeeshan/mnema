@@ -259,6 +259,9 @@ impl RecordingLifecycle {
 
         self.system_audio_start_retry_at_ms = None;
         self.system_audio_start_retry_delay_ms = 0;
+        // A start is "back on the record" by definition — it also releases a
+        // startup hold whose deadline hadn't passed yet.
+        self.runtime.off_record_deadline_unix_ms = None;
 
         start_capture_runtime(
             &mut self.runtime,
@@ -290,9 +293,16 @@ impl RecordingLifecycle {
         Ok(stopped_session_from_runtime(&self.runtime))
     }
 
+    /// The user pause — "off the record". All capture families stop; the
+    /// session stays alive so the segment loop keeps ticking. With a
+    /// `deadline_unix_ms` this is the timed variant: the tick compares the
+    /// wall-clock deadline and resumes capture once it passes (a monotonic
+    /// timer would stretch across system sleep; the deadline must not).
+    /// `None` is the indefinite pause — off the record until the user says so.
     pub(crate) fn pause_user_capture(
         &mut self,
-        app_handle: &tauri::AppHandle,
+        app_handle: Option<&tauri::AppHandle>,
+        deadline_unix_ms: Option<i64>,
     ) -> Result<NativeCaptureSession, CaptureErrorResponse> {
         if !self.runtime.is_running {
             return Err(CaptureErrorResponse {
@@ -301,16 +311,38 @@ impl RecordingLifecycle {
             });
         }
         if self.runtime.user_capture_paused {
+            // Already off the record: re-timing the window (15m -> 1h, timed ->
+            // indefinite) is just moving the deadline, never a second stop.
+            self.runtime.off_record_deadline_unix_ms = deadline_unix_ms;
             return Ok(self.session());
         }
-        stop_capture_runtime(&mut self.runtime, Some(app_handle))?;
+        stop_capture_runtime(&mut self.runtime, app_handle)?;
         self.runtime.user_capture_paused = true;
+        self.runtime.off_record_deadline_unix_ms = deadline_unix_ms;
         self.runtime.current_segment_sources = Some(CaptureSources {
             screen: false,
             microphone: false,
             system_audio: false,
         });
         Ok(self.session())
+    }
+
+    /// Whether a timed off-the-record window has run out and capture should
+    /// come back on the record. Indefinite pauses never elapse.
+    pub(crate) fn off_record_deadline_elapsed(&self, now_unix_ms: i64) -> bool {
+        self.runtime.is_running
+            && self.runtime.user_capture_paused
+            && self
+                .runtime
+                .off_record_deadline_unix_ms
+                .is_some_and(|deadline| now_unix_ms >= deadline)
+    }
+
+    /// Startup re-arm: hold capture off the record (no session started) until
+    /// the persisted deadline passes. The deadline lands on the runtime so the
+    /// session snapshot reports it even with nothing running.
+    pub(crate) fn hold_off_record_until(&mut self, deadline_unix_ms: i64) {
+        self.runtime.off_record_deadline_unix_ms = Some(deadline_unix_ms);
     }
 
     pub(crate) fn resume_user_capture(
@@ -417,6 +449,7 @@ impl RecordingLifecycle {
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
         self.runtime.user_capture_paused = false;
+        self.runtime.off_record_deadline_unix_ms = None;
         self.runtime.current_segment_sources = self.runtime.requested_sources.clone();
         if let Some(control) = self.runtime.segment_loop_control.as_ref() {
             control.notify();
@@ -1384,6 +1417,33 @@ impl RecordingLifecycle {
     }
 }
 
+/// What startup does about a persisted timed off-the-record deadline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OffRecordStartupAction {
+    /// No timed window armed — auto-start behaves as it always has.
+    StartNormally,
+    /// The deadline passed while the app was closed: clear it and go straight
+    /// back on the record (regular auto-start).
+    ResumeExpired,
+    /// The deadline is still in the future: stay off the record (skip
+    /// auto-start entirely — never record even a blip inside the window) and
+    /// re-arm a wall-clock watcher to start capture when it passes.
+    HoldUntil(i64),
+}
+
+/// The restart half of timed off-the-record: fold the persisted deadline and
+/// the current wall clock into what startup should do.
+pub(crate) fn off_record_startup_action(
+    persisted_deadline_unix_ms: Option<i64>,
+    now_unix_ms: i64,
+) -> OffRecordStartupAction {
+    match persisted_deadline_unix_ms {
+        None => OffRecordStartupAction::StartNormally,
+        Some(deadline) if now_unix_ms >= deadline => OffRecordStartupAction::ResumeExpired,
+        Some(deadline) => OffRecordStartupAction::HoldUntil(deadline),
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
@@ -1679,6 +1739,151 @@ mod tests {
 
         assert_eq!(outcome, None);
         assert!(lifecycle.runtime().capture_suspension.is_none());
+    }
+
+    // Timed off-the-record (slice 7): a pause with a deadline stores it on the
+    // runtime and surfaces it in the session snapshot, so the frontend/tray can
+    // render the countdown and the tick can compare it.
+    #[test]
+    fn a_timed_pause_stores_the_deadline_and_reports_it_in_the_session() {
+        let mut lifecycle = RecordingLifecycle {
+            runtime: NativeCaptureRuntime {
+                is_running: true,
+                requested_sources: Some(screen_only_sources()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let session = lifecycle
+            .pause_user_capture(None, Some(1_753_250_000_000))
+            .expect("timed pause should succeed");
+
+        assert!(session.is_user_paused);
+        assert_eq!(session.off_record_deadline_unix_ms, Some(1_753_250_000_000));
+        assert_eq!(
+            lifecycle.runtime().off_record_deadline_unix_ms,
+            Some(1_753_250_000_000)
+        );
+    }
+
+    #[test]
+    fn an_indefinite_pause_stores_no_deadline_and_never_elapses() {
+        let mut lifecycle = RecordingLifecycle {
+            runtime: NativeCaptureRuntime {
+                is_running: true,
+                requested_sources: Some(screen_only_sources()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let session = lifecycle
+            .pause_user_capture(None, None)
+            .expect("indefinite pause should succeed");
+
+        assert!(session.is_user_paused);
+        assert_eq!(session.off_record_deadline_unix_ms, None);
+        assert!(!lifecycle.off_record_deadline_elapsed(i64::MAX));
+    }
+
+    #[test]
+    fn re_pausing_while_off_the_record_retimes_the_window_without_a_second_stop() {
+        let mut lifecycle = RecordingLifecycle {
+            runtime: NativeCaptureRuntime {
+                is_running: true,
+                requested_sources: Some(screen_only_sources()),
+                user_capture_paused: true,
+                off_record_deadline_unix_ms: Some(1000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let session = lifecycle
+            .pause_user_capture(None, Some(2000))
+            .expect("re-timing should succeed");
+        assert_eq!(session.off_record_deadline_unix_ms, Some(2000));
+
+        // Timed -> indefinite drops the deadline too.
+        let session = lifecycle
+            .pause_user_capture(None, None)
+            .expect("indefinite re-pause should succeed");
+        assert_eq!(session.off_record_deadline_unix_ms, None);
+    }
+
+    // The deadline is wall-clock so sleeping through it still reads as elapsed
+    // on the first tick after wake — never a monotonic timer.
+    #[test]
+    fn the_off_record_deadline_elapses_on_the_wall_clock() {
+        let mut lifecycle = RecordingLifecycle {
+            runtime: NativeCaptureRuntime {
+                is_running: true,
+                requested_sources: Some(screen_only_sources()),
+                user_capture_paused: true,
+                off_record_deadline_unix_ms: Some(5000),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(!lifecycle.off_record_deadline_elapsed(4999));
+        assert!(lifecycle.off_record_deadline_elapsed(5000));
+        assert!(lifecycle.off_record_deadline_elapsed(6000));
+
+        // A session that is not paused (or not running) never auto-resumes.
+        lifecycle.runtime_mut().user_capture_paused = false;
+        assert!(!lifecycle.off_record_deadline_elapsed(6000));
+        lifecycle.runtime_mut().user_capture_paused = true;
+        lifecycle.runtime_mut().is_running = false;
+        assert!(!lifecycle.off_record_deadline_elapsed(6000));
+    }
+
+    // The restart simulation: what a relaunch does with the re-loaded deadline.
+    #[test]
+    fn startup_with_no_persisted_deadline_starts_normally() {
+        assert_eq!(
+            off_record_startup_action(None, 1_000),
+            OffRecordStartupAction::StartNormally
+        );
+    }
+
+    #[test]
+    fn a_deadline_that_passed_while_the_app_was_closed_resumes_on_startup() {
+        assert_eq!(
+            off_record_startup_action(Some(1_000), 1_000),
+            OffRecordStartupAction::ResumeExpired
+        );
+        assert_eq!(
+            off_record_startup_action(Some(1_000), 50_000),
+            OffRecordStartupAction::ResumeExpired
+        );
+    }
+
+    #[test]
+    fn a_deadline_still_in_the_future_holds_capture_off_the_record_at_startup() {
+        assert_eq!(
+            off_record_startup_action(Some(9_000), 1_000),
+            OffRecordStartupAction::HoldUntil(9_000)
+        );
+    }
+
+    // The state re-load path itself: a held deadline lands on the runtime and
+    // is visible in the session snapshot even though nothing is running yet,
+    // and a subsequent start (the auto-resume) releases it.
+    #[test]
+    fn a_startup_hold_reports_the_deadline_without_a_running_session() {
+        let mut lifecycle = RecordingLifecycle::default();
+
+        lifecycle.hold_off_record_until(9_000);
+
+        let session = lifecycle.session();
+        assert!(!session.is_running);
+        assert!(!session.is_user_paused);
+        assert_eq!(session.off_record_deadline_unix_ms, Some(9_000));
+        // No live paused session, so the segment-loop resume never fires for a
+        // hold — the startup watcher owns it.
+        assert!(!lifecycle.off_record_deadline_elapsed(i64::MAX));
     }
 
     #[test]

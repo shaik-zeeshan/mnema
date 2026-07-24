@@ -1,0 +1,693 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — App-Match · Insights Chat · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction-2 warm paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --blue: #3a6ea8;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body { font-family: var(--sans); color: var(--ink); padding: 72px 48px 120px; -webkit-font-smoothing: antialiased; }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden; display: flex; position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail — mirrors InsightsRail.svelte ============ */
+  .rail {
+    width: 240px; flex: none;
+    background: var(--rail-bg);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .rail-scroll { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 44px 16px 0; }
+  /* header band: only the collapse chevron, right-aligned (real .rail-header) */
+  .rail-header { display: flex; justify-content: flex-end; align-items: center; height: 24px; margin-bottom: 4px; }
+  .rail-collapse {
+    width: 24px; height: 24px; border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-3); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  }
+  .rail-collapse:hover { color: var(--accent); background: #ece8da; }
+  .rail-collapse svg { width: 15px; height: 15px; }
+  /* primary nav — quiet text rows; active = accent label + tint + inset bar */
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail-nav-item {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--ink-2); font-family: var(--sans);
+    font-size: 13px; text-align: left; cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  .rail-nav-item svg { flex: none; width: 15px; height: 15px; stroke: currentColor; opacity: .85; }
+  .rail-nav-item:hover { color: var(--ink); background: #ece8da; }
+  .rail-nav-item.active { color: var(--accent); font-weight: 600; background: var(--tint); }
+  .rail-nav-item.active svg { opacity: 1; }
+  .rail-nav-item.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  .rail-new {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
+    color: var(--accent-deep); background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 4px; padding: 1px 4px; margin-left: auto;
+  }
+  /* new chat — same geometry as nav rows (real .rail-newchat) */
+  .rail-newchat {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    width: 100%; height: 28px; margin-top: 16px; padding: 0 8px;
+    border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-2); font-family: var(--sans); font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .rail-newchat .plus { flex: none; width: 15px; display: inline-flex; justify-content: center; font-size: 14px; color: var(--ink-3); }
+  .rail-newchat:hover { color: var(--accent); background: #ece8da; }
+  .rail-newchat.active { color: var(--accent); font-weight: 600; background: var(--tint); }
+  .rail-newchat.active .plus { color: var(--accent); }
+  .rail-newchat.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  /* origin filter — rail-sized segmented All/Chats/Triggers (real .origin-filter) */
+  .origin-filter {
+    display: flex; align-items: center; gap: 2px; padding: 2px; margin-top: 14px;
+    border: 1px solid var(--border); border-radius: 7px; background: var(--rail-bg);
+  }
+  .origin-filter button {
+    flex: 1 1 0; height: 20px; font-family: var(--sans); font-size: 10.5px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 5px; background: transparent;
+    color: var(--ink-2); cursor: pointer; text-transform: lowercase;
+  }
+  .origin-filter button:hover { color: var(--ink); }
+  .origin-filter button.active { background: var(--tint); border-color: var(--tint-border); color: var(--accent-deep); }
+  /* search — borderless magnifier row (real .rail-search) */
+  .rail-search { display: flex; align-items: center; gap: 8px; height: 28px; margin-top: 8px; padding: 0 8px; border-radius: 6px; }
+  .rail-search svg { flex: none; width: 13px; height: 13px; stroke: var(--ink-3); }
+  .rail-search .ph { font-size: 12.5px; color: var(--ink-3); }
+  /* history — date-group eyebrows + compact rows (real RailHistory) */
+  .rail-history { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding-bottom: 16px; }
+  .rail-group {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); margin-top: 14px; padding: 11px 8px 8px; border-top: 1px solid var(--border-soft);
+  }
+  .rail-group:first-child { border-top: none; margin-top: 12px; padding-top: 0; }
+  .rail-chat-row { position: relative; display: flex; align-items: center; padding: 3px 8px; border-radius: 5px; cursor: pointer; }
+  .rail-chat-row:hover { background: #ece8da; }
+  .rail-chat { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .rail-chat .row1 { display: flex; align-items: center; gap: 8px; height: 24px; min-width: 0; }
+  .rail-chat .t {
+    flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--ink-2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .rail-chat-row:hover .t { color: var(--ink); }
+  .rail-chat .when { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); flex: none; }
+  .rail-chat-row.active { background: var(--tint); }
+  .rail-chat-row.active::before {
+    content: ""; position: absolute; left: -16px; top: 3px; bottom: 3px;
+    width: 3px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  .rail-chat-row.active .t { color: var(--accent-deep); font-weight: 500; }
+  /* trigger-origin badge — accent-bordered chip under the title (real .origin-badge) */
+  .origin-badge {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 4px;
+    margin-bottom: 1px; font-family: var(--mono); font-size: 9px; letter-spacing: .03em; line-height: 14px;
+    padding: 0 5px; border-radius: 4px;
+    border: 1px solid var(--tint-border); background: var(--tint-2); color: var(--accent-deep);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  .origin-badge svg { width: 9px; height: 9px; stroke: currentColor; flex: none; }
+  /* footer — engine status line (real RailFooter, NOT a recording status) */
+  .rail-foot {
+    flex: none; border-top: 1px solid var(--border);
+    padding: 12px 16px; display: flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .rail-foot .dot { width: 5px; height: 5px; border-radius: 999px; background: var(--accent-2); flex: none; box-shadow: 0 0 0 2px rgba(42,138,96,.14); }
+  .rail-foot .sep { color: var(--ink-3); }
+  .rail-foot .model { color: var(--ink-2); }
+  /* resizer divider between rail and pane (real RailResizer) */
+  .rail-resizer { width: 1px; flex: none; background: var(--border); position: relative; cursor: col-resize; }
+  .rail-resizer::after {
+    content: ""; position: absolute; top: 50%; left: -1.5px; width: 4px; height: 36px;
+    border-radius: 2px; background: var(--border-strong); transform: translateY(-50%); opacity: .55;
+  }
+
+  /* ============ chat pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+  /* --- empty state (new): serif greeting + hero composer + chips --- */
+  .chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 0 120px 56px; }
+  .empty-date { font-family: var(--mono); font-size: 12px; letter-spacing: .08em; color: var(--ink-3); margin-bottom: 18px; }
+  .empty-greet { font-family: var(--serif); font-size: 40px; font-weight: 400; letter-spacing: -.01em; text-align: center; }
+  .empty-sub { font-size: 14.5px; color: var(--ink-2); margin-top: 12px; text-align: center; }
+  .composer {
+    background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.04), 0 6px 24px rgba(60,52,32,.05);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.10), 0 6px 24px rgba(60,52,32,.05); }
+  .composer--hero { width: 700px; margin-top: 38px; }
+  .composer textarea {
+    width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+    font-family: var(--sans); font-size: 15px; color: var(--ink);
+    padding: 18px 20px 4px; height: 68px; line-height: 1.5;
+  }
+  .composer textarea::placeholder { color: var(--ink-3); }
+  .composer-bar { display: flex; align-items: center; gap: 12px; padding: 8px 10px 10px 14px; }
+  /* model picker trigger — "Default · <model>" with a caret (real ModelPicker) */
+  .model-pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    border: 1px solid var(--border); background: var(--card-deep);
+    border-radius: 6px; padding: 4px 9px; cursor: pointer;
+  }
+  .model-pick:hover { border-color: var(--border-strong); color: var(--ink); }
+  .model-pick .caret { font-size: 8px; color: var(--ink-3); }
+  /* context-window occupancy chip (real .composer-context, ring + token count) */
+  .ctx-tokens { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .ctx-tokens svg { width: 13px; height: 13px; }
+  .ctx-tokens .track { fill: none; stroke: var(--border); stroke-width: 2; }
+  .ctx-tokens .fill { fill: none; stroke: var(--accent-2); stroke-width: 2; stroke-linecap: round; }
+  .composer-send {
+    margin-left: auto; width: 30px; height: 30px; border-radius: 9px; border: 0;
+    background: var(--accent); color: #f6faf6; cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .composer-send:hover { background: var(--accent-deep); }
+  .composer-send:disabled { background: var(--border-strong); cursor: default; }
+  .chips-label { font-family: var(--mono); font-size: 11px; letter-spacing: .11em; text-transform: uppercase; color: var(--ink-3); margin: 34px 0 14px; }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: 760px; }
+  .chip {
+    font-family: var(--sans); font-size: 13px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 8px 17px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .chip:hover { border-color: var(--accent-2); color: var(--accent-deep); background: var(--tint-2); }
+  .chip .cm { font-family: var(--mono); font-size: 11px; color: var(--accent); margin-right: 7px; }
+
+  /* --- transcript (mid-conversation) --- */
+  .transcript { flex: 1; overflow-y: auto; min-height: 0; }
+  .thread-col { max-width: 760px; margin: 0 auto; padding: 46px 32px 16px; display: flex; flex-direction: column; gap: 8px; }
+  .msg-user { display: flex; justify-content: flex-end; margin-top: 10px; }
+  .user-bubble {
+    max-width: 78%; background: var(--tint); border: 1px solid var(--tint-border);
+    border-radius: 14px 14px 4px 14px; padding: 10px 15px;
+    font-size: 14px; line-height: 1.55; color: #2c4636;
+  }
+  .msg-assistant { margin-top: 12px; }
+  .answer-col { display: flex; flex-direction: column; gap: 12px; }
+  /* thinking / activity chips (real .activity-chip idiom) */
+  .activity-chip {
+    align-self: flex-start; display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    background: transparent; border: 0; padding: 0; cursor: pointer;
+  }
+  .activity-chip:hover { color: var(--ink-2); }
+  .activity-chip .caret { display: inline-block; transition: transform .15s; font-size: 8px; }
+  .activity-chip[aria-expanded="true"] .caret { transform: rotate(90deg); }
+  .activity-list { display: none; margin: 2px 0 0 14px; border-left: 1px solid var(--border); padding-left: 14px; }
+  .activity-list.open { display: block; }
+  .activity-item { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); padding: 3.5px 0; }
+  .activity-item .g { color: var(--accent); margin-right: 6px; }
+  .activity-item .app { color: var(--ink-2); }
+  /* answer prose */
+  .answer p { font-size: 14.5px; line-height: 1.65; color: #45412f; margin-bottom: 12px; }
+  .answer p:last-child { margin-bottom: 0; }
+  .answer b { font-weight: 600; color: var(--ink); }
+  /* typed timeline block (real charts/Timeline.svelte, warm-paper skin) */
+  .graphic {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 15px 20px 13px; box-shadow: 0 1px 2px rgba(60,52,32,.03);
+  }
+  .tl-title { font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px; }
+  .tl { list-style: none; }
+  .tl-row { display: grid; grid-template-columns: 16px 1fr; gap: 11px; }
+  .tl-spine { position: relative; width: 16px; }
+  .tl-spine::before { content: ""; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; transform: translateX(-50%); background: var(--border); }
+  .tl-row:first-child .tl-spine::before { top: 9px; }
+  .tl-row:last-child .tl-spine::before { bottom: calc(100% - 15px); }
+  .tl-dot { position: absolute; top: 7px; left: 50%; transform: translateX(-50%); width: 7px; height: 7px; border-radius: 50%; }
+  .tl-body { display: flex; flex-direction: column; padding: 3px 0 10px; }
+  .tl-row:last-child .tl-body { padding-bottom: 2px; }
+  .tl-time { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); letter-spacing: .02em; }
+  .tl-label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 3px; font-size: 13.5px; color: #45412f; }
+  .app-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; color: var(--ink-2); background: var(--card-deep);
+    border: 1px solid var(--border-soft); border-radius: 999px; padding: 1.5px 8px 1.5px 3px;
+  }
+  .app-chip .ic {
+    width: 14px; height: 14px; border-radius: 4px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 8px; font-weight: 700; color: #fff;
+  }
+  /* answer tools + sources (real .answer-tools / .sources) */
+  .answer-tools { display: flex; }
+  .answer-copy {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 10px; cursor: pointer;
+  }
+  .answer-copy:hover { color: var(--accent-deep); border-color: var(--tint-border); background: var(--tint-2); }
+  .sources { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border-soft); padding-top: 12px; }
+  .sources-heading { font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-3); }
+  .source-label { font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 4px 0 6px; display: block; }
+  .source-row { display: flex; gap: 10px; flex-wrap: wrap; }
+  .source-card {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 6px 12px 6px 7px; cursor: pointer; max-width: 320px;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .source-card:hover { border-color: var(--tint-border); box-shadow: 0 2px 10px rgba(31,111,74,.07); }
+  .source-thumb {
+    width: 42px; height: 27px; border-radius: 5px; flex: none;
+    border: 1px solid var(--border-soft);
+    background: linear-gradient(135deg, #f1ede0, #e6e0cf);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 9px; font-weight: 700; color: var(--ink-3);
+  }
+  .source-thumb.audio { background: var(--tint-2); color: var(--accent); font-size: 11px; }
+  .source-main { min-width: 0; display: flex; flex-direction: column; }
+  .source-title { font-size: 11.5px; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 230px; }
+  .source-meta { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); margin-top: 2px; }
+  /* pinned composer (mid-conversation) — slim single-row, like the real Chat */
+  .composer-wrap { flex: none; padding: 6px 32px 16px; max-width: 824px; margin: 0 auto; width: 100%; }
+  .composer-activity { height: 16px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); padding: 0 4px 2px; }
+  .composer-wrap .composer { border-radius: 13px; }
+  .composer-wrap .composer textarea { height: 40px; padding: 13px 18px 0; font-size: 14px; }
+  .composer-wrap .composer-bar { padding: 6px 8px 8px 12px; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · CHAT — NEW EMPTY STATE                                 -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 1</b> · Insights shell — Chat, new empty state (app-match rail + Meetings/Triggers nav)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Insights sub-surface">
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Overview
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+            Journal
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+            Subjects
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 4v13M9 9h6M9 13h4"/></svg>
+            Context
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+            Meetings <span class="rail-new">NEW</span>
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+            Triggers <span class="rail-new">NEW</span>
+          </button>
+        </nav>
+
+        <button class="rail-newchat active"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <span class="ph">Search chats…</span>
+        </div>
+
+        <div class="rail-history">
+          <div class="rail-group">Today</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Weekly product sync</span><span class="when">3h</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">2h</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Daily digest — Wed Jul 23</span><span class="when">7h</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Daily digest</span>
+            </div>
+          </div>
+          <div class="rail-group">Yesterday</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Sprint retro follow-ups — who owns what</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-group">This week</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Weekly review</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="dot"></span>
+        engine <span class="sep">·</span> <span class="model">claude-sonnet-4-5</span>
+      </div>
+    </aside>
+
+    <div class="rail-resizer" aria-hidden="true"></div>
+
+    <main class="main">
+      <div class="chat-empty">
+        <div class="empty-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+        <h1 class="empty-greet">Good afternoon, Zeeshan.</h1>
+        <p class="empty-sub">Ask about anything you’ve seen, heard, or said — it’s all here, on this Mac.</p>
+
+        <div class="composer composer--hero">
+          <textarea placeholder="Ask Mnema about your activity…"></textarea>
+          <div class="composer-bar">
+            <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+            <button class="composer-send" disabled aria-label="Send">↑</button>
+          </div>
+        </div>
+
+        <div class="chips-label">From your recent activity</div>
+        <div class="chips">
+          <button class="chip"><span class="cm">◉</span>Summarize your 10:00 meeting with Sarah</button>
+          <button class="chip"><span class="cm">▣</span>What was I doing in Figma before lunch?</button>
+          <button class="chip"><span class="cm">◷</span>What did I promise in yesterday’s retro?</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · CHAT — MID-CONVERSATION                                -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 2</b> · Insights shell — Chat mid-conversation with a typed timeline block + sources</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m11 17-5-5 5-5M18 17l-5-5 5-5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Insights sub-surface">
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+            Overview
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+            Journal
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+            Subjects
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h13a3 3 0 0 1 3 3v13H7a3 3 0 0 1-3-3V4z"/><path d="M4 4v13M9 9h6M9 13h4"/></svg>
+            Context
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+            Meetings <span class="rail-new">NEW</span>
+          </button>
+          <button class="rail-nav-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+            Triggers <span class="rail-new">NEW</span>
+          </button>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <span class="ph">Search chats…</span>
+        </div>
+
+        <div class="rail-history">
+          <div class="rail-group">Today</div>
+          <div class="rail-chat-row active">
+            <div class="rail-chat"><span class="row1"><span class="t">Lunch to design review — what happened</span><span class="when">now</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Recap — Weekly product sync</span><span class="when">3h</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>Meeting recap</span>
+            </div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">2h</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat">
+              <span class="row1"><span class="t">Daily digest — Wed Jul 23</span><span class="when">7h</span></span>
+              <span class="origin-badge"><svg viewBox="0 0 24 24" fill="none" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Daily digest</span>
+            </div>
+          </div>
+          <div class="rail-group">Yesterday</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Sprint retro follow-ups — who owns what</span><span class="when">Tue</span></span></div>
+          </div>
+          <div class="rail-group">This week</div>
+          <div class="rail-chat-row">
+            <div class="rail-chat"><span class="row1"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="dot"></span>
+        engine <span class="sep">·</span> <span class="model">claude-sonnet-4-5</span>
+      </div>
+    </aside>
+
+    <div class="rail-resizer" aria-hidden="true"></div>
+
+    <main class="main">
+      <div class="transcript">
+        <div class="thread-col">
+
+          <div class="msg-user">
+            <div class="user-bubble">What did I actually do between lunch and my 2:00 design review?</div>
+          </div>
+
+          <div class="msg-assistant">
+            <div class="answer-col">
+              <button class="activity-chip" aria-expanded="false" data-toggle="acts">
+                <span class="caret">▸</span> Searched your captures · 4 tool calls
+              </button>
+              <ul class="activity-list" id="acts">
+                <li class="activity-item"><span class="g">⌕</span>timeline 12:30 PM – 2:00 PM · <span class="app">today</span></li>
+                <li class="activity-item"><span class="g">⌕</span>search frames · <span class="app">"design review" "tokens"</span></li>
+                <li class="activity-item"><span class="g">⌕</span>read OCR text · <span class="app">Figma · 12:34 PM window</span></li>
+                <li class="activity-item"><span class="g">⌕</span>read transcript · <span class="app">mic · 1:22 PM segment</span></li>
+              </ul>
+
+              <div class="answer">
+                <p>You had a focused 90 minutes. After lunch you went straight back to the <b>warm-palette spacing tokens</b> in Figma, then switched to code for about 25 minutes to fix the rail-resizer drag bug. A Slack huddle with Sarah about recap latency interrupted at 1:22, and you spent the last stretch writing notes for the 2:00 design review.</p>
+              </div>
+
+              <figure class="graphic">
+                <div class="tl-title">12:30 – 2:00 PM · Wednesday, July 23</div>
+                <ol class="tl">
+                  <li class="tl-row">
+                    <span class="tl-spine"><span class="tl-dot" style="background:#8a6b3a"></span></span>
+                    <span class="tl-body">
+                      <span class="tl-time">12:34 – 12:58 PM</span>
+                      <span class="tl-label">Warm-palette spacing tokens — shell redesign page
+                        <span class="app-chip"><span class="ic" style="background:#a259ff">F</span>Figma</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="tl-row">
+                    <span class="tl-spine"><span class="tl-dot" style="background:#2a8a60"></span></span>
+                    <span class="tl-body">
+                      <span class="tl-time">12:58 – 1:22 PM</span>
+                      <span class="tl-label">Fixed rail-resizer drag clamp in RailResizer.svelte
+                        <span class="app-chip"><span class="ic" style="background:#1a6e63">Z</span>Zed</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="tl-row">
+                    <span class="tl-spine"><span class="tl-dot" style="background:#3a6ea8"></span></span>
+                    <span class="tl-body">
+                      <span class="tl-time">1:22 – 1:41 PM</span>
+                      <span class="tl-label">Huddle with Sarah — recap queue latency
+                        <span class="app-chip"><span class="ic" style="background:#4a154b">S</span>Slack</span>
+                      </span>
+                    </span>
+                  </li>
+                  <li class="tl-row">
+                    <span class="tl-spine"><span class="tl-dot" style="background:#9a6b1f"></span></span>
+                    <span class="tl-body">
+                      <span class="tl-time">1:41 – 1:58 PM</span>
+                      <span class="tl-label">Design-review prep notes — “trigger wizard open questions”
+                        <span class="app-chip"><span class="ic" style="background:#5b4a8a">O</span>Obsidian</span>
+                      </span>
+                    </span>
+                  </li>
+                </ol>
+              </figure>
+
+              <div class="answer">
+                <p>One loose end: in the huddle you told Sarah you’d <b>measure recap latency before and after the queue-lane split</b> — that isn’t in your review notes yet.</p>
+              </div>
+
+              <div class="answer-tools">
+                <button class="answer-copy">Copy</button>
+              </div>
+
+              <div class="sources">
+                <span class="sources-heading">Sources</span>
+                <div>
+                  <span class="source-label">Screen</span>
+                  <div class="source-row">
+                    <div class="source-card">
+                      <span class="source-thumb">IMG</span>
+                      <span class="source-main">
+                        <span class="source-title">Figma — Mnema · shell redesign / tokens</span>
+                        <span class="source-meta">12:34 – 12:58 PM</span>
+                      </span>
+                    </div>
+                    <div class="source-card">
+                      <span class="source-thumb">IMG</span>
+                      <span class="source-main">
+                        <span class="source-title">Zed — RailResizer.svelte — mnema</span>
+                        <span class="source-meta">12:58 – 1:22 PM</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <span class="source-label">Audio</span>
+                  <div class="source-row">
+                    <div class="source-card">
+                      <span class="source-thumb audio">◉</span>
+                      <span class="source-main">
+                        <span class="source-title">Microphone — huddle with Sarah</span>
+                        <span class="source-meta">1:22 – 1:41 PM · 2 voices</span>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer-activity"></div>
+        <div class="composer">
+          <textarea placeholder="Ask about your activity…"></textarea>
+          <div class="composer-bar">
+            <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+            <span class="ctx-tokens">
+              <svg viewBox="0 0 16 16"><circle class="track" cx="8" cy="8" r="6.5"/><circle class="fill" cx="8" cy="8" r="6.5" stroke-dasharray="5.7 40.84" transform="rotate(-90 8 8)"/></svg>
+              18.2k tokens
+            </span>
+            <button class="composer-send" disabled aria-label="Send">↑</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ponytail: the only JS — expand/collapse the "Searched your captures" chip.
+  document.querySelectorAll('[data-toggle]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var list = document.getElementById(btn.dataset.toggle);
+      var open = list.classList.toggle('open');
+      btn.setAttribute('aria-expanded', String(open));
+      btn.querySelector('.caret').textContent = open ? '▾' : '▸';
+    });
+  });
+</script>
+
+</body>
+</html>

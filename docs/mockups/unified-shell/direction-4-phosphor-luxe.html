@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mnema — Direction 4 · Phosphor Luxe</title>
+<style>
+/* ============ Phosphor Luxe — Mnema unified shell ============ */
+:root {
+  --bg: #0c0c0e;
+  --surface-0: #0e0e16;
+  --surface-1: #13131a;
+  --accent: #3dffa0;
+  --glow: rgba(61,255,160,.18);
+  --glow-soft: rgba(61,255,160,.08);
+  --ink: #e8eaed;
+  --ink-dim: #9aa0a8;
+  --ink-faint: #5c6068;
+  --hairline: rgba(255,255,255,.06);
+  --hairline-hi: rgba(255,255,255,.10);
+  --glass: rgba(255,255,255,.025);
+  --glass-hi: rgba(255,255,255,.05);
+  --mono: "SF Mono", ui-monospace, Menlo, Monaco, monospace;
+  --sans: system-ui, -apple-system, "Helvetica Neue", sans-serif;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { background: #060608; }
+body {
+  font-family: var(--sans);
+  color: var(--ink);
+  background:
+    radial-gradient(1100px 500px at 80% -5%, rgba(61,255,160,.045), transparent 60%),
+    radial-gradient(900px 700px at 8% 40%, rgba(30,80,60,.10), transparent 65%),
+    linear-gradient(180deg, #08080b 0%, #060608 100%);
+  padding: 72px 48px 120px;
+  min-width: 1540px;
+}
+::selection { background: rgba(61,255,160,.25); }
+
+/* ---- gallery scaffolding ---- */
+.mock-label {
+  max-width: 1440px;
+  margin: 96px auto 20px;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+.mock-label:first-of-type { margin-top: 0; }
+.mock-label .num {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  letter-spacing: .12em;
+  text-shadow: 0 0 12px var(--glow);
+}
+.mock-label h2 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  color: var(--ink);
+}
+.mock-label .sub { font-size: 13px; color: var(--ink-faint); }
+
+.window {
+  width: 1440px;
+  height: 900px;
+  margin: 0 auto;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg);
+  border: 1px solid rgba(255,255,255,.08);
+  box-shadow:
+    0 0 0 1px rgba(0,0,0,.6),
+    0 30px 80px rgba(0,0,0,.65),
+    0 8px 24px rgba(0,0,0,.5);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+/* ambient dusk inside every window */
+.window::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(900px 420px at 85% -10%, rgba(61,255,160,.05), transparent 55%),
+    radial-gradient(700px 600px at -5% 110%, rgba(24,60,46,.14), transparent 60%);
+  z-index: 0;
+}
+.titlebar {
+  height: 40px;
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 8px;
+  background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,0));
+  border-bottom: 1px solid var(--hairline);
+  position: relative;
+  z-index: 2;
+}
+.traffic { display: flex; gap: 8px; }
+.traffic i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+.traffic i:nth-child(1) { background: #ff5f57; }
+.traffic i:nth-child(2) { background: #febc2e; }
+.traffic i:nth-child(3) { background: #28c840; }
+.titlebar .title {
+  flex: 1;
+  text-align: center;
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  letter-spacing: .01em;
+  margin-right: 52px; /* balance traffic lights */
+}
+.chrome { flex: 1; display: flex; min-height: 0; position: relative; z-index: 1; }
+
+/* ================= LEFT RAIL ================= */
+.rail {
+  width: 264px;
+  flex: 0 0 264px;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(14,14,22,.85), rgba(12,12,16,.92));
+  border-right: 1px solid var(--hairline);
+  backdrop-filter: blur(20px);
+}
+.rail-nav { padding: 14px 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--ink-dim);
+  cursor: default;
+  border: 1px solid transparent;
+  transition: background .12s, color .12s;
+}
+.rail-item:hover { background: var(--glass-hi); color: var(--ink); }
+.rail-item.active {
+  background: linear-gradient(180deg, rgba(61,255,160,.10), rgba(61,255,160,.05));
+  border-color: rgba(61,255,160,.18);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 0 18px -6px var(--glow);
+}
+.rail-item .glyph {
+  font-family: var(--mono);
+  font-size: 13px;
+  width: 18px;
+  text-align: center;
+  color: var(--ink-faint);
+}
+.rail-item.active .glyph { color: var(--accent); text-shadow: 0 0 10px var(--glow); }
+.rail-item .kbd {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: rgba(0,0,0,.25);
+}
+.rail-sep { height: 1px; background: var(--hairline); margin: 10px 20px 6px; }
+.rail-head {
+  padding: 8px 22px 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: .18em;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+}
+.recents { flex: 1; overflow: hidden; padding: 0 12px; display: flex; flex-direction: column; gap: 1px; }
+.recent {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  color: var(--ink-dim);
+  cursor: default;
+  transition: background .12s, color .12s;
+  min-width: 0;
+}
+.recent:hover { background: var(--glass-hi); color: var(--ink); }
+.recent .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.recent .origin {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(61,255,160,.55);
+  flex: 0 0 auto;
+}
+.recent .when {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  flex: 0 0 auto;
+}
+.rail-footer {
+  border-top: 1px solid var(--hairline);
+  padding: 12px 18px 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.015), rgba(0,0,0,.15));
+}
+.cap-status { display: flex; align-items: center; gap: 9px; }
+.cap-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--glow), 0 0 16px var(--glow);
+  animation: breathe-dot 2.6s ease-in-out infinite;
+}
+@keyframes breathe-dot {
+  0%, 100% { box-shadow: 0 0 6px var(--glow), 0 0 12px var(--glow-soft); opacity: .85; }
+  50%      { box-shadow: 0 0 10px var(--glow), 0 0 22px var(--glow);      opacity: 1; }
+}
+.cap-status .label { font-size: 12.5px; color: var(--ink); font-weight: 500; }
+.cap-status .meta {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: rgba(61,255,160,.65);
+  text-shadow: 0 0 8px var(--glow-soft);
+}
+.cap-sub { margin-top: 5px; padding-left: 17px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); }
+
+/* ================= MAIN PANE ================= */
+.pane { flex: 1; min-width: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ---- Page 1: empty state ---- */
+.hero {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 0 60px 60px;
+}
+.hero .stamp {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: .16em;
+  color: rgba(61,255,160,.6);
+  text-transform: uppercase;
+  text-shadow: 0 0 12px var(--glow-soft);
+  margin-bottom: 18px;
+}
+.hero h1 {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -.02em;
+  color: var(--ink);
+  margin-bottom: 8px;
+}
+.hero .lede { font-size: 15px; color: var(--ink-dim); margin-bottom: 40px; }
+.hero .lede em { color: var(--ink); font-style: normal; }
+
+.composer {
+  width: 680px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.015));
+  border: 1px solid var(--hairline-hi);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 10px 30px rgba(0,0,0,.35);
+  padding: 18px 18px 12px;
+  transition: border-color .18s, box-shadow .25s;
+}
+.composer:focus-within {
+  border-color: rgba(61,255,160,.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.08),
+    0 0 0 4px rgba(61,255,160,.06),
+    0 0 44px -8px var(--glow),
+    0 10px 30px rgba(0,0,0,.35);
+}
+.composer textarea {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  outline: 0;
+  resize: none;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.5;
+  height: 52px;
+}
+.composer textarea::placeholder { color: var(--ink-faint); }
+.composer-bar { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.composer-bar .scope {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 4px 9px;
+  background: rgba(0,0,0,.25);
+}
+.composer-bar .send {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: #06120c;
+  background: linear-gradient(180deg, #4dffab, #2ee68c);
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 16px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 0 20px -4px var(--glow), inset 0 1px 0 rgba(255,255,255,.35);
+  transition: filter .12s;
+}
+.composer-bar .send:hover { filter: brightness(1.08); }
+
+.chips { display: flex; gap: 10px; margin-top: 26px; flex-wrap: wrap; justify-content: center; max-width: 760px; }
+.chip {
+  font-size: 13px;
+  color: var(--ink-dim);
+  border: 1px solid var(--hairline-hi);
+  background: var(--glass);
+  border-radius: 999px;
+  padding: 8px 16px;
+  cursor: default;
+  transition: border-color .15s, color .15s, background .15s, box-shadow .2s;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+}
+.chip:hover {
+  color: var(--ink);
+  border-color: rgba(61,255,160,.3);
+  background: rgba(61,255,160,.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 20px -8px var(--glow);
+}
+.chip .src { font-family: var(--mono); font-size: 10.5px; color: rgba(61,255,160,.5); margin-right: 7px; }
+.chips-head {
+  margin-top: 44px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ================= PAGE HEADER (shared, pages 2-4) ================= */
+.pane-head {
+  padding: 26px 40px 0;
+  flex: 0 0 auto;
+}
+.pane-head .crumb {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: .1em;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+.pane-head .crumb b { color: rgba(61,255,160,.65); font-weight: 400; }
+.pane-head h1 { font-size: 24px; font-weight: 600; letter-spacing: -.015em; }
+.pane-head .sub { margin-top: 6px; font-size: 13.5px; color: var(--ink-dim); }
+.pane-scroll { flex: 1; overflow-y: auto; padding: 22px 40px 44px; }
+
+/* ================= PAGE 2: MEETINGS LIST ================= */
+.day-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 26px 0 10px;
+}
+.day-head:first-child { margin-top: 4px; }
+.day-head .d { font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.day-head .dd { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+.day-head .rule { flex: 1; height: 1px; background: var(--hairline); }
+
+.mtg {
+  display: grid;
+  grid-template-columns: 88px 26px 1fr auto auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(255,255,255,.028), rgba(255,255,255,.008));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.045);
+  margin-bottom: 8px;
+  cursor: default;
+  transition: border-color .15s, background .15s, box-shadow .2s;
+}
+.mtg:hover {
+  border-color: var(--hairline-hi);
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.015));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 6px 20px rgba(0,0,0,.25);
+}
+.mtg .time { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+.mtg .time .dur { color: var(--ink-faint); font-size: 11px; display: block; }
+.appmark {
+  width: 26px; height: 26px;
+  border-radius: 7px;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-dim);
+  border: 1px solid var(--hairline-hi);
+  background: rgba(255,255,255,.04);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+}
+.mtg .body { min-width: 0; }
+.mtg .name { font-size: 14.5px; font-weight: 500; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mtg .via { margin-top: 3px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); }
+.speakers { display: flex; gap: 6px; }
+.spk {
+  font-size: 11.5px;
+  color: var(--ink-dim);
+  border: 1px solid var(--hairline-hi);
+  background: rgba(255,255,255,.035);
+  border-radius: 999px;
+  padding: 3px 10px;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  backdrop-filter: blur(8px);
+  white-space: nowrap;
+}
+.spk.you { color: rgba(61,255,160,.8); border-color: rgba(61,255,160,.22); background: rgba(61,255,160,.05); }
+.state {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .05em;
+  border-radius: 6px;
+  padding: 4px 10px;
+  white-space: nowrap;
+  justify-self: end;
+}
+.state.recap {
+  color: rgba(61,255,160,.85);
+  border: 1px solid rgba(61,255,160,.22);
+  background: rgba(61,255,160,.06);
+}
+.state.transcript { color: var(--ink-dim); border: 1px solid var(--hairline-hi); background: rgba(255,255,255,.03); }
+.state.processing {
+  color: var(--accent);
+  border: 1px solid rgba(61,255,160,.3);
+  background: rgba(61,255,160,.08);
+  text-shadow: 0 0 10px var(--glow);
+}
+.mtg.live {
+  border-color: rgba(61,255,160,.2);
+  animation: breathe-card 3.2s ease-in-out infinite;
+}
+@keyframes breathe-card {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 22px -10px var(--glow-soft); }
+  50%      { box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 34px -8px var(--glow); }
+}
+
+/* ================= PAGE 3: MEETING DETAIL ================= */
+.detail-meta { display: flex; align-items: center; gap: 10px; margin-top: 12px; flex-wrap: wrap; }
+.detail-meta .mono { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); }
+.detail-meta .dot-sep { color: var(--ink-faint); }
+.provenance {
+  margin-top: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+}
+.provenance .g { color: rgba(61,255,160,.5); }
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-top: 22px;
+  border-bottom: 1px solid var(--hairline);
+}
+.tab {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font-family: var(--sans);
+  font-size: 13.5px;
+  color: var(--ink-dim);
+  padding: 9px 16px 11px;
+  cursor: pointer;
+  position: relative;
+  transition: color .12s;
+}
+.tab:hover { color: var(--ink); }
+.tab.active { color: var(--ink); font-weight: 500; }
+.tab.active::after {
+  content: "";
+  position: absolute;
+  left: 12px; right: 12px; bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 2px;
+  box-shadow: 0 0 12px var(--glow), 0 0 4px var(--glow);
+}
+.tab .count { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); margin-left: 6px; }
+.tabpane { display: none; }
+.tabpane.active { display: block; }
+
+.sheet {
+  margin-top: 24px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.018));
+  border: 1px solid var(--hairline-hi);
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,.08),
+    0 20px 50px rgba(0,0,0,.4),
+    0 4px 14px rgba(0,0,0,.3);
+  padding: 40px 48px 44px;
+  max-width: 860px;
+  backdrop-filter: blur(24px);
+}
+.sheet h2 {
+  font-size: 13px;
+  font-family: var(--mono);
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: rgba(61,255,160,.7);
+  margin: 34px 0 12px;
+}
+.sheet h2:first-child { margin-top: 0; }
+.sheet p { font-size: 14.5px; line-height: 1.65; color: var(--ink); margin-bottom: 12px; }
+.sheet p .m { font-family: var(--mono); font-size: 12.5px; color: var(--ink-dim); }
+.sheet ul { list-style: none; margin: 0 0 8px; }
+.sheet li {
+  font-size: 14.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  padding: 7px 0 7px 26px;
+  position: relative;
+  border-bottom: 1px solid rgba(255,255,255,.035);
+}
+.sheet li:last-child { border-bottom: 0; }
+.sheet li::before {
+  content: "▸";
+  position: absolute; left: 4px; top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(61,255,160,.55);
+}
+.sheet li.action::before { content: "□"; color: rgba(61,255,160,.7); }
+.sheet li .owner {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-faint);
+  margin-left: 8px;
+}
+.recap-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 30px;
+  font-size: 13.5px;
+  color: var(--accent);
+  text-decoration: none;
+  border: 1px solid rgba(61,255,160,.24);
+  background: rgba(61,255,160,.05);
+  border-radius: 9px;
+  padding: 9px 16px;
+  transition: background .15s, box-shadow .2s;
+}
+.recap-link:hover { background: rgba(61,255,160,.1); box-shadow: 0 0 24px -8px var(--glow); }
+.recap-link .g { font-family: var(--mono); font-size: 12px; }
+
+/* transcript */
+.turns { margin-top: 24px; max-width: 860px; }
+.turn { display: grid; grid-template-columns: 64px 130px 1fr; gap: 16px; padding: 12px 6px; border-bottom: 1px solid rgba(255,255,255,.04); }
+.turn .ts { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); padding-top: 2px; }
+.turn .who { font-size: 13px; font-weight: 600; color: var(--ink-dim); padding-top: 1px; }
+.turn.you .who { color: rgba(61,255,160,.8); }
+.turn .say { font-size: 14px; line-height: 1.6; color: var(--ink); }
+/* notes */
+.notes-sheet { margin-top: 24px; max-width: 860px; }
+.notes-sheet textarea {
+  width: 100%;
+  min-height: 320px;
+  background: rgba(255,255,255,.02);
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  padding: 22px 26px;
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.7;
+  outline: 0;
+  resize: vertical;
+}
+.notes-sheet textarea:focus { border-color: rgba(61,255,160,.3); box-shadow: 0 0 28px -10px var(--glow); }
+
+/* ================= PAGE 4: TRIGGER GALLERY ================= */
+.steps { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.step { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-faint); }
+.step .pip {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  border: 1px solid var(--hairline-hi);
+  background: rgba(255,255,255,.03);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.step.hot { color: var(--ink); }
+.step.hot .pip {
+  border-color: rgba(61,255,160,.5);
+  color: var(--accent);
+  background: rgba(61,255,160,.08);
+  box-shadow: 0 0 16px -4px var(--glow);
+  text-shadow: 0 0 8px var(--glow);
+}
+.step-arrow { font-family: var(--mono); color: var(--ink-faint); font-size: 11px; }
+.steps .hint { margin-left: 14px; font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); }
+.steps .hint b { color: rgba(61,255,160,.6); font-weight: 400; }
+
+.tgrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 8px;
+  max-width: 1060px;
+}
+.tcard {
+  border-radius: 13px;
+  border: 1px solid var(--hairline);
+  background: linear-gradient(180deg, rgba(255,255,255,.035), rgba(255,255,255,.01));
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
+  padding: 20px 20px 18px;
+  cursor: default;
+  transition: border-color .15s, transform .15s, box-shadow .2s, background .15s;
+}
+.tcard:hover {
+  border-color: rgba(61,255,160,.28);
+  background: linear-gradient(180deg, rgba(61,255,160,.045), rgba(255,255,255,.012));
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06), 0 14px 34px rgba(0,0,0,.35), 0 0 30px -12px var(--glow);
+}
+.tcard .cond {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  color: rgba(61,255,160,.7);
+  border: 1px solid rgba(61,255,160,.16);
+  background: rgba(61,255,160,.04);
+  border-radius: 6px;
+  padding: 4px 9px;
+  margin-bottom: 14px;
+}
+.tcard .cond .g { font-size: 12px; }
+.tcard h3 { font-size: 15px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 7px; }
+.tcard .desc { font-size: 13px; line-height: 1.55; color: var(--ink-dim); }
+.tcard .fills {
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+}
+.scratch {
+  margin-top: 22px;
+  max-width: 1060px;
+  border: 1px dashed rgba(255,255,255,.14);
+  border-radius: 13px;
+  padding: 18px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: default;
+  transition: border-color .15s, background .15s;
+  background: rgba(255,255,255,.008);
+}
+.scratch:hover { border-color: rgba(61,255,160,.35); background: rgba(61,255,160,.025); }
+.scratch .plus {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  border: 1px solid var(--hairline-hi);
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--mono);
+  font-size: 16px;
+  color: var(--ink-dim);
+  background: rgba(255,255,255,.03);
+}
+.scratch:hover .plus { color: var(--accent); border-color: rgba(61,255,160,.3); text-shadow: 0 0 10px var(--glow); }
+.scratch b { font-size: 14px; font-weight: 600; display: block; margin-bottom: 2px; }
+.scratch span { font-size: 12.5px; color: var(--ink-dim); }
+.scratch .go { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--ink-faint); }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════ PAGE 1 ══════════════════════ -->
+<div class="mock-label">
+  <span class="num">01</span>
+  <h2>Insights Home — empty state</h2>
+  <span class="sub">unified rail · Ask-Mnema composer · activity-sourced suggestions</span>
+</div>
+<div class="window">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="title">Mnema</div></div>
+  <div class="chrome">
+    <aside class="rail">
+      <nav class="rail-nav">
+        <div class="rail-item active"><span class="glyph">＋</span>New Chat<span class="kbd">⌘N</span></div>
+        <div class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></div>
+        <div class="rail-item"><span class="glyph">◉</span>Meetings</div>
+        <div class="rail-item"><span class="glyph">◇</span>Triggers</div>
+      </nav>
+      <div class="rail-sep"></div>
+      <div class="rail-head">Recents</div>
+      <div class="recents">
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — Design standup, onboarding flow</span><span class="when">10:26</span></div>
+        <div class="recent"><span class="t">What did I decide about the CRL cache?</span><span class="when">09:41</span></div>
+        <div class="recent"><span class="origin">▣</span><span class="t">Figma brief — checkout redesign</span><span class="when">09:02</span></div>
+        <div class="recent"><span class="origin">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="t">Where did I save the Deepgram notes?</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — 1:1 with Sarah</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="t">Compare the two pricing spreadsheets</span><span class="when">Mon</span></div>
+        <div class="recent"><span class="origin">◷</span><span class="t">Weekly review — Jul 13–19</span><span class="when">Sun</span></div>
+      </div>
+      <div class="rail-footer">
+        <div class="cap-status">
+          <div class="cap-dot"></div>
+          <span class="label">Recording</span>
+          <span class="meta">3h 12m</span>
+        </div>
+        <div class="cap-sub">screen · mic · system audio</div>
+      </div>
+    </aside>
+    <main class="pane">
+      <div class="hero">
+        <div class="stamp">Wednesday · Jul 23 · 14:32</div>
+        <h1>Good afternoon.</h1>
+        <p class="lede">Everything you've seen and heard today is <em>searchable</em>. Ask away.</p>
+        <div class="composer">
+          <textarea placeholder="Ask Mnema anything about your day…"></textarea>
+          <div class="composer-bar">
+            <span class="scope">scope: today</span>
+            <span class="scope">◉ 2 meetings</span>
+            <button class="send">Ask ⏎</button>
+          </div>
+        </div>
+        <div class="chips-head">From your morning</div>
+        <div class="chips">
+          <div class="chip"><span class="src">10:00</span>Summarize my standup with Sarah &amp; Devon</div>
+          <div class="chip"><span class="src">11:47</span>What was I doing in Figma before lunch?</div>
+          <div class="chip"><span class="src">11:30</span>Pull the action items from the pricing sync</div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════ PAGE 2 ══════════════════════ -->
+<div class="mock-label">
+  <span class="num">02</span>
+  <h2>Meetings — auto-detected list</h2>
+  <span class="sub">no calendar · grouped by day · live processing state breathes</span>
+</div>
+<div class="window">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="title">Mnema — Meetings</div></div>
+  <div class="chrome">
+    <aside class="rail">
+      <nav class="rail-nav">
+        <div class="rail-item"><span class="glyph">＋</span>New Chat<span class="kbd">⌘N</span></div>
+        <div class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></div>
+        <div class="rail-item active"><span class="glyph">◉</span>Meetings</div>
+        <div class="rail-item"><span class="glyph">◇</span>Triggers</div>
+      </nav>
+      <div class="rail-sep"></div>
+      <div class="rail-head">Recents</div>
+      <div class="recents">
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — Design standup, onboarding flow</span><span class="when">10:26</span></div>
+        <div class="recent"><span class="t">What did I decide about the CRL cache?</span><span class="when">09:41</span></div>
+        <div class="recent"><span class="origin">▣</span><span class="t">Figma brief — checkout redesign</span><span class="when">09:02</span></div>
+        <div class="recent"><span class="origin">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — 1:1 with Sarah</span><span class="when">Tue</span></div>
+      </div>
+      <div class="rail-footer">
+        <div class="cap-status">
+          <div class="cap-dot"></div>
+          <span class="label">Recording</span>
+          <span class="meta">3h 12m</span>
+        </div>
+        <div class="cap-sub">screen · mic · system audio</div>
+      </div>
+    </aside>
+    <main class="pane">
+      <div class="pane-head">
+        <div class="crumb">MEETINGS <b>· detected from mic-hold + voices, no calendar needed</b></div>
+        <h1>Meetings</h1>
+        <p class="sub">5 detected this week · recaps write themselves a few minutes after you hang up</p>
+      </div>
+      <div class="pane-scroll">
+        <div class="day-head"><span class="d">Today</span><span class="dd">WED JUL 23</span><div class="rule"></div></div>
+
+        <div class="mtg live">
+          <div class="time">11:30–12:12<span class="dur">42 min</span></div>
+          <div class="appmark" title="Google Meet">Mt</div>
+          <div class="body">
+            <div class="name">Pricing sync — launch tiers with Marcus</div>
+            <div class="via">detected via mic-hold · Google Meet</div>
+          </div>
+          <div class="speakers"><span class="spk you">You</span><span class="spk">Marcus</span><span class="spk">Priya</span></div>
+          <div class="state processing">◌ writing recap…</div>
+        </div>
+
+        <div class="mtg">
+          <div class="time">10:00–10:24<span class="dur">24 min</span></div>
+          <div class="appmark" title="Zoom">Zm</div>
+          <div class="body">
+            <div class="name">Design standup — onboarding flow</div>
+            <div class="via">detected via mic-hold · Zoom</div>
+          </div>
+          <div class="speakers"><span class="spk you">You</span><span class="spk">Sarah</span><span class="spk">+2</span></div>
+          <div class="state recap">◉ recap ready</div>
+        </div>
+
+        <div class="day-head"><span class="d">Yesterday</span><span class="dd">TUE JUL 22</span><div class="rule"></div></div>
+
+        <div class="mtg">
+          <div class="time">14:00–14:51<span class="dur">51 min</span></div>
+          <div class="appmark" title="Browser tab">◍</div>
+          <div class="body">
+            <div class="name">Deepgram vendor call — usage pricing Q&amp;A</div>
+            <div class="via">detected via system audio · meet.deepgram.com in Safari</div>
+          </div>
+          <div class="speakers"><span class="spk you">You</span><span class="spk">Alex</span><span class="spk">+1</span></div>
+          <div class="state transcript">▤ transcript only</div>
+        </div>
+
+        <div class="mtg">
+          <div class="time">09:30–09:58<span class="dur">28 min</span></div>
+          <div class="appmark" title="Zoom">Zm</div>
+          <div class="body">
+            <div class="name">1:1 with Sarah</div>
+            <div class="via">detected via mic-hold · Zoom</div>
+          </div>
+          <div class="speakers"><span class="spk you">You</span><span class="spk">Sarah</span></div>
+          <div class="state recap">◉ recap ready</div>
+        </div>
+
+        <div class="day-head"><span class="d">Monday</span><span class="dd">MON JUL 21</span><div class="rule"></div></div>
+
+        <div class="mtg">
+          <div class="time">16:00–16:45<span class="dur">45 min</span></div>
+          <div class="appmark" title="Zoom">Zm</div>
+          <div class="body">
+            <div class="name">Sprint retro — capture pipeline week</div>
+            <div class="via">detected via mic-hold · Zoom</div>
+          </div>
+          <div class="speakers"><span class="spk you">You</span><span class="spk">Sarah</span><span class="spk">Devon</span><span class="spk">+2</span></div>
+          <div class="state recap">◉ recap ready</div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════ PAGE 3 ══════════════════════ -->
+<div class="mock-label">
+  <span class="num">03</span>
+  <h2>Meeting detail — Summary · Transcript · Notes</h2>
+  <span class="sub">recap on a raised glass sheet · tabs are live (click them)</span>
+</div>
+<div class="window">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="title">Mnema — Design standup</div></div>
+  <div class="chrome">
+    <aside class="rail">
+      <nav class="rail-nav">
+        <div class="rail-item"><span class="glyph">＋</span>New Chat<span class="kbd">⌘N</span></div>
+        <div class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></div>
+        <div class="rail-item active"><span class="glyph">◉</span>Meetings</div>
+        <div class="rail-item"><span class="glyph">◇</span>Triggers</div>
+      </nav>
+      <div class="rail-sep"></div>
+      <div class="rail-head">Recents</div>
+      <div class="recents">
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — Design standup, onboarding flow</span><span class="when">10:26</span></div>
+        <div class="recent"><span class="t">What did I decide about the CRL cache?</span><span class="when">09:41</span></div>
+        <div class="recent"><span class="origin">▣</span><span class="t">Figma brief — checkout redesign</span><span class="when">09:02</span></div>
+        <div class="recent"><span class="origin">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — 1:1 with Sarah</span><span class="when">Tue</span></div>
+      </div>
+      <div class="rail-footer">
+        <div class="cap-status">
+          <div class="cap-dot"></div>
+          <span class="label">Recording</span>
+          <span class="meta">3h 12m</span>
+        </div>
+        <div class="cap-sub">screen · mic · system audio</div>
+      </div>
+    </aside>
+    <main class="pane">
+      <div class="pane-head">
+        <div class="crumb">MEETINGS <b>› WED JUL 23</b></div>
+        <h1>Design standup — onboarding flow</h1>
+        <div class="detail-meta">
+          <span class="mono">Wed Jul 23 2026</span><span class="dot-sep">·</span>
+          <span class="mono">10:00–10:24</span><span class="dot-sep">·</span>
+          <span class="mono">24 min</span><span class="dot-sep">·</span>
+          <span class="spk you">You</span><span class="spk">Sarah</span><span class="spk">Devon</span><span class="spk">Rae</span>
+        </div>
+        <div class="provenance"><span class="g">◉</span> detected via mic-hold · Zoom</div>
+        <div class="tabs">
+          <button class="tab active" data-tab="summary">Summary</button>
+          <button class="tab" data-tab="transcript">Transcript<span class="count">38 turns</span></button>
+          <button class="tab" data-tab="notes">Notes</button>
+        </div>
+      </div>
+      <div class="pane-scroll">
+
+        <div class="tabpane active" id="tab-summary">
+          <div class="sheet">
+            <h2>Overview</h2>
+            <p>Quick standup on the onboarding redesign ahead of Friday's cut. Sarah walked the new
+            three-phase flow <span class="m">(welcome → feature toggles → finale)</span>; the group agreed the
+            permission-grant screens are the remaining risk. Devon flagged that the mic-permission step
+            still dead-ends when the user denies at the OS level, and Rae confirmed copy for the finale
+            screen is done.</p>
+            <h2>Decisions</h2>
+            <ul>
+              <li>Ship the accordion feature-toggle layout — the tabbed variant is dropped.</li>
+              <li>Denied OS permissions get an inline "open System Settings" recovery link, not a modal.</li>
+              <li>Finale screen keeps the attention-gated Finish button; no skip affordance.</li>
+            </ul>
+            <h2>Action items</h2>
+            <ul>
+              <li class="action">Prototype the permission-denied recovery link <span class="owner">Devon · by Thu</span></li>
+              <li class="action">Update the Figma flow to remove the tabbed variant <span class="owner">Sarah · today</span></li>
+              <li class="action">Write release notes blurb for onboarding changes <span class="owner">You · by Fri cut</span></li>
+            </ul>
+            <a class="recap-link" href="#"><span class="g">◉</span> Open recap conversation <span class="g">→</span></a>
+          </div>
+        </div>
+
+        <div class="tabpane" id="tab-transcript">
+          <div class="turns">
+            <div class="turn"><span class="ts">10:00:14</span><span class="who">Sarah</span><p class="say">Okay, quick one today — I want to lock the onboarding flow before Friday's cut. I pushed the three-phase version last night.</p></div>
+            <div class="turn you"><span class="ts">10:00:38</span><span class="who">You</span><p class="say">I went through it this morning. The accordion for feature toggles feels a lot better than the tabs, honestly.</p></div>
+            <div class="turn"><span class="ts">10:01:02</span><span class="who">Devon</span><p class="say">Agreed on the accordion. My worry is the permissions step — if someone denies mic at the OS prompt we just… sit there. There's no way back in.</p></div>
+            <div class="turn"><span class="ts">10:01:31</span><span class="who">Sarah</span><p class="say">Right, that's the dead end from the test session. Options are a modal explaining it, or an inline link straight to System Settings.</p></div>
+            <div class="turn you"><span class="ts">10:01:55</span><span class="who">You</span><p class="say">Inline link. A modal on top of a permission flow is punishment. Keep it in the row where the denial happened.</p></div>
+            <div class="turn"><span class="ts">10:02:20</span><span class="who">Rae</span><p class="say">Copy's done for the finale screen, by the way — I kept the "everything stays on this Mac" line as the closer.</p></div>
+            <div class="turn"><span class="ts">10:02:44</span><span class="who">Devon</span><p class="say">I can prototype the recovery link by Thursday if we're locking the accordion now.</p></div>
+            <div class="turn"><span class="ts">10:03:05</span><span class="who">Sarah</span><p class="say">Locking it. I'll strip the tabbed variant out of the Figma file today so nobody builds against it.</p></div>
+          </div>
+        </div>
+
+        <div class="tabpane" id="tab-notes">
+          <div class="notes-sheet">
+            <textarea>— push back on the modal idea if it resurfaces; inline recovery won
+— ask Rae for the finale copy doc, want it in the release notes
+— Friday cut: onboarding is the last gate, everything else is green</textarea>
+          </div>
+        </div>
+
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ══════════════════════ PAGE 4 ══════════════════════ -->
+<div class="mock-label">
+  <span class="num">04</span>
+  <h2>Trigger creation — gallery first</h2>
+  <span class="sub">templates prefill the 3-step wizard · Review is where you land</span>
+</div>
+<div class="window">
+  <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><div class="title">Mnema — New Trigger</div></div>
+  <div class="chrome">
+    <aside class="rail">
+      <nav class="rail-nav">
+        <div class="rail-item"><span class="glyph">＋</span>New Chat<span class="kbd">⌘N</span></div>
+        <div class="rail-item"><span class="glyph">⌕</span>Search<span class="kbd">⌘K</span></div>
+        <div class="rail-item"><span class="glyph">◉</span>Meetings</div>
+        <div class="rail-item active"><span class="glyph">◇</span>Triggers</div>
+      </nav>
+      <div class="rail-sep"></div>
+      <div class="rail-head">Recents</div>
+      <div class="recents">
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — Design standup, onboarding flow</span><span class="when">10:26</span></div>
+        <div class="recent"><span class="t">What did I decide about the CRL cache?</span><span class="when">09:41</span></div>
+        <div class="recent"><span class="origin">▣</span><span class="t">Figma brief — checkout redesign</span><span class="when">09:02</span></div>
+        <div class="recent"><span class="origin">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">Tue</span></div>
+        <div class="recent"><span class="origin">◉</span><span class="t">Recap — 1:1 with Sarah</span><span class="when">Tue</span></div>
+      </div>
+      <div class="rail-footer">
+        <div class="cap-status">
+          <div class="cap-dot"></div>
+          <span class="label">Recording</span>
+          <span class="meta">3h 12m</span>
+        </div>
+        <div class="cap-sub">screen · mic · system audio</div>
+      </div>
+    </aside>
+    <main class="pane">
+      <div class="pane-head">
+        <div class="crumb">TRIGGERS <b>› NEW</b></div>
+        <h1>What should Mnema do for you?</h1>
+        <p class="sub">Pick a template and it fills in the wizard — you land on Review, tweak, done.</p>
+        <div class="steps">
+          <div class="step"><span class="pip">1</span>Condition</div>
+          <span class="step-arrow">──▸</span>
+          <div class="step"><span class="pip">2</span>Prompt</div>
+          <span class="step-arrow">──▸</span>
+          <div class="step hot"><span class="pip">3</span>Review</div>
+          <span class="hint">template prefills 1–2 · <b>you land here</b></span>
+        </div>
+      </div>
+      <div class="pane-scroll">
+        <div class="tgrid">
+          <div class="tcard">
+            <div class="cond"><span class="g">◉</span>WHEN A MEETING ENDS</div>
+            <h3>Meeting Recap</h3>
+            <p class="desc">A structured recap — overview, decisions, action items — written a few minutes after every call ends.</p>
+            <div class="fills">prefills: meeting-end · recap prompt</div>
+          </div>
+          <div class="tcard">
+            <div class="cond"><span class="g">◷</span>DAILY AT 18:00</div>
+            <h3>Daily Digest</h3>
+            <p class="desc">An evening summary of what you actually worked on — apps, docs, calls — with loose ends called out.</p>
+            <div class="fills">prefills: schedule 18:00 · digest prompt</div>
+          </div>
+          <div class="tcard">
+            <div class="cond"><span class="g">▣</span>WHEN FIGMA OPENS</div>
+            <h3>"When I open Figma, brief me"</h3>
+            <p class="desc">The moment Figma comes to front, get a brief on the file you touched last and what you were mid-way through.</p>
+            <div class="fills">prefills: app-open Figma · context brief</div>
+          </div>
+          <div class="tcard">
+            <div class="cond"><span class="g">◷</span>FRIDAY AT 16:30</div>
+            <h3>Weekly Review</h3>
+            <p class="desc">Wins, dropped threads, and what to pick up Monday — pulled from the whole week's activity.</p>
+            <div class="fills">prefills: schedule Fri 16:30 · review prompt</div>
+          </div>
+          <div class="tcard">
+            <div class="cond"><span class="g">◉</span>AFTER A CALL WITH A NEW VOICE</div>
+            <h3>New Voice, Intro Note</h3>
+            <p class="desc">First time an unknown speaker shows up in a call, draft a who-is-this note from what was said.</p>
+            <div class="fills">prefills: new-speaker · intro-note prompt</div>
+          </div>
+          <div class="tcard">
+            <div class="cond"><span class="g">▣</span>WHEN XCODE OPENS</div>
+            <h3>Resume Coding Context</h3>
+            <p class="desc">Opens with a recap of the last build error you hit and the docs you had open when you stopped.</p>
+            <div class="fills">prefills: app-open Xcode · resume prompt</div>
+          </div>
+        </div>
+        <div class="scratch">
+          <div class="plus">＋</div>
+          <div>
+            <b>Start from scratch</b>
+            <span>Write your own condition and prompt — the same three steps, nothing prefilled.</span>
+          </div>
+          <span class="go">step 1 ▸</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+/* tab switching — page 3 only */
+document.querySelectorAll('.tabs').forEach(function (tabs) {
+  tabs.addEventListener('click', function (e) {
+    var btn = e.target.closest('.tab');
+    if (!btn) return;
+    tabs.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+    btn.classList.add('active');
+    var pane = tabs.closest('.pane');
+    pane.querySelectorAll('.tabpane').forEach(function (p) {
+      p.classList.toggle('active', p.id === 'tab-' + btn.dataset.tab);
+    });
+  });
+});
+</script>
+</body>
+</html>
