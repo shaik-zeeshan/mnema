@@ -2836,6 +2836,24 @@ fn finish_recording_settings_update(
         }
     }
 
+    // Local Whisper contexts have no idle-unload (unlike Parakeet) and otherwise
+    // live cached until app quit, so switching away from Whisper stranded ~1GB of
+    // model weights in memory. Free them at the save that lands the switch.
+    let whisper_was_active = previous_settings.transcription.enabled
+        && previous_settings.transcription.provider == AudioTranscriptionProvider::LocalWhisper;
+    let whisper_now_active = settings.transcription.enabled
+        && settings.transcription.provider == AudioTranscriptionProvider::LocalWhisper;
+    if whisper_was_active && !whisper_now_active {
+        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
+            Ok(unloaded) => debug_log::log_info(format!(
+                "unloaded {unloaded} cached Local Whisper context(s) after switching transcription away from Whisper"
+            )),
+            Err(error) => debug_log::log_warn(format!(
+                "failed to unload cached Local Whisper contexts after switching away from Whisper: {error}"
+            )),
+        }
+    }
+
     // An MCP connector whose auth mode flipped (Bearer↔OAuth) leaves the OLD
     // mode's payload in its polymorphic keychain slot — worst case the OAuth
     // Token Set JSON attached verbatim as an `Authorization: Bearer` header.
