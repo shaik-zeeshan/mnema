@@ -11,7 +11,7 @@
   import type { Activity, ActivityFocus } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import type { RiverBand } from "$lib/insights/journal-view";
-  import { isShortActivity, pendingReasonCopy } from "$lib/insights/journal-view";
+  import { isShortActivity, pendingReasonCopy, riverRowKey } from "$lib/insights/journal-view";
   import {
     CATEGORY_COLOR,
     UNCATEGORIZED_COLOR,
@@ -115,7 +115,7 @@
     <ScrollTimeBubble />
     {#each bands as band (band.label + band.rows[0].atMs)}
       <div class="day-rule"><span>{band.label}</span><span class="rule"></span></div>
-      {#each band.rows as row (row.kind + row.atMs)}
+      {#each band.rows as row (riverRowKey(row))}
         {#if row.kind === "gap"}
           <div class="gap-note" data-at-ms={row.atMs}>
             <div class="when"></div>

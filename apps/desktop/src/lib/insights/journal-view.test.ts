@@ -8,6 +8,7 @@ import {
   bandRiver,
   isShortActivity,
   pendingReasonCopy,
+  riverRowKey,
 } from "./journal-view";
 
 const DAY = new Date(2026, 6, 3, 0, 0, 0, 0).getTime();
@@ -58,6 +59,21 @@ describe("bandRiver", () => {
     expect(bands[0].rows).toHaveLength(2);
     expect(bands[1].rows).toHaveLength(1);
     expect(bands[2].rows).toHaveLength(1);
+  });
+});
+
+describe("riverRowKey", () => {
+  it("keys card rows by activity id, so duplicate start times can't collide", () => {
+    // Two Activities sharing a startedAtMs — the shape that threw
+    // each_key_duplicate and froze the river on its skeleton.
+    const a = { ...slot(at(9)), activity: { ...slot(at(9)).activity, id: 1 } };
+    const b = { ...slot(at(9)), activity: { ...slot(at(9)).activity, id: 2 } };
+    const keys = buildRiver([a, b], []).map(riverRowKey);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+  it("keeps gap keys distinct from card keys at the same timestamp", () => {
+    const keys = buildRiver([slot(at(9))], [gap(at(9), at(10))]).map(riverRowKey);
+    expect(new Set(keys).size).toBe(keys.length);
   });
 });
 

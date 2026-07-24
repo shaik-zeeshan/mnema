@@ -33,6 +33,17 @@ export function buildRiver(
 }
 
 /**
+ * Unique `{#each}` key for a river row. Card rows key off the Activity's
+ * database id — NEVER its start time: two Activities can share a `startedAtMs`
+ * (e.g. derivation splitting windows across a stop/restart-heavy day), and a
+ * `kind + atMs` key then collides, throwing Svelte's `each_key_duplicate`
+ * mid-flush and leaving the river stuck on the loading skeleton.
+ */
+export function riverRowKey(row: RiverRow): string {
+  return row.kind === "card" ? `card${row.slot.activity.id}` : `gap${row.atMs}`;
+}
+
+/**
  * Activities shorter than this render as compact one-line rows instead of full
  * cards. 5 minutes — deliberately the same magnitude as `AWAY_GAP_MIN_MS` and
  * the capture segment cap.
