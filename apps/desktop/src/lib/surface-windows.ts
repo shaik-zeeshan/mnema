@@ -136,16 +136,21 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
 
 // The last main surface (Timeline `/` or Insights `/insights`) the user was on
 // before entering Settings, so the settings rail's "← Back to app" can return
-// there instead of always landing on Timeline. Only the two known main surfaces
+// there instead of always landing on the home shell. Only known main surfaces
 // are accepted; anything else (`/settings`, `/onboarding`, …) is rejected and we
-// keep the `/` fallback. Survives navigations because it's module-level, not
-// route state; resets to `/` on a cold load (e.g. tray deeplink straight into
-// Settings), which is the desired fallback.
-let lastMainSurfacePath = "/";
+// keep the `/insights` fallback (the story-first home). Survives navigations
+// because it's module-level, not route state; resets on a cold load (e.g. tray
+// deeplink straight into Settings), which is the desired fallback.
+let lastMainSurfacePath = "/insights";
 
-/** Is `pathname` one of the two main app surfaces (Timeline or Insights)? */
+/** Is `pathname` one of the main app surfaces (Timeline, Insights, Triggers)? */
 function isMainSurface(pathname: string): boolean {
-  return isMainAppRoute(pathname) || normalizeAppPathname(pathname).startsWith("/insights");
+  const normalized = normalizeAppPathname(pathname);
+  return (
+    isMainAppRoute(pathname) ||
+    normalized.startsWith("/insights") ||
+    normalized.startsWith("/triggers")
+  );
 }
 
 /**
@@ -157,7 +162,8 @@ export function recordMainSurface(path: string): void {
   if (isMainSurface(path)) lastMainSurfacePath = normalizeAppPathname(path);
 }
 
-/** The last recorded main surface path, falling back to Timeline (`/`). */
+/** The last recorded main surface path, falling back to the home shell
+ *  (`/insights`). */
 export function getLastMainSurface(): string {
   return lastMainSurfacePath;
 }

@@ -1,13 +1,15 @@
 <script lang="ts">
-  // DayTimeline — the Journal Insights sub-surface (Dayflow Slice 3). One local
-  // day rendered as a river of AI-written activity cards on a time spine: a
-  // digest lede, category edge-bar cards, focus chips, away-gaps, and a pending
-  // slot at the live edge. Rendering makes ZERO LLM calls — it arranges four
-  // already-cheap reads (activities + frames + status + digest) through the pure
-  // `buildJournalDay` model (journal-day.ts) and `journal-view.ts` presentation
-  // helpers. The river itself renders in <JournalRiver/> (kept split so both
-  // files stay under the 800-line ceiling). Visual spec:
-  // docs/mockups/dayflow/01-day-journal.html.
+  // DayTimeline — the Today front page (Warm Paper redesign, Slice 3): greeting
+  // → digest paragraph (↻ re-read, mono lede stats) → suggestion chips +
+  // Ask-Mnema composer → the journal river as ledger prose. Rendering makes
+  // ZERO LLM calls — it arranges four already-cheap reads (activities + frames
+  // + status + digest) through the pure `buildJournalDay` model (journal-day.ts)
+  // and `journal-view.ts` presentation helpers; suggestion chips are mechanical
+  // templates (chip-fill.ts). Composer submits route into Chat over the
+  // conversation bus (`requestNewChat(prefill)` — the /insights owner switches
+  // the view when the bus fires). The river renders in <JournalRiver/> (kept
+  // split so both files stay under the 800-line ceiling). Visual spec:
+  // docs/mockups/unified-shell/main-surface/story-first-v5.html frame 1.
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -26,10 +28,13 @@
   import { computeLedeStats } from "$lib/insights/lede-stats";
   import { buildJournalDay } from "$lib/insights/journal-day";
   import { buildRiver, bandRiver } from "$lib/insights/journal-view";
+  import { fillChips } from "$lib/insights/chip-fill";
   import { captureControls } from "$lib/capture-controls.svelte";
+  import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import JournalDateStepper from "$lib/insights/JournalDateStepper.svelte";
   import JournalRiver from "$lib/insights/JournalRiver.svelte";
+  import TodayComposer from "$lib/insights/TodayComposer.svelte";
   import ActivityReceipt from "$lib/insights/ActivityReceipt.svelte";
 
   // ── Day range (always mode "day"; local midnight bounds) ────────────────
@@ -64,7 +69,9 @@
   let riverLoadedOnce = $state(false);
   let riverLoading = $state(false);
 
-  let usage = $state<{ timePerApp: { activeMs: number }[] } | null>(null);
+  let usage = $state<{ timePerApp: { app: string; activeMs: number }[] } | null>(
+    null,
+  );
   let usageLoaded = $state(false);
 
   // Digest lede — same state machine as Overview.
@@ -111,6 +118,54 @@
     }),
   );
   const trackedLabel = $derived(humanizeHours(ledeStats.trackedMs));
+
+  // ── Front-page dressing (greeting, date line, chips, chat hand-off) ─────
+  // Suggestion chips only dress the live front page — a past day is an archive
+  // read, not a "now" surface.
+  const chips = $derived(
+    atLatest
+      ? fillChips({
+          activities: rangeActivities,
+          timePerApp: usage?.timePerApp ?? [],
+          nowMs: Date.now(),
+        })
+      : [],
+  );
+
+  const frontDate = $derived(
+    new Date(range.startMs)
+      .toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
+      .toUpperCase()
+      .replaceAll(", ", " · "),
+  );
+
+  const greeting = $derived.by(() => {
+    if (!atLatest) {
+      // A past day heads with its name instead of a greeting.
+      return `${new Date(range.startMs).toLocaleDateString(undefined, {
+        weekday: "long",
+        month: "long",
+        day: "numeric",
+      })}.`;
+    }
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good morning.";
+    if (hour < 17) return "Good afternoon.";
+    return "Good evening.";
+  });
+
+  // Composer submit → route into Chat. `requestNewChat(prefill)` bumps the
+  // conversation bus; the /insights owner watches the bus and switches the
+  // shell to the Chat surface, where the question lands in the composer
+  // (focused, caret at end) ready to send — the bus never auto-sends.
+  function askInChat(text: string): void {
+    conversationStore.requestNewChat(text);
+  }
 
   function relativeTime(ms: number): string {
     if (!Number.isFinite(ms) || ms <= 0) return "";
@@ -177,10 +232,9 @@
     const token = ++usageToken;
     try {
       const { startMs, endMs } = range;
-      const next = await invoke<{ timePerApp: { activeMs: number }[] }>(
-        "get_usage_charts",
-        { startMs, endMs },
-      );
+      const next = await invoke<{
+        timePerApp: { app: string; activeMs: number }[];
+      }>("get_usage_charts", { startMs, endMs });
       if (token !== usageToken) return;
       usage = next;
     } catch {
@@ -323,14 +377,11 @@
   });
 </script>
 
-<section class="journal" aria-label="Journal">
-  <!-- ── Header ── -->
-  <div class="ov-header">
-    <div class="titles">
-      <h1>Journal</h1>
-      <p class="subtitle">Your day, written down while you worked.</p>
-    </div>
-    <div class="ov-controls">
+<section class="journal" aria-label="Today">
+  <!-- ── Front-page header: date line + stepper, greeting, digest, stats ── -->
+  <header class="front">
+    <div class="front-top">
+      <div class="front-date">{frontDate}</div>
       <JournalDateStepper
         bind:anchorMs
         rangeStartMs={range.startMs}
@@ -338,85 +389,80 @@
         {dayLabel}
       />
     </div>
-  </div>
+    <h1 class="front-greet">{greeting}</h1>
 
-  <!-- ── Digest lede (reused from Overview: headline + narrative + re-read) ── -->
-  <article
-    class="entry entry--lede"
-    aria-busy={(!digest && digestLoading) || digestRegenerating}
-  >
-    <p class="eyebrow">
-      <span class="diamond" aria-hidden="true">◆</span>
-      <span class="tick" aria-hidden="true"></span>
-      The read · {dayLabel}
-      <span class="rule"></span>
-      {#if digest}<span class="eyebrow-when">{relativeTime(digest.generatedAtMs)}</span>{/if}
-      {#if engineOn}
-        <button
-          type="button"
-          class="re-read"
-          class:is-busy={digestRegenerating}
-          onclick={regenerateDigest}
-          disabled={digestRegenerating || (!digest && digestLoading)}
-        >
-          <span class="re-read-ico" aria-hidden="true">↻</span>
-          {digestRegenerating ? "reading…" : "re-read"}
-        </button>
-      {/if}
-    </p>
-    {#if digest}
-      {#key digest.generatedAtMs}
-        <div class="lede-body">
-          {#if digest.headline}
-            <h2 class="lede-headline">{digest.headline}</h2>
-          {/if}
-          <p class="lede-text">{digest.narrative}</p>
-        </div>
-      {/key}
-    {:else if digestLoading || digestRegenerating}
-      <div class="sk-row"><Skeleton variant="text" width="92%" height="12px" /></div>
-      <div class="sk-row"><Skeleton variant="text" width="64%" height="12px" /></div>
-    {:else if digestError}
-      <p class="lede-error">{digestError}</p>
+    <!-- Digest paragraph — the day narrated in 3–5 sentences, ↻ re-read inline
+         at the end (mockup frame 1). Hidden while the engine is off: the
+         river's pending slot carries the why. -->
+    {#if engineOn}
+      <div
+        class="front-digest"
+        aria-busy={(!digest && digestLoading) || digestRegenerating}
+      >
+        {#if digest}
+          {#key digest.generatedAtMs}
+            <p class="digest-text">
+              {digest.narrative}<button
+                type="button"
+                class="reread"
+                class:is-busy={digestRegenerating}
+                title="Re-read this day's digest"
+                aria-label="Re-read this day's digest"
+                onclick={regenerateDigest}
+                disabled={digestRegenerating}
+              >↻</button><span class="digest-when">
+                {digestRegenerating
+                  ? "re-reading…"
+                  : `read ${relativeTime(digest.generatedAtMs)}`}</span>
+            </p>
+          {/key}
+        {:else if digestLoading || digestRegenerating}
+          <div class="sk-row"><Skeleton variant="text" width="92%" height="12px" /></div>
+          <div class="sk-row"><Skeleton variant="text" width="64%" height="12px" /></div>
+        {:else}
+          <p class="digest-text digest-text--empty">
+            {digestError ?? "No read of this day yet."}<button
+              type="button"
+              class="reread"
+              title="Read this day"
+              aria-label="Read this day"
+              onclick={regenerateDigest}
+            >↻</button>
+          </p>
+        {/if}
+      </div>
     {/if}
-    <!-- Four stats — tracked / deep focus % / top category / activities. The
-         usage-derived tracked stat gates on `usageLoaded`, the engine-derived
-         deep %/top category on the range load so a day switch never shows the
-         previous day's numbers. -->
-    <div class="lede-stats" aria-label="Day highlights">
+
+    <!-- Four lede stats in a quiet mono row — tracked / deep focus / top
+         category / activities. The usage-derived tracked stat gates on
+         `usageLoaded`, the engine-derived ones on the range load so a day
+         switch never shows the previous day's numbers. -->
+    <div class="front-stats" aria-label="Day highlights">
       {#if usageLoaded}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{trackedLabel}</span>
-          <span class="lede-stat-cap">tracked</span>
-        </div>
+        <span><span class="g" aria-hidden="true">▣</span><b>{trackedLabel}</b> tracked</span>
       {/if}
       {#if riverLoadedOnce && ledeStats.deepPct !== null}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{ledeStats.deepPct}%</span>
-          <span class="lede-stat-cap">deep focus</span>
-        </div>
+        <span><span class="g" aria-hidden="true">●</span><b>{ledeStats.deepPct}%</b> deep focus</span>
       {/if}
       {#if riverLoadedOnce && ledeStats.topCategory}
-        <div class="lede-stat">
-          <span class="lede-stat-n lede-stat-n--cat">
-            <span
-              class="lede-stat-swatch"
-              style="background:var({ledeStats.topCategory.colorVar});"
-              aria-hidden="true"
-            ></span>
-            {ledeStats.topCategory.label}
-          </span>
-          <span class="lede-stat-cap">top category</span>
-        </div>
+        <span>
+          <span
+            class="g g--swatch"
+            style="background:var({ledeStats.topCategory.colorVar});"
+            aria-hidden="true"
+          ></span><b>{ledeStats.topCategory.label}</b> top category
+        </span>
       {/if}
       {#if riverLoadedOnce}
-        <div class="lede-stat">
-          <span class="lede-stat-n">{model.slots.length}</span>
-          <span class="lede-stat-cap">activities</span>
-        </div>
+        <span><span class="g" aria-hidden="true">✦</span><b>{model.slots.length}</b> activities</span>
       {/if}
     </div>
-  </article>
+
+    <!-- Composer + suggestion chips — today only; a past day is an archive. -->
+    {#if atLatest}
+      <TodayComposer {chips} onSubmit={askInChat} />
+    {/if}
+  </header>
 
   <!-- ── The river (skeleton / cards+pending / empty panels) ── -->
   <JournalRiver
@@ -459,135 +505,51 @@
     }
   }
 
-  /* ---- Header (shared shape with Overview .ov-header) ---- */
-  .ov-header {
+  /* ---- Front-page header (mockup frame 1 `.front`, app tokens) ---- */
+  .front {
     display: flex;
-    align-items: flex-start;
+    flex-direction: column;
+  }
+  .front-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     gap: 16px;
     flex-wrap: wrap;
   }
-  .ov-header .titles {
-    flex: 1 1 auto;
-    min-width: 0;
+  .front-date {
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
+    letter-spacing: 0.1em;
+    color: var(--app-text-faint);
   }
-  .ov-header h1 {
-    margin: 0;
-    font-size: var(--text-xl);
-    line-height: 1.2;
-    font-weight: 600;
+  .front-greet {
+    margin: 12px 0 0;
+    font-family: var(--app-font-narrative);
+    font-size: 30px;
+    line-height: 1.15;
+    font-weight: 400;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
   }
-  .ov-header .subtitle {
-    margin: 3px 0 0;
-    font-size: var(--text-base);
+
+  /* ---- Digest paragraph (↻ inline at the end) ---- */
+  .front-digest {
+    margin-top: 10px;
+    max-width: 700px;
+  }
+  .digest-text {
+    margin: 0;
+    font-family: var(--app-font-narrative);
+    font-size: 15px;
+    line-height: 1.68;
+    color: var(--app-text);
+    animation: digest-reveal 0.25s ease;
+  }
+  .digest-text--empty {
     color: var(--app-text-muted);
   }
-  .ov-controls {
-    display: inline-flex;
-    align-items: center;
-    gap: 12px;
-    flex: 0 0 auto;
-  }
-
-  /* ---- Digest lede (copied token-for-token from Overview) ---- */
-  .entry {
-    position: relative;
-    padding: 20px 22px 18px;
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-    background: var(--app-surface);
-  }
-  .entry--lede {
-    padding: 24px 26px 22px;
-    border-left: 2px solid var(--app-accent);
-    background: linear-gradient(
-      to right,
-      var(--app-accent-bg),
-      var(--app-surface) 42%
-    );
-  }
-  .eyebrow {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    margin: 0 0 11px;
-  }
-  .eyebrow .tick {
-    flex: 0 0 auto;
-    width: 5px;
-    height: 5px;
-    border-radius: 50%;
-    background: var(--app-text-faint);
-  }
-  .eyebrow .rule {
-    flex: 1 1 auto;
-    height: 1px;
-    background: var(--app-border);
-  }
-  .eyebrow .diamond {
-    color: var(--app-text-faint);
-    letter-spacing: 0;
-  }
-  .eyebrow-when {
-    flex: 0 0 auto;
-  }
-  .re-read {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    margin: 0;
-    padding: 2px 7px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--app-text-subtle);
-    font: inherit;
-    font-size: var(--text-xs);
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      color 0.12s ease,
-      border-color 0.12s ease,
-      background 0.12s ease;
-  }
-  .re-read:hover:not(:disabled) {
-    color: var(--app-accent);
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .re-read:disabled {
-    cursor: default;
-    opacity: 0.6;
-  }
-  .re-read-ico {
-    font-size: var(--text-base);
-    line-height: 1;
-    letter-spacing: 0;
-  }
-  .re-read.is-busy .re-read-ico {
-    animation: re-read-spin 0.8s linear infinite;
-  }
-  @keyframes re-read-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .re-read.is-busy .re-read-ico {
-      animation: none;
-    }
-  }
-  .lede-body {
-    animation: lede-reveal 0.25s ease;
-  }
-  @keyframes lede-reveal {
+  @keyframes digest-reveal {
     from {
       opacity: 0;
       transform: translateY(4px);
@@ -598,29 +560,54 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .lede-body {
+    .digest-text {
       animation: none;
     }
   }
-  .lede-headline {
-    margin: 0 0 10px;
-    font-size: 24px;
-    line-height: 1.22;
-    font-weight: 650;
-    letter-spacing: -0.02em;
-    color: var(--app-text-strong);
-  }
-  .lede-text {
-    margin: 0;
+  .reread {
+    border: 0;
+    background: none;
+    cursor: pointer;
+    padding: 0 2px;
+    margin-left: 5px;
     font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-text);
+    line-height: 1;
+    color: var(--app-text-faint);
+    vertical-align: 0;
   }
-  .lede-error {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-danger, var(--app-text-subtle));
+  .reread:hover:not(:disabled) {
+    color: var(--app-accent);
+  }
+  .reread:focus-visible {
+    outline: none;
+    border-radius: 4px;
+    box-shadow: var(--app-ring);
+  }
+  .reread:disabled {
+    cursor: default;
+    opacity: var(--app-busy-opacity);
+  }
+  .reread.is-busy {
+    display: inline-block;
+    animation: reread-spin 0.8s linear infinite;
+  }
+  @keyframes reread-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .reread.is-busy {
+      animation: none;
+    }
+  }
+  .digest-when {
+    margin-left: 7px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.04em;
+    color: var(--app-text-faint);
+    white-space: nowrap;
   }
   .sk-row {
     display: flex;
@@ -632,45 +619,33 @@
   .sk-row + .sk-row {
     border-top: 1px dashed var(--app-border);
   }
-  .lede-stats {
+
+  /* ---- Lede stats — one quiet mono row ---- */
+  .front-stats {
     display: flex;
+    align-items: center;
+    gap: 8px 18px;
     flex-wrap: wrap;
-    gap: 14px 28px;
-    margin-top: 16px;
-    padding-top: 14px;
-    border-top: 1px dashed var(--app-border);
+    margin-top: 12px;
+    font-family: var(--app-font-mono);
+    font-size: var(--text-sm);
+    letter-spacing: 0.03em;
+    color: var(--app-text-faint);
   }
-  .lede-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    min-width: 0;
-  }
-  .lede-stat-n {
-    font-size: var(--text-lg);
-    line-height: 1.1;
-    color: var(--app-text-strong);
+  .front-stats b {
+    color: var(--app-text-muted);
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
-  .lede-stat-n--cat {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    max-width: 220px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .front-stats .g {
+    color: var(--app-accent);
+    margin-right: 5px;
   }
-  .lede-stat-swatch {
-    flex: 0 0 auto;
-    width: 9px;
-    height: 9px;
+  .front-stats .g--swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
-  }
-  .lede-stat-cap {
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    vertical-align: 0;
   }
 </style>

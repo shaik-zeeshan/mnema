@@ -1,0 +1,948 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — App Match · Triggers · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction-2-warm-paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --danger: #a3442f;
+    --danger-tint: #f7e8e1;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    padding: 72px 48px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden; display: flex; position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail ============ */
+  .rail {
+    width: 264px; flex: none;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 52px 0 0;
+  }
+  .brand { font-family: var(--serif); font-size: 19px; letter-spacing: .01em; padding: 0 22px 18px; color: var(--ink); }
+  .brand .leaf { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 7px; }
+  .nav { padding: 0 12px; display: flex; flex-direction: column; gap: 2px; }
+  .nav a {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--ink-2); text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background .12s, color .12s;
+  }
+  .nav a svg { width: 15px; height: 15px; stroke: currentColor; flex: none; opacity: .8; }
+  .nav a:hover { background: #ece8da; color: var(--ink); }
+  .nav a.active { background: var(--tint); color: var(--accent-deep); }
+  .nav a.active svg { opacity: 1; }
+  .nav a .kbd {
+    margin-left: auto; font-family: var(--mono); font-size: 10.5px;
+    color: var(--ink-3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; background: var(--card);
+  }
+  .rail-sec {
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3); padding: 26px 22px 8px;
+  }
+  .recents { padding: 0 12px; overflow: hidden; flex: 1; }
+  .recents a {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    text-decoration: none; color: var(--ink-2);
+    font-size: 13px; line-height: 1.35;
+    transition: background .12s, color .12s;
+  }
+  .recents a:hover { background: #ece8da; color: var(--ink); }
+  .recents .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recents .glyph { font-family: var(--mono); font-size: 11px; color: var(--accent); flex: none; }
+  .recents .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
+  .rail-foot {
+    border-top: 1px solid var(--border);
+    padding: 13px 20px 15px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.16); flex: none; }
+  .rail-foot .stat { font-family: var(--mono); font-size: 11px; color: var(--ink-2); line-height: 1.5; }
+  .rail-foot .stat b { color: var(--accent-deep); font-weight: 600; }
+  .rail-foot .stat .dim { color: var(--ink-3); }
+
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+  /* ============ triggers list (Screen 1) ============ */
+  .page-head {
+    padding: 40px 64px 0;
+    display: flex; align-items: flex-start; gap: 20px;
+  }
+  .page-title { font-family: var(--serif); font-size: 28px; font-weight: 400; letter-spacing: -.01em; }
+  .page-sub { font-size: 14px; color: var(--ink-2); margin-top: 8px; max-width: 620px; line-height: 1.5; }
+  .head-spacer { flex: 1; }
+  .btn {
+    font-family: var(--sans); font-size: 13px; font-weight: 500;
+    color: var(--ink-2); background: var(--card);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 16px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .btn:hover { border-color: var(--border-strong); color: var(--ink); }
+  .btn--accent { background: var(--accent); border-color: var(--accent); color: #f4f9f4; }
+  .btn--accent:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #f4f9f4; }
+  .btn--ghost { background: transparent; }
+
+  .list-scroll { flex: 1; overflow-y: auto; padding: 18px 64px 40px; }
+
+  .cond-section { margin-bottom: 13px; }
+  .cond-section-head { margin-bottom: 6px; display: flex; align-items: baseline; gap: 12px; }
+  .cond-section-title {
+    display: flex; align-items: baseline; gap: 9px;
+    font-family: var(--serif); font-size: 17px; font-weight: 500; color: var(--ink);
+  }
+  .cond-section-title .glyph { font-family: var(--mono); font-size: 12px; color: var(--accent); }
+  .cond-section-blurb { font-size: 12px; color: var(--ink-3); line-height: 1.5; }
+
+  .trigger-rows {
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); overflow: hidden;
+    box-shadow: 0 1px 2px rgba(60,52,32,.03);
+  }
+  .trow {
+    display: flex; align-items: center; gap: 12px;
+    padding: 7px 18px; min-height: 37px;
+    transition: background .12s;
+  }
+  .trow + .trow, .add-row { border-top: 1px solid var(--border-soft); }
+  .trow:hover { background: var(--card-deep); }
+  .trow-name {
+    font-size: 14px; font-weight: 500; color: var(--ink);
+    background: none; border: 0; padding: 0; font-family: var(--sans);
+    cursor: pointer; white-space: nowrap;
+  }
+  .trow-name:hover { color: var(--accent-deep); text-decoration: underline dotted; text-underline-offset: 3px; }
+  .trow-detail { font-family: var(--mono); font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .spacer { flex: 1 1 auto; }
+
+  .trow-status {
+    font-family: var(--mono); font-size: 11px; white-space: nowrap;
+    display: inline-flex; align-items: baseline; gap: 6px;
+    background: none; border: 0; padding: 0;
+  }
+  .trow-status .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; align-self: center; flex: none; }
+  .trow-status .rest { color: var(--ink-3); }
+  .st-ok .dot, .st-ok .word { color: var(--accent-deep); }
+  .st-skip .dot, .st-skip .word { color: var(--ink-3); }
+  .st-fail .dot, .st-fail .word { color: var(--danger); }
+  .st-none .dot, .st-none .word { color: var(--ink-3); }
+  .st-running .dot, .st-running .word { color: var(--accent-2); }
+  .st-running .dot { animation: pulseDot 1.2s ease-in-out infinite; }
+  @keyframes pulseDot { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+  .openable { cursor: pointer; }
+  .openable .word { text-decoration: underline dotted; text-underline-offset: 2px; }
+  .openable .arrow { color: var(--ink-3); align-self: center; font-size: 10px; }
+  .openable:hover .arrow { color: var(--ink); }
+  .run-again-link {
+    font-family: var(--mono); font-size: 10.5px; color: var(--danger);
+    background: none; border: 0; padding: 0; cursor: pointer;
+    text-decoration: underline; text-underline-offset: 2px; white-space: nowrap;
+  }
+  .run-again-link:hover { color: var(--ink); }
+
+  .trow--off .trow-name, .trow--off .trow-detail, .trow--off .trow-status { opacity: .45; }
+
+  /* hover row actions — edit · share · delete */
+  .trow-actions { display: none; align-items: center; gap: 2px; flex: none; }
+  .trow:hover .trow-actions, .trow.demo-hover .trow-actions { display: inline-flex; }
+  .row-act {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    background: none; border: 0; padding: 3px 7px; border-radius: 5px; cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  .row-act:hover { color: var(--ink); background: var(--border-soft); }
+  .row-act--danger:hover { color: var(--danger); background: var(--danger-tint); }
+
+  /* enable switch */
+  .switch {
+    position: relative; flex: none; width: 32px; height: 18px;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    background: var(--card-deep); cursor: pointer; padding: 0;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 12px; height: 12px; border-radius: 50%;
+    background: var(--ink-3); transition: left .12s, background .12s;
+  }
+  .switch.on { background: var(--tint); border-color: var(--tint-border); }
+  .switch.on::after { left: 16px; background: var(--accent); }
+
+  /* ghost add row */
+  .add-row {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    font-family: var(--sans); font-size: 12.5px;
+    padding: 7px 18px; border-left: 0; border-right: 0; border-bottom: 0;
+    border-top: 1px dashed var(--border-strong);
+    background: transparent; color: var(--ink-3); cursor: pointer; text-align: left;
+    transition: color .12s, background .12s;
+  }
+  .add-row:hover { color: var(--accent-deep); background: var(--tint-2); }
+  .add-row .plus { font-family: var(--mono); font-size: 13px; color: var(--ink-3); }
+  .add-row:hover .plus { color: var(--accent); }
+
+  .hover-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin: 6px 4px 0; letter-spacing: .02em; }
+  .hover-note .g { color: var(--accent); }
+
+  /* runs ledger (Screen 2, shown inset) */
+  .ledger-caption {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3); margin: 18px 4px 8px;
+  }
+  .ledger-caption .g { color: var(--accent); }
+  .ledger {
+    border: 1px solid var(--border); border-radius: 12px;
+    background: var(--card); padding: 16px 22px 12px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.03), 0 8px 28px rgba(60,52,32,.04);
+  }
+  .crumb { font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: .03em; }
+  .crumb .back { color: var(--ink-3); cursor: pointer; background: none; border: 0; font: inherit; padding: 0; }
+  .crumb .back:hover { color: var(--accent-deep); }
+  .crumb .here { color: var(--ink); }
+  .ledger-head { display: flex; align-items: baseline; gap: 14px; margin-top: 8px; }
+  .ledger-head h2 { font-family: var(--serif); font-size: 20px; font-weight: 500; letter-spacing: -.005em; }
+  .cond-echo-inline { font-family: var(--mono); font-size: 11px; color: var(--ink-2); }
+  .cond-echo-inline .g { color: var(--accent); margin-right: 5px; }
+  .ledger-sub { font-size: 12.5px; color: var(--ink-2); margin-top: 4px; }
+  .run-rows { margin-top: 10px; border-top: 1px solid var(--border-soft); }
+  .run-row {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 7px 4px; border-bottom: 1px solid var(--border-soft);
+    font-family: var(--mono); font-size: 11.5px;
+  }
+  .run-row .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; align-self: center; flex: none; }
+  .run-row .word { display: inline-flex; align-items: baseline; gap: 6px; }
+  .run-ok .word, .run-ok .dot { color: var(--accent-deep); }
+  .run-skip .word, .run-skip .dot { color: var(--ink-3); }
+  .run-fail .word, .run-fail .dot { color: var(--danger); }
+  .run-open {
+    color: var(--accent-deep); background: none; border: 0; font: inherit;
+    cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  .run-open .arrow { color: var(--ink-3); font-size: 10px; }
+  .run-open:hover .arrow { color: var(--ink); }
+  .run-reason { color: var(--ink-3); }
+  .run-when { color: var(--ink-3); }
+  .ledger-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-top: 9px; }
+
+  /* ============ wizard shell ============ */
+  .wiz-scroll { flex: 1; overflow-y: auto; padding: 38px 0 44px; }
+  .wiz-col { max-width: 860px; margin: 0 auto; padding: 0 40px; }
+  .wiz-col--wide { max-width: 1080px; }
+  .wiz-title-row { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 16px; }
+  .wiz-title { font-family: var(--serif); font-size: 28px; font-weight: 400; letter-spacing: -.01em; }
+
+  .steps { display: flex; align-items: center; gap: 8px; }
+  .step-tab {
+    display: flex; align-items: center; gap: 7px;
+    font-size: 12.5px; font-weight: 500; color: var(--ink-3);
+    background: none; border: 0; padding: 4px 2px; cursor: default;
+    font-family: var(--sans);
+  }
+  .step-tab .num {
+    font-family: var(--mono); font-size: 10px; color: var(--ink-3);
+    width: 20px; height: 20px; border-radius: 50%;
+    border: 1.5px solid var(--border-strong); background: var(--card);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .step-tab.current { color: var(--accent-deep); }
+  .step-tab.current .num { background: var(--accent); border-color: var(--accent); color: #f4f9f4; }
+  .step-tab.done { color: var(--ink-2); cursor: pointer; }
+  .step-tab.done .num { border-color: var(--tint-border); background: var(--tint-2); color: var(--accent-deep); }
+  .step-rule { width: 22px; height: 1px; background: var(--border-strong); }
+  .step-rule.done { background: var(--accent-2); }
+
+  .wiz-lead { margin-top: 18px; }
+  .wiz-lead .q { display: block; font-family: var(--serif); font-size: 19px; font-weight: 500; }
+  .wiz-lead .hint { display: block; font-size: 13px; color: var(--ink-2); margin-top: 6px; line-height: 1.5; }
+  .wiz-note-r { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .wiz-note-r .g { color: var(--accent); }
+  .wiz-note-r b { color: var(--ink-2); }
+
+  /* gallery (new step 0) */
+  .gal-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 26px; }
+  .tpl {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 22px 20px;
+    cursor: pointer; position: relative;
+    transition: border-color .14s, box-shadow .14s, transform .14s;
+  }
+  .tpl:hover {
+    border-color: var(--tint-border);
+    box-shadow: 0 3px 16px rgba(31,111,74,.09);
+    transform: translateY(-2px);
+  }
+  .tpl:hover .tpl-go { opacity: 1; transform: translateX(0); }
+  .tpl-glyph {
+    font-family: var(--mono); font-size: 15px; color: var(--accent);
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 15px;
+  }
+  .tpl h4 { font-family: var(--serif); font-size: 17.5px; font-weight: 500; letter-spacing: -.005em; }
+  .tpl p { font-size: 13px; line-height: 1.55; color: var(--ink-2); margin-top: 7px; }
+  .tpl .cond { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-top: 14px; letter-spacing: .03em; }
+  .tpl .cond .g { color: var(--accent); }
+  .tpl-go {
+    position: absolute; top: 22px; right: 20px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent);
+    opacity: 0; transform: translateX(-4px);
+    transition: opacity .14s, transform .14s;
+  }
+  .scratch {
+    margin-top: 20px;
+    border: 1.5px dashed var(--border-strong); border-radius: 14px;
+    background: transparent; padding: 18px 26px;
+    display: flex; align-items: center; gap: 18px;
+    cursor: pointer; width: 100%; text-align: left;
+    font-family: var(--sans);
+    transition: border-color .14s, background .14s;
+  }
+  .scratch:hover { border-color: var(--accent-2); background: var(--tint-2); }
+  .scratch .plus {
+    width: 34px; height: 34px; flex: none; border-radius: 9px;
+    border: 1px solid var(--border-strong);
+    font-family: var(--mono); font-size: 16px; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+    background: var(--card);
+  }
+  .scratch:hover .plus { color: var(--accent-deep); border-color: var(--tint-border); }
+  .scratch b { font-size: 14.5px; font-weight: 600; color: var(--ink); display: block; }
+  .scratch span { font-size: 12.5px; color: var(--ink-2); display: block; margin-top: 3px; }
+  .glyph-legend {
+    display: flex; gap: 22px; margin-top: 22px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); letter-spacing: .03em;
+  }
+  .glyph-legend .g { color: var(--accent); margin-right: 5px; }
+
+  /* review step */
+  .tpl-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: 11px; color: var(--accent-deep);
+    background: var(--tint); border: 1px solid var(--tint-border);
+    border-radius: 999px; padding: 4px 12px; margin-top: 12px;
+  }
+  .tpl-chip .x { color: var(--ink-3); cursor: pointer; }
+  .tpl-chip .x:hover { color: var(--danger); }
+  .review-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 4px 32px;
+    margin-top: 16px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.03), 0 8px 28px rgba(60,52,32,.04);
+  }
+  .review-sec { padding: 14px 0; }
+  .review-sec + .review-sec { border-top: 1px solid var(--border-soft); }
+  .review-lbl {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 8px;
+  }
+  .text-input {
+    width: 340px; font-family: var(--sans); font-size: 14px; color: var(--ink);
+    background: var(--card-deep); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 13px; outline: 0;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .text-input:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.10); }
+  .review-echo .echo-main { font-family: var(--serif); font-size: 16px; font-weight: 500; }
+  .review-echo .echo-main .g { font-family: var(--mono); font-size: 12px; color: var(--accent); margin-right: 8px; }
+  .review-echo .sub { display: block; font-size: 12.5px; color: var(--ink-2); margin-top: 5px; }
+  .prompt-preview {
+    font-family: var(--mono); font-size: 12px; line-height: 1.65; color: #45412f;
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 10px; padding: 14px 18px;
+    white-space: pre-wrap;
+    max-height: 108px; overflow: hidden; position: relative;
+  }
+  .prompt-preview::after {
+    content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 30px;
+    background: linear-gradient(rgba(251,249,241,0), var(--card-deep));
+  }
+  .prompt-preview.expanded { max-height: none; }
+  .prompt-preview.expanded::after { display: none; }
+  .preview-more {
+    font-family: var(--mono); font-size: 10.5px; color: var(--accent-deep);
+    background: none; border: 0; padding: 0; margin-top: 8px; cursor: pointer;
+    text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  .auto-list { list-style: none; }
+  .auto-list li {
+    font-size: 13.5px; color: #45412f; line-height: 1.55;
+    padding: 2px 0 2px 24px; position: relative;
+  }
+  .auto-list li::before {
+    content: "✓"; position: absolute; left: 2px; top: 5px;
+    font-family: var(--mono); font-size: 11px; color: var(--accent-2);
+  }
+  .auto-note { font-size: 12px; color: var(--ink-3); margin-top: 8px; }
+  .disclosure summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: baseline; gap: 9px;
+    font-size: 13.5px; font-weight: 500; color: var(--ink);
+  }
+  .disclosure summary::-webkit-details-marker { display: none; }
+  .disclosure summary .caret { font-family: var(--mono); font-size: 10px; color: var(--ink-3); transition: transform .12s; display: inline-block; }
+  .disclosure[open] summary .caret { transform: rotate(90deg); }
+  .disclosure .default-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-left: 4px; }
+  .disc-body { padding: 14px 0 2px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .stepper-row { display: flex; align-items: center; gap: 16px; }
+  .stepper-lbl { font-size: 13px; color: var(--ink-2); width: 200px; }
+  .stepper {
+    display: inline-flex; align-items: center;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--card-deep);
+    overflow: hidden;
+  }
+  .stepper button {
+    font-family: var(--mono); font-size: 13px; color: var(--ink-2);
+    background: none; border: 0; width: 28px; height: 28px; cursor: pointer;
+  }
+  .stepper button:hover { background: var(--border-soft); color: var(--ink); }
+  .stepper .val { font-family: var(--mono); font-size: 11.5px; color: var(--ink); padding: 0 10px; min-width: 62px; text-align: center; border-left: 1px solid var(--border-soft); border-right: 1px solid var(--border-soft); }
+
+  .wiz-nav {
+    display: flex; align-items: center; gap: 12px;
+    margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border-soft);
+  }
+  .wiz-nav .note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · TRIGGERS LIST + RUNS LEDGER                             -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 1</b> · Triggers — list grouped by condition, six lifecycle states, inset runs ledger · Wed Jul 23 2026</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <div>
+          <h1 class="page-title">Triggers</h1>
+          <p class="page-sub">When something happens, Mnema runs your prompt over what it captured and saves the result as a document.</p>
+        </div>
+        <span class="head-spacer"></span>
+        <button class="btn" title="Paste shared Trigger JSON — it prefills the wizard for review, never saves directly">Import</button>
+        <button class="btn btn--accent">＋ New Trigger</button>
+      </div>
+
+      <div class="list-scroll">
+        <!-- ◉ meeting ends -->
+        <section class="cond-section">
+          <div class="cond-section-head">
+            <div class="cond-section-title"><span class="glyph">◉</span><span>When a meeting ends</span></div>
+            <p class="cond-section-blurb">A conferencing app held your mic ≥5 min, then released it and stayed quiet ~2 min.</p>
+          </div>
+          <div class="trigger-rows">
+            <div class="trow demo-hover">
+              <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Meeting Recap"></button>
+              <button class="trow-name" title="See every run of this trigger, including skips and failures">Meeting Recap</button>
+              <span class="spacer"></span>
+              <button class="trow-status st-ok openable" title="The last run produced a document — click to read it">
+                <span class="dot"></span><span class="word">completed</span><span class="rest">· today 11:02 AM</span><span class="arrow">↗</span>
+              </button>
+              <span class="trow-actions">
+                <button class="row-act">edit</button>
+                <button class="row-act" title="Copies this trigger as JSON — never carries provider or model config">share</button>
+                <button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <div class="trow">
+              <button class="switch on" role="switch" aria-checked="true" aria-label="Enable 1:1 Prep — Sarah"></button>
+              <button class="trow-name">1:1 Prep — Sarah</button>
+              <span class="spacer"></span>
+              <span class="trow-status st-running" title="waiting for transcription… can take up to ~15 min">
+                <span class="dot"></span><span class="word">running</span><span class="rest">· today 2:31 PM</span>
+              </span>
+              <span class="trow-actions">
+                <button class="row-act">edit</button><button class="row-act">share</button><button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <button class="add-row"><span class="plus">＋</span><span>add a meeting-ends trigger</span></button>
+          </div>
+        </section>
+
+        <!-- ▣ app opened -->
+        <section class="cond-section">
+          <div class="cond-section-head">
+            <div class="cond-section-title"><span class="glyph">▣</span><span>When an app opens</span></div>
+            <p class="cond-section-blurb">A chosen app comes to the front after 30+ min away — a fresh session, not window switching.</p>
+          </div>
+          <div class="trigger-rows">
+            <div class="trow">
+              <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Figma Brief"></button>
+              <button class="trow-name">Figma Brief</button>
+              <span class="trow-detail">— Figma, after 30 min away</span>
+              <span class="spacer"></span>
+              <button class="trow-status st-ok openable" title="The last run produced a document — click to read it">
+                <span class="dot"></span><span class="word">completed</span><span class="rest">· today 12:31 PM</span><span class="arrow">↗</span>
+              </button>
+              <span class="trow-actions">
+                <button class="row-act">edit</button><button class="row-act">share</button><button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <div class="trow trow--off">
+              <button class="switch" role="switch" aria-checked="false" aria-label="Enable Xcode Catch-up"></button>
+              <button class="trow-name">Xcode Catch-up</button>
+              <span class="trow-detail">— Xcode, after 45 min away</span>
+              <span class="spacer"></span>
+              <span class="trow-status st-skip" title="The condition fired but there was nothing to work with — no document, no notification">
+                <span class="dot"></span><span class="word">skipped</span><span class="rest">— nothing captured since last session · yesterday 4:12 PM</span>
+              </span>
+              <span class="trow-actions">
+                <button class="row-act">edit</button><button class="row-act">share</button><button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <button class="add-row"><span class="plus">＋</span><span>add an app-opened trigger</span></button>
+          </div>
+        </section>
+
+        <!-- ◷ schedule -->
+        <section class="cond-section">
+          <div class="cond-section-head">
+            <div class="cond-section-title"><span class="glyph">◷</span><span>On a schedule</span></div>
+            <p class="cond-section-blurb">At a fixed local time on the days you pick.</p>
+          </div>
+          <div class="trigger-rows">
+            <div class="trow">
+              <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Daily Digest"></button>
+              <button class="trow-name">Daily Digest</button>
+              <span class="trow-detail">— weekdays at 8:00 AM</span>
+              <span class="spacer"></span>
+              <button class="trow-status st-ok openable" title="The last run produced a document — click to read it">
+                <span class="dot"></span><span class="word">completed</span><span class="rest">· today 8:00 AM</span><span class="arrow">↗</span>
+              </button>
+              <span class="trow-actions">
+                <button class="row-act">edit</button><button class="row-act">share</button><button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <div class="trow">
+              <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Weekly Review"></button>
+              <button class="trow-name">Weekly Review</button>
+              <span class="trow-detail">— Fridays at 4:30 PM</span>
+              <span class="spacer"></span>
+              <button class="trow-status st-fail openable" title="The run started but did not complete — run again retries this exact firing">
+                <span class="dot"></span><span class="word">failed</span><span class="rest">— model timed out · Jul 18, 4:31 PM</span><span class="arrow">↗</span>
+              </button>
+              <button class="run-again-link" title="Retry this exact firing — same window, a fresh attempt">run again</button>
+              <span class="trow-actions">
+                <button class="row-act">edit</button><button class="row-act">share</button><button class="row-act row-act--danger">delete</button>
+              </span>
+            </div>
+            <button class="add-row"><span class="plus">＋</span><span>add a scheduled trigger</span></button>
+          </div>
+        </section>
+
+        <p class="hover-note"><span class="g">◆</span> hover reveals edit · share · delete — shown pinned on the first row · a trigger's name opens its runs ledger ↓</p>
+
+        <!-- runs ledger (Screen 2, inset for reference) -->
+        <p class="ledger-caption"><span class="g">◷</span> runs ledger — opened by clicking “Daily Digest”</p>
+        <div class="ledger">
+          <nav class="crumb"><button class="back">triggers</button> <span>/</span> <span class="here">Daily Digest</span></nav>
+          <div class="ledger-head">
+            <h2>Daily Digest</h2>
+            <span class="cond-echo-inline"><span class="g">◷</span>Schedule — weekdays at 8:00 AM</span>
+          </div>
+          <p class="ledger-sub">Every firing, including the quiet ones — skips and failures never notify, they just show up here.</p>
+          <div class="run-rows">
+            <div class="run-row run-ok">
+              <span class="dot"></span><span class="word">completed</span>
+              <button class="run-open" title="This run produced a document — click to read it">Daily digest — Tue Jul 22 <span class="arrow">↗</span></button>
+              <span class="spacer"></span><span class="run-when">today 8:00 AM</span>
+            </div>
+            <div class="run-row run-ok">
+              <span class="dot"></span><span class="word">completed</span>
+              <button class="run-open">Daily digest — Mon Jul 21 <span class="arrow">↗</span></button>
+              <span class="spacer"></span><span class="run-when">yesterday 8:00 AM</span>
+            </div>
+            <div class="run-row run-skip">
+              <span class="dot"></span><span class="word">skipped</span>
+              <span class="run-reason">— no capture in the window (Mac was asleep)</span>
+              <span class="spacer"></span><span class="run-when">Jul 21, 8:00 AM</span>
+            </div>
+            <div class="run-row run-fail">
+              <span class="dot"></span><span class="word">failed</span>
+              <span class="run-reason">— provider returned 529, retries exhausted</span>
+              <span class="spacer"></span>
+              <button class="run-again-link" title="Retry this exact firing — same window, a fresh attempt">run again</button>
+              <span class="run-when">Jul 18, 8:01 AM</span>
+            </div>
+          </div>
+          <p class="ledger-note">Runs are ordinary conversations — they also live in your chat rail under the Triggers filter.</p>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · WIZARD — TEMPLATE GALLERY (new step 0)                  -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 2</b> · New Trigger — template gallery, the wizard’s new first screen (picking a card prefills and lands on Review)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="wiz-scroll">
+        <div class="wiz-col wiz-col--wide">
+          <nav class="crumb"><button class="back">triggers</button> <span>/</span> <span class="here">new trigger</span></nav>
+          <div class="wiz-title-row">
+            <h1 class="wiz-title">New Trigger</h1>
+            <div class="steps">
+              <button class="step-tab current"><span class="num">✦</span>Template</button>
+              <span class="step-rule"></span>
+              <button class="step-tab"><span class="num">01</span>Condition</button>
+              <span class="step-rule"></span>
+              <button class="step-tab"><span class="num">02</span>Prompt</button>
+              <span class="step-rule"></span>
+              <button class="step-tab"><span class="num">03</span>Review</button>
+            </div>
+          </div>
+
+          <div class="wiz-lead" style="display:flex;align-items:flex-end;justify-content:space-between;gap:24px;">
+            <span>
+              <span class="q">Start from a template.</span>
+              <span class="hint">Each one fills in the condition and prompt for you — you only name it and save.</span>
+            </span>
+            <span class="wiz-note-r"><span class="g">◆</span> picking a template lands you on <b>Review</b>, ready to save</span>
+          </div>
+
+          <div class="gal-grid">
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">◉</div>
+              <h4>Meeting Recap</h4>
+              <p>When a meeting ends, write a speaker-labeled recap with decisions, action items, and feedback for you.</p>
+              <div class="cond"><span class="g">◉</span> meeting ends · any conferencing app</div>
+            </div>
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">◷</div>
+              <h4>Daily Digest</h4>
+              <p>Every weekday morning, summarize yesterday — the main threads of work, who you talked to, loose ends.</p>
+              <div class="cond"><span class="g">◷</span> weekdays · 8:00 AM</div>
+            </div>
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">▣</div>
+              <h4>“When I open Figma, brief me”</h4>
+              <p>The moment Figma starts a fresh session, recall what you were designing and what feedback is pending.</p>
+              <div class="cond"><span class="g">▣</span> app opened · Figma · 30 min away</div>
+            </div>
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">◷</div>
+              <h4>Weekly Review</h4>
+              <p>Friday afternoon, look back over the week: shipped work, meetings, commitments, and what slipped.</p>
+              <div class="cond"><span class="g">◷</span> Fridays · 4:30 PM</div>
+            </div>
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">◉</div>
+              <h4>1:1 Prep</h4>
+              <p>After any call, surface what each person committed to — so open items are ready before the next 1:1.</p>
+              <div class="cond"><span class="g">◉</span> meeting ends · any conferencing app</div>
+            </div>
+            <div class="tpl">
+              <span class="tpl-go">→</span>
+              <div class="tpl-glyph">▣</div>
+              <h4>Editor Catch-up</h4>
+              <p>When you come back to Xcode after a long break, list where you left off and what changed elsewhere since.</p>
+              <div class="cond"><span class="g">▣</span> app opened · Xcode · 45 min away</div>
+            </div>
+          </div>
+
+          <button class="scratch">
+            <span class="plus">＋</span>
+            <span>
+              <b>Start from scratch</b>
+              <span>Build your own — choose a condition, write the prompt, review, save.</span>
+            </span>
+            <span style="margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-3);">begins at 01 Condition →</span>
+          </button>
+
+          <div class="glyph-legend">
+            <span><span class="g">◉</span>when a meeting ends</span>
+            <span><span class="g">▣</span>when an app opens</span>
+            <span><span class="g">◷</span>on a schedule</span>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 3 · WIZARD — REVIEW, LANDED FROM TEMPLATE                   -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 3</b> · New Trigger — Review step, landed from the “Meeting Recap” template (prefilled, ready to save)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="wiz-scroll">
+        <div class="wiz-col">
+          <nav class="crumb"><button class="back">triggers</button> <span>/</span> <span class="here">new trigger</span></nav>
+          <div class="wiz-title-row">
+            <h1 class="wiz-title">New Trigger</h1>
+            <div class="steps">
+              <button class="step-tab done"><span class="num">✓</span>Template</button>
+              <span class="step-rule done"></span>
+              <button class="step-tab done"><span class="num">01</span>Condition</button>
+              <span class="step-rule done"></span>
+              <button class="step-tab done"><span class="num">02</span>Prompt</button>
+              <span class="step-rule done"></span>
+              <button class="step-tab current"><span class="num">03</span>Review</button>
+            </div>
+          </div>
+
+          <span class="tpl-chip"><span>◉</span> from template · Meeting Recap <span class="x" title="Clear the template and start from scratch">✕</span></span>
+
+          <div class="wiz-lead">
+            <span class="q">Review and save.</span>
+            <span class="hint">The template filled everything in — steps 01 and 02 are unlocked if you want to change the condition or reword the prompt.</span>
+          </div>
+
+          <div class="review-card">
+            <div class="review-sec">
+              <p class="review-lbl">Name</p>
+              <input class="text-input" type="text" value="Meeting Recap">
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">Condition</p>
+              <div class="review-echo">
+                <span class="echo-main"><span class="g">◉</span>Meeting Ends</span>
+                <span class="sub">a conferencing app releases the mic after holding it ≥5 min</span>
+              </div>
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">Prompt</p>
+              <div class="prompt-preview" id="prompt-preview">Write a recap of the meeting that just ended.
+
+Open with a one-paragraph summary of what the meeting was about and where it landed. Then give a speaker-labeled rundown: for each person, the main points they raised and anything they committed to. Call out decisions that were made, and list open questions separately.
+
+Close with short feedback for me: where I was clear, where I rambled, and anything I said I would follow up on. Plain prose throughout.</div>
+              <button class="preview-more" id="preview-more">show all</button>
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">What Mnema adds automatically</p>
+              <ul class="auto-list">
+                <li>the firing window — condition, time span, app</li>
+                <li>your User Context — what Mnema has learned about your work</li>
+                <li>speaker identity — which voice in the audio is you</li>
+                <li>previous runs of this trigger, so results compound</li>
+              </ul>
+              <p class="auto-note">Assembled on every run. Nothing to configure — want a generic result? Just say so in the prompt.</p>
+            </div>
+
+            <div class="review-sec">
+              <details class="disclosure">
+                <summary><span class="caret">▶</span> Advanced <span class="default-note">all defaults</span></summary>
+                <div class="disc-body">
+                  <div class="stepper-row">
+                    <span class="stepper-lbl">Minimum meeting length</span>
+                    <span class="stepper"><button>−</button><span class="val">5 min</span><button>+</button></span>
+                  </div>
+                  <div class="stepper-row">
+                    <span class="stepper-lbl">Cooldown</span>
+                    <span class="stepper"><button>−</button><span class="val">10 min</span><button>+</button></span>
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+
+          <div class="wiz-nav">
+            <button class="btn">‹ Back</button>
+            <span class="spacer"></span>
+            <span class="note">saved to triggers.json — runs stay on this Mac</span>
+            <button class="btn btn--ghost" title="Copies Trigger JSON — never carries provider or model config">Share as JSON</button>
+            <button class="btn btn--accent">Save Trigger</button>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ponytail: the only JS — the review prompt's show-all toggle.
+  var more = document.getElementById('preview-more');
+  more.addEventListener('click', function () {
+    var pre = document.getElementById('prompt-preview');
+    var open = pre.classList.toggle('expanded');
+    more.textContent = open ? 'show less' : 'show all';
+  });
+</script>
+
+</body>
+</html>

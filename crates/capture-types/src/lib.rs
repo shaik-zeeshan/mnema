@@ -2,6 +2,7 @@ mod conversation;
 mod inactivity;
 mod licensing;
 mod logs;
+mod meetings;
 mod microphone;
 mod recording;
 mod session;
@@ -15,6 +16,7 @@ pub use conversation::*;
 pub use inactivity::*;
 pub use licensing::*;
 pub use logs::*;
+pub use meetings::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
@@ -66,6 +68,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: false,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: Some(1_753_250_000_000),
             requested_sources: None,
             output_files: None,
             source_sessions: Some(SourceSessions {
@@ -85,6 +88,8 @@ mod tests {
         assert_eq!(json["sourceSessions"]["microphone"]["sessionId"], "mic-1");
         assert!(json["sourceSessions"]["systemAudio"].is_null());
         assert_eq!(json["isLowDiskSuspended"], false);
+        // Pins the wire name the hand-written TS mirror must spell the same way.
+        assert_eq!(json["offRecordDeadlineUnixMs"], 1_753_250_000_000_i64);
         assert!(json.get("sessionId").is_none());
         assert!(json.get("startedAtUnixMs").is_none());
     }

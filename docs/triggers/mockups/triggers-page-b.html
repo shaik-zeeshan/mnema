@@ -1,0 +1,707 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Triggers — Direction B (card grid + run history)</title>
+  <style>
+    /* ---- tokens (subset copied from docs/user-context/mockups/tokens.css, dark only) ---- */
+    :root {
+      --app-bg: #0c0c0e;
+      --app-fg: #e2e2e8;
+
+      --app-titlebar-bg: #08080c;
+      --app-titlebar-border: #15151f;
+      --app-titlebar-title: #45455a;
+
+      --app-status-bg: #0a0a10;
+      --app-status-border: #161624;
+      --app-status-fg: #555574;
+      --app-status-running-fg: #ff5d6c;
+      --app-status-running-border: #3a1820;
+      --app-status-running-dot: #ff3148;
+      --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+      --app-surface: #0e0e16;
+      --app-surface-subtle: #101018;
+      --app-surface-raised: #13131a;
+      --app-surface-hover: #1a1a2a;
+
+      --app-border: #1e1e2e;
+      --app-border-strong: #2a2a3a;
+      --app-border-hover: #3a3a5a;
+
+      --app-text-strong: #e2e2e8;
+      --app-text: #c0c0d0;
+      --app-text-muted: #7a7a9a;
+      --app-text-subtle: #44445a;
+      --app-text-faint: #33334a;
+
+      --app-accent: #3dffa0;
+      --app-accent-strong: #2a8a60;
+      --app-accent-bg: #0d1f15;
+      --app-accent-border: #1a4a30;
+      --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+      --app-warn: #d6a14a;
+      --app-warn-bg: #1a1208;
+      --app-warn-border: #7a4a18;
+
+      --app-danger: #ff6b7a;
+      --app-danger-bg: #2e0f14;
+      --app-danger-border: #4a1a20;
+      --app-danger-text: #ff8090;
+
+      --app-neutral-bg: #1a1a2a;
+      --app-neutral-border: #2a2a3a;
+      --app-neutral-text: #7070a0;
+    }
+
+    /* ---- base + window frame (mirrors app.css) ---- */
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+        "Cascadia Code", "Fira Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* ---- mockup explainer bar (outside the app window) ---- */
+    .mock-note {
+      max-width: 1180px;
+      margin: 14px auto 0;
+      padding: 8px 12px;
+      border: 1px dashed var(--app-border-strong);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--app-text-muted);
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .mock-note strong { color: var(--app-text); font-weight: 600; letter-spacing: 0.04em; }
+    .mock-note nav { margin-left: auto; display: flex; gap: 10px; white-space: nowrap; }
+    .mock-note nav a {
+      color: var(--app-text-subtle);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+    }
+    .mock-note nav a:hover { color: var(--app-text); }
+    .mock-note nav a.current { color: var(--app-text-strong); text-decoration: none; }
+
+    .app-window {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1180px;
+      height: calc(100vh - 90px);
+      margin: 12px auto 16px;
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--app-bg);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      height: 36px;
+      flex: 0 0 36px;
+      padding: 0 12px;
+      background: var(--app-titlebar-bg);
+      border-bottom: 1px solid var(--app-titlebar-border);
+      user-select: none;
+    }
+    .titlebar-left { display: flex; align-items: center; gap: 12px; }
+    .traffic-lights { display: flex; align-items: center; gap: 8px; }
+    .traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .tl-close { background: #ff5f57; }
+    .tl-min { background: #febc2e; }
+    .tl-max { background: #28c840; }
+    .wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+    .titlebar-center { font-size: 11px; color: var(--app-titlebar-title); letter-spacing: 0.04em; }
+    .titlebar-right { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+
+    .status-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 11px; padding: 3px 9px;
+      border: 1px solid var(--app-status-border);
+      border-radius: 999px;
+      background: var(--app-status-bg);
+      color: var(--app-status-fg);
+    }
+    .status-chip--running { color: var(--app-status-running-fg); border-color: var(--app-status-running-border); }
+    .status-chip .dot { width: 7px; height: 7px; border-radius: 50%; }
+    .status-chip--running .dot {
+      background: var(--app-status-running-dot);
+      box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
+    }
+
+    /* ---- buttons (mirrors app.css .btn) ---- */
+    .btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      font: inherit; font-size: 12px;
+      padding: 5px 11px;
+      border: 1px solid var(--app-border);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--app-text);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .btn:hover { background: var(--app-surface-hover); border-color: var(--app-border-hover); color: var(--app-text-strong); }
+    .btn--accent { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+    .btn--accent:hover { background: var(--app-accent-bg); border-color: var(--app-accent); color: var(--app-accent); }
+
+    /* ---- page ---- */
+    .page {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 22px 24px 28px;
+    }
+    .page-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .page-head h1 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--app-text-strong);
+      line-height: 1.3;
+    }
+    .page-head .sub {
+      margin: 3px 0 0;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+    }
+    .page-head .spacer { flex: 1 1 auto; }
+    .page-head .actions { display: flex; gap: 8px; padding-top: 2px; }
+
+    /* ---- card grid ---- */
+    .trigger-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+    @media (max-width: 860px) { .trigger-grid { grid-template-columns: 1fr; } }
+
+    .tcard {
+      display: flex;
+      flex-direction: column;
+      padding: 13px 14px 10px;
+      background: var(--app-surface);
+      border: 1px solid var(--app-border);
+      border-radius: 8px;
+      min-width: 0;
+      transition: border-color 0.12s ease;
+    }
+    .tcard:hover { border-color: var(--app-border-hover); }
+
+    .tcard-head { display: flex; align-items: center; gap: 9px; }
+    .tcard-name {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--app-text-strong);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tcard-head .spacer { flex: 1 1 auto; }
+
+    /* switch */
+    .switch {
+      position: relative;
+      flex: 0 0 auto;
+      width: 30px; height: 17px;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 999px;
+      background: var(--app-surface-hover);
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      background: var(--app-text-muted);
+      transition: left 0.12s ease, background 0.12s ease;
+    }
+    .switch.on { background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+    .switch.on::after { left: 15px; background: var(--app-accent); }
+
+    .tcard-cond {
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--app-text-muted);
+      display: flex; align-items: center; gap: 7px;
+      flex-wrap: wrap;
+    }
+    .cond-chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-size: 10.5px;
+      letter-spacing: 0.02em;
+      padding: 1px 7px;
+      background: var(--app-surface-hover);
+      border: 1px solid var(--app-border);
+      border-radius: 4px;
+      color: var(--app-text);
+      white-space: nowrap;
+    }
+
+    /* ---- last-runs strip (CI-style ticks) ---- */
+    .runs {
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .runs-label {
+      font-size: 9.5px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+    }
+    .runs-strip { display: flex; gap: 4px; }
+    .tick {
+      width: 8px; height: 16px;
+      border-radius: 2px;
+      border: 1px solid transparent;
+    }
+    .tick--ok { background: var(--app-accent); opacity: 0.85; }
+    .tick--skip { background: var(--app-neutral-bg); border-color: var(--app-neutral-border); }
+    .tick--fail { background: var(--app-danger); opacity: 0.85; }
+    .tick--none { background: transparent; border-color: var(--app-border); }
+
+    .run-status {
+      margin-top: 6px;
+      font-size: 11px;
+      display: flex; align-items: baseline; gap: 6px;
+    }
+    .run-status .dot { font-size: 10px; }
+    .run-status--ok { cursor: pointer; }
+    .tick--ok { cursor: pointer; }
+    .run-status--ok .dot, .run-status--ok .word { color: var(--app-accent-strong); }
+    .run-status--skip .dot, .run-status--skip .word { color: var(--app-neutral-text); }
+    .run-status--fail .dot, .run-status--fail .word { color: var(--app-danger-text); }
+    .run-status--off .dot, .run-status--off .word { color: var(--app-text-subtle); }
+    .run-status .rest { color: var(--app-text-muted); }
+
+    /* ---- disabled (switched off) state ---- */
+    .tcard--off .tcard-name,
+    .tcard--off .tcard-cond,
+    .tcard--off .runs { opacity: 0.45; }
+
+    /* ---- needs-provider (Provider Gate) state ---- */
+    .tcard--gated { opacity: 0.92; }
+    .tcard--gated .tcard-name,
+    .tcard--gated .tcard-cond,
+    .tcard--gated .runs { opacity: 0.55; }
+    .gate-callout {
+      margin-top: 12px;
+      display: flex; align-items: center; gap: 8px;
+      padding: 7px 10px;
+      font-size: 11px;
+      color: var(--app-warn);
+      background: var(--app-warn-bg);
+      border: 1px solid var(--app-warn-border);
+      border-radius: 6px;
+    }
+    .gate-callout .glyph { flex: 0 0 auto; }
+    .gate-callout a {
+      margin-left: auto;
+      color: var(--app-warn);
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      white-space: nowrap;
+    }
+    .gate-callout a:hover { color: var(--app-text-strong); }
+
+    /* ---- card footer ---- */
+    .tcard-foot {
+      margin-top: 12px;
+      padding-top: 8px;
+      border-top: 1px solid var(--app-border);
+      display: flex; align-items: center; gap: 4px;
+    }
+    .quiet-btn {
+      font: inherit; font-size: 11px;
+      padding: 2px 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+    }
+    .quiet-btn:hover {
+      background: var(--app-surface-hover);
+      border-color: var(--app-border);
+      color: var(--app-text-strong);
+    }
+    .tcard-foot .hint {
+      margin-left: auto;
+      font-size: 9.5px;
+      color: var(--app-text-faint);
+      letter-spacing: 0.02em;
+    }
+  </style>
+</head>
+<body>
+  <div class="mock-note">
+    <strong>MOCKUP · Triggers page — Variant B: card grid</strong>
+    <span>Manage your triggers: each card shows its condition, recent run history, and last result; switch on/off, create or import.</span>
+    <nav>
+      <a href="triggers-page-a.html">Page A</a>
+      <a href="triggers-page-b.html" class="current">Page B</a>
+      <a href="create-edit-a.html">Create A</a>
+      <a href="create-edit-b.html">Create B</a>
+      <a href="document-view-a.html">Document</a>
+    </nav>
+  </div>
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="titlebar-left">
+        <div class="traffic-lights">
+          <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+        </div>
+        <span class="wordmark">MNEMA</span>
+      </div>
+      <div class="titlebar-center">/triggers</div>
+      <div class="titlebar-right">
+        <span class="status-chip status-chip--running"><span class="dot"></span>recording</span>
+      </div>
+    </header>
+
+    <main class="page">
+      <div class="page-head">
+        <div>
+          <h1>Triggers</h1>
+          <p class="sub">A trigger pairs a condition (meeting ends, app opens, schedule) with your prompt — when it fires, Mnema runs the AI over what it captured and saves the result as a document.</p>
+        </div>
+        <span class="spacer"></span>
+        <div class="actions">
+          <button class="btn" id="btn-import" title="Paste shared Trigger JSON to add someone else's trigger">Import</button>
+          <button class="btn btn--accent" id="btn-new">+ New Trigger</button>
+        </div>
+      </div>
+
+      <div class="trigger-grid">
+
+        <!-- Meeting Recap — completed -->
+        <article class="tcard" data-id="meeting-recap">
+          <div class="tcard-head">
+            <span class="tcard-name">Meeting Recap</span>
+            <span class="spacer"></span>
+            <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Meeting Recap"></button>
+          </div>
+          <div class="tcard-cond">
+            <span class="cond-chip">Meeting Ends</span>
+            <span>fires when a meeting ends</span>
+          </div>
+          <div class="runs" aria-label="Last 7 runs">
+            <span class="runs-label">runs</span>
+            <div class="runs-strip">
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+            </div>
+          </div>
+          <div class="run-status run-status--ok" title="Last run fired and the AI produced a document — click to open it">
+            <span class="dot">●</span>
+            <span class="word">completed</span>
+            <span class="rest">· today 2:14 PM</span>
+          </div>
+          <div class="tcard-foot">
+            <button class="quiet-btn">Edit</button>
+            <button class="quiet-btn" title="Copies Trigger JSON to the clipboard">Share</button>
+            <span class="hint">27 runs total</span>
+          </div>
+        </article>
+
+        <!-- Standup Notes — skipped -->
+        <article class="tcard" data-id="standup-notes">
+          <div class="tcard-head">
+            <span class="tcard-name">Standup Notes</span>
+            <span class="spacer"></span>
+            <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Standup Notes"></button>
+          </div>
+          <div class="tcard-cond">
+            <span class="cond-chip">Meeting Ends</span>
+            <span>fires when a meeting ends</span>
+          </div>
+          <div class="runs" aria-label="Last 7 runs">
+            <span class="runs-label">runs</span>
+            <div class="runs-strip">
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--none" title="no run"></span>
+            </div>
+          </div>
+          <div class="run-status run-status--skip" title="The condition fired but Mnema wasn't recording, so there was nothing to run the AI over — no document was made">
+            <span class="dot">●</span>
+            <span class="word">skipped</span>
+            <span class="rest">— wasn't recording · yesterday 9:31 AM</span>
+          </div>
+          <div class="tcard-foot">
+            <button class="quiet-btn">Edit</button>
+            <button class="quiet-btn" title="Copies Trigger JSON to the clipboard">Share</button>
+            <span class="hint">14 runs total</span>
+          </div>
+        </article>
+
+        <!-- Figma Session Log — failed -->
+        <article class="tcard" data-id="figma-session-log">
+          <div class="tcard-head">
+            <span class="tcard-name">Figma Session Log</span>
+            <span class="spacer"></span>
+            <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Figma Session Log"></button>
+          </div>
+          <div class="tcard-cond">
+            <span class="cond-chip">App Opened — Figma</span>
+            <span>fires on a fresh Figma session (30 min away)</span>
+          </div>
+          <div class="runs" aria-label="Last 7 runs">
+            <span class="runs-label">runs</span>
+            <div class="runs-strip">
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--fail" title="failed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--fail" title="failed"></span>
+            </div>
+          </div>
+          <div class="run-status run-status--fail" title="The run started but the AI provider returned an error — no document was produced; it will try again next time the condition fires">
+            <span class="dot">●</span>
+            <span class="word">failed</span>
+            <span class="rest">— provider returned an error · today 11:02 AM</span>
+          </div>
+          <div class="tcard-foot">
+            <button class="quiet-btn">Edit</button>
+            <button class="quiet-btn" title="Copies Trigger JSON to the clipboard">Share</button>
+            <span class="hint">41 runs total</span>
+          </div>
+        </article>
+
+        <!-- Daily Wrap-Up — completed, schedule -->
+        <article class="tcard" data-id="daily-wrap-up">
+          <div class="tcard-head">
+            <span class="tcard-name">Daily Wrap-Up</span>
+            <span class="spacer"></span>
+            <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Daily Wrap-Up"></button>
+          </div>
+          <div class="tcard-cond">
+            <span class="cond-chip">Schedule</span>
+            <span>fires every day at 6:00 PM</span>
+          </div>
+          <div class="runs" aria-label="Last 7 runs">
+            <span class="runs-label">runs</span>
+            <div class="runs-strip">
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+            </div>
+          </div>
+          <div class="run-status run-status--ok" title="Last run fired and the AI produced a document — click to open it">
+            <span class="dot">●</span>
+            <span class="word">completed</span>
+            <span class="rest">· yesterday 6:03 PM</span>
+          </div>
+          <div class="tcard-foot">
+            <button class="quiet-btn">Edit</button>
+            <button class="quiet-btn" title="Copies Trigger JSON to the clipboard">Share</button>
+            <span class="hint">96 runs total</span>
+          </div>
+        </article>
+
+        <!-- 1:1 Follow-Ups — Provider Gate: needs an AI provider -->
+        <article class="tcard tcard--gated" data-id="one-on-one-follow-ups">
+          <div class="tcard-head">
+            <span class="tcard-name">1:1 Follow-Ups</span>
+            <span class="spacer"></span>
+            <button class="switch" role="switch" aria-checked="false" disabled aria-label="1:1 Follow-Ups disabled — needs an AI provider"></button>
+          </div>
+          <div class="tcard-cond">
+            <span class="cond-chip">Meeting Ends</span>
+            <span>fires when a meeting ends</span>
+          </div>
+          <div class="runs" aria-label="Last 7 runs">
+            <span class="runs-label">runs</span>
+            <div class="runs-strip">
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--skip" title="skipped"></span>
+              <span class="tick tick--ok" title="completed"></span>
+              <span class="tick tick--none" title="no run"></span>
+              <span class="tick tick--none" title="no run"></span>
+            </div>
+          </div>
+          <div class="gate-callout" title="This trigger can't run until an AI provider is configured in Settings — its condition is ignored until then">
+            <span class="glyph">▲</span>
+            <span>needs an AI provider — runs are paused</span>
+            <a href="#" id="gate-provider-link">Set up provider</a>
+          </div>
+          <div class="tcard-foot">
+            <button class="quiet-btn">Edit</button>
+            <button class="quiet-btn" title="Copies Trigger JSON to the clipboard">Share</button>
+            <span class="hint">18 runs total</span>
+          </div>
+        </article>
+
+      </div>
+    </main>
+  </div>
+
+  <script>
+    // ponytail: mockup-only wiring — plain listeners, no framework, no state beyond the DOM.
+    (function () {
+      "use strict";
+
+      // Realistic Trigger JSON per card, used by Share.
+      var TRIGGERS = {
+        "meeting-recap": {
+          version: 1,
+          name: "Meeting Recap",
+          condition: { type: "meeting_ends", params: {} },
+          prompt: "Summarize the meeting that just ended: key decisions, action items with owners, and open questions."
+        },
+        "standup-notes": {
+          version: 1,
+          name: "Standup Notes",
+          condition: { type: "meeting_ends", params: {} },
+          prompt: "From the meeting that just ended, write my standup update: what I reported, blockers raised, and what I committed to."
+        },
+        "figma-session-log": {
+          version: 1,
+          name: "Figma Session Log",
+          condition: { type: "app_opened", params: { app: "Figma", away_minutes: 30 } },
+          prompt: "Log what I worked on in this Figma session: files touched, components changed, and any feedback I left."
+        },
+        "daily-wrap-up": {
+          version: 1,
+          name: "Daily Wrap-Up",
+          condition: { type: "schedule", params: { time: "18:00", repeat: "daily" } },
+          prompt: "Write a wrap-up of my day: main threads of work, meetings and outcomes, and what to pick up tomorrow."
+        },
+        "one-on-one-follow-ups": {
+          version: 1,
+          name: "1:1 Follow-Ups",
+          condition: { type: "meeting_ends", params: {} },
+          prompt: "If the meeting that just ended was a 1:1, list follow-ups for each of us and anything I promised to send."
+        }
+      };
+
+      // ---- run-strip ticks: tooltip = outcome + relative time; green ticks open the document ----
+      var TICK_TIMES = [
+        "last Mon 9:12 AM", "last Wed 4:40 PM", "last Fri 10:05 AM",
+        "Mon 2:14 PM", "Tue 11:30 AM", "Thu 9:02 AM", "today 2:14 PM"
+      ];
+      var TICK_OUTCOME = {
+        "tick--ok": "completed",
+        "tick--skip": "skipped — wasn't recording",
+        "tick--fail": "failed — provider returned an error",
+        "tick--none": "no run yet"
+      };
+      document.querySelectorAll(".runs-strip").forEach(function (strip) {
+        strip.querySelectorAll(".tick").forEach(function (tick, i) {
+          var kind = Object.keys(TICK_OUTCOME).find(function (k) { return tick.classList.contains(k); });
+          if (!kind) return;
+          tick.title = kind === "tick--none"
+            ? TICK_OUTCOME[kind]
+            : TICK_OUTCOME[kind] + " · " + TICK_TIMES[i % TICK_TIMES.length];
+          if (kind === "tick--ok") {
+            tick.title += " — click to open the document";
+            tick.addEventListener("click", function () { location.href = "document-view-a.html"; });
+          }
+        });
+      });
+
+      // ---- completed status line opens the document ----
+      document.querySelectorAll(".run-status--ok").forEach(function (line) {
+        line.addEventListener("click", function () { location.href = "document-view-a.html"; });
+      });
+
+      // ---- switches: toggle enables/disables the card ----
+      document.querySelectorAll(".switch").forEach(function (sw) {
+        sw.addEventListener("click", function () {
+          if (sw.disabled) return;
+          var card = sw.closest(".tcard");
+          var status = card.querySelector(".run-status");
+          var turningOn = !sw.classList.contains("on");
+          sw.classList.toggle("on", turningOn);
+          sw.setAttribute("aria-checked", String(turningOn));
+          card.classList.toggle("tcard--off", !turningOn);
+          if (!status) return;
+          if (!turningOn) {
+            status.dataset.origClass = status.className;
+            status.dataset.origHtml = status.innerHTML;
+            status.dataset.origTitle = status.title;
+            status.className = "run-status run-status--off";
+            status.title = "This trigger is switched off — its condition is ignored until you switch it back on";
+            status.innerHTML = '<span class="dot">●</span><span class="word">disabled</span>';
+          } else {
+            status.className = status.dataset.origClass;
+            status.innerHTML = status.dataset.origHtml;
+            status.title = status.dataset.origTitle;
+          }
+        });
+      });
+
+      // ---- footer buttons: Edit + Share ----
+      document.querySelectorAll(".tcard").forEach(function (card) {
+        var buttons = card.querySelectorAll(".quiet-btn");
+        var edit = buttons[0], share = buttons[1];
+        edit.addEventListener("click", function () { location.href = "create-edit-b.html?edit=1"; });
+        share.addEventListener("click", function () {
+          var json = JSON.stringify(TRIGGERS[card.dataset.id], null, 2);
+          navigator.clipboard.writeText(json).then(flash, flash);
+          function flash() {
+            share.textContent = "copied";
+            setTimeout(function () { share.textContent = "Share"; }, 1200);
+          }
+        });
+      });
+
+      // ---- page-head actions + provider gate ----
+      document.getElementById("btn-new").addEventListener("click", function () {
+        location.href = "create-edit-b.html";
+      });
+      document.getElementById("btn-import").addEventListener("click", function () {
+        location.href = "create-edit-b.html?imported=1";
+      });
+      document.getElementById("gate-provider-link").addEventListener("click", function (e) {
+        e.preventDefault();
+        alert("Would open Settings → AI Providers");
+      });
+    })();
+  </script>
+</body>
+</html>

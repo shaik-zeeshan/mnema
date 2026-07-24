@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mnema · Triggers — A (dense terminal list)</title>
+  <style>
+    /* Tokens copied from docs/user-context/mockups/tokens.css (dark theme only). */
+    :root {
+      --app-bg: #0c0c0e;
+      --app-fg: #e2e2e8;
+
+      --app-titlebar-bg: #08080c;
+      --app-titlebar-border: #15151f;
+      --app-titlebar-title: #45455a;
+
+      --app-surface: #0e0e16;
+      --app-surface-subtle: #101018;
+      --app-surface-hover: #1a1a2a;
+
+      --app-border: #1e1e2e;
+      --app-border-strong: #2a2a3a;
+      --app-border-hover: #3a3a5a;
+
+      --app-text-strong: #e2e2e8;
+      --app-text: #c0c0d0;
+      --app-text-muted: #7a7a9a;
+      --app-text-subtle: #44445a;
+      --app-text-faint: #33334a;
+
+      --app-accent: #3dffa0;
+      --app-accent-strong: #2a8a60;
+      --app-accent-bg: #0d1f15;
+      --app-accent-border: #1a4a30;
+      --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+      --app-warn: #d6a14a;
+      --app-warn-bg: #1a1208;
+      --app-warn-border: #7a4a18;
+
+      --app-danger: #ff6b7a;
+      --app-danger-text: #ff8090;
+
+      --app-neutral-bg: #1a1a2a;
+      --app-neutral-border: #2a2a3a;
+      --app-neutral-text: #7070a0;
+    }
+
+    * { box-sizing: border-box; }
+
+    /* ================================================== MOCKUP EXPLAINER BAR (not part of the app) */
+    .mockup-bar {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+      max-width: 1180px;
+      margin: 14px auto 0;
+      padding: 8px 12px;
+      border: 1px dashed var(--app-border-strong);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--app-text-muted);
+    }
+    .mockup-bar .tag { color: var(--app-text-subtle); letter-spacing: 0.08em; }
+    .mockup-bar .spacer { flex: 1 1 auto; }
+    .mockup-bar nav a {
+      color: var(--app-text-subtle);
+      text-decoration: none;
+      margin-left: 10px;
+      white-space: nowrap;
+    }
+    .mockup-bar nav a:hover { color: var(--app-text); text-decoration: underline; }
+    .mockup-bar nav a.current { color: var(--app-text-strong); font-weight: 700; }
+
+    body {
+      margin: 0;
+      font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+        "Cascadia Code", "Fira Code", monospace;
+      font-size: 13px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      background: var(--app-bg);
+      color: var(--app-fg);
+    }
+
+    /* ================================================== APP WINDOW FRAME */
+    .app-window {
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 1180px;
+      height: calc(100vh - 90px);
+      margin: 12px auto 16px;
+      border: 1px solid var(--app-border);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--app-bg);
+      box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+    }
+
+    .titlebar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      height: 36px;
+      flex: 0 0 36px;
+      padding: 0 12px;
+      background: var(--app-titlebar-bg);
+      border-bottom: 1px solid var(--app-titlebar-border);
+      user-select: none;
+    }
+    .traffic-lights { display: flex; align-items: center; gap: 8px; }
+    .traffic-lights span {
+      width: 11px; height: 11px; border-radius: 50%; display: inline-block;
+    }
+    .tl-close { background: #ff5f57; }
+    .tl-min { background: #febc2e; }
+    .tl-max { background: #28c840; }
+    .wordmark {
+      font-size: 11px;
+      letter-spacing: 0.06em;
+      color: var(--app-titlebar-title);
+    }
+
+    /* ================================================== PAGE */
+    .page {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 22px 28px 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .page-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .page-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--app-text-strong);
+    }
+    .page-header .spacer { flex: 1 1 auto; }
+
+    .page-subtitle {
+      margin: -10px 0 14px;
+      font-size: 11.5px;
+      color: var(--app-text-muted);
+    }
+
+    .btn {
+      font: inherit;
+      font-size: 11.5px;
+      line-height: 1;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      height: 26px;
+      padding: 0 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .btn-secondary {
+      border: 1px solid var(--app-border-strong);
+      background: transparent;
+      color: var(--app-text-muted);
+    }
+    .btn-secondary:hover {
+      color: var(--app-text-strong);
+      border-color: var(--app-border-hover);
+      background: var(--app-surface-hover);
+    }
+    .btn-primary {
+      border: 1px solid var(--app-accent-border);
+      background: var(--app-accent-bg);
+      color: var(--app-accent);
+    }
+    .btn-primary:hover { box-shadow: 0 0 10px var(--app-accent-glow); }
+    .btn .plus { color: inherit; opacity: 0.8; }
+
+    /* Segmented filter (Settings convention: Segmented for small static enums). */
+    .filter-seg {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      border: 1px solid var(--app-border);
+      border-radius: 7px;
+      background: var(--app-surface-subtle);
+      margin-bottom: 10px;
+      align-self: flex-start;
+    }
+    .filter-seg button {
+      font: inherit;
+      font-size: 11.5px;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 13px;
+      height: 22px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .filter-seg button:hover { color: var(--app-text-strong); }
+    .filter-seg button.active {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+      color: var(--app-accent-strong);
+    }
+
+    /* ================================================== TRIGGER TABLE (ps-style) */
+    .trigger-table { border-top: 1px solid var(--app-border); }
+
+    .t-head, .t-row {
+      display: grid;
+      grid-template-columns: 44px minmax(160px, 1fr) 200px minmax(280px, 1.4fr) auto;
+      align-items: center;
+      gap: 14px;
+      padding: 0 10px;
+    }
+    .t-head {
+      height: 26px;
+      font-size: 10px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--app-text-subtle);
+      border-bottom: 1px solid var(--app-border);
+      user-select: none;
+    }
+    .t-row {
+      height: 44px;
+      border-bottom: 1px solid var(--app-border);
+      transition: background 0.12s ease;
+    }
+    .t-row:hover { background: var(--app-surface-hover); }
+
+    .t-name {
+      font-size: 12.5px;
+      color: var(--app-text-strong);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* Condition chip — small monospace badge. */
+    .cond-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      line-height: 1;
+      letter-spacing: 0.03em;
+      padding: 4px 8px;
+      border: 1px solid var(--app-neutral-border);
+      border-radius: 4px;
+      background: var(--app-neutral-bg);
+      color: var(--app-neutral-text);
+      white-space: nowrap;
+    }
+    .cond-chip .param { color: var(--app-text-muted); }
+
+    /* Last-run status line. */
+    .t-status {
+      font-size: 11.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--app-text-muted);
+    }
+    .t-status .when { color: var(--app-text-subtle); }
+    .status-dot {
+      display: inline-block;
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: 1px;
+      background: var(--app-text-faint);
+    }
+    .st-completed .status-dot { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+    .st-completed .label { color: var(--app-accent-strong); }
+    .st-skipped .status-dot { background: var(--app-text-subtle); }
+    .st-skipped .label { color: var(--app-text-muted); }
+    .st-failed .status-dot { background: var(--app-danger); }
+    .st-failed .label { color: var(--app-danger-text); }
+    .st-provider .status-dot { background: var(--app-warn); }
+    .st-provider .label { color: var(--app-warn); }
+    .provider-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10.5px;
+      line-height: 1;
+      padding: 4px 8px;
+      border: 1px solid var(--app-warn-border);
+      border-radius: 4px;
+      background: var(--app-warn-bg);
+      color: var(--app-warn);
+      white-space: nowrap;
+    }
+
+    /* Disabled (switched-off) rows are visibly dimmed; a warn note stays legible. */
+    .t-row.row-disabled .t-name,
+    .t-row.row-disabled .cond-chip { opacity: 0.45; }
+    .st-off .label { color: var(--app-text-subtle); }
+
+    /* Rows whose last run completed open that run's document. */
+    .t-row.row-open:not(.row-disabled) { cursor: pointer; }
+    .open-hint {
+      display: none;
+      font-size: 10px;
+      color: var(--app-text-subtle);
+      margin-left: 8px;
+    }
+    .t-row.row-open:not(.row-disabled):hover .open-hint { display: inline; }
+
+    /* Hover actions. */
+    .t-actions {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      justify-content: flex-end;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+    }
+    .t-row:hover .t-actions { opacity: 1; }
+    .action-btn {
+      font: inherit;
+      font-size: 11px;
+      line-height: 1;
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      background: transparent;
+      color: var(--app-text-muted);
+      cursor: pointer;
+      transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    }
+    .action-btn:hover {
+      color: var(--app-text-strong);
+      background: var(--app-neutral-bg);
+      border-color: var(--app-neutral-border);
+    }
+    .action-btn.danger:hover {
+      color: var(--app-danger-text);
+      border-color: var(--app-neutral-border);
+    }
+
+    /* Small switch. */
+    .switch {
+      position: relative;
+      width: 30px;
+      height: 17px;
+      flex: 0 0 auto;
+      border: 1px solid var(--app-border-strong);
+      border-radius: 999px;
+      background: var(--app-surface-subtle);
+      cursor: pointer;
+      padding: 0;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 2px; left: 2px;
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      background: var(--app-text-subtle);
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+    .switch.on {
+      background: var(--app-accent-bg);
+      border-color: var(--app-accent-border);
+    }
+    .switch.on::after {
+      transform: translateX(13px);
+      background: var(--app-accent);
+      box-shadow: 0 0 6px var(--app-accent-glow);
+    }
+
+    /* Footer summary line. */
+    .table-footer {
+      display: flex;
+      align-items: center;
+      padding: 10px 10px 22px;
+      font-size: 11px;
+      color: var(--app-text-subtle);
+      user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="mockup-bar">
+    <span class="tag">MOCKUP · Triggers page — Variant A: dense list</span>
+    <span>Manage your triggers: see each trigger's condition and last run, switch them on/off, create or import new ones.</span>
+    <span class="spacer"></span>
+    <nav>
+      <a class="current" href="triggers-page-a.html">Page A</a>
+      <a href="triggers-page-b.html">Page B</a>
+      <a href="create-edit-a.html">Create A</a>
+      <a href="create-edit-b.html">Create B</a>
+      <a href="document-view-a.html">Document</a>
+    </nav>
+  </div>
+
+  <div class="app-window">
+    <header class="titlebar">
+      <div class="traffic-lights">
+        <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+      </div>
+      <div class="wordmark">MNEMA</div>
+      <div></div>
+    </header>
+
+    <main class="page">
+      <div class="page-header">
+        <h1 class="page-title">Triggers</h1>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" id="btn-import" title="Paste shared Trigger JSON — prefills the creation form">Import</button>
+        <button class="btn btn-primary" id="btn-new"><span class="plus">+</span> New Trigger</button>
+      </div>
+      <p class="page-subtitle">A trigger runs your prompt automatically when its condition fires — results arrive as notifications.</p>
+
+      <div class="filter-seg" role="tablist" aria-label="Filter triggers">
+        <button class="active">All</button>
+        <button>Enabled</button>
+        <button>Disabled</button>
+      </div>
+
+      <div class="trigger-table">
+        <div class="t-head">
+          <span>On</span>
+          <span>Name</span>
+          <span>Condition</span>
+          <span>Last run</span>
+          <span></span>
+        </div>
+
+        <!-- completed -->
+        <div class="t-row row-open">
+          <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Meeting Recap"></button>
+          <span class="t-name">Meeting Recap</span>
+          <span><span class="cond-chip">meeting ends</span></span>
+          <span class="t-status st-completed">
+            <span class="status-dot"></span><span class="label" title="The run completed — click the row to open its result document">completed</span>
+            <span class="when">&nbsp;· today 2:14 PM</span>
+            <span class="open-hint">open last run ↗</span>
+          </span>
+          <span class="t-actions">
+            <button class="action-btn">Edit</button>
+            <button class="action-btn" title="Copy Trigger JSON to clipboard">Share</button>
+            <button class="action-btn danger">Delete</button>
+          </span>
+        </div>
+
+        <!-- skipped -->
+        <div class="t-row">
+          <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Standup Notes"></button>
+          <span class="t-name">Standup Notes</span>
+          <span><span class="cond-chip">meeting ends</span></span>
+          <span class="t-status st-skipped">
+            <span class="status-dot"></span><span class="label" title="The condition fired but Mnema wasn't recording, so there was nothing to run on">skipped — wasn't recording</span>
+            <span class="when">&nbsp;· yesterday 11:02 AM</span>
+          </span>
+          <span class="t-actions">
+            <button class="action-btn">Edit</button>
+            <button class="action-btn" title="Copy Trigger JSON to clipboard">Share</button>
+            <button class="action-btn danger">Delete</button>
+          </span>
+        </div>
+
+        <!-- failed -->
+        <div class="t-row">
+          <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Figma Session Log"></button>
+          <span class="t-name">Figma Session Log</span>
+          <span><span class="cond-chip">app opened <span class="param">· Figma</span></span></span>
+          <span class="t-status st-failed">
+            <span class="status-dot"></span><span class="label" title="The run failed — the AI provider returned an error">failed — provider returned an error</span>
+            <span class="when">&nbsp;· Jul 17</span>
+          </span>
+          <span class="t-actions">
+            <button class="action-btn">Edit</button>
+            <button class="action-btn" title="Copy Trigger JSON to clipboard">Share</button>
+            <button class="action-btn danger">Delete</button>
+          </span>
+        </div>
+
+        <!-- completed, older -->
+        <div class="t-row row-open">
+          <button class="switch on" role="switch" aria-checked="true" aria-label="Enable Daily Wrap-Up"></button>
+          <span class="t-name">Daily Wrap-Up</span>
+          <span><span class="cond-chip">schedule <span class="param">· every day 6:00 PM</span></span></span>
+          <span class="t-status st-completed">
+            <span class="status-dot"></span><span class="label" title="The run completed — click the row to open its result document">completed</span>
+            <span class="when">&nbsp;· yesterday 6:03 PM</span>
+            <span class="open-hint">open last run ↗</span>
+          </span>
+          <span class="t-actions">
+            <button class="action-btn">Edit</button>
+            <button class="action-btn" title="Copy Trigger JSON to clipboard">Share</button>
+            <button class="action-btn danger">Delete</button>
+          </span>
+        </div>
+
+        <!-- needs an AI provider (Provider Gate) — dimmed, warn note -->
+        <div class="t-row row-disabled" data-provider="1">
+          <button class="switch" role="switch" aria-checked="false" aria-label="Enable Weekly Review"></button>
+          <span class="t-name">Weekly Review</span>
+          <span><span class="cond-chip">schedule <span class="param">· Fridays 5:00 PM</span></span></span>
+          <span class="t-status st-provider">
+            <span class="provider-note" title="This trigger can't run until an AI provider is configured in Settings → AI">⚠ needs an AI provider</span>
+          </span>
+          <span class="t-actions">
+            <button class="action-btn">Edit</button>
+            <button class="action-btn" title="Copy Trigger JSON to clipboard">Share</button>
+            <button class="action-btn danger">Delete</button>
+          </span>
+        </div>
+      </div>
+
+      <div class="table-footer">5 triggers · 4 enabled</div>
+    </main>
+  </div>
+
+  <script>
+    // Mockup behavior only — no persistence.
+    var TRIGGERS = {
+      "Meeting Recap": { condition: { type: "meeting_ends", params: {} }, prompt: "Summarize the meeting that just ended: decisions, action items, open questions." },
+      "Standup Notes": { condition: { type: "meeting_ends", params: {} }, prompt: "Draft my standup notes from this meeting: what I reported and any blockers raised." },
+      "Figma Session Log": { condition: { type: "app_opened", params: { app: "Figma" } }, prompt: "Log what I worked on during this Figma session." },
+      "Daily Wrap-Up": { condition: { type: "schedule", params: { cron: "0 18 * * *" } }, prompt: "Write a wrap-up of my day: what I worked on and what's unfinished." },
+      "Weekly Review": { condition: { type: "schedule", params: { cron: "0 17 * * 5" } }, prompt: "Review my week: themes, wins, and what to carry into next week." },
+    };
+
+    var footer = document.querySelector(".table-footer");
+    function rows() { return Array.from(document.querySelectorAll(".t-row")); }
+    function isOn(row) { return row.querySelector(".switch").classList.contains("on"); }
+
+    function updateFooter() {
+      var all = rows();
+      var on = all.filter(isOn).length;
+      footer.textContent = all.length + " triggers · " + on + " enabled";
+    }
+
+    var filter = "All";
+    function applyFilter() {
+      rows().forEach(function (row) {
+        var show = filter === "All" || (filter === "Enabled") === isOn(row);
+        row.style.display = show ? "" : "none";
+      });
+    }
+
+    function setEnabled(row, on) {
+      var sw = row.querySelector(".switch");
+      sw.classList.toggle("on", on);
+      sw.setAttribute("aria-checked", String(on));
+      row.classList.toggle("row-disabled", !on);
+      // The needs-provider row keeps its warn chip either way.
+      if (!row.dataset.provider) {
+        var status = row.querySelector(".t-status");
+        if (!on) {
+          row.dataset.statusHtml = status.innerHTML;
+          row.dataset.statusClass = status.className;
+          status.className = "t-status st-off";
+          status.innerHTML = '<span class="status-dot"></span><span class="label" title="This trigger is switched off — its condition is ignored">disabled</span>';
+        } else if (row.dataset.statusHtml) {
+          status.innerHTML = row.dataset.statusHtml;
+          status.className = row.dataset.statusClass;
+        }
+      }
+      updateFooter();
+      applyFilter();
+    }
+
+    document.querySelectorAll(".switch").forEach(function (sw) {
+      sw.addEventListener("click", function (e) {
+        e.stopPropagation();
+        setEnabled(sw.closest(".t-row"), !sw.classList.contains("on"));
+      });
+    });
+
+    document.querySelectorAll(".filter-seg button").forEach(function (b) {
+      b.addEventListener("click", function () {
+        b.parentElement.querySelector(".active")?.classList.remove("active");
+        b.classList.add("active");
+        filter = b.textContent.trim();
+        applyFilter();
+      });
+    });
+
+    rows().forEach(function (row) {
+      var name = row.querySelector(".t-name").textContent;
+      var actions = row.querySelectorAll(".action-btn");
+      var edit = actions[0], share = actions[1], del = actions[2];
+      edit.addEventListener("click", function (e) {
+        e.stopPropagation();
+        location.href = "create-edit-a.html?edit=1";
+      });
+      share.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var t = TRIGGERS[name];
+        var json = JSON.stringify({ version: 1, name: name, condition: t.condition, prompt: t.prompt }, null, 2);
+        navigator.clipboard.writeText(json);
+        share.textContent = "copied";
+        setTimeout(function () { share.textContent = "Share"; }, 1200);
+      });
+      del.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (confirm('Delete trigger "' + name + '"? Its past runs are kept.')) {
+          row.remove();
+          updateFooter();
+        }
+      });
+      // A row whose last run completed opens that run's document.
+      row.addEventListener("click", function () {
+        if (row.classList.contains("row-open") && !row.classList.contains("row-disabled")) {
+          location.href = "document-view-a.html";
+        }
+      });
+    });
+
+    document.getElementById("btn-new").addEventListener("click", function () {
+      location.href = "create-edit-a.html";
+    });
+    document.getElementById("btn-import").addEventListener("click", function () {
+      location.href = "create-edit-a.html?imported=1";
+    });
+  </script>
+</body>
+</html>

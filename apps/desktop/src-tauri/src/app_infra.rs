@@ -1913,6 +1913,35 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         background_workers.clone(),
     );
 
+    // Triggers evaluator (issue #175): fires due Schedule triggers from
+    // `triggers.json` into sealed Ask AI runs. Idle-cheap: a tick with no
+    // definitions file does nothing but sleep.
+    crate::triggers::spawn_triggers_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
+    // Meeting detector (issue #177, ADR 0057): polls Core Audio per-process
+    // mic-in-use state and fires Meeting Ends triggers. macOS-only in effect —
+    // elsewhere every snapshot read fails and the loop idles. Idle-cheap: no
+    // Core Audio read at all unless a meeting_ends trigger is defined.
+    crate::triggers::meeting_worker::spawn_meeting_detector_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
+    // App Opened triggers (issue #178): consumes frontmost-app activations
+    // fanned out from the workspace metadata notifier and fires app_opened
+    // triggers on a fresh session (≥ away gap of not being frontmost).
+    // Idle-cheap: no activation events, no work.
+    crate::triggers::app_opened::spawn_app_opened_worker(
+        Arc::clone(&infra),
+        app_handle.clone(),
+        background_workers.clone(),
+    );
+
     // Semantic Search startup reconciliation (self-heal): if a past model switch
     // left the vec0 table at a dimension that disagrees with the selected model
     // (e.g. a rebuild that failed under DB contention), every search degrades to
@@ -4079,7 +4108,7 @@ async fn delete_recent_capture_inner(
     let should_resume_after_boundary =
         should_resume_delete_recent_capture_boundary(&session_before_delete);
     if should_resume_after_boundary {
-        crate::native_capture::pause_native_capture_from_app_handle(app_handle).map_err(
+        crate::native_capture::pause_native_capture_from_app_handle(app_handle, None).map_err(
             |error| {
                 format!(
                     "failed to create recording boundary before deletion: {}",
@@ -5499,6 +5528,7 @@ mod tests {
             is_inactivity_paused: true,
             is_user_paused: false,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,
@@ -5514,6 +5544,7 @@ mod tests {
             is_inactivity_paused: false,
             is_user_paused: true,
             is_low_disk_suspended: false,
+            off_record_deadline_unix_ms: None,
             requested_sources: None,
             output_files: None,
             source_sessions: None,

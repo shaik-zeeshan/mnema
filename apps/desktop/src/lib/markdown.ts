@@ -116,6 +116,43 @@ function createRenderer(highlightEnabled: boolean): MarkdownIt {
     return defaultLinkOpen(tokens, idx, options, env, self);
   };
 
+  // GFM task-list items: `- [ ] item` / `- [x] item` render as checkbox rows
+  // (the Triggers document view's "action items as a toggleable checklist" —
+  // client-side toggling only, no persistence, so the input is NOT disabled).
+  //
+  // SECURITY: the only markup injected is the static `<input>` literal below,
+  // via an `html_inline` token WE create. `html: false` means the parser never
+  // produces html_inline tokens from the source, so no source-derived content
+  // can ride this path — the item's own text still renders through the normal
+  // escaped inline rules.
+  md.core.ruler.after("inline", "task_list", (state) => {
+    const tokens = state.tokens;
+    for (let i = 2; i < tokens.length; i++) {
+      const inline = tokens[i];
+      if (
+        inline.type !== "inline" ||
+        inline.children === null ||
+        inline.children.length === 0 ||
+        tokens[i - 1].type !== "paragraph_open" ||
+        tokens[i - 2].type !== "list_item_open"
+      ) {
+        continue;
+      }
+      const first = inline.children[0];
+      if (first.type !== "text") continue;
+      const marker = /^\[([ xX])\] /.exec(first.content);
+      if (marker === null) continue;
+      tokens[i - 2].attrJoin("class", "task-item");
+      first.content = first.content.slice(marker[0].length);
+      const checkbox = new state.Token("html_inline", "", 0);
+      checkbox.content =
+        marker[1] === " "
+          ? '<input class="task-checkbox" type="checkbox">'
+          : '<input class="task-checkbox" type="checkbox" checked>';
+      inline.children.unshift(checkbox);
+    }
+  });
+
   // Override fenced code blocks to emit our "code chrome" (a header strip with a
   // language label + a copy button, then the highlighted/plain code). The class
   // names and data attributes below are a stable contract that the answer

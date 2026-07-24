@@ -484,14 +484,14 @@
     // Cancelled (gesture stolen): keep the scrubbed frame where it landed, never resume.
   }
 
-  // ── Open in Timeline handoff (frontend-only, no backend command) ─────
+  // ── "Browse full timeline" door (frontend-only, no backend command) ──
   // Hand off the current frame; for an audio-only receipt (no frame) hand off
-  // the selected spoken segment instead.
+  // the selected spoken segment. An expired receipt still opens the raw
+  // Timeline, just un-focused — the trust door never dead-ends.
   function openInTimeline(): void {
     const audioSegmentId = selectedTurn?.audioSegmentId ?? null;
     if (currentFrameId != null) setPendingTimelineFocus({ frameId: currentFrameId });
     else if (audioSegmentId != null) setPendingTimelineFocus({ audioSegmentId });
-    else return;
     void goto("/");
     onClose();
   }
@@ -566,11 +566,14 @@
     aria-label={`Activity receipt: ${activity.title}`}
   >
     <div class="m-head">
-      <span class="chip">
-        <span class="sw" style="background:var({catColorVar})"></span>{catLabel}
-      </span>
-      <h2 class="m-title" use:tip={activity.title}>{activity.title}</h2>
-      <span class="when">{rangeLabel}</span>
+      <div class="m-titles">
+        <div class="m-eyebrow"><span class="g" aria-hidden="true">▣</span> Receipt · scoped to this activity</div>
+        <h2 class="m-title" use:tip={activity.title}>{activity.title}</h2>
+        <div class="m-span">
+          <span class="sw" style="background:var({catColorVar})"></span>{rangeLabel}
+          <span class="dim">· {catLabel}</span>
+        </div>
+      </div>
       <button type="button" class="m-close" aria-label="Close receipt" onclick={onClose}><IconClose /></button>
     </div>
 
@@ -612,6 +615,8 @@
       <div class="m-foot"><span>Loading footage…</span></div>
     {:else if viewState === "expired"}
       <div class="m-foot">
+        <button type="button" class="browse-link" onclick={openInTimeline}>Browse full timeline ›</button>
+        <span class="sep">·</span>
         <span>0 frames still on disk</span><span class="sep">·</span>
         <span>summary retained</span>
       </div>
@@ -698,43 +703,54 @@
           {/if}
         </span>
         <span class="ctl-spacer"></span>
-        <button type="button" class="open-tl" onclick={openInTimeline}>Open in Timeline <IconArrowRight /></button>
+        <span class="counter">
+          {#if isAudioOnly}
+            {audioFooterLeft(frameEvidence.length)} · {turnSpeakerRoster(turns)}
+          {:else}
+            {frameEvidence.length} frames + {audioEvidence.length} spoken segments cited
+          {/if}
+        </span>
       </div>
 
       <div class="m-foot">
+        <button type="button" class="browse-link" onclick={openInTimeline}>Browse full timeline <IconArrowRight /></button>
+        <span class="sep">·</span>
         {#if isAudioOnly}
-          <span>{audioFooterLeft(frameEvidence.length)}</span><span class="sep">·</span>
-          <span>{turnSpeakerRoster(turns)}</span>
+          <span>{turns.length} spoken {turns.length === 1 ? "turn" : "turns"} in this span</span>
         {:else}
           <span>
             {strip.length}
             {strip.length === 1 ? "frame" : "frames"} across {segmentCount} capture
             {segmentCount === 1 ? "segment" : "segments"}
           </span>
-          <span class="sep">·</span>
-          <span>{frameEvidence.length} frames + {audioEvidence.length} spoken segments cited</span>
         {/if}
+        <span class="ctl-spacer"></span>
+        <span class="keys"><kbd>esc</kbd> close · <kbd>←</kbd><kbd>→</kbd> step · <kbd>space</kbd> play</span>
       </div>
     {/if}
   </div>
 </div>
 
 <style>
-  /* One selector per line to keep this component under the 800-line ceiling
-     (repo rule); tokens + structure mirror docs/mockups/dayflow/04-timelapse.html.
-     Audio channel (ADR 0049) uses --cat-communication (lavender) for voice. */
-  .receipt { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 16px; background: var(--app-overlay-bg); backdrop-filter: blur(4px); }
-  .modal-card { width: 82vw; height: 90vh; display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface); border: 1px solid var(--app-border-strong); border-radius: 12px; box-shadow: var(--app-shadow-popover); }
+  /* One selector per line (800-line ceiling). Anatomy mirrors dayflow/04-timelapse
+     re-hosted as the story-first receipt DRAWER: scrim + right-side evidence panel
+     scoped to the span. Audio channel (ADR 0049) = --cat-communication. */
+  .receipt { position: fixed; inset: 0; z-index: 2000; background: var(--app-overlay-bg); backdrop-filter: blur(4px); }
+  .modal-card { position: absolute; top: 0; right: 0; bottom: 0; width: min(820px, 94vw); display: flex; flex-direction: column; overflow: hidden; background: var(--app-surface); border-left: 1px solid var(--app-border-strong); box-shadow: var(--app-shadow-popover); animation: drawer-in 0.16s ease; }
+  @keyframes drawer-in { from { transform: translateX(28px); opacity: 0.4; } to { transform: none; opacity: 1; } }
   /* The frame .viewer is the ONE elastic region; every other row is pinned so the
      added lane + transcript trade against the frame height, never overflow the
-     modal (mirrors the mockup's `.modal .modal-card` rule). */
+     drawer (mirrors the mockup's `.modal .modal-card` rule). */
   .m-head, .m-summary, .scrub, .film, .controls, .m-foot { flex: 0 0 auto; }
-  .m-head { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--app-border); }
-  .chip { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-muted); }
-  .sw { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
-  .m-title { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 14px; font-weight: 600; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .when { flex: 0 0 auto; font-size: 11px; color: var(--app-text-subtle); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; font: inherit; cursor: pointer; color: var(--app-text-subtle); background: transparent; border: 1px solid var(--app-border); border-radius: 5px; }
+  .m-head { display: flex; align-items: flex-start; gap: 10px; padding: 13px 16px; border-bottom: 1px solid var(--app-border); }
+  .m-titles { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .m-eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--app-text-subtle); }
+  .m-eyebrow .g { color: var(--app-accent); letter-spacing: 0; }
+  .sw { flex: 0 0 auto; display: inline-block; width: 8px; height: 8px; margin-right: 2px; border-radius: 50%; vertical-align: 0; }
+  .m-title { margin: 0; min-width: 0; font-size: 15px; font-weight: 600; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .m-span { font-size: 11px; color: var(--app-text-muted); font-variant-numeric: tabular-nums; }
+  .m-span .dim { color: var(--app-text-subtle); }
+  .m-close { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; font: inherit; cursor: pointer; color: var(--app-text-subtle); background: transparent; border: 1px solid var(--app-border); border-radius: 6px; }
   .m-close:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
   .m-close :global(svg) { width: 13px; height: 13px; }
   .m-summary { margin: 0; padding: 10px 16px; border-bottom: 1px solid var(--app-border); font-size: 12px; line-height: 1.65; color: var(--app-text-muted); }
@@ -766,16 +782,19 @@
   /* Controls */
   .controls { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
   .play { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 7px; }
-  .play:hover, .open-tl:hover { border-color: var(--app-accent); }
+  .play:hover { border-color: var(--app-accent); }
   .play--audio { color: var(--cat-communication); background: var(--app-accent-bg); border-color: var(--cat-communication); }
-  .play :global(svg), .open-tl :global(svg) { width: 14px; height: 14px; }
+  .play :global(svg) { width: 14px; height: 14px; }
   .counter { font-size: 11px; font-variant-numeric: tabular-nums; color: var(--app-text-muted); }
   .counter__now { color: var(--app-text-strong); }
   .ctl-spacer { flex: 1 1 auto; }
-  .open-tl { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; font: inherit; font-size: 11px; cursor: pointer; color: var(--app-accent); background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); border-radius: 6px; }
-  .open-tl :global(svg) { width: 13px; height: 13px; }
 
-  /* Footer */
+  /* Footer — the "Browse full timeline" trust door + span facts + key hints. */
   .m-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; font-size: 10.5px; color: var(--app-text-subtle); border-top: 1px dashed var(--app-border); }
   .m-foot .sep { color: var(--app-text-faint); }
+  .browse-link { display: inline-flex; align-items: center; gap: 5px; padding: 0; font: inherit; font-size: 11.5px; cursor: pointer; color: var(--app-accent); background: transparent; border: 0; }
+  .browse-link:hover { color: var(--app-accent-strong); text-decoration: underline; }
+  .browse-link :global(svg) { width: 12px; height: 12px; }
+  .keys { font-size: 10px; color: var(--app-text-faint); letter-spacing: 0.04em; white-space: nowrap; }
+  .keys kbd { font: inherit; padding: 1px 4px; border: 1px solid var(--app-border); border-bottom-width: 2px; border-radius: 4px; background: var(--app-surface-raised); color: var(--app-text-muted); }
 </style>

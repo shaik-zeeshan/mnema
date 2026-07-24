@@ -47,8 +47,14 @@ pub struct Conversation {
     /// Frontend-generated UUID (the stable cross-restart identity).
     pub conversation_id: String,
     pub title: String,
-    /// The door that created it: `'quick_recall'` | `'chat'`.
+    /// The door that created it: `'quick_recall'` | `'chat'` | `'trigger'`.
     pub origin: String,
+    /// For `origin == 'trigger'`: the firing trigger's id (from `triggers.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    /// For `origin == 'trigger'`: the trigger's display name at fire time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_name: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     /// The pinned engine provider id (e.g. `"anthropic"` | `"openai"`), or
@@ -69,6 +75,12 @@ pub struct ConversationSummary {
     pub conversation_id: String,
     pub title: String,
     pub origin: String,
+    /// For `origin == 'trigger'`: the firing trigger's id (from `triggers.json`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_id: Option<String>,
+    /// For `origin == 'trigger'`: the trigger's display name at fire time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_name: Option<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub turn_count: i64,
@@ -403,6 +415,71 @@ mod tests {
             obj["toolActivities"],
             json!([ { "kind": "search", "label": "Searched" } ])
         );
+    }
+
+    #[test]
+    fn conversation_trigger_fields_round_trip_and_skip_when_absent() {
+        // Trigger-origin conversation (ADR 0058): trigger id/name serialize as
+        // camelCase keys and round-trip exactly.
+        let summary = ConversationSummary {
+            conversation_id: "trigger-evening-1".to_string(),
+            title: "Evening Review — Fri Jul 24".to_string(),
+            origin: "trigger".to_string(),
+            trigger_id: Some("evening-review".to_string()),
+            trigger_name: Some("Evening Review".to_string()),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            turn_count: 1,
+            preview: "…".to_string(),
+        };
+        let value = serde_json::to_value(&summary).unwrap();
+        assert_eq!(value["triggerId"], json!("evening-review"));
+        assert_eq!(value["triggerName"], json!("Evening Review"));
+        let round_tripped: ConversationSummary = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, summary);
+
+        // A non-trigger conversation SKIPS the absent keys (legacy wire shape is
+        // unchanged), and a legacy payload without them deserializes to None.
+        let plain = ConversationSummary {
+            trigger_id: None,
+            trigger_name: None,
+            origin: "chat".to_string(),
+            ..summary.clone()
+        };
+        let value = serde_json::to_value(&plain).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(!obj.contains_key("triggerId"));
+        assert!(!obj.contains_key("triggerName"));
+        let legacy: ConversationSummary = serde_json::from_value(json!({
+            "conversationId": "c",
+            "title": "t",
+            "origin": "chat",
+            "createdAtMs": 1,
+            "updatedAtMs": 2,
+            "turnCount": 0,
+            "preview": ""
+        }))
+        .unwrap();
+        assert_eq!(legacy.trigger_id, None);
+        assert_eq!(legacy.trigger_name, None);
+
+        // Same contract on the hydrated Conversation.
+        let conversation = Conversation {
+            conversation_id: "trigger-evening-1".to_string(),
+            title: "Evening Review — Fri Jul 24".to_string(),
+            origin: "trigger".to_string(),
+            trigger_id: Some("evening-review".to_string()),
+            trigger_name: Some("Evening Review".to_string()),
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            provider: None,
+            model: None,
+            turns: vec![],
+        };
+        let value = serde_json::to_value(&conversation).unwrap();
+        assert_eq!(value["triggerId"], json!("evening-review"));
+        let round_tripped: Conversation = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, conversation);
     }
 
     #[test]

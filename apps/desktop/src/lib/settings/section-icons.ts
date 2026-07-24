@@ -22,6 +22,9 @@ import IconAudio from "~icons/lucide/audio-lines";
 import IconPrivacy from "~icons/lucide/shield";
 import IconIntelligence from "~icons/lucide/brain";
 import IconAskAi from "~icons/lucide/sparkles";
+// Triggers = workflow, not zap: DESIGN.md rejected the ⚡ identity for trigger
+// runs, and the condition marks are distinct lucide icons (condition-icons.ts).
+import IconTriggers from "~icons/lucide/workflow";
 import IconUserContext from "~icons/lucide/user";
 import IconOcr from "~icons/lucide/scan-text";
 import IconTranscription from "~icons/lucide/mic";
@@ -47,6 +50,7 @@ export const SECTION_ICONS: Record<IconName, IconComponent> = {
   privacy: IconPrivacy,
   intelligence: IconIntelligence,
   askAi: IconAskAi,
+  triggers: IconTriggers,
   userContext: IconUserContext,
   ocr: IconOcr,
   transcription: IconTranscription,

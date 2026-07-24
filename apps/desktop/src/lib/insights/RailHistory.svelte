@@ -1,12 +1,13 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   // RailHistory — the chat search field + time-grouped conversation history that
-  // sits in the persistent Insights rail (Insights-rail refactor, Slices 2/3).
-  // It renders the shared `conversationStore`: a debounced search over the list,
-  // newest-first rows grouped under quiet date headers (Today / Yesterday / This
-  // week / earlier months), with per-row inline rename + delete revealed on
-  // hover / focus-within. Restyled to the rail's "minimal / quiet" aesthetic
-  // (hairline dividers, whitespace, a single green accent for the active row).
+  // sits in the persistent rail, in the "tightened-B" treatment (Warm Paper
+  // redesign, Slice 2; DESIGN.md): search + an `all ▾` origin scope in ONE row,
+  // origin as a small glyph before the row title, times hidden until hover, and
+  // 8.5px group labels. It renders the shared `conversationStore`: a debounced
+  // search over the list, newest-first rows grouped under quiet date headers
+  // (Today / Yesterday / This week / earlier months), with per-row inline
+  // rename + delete revealed on hover / focus-within.
   //
   // A row click routes through the store's selection BUS (`requestOpen`); the
   // owning shell switches to the Chat sub-surface when the bus fires. The rename
@@ -17,10 +18,34 @@
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
+  import { listTriggers, type ConditionType } from "$lib/triggers/api";
+  import { CONDITION_ICON } from "$lib/triggers/condition-icons";
   import {
     conversationStore,
     relativeTime,
   } from "$lib/insights/conversationStore.svelte";
+
+  // triggerId → condition type, for the origin badge's condition icon.
+  // Resolved client-side once per mount (best-effort; a deleted trigger just
+  // misses the map and the badge renders without an icon).
+  let conditionByTriggerId = $state<Record<string, ConditionType>>({});
+  void listTriggers()
+    .then((triggers) => {
+      conditionByTriggerId = Object.fromEntries(
+        triggers.map((t) => [t.id, t.condition.type]),
+      );
+    })
+    .catch(() => {});
+
+  const emptyMessage = $derived.by((): string => {
+    if (conversationStore.searchQuery.trim().length > 0)
+      return "No conversations match.";
+    if (conversationStore.conversations.length > 0)
+      return conversationStore.originFilter === "triggers"
+        ? "No trigger runs yet."
+        : "No chats yet.";
+    return "No conversations yet.";
+  });
 
   function autofocusSelect(node: HTMLInputElement): void {
     node.focus();
@@ -39,9 +64,10 @@
   }
 </script>
 
-<!-- search — borderless; a clear magnifier glyph carries the "this is search"
-     signal (the app's own search SVG). Focus brightens the glyph to the accent
-     (no box/line). -->
+<!-- search + origin scope — ONE row (tightened-B): borderless search with a
+     clear magnifier glyph, then a quiet `all ▾` native select that narrows the
+     list to trigger runs (or plain chats) and back; text search keeps working
+     inside a filtered view. -->
 <div class="rail-search">
   <svg
     class="icon"
@@ -66,6 +92,17 @@
     bind:value={conversationStore.searchQuery}
     oninput={() => conversationStore.onSearchInput()}
   />
+  <span class="srch-scope" use:tip={"Filter by origin"}>
+    <select
+      aria-label="Filter conversations by origin"
+      bind:value={conversationStore.originFilter}
+    >
+      <option value="all">all</option>
+      <option value="chats">chats</option>
+      <option value="triggers">triggers</option>
+    </select>
+    <span class="caret" aria-hidden="true">▾</span>
+  </span>
 </div>
 
 <!-- chat history — ultra-compact single-line rows, no chrome. -->
@@ -78,12 +115,8 @@
         </div>
       {/each}
     </div>
-  {:else if conversationStore.conversations.length === 0}
-    <p class="rail-empty">
-      {conversationStore.searchQuery.trim().length > 0
-        ? "No conversations match."
-        : "No conversations yet."}
-    </p>
+  {:else if conversationStore.filteredConversations.length === 0}
+    <p class="rail-empty">{emptyMessage}</p>
   {:else}
     {#each conversationStore.historyGroups as group (group.label)}
       <div class="rail-group" role="presentation">{group.label}</div>
@@ -123,10 +156,32 @@
                 ? "true"
                 : undefined}
             >
-              <span class="t" use:tip={c.title || c.preview}>
-                {c.title || c.preview || "Untitled chat"}
+              <span class="row1">
+                <!-- origin glyph (tightened-B): a small condition icon before
+                     the title for trigger runs, an invisible placeholder for
+                     plain chats so titles stay on one guide. -->
+                {#if c.origin === "trigger"}
+                  <span
+                    class="og"
+                    role="img"
+                    aria-label={`Run by trigger: ${c.triggerName || "unknown"}`}
+                    use:tip={`Run by trigger: ${c.triggerName || "unknown"}`}
+                  >
+                    {#if c.triggerId && conditionByTriggerId[c.triggerId]}
+                      {@const CondIcon = CONDITION_ICON[conditionByTriggerId[c.triggerId]]}
+                      <CondIcon />
+                    {:else}
+                      ◉
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="og og--blank" aria-hidden="true">·</span>
+                {/if}
+                <span class="t" use:tip={c.title || c.preview}>
+                  {c.title || c.preview || "Untitled chat"}
+                </span>
+                <span class="when">{relativeTime(c.updatedAtMs)}</span>
               </span>
-              <span class="when">{relativeTime(c.updatedAtMs)}</span>
             </button>
             <!-- Quiet row actions: hidden until the row is hovered or holds
                  keyboard focus (`:focus-within`) — pure hover would lock
@@ -233,6 +288,45 @@
     appearance: none;
   }
 
+  /* origin scope — the `all ▾` dropdown riding the search row (tightened-B).
+     A native <select> stripped to quiet text; the ▾ caret is ours (WebKit's
+     is unstylable). */
+  .srch-scope {
+    position: relative;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    color: var(--app-text-subtle);
+    transition: color 0.12s ease;
+  }
+  .srch-scope:hover,
+  .srch-scope:focus-within {
+    color: var(--app-text-muted);
+  }
+  .srch-scope select {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    font-family: var(--app-font-mono, inherit);
+    font-size: 10px;
+    color: inherit;
+    cursor: pointer;
+    outline: none;
+    text-transform: lowercase;
+  }
+  .srch-scope:focus-within .caret {
+    color: var(--app-accent);
+  }
+  .srch-scope .caret {
+    font-size: 8px;
+    line-height: 1;
+    pointer-events: none;
+  }
+
   /* chat history — ultra-compact single-line rows, no chrome. */
   .rail-history {
     flex: 1 1 auto;
@@ -259,24 +353,28 @@
   }
   .sk-row {
     display: flex;
+    padding: 0 8px;
   }
   .rail-empty {
     font-size: 11px;
     color: var(--app-text-subtle);
     margin-top: 16px;
+    padding: 0 8px;
     line-height: 1.5;
   }
 
   /* group label — tiny, faint, uppercase eyebrow (matching the app's section
-     markers); hairline above + top spacing. */
+     markers); hairline above + top spacing. 8.5px per tightened-B. */
   .rail-group {
-    font-size: 9px;
-    letter-spacing: 0.14em;
+    font-size: 8.5px;
+    letter-spacing: 0.16em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
     margin-top: 14px;
-    padding-top: 11px;
-    padding-bottom: 8px;
+    /* 8px horizontal inset puts the eyebrow on the same 24px content guide as
+       the row titles / nav labels (it used to sit flush at the gutter edge,
+       reading as "touching the border"); the hairline still spans full width. */
+    padding: 11px 8px 8px;
     border-top: 1px solid var(--app-border);
   }
   /* first group: sits clean below the search's bottom hairline — no double
@@ -288,15 +386,18 @@
   }
 
   /* A row holds the chat link + its quiet hover actions on one baseline line.
-     `position: relative` anchors the absolutely-placed `.rail-actions` (see
-     below) so the hidden actions never reserve width. */
+     `position: relative` anchors the active row's inset accent bar. */
   .rail-chat-row {
     position: relative;
     display: flex;
     align-items: center;
-    /* Reserve room for the active row's 3px inset bar on EVERY row so toggling
-       the active state never shifts the title horizontally. */
-    padding-left: 8px;
+    /* Same 8px horizontal inset as the nav rows (keeps title/badge on the 24px
+       content guide and stops the timestamp touching the tint's right edge),
+       plus a small vertical inset so the active tint never hugs the content.
+       The left 8px also reserves room for the active row's 3px inset bar so
+       toggling active never shifts the title horizontally. */
+    padding: 3px 8px;
+    border-radius: 5px;
     /* The inner `.rail-chat` is a fixed 24px tall, so the row height matches it
        without an explicit `min-height` — and dropping the min-height lets the
        removal slide collapse smoothly to 0 instead of snapping at 24px. */
@@ -305,9 +406,9 @@
     flex: 1 1 auto;
     min-width: 0;
     display: flex;
-    align-items: center;
-    gap: 8px;
-    height: 24px;
+    flex-direction: column;
+    align-items: stretch;
+    min-height: 24px;
     background: transparent;
     border: 0;
     padding: 0;
@@ -315,6 +416,33 @@
     cursor: pointer;
     text-align: left;
     font: inherit;
+  }
+  /* Single-line row: origin glyph · title · (hover) timestamp. */
+  .rail-chat .row1 {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    height: 24px;
+    min-width: 0;
+  }
+  /* Origin glyph (tightened-B) — a small accent condition icon for trigger
+     runs; plain chats carry an invisible placeholder so titles share one
+     guide. */
+  .rail-chat .og {
+    flex: 0 0 11px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    line-height: 1;
+    color: var(--app-accent);
+  }
+  .rail-chat .og :global(svg) {
+    width: 10px;
+    height: 10px;
+  }
+  .rail-chat .og--blank {
+    visibility: hidden;
   }
   .rail-chat .t {
     flex: 1 1 auto;
@@ -339,23 +467,24 @@
     text-decoration-color: var(--app-accent-border);
     text-underline-offset: 3px;
   }
+  /* Timestamp hidden until hover (tightened-B) — the rail rests as titles
+     only; hovering a row reveals its time (and the rename/delete actions). */
   .rail-chat .when {
     font-size: 9.5px;
     color: var(--app-text-faint);
     flex: 0 0 auto;
+    opacity: 0;
     transition: opacity 0.12s ease;
   }
-  /* The timestamp yields to the hover actions so the two never overlap. */
   .rail-chat-row:hover .when,
   .rail-chat-row:focus-within .when {
-    opacity: 0;
+    opacity: 1;
   }
   /* active row — accent title PLUS a tinted background and a 3px inset accent
      bar, so the selection never relies on text colour alone (matches the
      primary nav's multi-signal active treatment). */
   .rail-chat-row.active {
     background: var(--app-accent-bg);
-    border-radius: 5px;
   }
   .rail-chat-row.active::before {
     content: "";
@@ -372,32 +501,19 @@
   }
 
   /* Row actions (rename + delete): hidden until the row is hovered or holds
-     keyboard focus. Absolutely anchored to the row's right edge so they NEVER
-     reserve width when hidden — previously they sat in flow at `opacity: 0`,
-     stealing ~44px from every title (forcing truncation) and leaving a dead
-     right gutter. A short gradient masks the title/timestamp they overlay. */
+     keyboard focus. In-flow while shown (display toggles) so they reserve no
+     width at rest AND never overlay the hover-revealed timestamp — the title
+     yields a little width instead, which reads fine at 11.5px. */
   .rail-actions {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    display: flex;
+    display: none;
+    flex: 0 0 auto;
     align-items: center;
     gap: 2px;
-    padding-left: 16px;
-    background: linear-gradient(
-      to right,
-      transparent,
-      var(--app-surface-subtle) 45%
-    );
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.12s ease;
+    margin-left: 4px;
   }
   .rail-chat-row:hover .rail-actions,
   .rail-chat-row:focus-within .rail-actions {
-    opacity: 1;
-    pointer-events: auto;
+    display: flex;
   }
   .rail-action {
     width: 18px;

@@ -13,6 +13,10 @@ const COMPLETE_SETUP_ID: &str = "tray_complete_setup";
 const STATUS_HEADER_ID: &str = "tray_status_header";
 const RECORDING_TOGGLE_ID: &str = "tray_recording_toggle";
 const PAUSE_TOGGLE_ID: &str = "tray_pause_toggle";
+const OFF_RECORD_15_MIN_ID: &str = "tray_off_record_15_min";
+const OFF_RECORD_30_MIN_ID: &str = "tray_off_record_30_min";
+const OFF_RECORD_1_HOUR_ID: &str = "tray_off_record_1_hour";
+const OFF_RECORD_INDEFINITE_ID: &str = "tray_off_record_indefinite";
 const DELETE_LAST_1_MINUTE_ID: &str = "tray_delete_recent_60";
 const DELETE_LAST_5_MINUTES_ID: &str = "tray_delete_recent_300";
 const DELETE_LAST_15_MINUTES_ID: &str = "tray_delete_recent_900";
@@ -61,17 +65,22 @@ struct SourceItemModel {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusBarMenuModel {
     onboarding_complete: bool,
-    /// A non-actionable status header shown at the top of the menu. Present only
-    /// for the low-disk-suspended state ("Paused — low disk"), which is surfaced
-    /// as a disabled label so the tray never reads as plainly "Recording" while
-    /// capture is held by the low-disk liveness suspension (ADR 0040).
-    status_label: Option<&'static str>,
+    /// A non-actionable status header shown at the top of the menu: the
+    /// low-disk-suspended state ("Paused — low disk", ADR 0040) or the
+    /// off-the-record state ("Off the record — 12m left"), surfaced as a
+    /// disabled label so the tray never reads as plainly recording while
+    /// capture is held.
+    status_label: Option<String>,
     recording_label: Option<&'static str>,
     recording_enabled: bool,
+    /// "Back On the Record" — present only while off the record.
     pause_label: Option<&'static str>,
     pause_enabled: bool,
+    /// The "Go Off the Record" submenu (15 min / 30 min / 1 hour / until
+    /// turned back on) — present while recording on the record.
+    show_off_record_menu: bool,
     source_items: Vec<SourceItemModel>,
-    tooltip: &'static str,
+    tooltip: String,
 }
 
 impl Default for StatusBarOperation {
@@ -153,11 +162,31 @@ fn source_item_enabled(
     true
 }
 
+/// How long an off-the-record window has left, in menu-friendly units.
+fn format_off_record_remaining(deadline_unix_ms: i64, now_unix_ms: i64) -> String {
+    let remaining_minutes = (deadline_unix_ms.saturating_sub(now_unix_ms) + 59_999) / 60_000;
+    match remaining_minutes {
+        ..=0 => "any moment".to_string(),
+        minutes @ 1..=59 => format!("{minutes}m left"),
+        minutes => {
+            let hours = minutes / 60;
+            let rest = minutes % 60;
+            if rest == 0 {
+                format!("{hours}h left")
+            } else {
+                format!("{hours}h {rest}m left")
+            }
+        }
+    }
+}
+
 fn build_menu_model(
     onboarding_complete: bool,
     recording: bool,
     user_paused: bool,
     low_disk_suspended: bool,
+    off_record_deadline_unix_ms: Option<i64>,
+    now_unix_ms: i64,
     settings: &RecordingSettings,
     support: &CaptureSources,
     operation: StatusBarOperation,
@@ -170,8 +199,9 @@ fn build_menu_model(
             recording_enabled: false,
             pause_label: None,
             pause_enabled: false,
+            show_off_record_menu: false,
             source_items: Vec::new(),
-            tooltip: "Mnema",
+            tooltip: "Mnema".to_string(),
         };
     }
 
@@ -182,17 +212,38 @@ fn build_menu_model(
         StatusBarOperation::Starting => "Starting...",
         StatusBarOperation::Stopping => "Stopping...",
     };
+    // Off the record covers both shapes of the state: a paused live session,
+    // and the startup hold (no session yet, deadline re-armed from disk).
+    let off_record = user_paused || (!recording && off_record_deadline_unix_ms.is_some());
+    let off_record_status = off_record.then(|| match off_record_deadline_unix_ms {
+        Some(deadline) => format!(
+            "Off the record — {}",
+            format_off_record_remaining(deadline, now_unix_ms)
+        ),
+        None => "Off the record".to_string(),
+    });
     // The low-disk suspension keeps the session alive (recording == true), so it
-    // must take precedence over the generic recording/paused tooltip — otherwise
-    // the tray would read "Recording" while capture is actually held (ADR 0040).
-    let status_label = (operation == StatusBarOperation::Idle && low_disk_suspended)
-        .then_some("Paused — low disk");
+    // must take precedence over the generic on-the-record tooltip — otherwise
+    // the tray would read as recording while capture is actually held (ADR 0040).
+    let status_label = if operation != StatusBarOperation::Idle {
+        None
+    } else if low_disk_suspended && !user_paused {
+        Some("Paused — low disk".to_string())
+    } else {
+        off_record_status.clone()
+    };
     let tooltip = match operation {
-        StatusBarOperation::Idle if low_disk_suspended => "Mnema — Paused (low disk)",
-        StatusBarOperation::Idle if recording => "Mnema - Recording",
-        StatusBarOperation::Idle => "Mnema",
-        StatusBarOperation::Starting => "Mnema - Starting...",
-        StatusBarOperation::Stopping => "Mnema - Stopping...",
+        StatusBarOperation::Idle if low_disk_suspended && !user_paused => {
+            "Mnema — Paused (low disk)".to_string()
+        }
+        StatusBarOperation::Idle if off_record => format!(
+            "Mnema — {}",
+            off_record_status.as_deref().unwrap_or("Off the record")
+        ),
+        StatusBarOperation::Idle if recording => "Mnema — On the record".to_string(),
+        StatusBarOperation::Idle => "Mnema".to_string(),
+        StatusBarOperation::Starting => "Mnema - Starting...".to_string(),
+        StatusBarOperation::Stopping => "Mnema - Stopping...".to_string(),
     };
 
     let source_items = [
@@ -222,12 +273,9 @@ fn build_menu_model(
         status_label,
         recording_label: Some(recording_label),
         recording_enabled: operation == StatusBarOperation::Idle,
-        pause_label: recording.then_some(if user_paused {
-            "Resume Recording"
-        } else {
-            "Pause Recording"
-        }),
+        pause_label: (recording && user_paused).then_some("Back On the Record"),
         pause_enabled: recording && operation == StatusBarOperation::Idle,
+        show_off_record_menu: recording && !user_paused,
         source_items,
         tooltip,
     }
@@ -277,8 +325,8 @@ fn apply_read_only_status(
             ),
             _ => ("Read-Only — trial ended", "Mnema — Read-Only (trial ended)"),
         };
-        model.status_label = Some(label);
-        model.tooltip = tooltip;
+        model.status_label = Some(label.to_string());
+        model.tooltip = tooltip.to_string();
     }
 }
 
@@ -292,6 +340,8 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         recording,
         session.is_user_paused,
         session.is_low_disk_suspended,
+        session.off_record_deadline_unix_ms,
+        crate::native_capture::runtime_now_unix_ms() as i64,
         &settings,
         &support,
         operation(app),
@@ -339,12 +389,39 @@ fn build_menu(
         .build(app)?;
     let sources =
         Submenu::with_items(app, "Sources", true, &[&screen, &microphone, &system_audio])?;
-    let pause = MenuItemBuilder::with_id(
-        PAUSE_TOGGLE_ID,
-        model.pause_label.unwrap_or("Pause Recording"),
-    )
-    .enabled(model.pause_enabled)
-    .build(app)?;
+    // Off the record: "Back On the Record" while paused; otherwise the timed
+    // "Go Off the Record" submenu while a session is on the record.
+    let back_on_record = model
+        .pause_label
+        .map(|label| {
+            MenuItemBuilder::with_id(PAUSE_TOGGLE_ID, label)
+                .enabled(model.pause_enabled)
+                .build(app)
+        })
+        .transpose()?;
+    let off_record_menu = if model.show_off_record_menu {
+        let for_15 = MenuItemBuilder::with_id(OFF_RECORD_15_MIN_ID, "For 15 Minutes")
+            .enabled(model.pause_enabled)
+            .build(app)?;
+        let for_30 = MenuItemBuilder::with_id(OFF_RECORD_30_MIN_ID, "For 30 Minutes")
+            .enabled(model.pause_enabled)
+            .build(app)?;
+        let for_1h = MenuItemBuilder::with_id(OFF_RECORD_1_HOUR_ID, "For 1 Hour")
+            .enabled(model.pause_enabled)
+            .build(app)?;
+        let indefinite =
+            MenuItemBuilder::with_id(OFF_RECORD_INDEFINITE_ID, "Until I Turn It Back On")
+                .enabled(model.pause_enabled)
+                .build(app)?;
+        Some(Submenu::with_items(
+            app,
+            "Go Off the Record",
+            true,
+            &[&for_15, &for_30, &for_1h, &indefinite],
+        )?)
+    } else {
+        None
+    };
     let exclude_current =
         MenuItemBuilder::with_id(EXCLUDE_CURRENT_APP_ID, "Exclude Current App From Now On...")
             .build(app)?;
@@ -367,10 +444,11 @@ fn build_menu(
     let separator = PredefinedMenuItem::separator(app)?;
     let separator_two = PredefinedMenuItem::separator(app)?;
 
-    // A non-actionable status header surfaced only while capture is held by the
-    // low-disk liveness suspension, so the menu never reads as plainly running.
+    // A non-actionable status header surfaced while capture is held (low-disk
+    // suspension or off the record), so the menu never reads as plainly running.
     let status_header = model
         .status_label
+        .as_deref()
         .map(|label| {
             MenuItemBuilder::with_id(STATUS_HEADER_ID, label)
                 .enabled(false)
@@ -387,10 +465,15 @@ fn build_menu(
         items.push(header);
         items.push(sep);
     }
+    items.push(&recording);
+    if let Some(back_on_record) = back_on_record.as_ref() {
+        items.push(back_on_record);
+    }
+    if let Some(off_record_menu) = off_record_menu.as_ref() {
+        items.push(off_record_menu);
+    }
     items.extend([
-        &recording as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
-        &pause,
-        &sources,
+        &sources as &dyn tauri::menu::IsMenuItem<tauri::Wry>,
         &exclude_current,
         &delete_recent,
         &separator_two,
@@ -531,14 +614,29 @@ fn handle_pause_toggle(app: &tauri::AppHandle) {
     let result = if session.is_user_paused {
         crate::native_capture::resume_native_capture_from_app_handle(app)
             .map(|_| ())
-            .map_err(|error| ("Recording could not resume", error))
+            .map_err(|error| ("Could not go back on the record", error))
     } else {
-        crate::native_capture::pause_native_capture_from_app_handle(app)
+        crate::native_capture::pause_native_capture_from_app_handle(app, None)
             .map(|_| ())
-            .map_err(|error| ("Recording could not pause", error))
+            .map_err(|error| ("Could not go off the record", error))
     };
     if let Err((title, error)) = result {
         show_capture_error(app, title, error);
+    }
+}
+
+/// Go off the record from the tray. `duration_ms` = the timed window
+/// (auto-resumes when it ends); `None` = until turned back on.
+fn handle_off_record(app: &tauri::AppHandle, duration_ms: Option<i64>) {
+    let session = crate::native_capture::current_native_capture_session(app);
+    if !session.is_running || session.is_user_paused {
+        return;
+    }
+    let deadline_unix_ms =
+        duration_ms.map(|ms| crate::native_capture::runtime_now_unix_ms() as i64 + ms);
+    if let Err(error) = crate::native_capture::pause_native_capture_from_app_handle(app, deadline_unix_ms)
+    {
+        show_capture_error(app, "Could not go off the record", error);
     }
 }
 
@@ -658,6 +756,10 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         }
         RECORDING_TOGGLE_ID => handle_recording_toggle(app),
         PAUSE_TOGGLE_ID => handle_pause_toggle(app),
+        OFF_RECORD_15_MIN_ID => handle_off_record(app, Some(15 * 60 * 1000)),
+        OFF_RECORD_30_MIN_ID => handle_off_record(app, Some(30 * 60 * 1000)),
+        OFF_RECORD_1_HOUR_ID => handle_off_record(app, Some(60 * 60 * 1000)),
+        OFF_RECORD_INDEFINITE_ID => handle_off_record(app, None),
         EXCLUDE_CURRENT_APP_ID => handle_exclude_current_app(app),
         DELETE_LAST_1_MINUTE_ID => confirm_delete_recent(app, 60),
         DELETE_LAST_5_MINUTES_ID => confirm_delete_recent(app, 300),
@@ -709,6 +811,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -725,6 +829,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -763,6 +869,8 @@ mod tests {
             true,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -782,11 +890,13 @@ mod tests {
             true,
             false,
             true,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
         );
-        assert_eq!(model.status_label, Some("Paused — low disk"));
+        assert_eq!(model.status_label.as_deref(), Some("Paused — low disk"));
         assert_eq!(model.tooltip, "Mnema — Paused (low disk)");
         assert_ne!(model.tooltip, "Mnema - Recording");
     }
@@ -800,12 +910,14 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
         );
         apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
-        assert_eq!(model.status_label, Some("Read-Only — trial ended"));
+        assert_eq!(model.status_label.as_deref(), Some("Read-Only — trial ended"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (trial ended)");
         assert!(!model.recording_enabled);
     }
@@ -819,12 +931,14 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
         );
         apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::Revoked));
-        assert_eq!(model.status_label, Some("Read-Only — license revoked"));
+        assert_eq!(model.status_label.as_deref(), Some("Read-Only — license revoked"));
         assert_eq!(model.tooltip, "Mnema — Read-Only (license revoked)");
         assert!(!model.recording_enabled);
     }
@@ -840,6 +954,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -853,7 +969,7 @@ mod tests {
         };
         apply_read_only_status(&mut model, true, Some(&status));
         assert_ne!(
-            model.status_label,
+            model.status_label.as_deref(),
             Some("Read-Only — trial ended"),
             "a paid but unactivated license must not read as a lapsed trial"
         );
@@ -869,6 +985,8 @@ mod tests {
             true,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -887,6 +1005,8 @@ mod tests {
                 false,
                 false,
                 false,
+                None,
+                0,
                 &settings_with_sources(true, true, true),
                 &support_all(),
                 operation,
@@ -903,6 +1023,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -914,6 +1036,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -931,6 +1055,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, false, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -964,6 +1090,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -996,6 +1124,8 @@ mod tests {
             false,
             false,
             false,
+            None,
+            0,
             &settings_with_sources(true, true, true),
             &CaptureSources {
                 screen: true,
@@ -1009,5 +1139,96 @@ mod tests {
         assert!(!model.source_items[1].enabled);
         assert!(model.source_items[2].checked);
         assert!(!model.source_items[2].enabled);
+    }
+
+    // "The record" language (slice 7): while recording on the record, the tray
+    // offers the timed Go Off the Record submenu instead of a bare pause item.
+    #[test]
+    fn on_the_record_model_offers_the_off_record_menu() {
+        let model = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            None,
+            0,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert!(model.show_off_record_menu);
+        assert_eq!(model.pause_label, None);
+        assert!(model.pause_enabled);
+        assert_eq!(model.tooltip, "Mnema — On the record");
+    }
+
+    #[test]
+    fn timed_off_record_model_counts_down_and_offers_back_on_the_record() {
+        // 12 minutes left on the window.
+        let model = build_menu_model(
+            true,
+            true,
+            true,
+            false,
+            Some(12 * 60_000),
+            0,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.status_label.as_deref(), Some("Off the record — 12m left"));
+        assert_eq!(model.tooltip, "Mnema — Off the record — 12m left");
+        assert_eq!(model.pause_label, Some("Back On the Record"));
+        assert!(!model.show_off_record_menu);
+    }
+
+    #[test]
+    fn indefinite_off_record_model_reads_off_the_record_without_a_countdown() {
+        let model = build_menu_model(
+            true,
+            true,
+            true,
+            false,
+            None,
+            0,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.status_label.as_deref(), Some("Off the record"));
+        assert_eq!(model.tooltip, "Mnema — Off the record");
+        assert_eq!(model.pause_label, Some("Back On the Record"));
+    }
+
+    // The startup hold: a deadline re-armed from disk with no session running.
+    // The tray must read off the record with the countdown while still offering
+    // Start Recording as the manual way back on.
+    #[test]
+    fn startup_hold_model_counts_down_without_a_running_session() {
+        let model = build_menu_model(
+            true,
+            false,
+            false,
+            false,
+            Some(30 * 60_000),
+            0,
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert_eq!(model.status_label.as_deref(), Some("Off the record — 30m left"));
+        assert_eq!(model.recording_label, Some("Start Recording"));
+        assert!(model.recording_enabled);
+        assert_eq!(model.pause_label, None);
+        assert!(!model.show_off_record_menu);
+    }
+
+    #[test]
+    fn off_record_remaining_formats_minutes_and_hours() {
+        assert_eq!(format_off_record_remaining(30_000, 0), "1m left");
+        assert_eq!(format_off_record_remaining(15 * 60_000, 0), "15m left");
+        assert_eq!(format_off_record_remaining(60 * 60_000, 0), "1h left");
+        assert_eq!(format_off_record_remaining(90 * 60_000, 0), "1h 30m left");
+        assert_eq!(format_off_record_remaining(0, 60_000), "any moment");
     }
 }

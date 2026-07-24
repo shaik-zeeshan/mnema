@@ -192,6 +192,25 @@
     margin: 0.2em 0;
   }
 
+  /* Task-list items (markdown.ts's task_list rule): checkbox rows with no list
+     marker. The checkbox stays interactive (toggleable, unpersisted) per the
+     Triggers document-view checklist. */
+  .answer-prose :global(li.task-item) {
+    list-style: none;
+    margin-left: -1.2em;
+  }
+  .answer-prose :global(.task-checkbox) {
+    margin: 0 0.5em 0 0;
+    vertical-align: -0.15em;
+    accent-color: var(--app-accent);
+    cursor: pointer;
+  }
+  .answer-prose :global(li.task-item:has(.task-checkbox:checked)) {
+    color: var(--app-text-muted);
+    text-decoration: line-through;
+    text-decoration-color: var(--app-border-strong);
+  }
+
   /* Inline code — explicitly NOT the code inside `.answer-code` blocks (those are
      re-styled below). */
   .answer-prose :global(code:not(.answer-code code)) {

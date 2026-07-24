@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — App-Match · Meetings · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction 2 · warm paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    padding: 72px 48px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden; display: flex; position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail — mirrors InsightsRail.svelte structure ============ */
+  .rail {
+    width: 240px; flex: none;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 44px 0 0;
+  }
+  .rail-scroll { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 10px 16px 0; overflow: hidden; }
+  .rail-header { display: flex; justify-content: flex-end; align-items: center; height: 24px; margin-bottom: 4px; }
+  .rail-collapse {
+    width: 24px; height: 24px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--ink-3); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .rail-collapse:hover { color: var(--accent-deep); background: #ece8da; }
+  .rail-collapse svg { width: 15px; height: 15px; }
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail-nav a, .rail-newchat {
+    position: relative;
+    display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 8px; border-radius: 6px;
+    color: var(--ink-2); text-decoration: none;
+    font-size: 13px; font-weight: 500;
+    transition: background .12s, color .12s;
+  }
+  .rail-nav a svg { width: 15px; height: 15px; stroke: currentColor; flex: none; opacity: .85; }
+  .rail-nav a:hover { background: #ece8da; color: var(--ink); }
+  .rail-nav a.active { background: var(--tint); color: var(--accent-deep); font-weight: 600; }
+  .rail-nav a.active svg { opacity: 1; }
+  .rail-nav a.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  .rail-newchat { margin-top: 16px; border: 0; background: transparent; cursor: pointer; font-family: var(--sans); width: 100%; text-align: left; }
+  .rail-newchat .plus { width: 15px; flex: none; display: inline-flex; justify-content: center; font-size: 14px; color: var(--ink-3); }
+  .rail-newchat:hover { background: #ece8da; color: var(--ink); }
+  .origin-filter {
+    display: flex; gap: 2px; margin-top: 14px;
+    background: #ece8da; border-radius: 7px; padding: 2px;
+  }
+  .origin-filter button {
+    flex: 1; border: 0; background: transparent; cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+    color: var(--ink-3); border-radius: 5px; padding: 4px 0;
+  }
+  .origin-filter button.active { background: var(--card); color: var(--accent-deep); box-shadow: 0 1px 2px rgba(60,52,32,.07); }
+  .rail-search {
+    display: flex; align-items: center; gap: 7px;
+    margin-top: 12px; padding: 0 8px; color: var(--ink-3);
+  }
+  .rail-search svg { width: 12px; height: 12px; flex: none; }
+  .rail-search input {
+    border: 0; outline: 0; background: transparent; width: 100%;
+    font-family: var(--sans); font-size: 12.5px; color: var(--ink); padding: 4px 0;
+  }
+  .rail-search input::placeholder { color: var(--ink-3); }
+  .hist-group {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding: 16px 8px 6px;
+  }
+  .hist a {
+    display: flex; align-items: baseline; gap: 7px;
+    padding: 6px 8px; border-radius: 6px;
+    text-decoration: none; color: var(--ink-2);
+    font-size: 12.5px; line-height: 1.35;
+  }
+  .hist a:hover { background: #ece8da; color: var(--ink); }
+  .hist a.sel { background: var(--tint); color: var(--accent-deep); }
+  .hist .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hist .glyph { font-family: var(--mono); font-size: 10.5px; color: var(--accent); flex: none; }
+  .hist .when { font-family: var(--mono); font-size: 10px; color: var(--ink-3); flex: none; }
+  .rail-foot {
+    flex: none; border-top: 1px solid var(--border);
+    padding: 12px 16px;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 11px; color: var(--ink-2);
+  }
+  .rail-foot .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); flex: none; }
+  .rail-foot .sep { color: var(--ink-3); }
+  .rail-foot .model { font-family: var(--mono); font-size: 10.5px; }
+
+  /* ============ main pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ============ frame 1 · meetings list ============ */
+  .page-head { padding: 58px 64px 0; }
+  .page-title { font-family: var(--serif); font-size: 32px; font-weight: 400; letter-spacing: -.01em; }
+  .page-sub { font-size: 14px; color: var(--ink-2); margin-top: 8px; max-width: 720px; line-height: 1.5; }
+  .page-sub .m { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .meet-scroll { flex: 1; overflow-y: auto; padding: 28px 64px 60px; }
+  .day-head { display: flex; align-items: baseline; gap: 12px; margin: 26px 0 12px; }
+  .day-head:first-child { margin-top: 0; }
+  .day-head h3 { font-family: var(--serif); font-size: 17px; font-weight: 500; color: var(--ink); }
+  .day-head .m { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .day-head .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .meet-count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .meet-row {
+    display: flex; align-items: center; gap: 18px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 15px 20px;
+    margin-bottom: 10px; cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .meet-row:hover {
+    border-color: var(--tint-border);
+    box-shadow: 0 2px 12px rgba(31,111,74,.07);
+    transform: translateY(-1px);
+  }
+  .meet-row.muted { background: var(--card-deep); }
+  .meet-row.muted .meet-title { color: var(--ink-2); }
+  .app-glyph {
+    width: 40px; height: 40px; flex: none;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--card-deep);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-2);
+  }
+  .app-glyph.zoom { color: #3a6ea8; }
+  .app-glyph.teams { color: #5a5a9a; }
+  .app-glyph.web  { color: #8a6b3a; font-size: 16px; }
+  .app-glyph.ft   { color: #2a8a60; }
+  .meet-main { flex: 1; min-width: 0; }
+  .meet-title { font-family: var(--serif); font-size: 17px; color: var(--ink); }
+  .meet-title .inferred { font-family: var(--mono); font-size: 9.5px; color: var(--ink-3); letter-spacing: .06em; text-transform: uppercase; margin-left: 8px; vertical-align: 2px; }
+  .meet-meta { display: flex; align-items: center; gap: 14px; margin-top: 5px; }
+  .meet-meta .m { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .spk-chips { display: flex; align-items: center; gap: 6px; }
+  .spk {
+    font-size: 11.5px; font-weight: 500; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2.5px 9px;
+  }
+  .spk.you { color: var(--accent-deep); background: var(--tint-2); border-color: var(--tint-border); }
+  .spk.unk { color: var(--ink-3); border-style: dashed; }
+  .meet-prov {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    margin-top: 6px; letter-spacing: .02em;
+  }
+  .meet-prov .g { color: var(--accent); }
+  .state { flex: none; font-family: var(--mono); font-size: 11px; border-radius: 999px; padding: 5px 12px; letter-spacing: .02em; }
+  .state.recap { color: var(--accent-deep); background: var(--tint); border: 1px solid var(--tint-border); }
+  .state.transcript { color: var(--ink-2); background: var(--card-deep); border: 1px solid var(--border); }
+  .state.processing { color: var(--amber); background: var(--amber-tint); border: 1px solid #e7d8b4; }
+  .state.skipped { color: var(--ink-3); background: transparent; border: 1px dashed var(--border-strong); }
+  .spin {
+    display: inline-block; width: 9px; height: 9px; margin-right: 6px;
+    border-radius: 50%; border: 1.5px solid #d9c48c; border-top-color: var(--amber);
+    vertical-align: -1px;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ============ frame 2 · meeting detail ============ */
+  .detail-scroll { flex: 1; overflow-y: auto; padding: 50px 0 80px; }
+  .detail-inner { max-width: 780px; margin: 0 auto; padding: 0 40px; }
+  .back { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); text-decoration: none; letter-spacing: .04em; }
+  .back:hover { color: var(--accent-deep); }
+  .detail-title { font-family: var(--serif); font-size: 34px; font-weight: 400; letter-spacing: -.012em; margin-top: 18px; line-height: 1.2; }
+  .detail-title .inferred { font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: .07em; text-transform: uppercase; margin-left: 10px; vertical-align: 8px; }
+  .detail-meta { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 14px; }
+  .detail-meta .m { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .detail-meta .sep { color: var(--border-strong); }
+  .provenance { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 12px; letter-spacing: .02em; }
+  .provenance .g { color: var(--accent); }
+  .tabs { display: flex; gap: 4px; margin-top: 30px; border-bottom: 1px solid var(--border); }
+  .tab {
+    font-family: var(--sans); font-size: 13.5px; font-weight: 500;
+    color: var(--ink-2); background: none; border: 0; cursor: pointer;
+    padding: 9px 16px 11px; border-bottom: 2px solid transparent; margin-bottom: -1px;
+    transition: color .12s, border-color .12s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent-deep); border-bottom-color: var(--accent); }
+  .tab .n { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-left: 5px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+
+  .run-eyebrow {
+    display: flex; align-items: center; gap: 10px;
+    margin-top: 26px;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink-3);
+  }
+  .run-eyebrow .g { color: var(--accent); }
+  .recap-doc {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 42px 52px 46px; margin-top: 12px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.03), 0 8px 28px rgba(60,52,32,.04);
+  }
+  .recap-doc h2 { font-family: var(--serif); font-size: 21px; font-weight: 500; margin: 34px 0 12px; letter-spacing: -.005em; }
+  .recap-doc h2:first-child { margin-top: 0; }
+  .recap-doc p { font-size: 14.5px; line-height: 1.65; color: #45412f; margin-bottom: 12px; }
+  .recap-doc ul { margin: 0 0 12px 2px; list-style: none; }
+  .recap-doc li { font-size: 14.5px; line-height: 1.6; color: #45412f; padding: 5px 0 5px 22px; position: relative; }
+  .recap-doc li::before { content: "—"; position: absolute; left: 0; font-family: var(--mono); color: var(--accent-2); font-size: 12px; top: 8px; }
+  .recap-doc li b { font-weight: 600; color: var(--ink); }
+  .decision {
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 10px; padding: 13px 16px 13px 42px; margin: 8px 0;
+    font-size: 14px; line-height: 1.55; color: #35402f; position: relative;
+  }
+  .decision::before { content: "◆"; position: absolute; left: 17px; top: 13px; font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .action { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .action:last-of-type { border-bottom: 0; }
+  .action .box { width: 15px; height: 15px; flex: none; align-self: center; border: 1.5px solid var(--border-strong); border-radius: 4px; }
+  .action:hover .box { border-color: var(--accent-2); }
+  .action .who { font-family: var(--mono); font-size: 11px; color: var(--accent-deep); flex: none; width: 52px; }
+  .action .what { font-size: 14px; color: #45412f; line-height: 1.5; }
+  .recap-foot {
+    margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--border-soft);
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  }
+  .open-convo {
+    font-size: 13.5px; font-weight: 500; color: var(--accent-deep);
+    text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border: 1px solid var(--tint-border); border-radius: 8px;
+    background: var(--tint-2); white-space: nowrap;
+  }
+  .open-convo:hover { background: var(--tint); border-color: var(--accent-2); }
+  .recap-foot .m { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); text-align: right; line-height: 1.6; }
+
+  .turns-note { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin: 22px 0 4px; letter-spacing: .02em; }
+  .turns { margin-top: 8px; }
+  .turn { display: flex; gap: 18px; padding: 13px 6px; border-bottom: 1px solid var(--border-soft); }
+  .turn:hover { background: #f7f4ea; }
+  .turn .ts { font-family: var(--mono); font-size: 11px; color: var(--ink-3); flex: none; width: 52px; padding-top: 3px; font-variant-numeric: tabular-nums; }
+  .turn .who { font-family: var(--mono); font-size: 11.5px; font-weight: 700; flex: none; width: 76px; padding-top: 2px; }
+  .turn .who.s1 { color: #1f6f4a; } .turn .who.s2 { color: #8a5a2a; }
+  .turn .who.s3 { color: #3a6ea8; } .turn .who.you { color: #2b2a24; }
+  .turn .say { font-size: 14px; line-height: 1.6; color: #45412f; }
+
+  .notes-card { margin-top: 26px; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 26px 30px; }
+  .notes-card p { font-size: 14.5px; line-height: 1.7; color: #45412f; margin-bottom: 10px; }
+  .notes-card .hint { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 14px; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · MEETINGS LIST                                          -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 1</b> · Meetings — detected list, grouped by day · app-match (real rail, mic-hold detection)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3 5 8l4 5M13 3 9 8l4 5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Insights sub-surface">
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="7" rx="1"/><rect x="9" y="2" width="5" height="4" rx="1"/><rect x="9" y="8" width="5" height="6" rx="1"/><rect x="2" y="11" width="5" height="3" rx="1"/></svg>
+            Overview
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M5 1.5V4M11 1.5V4M2 6.5h12M5 9h.01M8 9h.01M11 9h.01M5 11.5h.01M8 11.5h.01"/></svg>
+            Journal
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11.5a4.5 4.5 0 1 1 4 0c-.6.35-1 .9-1 1.5H7c0-.6-.4-1.15-1-1.5zM6.5 15h3"/></svg>
+            Subjects
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M1.5 5H3M1.5 8H3M1.5 11H3M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>
+            Context
+          </a>
+          <a href="#" class="active" aria-current="page">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5V15"/></svg>
+            Meetings
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5 3.5 9h3L7 14.5 12.5 7h-3L9 1.5z"/></svg>
+            Triggers
+          </a>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <input type="search" placeholder="Search chats…">
+        </div>
+
+        <div class="hist-group">Today</div>
+        <div class="hist">
+          <a href="#"><span class="glyph">◉</span><span class="t">Meeting Recap — Weekly product sync</span><span class="when">10:58</span></a>
+          <a href="#"><span class="t">what did Dev say about the recap queue lane</span><span class="when">11:20</span></a>
+          <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Wed Jul 23</span><span class="when">08:00</span></a>
+        </div>
+        <div class="hist-group">Yesterday</div>
+        <div class="hist">
+          <a href="#"><span class="glyph">◉</span><span class="t">Meeting Recap — Sprint retro</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">where did I save the warm palette tokens</span><span class="when">Tue</span></a>
+          <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+          <a href="#"><span class="glyph">◉</span><span class="t">Meeting Recap — 1:1 with Sarah</span><span class="when">Tue</span></a>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="dot"></span>
+        engine <span class="sep">·</span> <span class="model">claude-sonnet-4.5</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <h1 class="page-title">Meetings</h1>
+        <p class="page-sub">Detected when a conferencing app holds your microphone for five minutes or more — no calendar connected, none needed. <span class="m">8 this week</span></p>
+      </div>
+
+      <div class="meet-scroll">
+        <div class="day-head">
+          <h3>Today</h3><span class="m">WED · JUL 23 2026</span><span class="rule"></span><span class="meet-count">3 meetings · 1h 30m</span>
+        </div>
+
+        <!-- readiness wait: mic released, grace passed, transcript still processing -->
+        <div class="meet-row">
+          <div class="app-glyph web">◈</div>
+          <div class="meet-main">
+            <div class="meet-title">Meeting on meet.google.com</div>
+            <div class="meet-meta">
+              <span class="m">2:12 – 2:31 PM · 19m</span>
+              <div class="spk-chips"><span class="spk unk">voices pending</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · meet.google.com · Arc</div>
+          </div>
+          <span class="state processing"><span class="spin"></span>transcribing · recap after</span>
+        </div>
+
+        <!-- transcript only: no recap trigger configured for this one -->
+        <div class="meet-row">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">Meeting with Dev Patel</div>
+            <div class="meet-meta">
+              <span class="m">11:30 – 11:54 AM · 24m</span>
+              <div class="spk-chips"><span class="spk">Dev Patel</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · zoom.us</div>
+          </div>
+          <span class="state transcript">transcript only</span>
+        </div>
+
+        <!-- recap ready: Meeting Recap trigger ran; title inferred by the model -->
+        <div class="meet-row">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">Weekly product sync<span class="inferred">title inferred</span></div>
+            <div class="meet-meta">
+              <span class="m">10:00 – 10:47 AM · 47m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Dev</span><span class="spk">Priya</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · zoom.us</div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <div class="day-head">
+          <h3>Yesterday</h3><span class="m">TUE · JUL 22</span><span class="rule"></span><span class="meet-count">3 meetings · 1h 46m</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph teams">ts</div>
+          <div class="meet-main">
+            <div class="meet-title">Sprint retro — capture pipeline<span class="inferred">title inferred</span></div>
+            <div class="meet-meta">
+              <span class="m">4:00 – 4:52 PM · 52m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Marcus</span><span class="spk unk">Speaker 3</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · com.microsoft.teams2</div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <!-- skipped run: mic-hold seen but Mnema wasn't recording — nothing to transcribe -->
+        <div class="meet-row muted">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">Meeting on zoom.us</div>
+            <div class="meet-meta">
+              <span class="m">1:00 – 1:25 PM · 25m</span>
+              <div class="spk-chips"><span class="spk unk">not recorded</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · zoom.us · recording was paused — recap skipped</div>
+          </div>
+          <span class="state skipped">skipped</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph ft">ft</div>
+          <div class="meet-main">
+            <div class="meet-title">1:1 with Sarah<span class="inferred">title inferred</span></div>
+            <div class="meet-meta">
+              <span class="m">9:30 – 9:59 AM · 29m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · FaceTime</div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <div class="day-head">
+          <h3>Monday</h3><span class="m">MON · JUL 21</span><span class="rule"></span><span class="meet-count">2 meetings · 1h 05m</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph web">◈</div>
+          <div class="meet-main">
+            <div class="meet-title">Meeting with 1 other</div>
+            <div class="meet-meta">
+              <span class="m">3:00 – 3:41 PM · 41m</span>
+              <div class="spk-chips"><span class="spk unk">Speaker 1</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · meet.google.com · Arc</div>
+          </div>
+          <span class="state transcript">transcript only</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph teams">ts</div>
+          <div class="meet-main">
+            <div class="meet-title">Monday kickoff — v0.2 scope<span class="inferred">title inferred</span></div>
+            <div class="meet-meta">
+              <span class="m">9:15 – 9:39 AM · 24m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Dev</span><span class="spk">Priya</span><span class="spk you">You</span></div>
+            </div>
+            <div class="meet-prov"><span class="g">◉</span> detected via mic-hold · com.microsoft.teams2</div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · MEETING DETAIL                                         -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 2</b> · Meeting detail — Summary tab active (tabs clickable) · recap = trigger-run document view</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="rail-scroll">
+        <div class="rail-header">
+          <button class="rail-collapse" aria-label="Collapse sidebar">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3 5 8l4 5M13 3 9 8l4 5"/></svg>
+          </button>
+        </div>
+
+        <nav class="rail-nav" aria-label="Insights sub-surface">
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="7" rx="1"/><rect x="9" y="2" width="5" height="4" rx="1"/><rect x="9" y="8" width="5" height="6" rx="1"/><rect x="2" y="11" width="5" height="3" rx="1"/></svg>
+            Overview
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M5 1.5V4M11 1.5V4M2 6.5h12M5 9h.01M8 9h.01M11 9h.01M5 11.5h.01M8 11.5h.01"/></svg>
+            Journal
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11.5a4.5 4.5 0 1 1 4 0c-.6.35-1 .9-1 1.5H7c0-.6-.4-1.15-1-1.5zM6.5 15h3"/></svg>
+            Subjects
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M1.5 5H3M1.5 8H3M1.5 11H3M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>
+            Context
+          </a>
+          <a href="#" class="active" aria-current="page">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="1.5" width="5" height="8" rx="2.5"/><path d="M3 7.5a5 5 0 0 0 10 0M8 12.5V15"/></svg>
+            Meetings
+          </a>
+          <a href="#">
+            <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5 3.5 9h3L7 14.5 12.5 7h-3L9 1.5z"/></svg>
+            Triggers
+          </a>
+        </nav>
+
+        <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+        <div class="origin-filter" role="group" aria-label="Filter conversations by origin">
+          <button class="active">all</button>
+          <button>chats</button>
+          <button>triggers</button>
+        </div>
+
+        <div class="rail-search">
+          <svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+          <input type="search" placeholder="Search chats…">
+        </div>
+
+        <div class="hist-group">Today</div>
+        <div class="hist">
+          <a href="#" class="sel"><span class="glyph">◉</span><span class="t">Meeting Recap — Weekly product sync</span><span class="when">10:58</span></a>
+          <a href="#"><span class="t">what did Dev say about the recap queue lane</span><span class="when">11:20</span></a>
+          <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Wed Jul 23</span><span class="when">08:00</span></a>
+        </div>
+        <div class="hist-group">Yesterday</div>
+        <div class="hist">
+          <a href="#"><span class="glyph">◉</span><span class="t">Meeting Recap — Sprint retro</span><span class="when">Tue</span></a>
+          <a href="#"><span class="t">where did I save the warm palette tokens</span><span class="when">Tue</span></a>
+          <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+          <a href="#"><span class="glyph">◉</span><span class="t">Meeting Recap — 1:1 with Sarah</span><span class="when">Tue</span></a>
+        </div>
+      </div>
+
+      <div class="rail-foot">
+        <span class="dot"></span>
+        engine <span class="sep">·</span> <span class="model">claude-sonnet-4.5</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="detail-scroll">
+        <div class="detail-inner">
+          <a href="#" class="back">← MEETINGS</a>
+          <h1 class="detail-title">Weekly product sync<span class="inferred">title inferred</span></h1>
+          <div class="detail-meta">
+            <span class="m">WED JUL 23 2026 · 10:00 – 10:47 AM · 47m</span>
+            <span class="sep">·</span>
+            <div class="spk-chips">
+              <span class="spk">Sarah Lindqvist</span><span class="spk">Dev Patel</span><span class="spk">Priya Sharma</span><span class="spk you">You</span>
+            </div>
+          </div>
+          <p class="provenance"><span class="g">◉</span> detected via mic-hold · zoom.us · mic released 10:47, held through 2m grace · 4 voices · 3 matched to saved speakers</p>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-pane="pane-summary" role="tab">Summary</button>
+            <button class="tab" data-pane="pane-transcript" role="tab">Transcript <span class="n">142 turns</span></button>
+            <button class="tab" data-pane="pane-notes" role="tab">Notes</button>
+          </div>
+
+          <!-- SUMMARY — the Meeting Recap trigger run, rendered document-view -->
+          <section id="pane-summary" class="pane active">
+            <div class="run-eyebrow"><span class="g">◉</span> trigger run · meeting recap · document view</div>
+            <article class="recap-doc">
+              <h2>Overview</h2>
+              <p>The team aligned on shipping the unified shell for v0.2. Sarah walked through the warm-paper direction for the insights home; the group agreed the meetings surface should stay calendar-free and lean entirely on mic-hold detection. Dev flagged that recap generation currently queues behind OCR on busy mornings, which explains the late recap people noticed after Monday’s kickoff.</p>
+
+              <h2>Decisions</h2>
+              <div class="decision">Ship the <b>unified left rail</b> (overview, journal, subjects, context, meetings, triggers) in v0.2 — the top subnav is retired.</div>
+              <div class="decision">Meeting detection stays <b>audio-first with no calendar integration</b>; titles are inferred from the conversation, never imported.</div>
+              <div class="decision">Recap jobs get their own queue lane so they no longer wait behind the OCR backlog.</div>
+
+              <h2>Action items</h2>
+              <div class="action"><span class="box"></span><span class="who">Sarah</span><span class="what">Finalize warm-paper spacing tokens and hand off the Figma page by Friday.</span></div>
+              <div class="action"><span class="box"></span><span class="who">Dev</span><span class="what">Split recap generation into its own job lane; measure Monday-morning latency before and after.</span></div>
+              <div class="action"><span class="box"></span><span class="who">Priya</span><span class="what">Draft copy for the meetings empty state and the “transcribing” row tooltip.</span></div>
+              <div class="action"><span class="box"></span><span class="who">You</span><span class="what">Wire the trigger-template gallery as the first wizard step behind the dev flag.</span></div>
+
+              <h2>Open questions</h2>
+              <ul>
+                <li>Should transcript-only meetings offer a one-click “run a recap now”, or stay passive until a trigger is configured?</li>
+                <li>Do unnamed voices (“Speaker 3”) prompt for a label after the second recurrence, or stay silent?</li>
+              </ul>
+
+              <div class="recap-foot">
+                <a href="#" class="open-convo">Open run conversation
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 12 4M6 4h6v6"/></svg>
+                </a>
+                <span class="m">fired 10:49 AM · mic released + 2m grace<br>ran 10:58 AM after readiness wait · claude-sonnet-4.5</span>
+              </div>
+            </article>
+          </section>
+
+          <!-- TRANSCRIPT -->
+          <section id="pane-transcript" class="pane">
+            <p class="turns-note">transcribed on-device · voices separated by diarization, matched to saved speakers · times are wall-clock</p>
+            <div class="turns">
+              <div class="turn"><span class="ts">10:00</span><span class="who s1">Sarah</span><span class="say">Okay, everyone’s here — let’s start with the shell. I posted the warm-paper direction in the channel this morning, did everyone get a chance to look?</span></div>
+              <div class="turn"><span class="ts">10:00</span><span class="who you">You</span><span class="say">I did. The cream background reads much calmer than the current dark shell. My only worry is the rail — six nav items plus history is a lot for 240 pixels.</span></div>
+              <div class="turn"><span class="ts">10:01</span><span class="who s1">Sarah</span><span class="say">The history list truncates, that’s fine. What I want to settle today is whether meetings gets its own top-level entry or lives under journal.</span></div>
+              <div class="turn"><span class="ts">10:01</span><span class="who s2">Dev</span><span class="say">Top-level. Detection is good enough now that the list is actually trustworthy — we caught eleven of twelve meetings last week, and the miss was a four-minute hallway call that never crossed the five-minute floor.</span></div>
+              <div class="turn"><span class="ts">10:02</span><span class="who s3">Priya</span><span class="say">Agreed, but then the empty state matters. If someone has no meetings detected yet, that page needs to explain the mic-hold thing in one friendly sentence, not a paragraph.</span></div>
+              <div class="turn"><span class="ts">10:02</span><span class="who s2">Dev</span><span class="say">One thing before we move on — recap latency. Monday’s 9:15 kickoff didn’t get its recap until almost eleven. It’s queued behind OCR, and Monday mornings are the worst possible time for that.</span></div>
+              <div class="turn"><span class="ts">10:03</span><span class="who s1">Sarah</span><span class="say">Can we give recaps their own lane? They’re small jobs, it feels silly for them to wait behind a thousand frame batches.</span></div>
+              <div class="turn"><span class="ts">10:03</span><span class="who s2">Dev</span><span class="say">Yes — separate queue lane, same worker pool. I’ll measure before and after so we’re not guessing. The readiness wait already caps at fifteen minutes; the lane change is about keeping well under it.</span></div>
+              <div class="turn"><span class="ts">10:04</span><span class="who you">You</span><span class="say">While we’re on it: the trigger gallery. I want the first wizard screen to be templates, not a blank condition form. Picking “Meeting Recap” should land you on Review with everything prefilled.</span></div>
+              <div class="turn"><span class="ts">10:04</span><span class="who s3">Priya</span><span class="say">Love that. Blank forms are where people give up. I’ll write the card descriptions — one line each, no jargon.</span></div>
+              <div class="turn"><span class="ts">10:05</span><span class="who s1">Sarah</span><span class="say">Good. Last thing on meetings: titles. We don’t have a calendar, so a row is “Meeting on zoom.us” until the recap names it. Are we comfortable with that?</span></div>
+              <div class="turn"><span class="ts">10:05</span><span class="who you">You</span><span class="say">Yes — and we label it “title inferred” so nobody thinks we’re reading their calendar. Honest beats pretty here.</span></div>
+            </div>
+          </section>
+
+          <!-- NOTES -->
+          <section id="pane-notes" class="pane">
+            <div class="notes-card">
+              <p>Sarah’s spacing tokens land Friday — block Thursday afternoon to prep the rail component so the handoff drops straight in.</p>
+              <p>Dev’s queue-lane change might also fix the digest lag Priya mentioned last week. Ask him to check both in the same measurement pass.</p>
+              <p>Remember: the “Speaker 3” labeling prompt is <em>not</em> decided. Don’t build it yet.</p>
+              <p class="hint">your notes stay local · never sent to any model unless you paste them into a chat</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ponytail: tab switching only — the sole JS on the page.
+  document.querySelectorAll('.tabs').forEach(function (tabs) {
+    tabs.addEventListener('click', function (e) {
+      var btn = e.target.closest('.tab');
+      if (!btn) return;
+      var scope = tabs.parentElement;
+      tabs.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+      scope.querySelectorAll('.pane').forEach(function (p) {
+        p.classList.toggle('active', p.id === btn.dataset.pane);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

@@ -42,7 +42,7 @@ let _settingsSyncInitialized = false;
 // surfaced through the project's native dialog so the user gets an explicit
 // alert instead of a silent snap-back. Fire-and-forget; callers don't await.
 function reportCaptureError(err: unknown): void {
-  void message(humanizeError(err), { title: "Recording error", kind: "error" });
+  void message(humanizeError(err), { title: "Capture error", kind: "error" });
 }
 
 export const captureControls = {
@@ -92,34 +92,17 @@ export const captureControls = {
   get isLowDiskSuspended(): boolean {
     return captureSession.value?.isLowDiskSuspended === true;
   },
-  get statusLabel(): string {
-    if (captureControls.isRunning) {
-      // The low-disk liveness suspension keeps the session running, so this
-      // specific label takes precedence over the generic "Paused" (ADR 0040).
-      if (captureControls.isLowDiskSuspended) {
-        return "Paused — low disk";
-      }
-      // Differentiate WHY recording is paused so the pill explains itself:
-      // a manual pause vs. an automatic inactivity pause read very differently
-      // to the user. Low-disk keeps precedence above.
-      if (captureControls.isUserPaused) {
-        return "Paused — manual";
-      }
-      if (captureControls.isInactivityPaused) {
-        return "Paused — inactive";
-      }
-      return captureControls.paused ? "Paused" : "Recording";
-    }
-    // "Stopped" and "Idle" are visually identical (both render with the
-    // 'idle' modifier), so the copy is unified to match the single visual
-    // state rather than implying a distinction the chrome never shows.
-    return "Idle";
+  /** Timed off-the-record deadline (unix ms), `null` when none is armed. */
+  get offRecordDeadlineUnixMs(): number | null {
+    return captureSession.value?.offRecordDeadlineUnixMs ?? null;
   },
-  get statusModifier(): "idle" | "running" | "paused" {
-    if (captureControls.isRunning) {
-      return captureControls.paused ? "paused" : "running";
-    }
-    return "idle";
+  /**
+   * "Off the record" in the capture model's sense: no session running, or the
+   * user deliberately paused one. Automatic suspensions (inactivity, low disk)
+   * keep the session on the record — they resolve themselves.
+   */
+  get offTheRecord(): boolean {
+    return !captureControls.isRunning || captureControls.isUserPaused;
   },
   get followTimelineLive(): boolean {
     return _state.recordingSettings?.followTimelineLive === true;
@@ -179,7 +162,12 @@ function applyCaptureSession(session: CaptureSession): void {
   }
 }
 
-export async function pauseCapture(): Promise<void> {
+/**
+ * Go off the record. `deadlineUnixMs` (optional) arms a timed window that
+ * auto-resumes at that wall-clock moment; omitted = off the record until the
+ * user turns it back on.
+ */
+export async function pauseCapture(deadlineUnixMs?: number): Promise<void> {
   if (
     _state.loadingStart ||
     _state.loadingStop ||
@@ -189,7 +177,9 @@ export async function pauseCapture(): Promise<void> {
   ) return;
   _state.loadingPause = true;
   try {
-    const result = await invoke<{ session: CaptureSession }>("pause_native_capture");
+    const result = await invoke<{ session: CaptureSession }>("pause_native_capture", {
+      deadlineUnixMs: deadlineUnixMs ?? null,
+    });
     applyCaptureSession(result.session);
   } catch (err) {
     reportCaptureError(err);

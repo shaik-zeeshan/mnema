@@ -400,8 +400,8 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 7px;
     overflow: hidden;
-    background: #101014;
-    color: #6a6a74;
+    background: var(--app-thumb-stage);
+    color: var(--app-thumb-stage-fg);
   }
 
   .qr-detail__hero-img {

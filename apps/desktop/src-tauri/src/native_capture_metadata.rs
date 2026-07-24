@@ -259,12 +259,40 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
         }));
     }
 
+    // App Opened triggers (issue #178): one extra `did_activate_app` guard on
+    // the SAME notification center, fanning the activated bundle id into the
+    // triggers channel. A dedicated guard (rather than branching inside the
+    // shared privacy-refresh closure above) keeps the capture path untouched
+    // while observer lifecycle stays in this one registration.
+    guards.push(center.add_observer_guard(
+        ns::workspace::notification::did_activate_app(),
+        None,
+        None,
+        |notification| {
+            crate::triggers::app_opened::publish_activation(activated_app_bundle_id(notification));
+        },
+    ));
+
     replace_metadata_notifier_guards(
         app_handle
             .state::<crate::native_capture::MetadataNotifierState>()
             .inner(),
         guards,
     );
+}
+
+/// The activated app's bundle id from a `did_activate_app` notification's
+/// `NSWorkspaceApplicationKey` — authoritative for WHICH app activated, unlike
+/// re-reading the frontmost app (which can already have moved on under churn).
+#[cfg(target_os = "macos")]
+fn activated_app_bundle_id(notification: &cidre::ns::Notification) -> Option<String> {
+    use cidre::objc::Obj;
+    let user_info = notification.user_info()?;
+    let value = user_info.get(cidre::ns::workspace::notification::app_key().as_id_ref())?;
+    let app = value.try_cast(cidre::ns::RunningApp::cls())?;
+    app.bundle_id()
+        .map(|bundle_id| bundle_id.to_string())
+        .filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -582,6 +610,92 @@ fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
         }
         None => None,
     }
+}
+
+/// Front-tab URL probe for the meeting detector (triggers issue #180). Same
+/// strategy dispatch as [`active_browser_url`], with two differences: it
+/// resolves the browser's pid itself (the Core Audio mic snapshot only carries
+/// bundle ids), and it never raises a permission dialog — a mic hold must not
+/// pop a prompt mid-call (ADR 0057 amendment 2026-07-21). The Gecko path skips
+/// the Accessibility prompt; the AppleScript path pre-checks Automation
+/// consent without asking. Either way, without a grant the read quietly yields
+/// no evidence — permission is earned on the capture prober's foreground path.
+/// Blocking (osascript ≤1s, AX ≤~1.4s): call off the async runtime.
+#[cfg(target_os = "macos")]
+pub(crate) fn probe_browser_front_tab_url(bundle_id: &str) -> Option<String> {
+    match browser_url_strategy(bundle_id) {
+        Some(BrowserUrlStrategy::AppleScript(_)) => automation_permission_granted(bundle_id)
+            .then(|| active_browser_url_applescript(bundle_id))
+            .flatten(),
+        Some(BrowserUrlStrategy::Accessibility) => running_app_pid(bundle_id)
+            .and_then(crate::native_capture::browser_url_ax::read_active_tab_url),
+        None => None,
+    }
+}
+
+/// Whether Automation (Apple Events) consent for `bundle_id` is already
+/// granted, checked WITHOUT prompting (`AEDeterminePermissionToAutomateTarget`
+/// with `askUserIfNeeded = false`). Not-yet-asked, denied, and not-running all
+/// read as `false`.
+#[cfg(target_os = "macos")]
+fn automation_permission_granted(bundle_id: &str) -> bool {
+    // FourCharCodes: 'bund' addresses an app by bundle id; '****' = any event.
+    const TYPE_APPLICATION_BUNDLE_ID: u32 = u32::from_be_bytes(*b"bund");
+    const TYPE_WILD_CARD: u32 = u32::from_be_bytes(*b"****");
+    #[repr(C)]
+    struct AEDesc {
+        descriptor_type: u32,
+        data_handle: *mut std::ffi::c_void,
+    }
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn AECreateDesc(
+            type_code: u32,
+            data_ptr: *const std::ffi::c_void,
+            data_size: isize,
+            result: *mut AEDesc,
+        ) -> i16;
+        fn AEDisposeDesc(desc: *mut AEDesc) -> i16;
+        fn AEDeterminePermissionToAutomateTarget(
+            target: *const AEDesc,
+            the_ae_event_class: u32,
+            the_ae_event_id: u32,
+            ask_user_if_needed: bool,
+        ) -> i32;
+    }
+    let bytes = bundle_id.as_bytes();
+    let mut desc = AEDesc {
+        descriptor_type: 0,
+        data_handle: std::ptr::null_mut(),
+    };
+    unsafe {
+        if AECreateDesc(
+            TYPE_APPLICATION_BUNDLE_ID,
+            bytes.as_ptr().cast(),
+            bytes.len() as isize,
+            &mut desc,
+        ) != 0
+        {
+            return false;
+        }
+        let status =
+            AEDeterminePermissionToAutomateTarget(&desc, TYPE_WILD_CARD, TYPE_WILD_CARD, false);
+        AEDisposeDesc(&mut desc);
+        status == 0
+    }
+}
+
+/// The pid of the running app with this bundle id, if any.
+#[cfg(target_os = "macos")]
+fn running_app_pid(bundle_id: &str) -> Option<i32> {
+    cidre::ns::Workspace::shared()
+        .running_apps()
+        .iter()
+        .find(|app| {
+            app.bundle_id()
+                .is_some_and(|id| id.to_string() == bundle_id)
+        })
+        .map(|app| app.pid())
 }
 
 #[cfg(target_os = "macos")]

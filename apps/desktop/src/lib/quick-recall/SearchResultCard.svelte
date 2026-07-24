@@ -289,8 +289,8 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 6px;
     overflow: hidden;
-    background: #101014;
-    color: #6a6a74;
+    background: var(--app-thumb-stage);
+    color: var(--app-thumb-stage-fg);
   }
 
   /* The image sits above the always-present glyph placeholder and fades in once

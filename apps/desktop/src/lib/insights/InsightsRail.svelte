@@ -1,16 +1,24 @@
+<script lang="ts" module>
+  // The rail's destinations (story-first shell, Slice 2). Four primary nav
+  // surfaces plus Chat, which is reached via "new chat" / a history row, never
+  // a nav item. Shared by <InsightsShell> and the routes that own a shell.
+  export type RailTab = "today" | "meetings" | "subjects" | "triggers" | "chat";
+</script>
+
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
-  // InsightsRail — the persistent left rail of the Insights surface (Insights-
-  // rail refactor, Slices 2/3). It replaces the old horizontal `.subnav` and is
-  // always present across every sub-surface (Overview / Subjects / Context /
-  // Chat). Top→bottom it carries: the sub-surface nav (overview / subjects /
-  // context), a "new chat" action, the chat search + time-grouped history
-  // (<RailHistory/>), and the engine/model footer (<RailFooter/>). The active
-  // sub-surface renders in the column to the RIGHT of this rail (the shell owns
-  // that). Chat is reached via "new chat" or a history row — it is NOT a primary
-  // nav item, but the "New chat" row doubles as the Chat group anchor and carries
-  // the active treatment when `view === "chat"`, so the rail always shows a stable
-  // "you are here" landmark.
+  // InsightsRail — the persistent left rail of the story-first shell (Warm
+  // Paper redesign, Slice 2; pinned mockup
+  // docs/mockups/unified-shell/main-surface/story-first-v5.html frame 1).
+  // Top→bottom it carries: the primary nav (Today / Meetings / Subjects /
+  // Triggers), a "new chat" action, the chat search + time-grouped history
+  // (<RailHistory/>, "tightened-B" treatment), and the engine/model footer
+  // (<RailFooter/>). The active surface renders in the column to the RIGHT of
+  // this rail (the shell owns that). Chat is reached via "new chat" or a
+  // history row — it is NOT a primary nav item, but the "New chat" row doubles
+  // as the Chat group anchor and carries the active treatment when
+  // `view === "chat"`, so the rail always shows a stable "you are here"
+  // landmark.
   //
   // The aesthetic is the approved "minimal / quiet" sidebar: hairline dividers +
   // whitespace + a single green accent. Active state combines accent label +
@@ -22,22 +30,21 @@
   import RailFooter from "$lib/insights/RailFooter.svelte";
   import { conversationStore } from "$lib/insights/conversationStore.svelte";
   import type { IconComponent } from "$lib/settings/section-icons";
-  import IconOverview from "~icons/lucide/layout-dashboard";
-  import IconJournal from "~icons/lucide/calendar-days";
+  import IconToday from "~icons/lucide/calendar-days";
+  import IconMeetings from "~icons/lucide/mic";
   import IconSubjects from "~icons/lucide/lightbulb";
-  import IconContext from "~icons/lucide/notebook-text";
+  import IconTriggers from "~icons/lucide/zap";
   import IconCollapse from "~icons/lucide/chevrons-left";
   import IconLock from "~icons/lucide/lock";
 
-  type InsightsTab = "overview" | "journal" | "subjects" | "context" | "chat";
-
   interface Props {
-    view: InsightsTab;
-    onOpenTab: (tab: InsightsTab) => void;
+    view: RailTab;
+    onOpenTab: (tab: RailTab) => void;
     // Continuous derivation (User Context opt-in) is off while the runtime is
-    // otherwise set up. All four nav sub-surfaces are derivation-fed, so they
-    // render locked (dim + lock glyph + tooltip) and clicking one deeplinks to
-    // the derivation setting instead of switching tabs. Chat stays live.
+    // otherwise set up. Today and Subjects are derivation-fed, so they render
+    // locked (dim + lock glyph + tooltip) and clicking one deeplinks to the
+    // derivation setting instead of switching tabs. Meetings, Triggers, and
+    // Chat stay live.
     derivationOff: boolean;
     onOpenDerivationSettings: () => void;
     engineOn: boolean;
@@ -69,17 +76,19 @@
     width,
   }: Props = $props();
 
-  // The nav is the three persistent sub-surfaces only — Chat is reached via
-  // new-chat / a history row, never a nav item.
+  // The nav is the four primary surfaces only — Chat is reached via new-chat /
+  // a history row, never a nav item. `derivationFed` marks the surfaces built
+  // from continuous-derivation output (locked while that opt-in is off).
   const NAV: {
-    id: Exclude<InsightsTab, "chat">;
+    id: Exclude<RailTab, "chat">;
     label: string;
     icon: IconComponent;
+    derivationFed: boolean;
   }[] = [
-    { id: "overview", label: "Overview", icon: IconOverview },
-    { id: "journal", label: "Journal", icon: IconJournal },
-    { id: "subjects", label: "Subjects", icon: IconSubjects },
-    { id: "context", label: "Context", icon: IconContext },
+    { id: "today", label: "Today", icon: IconToday, derivationFed: true },
+    { id: "meetings", label: "Meetings", icon: IconMeetings, derivationFed: false },
+    { id: "subjects", label: "Subjects", icon: IconSubjects, derivationFed: true },
+    { id: "triggers", label: "Triggers", icon: IconTriggers, derivationFed: false },
   ];
 
   // "New chat" carries the Chat-group active treatment ONLY when the open thread
@@ -96,7 +105,7 @@
 </script>
 
 {#if !collapsed}
-<aside class="sidebar" aria-label="Insights" style="width: {width}px;">
+<aside class="sidebar" aria-label="Main navigation" style="width: {width}px;">
   <div class="sidebar-scroll">
     <!-- A quiet collapse chevron in a compact right-aligned header row. It owns
          its own band so it never sits on top of the (full-width) Overview nav
@@ -117,24 +126,25 @@
 
     <!-- primary nav — title-case text rows with a leading glyph. Active =
          accent label + tint + inset bar. -->
-    <nav class="rail-nav" aria-label="Insights sub-surface">
+    <nav class="rail-nav" aria-label="Main surfaces">
       {#each NAV as item (item.id)}
         {@const Icon = item.icon}
+        {@const locked = derivationOff && item.derivationFed}
         <button
           type="button"
           class="rail-nav-item"
           class:active={view === item.id}
-          class:locked={derivationOff}
+          class:locked
           aria-current={view === item.id ? "page" : undefined}
-          use:tip={derivationOff
+          use:tip={locked
             ? "Continuous derivation is off — click to turn it on in Settings"
             : undefined}
           onclick={() =>
-            derivationOff ? onOpenDerivationSettings() : onOpenTab(item.id)}
+            locked ? onOpenDerivationSettings() : onOpenTab(item.id)}
         >
           <Icon aria-hidden="true" />
           {item.label}
-          {#if derivationOff}
+          {#if locked}
             <IconLock class="rail-lock" role="img" aria-label="Requires continuous derivation" />
           {/if}
         </button>

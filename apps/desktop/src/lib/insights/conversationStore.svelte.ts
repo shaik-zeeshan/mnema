@@ -30,6 +30,12 @@ export interface HistoryGroup {
   items: ConversationSummary[];
 }
 
+/** The rail's origin filter (issue #179): "chats" = anything a human started
+ *  (quick_recall + chat), "triggers" = trigger runs. Applied CLIENT-SIDE over
+ *  whatever the backend returned (browse list or search results), so text
+ *  search keeps working inside a filtered view. */
+export type OriginFilter = "all" | "chats" | "triggers";
+
 const DAY_MS = 86_400_000;
 
 function historyGroupLabel(ms: number, todayStartMs: number): string {
@@ -72,6 +78,8 @@ export class ConversationStore {
   historyLoaded = $state(false);
   /** The debounced search query over the history list. */
   searchQuery = $state("");
+  /** The rail's All / Chats / Triggers origin filter. */
+  originFilter = $state<OriginFilter>("all");
   /** The conversation id currently being inline-renamed, or null. */
   renamingId = $state<string | null>(null);
   /** The in-progress rename text. */
@@ -95,14 +103,24 @@ export class ConversationStore {
     prefill: null,
   });
 
-  /** Date-grouped view of `conversations` for the rail's section headers. */
+  /** `conversations` narrowed by the origin filter (search already applied by
+   *  the backend fetch, so filter and search compose). */
+  filteredConversations = $derived.by((): ConversationSummary[] => {
+    if (this.originFilter === "all") return this.conversations;
+    const wantTrigger = this.originFilter === "triggers";
+    return this.conversations.filter(
+      (c) => (c.origin === "trigger") === wantTrigger,
+    );
+  });
+
+  /** Date-grouped view of the filtered list for the rail's section headers. */
   historyGroups = $derived.by((): HistoryGroup[] => {
     const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
     const todayStartMs = todayStart.getTime();
     const groups: HistoryGroup[] = [];
     const byLabel = new Map<string, HistoryGroup>();
-    for (const c of this.conversations) {
+    for (const c of this.filteredConversations) {
       const label = historyGroupLabel(c.updatedAtMs, todayStartMs);
       let group = byLabel.get(label);
       if (group === undefined) {

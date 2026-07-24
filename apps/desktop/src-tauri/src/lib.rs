@@ -14,6 +14,7 @@ mod general_app_log;
 mod keyboard_bindings;
 mod licensing;
 mod managed_storage_layout;
+mod meetings;
 mod native_capture;
 mod ocr_budget;
 mod ocr_models;
@@ -30,6 +31,7 @@ mod speaker_analysis_runtime;
 mod status_bar;
 mod third_party_notices;
 mod transcription_deepgram;
+mod triggers;
 mod usage_charts;
 mod user_context;
 mod webview_cache;
@@ -177,19 +179,29 @@ fn has_pending_insights_open_conversations(
 fn open_conversation_in_chat(
     conversation_id: String,
     app_handle: tauri::AppHandle,
-    state: tauri::State<'_, InsightsOpenConversationState>,
+    _state: tauri::State<'_, InsightsOpenConversationState>,
 ) {
+    open_conversation_in_main_window(&app_handle, conversation_id);
+}
+
+/// The shared show-main-window-on-a-conversation path behind BOTH the
+/// `open_conversation_in_chat` command (Quick Recall's "Open in Chat") and the
+/// trigger-notification activation route: emit the live event for a warm
+/// window, and queue for the cold-window drain ONLY when the main window isn't
+/// already open (queuing on a warm window would strand a stale entry).
+fn open_conversation_in_main_window(app_handle: &tauri::AppHandle, conversation_id: String) {
     let payload = InsightsOpenConversationPayload { conversation_id };
-    // A cold main window drains the queue on mount; a warm one is served by the
-    // live event alone. Only queue when the window is not yet open so a warm
-    // window never accumulates stale entries.
     let main_window_open = app_handle.get_webview_window("main").is_some();
     if !main_window_open {
-        if let Ok(mut pending) = state.pending.lock() {
+        if let Ok(mut pending) = app_handle
+            .state::<InsightsOpenConversationState>()
+            .pending
+            .lock()
+        {
             pending.push_back(payload.clone());
         }
     }
-    let _ = windows::open_main_window(&app_handle);
+    let _ = windows::open_main_window(app_handle);
     let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
 }
 
@@ -653,6 +665,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_fs::init())
@@ -721,6 +734,20 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
+            triggers::list_triggers_status,
+            triggers::list_trigger_firings,
+            triggers::store::list_triggers,
+            triggers::store::create_trigger,
+            triggers::store::update_trigger,
+            triggers::store::delete_trigger,
+            triggers::store::triggers_provider_ready,
+            triggers::store::get_meeting_release_grace_minutes,
+            triggers::store::set_meeting_release_grace_minutes,
+            triggers::run::run_trigger_again,
+            meetings::list_meetings,
+            meetings::get_meeting,
+            meetings::set_meeting_notes,
+            meetings::set_meeting_checklist,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
             ask_ai::mcp::oauth_flow::mcp_oauth_begin,
@@ -890,6 +917,7 @@ pub fn run() {
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
             native_capture::stop_native_capture,
+            native_capture::get_native_capture_session,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
             windows::request_app_relaunch,
@@ -1036,6 +1064,14 @@ pub fn run() {
                 ..
             } => {
                 if notify_pending_broker_authorization_request(app_handle) {
+                    return;
+                }
+                // A trigger-run notification click activates the app; the
+                // desktop notification plugin has no click callback, so an
+                // activation with no open window shortly after a delivery is the
+                // click signal — land on that run's conversation (issue #175).
+                if let Some(conversation_id) = triggers::take_recent_notification_conversation() {
+                    open_conversation_in_main_window(app_handle, conversation_id);
                     return;
                 }
                 let _ = windows::open_main_window(app_handle);

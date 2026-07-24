@@ -79,6 +79,7 @@ pub use settings::RecordingSettingsState;
 // read the persisted recording settings through the same seam used by the
 // rest of `native_capture` without bypassing it to touch persistence directly.
 pub(crate) use settings::current_recording_settings as read_recording_settings;
+pub(crate) use runtime::now_unix_ms as runtime_now_unix_ms;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -2309,6 +2310,11 @@ fn start_native_capture_inner(
         settings.save_directory
     ));
 
+    // Every start door funnels through here, and a start is "back on the
+    // record" by definition — disarm any persisted timed off-the-record window
+    // (the lifecycle already cleared the in-memory deadline).
+    persist_off_record_deadline(&app_handle, None);
+
     // Slice 6a: the Trial clock starts at first *successful* Capture, not launch.
     // `ensure_trial_started` writes once (idempotent), so firing it on every
     // successful start is safe; skip the async hop when already Licensed —
@@ -2734,9 +2740,45 @@ pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
 pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
     let settings_state = app_handle.state::<RecordingSettingsState>();
     let auto_start_enabled = current_auto_start(settings_state.inner());
+    let persisted_deadline = read_persisted_off_record_deadline(app_handle);
 
     if !auto_start_enabled {
+        // With auto-start off nothing will be recording, so a held deadline has
+        // nothing to resume — drop it rather than leaving a stale window armed.
+        if persisted_deadline.is_some() {
+            persist_off_record_deadline(app_handle, None);
+        }
         return;
+    }
+
+    match lifecycle::off_record_startup_action(persisted_deadline, runtime::now_unix_ms() as i64) {
+        lifecycle::OffRecordStartupAction::StartNormally => {}
+        lifecycle::OffRecordStartupAction::ResumeExpired => {
+            debug_log::log_info(
+                "off-the-record window ended while the app was closed; resuming capture at startup",
+            );
+            persist_off_record_deadline(app_handle, None);
+        }
+        lifecycle::OffRecordStartupAction::HoldUntil(deadline) => {
+            // Stay off the record: never record even a blip inside the window.
+            // The hold lands on the (idle) runtime so the tray/frontend report
+            // the countdown, and the watcher starts capture when it passes.
+            debug_log::log_info(format!(
+                "off-the-record window still open at startup; holding capture until deadline_unix_ms={deadline}"
+            ));
+            {
+                let state = app_handle.state::<NativeCaptureState>();
+                let mut runtime = state.lock().expect("native capture state poisoned");
+                runtime.hold_off_record_until(deadline);
+            }
+            emit_native_capture_session_changed(
+                app_handle,
+                &current_native_capture_session(app_handle),
+            );
+            crate::status_bar::refresh(app_handle);
+            spawn_off_record_startup_watcher(app_handle.clone());
+            return;
+        }
     }
 
     let _ = start_native_capture_from_app_handle("auto-start", app_handle);
@@ -2965,13 +3007,20 @@ pub(crate) fn stop_native_capture_from_app_handle(
     Ok(response)
 }
 
+/// Go off the record: pause all capture families, optionally until a
+/// wall-clock deadline (unix ms) after which capture auto-resumes. `None` =
+/// the indefinite pause (until the user turns it back on). Only a timed
+/// window persists — an indefinite pause never survived a restart and still
+/// doesn't.
 pub(crate) fn pause_native_capture_from_app_handle(
     app_handle: &tauri::AppHandle,
+    deadline_unix_ms: Option<i64>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let state = app_handle.state::<NativeCaptureState>();
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session = runtime.pause_user_capture(app_handle)?;
+    let session = runtime.pause_user_capture(Some(app_handle), deadline_unix_ms)?;
     drop(runtime);
+    persist_off_record_deadline(app_handle, deadline_unix_ms);
     emit_native_capture_session_changed(app_handle, &session);
     crate::status_bar::refresh(app_handle);
     Ok(NativeCaptureSessionResponse { session })
@@ -2984,9 +3033,121 @@ pub(crate) fn resume_native_capture_from_app_handle(
     let mut runtime = state.lock().expect("native capture state poisoned");
     let session = runtime.resume_user_capture(app_handle)?;
     drop(runtime);
+    persist_off_record_deadline(app_handle, None);
     emit_native_capture_session_changed(app_handle, &session);
     crate::status_bar::refresh(app_handle);
     Ok(NativeCaptureSessionResponse { session })
+}
+
+/// Durable copy of the timed off-the-record deadline (`None` disarms it), so a
+/// window survives an app restart. Off the caller's path: the in-memory
+/// runtime field is what the tick and every surface read, and this is only the
+/// restart copy catching up (mirrors `note_permission_evidence`'s pattern).
+fn persist_off_record_deadline(app_handle: &tauri::AppHandle, deadline_unix_ms: Option<i64>) {
+    let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() else {
+        return;
+    };
+    let infra = std::sync::Arc::clone(&infra);
+    tauri::async_runtime::spawn(async move {
+        let result = match deadline_unix_ms {
+            Some(deadline) => infra.off_record().set_deadline_unix_ms(deadline).await,
+            None => infra.off_record().clear_deadline().await,
+        };
+        if let Err(error) = result {
+            debug_log::log_warn(format!(
+                "failed to persist off-the-record deadline (deadline_unix_ms={deadline_unix_ms:?}): {error}"
+            ));
+        }
+    });
+}
+
+/// The persisted deadline, read synchronously (deferred-startup thread only,
+/// like `hydrate_system_audio_permission_evidence`). A failed read counts as
+/// "no window armed" — startup then behaves as it always has.
+fn read_persisted_off_record_deadline(app_handle: &tauri::AppHandle) -> Option<i64> {
+    let infra = app_handle.try_state::<crate::app_infra::AppInfraState>()?;
+    let infra = std::sync::Arc::clone(&infra);
+    match tauri::async_runtime::block_on(async move { infra.off_record().deadline_unix_ms().await })
+    {
+        Ok(deadline) => deadline,
+        Err(error) => {
+            debug_log::log_warn(format!(
+                "failed to read persisted off-the-record deadline; treating as not armed: {error}"
+            ));
+            None
+        }
+    }
+}
+
+/// How often the startup hold re-checks the wall clock. Coarse on purpose: the
+/// deadline has minute granularity, and each turn is one lock + one compare.
+const OFF_RECORD_STARTUP_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The restart half of timed off-the-record auto-resume: while a startup hold
+/// is armed (deadline on the runtime, no session running), poll the wall clock
+/// and start capture when the deadline passes. Wall-clock compare per turn, so
+/// sleeping through the deadline still resumes on the first turn after wake.
+///
+/// The watcher owns nothing: it exits the moment the deadline is cleared (a
+/// manual start took capture back on the record) or a session exists (a live
+/// pause hands auto-resume to the segment loop's tick).
+fn spawn_off_record_startup_watcher(app_handle: tauri::AppHandle) {
+    std::thread::Builder::new()
+        .name("mnema-off-record-watch".to_string())
+        .spawn(move || loop {
+            std::thread::sleep(OFF_RECORD_STARTUP_WATCH_INTERVAL);
+
+            let state = app_handle.state::<NativeCaptureState>();
+            let (deadline, is_running) = {
+                let runtime = state.lock().expect("native capture state poisoned");
+                (
+                    runtime.runtime().off_record_deadline_unix_ms,
+                    runtime.runtime().is_running,
+                )
+            };
+            let Some(deadline) = deadline else {
+                return;
+            };
+            if is_running {
+                return;
+            }
+            if (runtime::now_unix_ms() as i64) < deadline {
+                continue;
+            }
+            if crate::windows::is_graceful_exit_in_progress(&app_handle) {
+                // The app is quitting; leave the persisted deadline for the
+                // next launch's re-arm instead of starting capture mid-exit.
+                return;
+            }
+
+            debug_log::log_info(
+                "off-the-record window ended; starting capture (startup hold auto-resume)",
+            );
+            // The start clears the runtime deadline and the persisted copy on
+            // success. On failure, clear the hold rather than retrying blind —
+            // the surfaces then honestly show "not recording" instead of a
+            // countdown that never resolves.
+            // ponytail: no retry ladder here; if start-at-deadline failures turn
+            // out to be transient in practice, borrow the tap-start backoff.
+            if let Err(error) = start_native_capture_from_app_handle("off-record-resume", &app_handle)
+            {
+                debug_log::log_error(format!(
+                    "failed to start capture when the off-the-record window ended: [{}] {}",
+                    error.code, error.message
+                ));
+                let mut runtime = state.lock().expect("native capture state poisoned");
+                runtime.runtime_mut().off_record_deadline_unix_ms = None;
+                drop(runtime);
+                persist_off_record_deadline(&app_handle, None);
+                emit_native_capture_session_changed(
+                    &app_handle,
+                    &current_native_capture_session(&app_handle),
+                );
+                crate::status_bar::refresh(&app_handle);
+            }
+            return;
+        })
+        .expect("off-record watcher thread should spawn");
 }
 
 #[tauri::command]
@@ -3256,33 +3417,47 @@ pub(crate) fn persist_semantic_search_settings(
 }
 
 #[tauri::command]
-pub fn start_native_capture(
+pub async fn start_native_capture(
     request: StartNativeCaptureRequest,
-    state: tauri::State<'_, NativeCaptureState>,
-    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
-    recording_settings_state: tauri::State<'_, RecordingSettingsState>,
-    app_notifications_state: tauri::State<'_, AppNotificationsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = start_native_capture_inner(
-        "command",
-        request,
-        state,
-        microphone_controller_preferences_state,
-        recording_settings_state,
-        app_notifications_state,
-        app_handle.clone(),
-    )?;
+    // Starting blocks on AVFoundation's `startRunning` for the microphone
+    // session — ~100-500ms even in the happy path, and indefinitely when
+    // coreaudiod wedges (observed on macOS 26). A sync command runs on the main
+    // thread, so run the start on the blocking pool and await it — keeping the
+    // UI responsive while preserving the error contract (mirrors
+    // `stop_native_capture`). The tray/shortcut/auto-start entry points already
+    // call the sync seam from their own background threads.
+    let handle = app_handle.clone();
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        start_native_capture_inner(
+            "command",
+            request,
+            handle.state::<NativeCaptureState>(),
+            handle.state::<MicrophoneControllerPreferencesState>(),
+            handle.state::<RecordingSettingsState>(),
+            handle.state::<AppNotificationsState>(),
+            handle.clone(),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "start_native_capture_join".to_string(),
+        message: format!("start native capture task failed: {error}"),
+    })??;
     emit_native_capture_session_changed(&app_handle, &response.session);
     crate::status_bar::refresh(&app_handle);
     Ok(response)
 }
 
+/// Go off the record. `deadline_unix_ms` (optional) makes it a timed window
+/// that auto-resumes; omitted = off the record until turned back on.
 #[tauri::command]
 pub fn pause_native_capture(
     app_handle: tauri::AppHandle,
+    deadline_unix_ms: Option<i64>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    pause_native_capture_from_app_handle(&app_handle)
+    pause_native_capture_from_app_handle(&app_handle, deadline_unix_ms)
 }
 
 #[tauri::command]
@@ -3290,6 +3465,16 @@ pub fn resume_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     resume_native_capture_from_app_handle(&app_handle)
+}
+
+/// The current record state, queryable without side effects: running/paused
+/// flags plus `offRecordDeadlineUnixMs` when a timed window is armed. The
+/// `native_capture_session_changed` event carries the same shape on changes.
+#[tauri::command]
+pub fn get_native_capture_session(app_handle: tauri::AppHandle) -> NativeCaptureSessionResponse {
+    NativeCaptureSessionResponse {
+        session: current_native_capture_session(&app_handle),
+    }
 }
 
 fn stop_native_capture_with_state(
@@ -3347,6 +3532,15 @@ fn stop_native_capture_with_state(
     };
     if let Some(metadata_state) = app_handle.try_state::<CaptureMetadataState>() {
         metadata::reset_recording_session_privacy_state(metadata_state.inner());
+    }
+
+    // A user-intent stop ends the off-the-record window too (the record is off
+    // until they start it again, not until a timer fires) — but the graceful
+    // app-exit stop is NOT user intent about the window: quitting mid-window
+    // must leave the persisted deadline for the startup re-arm, or a relaunch
+    // would record straight through the user's private time.
+    if !crate::windows::is_graceful_exit_in_progress(app_handle) {
+        persist_off_record_deadline(app_handle, None);
     }
 
     debug_log::log_info(format!(

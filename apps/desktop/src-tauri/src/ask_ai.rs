@@ -92,7 +92,7 @@ fn record_cancel_before_register(conversation_id: &str) {
 /// start/follow-up cooperatively stops the displaced turn rather than letting two
 /// turns interleave `ask_ai_update` output under the same conversation id. The
 /// displaced turn observes its flag between stream items and ends cleanly.
-fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
+pub(crate) fn register_inflight(conversation_id: &str) -> Arc<AtomicBool> {
     // Consume a cancel that raced ahead of this registration (see
     // ASK_AI_PENDING_CANCEL): the turn comes up already cancelled and stops at its
     // first check, before any model call. Consume exactly once so the pending entry
@@ -430,12 +430,12 @@ fn now_ms() -> i64 {
 /// unsound under Tauri's multithreading. Absent (older payloads / unknown) → the
 /// grounding falls back to UTC only.
 #[derive(Debug, Clone, Default)]
-struct ClientClock {
+pub(crate) struct ClientClock {
     /// Minutes to ADD to UTC to reach the user's local wall clock (e.g. PST = -480,
     /// IST = 330). This is `-Date.getTimezoneOffset()` on the JS side.
-    utc_offset_minutes: Option<i32>,
+    pub(crate) utc_offset_minutes: Option<i32>,
     /// IANA zone name for display only (e.g. "America/Los_Angeles").
-    time_zone: Option<String>,
+    pub(crate) time_zone: Option<String>,
 }
 
 /// Format an `OffsetDateTime` as `YYYY-MM-DD HH:MM` (no seconds — the model reasons
@@ -548,7 +548,7 @@ instead of converting the UTC fields yourself.\n\n",
 /// The two-layer Ask AI access gate. `Ok(())` only when Ask AI is enabled in
 /// settings AND the shared Reasoning Engine prerequisite passes; the error is a
 /// human string the frontend surfaces.
-async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
+pub(crate) async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(), String> {
     if !read_ask_ai_enabled(app_handle) {
         return Err("Ask AI access is disabled in settings".to_string());
     }
@@ -561,7 +561,7 @@ async fn ensure_ask_ai_access_ready(app_handle: &tauri::AppHandle) -> Result<(),
 /// (`execute_for_ask_ai`) with redaction/audit attributed to the "Ask AI"
 /// identity. `open`/`open_in_mnema` never reach here — they are rejected by
 /// `broker_request_from_tool` before this is called.
-async fn execute_ask_ai_broker_request(
+pub(crate) async fn execute_ask_ai_broker_request(
     app_handle: tauri::AppHandle,
     request: BrokeredCaptureRequest,
 ) -> Result<BrokeredCaptureResponse, String> {
@@ -1315,6 +1315,108 @@ repeat call replaces the prior set). This does NOT count against the tool-call b
     tools
 }
 
+/// The **Sealed Toolbox** (ADR 0058): the only tools an unattended Trigger Run
+/// may offer OR execute — read-only, inward-facing data tools. No web fetch, no
+/// MCP connectors, no app-control, no `show_text`/`reference_captures`,
+/// unconditionally. Enforced twice: at offer time
+/// ([`build_sealed_trigger_tools`]) and at call time (the executor rejects any
+/// other name on a sealed turn), so a pasted trigger prompt can never reach an
+/// outward tool even if the model hallucinates one.
+pub(crate) const SEALED_TRIGGER_TOOLS: &[&str] = &["search", "timeline", "recall_context"];
+
+/// The call-time half of the seal: whether `tool` may execute on this turn.
+/// Kept as a named predicate so the enforcement branch itself is unit-tested,
+/// not just the offered tool list.
+fn sealed_tool_allowed(sealed: bool, tool: &str) -> bool {
+    !sealed || SEALED_TRIGGER_TOOLS.contains(&tool)
+}
+
+/// The sealed trigger toolset: the full Ask AI builder filtered down to
+/// [`SEALED_TRIGGER_TOOLS`], so the tool contracts (schemas/descriptions) stay
+/// identical to interactive Ask AI with zero duplication.
+fn build_sealed_trigger_tools() -> Vec<ai_engine::AgentTool> {
+    build_ask_ai_tools(false, Vec::new())
+        .into_iter()
+        .filter(|tool| SEALED_TRIGGER_TOOLS.contains(&tool.name.as_str()))
+        .collect()
+}
+
+/// The agent preamble for a sealed Trigger Run: documents ONLY the sealed data
+/// tools plus the graphical-answer blocks, and asks for a structured DOCUMENT
+/// (ADR 0058's Document View contract) rather than chat. Never mentions
+/// app-control, `fetch_url`, MCP, `show_text`, or `reference_captures` — none
+/// of them exist on a sealed turn.
+///
+/// `personalization` is the Context Assembly block (issue #183,
+/// `triggers::context_assembly`): non-sensitive User-Context conclusions and
+/// past-run excerpts, appended verbatim. It rides the EPHEMERAL preamble — not
+/// the persisted firing question — so personalization data never lands in
+/// conversation rows or follow-up history. `None` degrades to the exact
+/// pre-#183 preamble plus the standing speaker-identity instruction.
+fn build_trigger_preamble(personalization: Option<&str>) -> String {
+    let mut preamble = String::new();
+    preamble.push_str(
+        "You are Mnema's automated trigger assistant. This run was started by a schedule the \
+user set up, not by a live question — the user is not watching, so never ask questions back. \
+Write a well-structured, self-contained REPORT DOCUMENT in Markdown (short headings, bullet \
+lists, concrete times and app names) answering the user's standing instruction from their own \
+on-device screen and audio capture history. All data is the user's own, redacted, on-device \
+capture. Your tools are the ONLY way you can act, and there is NO way to open files, fetch the \
+web, or access anything beyond them: `search` finds redacted snippets across the user's screen \
+OCR and audio transcript history (optionally narrowed by a `from`/`to` RFC3339 time range and \
+`app`/`windowTitle` filters); `timeline` returns coarse activity intervals for a bounded \
+`from`/`to` window; `recall_context` returns ONLY the User-Context conclusions (distilled \
+beliefs about the user) and recent activities relevant to the instruction. Ground everything in \
+what the tools return; never invent details. If the covered window holds nothing relevant, say \
+so briefly.\n",
+    );
+    // Document View contract (ADR 0058): the run renders as a titled page, so
+    // the answer must read as a report, not a chat reply.
+    preamble.push_str(
+        "The answer renders as a standalone titled page, so shape it like one: no chat \
+pleasantries, no greetings, no \"Here is…\" lead-in, no closing offer to help — start directly \
+with the first section. Do NOT add a top-level title (the page already has one); organize the \
+body into `##` section headings chosen for the instruction (e.g. Summary, Decisions, Action \
+items for a meeting; Highlights, Where the time went for a review). Keep sections short and \
+scannable. When the instruction concerns a meeting and speaker turns exist, include a \
+speaking-time breakdown as a bars block; when there are follow-ups or commitments, end with an \
+Action items section as a bullet list, one item per line ending with `— owner` when known.\n",
+    );
+    // The same graphical-answer affordances interactive Ask AI documents: the
+    // Chat surface renders these fenced blocks inline in the document view.
+    preamble.push_str(
+        "When a section is naturally a breakdown or comparison you MAY include ONE fenced \
+```mnema-bars block whose body is JSON \
+`{\"title\":\"…\",\"bars\":[{\"label\":\"…\",\"value\":12,\"sublabel\":\"12m\"}]}` (always set \
+`sublabel` to the number WITH its unit). When a section is genuinely chronological you MAY \
+include ONE fenced ```mnema-timeline block whose body is JSON \
+`{\"title\":\"…\",\"intervals\":[{\"label\":\"…\",\"start\":\"9:30 AM\",\"end\":\"11:00 AM\",\
+\"app\":\"Visual Studio Code\",\"category\":\"creating\"}]}` derived from the `timeline` tool's \
+real intervals (`app` must be the exact captured app name, verbatim). Otherwise use plain \
+markdown.\n",
+    );
+    // Speaker identity (issue #183): there is no self person-profile concept in
+    // the app, so the honest, always-true identity signal is the capture source
+    // — microphone audio is the user's own voice, system audio is everyone else
+    // (mirrors ADR 0050's you/other split). Static instruction, no data.
+    preamble.push_str(
+        "Audio captured from the microphone is the user's OWN voice; system audio is the other \
+participants (the `timeline` tool labels these `audio_microphone` and `audio_system`). Address \
+the user directly as \"you\", and aim any feedback about speaking, communication, or \
+commitments at the user's own microphone turns — never critique the user for something another \
+participant said.\n",
+    );
+    // Context Assembly (issue #183): the personalization block assembled
+    // on-device around this firing — already guardrailed and capped upstream.
+    if let Some(block) = personalization {
+        preamble.push_str(block);
+        if !block.ends_with('\n') {
+            preamble.push('\n');
+        }
+    }
+    preamble
+}
+
 /// Where an Ask AI tool call routes. The dispatch closure checks these in
 /// precedence order: app-control → `fetch_url` → MCP connector → broker.
 /// Call-time curation is intentionally offer-time-only (INV-B1): this routes a
@@ -1604,7 +1706,16 @@ async fn generate_conversation_title(
 ///
 /// Detached: the spawned task finishes regardless of dismiss/close, so an unseen
 /// thread completes in the background and a reattach reads the persisted answer.
-async fn run_ask_ai_turn(
+///
+/// `sealed` runs the turn under the **Sealed Toolbox** (ADR 0058, Trigger Runs):
+/// only [`SEALED_TRIGGER_TOOLS`] are offered AND executable, the engine is the
+/// GLOBAL DEFAULT (no thread pin, no Ask-AI model override), the preamble is the
+/// document-style trigger preamble, and no thread title is generated (trigger
+/// conversations are self-titled). Returns whether the turn finished as a
+/// completed answer (`done` with content) — the trigger caller notifies only on
+/// `true`; interactive callers ignore it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn run_ask_ai_turn(
     app_handle: tauri::AppHandle,
     conversation_id: String,
     question: String,
@@ -1613,7 +1724,11 @@ async fn run_ask_ai_turn(
     title: String,
     clock: ClientClock,
     cancel: Arc<AtomicBool>,
-) {
+    sealed: bool,
+    // Context Assembly block for a sealed run (issue #183); appended to the
+    // ephemeral trigger preamble, never persisted. Ignored when not sealed.
+    sealed_personalization: Option<String>,
+) -> bool {
     // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
     // ownership checks (apply/remove) can tell THIS turn apart from a newer turn
     // that displaces it for the same conversation. The LiveTurn analogue of the
@@ -1639,7 +1754,7 @@ async fn run_ask_ai_turn(
                 }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
-            return;
+            return false;
         }
     };
 
@@ -1681,7 +1796,8 @@ async fn run_ask_ai_turn(
     // 2. Resolve the engine through the single precedence chain (ADR 0034):
     //    thread pin → Ask AI model override (`access.askAiModel`, a bare
     //    rig-core model id riding on the default model's provider) → global
-    //    default model.
+    //    default model. A SEALED trigger run uses the GLOBAL DEFAULT engine
+    //    unconditionally (ADR 0058: no per-trigger model pin).
     let settings = read_recording_settings(&app_handle);
     let pin_ref = pin.as_ref().and_then(|(provider, model)| {
         match (provider.as_deref(), model.as_deref()) {
@@ -1689,11 +1805,15 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config(
-        &settings.ai_runtime,
-        pin_ref,
-        settings.access.ask_ai_model.as_deref(),
-    );
+    let config_result = if sealed {
+        crate::ai_runtime::resolve_engine_config(&settings.ai_runtime, None, None)
+    } else {
+        crate::ai_runtime::resolve_engine_config(
+            &settings.ai_runtime,
+            pin_ref,
+            settings.access.ask_ai_model.as_deref(),
+        )
+    };
     let config = match config_result {
         Ok(config) => config,
         Err(reason) => {
@@ -1710,7 +1830,7 @@ async fn run_ask_ai_turn(
                 }),
             );
             remove_inflight_if_owner(&conversation_id, &cancel);
-            return;
+            return false;
         }
     };
 
@@ -1760,7 +1880,7 @@ async fn run_ask_ai_turn(
             }),
         );
         remove_inflight_if_owner(&conversation_id, &cancel);
-        return;
+        return false;
     }
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
@@ -1853,6 +1973,16 @@ async fn run_ask_ai_turn(
             let tool_activities = Arc::clone(&tool_activities);
             let sources = Arc::clone(&sources);
             Box::pin(async move {
+                // Sealed Toolbox call-time enforcement (ADR 0058): on a sealed
+                // trigger turn, ANY tool outside the sealed set is rejected here
+                // — before the reference intercept, before routing — regardless
+                // of what the model asked for. Offer-time filtering already
+                // hides everything else; this makes the seal structural.
+                if !sealed_tool_allowed(sealed, &tool) {
+                    return Err(format!(
+                        "tool `{tool}` is not available in automated trigger runs"
+                    ));
+                }
                 // Presentation signal: validate/decode the nominated sources,
                 // never dispatched to the broker. Its resolved source set is
                 // stashed for persistence and emitted as a `Sources` view update.
@@ -1931,13 +2061,22 @@ async fn run_ask_ai_turn(
     // MCP connectors (Workstream C): await any in-flight warm-on-open discovery
     // (≤15s) and offer the ready servers' curated tools + preamble notes this
     // turn. Cheap Arc clone out of managed state so no State guard is held across
-    // the await.
-    let mcp_manager = (*app_handle.state::<mcp::McpManager>()).clone();
-    let (mcp_tools, mcp_notes) = mcp_manager.tools_for_turn(&app_handle).await;
-
-    let tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
+    // the await. A SEALED turn never consults MCP at all (no connector tools, no
+    // discovery wait).
+    let (tools, preamble) = if sealed {
+        (
+            build_sealed_trigger_tools(),
+            build_trigger_preamble(sealed_personalization.as_deref()),
+        )
+    } else {
+        let mcp_manager = (*app_handle.state::<mcp::McpManager>()).clone();
+        let (mcp_tools, mcp_notes) = mcp_manager.tools_for_turn(&app_handle).await;
+        (
+            build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools),
+            build_ask_ai_preamble(&mcp_notes),
+        )
+    };
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
-    let preamble = build_ask_ai_preamble(&mcp_notes);
     let prompt = build_ask_ai_prompt(
         &question,
         seed_query.as_deref(),
@@ -2297,7 +2436,7 @@ async fn run_ask_ai_turn(
         }
     };
 
-    match run_result {
+    let completed = match run_result {
         Ok(()) if !cancel.load(Ordering::SeqCst) && final_answer.trim().is_empty() => {
             // Clean finish that produced no answer. A reasoning model can spend
             // its entire token budget on chain-of-thought and stop
@@ -2337,6 +2476,7 @@ async fn run_ask_ai_turn(
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
             emit_terminal(TurnUpdate::Error { message }, &mut last_version);
+            false
         }
         Ok(()) => {
             // A cooperative cancel keeps whatever was generated and emits no
@@ -2367,8 +2507,10 @@ async fn run_ask_ai_turn(
             // Fire-and-forget generated thread title: only after the FIRST turn
             // completes and persists. Spawned detached so it can never delay or
             // fail the turn; every failure inside is swallowed (the fallback
-            // first-question title stands).
-            if title_generation_eligible(turn_index) {
+            // first-question title stands). NEVER on a sealed trigger run — the
+            // conversation is self-titled ("<Trigger Name> — <date>") and a
+            // generated title would override the stored one in the read path.
+            if title_generation_eligible(turn_index) && !sealed {
                 tauri::async_runtime::spawn(generate_conversation_title(
                     app_handle.clone(),
                     Arc::clone(&infra),
@@ -2376,6 +2518,9 @@ async fn run_ask_ai_turn(
                     question.clone(),
                 ));
             }
+            // A cooperative cancel persisted `done` but is not a COMPLETED run
+            // (a trigger must not notify on a cancelled/partial answer).
+            !cancel.load(Ordering::SeqCst)
         }
         Err(error) => {
             // Display a plain-language sentence; keep the raw provider/transport
@@ -2409,8 +2554,9 @@ async fn run_ask_ai_turn(
                 },
                 &mut last_version,
             );
+            false
         }
-    }
+    };
 
     // Remove only our own in-flight flag: a newer turn that displaced us holds a
     // different `Arc` and must survive our teardown.
@@ -2418,6 +2564,8 @@ async fn run_ask_ai_turn(
     // Likewise remove our LiveTurn ONLY if we still own it — a displacing newer
     // turn registered a different token and its entry must survive our teardown.
     remove_live_turn_if_owner(&conversation_id, turn_token);
+
+    completed
 }
 
 #[tauri::command]
@@ -2469,6 +2617,8 @@ pub async fn ask_ai_start(
         title,
         clock,
         cancel,
+        false,
+        None,
     ));
 
     Ok(())
@@ -2521,6 +2671,8 @@ pub async fn ask_ai_followup(
         String::new(),
         clock,
         cancel,
+        false,
+        None,
     ));
 
     Ok(())
@@ -2614,6 +2766,95 @@ mod tests {
         }
         // Passed MCP tools are appended verbatim.
         assert!(tools.iter().any(|t| t.name == "mcp__github__create_issue"));
+    }
+
+    #[test]
+    fn sealed_trigger_tools_are_exactly_the_inward_data_tools() {
+        // Sealed Toolbox invariant (ADR 0058 / issue #175): a trigger run offers
+        // EXACTLY search + timeline + recall_context — no show_text, no
+        // reference_captures, no app-control, no fetch_url, no MCP.
+        let tools = build_sealed_trigger_tools();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["search", "timeline", "recall_context"]);
+    }
+
+    #[test]
+    fn sealed_turn_rejects_outward_tools_at_call_time_unsealed_allows_them() {
+        // The CALL-TIME half of the "enforced twice" seal (ADR 0058): even if
+        // the model hallucinates a tool that was never offered, a sealed turn
+        // must refuse to execute it. Pinned on the predicate the executor
+        // branches on, so deleting or inverting the guard fails this test —
+        // the offered-list test above cannot catch that.
+        for outward in ["stop_capture", "fetch_url", "show_text", "mcp__github__create_issue"] {
+            assert!(
+                !sealed_tool_allowed(true, outward),
+                "sealed turn must reject `{outward}`"
+            );
+            assert!(
+                sealed_tool_allowed(false, outward),
+                "unsealed turn must still allow `{outward}`"
+            );
+        }
+        for inward in SEALED_TRIGGER_TOOLS {
+            assert!(sealed_tool_allowed(true, inward));
+        }
+    }
+
+    #[test]
+    fn trigger_preamble_documents_only_sealed_tools_and_asks_for_a_document() {
+        let preamble = build_trigger_preamble(None);
+        // The three sealed tools are described…
+        assert!(preamble.contains("`search`"));
+        assert!(preamble.contains("`timeline`"));
+        assert!(preamble.contains("`recall_context`"));
+        // …and nothing outward or interactive is even mentioned.
+        for absent in [
+            "show_text",
+            "reference_captures",
+            "fetch_url",
+            "capture_status",
+            "start_capture",
+            "stop_capture",
+            "mcp__",
+            "MCP",
+        ] {
+            assert!(
+                !preamble.contains(absent),
+                "sealed preamble must not mention `{absent}`"
+            );
+        }
+        // The Document View contract: the model is asked for a report document…
+        assert!(preamble.to_lowercase().contains("document"));
+        // …structured into sections, with no chat pleasantries and no duplicate
+        // top-level title (the page renders its own), ending in action items
+        // where they apply (issue #181).
+        assert!(preamble.contains("`##` section headings"));
+        assert!(preamble.contains("no chat pleasantries"));
+        assert!(preamble.contains("Do NOT add a top-level title"));
+        assert!(preamble.contains("Action items"));
+        assert!(preamble.contains("speaking-time breakdown"));
+        // The graphical block affordances still render in the document view.
+        assert!(preamble.contains("mnema-bars"));
+        assert!(preamble.contains("mnema-timeline"));
+    }
+
+    #[test]
+    fn trigger_preamble_carries_speaker_identity_and_appends_personalization() {
+        // Speaker identity (issue #183): with no self person-profile concept in
+        // the app, the standing instruction anchors "the user's own voice" to
+        // the microphone source, unconditionally.
+        let bare = build_trigger_preamble(None);
+        assert!(bare.contains("microphone is the user's OWN voice"));
+        assert!(bare.contains("audio_microphone"));
+        // No personalization → the preamble ends exactly where it used to (no
+        // empty scaffolding text confusing the model).
+        assert!(!bare.contains("Personalization"));
+
+        // A Context Assembly block is appended verbatim, newline-terminated.
+        let block = "Personalization for this run:\n- prefers Rust";
+        let personalized = build_trigger_preamble(Some(block));
+        assert!(personalized.starts_with(&bare));
+        assert!(personalized.ends_with("Personalization for this run:\n- prefers Rust\n"));
     }
 
     #[test]

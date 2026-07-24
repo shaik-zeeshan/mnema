@@ -1,0 +1,1075 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — Main Surface · Story-First v2 · Warm Paper light + dark</title>
+<style>
+  /* ============ tokens (pinned: direction-2-warm-paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --hover: #ece8da;
+    --hover-soft: #f3efe2;
+    --prose: #55503e;
+    --prose-strong: #45412f;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --rec: #b0483b;
+    --send-ink: #f6faf6;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+    --cat-creating: #2a8a60;
+    --cat-communication: #3a6ea8;
+    --cat-meetings: #8a5a2a;
+    --cat-research: #6d5a8a;
+    --cat-organizing: #9a6b1f;
+    --cat-uncat: #9a927e;
+  }
+  /* ============ Warm Paper Dark — the dusk sibling ============
+     cream→dusk mapping: desk #ece8dc→(page stays cream, the WINDOW darkens),
+     shell #faf8f2→#17150f, rail #f4f1e7→#141209, card #fffdf7→#1e1b13.
+     Botanical green lifted for dark ground; ivory ink family. */
+  .dark {
+    --shell-bg: #17150f;
+    --rail-bg: #131109;
+    --card: #1e1b13;
+    --card-deep: #1a1710;
+    --border: #2d2920;
+    --border-soft: #262218;
+    --border-strong: #3e382a;
+    --ink: #ede8d9;
+    --ink-2: #b5ac95;
+    --ink-3: #978d79;
+    --hover: #221f15;
+    --hover-soft: #201d14;
+    --prose: #c9c1ab;
+    --prose-strong: #d8d1bc;
+    --accent: #5cbd8d;
+    --accent-deep: #7ed3a8;
+    --accent-2: #4daf7e;
+    --tint: #1c2f23;
+    --tint-2: #17261e;
+    --tint-border: #2f4d3b;
+    --amber: #d3a75c;
+    --rec: #d97f6e;
+    --send-ink: #0f231a;
+    --shadow-win: 0 1px 2px rgba(0,0,0,.5), 0 14px 44px rgba(20,16,8,.55), 0 2px 8px rgba(0,0,0,.35);
+    --cat-creating: #4fb383;
+    --cat-communication: #7aa8d8;
+    --cat-meetings: #cf9c5c;
+    --cat-research: #ab94d3;
+    --cat-organizing: #d0a452;
+    --cat-uncat: #8d8471;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body { font-family: var(--sans); color: var(--ink); padding: 72px 48px 120px; -webkit-font-smoothing: antialiased; }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .14em;
+    text-transform: uppercase; color: #8a8270; margin: 0 4px 14px;
+  }
+  .frame-label b { color: #1f6f4a; font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden; display: flex; flex-direction: column; position: relative;
+    color: var(--ink);
+  }
+
+  /* ============ titlebar — Story|Timeline door + theme cluster ============ */
+  .titlebar {
+    flex: none; height: 44px; position: relative;
+    display: flex; align-items: center;
+    background: var(--shell-bg); border-bottom: 1px solid var(--border-soft);
+    padding: 0 14px 0 96px;
+  }
+  .traffic { position: absolute; top: 16px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+  .dark .traffic span { border-color: rgba(0,0,0,.4); filter: saturate(.8) brightness(.92); }
+  .tb-toggle {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%);
+    display: flex; gap: 2px; padding: 2px;
+    background: var(--rail-bg); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .tb-seg {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase;
+    padding: 3px 13px; border: 1px solid transparent; border-radius: 6px;
+    background: transparent; color: var(--ink-3); cursor: pointer;
+  }
+  .tb-seg:hover { color: var(--ink-2); }
+  .tb-seg.active { background: var(--tint); border-color: var(--tint-border); color: var(--accent-deep); }
+  .tb-right { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  .tb-icon {
+    width: 27px; height: 27px; border-radius: 7px; border: 0; background: transparent;
+    color: var(--ink-3); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .tb-icon:hover { color: var(--accent-deep); background: var(--hover); }
+  .tb-icon svg { width: 14.5px; height: 14.5px; stroke: currentColor; }
+
+  .body-row { flex: 1; display: flex; min-height: 0; }
+
+  /* ============ left rail — calm Recents treatment ============ */
+  .rail {
+    width: 240px; flex: none;
+    background: var(--rail-bg);
+    display: flex; flex-direction: column;
+    min-height: 0;
+  }
+  .rail-scroll { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; padding: 16px 16px 0; }
+  .rail-nav { display: flex; flex-direction: column; gap: 2px; }
+  .rail-nav-item {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    height: 28px; padding: 0 8px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--ink-2); font-family: var(--sans);
+    font-size: 13px; text-align: left; cursor: pointer;
+    transition: color .12s, background .12s;
+  }
+  .rail-nav-item svg { flex: none; width: 15px; height: 15px; stroke: currentColor; opacity: .85; }
+  .rail-nav-item:hover { color: var(--ink); background: var(--hover); }
+  .rail-nav-item.active { color: var(--accent); font-weight: 600; background: var(--tint); }
+  .rail-nav-item.active svg { opacity: 1; }
+  .rail-nav-item.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 16px; border-radius: 0 2px 2px 0; background: var(--accent);
+  }
+  /* secondary group — findable, subordinate */
+  .rail-more { margin-top: 14px; padding-top: 9px; border-top: 1px solid var(--border-soft); }
+  .rail-more-label {
+    font-family: var(--mono); font-size: 8.5px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); padding: 0 8px 5px; opacity: .85;
+  }
+  .rail-nav-item.sub { height: 24px; font-size: 12px; color: var(--ink-3); }
+  .rail-nav-item.sub svg { width: 13px; height: 13px; opacity: .7; }
+  .rail-nav-item.sub:hover { color: var(--ink-2); background: var(--hover); }
+
+  .rail-newchat {
+    position: relative; display: flex; align-items: center; gap: 8px;
+    width: 100%; height: 28px; margin-top: 16px; padding: 0 8px;
+    border: 0; border-radius: 6px; background: transparent;
+    color: var(--ink-2); font-family: var(--sans); font-size: 13px; text-align: left; cursor: pointer;
+  }
+  .rail-newchat .plus { flex: none; width: 15px; display: inline-flex; justify-content: center; font-size: 14px; color: var(--ink-3); }
+  .rail-newchat:hover { color: var(--accent); background: var(--hover); }
+
+  /* search row + text-link filters — no boxed segmented control */
+  .rail-search { display: flex; align-items: center; gap: 8px; height: 28px; margin-top: 10px; padding: 0 8px; border-radius: 6px; }
+  .rail-search svg { flex: none; width: 13px; height: 13px; stroke: var(--ink-3); }
+  .rail-search .ph { font-size: 12.5px; color: var(--ink-3); }
+  .rail-filters { display: flex; gap: 12px; padding: 1px 8px 0 29px; }
+  .rail-filters button {
+    border: 0; background: none; cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+    color: var(--ink-3); padding: 0;
+  }
+  .rail-filters button:hover { color: var(--ink-2); }
+  .rail-filters button.active { color: var(--accent-deep); }
+
+  /* history — quiet rows: glyph · title · faint time */
+  .rail-history { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; padding-bottom: 16px; }
+  .rail-group {
+    font-family: var(--mono); font-size: 9px; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--ink-3); padding: 14px 8px 5px;
+  }
+  .rail-history .rail-group:first-child { padding-top: 12px; }
+  .hrow { display: flex; align-items: center; gap: 7px; height: 26px; padding: 0 8px; border-radius: 5px; cursor: pointer; }
+  .hrow:hover { background: var(--hover); }
+  .hrow .og { flex: none; width: 11px; text-align: center; font-family: var(--mono); font-size: 9px; color: var(--accent-2); }
+  .hrow .og.blank { visibility: hidden; }
+  .hrow .t { flex: 1 1 auto; min-width: 0; font-size: 11.5px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hrow:hover .t { color: var(--ink); }
+  .hrow .when { flex: none; font-family: var(--mono); font-size: 9px; color: var(--ink-3); opacity: .55; }
+  .hrow:hover .when { opacity: 1; }
+
+  .rail-foot {
+    flex: none; border-top: 1px solid var(--border);
+    padding: 10px 16px 12px; display: flex; flex-direction: column; gap: 4px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .rail-foot .line { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .rail-foot .dot { width: 5px; height: 5px; border-radius: 999px; background: var(--accent-2); flex: none; box-shadow: 0 0 0 2px rgba(42,138,96,.14); }
+  .rail-foot .rec-dot { width: 5px; height: 5px; border-radius: 999px; background: var(--rec); flex: none; box-shadow: 0 0 0 2px rgba(176,72,59,.14); }
+  .rail-foot .sep { color: var(--ink-3); }
+  .rail-foot .dim { color: var(--ink-3); font-size: 10px; }
+  .rail-resizer { width: 1px; flex: none; background: var(--border); position: relative; cursor: col-resize; }
+  .rail-resizer::after {
+    content: ""; position: absolute; top: 50%; left: -1.5px; width: 4px; height: 36px;
+    border-radius: 2px; background: var(--border-strong); transform: translateY(-50%); opacity: .55;
+  }
+
+  /* ============ main pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .main-scroll { flex: 1; overflow: hidden; padding: 26px 0 0; }
+  .col { max-width: 860px; margin: 0 auto; padding: 0 40px; }
+
+  /* ============ front page — greeting → digest → stats → composer ============ */
+  .front { padding-top: 6px; }
+  .front-date { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-3); }
+  .front-greet { font-family: var(--serif); font-size: 33px; font-weight: 400; letter-spacing: -.01em; color: var(--ink); margin-top: 10px; }
+  .front-digest { font-family: var(--serif); font-size: 15.5px; line-height: 1.6; color: var(--prose-strong); margin-top: 8px; max-width: 660px; }
+  .reread {
+    border: 0; background: none; cursor: pointer; padding: 0 2px;
+    font-size: 13px; color: var(--ink-3); vertical-align: 0; margin-left: 5px;
+  }
+  .reread:hover { color: var(--accent-deep); }
+  .front-stats {
+    display: flex; align-items: center; gap: 18px; margin-top: 11px;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .03em; color: var(--ink-3);
+  }
+  .front-stats .g { color: var(--accent); margin-right: 5px; }
+  .front-stats b { color: var(--ink-2); font-weight: 600; }
+  .front-meets { display: flex; align-items: center; gap: 8px; margin-top: 13px; flex-wrap: wrap; }
+  .meet-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 12.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 4px 13px 4px 10px; cursor: pointer;
+    transition: border-color .12s, color .12s;
+  }
+  .meet-chip:hover { border-color: var(--tint-border); color: var(--accent-deep); }
+  .meet-chip .cm { font-family: var(--mono); font-size: 11px; color: var(--cat-meetings); }
+  .meet-chip .tm { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+  .meet-chip--ready { border-color: var(--tint-border); background: var(--tint-2); color: var(--accent-deep); }
+  .meet-chip--ready .cm { color: var(--accent); }
+  .meet-chip--ready b { font-weight: 600; }
+
+  /* composer — below the digest, one front door */
+  .composer {
+    background: var(--card); border: 1px solid var(--border); border-radius: 14px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.04), 0 6px 24px rgba(60,52,32,.05);
+    margin-top: 16px;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.10), 0 6px 24px rgba(60,52,32,.05); }
+  .composer textarea {
+    width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+    font-family: var(--sans); font-size: 14.5px; color: var(--ink);
+    padding: 14px 18px 0; height: 46px; line-height: 1.5;
+  }
+  .composer textarea::placeholder { color: var(--ink-3); }
+  .composer-bar { display: flex; align-items: center; gap: 12px; padding: 6px 9px 9px 13px; }
+  .model-pick {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    border: 1px solid var(--border); background: var(--card-deep);
+    border-radius: 6px; padding: 4px 9px; cursor: pointer;
+  }
+  .model-pick:hover { border-color: var(--border-strong); color: var(--ink); }
+  .model-pick .caret { font-size: 8px; color: var(--ink-3); }
+  .composer-send {
+    margin-left: auto; width: 29px; height: 29px; border-radius: 9px; border: 0;
+    background: var(--accent); color: var(--send-ink); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 14px;
+  }
+  .composer-send:hover { background: var(--accent-deep); }
+  .composer-send:disabled { background: var(--border-strong); cursor: default; }
+  .front-chips { display: flex; gap: 9px; margin-top: 12px; flex-wrap: wrap; }
+  .chip {
+    font-family: var(--sans); font-size: 12.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 6px 15px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s;
+  }
+  .chip:hover { border-color: var(--accent-2); color: var(--accent-deep); background: var(--tint-2); }
+  .chip .cm { font-family: var(--mono); font-size: 10.5px; color: var(--accent); margin-right: 7px; }
+
+  /* ============ journal river — a calm ledger ============ */
+  .river { margin-top: 26px; display: flex; flex-direction: column; padding-bottom: 72px; }
+  .day-rule {
+    display: flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); padding: 4px 0 6px; margin: 2px 0 8px;
+  }
+  .day-rule:not(:first-child) { margin-top: 18px; }
+  .day-rule .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .slot, .gap-note {
+    display: grid;
+    grid-template-columns: 68px 20px 1fr;
+    gap: 0 12px;
+  }
+  .slot + .slot, .gap-note + .slot, .slot + .gap-note { margin-top: 11px; }
+  .slot .when {
+    padding-top: 13px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .slot .when .dur { display: block; font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+  .spine { position: relative; }
+  .spine::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: -11px;
+    width: 1px; background: var(--border);
+  }
+  .river > .slot:last-child .spine::before { bottom: 12px; }
+  .spine .node {
+    position: absolute; left: 50%; top: 16px; transform: translate(-50%, 0);
+    width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--shell-bg);
+  }
+  .spine .node--pending { background: var(--ink-3); }
+  .gap-note { margin-top: 11px; }
+  .gap-note .spine::before { border-left: 1px dashed var(--border); background: transparent; width: 0; }
+  .gap-note .txt { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--ink-3); padding: 5px 0; }
+  .gap-note .txt .m { font-family: var(--mono); font-style: normal; font-size: 11px; }
+
+  /* quiet activity card: one mono meta line, smaller serif title, edge bar + receipt kept */
+  .jcard {
+    position: relative; display: block; width: 100%; text-align: left;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--cat, var(--border-strong));
+    border-radius: 10px; padding: 11px 15px 10px;
+    cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .jcard:hover { border-color: var(--tint-border); box-shadow: 0 2px 12px rgba(31,111,74,.07); transform: translateY(-1px); }
+  .jmeta {
+    display: flex; align-items: baseline; gap: 7px; margin-bottom: 4px;
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .jmeta .cw { color: var(--cat, var(--ink-2)); font-weight: 600; }
+  .jcard h3 { font-family: var(--serif); font-size: 15px; font-weight: 500; letter-spacing: -.003em; color: var(--ink); }
+  .jcard p { font-family: var(--serif); font-size: 13px; line-height: 1.5; color: var(--prose); margin-top: 3px; }
+  .jcard-foot { margin-top: 8px; display: flex; align-items: center; gap: 14px; }
+  .receipt { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--ink-3); }
+  .jcard:hover .receipt { color: var(--accent-deep); }
+
+  /* recap-ready ◉ row — inline trigger-run door on a meeting card */
+  .recap-row {
+    display: flex; align-items: center; gap: 9px;
+    margin-top: 9px; padding: 6px 12px;
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 8px; font-size: 12px; color: var(--accent-deep); cursor: pointer;
+    transition: background .12s;
+  }
+  .recap-row:hover { background: var(--tint); }
+  .recap-row .cm { font-family: var(--mono); font-size: 11px; color: var(--accent); }
+  .recap-row b { font-weight: 600; }
+  .recap-row .meta { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  .recap-row .open { margin-left: auto; font-size: 12px; font-weight: 600; }
+
+  .slot--compact .when { padding-top: 7px; }
+  .slot--compact .node { top: 10px; }
+  .row-compact {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .row-compact:hover { background: var(--hover-soft); }
+  .row-compact .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .row-compact .row-title { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-compact:hover .row-title { color: var(--ink); }
+
+  .jcard--pending { border-left: 3px solid var(--border-strong); background: var(--card-deep); cursor: default; }
+  .jcard--pending:hover { transform: none; box-shadow: none; border-color: var(--border); border-left-color: var(--border-strong); }
+  .jcard--pending .pt { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .jcard--pending .sub { font-size: 12px; color: var(--ink-3); margin-top: 4px; line-height: 1.5; }
+  .spin {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; border: 1.5px solid var(--border-strong); border-top-color: var(--accent-2);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ============ frame 3 — alternates board ============ */
+  .board {
+    width: 1440px; background: var(--shell-bg);
+    border: 1px solid var(--border-strong); border-radius: 14px;
+    box-shadow: var(--shadow-win); padding: 36px 40px 44px;
+  }
+  .board-h {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); display: flex; align-items: center; gap: 10px;
+  }
+  .board-h .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .board-h + .board-h, .alt-row + .board-h { margin-top: 40px; }
+  .alt-row { display: flex; gap: 26px; margin-top: 18px; align-items: flex-start; }
+  .alt { flex: 1 1 0; min-width: 0; }
+  .alt-tag { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; color: var(--ink-3); text-transform: uppercase; }
+  .alt-tag b { color: var(--accent); font-weight: 600; }
+  .alt-cap { font-size: 11.5px; line-height: 1.45; color: var(--ink-2); margin-top: 9px; max-width: 400px; }
+  .alt-panel {
+    margin-top: 9px; background: var(--rail-bg);
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 10px;
+  }
+  .alt-panel--card { background: var(--shell-bg); padding: 14px 14px; }
+  /* alt B rail: filter folded into the search row as a dropdown word */
+  .srch-drop { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--ink-3); cursor: pointer; }
+  .srch-drop:hover { color: var(--ink-2); }
+  .hrow.hov { background: var(--hover); }
+  .hrow.hov .t { color: var(--ink); }
+  .hrow.hov .when { opacity: 1; }
+  /* alt B/C legacy bits for comparison */
+  .origin-filter {
+    display: flex; align-items: center; gap: 2px; padding: 2px; margin-top: 2px;
+    border: 1px solid var(--border); border-radius: 7px; background: var(--rail-bg);
+  }
+  .origin-filter button {
+    flex: 1 1 0; height: 20px; font-family: var(--sans); font-size: 10.5px; line-height: 1;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; border-radius: 5px; background: transparent;
+    color: var(--ink-2); cursor: pointer; text-transform: lowercase;
+  }
+  .origin-filter button.active { background: var(--tint); border-color: var(--tint-border); color: var(--accent-deep); }
+  /* card alt B: category lives only in the footer */
+  .jcard--b .jcard-foot { gap: 8px; }
+  .jcard--b .cw-foot { font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; color: var(--cat); font-weight: 600; }
+  .jcard--b .fsep { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+  /* card alt C: single tinted word floated on the title line */
+  .jcard--c .trow { display: flex; align-items: baseline; gap: 12px; }
+  .jcard--c .trow h3 { flex: 1 1 auto; min-width: 0; }
+  .jcard--c .cw-side { flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--cat); font-weight: 600; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · REVISED HOME — light Warm Paper                        -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f1">
+  <p class="frame-label"><b>Frame 1</b> · Revised home, light — calm rail, quiet ledger cards, digest above composer, Story|Timeline door · Wed Jul 23 2026 · 2:47 PM</p>
+  <div class="window">
+
+    <header class="titlebar">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="tb-toggle" role="tablist" aria-label="Main surface">
+        <button class="tb-seg active">Story</button>
+        <button class="tb-seg">Timeline</button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-icon" title="Theme — Warm Paper · Dark">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tb-icon" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="body-row">
+      <aside class="rail">
+        <div class="rail-scroll">
+          <nav class="rail-nav" aria-label="Main surfaces">
+            <button class="rail-nav-item active">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+              Today
+            </button>
+            <button class="rail-nav-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+              Meetings
+            </button>
+            <button class="rail-nav-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+              Triggers
+            </button>
+          </nav>
+
+          <div class="rail-more">
+            <div class="rail-more-label">More</div>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+              Subjects
+            </button>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 13l3-3 4 4 5-6"/></svg>
+              Overview
+            </button>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 14 0v1"/></svg>
+              Context
+            </button>
+          </div>
+
+          <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+          <div class="rail-search">
+            <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+            <span class="ph">Search chats…</span>
+          </div>
+          <div class="rail-filters" role="group" aria-label="Filter conversations by origin">
+            <button class="active">all</button>
+            <button>chats</button>
+            <button>triggers</button>
+          </div>
+
+          <div class="rail-history">
+            <div class="rail-group">Today</div>
+            <div class="hrow"><span class="og" title="Meeting recap trigger">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></div>
+            <div class="hrow"><span class="og" title="Daily digest trigger">✦</span><span class="t">Daily digest — Wed Jul 23</span><span class="when">8:00</span></div>
+            <div class="rail-group">Yesterday</div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></div>
+            <div class="rail-group">This week</div>
+            <div class="hrow"><span class="og" title="Weekly review trigger">✦</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></div>
+          </div>
+        </div>
+
+        <div class="rail-foot">
+          <span class="line"><span class="dot"></span>engine <span class="sep">·</span> claude-sonnet-4-5</span>
+          <span class="line"><span class="rec-dot"></span><span class="dim">recording · 5h 12m · 2.1 GB</span></span>
+        </div>
+      </aside>
+
+      <div class="rail-resizer" aria-hidden="true"></div>
+
+      <main class="main">
+        <div class="main-scroll">
+          <div class="col">
+
+            <!-- front page: greeting → digest + stats → composer -->
+            <header class="front">
+              <div class="front-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+              <h1 class="front-greet">Good afternoon, Zeeshan.</h1>
+              <p class="front-digest">A deep morning in the triggers ledger, one meeting already
+                 recapped — and the marketing site finally has its
+                 headline.<button class="reread" title="Re-read today’s digest">↻</button></p>
+              <div class="front-stats">
+                <span><span class="g">▣</span><b>5h 12m</b> captured</span>
+                <span><span class="g">●</span><b>2h 57m</b> deep focus</span>
+                <span><span class="g">◉</span><b>2</b> meetings · 1 recapped</span>
+                <span><span class="g">✦</span><b>8</b> activities</span>
+              </div>
+              <div class="front-meets">
+                <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">10:00</span> Weekly product sync <b>· recap ready</b></span>
+                <span class="meet-chip"><span class="cm">◉</span><span class="tm">3:00</span> Design review · upcoming</span>
+              </div>
+
+              <div class="composer">
+                <textarea placeholder="Ask Mnema about your day…"></textarea>
+                <div class="composer-bar">
+                  <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+                  <button class="composer-send" disabled aria-label="Send">↑</button>
+                </div>
+              </div>
+              <div class="front-chips">
+                <button class="chip"><span class="cm">◉</span>Catch me up on the product sync</button>
+                <button class="chip"><span class="cm">▣</span>Where did the marketing hero copy land?</button>
+              </div>
+            </header>
+
+            <!-- the river -->
+            <section class="river">
+              <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+              <div class="slot slot--compact">
+                <div class="when">8:52 AM <span class="dur">4m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">9:04 AM <span class="dur">47m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                  <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                     queries, the running-state badge, and a cargo test pass that stayed
+                     green. Brief detours into the sqlx migration folder.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot slot--compact">
+                <div class="when">9:51 AM <span class="dur">3m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-research);"></span>
+                  <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">10:00 AM <span class="dur">47m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-meetings);">
+                  <div class="jmeta"><span class="cw">Meeting</span><span>· 4 voices · zoom</span></div>
+                  <h3>Weekly product sync over Zoom</h3>
+                  <p>The story-first home was approved for v0.2, recap jobs get their own
+                     queue lane, and you took the trigger-gallery wizard as an action item.</p>
+                  <div class="recap-row">
+                    <span class="cm">◉</span><b>Recap ready</b>
+                    <span class="meta">ran 11:02 AM</span>
+                    <span class="open">Open document ›</span>
+                  </div>
+                  <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Figma — mnema marketing site</h3>
+                  <p>Hero section and pricing band on the mnema.day landing page — wrote
+                     the “Recall everything. Keep it local.” headline, then checked it
+                     against the live preview in Safari. Spotify carried the whole stretch.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 318 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="gap-note">
+                <div class="when"></div>
+                <div class="spine"></div>
+                <div class="txt"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+              </div>
+
+              <div class="day-rule"><span>Afternoon</span><span class="rule"></span></div>
+
+              <div class="slot">
+                <div class="when">1:08 PM <span class="dur">26m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-communication);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-communication);">
+                  <div class="jmeta"><span class="cw">Communication</span><span>· scattered</span></div>
+                  <h3>Inbox sweep and licensing follow-ups</h3>
+                  <p>Batched replies in Mail and the Polar dashboard — the webhook
+                     signature thread got its closing message, and two license-reset
+                     requests were approved.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 61 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">1:34 PM <span class="dur">58m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Retention GC index migration and its regression test</h3>
+                  <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                     new speaker_turns index, with a test pinning the hoisted GC.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 247 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot slot--compact">
+                <div class="when">2:32 PM <span class="dur">4m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Filed review comments on the triggers PR</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">2:36 PM <span class="dur">now</span></div>
+                <div class="spine"><span class="node node--pending"></span></div>
+                <div class="jcard jcard--pending">
+                  <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+                  <div class="sub">The journal trails live capture by up to 30 minutes —
+                       every frame is already saved, and one click away in any receipt.</div>
+                </div>
+              </div>
+            </section>
+
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · SAME HOME — Warm Paper Dark sibling                    -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f2">
+  <p class="frame-label"><b>Frame 2</b> · Same home · Warm Paper Dark — warm charcoal desk, ivory ink, botanical green lifted · Wed Jul 23 2026 · 2:47 PM</p>
+  <div class="window dark">
+
+    <header class="titlebar">
+      <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+      <div class="tb-toggle" role="tablist" aria-label="Main surface">
+        <button class="tb-seg active">Story</button>
+        <button class="tb-seg">Timeline</button>
+      </div>
+      <div class="tb-right">
+        <button class="tb-icon" title="Theme — Warm Paper · Light">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="8.5"/><path d="M12 20.5a8.5 8.5 0 0 1 0-17z" fill="currentColor" stroke="none"/></svg>
+        </button>
+        <button class="tb-icon" title="Settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1-1.55 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.55-1 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.09a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.55 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.09a1.7 1.7 0 0 0 1.55 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.55 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="body-row">
+      <aside class="rail">
+        <div class="rail-scroll">
+          <nav class="rail-nav" aria-label="Main surfaces">
+            <button class="rail-nav-item active">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18M8 14h.01M12 14h.01M16 14h.01M8 18h.01M12 18h.01"/></svg>
+              Today
+            </button>
+            <button class="rail-nav-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v4"/></svg>
+              Meetings
+            </button>
+            <button class="rail-nav-item">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 4.1 12.5a1 1 0 0 0 .8 1.5H11l-1 8 8.9-10.5a1 1 0 0 0-.8-1.5H13l1-8z"/></svg>
+              Triggers
+            </button>
+          </nav>
+
+          <div class="rail-more">
+            <div class="rail-more-label">More</div>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5A6 6 0 1 0 6.5 11.5c.8.8 1.3 1.5 1.5 2.5"/><path d="M9 18h6M10 22h4"/></svg>
+              Subjects
+            </button>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 13l3-3 4 4 5-6"/></svg>
+              Overview
+            </button>
+            <button class="rail-nav-item sub">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21v-1a7 7 0 0 1 14 0v1"/></svg>
+              Context
+            </button>
+          </div>
+
+          <button class="rail-newchat"><span class="plus">＋</span> New chat</button>
+
+          <div class="rail-search">
+            <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+            <span class="ph">Search chats…</span>
+          </div>
+          <div class="rail-filters" role="group" aria-label="Filter conversations by origin">
+            <button class="active">all</button>
+            <button>chats</button>
+            <button>triggers</button>
+          </div>
+
+          <div class="rail-history">
+            <div class="rail-group">Today</div>
+            <div class="hrow"><span class="og" title="Meeting recap trigger">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></div>
+            <div class="hrow"><span class="og" title="Daily digest trigger">✦</span><span class="t">Daily digest — Wed Jul 23</span><span class="when">8:00</span></div>
+            <div class="rail-group">Yesterday</div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></div>
+            <div class="hrow"><span class="og blank">·</span><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></div>
+            <div class="rail-group">This week</div>
+            <div class="hrow"><span class="og" title="Weekly review trigger">✦</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></div>
+          </div>
+        </div>
+
+        <div class="rail-foot">
+          <span class="line"><span class="dot"></span>engine <span class="sep">·</span> claude-sonnet-4-5</span>
+          <span class="line"><span class="rec-dot"></span><span class="dim">recording · 5h 12m · 2.1 GB</span></span>
+        </div>
+      </aside>
+
+      <div class="rail-resizer" aria-hidden="true"></div>
+
+      <main class="main">
+        <div class="main-scroll">
+          <div class="col">
+
+            <header class="front">
+              <div class="front-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+              <h1 class="front-greet">Good afternoon, Zeeshan.</h1>
+              <p class="front-digest">A deep morning in the triggers ledger, one meeting already
+                 recapped — and the marketing site finally has its
+                 headline.<button class="reread" title="Re-read today’s digest">↻</button></p>
+              <div class="front-stats">
+                <span><span class="g">▣</span><b>5h 12m</b> captured</span>
+                <span><span class="g">●</span><b>2h 57m</b> deep focus</span>
+                <span><span class="g">◉</span><b>2</b> meetings · 1 recapped</span>
+                <span><span class="g">✦</span><b>8</b> activities</span>
+              </div>
+              <div class="front-meets">
+                <span class="meet-chip meet-chip--ready"><span class="cm">◉</span><span class="tm">10:00</span> Weekly product sync <b>· recap ready</b></span>
+                <span class="meet-chip"><span class="cm">◉</span><span class="tm">3:00</span> Design review · upcoming</span>
+              </div>
+
+              <div class="composer">
+                <textarea placeholder="Ask Mnema about your day…"></textarea>
+                <div class="composer-bar">
+                  <button class="model-pick">Default · claude-sonnet-4-5 <span class="caret">▾</span></button>
+                  <button class="composer-send" disabled aria-label="Send">↑</button>
+                </div>
+              </div>
+              <div class="front-chips">
+                <button class="chip"><span class="cm">◉</span>Catch me up on the product sync</button>
+                <button class="chip"><span class="cm">▣</span>Where did the marketing hero copy land?</button>
+              </div>
+            </header>
+
+            <section class="river">
+              <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+              <div class="slot slot--compact">
+                <div class="when">8:52 AM <span class="dur">4m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">9:04 AM <span class="dur">47m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                  <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                     queries, the running-state badge, and a cargo test pass that stayed
+                     green. Brief detours into the sqlx migration folder.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot slot--compact">
+                <div class="when">9:51 AM <span class="dur">3m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-research);"></span>
+                  <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">10:00 AM <span class="dur">47m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-meetings);">
+                  <div class="jmeta"><span class="cw">Meeting</span><span>· 4 voices · zoom</span></div>
+                  <h3>Weekly product sync over Zoom</h3>
+                  <p>The story-first home was approved for v0.2, recap jobs get their own
+                     queue lane, and you took the trigger-gallery wizard as an action item.</p>
+                  <div class="recap-row">
+                    <span class="cm">◉</span><b>Recap ready</b>
+                    <span class="meta">ran 11:02 AM</span>
+                    <span class="open">Open document ›</span>
+                  </div>
+                  <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Figma — mnema marketing site</h3>
+                  <p>Hero section and pricing band on the mnema.day landing page — wrote
+                     the “Recall everything. Keep it local.” headline, then checked it
+                     against the live preview in Safari. Spotify carried the whole stretch.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 318 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="gap-note">
+                <div class="when"></div>
+                <div class="spine"></div>
+                <div class="txt"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+              </div>
+
+              <div class="day-rule"><span>Afternoon</span><span class="rule"></span></div>
+
+              <div class="slot">
+                <div class="when">1:08 PM <span class="dur">26m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-communication);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-communication);">
+                  <div class="jmeta"><span class="cw">Communication</span><span>· scattered</span></div>
+                  <h3>Inbox sweep and licensing follow-ups</h3>
+                  <p>Batched replies in Mail and the Polar dashboard — the webhook
+                     signature thread got its closing message, and two license-reset
+                     requests were approved.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 61 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">1:34 PM <span class="dur">58m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+                <div class="jcard" style="--cat:var(--cat-creating);">
+                  <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+                  <h3>Retention GC index migration and its regression test</h3>
+                  <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                     new speaker_turns index, with a test pinning the hoisted GC.</p>
+                  <div class="jcard-foot"><span class="receipt">▸ 247 frames · receipt</span></div>
+                </div>
+              </div>
+
+              <div class="slot slot--compact">
+                <div class="when">2:32 PM <span class="dur">4m</span></div>
+                <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+                <div class="row-compact">
+                  <span class="swatch" style="background:var(--cat-organizing);"></span>
+                  <span class="row-title">Filed review comments on the triggers PR</span>
+                </div>
+              </div>
+
+              <div class="slot">
+                <div class="when">2:36 PM <span class="dur">now</span></div>
+                <div class="spine"><span class="node node--pending"></span></div>
+                <div class="jcard jcard--pending">
+                  <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+                  <div class="sub">The journal trails live capture by up to 30 minutes —
+                       every frame is already saved, and one click away in any receipt.</div>
+                </div>
+              </div>
+            </section>
+
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 3 · ALTERNATES SHEET — rail history + activity card A/B/C  -->
+<!-- ================================================================ -->
+<div class="frame-wrap" id="f3">
+  <p class="frame-label"><b>Frame 3</b> · Alternates sheet — rail history list & activity card, A = committed in frames 1–2</p>
+  <div class="board">
+
+    <div class="board-h"><span>Rail history list</span><span class="rule"></span></div>
+    <div class="alt-row">
+
+      <div class="alt">
+        <div class="alt-tag"><b>A · committed</b></div>
+        <div class="alt-panel" style="max-width:250px">
+          <div class="rail-search" style="margin-top:0">
+            <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round" style="width:13px;height:13px;stroke:var(--ink-3)"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+            <span class="ph">Search chats…</span>
+          </div>
+          <div class="rail-filters"><button class="active">all</button><button>chats</button><button>triggers</button></div>
+          <div class="rail-group">Today</div>
+          <div class="hrow"><span class="og">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></div>
+          <div class="hrow"><span class="og blank">·</span><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></div>
+          <div class="hrow"><span class="og">✦</span><span class="t">Daily digest — Wed Jul 23</span><span class="when">8:00</span></div>
+          <div class="rail-group">Yesterday</div>
+          <div class="hrow"><span class="og blank">·</span><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></div>
+        </div>
+        <p class="alt-cap">Filters as bare text links under search; origin is one small
+           glyph before the title (◉ recap, ✦ digest); times faint, full on hover.
+           No boxes, no badges.</p>
+      </div>
+
+      <div class="alt">
+        <div class="alt-tag">B · filter folded into search</div>
+        <div class="alt-panel" style="max-width:250px">
+          <div class="rail-search" style="margin-top:0">
+            <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round" style="width:13px;height:13px;stroke:var(--ink-3)"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+            <span class="ph">Search chats…</span>
+            <span class="srch-drop">all ▾</span>
+          </div>
+          <div class="rail-group">Today</div>
+          <div class="hrow"><span class="og">◉</span><span class="t">Recap — Weekly product sync</span></div>
+          <div class="hrow hov"><span class="og blank">·</span><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></div>
+          <div class="hrow"><span class="og">✦</span><span class="t">Daily digest — Wed Jul 23</span></div>
+          <div class="rail-group">Yesterday</div>
+          <div class="hrow"><span class="og blank">·</span><span class="t">When did I last touch build.rs and why</span></div>
+        </div>
+        <p class="alt-cap">One row: search + an “all ▾” scope word at its end.
+           Times appear only on hover (middle row shown hovered). Quietest chrome,
+           filter slightly less discoverable.</p>
+      </div>
+
+      <div class="alt">
+        <div class="alt-tag">C · base (for reference)</div>
+        <div class="alt-panel" style="max-width:250px">
+          <div class="rail-search" style="margin-top:0">
+            <svg viewBox="0 0 14 14" fill="none" stroke-width="1.5" stroke-linecap="round" style="width:13px;height:13px;stroke:var(--ink-3)"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+            <span class="ph">Search chats…</span>
+          </div>
+          <div class="origin-filter"><button class="active">all</button><button>chats</button><button>triggers</button></div>
+          <div class="rail-group">Today</div>
+          <div class="hrow" style="height:auto;padding:3px 8px"><span class="t" style="display:flex;flex-direction:column;white-space:normal"><span style="display:flex;gap:8px;align-items:center"><span class="t">Recap — Weekly product sync</span><span class="when" style="opacity:1">11:02</span></span><span style="font-family:var(--mono);font-size:9px;line-height:14px;padding:0 5px;border-radius:4px;border:1px solid var(--tint-border);background:var(--tint-2);color:var(--accent-deep);align-self:flex-start;margin-top:1px">◉ Meeting recap</span></span></div>
+          <div class="hrow"><span class="t">Where did the retention GC index land?</span><span class="when" style="opacity:1">10:41</span></div>
+        </div>
+        <p class="alt-cap">The v1 treatment being replaced: boxed segmented control,
+           badge chip rows, solid right-aligned times. Kept here only for the
+           side-by-side.</p>
+      </div>
+    </div>
+
+    <div class="board-h"><span>Activity card</span><span class="rule"></span></div>
+    <div class="alt-row">
+
+      <div class="alt">
+        <div class="alt-tag"><b>A · committed</b></div>
+        <div class="alt-panel alt-panel--card">
+          <div class="jcard" style="--cat:var(--cat-creating);">
+            <div class="jmeta"><span class="cw">Creating</span><span>· deep focus</span></div>
+            <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+            <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+               queries, the running-state badge, and a green cargo test pass.</p>
+            <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+          </div>
+        </div>
+        <p class="alt-cap">Chips replaced by one small mono line — category as a single
+           tinted word, focus as plain text. Title down a step (16.5 → 15px).
+           Edge bar and receipt footer kept.</p>
+      </div>
+
+      <div class="alt">
+        <div class="alt-tag">B · category in the footer</div>
+        <div class="alt-panel alt-panel--card">
+          <div class="jcard jcard--b" style="--cat:var(--cat-creating);">
+            <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+            <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+               queries, the running-state badge, and a green cargo test pass.</p>
+            <div class="jcard-foot">
+              <span class="cw-foot">creating</span><span class="fsep">· deep ·</span>
+              <span class="receipt">▸ 214 frames · receipt</span>
+            </div>
+          </div>
+        </div>
+        <p class="alt-cap">No header line at all — the edge bar carries category above
+           the fold; the word only appears in the footer beside the receipt.
+           Quietest, but category is easy to miss while scanning.</p>
+      </div>
+
+      <div class="alt">
+        <div class="alt-tag">C · word on the title line</div>
+        <div class="alt-panel alt-panel--card">
+          <div class="jcard jcard--c" style="--cat:var(--cat-creating);">
+            <div class="trow">
+              <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+              <span class="cw-side">creating</span>
+            </div>
+            <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+               queries, the running-state badge, and a green cargo test pass.</p>
+            <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+          </div>
+        </div>
+        <p class="alt-cap">Category as a single tinted word right-aligned on the title
+           line; focus dropped entirely. Densest vertical rhythm; long titles can
+           crowd the word.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- ponytail: no JS — all three frames are static states; the dark sibling is a
+     token override class on the window, exactly how the app itself themes. -->
+
+</body>
+</html>

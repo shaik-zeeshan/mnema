@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — Unified Shell · Direction 2 · Warm Paper</title>
+<style>
+  /* ============ tokens ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    padding: 72px 48px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #8a8270;
+    margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden;
+    display: flex;
+    position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail ============ */
+  .rail {
+    width: 264px; flex: none;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 52px 0 0;
+  }
+  .brand {
+    font-family: var(--serif);
+    font-size: 19px; letter-spacing: .01em;
+    padding: 0 22px 18px;
+    color: var(--ink);
+  }
+  .brand .leaf { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 7px; }
+  .nav { padding: 0 12px; display: flex; flex-direction: column; gap: 2px; }
+  .nav a {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--ink-2); text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background .12s, color .12s;
+  }
+  .nav a svg { width: 15px; height: 15px; stroke: currentColor; flex: none; opacity: .8; }
+  .nav a:hover { background: #ece8da; color: var(--ink); }
+  .nav a.active { background: var(--tint); color: var(--accent-deep); }
+  .nav a.active svg { opacity: 1; }
+  .nav a .kbd {
+    margin-left: auto; font-family: var(--mono); font-size: 10.5px;
+    color: var(--ink-3); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; background: var(--card);
+  }
+  .rail-sec {
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 26px 22px 8px;
+  }
+  .recents { padding: 0 12px; overflow: hidden; flex: 1; }
+  .recents a {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    text-decoration: none; color: var(--ink-2);
+    font-size: 13px; line-height: 1.35;
+    transition: background .12s, color .12s;
+  }
+  .recents a:hover { background: #ece8da; color: var(--ink); }
+  .recents a.sel { background: #e9e4d4; color: var(--ink); }
+  .recents .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recents .glyph { font-family: var(--mono); font-size: 11px; color: var(--accent); flex: none; }
+  .recents .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
+  .rail-foot {
+    border-top: 1px solid var(--border);
+    padding: 13px 20px 15px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .rec-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.16); flex: none; }
+  .rail-foot .stat { font-family: var(--mono); font-size: 11px; color: var(--ink-2); line-height: 1.5; }
+  .rail-foot .stat b { color: var(--accent-deep); font-weight: 600; }
+  .rail-foot .stat .dim { color: var(--ink-3); }
+
+  /* ============ main pane generic ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* ============ page 1 · insights home ============ */
+  .home-center {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 0 120px 60px;
+  }
+  .home-date {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em;
+    color: var(--ink-3); margin-bottom: 18px;
+  }
+  .home-greet {
+    font-family: var(--serif); font-size: 42px; font-weight: 400;
+    letter-spacing: -.01em; color: var(--ink); text-align: center;
+  }
+  .home-sub {
+    font-size: 15px; color: var(--ink-2); margin-top: 12px; text-align: center;
+  }
+  .composer {
+    width: 720px; margin-top: 40px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.04), 0 6px 24px rgba(60,52,32,.05);
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .composer:hover { border-color: var(--border-strong); }
+  .composer:focus-within { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.10), 0 6px 24px rgba(60,52,32,.05); }
+  .composer textarea {
+    width: 100%; border: 0; outline: 0; resize: none; background: transparent;
+    font-family: var(--sans); font-size: 15.5px; color: var(--ink);
+    padding: 20px 22px 6px; height: 74px; line-height: 1.5;
+  }
+  .composer textarea::placeholder { color: var(--ink-3); }
+  .composer-bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px 12px 18px;
+  }
+  .model-chip {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    border: 1px solid var(--border); background: var(--card-deep);
+    border-radius: 6px; padding: 4px 9px; cursor: default;
+    transition: border-color .12s;
+  }
+  .model-chip:hover { border-color: var(--border-strong); }
+  .scope-chip {
+    font-family: var(--mono); font-size: 11px; color: var(--accent-deep);
+    background: var(--tint); border: 1px solid var(--tint-border);
+    border-radius: 6px; padding: 4px 9px;
+  }
+  .send {
+    margin-left: auto;
+    width: 36px; height: 36px; border-radius: 10px; border: 0;
+    background: var(--accent); color: #f6faf6; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .12s, transform .12s;
+  }
+  .send:hover { background: var(--accent-deep); }
+  .send svg { width: 15px; height: 15px; }
+  .chips-label {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .11em;
+    text-transform: uppercase; color: var(--ink-3);
+    margin: 36px 0 14px;
+  }
+  .chips { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; max-width: 780px; }
+  .chip {
+    font-size: 13.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 9px 18px; cursor: pointer;
+    transition: border-color .12s, color .12s, background .12s, transform .12s;
+  }
+  .chip:hover { border-color: var(--accent-2); color: var(--accent-deep); background: var(--tint-2); }
+  .chip .cm { font-family: var(--mono); font-size: 11.5px; color: var(--accent); margin-right: 7px; }
+
+  /* ============ page 2 · meetings list ============ */
+  .page-head { padding: 58px 64px 0; }
+  .page-title { font-family: var(--serif); font-size: 32px; font-weight: 400; letter-spacing: -.01em; }
+  .page-sub { font-size: 14px; color: var(--ink-2); margin-top: 8px; }
+  .page-sub .m { font-family: var(--mono); font-size: 12px; color: var(--ink-3); }
+  .meet-scroll { flex: 1; overflow-y: auto; padding: 30px 64px 60px; }
+  .day-head {
+    display: flex; align-items: baseline; gap: 12px;
+    margin: 28px 0 12px;
+  }
+  .day-head:first-child { margin-top: 0; }
+  .day-head h3 { font-family: var(--serif); font-size: 17px; font-weight: 500; color: var(--ink); }
+  .day-head .m { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .day-head .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .meet-row {
+    display: flex; align-items: center; gap: 18px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px 20px;
+    margin-bottom: 10px; cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .meet-row:hover {
+    border-color: var(--tint-border);
+    box-shadow: 0 2px 12px rgba(31,111,74,.07);
+    transform: translateY(-1px);
+  }
+  .app-glyph {
+    width: 40px; height: 40px; flex: none;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--card-deep);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ink-2);
+  }
+  .app-glyph.zoom { color: #3a6ea8; }
+  .app-glyph.meet { color: #2a8a60; }
+  .app-glyph.web  { color: #8a6b3a; }
+  .meet-main { flex: 1; min-width: 0; }
+  .meet-title { font-family: var(--serif); font-size: 17px; color: var(--ink); }
+  .meet-meta { display: flex; align-items: center; gap: 14px; margin-top: 6px; }
+  .meet-meta .m { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); }
+  .spk-chips { display: flex; align-items: center; gap: 6px; }
+  .spk {
+    font-size: 11.5px; font-weight: 500; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2.5px 9px;
+  }
+  .spk.you { color: var(--accent-deep); background: var(--tint-2); border-color: var(--tint-border); }
+  .spk.more { color: var(--ink-3); border-style: dashed; }
+  .state { flex: none; font-family: var(--mono); font-size: 11px; border-radius: 999px; padding: 5px 12px; letter-spacing: .02em; }
+  .state.recap { color: var(--accent-deep); background: var(--tint); border: 1px solid var(--tint-border); }
+  .state.transcript { color: var(--ink-2); background: var(--card-deep); border: 1px solid var(--border); }
+  .state.processing { color: var(--amber); background: var(--amber-tint); border: 1px solid #e7d8b4; }
+  .spin {
+    display: inline-block; width: 9px; height: 9px; margin-right: 6px;
+    border-radius: 50%; border: 1.5px solid #d9c48c; border-top-color: var(--amber);
+    vertical-align: -1px;
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .meet-count { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); margin-left: auto; }
+
+  /* ============ page 3 · meeting detail ============ */
+  .detail-scroll { flex: 1; overflow-y: auto; padding: 50px 0 80px; }
+  .detail-inner { max-width: 780px; margin: 0 auto; padding: 0 40px; }
+  .back {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-3);
+    text-decoration: none; letter-spacing: .04em;
+    transition: color .12s;
+  }
+  .back:hover { color: var(--accent-deep); }
+  .detail-title {
+    font-family: var(--serif); font-size: 34px; font-weight: 400;
+    letter-spacing: -.012em; margin-top: 18px; line-height: 1.2;
+  }
+  .detail-meta {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    margin-top: 14px;
+  }
+  .detail-meta .m { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .detail-meta .sep { color: var(--border-strong); }
+  .provenance {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-3);
+    margin-top: 12px; letter-spacing: .02em;
+  }
+  .provenance .g { color: var(--accent); }
+  .tabs {
+    display: flex; gap: 4px; margin-top: 30px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tab {
+    font-family: var(--sans); font-size: 13.5px; font-weight: 500;
+    color: var(--ink-2); background: none; border: 0; cursor: pointer;
+    padding: 9px 16px 11px; border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    transition: color .12s, border-color .12s;
+  }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent-deep); border-bottom-color: var(--accent); }
+  .tab .n { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); margin-left: 5px; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+
+  .recap-doc {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 44px 52px 48px;
+    margin-top: 28px;
+    box-shadow: 0 1px 2px rgba(60,52,32,.03), 0 8px 28px rgba(60,52,32,.04);
+  }
+  .recap-doc h2 {
+    font-family: var(--serif); font-size: 21px; font-weight: 500;
+    margin: 34px 0 12px; letter-spacing: -.005em;
+  }
+  .recap-doc h2:first-child { margin-top: 0; }
+  .recap-doc p { font-size: 14.5px; line-height: 1.65; color: #45412f; margin-bottom: 12px; }
+  .recap-doc ul { margin: 0 0 12px 2px; list-style: none; }
+  .recap-doc li {
+    font-size: 14.5px; line-height: 1.6; color: #45412f;
+    padding: 5px 0 5px 22px; position: relative;
+  }
+  .recap-doc li::before {
+    content: "—"; position: absolute; left: 0;
+    font-family: var(--mono); color: var(--accent-2); font-size: 12px; top: 8px;
+  }
+  .recap-doc li b { font-weight: 600; color: var(--ink); }
+  .decision {
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    border-radius: 10px; padding: 13px 16px 13px 42px; margin: 8px 0;
+    font-size: 14px; line-height: 1.55; color: #35402f; position: relative;
+  }
+  .decision::before {
+    content: "◆"; position: absolute; left: 17px; top: 13px;
+    font-family: var(--mono); font-size: 11px; color: var(--accent);
+  }
+  .action { display: flex; align-items: baseline; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border-soft); }
+  .action:last-of-type { border-bottom: 0; }
+  .action .box {
+    width: 15px; height: 15px; flex: none; align-self: center;
+    border: 1.5px solid var(--border-strong); border-radius: 4px;
+    transition: border-color .12s;
+  }
+  .action:hover .box { border-color: var(--accent-2); }
+  .action .who { font-family: var(--mono); font-size: 11px; color: var(--accent-deep); flex: none; width: 52px; }
+  .action .what { font-size: 14px; color: #45412f; line-height: 1.5; }
+  .recap-foot {
+    margin-top: 34px; padding-top: 22px; border-top: 1px solid var(--border-soft);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .open-convo {
+    font-size: 13.5px; font-weight: 500; color: var(--accent-deep);
+    text-decoration: none; display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border: 1px solid var(--tint-border); border-radius: 8px;
+    background: var(--tint-2);
+    transition: background .12s, border-color .12s;
+  }
+  .open-convo:hover { background: var(--tint); border-color: var(--accent-2); }
+  .recap-foot .m { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+
+  .turns { margin-top: 26px; }
+  .turn { display: flex; gap: 18px; padding: 13px 6px; border-bottom: 1px solid var(--border-soft); }
+  .turn:hover { background: #f7f4ea; }
+  .turn .ts { font-family: var(--mono); font-size: 11px; color: var(--ink-3); flex: none; width: 52px; padding-top: 3px; }
+  .turn .who { font-size: 12.5px; font-weight: 600; flex: none; width: 66px; padding-top: 1px; }
+  .turn .who.s1 { color: #1f6f4a; } .turn .who.s2 { color: #8a5a2a; }
+  .turn .who.s3 { color: #3a6ea8; } .turn .who.s4 { color: #6d675a; }
+  .turn .say { font-size: 14px; line-height: 1.6; color: #45412f; }
+
+  .notes-card {
+    margin-top: 26px; background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 26px 30px;
+  }
+  .notes-card p { font-size: 14.5px; line-height: 1.7; color: #45412f; margin-bottom: 10px; }
+  .notes-card .hint { font-family: var(--mono); font-size: 11px; color: var(--ink-3); margin-top: 14px; }
+
+  /* ============ page 4 · trigger gallery ============ */
+  .wiz-head { padding: 58px 72px 0; }
+  .wiz-top { display: flex; align-items: center; justify-content: space-between; }
+  .steps { display: flex; align-items: center; gap: 10px; }
+  .step { display: flex; align-items: center; gap: 8px; }
+  .step .dot {
+    width: 22px; height: 22px; border-radius: 50%;
+    border: 1.5px solid var(--border-strong);
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    display: flex; align-items: center; justify-content: center;
+    background: var(--card);
+  }
+  .step .lbl { font-size: 12.5px; color: var(--ink-3); font-weight: 500; }
+  .step.landing .dot { background: var(--accent); border-color: var(--accent); color: #f4f9f4; }
+  .step.landing .lbl { color: var(--accent-deep); }
+  .step-dash { width: 26px; height: 1px; background: var(--border-strong); }
+  .wiz-note {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    margin-top: 10px; text-align: right;
+  }
+  .wiz-note .g { color: var(--accent); }
+  .gallery-scroll { flex: 1; overflow-y: auto; padding: 8px 72px 64px; }
+  .gal-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 16px; margin-top: 30px;
+  }
+  .tpl {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px 22px 20px;
+    cursor: pointer; position: relative;
+    transition: border-color .14s, box-shadow .14s, transform .14s;
+  }
+  .tpl:hover {
+    border-color: var(--tint-border);
+    box-shadow: 0 3px 16px rgba(31,111,74,.09);
+    transform: translateY(-2px);
+  }
+  .tpl:hover .tpl-go { opacity: 1; transform: translateX(0); }
+  .tpl-glyph {
+    font-family: var(--mono); font-size: 15px; color: var(--accent);
+    width: 34px; height: 34px; border-radius: 9px;
+    background: var(--tint-2); border: 1px solid var(--tint-border);
+    display: flex; align-items: center; justify-content: center;
+    margin-bottom: 15px;
+  }
+  .tpl h4 { font-family: var(--serif); font-size: 17.5px; font-weight: 500; letter-spacing: -.005em; }
+  .tpl p { font-size: 13px; line-height: 1.55; color: var(--ink-2); margin-top: 7px; }
+  .tpl .cond {
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    margin-top: 14px; letter-spacing: .03em;
+  }
+  .tpl .cond .g { color: var(--accent); }
+  .tpl-go {
+    position: absolute; top: 22px; right: 20px;
+    font-family: var(--mono); font-size: 12px; color: var(--accent);
+    opacity: 0; transform: translateX(-4px);
+    transition: opacity .14s, transform .14s;
+  }
+  .scratch {
+    margin-top: 22px;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 14px;
+    background: transparent;
+    padding: 20px 26px;
+    display: flex; align-items: center; gap: 18px;
+    cursor: pointer; width: 100%; text-align: left;
+    font-family: var(--sans);
+    transition: border-color .14s, background .14s;
+  }
+  .scratch:hover { border-color: var(--accent-2); background: var(--tint-2); }
+  .scratch .plus {
+    width: 34px; height: 34px; flex: none; border-radius: 9px;
+    border: 1px solid var(--border-strong);
+    font-family: var(--mono); font-size: 16px; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+    background: var(--card);
+  }
+  .scratch:hover .plus { color: var(--accent-deep); border-color: var(--tint-border); }
+  .scratch b { font-size: 14.5px; font-weight: 600; color: var(--ink); display: block; }
+  .scratch span { font-size: 12.5px; color: var(--ink-2); display: block; margin-top: 3px; }
+  .glyph-legend {
+    display: flex; gap: 22px; margin-top: 26px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-3);
+    letter-spacing: .03em;
+  }
+  .glyph-legend .g { color: var(--accent); margin-right: 5px; }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- PAGE 1 · INSIGHTS HOME                                           -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Page 1</b> · Insights Home — empty state · direction 2 “Warm Paper”</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Weekly review — Jul 14 to Jul 20</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="home-center">
+        <div class="home-date">WEDNESDAY · JULY 23 2026 · 2:47 PM</div>
+        <h1 class="home-greet">Good afternoon, Zeeshan.</h1>
+        <p class="home-sub">Everything you’ve seen, heard, and said today is ready to be asked about.</p>
+
+        <div class="composer">
+          <textarea placeholder="Ask about anything you’ve seen, heard, or done…"></textarea>
+          <div class="composer-bar">
+            <span class="model-chip">claude-sonnet · local index</span>
+            <span class="scope-chip">scope: today</span>
+            <button class="send" aria-label="Send">
+              <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="chips-label">From your day so far</div>
+        <div class="chips">
+          <button class="chip"><span class="cm">◉</span>Summarize my 10:00 meeting with Sarah</button>
+          <button class="chip"><span class="cm">▣</span>What was I doing in Figma before lunch?</button>
+          <button class="chip"><span class="cm">◷</span>What did I promise in yesterday’s retro?</button>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 2 · MEETINGS LIST                                           -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Page 2</b> · Meetings — auto-detected list, grouped by day</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="page-head">
+        <h1 class="page-title">Meetings</h1>
+        <p class="page-sub">Detected from your microphone and system audio — no calendar connected, none needed. <span class="m">14 this week</span></p>
+      </div>
+
+      <div class="meet-scroll">
+        <div class="day-head">
+          <h3>Today</h3><span class="m">WED · JUL 23</span><span class="rule"></span><span class="meet-count">3 meetings · 1h 58m</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">Design review — trigger wizard &amp; gallery</div>
+            <div class="meet-meta">
+              <span class="m">2:00 PM → live · 47m so far</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Priya</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state processing"><span class="spin"></span>processing</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph web">◈</div>
+          <div class="meet-main">
+            <div class="meet-title">Licensing follow-up — CRL rollout window</div>
+            <div class="meet-meta">
+              <span class="m">11:30 AM · 24m</span>
+              <div class="spk-chips"><span class="spk">Dev</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state transcript">transcript only</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">Weekly product sync</div>
+            <div class="meet-meta">
+              <span class="m">10:00 AM · 47m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Dev</span><span class="spk">Priya</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <div class="day-head">
+          <h3>Yesterday</h3><span class="m">TUE · JUL 22</span><span class="rule"></span><span class="meet-count">2 meetings · 1h 21m</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph meet">mt</div>
+          <div class="meet-main">
+            <div class="meet-title">Sprint retro — capture pipeline</div>
+            <div class="meet-meta">
+              <span class="m">4:00 PM · 52m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Marcus</span><span class="spk more">+2</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph zoom">zm</div>
+          <div class="meet-main">
+            <div class="meet-title">1:1 with Sarah</div>
+            <div class="meet-meta">
+              <span class="m">9:30 AM · 29m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+
+        <div class="day-head">
+          <h3>Monday</h3><span class="m">MON · JUL 21</span><span class="rule"></span><span class="meet-count">2 meetings · 1h 05m</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph web">◈</div>
+          <div class="meet-main">
+            <div class="meet-title">Candidate screen — senior Rust engineer</div>
+            <div class="meet-meta">
+              <span class="m">3:00 PM · 41m</span>
+              <div class="spk-chips"><span class="spk">Unknown speaker</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state transcript">transcript only</span>
+        </div>
+
+        <div class="meet-row">
+          <div class="app-glyph meet">mt</div>
+          <div class="meet-main">
+            <div class="meet-title">Monday kickoff — v0.2 scope</div>
+            <div class="meet-meta">
+              <span class="m">9:15 AM · 24m</span>
+              <div class="spk-chips"><span class="spk">Sarah</span><span class="spk">Dev</span><span class="spk">Priya</span><span class="spk you">You</span></div>
+            </div>
+          </div>
+          <span class="state recap">recap ready</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 3 · MEETING DETAIL                                          -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Page 3</b> · Meeting detail — Summary tab active (tabs are clickable)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#" class="sel"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="detail-scroll">
+        <div class="detail-inner">
+          <a href="#" class="back">← MEETINGS</a>
+          <h1 class="detail-title">Weekly product sync</h1>
+          <div class="detail-meta">
+            <span class="m">WED JUL 23 2026 · 10:00 – 10:47 AM · 47m</span>
+            <span class="sep">·</span>
+            <div class="spk-chips">
+              <span class="spk">Sarah Lindqvist</span><span class="spk">Dev Patel</span><span class="spk">Priya Sharma</span><span class="spk you">You</span>
+            </div>
+          </div>
+          <p class="provenance"><span class="g">◉</span> detected via mic-hold · Zoom · 4 voices separated</p>
+
+          <div class="tabs" role="tablist">
+            <button class="tab active" data-pane="pane-summary" role="tab">Summary</button>
+            <button class="tab" data-pane="pane-transcript" role="tab">Transcript <span class="n">142 turns</span></button>
+            <button class="tab" data-pane="pane-notes" role="tab">Notes</button>
+          </div>
+
+          <!-- SUMMARY -->
+          <section id="pane-summary" class="pane active">
+            <article class="recap-doc">
+              <h2>Overview</h2>
+              <p>The team aligned on shipping the unified shell for v0.2. Sarah walked through the warm-paper direction for the insights home; the group agreed the meetings surface should stay calendar-free and lean entirely on detection. Dev flagged that recap generation currently queues behind OCR on busy mornings, which explains the 11:00 recap lag people noticed on Monday.</p>
+
+              <h2>Decisions</h2>
+              <div class="decision">Ship the <b>unified left rail</b> (chat, search, meetings, triggers) in v0.2 — the top subnav is retired.</div>
+              <div class="decision">Meeting detection stays <b>audio-first with no calendar integration</b>; titles are inferred, never imported.</div>
+              <div class="decision">Recap jobs get their own queue lane so they no longer wait behind the OCR backlog.</div>
+
+              <h2>Action items</h2>
+              <div class="action"><span class="box"></span><span class="who">Sarah</span><span class="what">Finalize warm-paper spacing tokens and hand off the Figma page by Friday.</span></div>
+              <div class="action"><span class="box"></span><span class="who">Dev</span><span class="what">Split recap generation into its own job lane; measure Monday-morning latency before/after.</span></div>
+              <div class="action"><span class="box"></span><span class="who">Priya</span><span class="what">Draft copy for the meetings empty state and the “processing” row tooltip.</span></div>
+              <div class="action"><span class="box"></span><span class="who">You</span><span class="what">Wire the trigger-template gallery as the first wizard step behind the dev flag.</span></div>
+
+              <h2>Open questions</h2>
+              <ul>
+                <li>Should transcript-only meetings offer a one-click “generate recap now”, or stay passive until the queue reaches them?</li>
+                <li>Do unnamed voices (“Unknown speaker”) prompt for a label after the second recurrence, or stay silent?</li>
+              </ul>
+
+              <div class="recap-foot">
+                <a href="#" class="open-convo">Open recap conversation
+                  <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12 12 4M6 4h6v6"/></svg>
+                </a>
+                <span class="m">recap generated 11:02 AM · claude-sonnet · local transcript</span>
+              </div>
+            </article>
+          </section>
+
+          <!-- TRANSCRIPT -->
+          <section id="pane-transcript" class="pane">
+            <div class="turns">
+              <div class="turn"><span class="ts">00:12</span><span class="who s1">Sarah</span><span class="say">Okay, everyone’s here — let’s start with the shell. I posted the warm-paper direction in the channel this morning, did everyone get a chance to look?</span></div>
+              <div class="turn"><span class="ts">00:31</span><span class="who s4">You</span><span class="say">I did. The cream background reads much calmer than the current dark shell. My only worry is the rail — four nav items plus recents is a lot for 264 pixels.</span></div>
+              <div class="turn"><span class="ts">00:58</span><span class="who s1">Sarah</span><span class="say">The recents list truncates, that’s fine. What I want to settle today is whether meetings gets its own top-level entry or lives under search.</span></div>
+              <div class="turn"><span class="ts">01:24</span><span class="who s2">Dev</span><span class="say">Top-level. Detection is good enough now that the list is actually trustworthy — we caught eleven of twelve meetings last week, and the miss was a hallway call with AirPods on one ear.</span></div>
+              <div class="turn"><span class="ts">01:52</span><span class="who s3">Priya</span><span class="say">Agreed, but then the empty state matters. If someone has no meetings detected yet, that page needs to explain the mic-hold heuristic in one friendly sentence, not a paragraph.</span></div>
+              <div class="turn"><span class="ts">02:20</span><span class="who s2">Dev</span><span class="say">One thing before we move on — recap latency. Monday’s 9:15 kickoff didn’t get its recap until almost eleven. It’s queued behind OCR, and Monday mornings are the worst possible time for that.</span></div>
+              <div class="turn"><span class="ts">02:47</span><span class="who s1">Sarah</span><span class="say">Can we give recaps their own lane? They’re small jobs, it feels silly for them to wait behind a thousand frame batches.</span></div>
+              <div class="turn"><span class="ts">03:05</span><span class="who s2">Dev</span><span class="say">Yes — separate queue lane, same worker pool. I’ll measure before and after so we’re not guessing.</span></div>
+              <div class="turn"><span class="ts">03:22</span><span class="who s4">You</span><span class="say">While we’re on it: the trigger gallery. I want the first wizard screen to be templates, not a blank condition form. Picking “Meeting Recap” should land you on Review with everything prefilled.</span></div>
+              <div class="turn"><span class="ts">03:51</span><span class="who s3">Priya</span><span class="say">Love that. Blank forms are where people give up. I’ll write the card descriptions — one line each, no jargon.</span></div>
+            </div>
+          </section>
+
+          <!-- NOTES -->
+          <section id="pane-notes" class="pane">
+            <div class="notes-card">
+              <p>Sarah’s spacing tokens land Friday — block Thursday afternoon to prep the rail component so the handoff drops straight in.</p>
+              <p>Dev’s queue-lane change might also fix the digest lag Priya mentioned last week. Ask him to check both in the same measurement pass.</p>
+              <p>Remember: the “Unknown speaker” labeling prompt is <em>not</em> decided. Don’t build it yet.</p>
+              <p class="hint">your notes stay local · never sent to any model unless you paste them into a chat</p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- PAGE 4 · TRIGGER CREATION — GALLERY FIRST                        -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Page 4</b> · New Trigger — gallery-first wizard entry (picking a card prefills and lands on Review)</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+          New Chat <span class="kbd">⌘N</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round"><circle cx="7" cy="7" r="4.2"/><path d="M10.4 10.4 14 14"/></svg>
+          Search <span class="kbd">⌘K</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers
+        </a>
+      </nav>
+
+      <div class="rail-sec">Recents</div>
+      <div class="recents">
+        <a href="#"><span class="glyph">◉</span><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where did I save them?</span><span class="when">12:31</span></a>
+        <a href="#"><span class="glyph">◷</span><span class="t">Daily digest — Tue Jul 22</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="glyph">▣</span><span class="t">Figma opened — shell redesign brief</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Mon</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <span class="rec-dot"></span>
+        <div class="stat"><b>Recording</b> · screen + mic<br><span class="dim">today 5h 12m · 2.1 GB</span></div>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="wiz-head">
+        <div class="wiz-top">
+          <h1 class="page-title">New Trigger</h1>
+          <div class="steps">
+            <div class="step"><span class="dot">1</span><span class="lbl">Condition</span></div>
+            <span class="step-dash"></span>
+            <div class="step"><span class="dot">2</span><span class="lbl">Prompt</span></div>
+            <span class="step-dash"></span>
+            <div class="step landing"><span class="dot">3</span><span class="lbl">Review</span></div>
+          </div>
+        </div>
+        <p class="page-sub">Start from a template — it fills in the condition and prompt for you.</p>
+        <p class="wiz-note"><span class="g">◆</span> picking a template lands you on <b>Review</b>, ready to save</p>
+      </div>
+
+      <div class="gallery-scroll">
+        <div class="gal-grid">
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">◉</div>
+            <h4>Meeting Recap</h4>
+            <p>When a meeting ends, write a recap with decisions and action items into a new conversation.</p>
+            <div class="cond"><span class="g">◉</span> on meeting end · any app</div>
+          </div>
+
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">◷</div>
+            <h4>Daily Digest</h4>
+            <p>Every morning, summarize yesterday — what you worked on, who you talked to, loose ends.</p>
+            <div class="cond"><span class="g">◷</span> daily · 8:00 AM · mon–fri</div>
+          </div>
+
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">▣</div>
+            <h4>“When I open Figma, brief me”</h4>
+            <p>The moment Figma comes to the front, recall what you were designing and what feedback is pending.</p>
+            <div class="cond"><span class="g">▣</span> on app open · Figma</div>
+          </div>
+
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">◷</div>
+            <h4>Weekly Review</h4>
+            <p>Friday afternoon, look back over the week: shipped work, meetings, and what slipped.</p>
+            <div class="cond"><span class="g">◷</span> weekly · fri 4:30 PM</div>
+          </div>
+
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">◉</div>
+            <h4>1:1 Prep</h4>
+            <p>When a call with a recurring voice starts, surface open action items from your last conversation with them.</p>
+            <div class="cond"><span class="g">◉</span> on meeting start · known voice</div>
+          </div>
+
+          <div class="tpl">
+            <span class="tpl-go">→</span>
+            <div class="tpl-glyph">▣</div>
+            <h4>Context Switch Log</h4>
+            <p>When you jump from the editor to the browser for more than ten minutes, note what pulled you away.</p>
+            <div class="cond"><span class="g">▣</span> on app switch · 10m dwell</div>
+          </div>
+        </div>
+
+        <button class="scratch">
+          <span class="plus">+</span>
+          <span>
+            <b>Start from scratch</b>
+            <span>Build your own — choose a condition, write the prompt, review, save.</span>
+          </span>
+          <span style="margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--ink-3);">begins at step 1 →</span>
+        </button>
+
+        <div class="glyph-legend">
+          <span><span class="g">◉</span>meeting / voice event</span>
+          <span><span class="g">▣</span>app activity</span>
+          <span><span class="g">◷</span>schedule</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ponytail: tab switching only — the sole JS on the page.
+  document.querySelectorAll('.tabs').forEach(function (tabs) {
+    tabs.addEventListener('click', function (e) {
+      var btn = e.target.closest('.tab');
+      if (!btn) return;
+      var scope = tabs.parentElement;
+      tabs.querySelectorAll('.tab').forEach(function (t) { t.classList.toggle('active', t === btn); });
+      scope.querySelectorAll('.pane').forEach(function (p) {
+        p.classList.toggle('active', p.id === btn.dataset.pane);
+      });
+    });
+  });
+</script>
+
+</body>
+</html>

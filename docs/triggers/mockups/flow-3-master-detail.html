@@ -1,0 +1,1092 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mnema · Triggers — Flow 3: Master-detail</title>
+<style>
+/* Tokens copied from docs/user-context/mockups/tokens.css (dark only). */
+:root {
+  --app-bg: #0c0c0e;
+  --app-fg: #e2e2e8;
+  --app-titlebar-bg: #08080c;
+  --app-titlebar-border: #15151f;
+  --app-titlebar-title: #45455a;
+  --app-surface: #0e0e16;
+  --app-surface-subtle: #101018;
+  --app-surface-raised: #13131a;
+  --app-surface-hover: #1a1a2a;
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #7a7a9a;
+  --app-text-subtle: #44445a;
+  --app-text-faint: #33334a;
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-glow: rgba(61, 255, 160, 0.18);
+  --app-warn: #d6a14a;
+  --app-warn-bg: #1a1208;
+  --app-warn-border: #7a4a18;
+  --app-danger: #ff6b7a;
+  --app-danger-text: #ff8090;
+  --app-neutral-bg: #1a1a2a;
+  --app-neutral-border: #2a2a3a;
+  --app-neutral-text: #7070a0;
+  --app-icon-fg: #8a8aaa;
+  --app-icon-fg-hover: #e2e2e8;
+  --app-icon-bg-hover: #1a1a2a;
+  --app-icon-border-hover: #2a2a3a;
+}
+* { box-sizing: border-box; }
+.hidden { display: none !important; }
+body { margin: 0; font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace, "Cascadia Code", "Fira Code", monospace; font-size: 13px; line-height: 1.6; -webkit-font-smoothing: antialiased; background: var(--app-bg); color: var(--app-fg); }
+
+/* ============================== MOCKUP EXPLAINER BAR */
+.mockup-bar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; max-width: 1180px; margin: 14px auto 0; padding: 8px 12px; border: 1px dashed var(--app-border-strong); border-radius: 8px; font-size: 11px; color: var(--app-text-muted); }
+.mockup-bar b { color: var(--app-text); font-weight: 700; }
+.mockup-bar .spacer { flex: 1 1 auto; }
+.mockup-bar nav a { color: var(--app-text-subtle); text-decoration: none; margin-left: 10px; white-space: nowrap; }
+.mockup-bar nav a:hover { color: var(--app-text); text-decoration: underline; }
+.mockup-bar nav a.current { color: var(--app-accent-strong); font-weight: 700; }
+
+/* ============================== APP WINDOW */
+.app-window { display: flex; flex-direction: column; width: 100%; max-width: 1180px; height: calc(100vh - 90px); margin: 12px auto 16px; border: 1px solid var(--app-border); border-radius: 10px; overflow: hidden; background: var(--app-bg); box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28); }
+.titlebar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; height: 36px; flex: 0 0 36px; padding: 0 12px; background: var(--app-titlebar-bg); border-bottom: 1px solid var(--app-titlebar-border); user-select: none; }
+.traffic-lights { display: flex; align-items: center; gap: 8px; }
+.traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.tl-close { background: #ff5f57; }
+.tl-min { background: #febc2e; }
+.tl-max { background: #28c840; }
+.wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+
+/* ============================== SPLIT */
+.split { display: flex; flex: 1 1 auto; min-height: 0; }
+
+/* ---- LEFT COLUMN: trigger list ---- */
+.list-col { flex: 0 0 300px; width: 300px; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--app-border); background: var(--app-surface-subtle); }
+.list-head { display: flex; align-items: center; gap: 6px; padding: 14px 12px 10px; }
+.list-head h1 { margin: 0; font-size: 13.5px; font-weight: 700; letter-spacing: 0.02em; color: var(--app-text-strong); }
+.list-head .spacer { flex: 1 1 auto; }
+.mini-btn { font: inherit; font-size: 10.5px; line-height: 1; height: 22px; padding: 0 9px; border-radius: 5px; cursor: pointer; transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease; }
+.mini-btn.primary { border: 1px solid var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-accent); }
+.mini-btn.primary:hover { box-shadow: 0 0 8px var(--app-accent-glow); }
+.mini-btn.secondary { border: 1px solid var(--app-border-strong); background: transparent; color: var(--app-text-muted); }
+.mini-btn.secondary:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); background: var(--app-surface-hover); }
+.mini-filter { display: inline-flex; align-items: center; gap: 2px; padding: 2px; margin: 0 12px 8px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface-subtle); align-self: flex-start; }
+.mini-filter button { font: inherit; font-size: 10.5px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0 10px; height: 19px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--app-text-muted); cursor: pointer; transition: color 0.12s ease; }
+.mini-filter button:hover { color: var(--app-text-strong); }
+.mini-filter button.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+.trigger-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; border-top: 1px solid var(--app-border); }
+.trigger-list::-webkit-scrollbar, .pane-scroll::-webkit-scrollbar { width: 8px; }
+.trigger-list::-webkit-scrollbar-track, .pane-scroll::-webkit-scrollbar-track { background: transparent; }
+.trigger-list::-webkit-scrollbar-thumb, .pane-scroll::-webkit-scrollbar-thumb { background: var(--app-border-strong); border: 2px solid var(--app-bg); border-radius: 999px; }
+.trow { display: flex; gap: 10px; padding: 9px 12px 10px; border-bottom: 1px solid var(--app-border); cursor: pointer; transition: background 0.12s ease; }
+.trow:hover { background: var(--app-surface-hover); }
+.trow.selected { background: var(--app-surface-raised); box-shadow: inset 2px 0 0 var(--app-accent); }
+.trow .switch { margin-top: 3px; }
+.trow-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.trow-line1 { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.trow-name { font-size: 12px; color: var(--app-text-strong); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.trow.dim .trow-name, .trow.dim .cond-chip { opacity: 0.45; }
+.cond-chip { flex: 0 0 auto; display: inline-flex; align-items: center; font-size: 9px; line-height: 1; letter-spacing: 0.04em; padding: 3px 6px; border: 1px solid var(--app-neutral-border); border-radius: 4px; background: var(--app-neutral-bg); color: var(--app-neutral-text); white-space: nowrap; }
+.trow-status { font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--app-text-muted); }
+.trow-status .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--app-text-faint); }
+.trow-status .when { color: var(--app-text-subtle); }
+.st-completed .dot { background: var(--app-accent); box-shadow: 0 0 5px var(--app-accent-glow); }
+.st-completed .lbl { color: var(--app-accent-strong); }
+.st-skipped .dot { background: var(--app-text-subtle); }
+.st-skipped .lbl { color: var(--app-text-muted); }
+.st-failed .dot { background: var(--app-danger); }
+.st-failed .lbl { color: var(--app-danger-text); }
+.st-off .lbl { color: var(--app-text-subtle); }
+.warn-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 9.5px; line-height: 1; padding: 3px 6px; border: 1px solid var(--app-warn-border); border-radius: 4px; background: var(--app-warn-bg); color: var(--app-warn); white-space: nowrap; }
+.list-foot { flex: 0 0 auto; padding: 8px 12px; border-top: 1px solid var(--app-border); font-size: 10px; color: var(--app-text-subtle); user-select: none; }
+
+/* ---- switch ---- */
+.switch { position: relative; width: 28px; height: 16px; flex: 0 0 auto; border: 1px solid var(--app-border-strong); border-radius: 999px; background: var(--app-surface-subtle); cursor: pointer; padding: 0; transition: background 0.12s ease, border-color 0.12s ease; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--app-text-subtle); transition: transform 0.12s ease, background 0.12s ease; }
+.switch.on { background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+.switch.on::after { transform: translateX(12px); background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+
+/* ============================== RIGHT PANE */
+.pane { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.pane-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 24px 28px 40px; }
+.pane-col { max-width: 680px; margin: 0 auto; }
+
+/* ---- editor ---- */
+.ed-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+.ed-head h2 { margin: 0; font-size: 15px; font-weight: 700; letter-spacing: 0.02em; color: var(--app-text-strong); }
+.ed-head .crumb { font-size: 10.5px; color: var(--app-text-subtle); }
+.ed-head .dirty-hint { margin-left: auto; font-size: 10.5px; color: var(--app-warn); }
+.import-banner, .gate-banner { display: flex; align-items: flex-start; gap: 8px; padding: 8px 11px; border: 1px solid var(--app-warn-border); border-radius: 6px; background: var(--app-warn-bg); font-size: 11px; line-height: 1.5; color: var(--app-warn); margin-bottom: 16px; }
+.import-banner .sub, .gate-banner .sub { color: var(--app-text-muted); }
+.field-block { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+.field-label { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-muted); }
+.field-hint { font-size: 10.5px; color: var(--app-text-subtle); line-height: 1.5; }
+.text-input { width: 100%; height: 32px; padding: 0 10px; border: 1px solid var(--app-border-strong); border-radius: 4px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12px; outline: none; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25); }
+.text-input:focus { border-color: var(--app-accent); background: var(--app-surface-raised); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow); }
+.seg { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--app-border); border-radius: 7px; background: var(--app-surface-subtle); align-self: flex-start; }
+.seg button { font: inherit; font-size: 11px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; height: 22px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--app-text-muted); cursor: pointer; transition: color 0.12s ease; }
+.seg button:hover { color: var(--app-text-strong); }
+.seg button.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+.condition-params { padding: 9px 11px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface-subtle); font-size: 11px; line-height: 1.55; color: var(--app-text-muted); }
+.condition-params b { color: var(--app-text); font-weight: 600; }
+.condition-params .alt { display: block; margin-top: 4px; color: var(--app-text-subtle); font-size: 10.5px; }
+.app-picker { width: 220px; margin-bottom: 2px; }
+.sched-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; }
+.time-input { width: 112px; flex: 0 0 auto; }
+.day-chips { display: inline-flex; gap: 4px; }
+.day-chip { font: inherit; font-size: 10px; line-height: 1; padding: 0 7px; height: 24px; border: 1px solid var(--app-border-strong); border-radius: 5px; background: var(--app-surface); color: var(--app-text-muted); cursor: pointer; transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease; }
+.day-chip:hover { color: var(--app-text-strong); border-color: var(--app-border-hover); }
+.day-chip.active { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+.prompt-head { display: flex; align-items: baseline; gap: 12px; }
+.prompt-head .char-count { margin-left: auto; font-size: 10px; color: var(--app-text-faint); }
+.quiet-btn { font: inherit; font-size: 10.5px; border: 0; padding: 0; background: transparent; color: var(--app-text-muted); cursor: pointer; transition: color 0.12s ease; }
+.quiet-btn:hover { color: var(--app-accent); }
+.quiet-btn.danger:hover { color: var(--app-danger-text); }
+.prompt-textarea { width: 100%; min-height: 170px; resize: vertical; padding: 11px 13px; border: 1px solid var(--app-border-strong); border-radius: 6px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 12px; line-height: 1.65; outline: none; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25); }
+.prompt-textarea:focus { border-color: var(--app-accent); background: var(--app-surface-raised); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 3px var(--app-accent-glow); }
+
+/* advanced disclosure */
+.advanced { border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-surface-subtle); margin-bottom: 16px; }
+.advanced summary { display: flex; align-items: center; gap: 8px; padding: 8px 11px; font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-muted); cursor: pointer; list-style: none; user-select: none; }
+.advanced summary::-webkit-details-marker { display: none; }
+.advanced summary .chev { transition: transform 0.12s ease; color: var(--app-text-subtle); }
+.advanced[open] summary .chev { transform: rotate(90deg); }
+.advanced summary .defaults-note { margin-left: auto; font-weight: 400; letter-spacing: 0.02em; text-transform: none; color: var(--app-text-faint); }
+.advanced-body { border-top: 1px solid var(--app-border); padding: 2px 11px 8px; }
+.adv-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; }
+.adv-row + .adv-row { border-top: 1px solid var(--app-border); }
+.adv-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.adv-name { font-size: 11.5px; color: var(--app-text); }
+.adv-hint { font-size: 10px; color: var(--app-text-subtle); line-height: 1.45; }
+.stepper { display: inline-flex; align-items: stretch; gap: 5px; flex: 0 0 auto; }
+.step-btn { flex: 0 0 26px; width: 26px; border: 1px solid var(--app-border-strong); border-radius: 4px; background: var(--app-surface); color: var(--app-text-muted); font: inherit; font-size: 14px; line-height: 1; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.12s, border-color 0.12s, color 0.12s; }
+.step-btn:hover { background: var(--app-surface-hover); border-color: var(--app-border-hover); color: var(--app-text-strong); }
+.stepper .field { position: relative; display: inline-flex; width: 84px; }
+.num-input { width: 100%; height: 30px; padding: 0 38px 0 9px; border: 1px solid var(--app-border-strong); border-radius: 4px; background: var(--app-surface); color: var(--app-text); font: inherit; font-size: 11.5px; outline: none; box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.25); }
+.unit-chip { position: absolute; top: 50%; right: 7px; transform: translateY(-50%); color: var(--app-text-faint); font-size: 9px; font-weight: 800; letter-spacing: 0.06em; pointer-events: none; }
+
+/* actions */
+.ed-actions { display: flex; align-items: center; gap: 12px; padding-top: 14px; border-top: 1px solid var(--app-border); margin-bottom: 22px; }
+.btn-save { font: inherit; font-size: 11.5px; font-weight: 700; letter-spacing: 0.03em; padding: 7px 16px; border: 1px solid var(--app-accent-border); border-radius: 5px; background: var(--app-accent-bg); color: var(--app-accent); cursor: pointer; transition: border-color 0.12s ease; }
+.btn-save:hover { border-color: var(--app-accent-strong); box-shadow: 0 0 0 3px var(--app-accent-glow); }
+.share-hint { font-size: 10px; color: var(--app-text-faint); }
+
+/* recent runs */
+.runs-block { border-top: 1px solid var(--app-border); padding-top: 12px; }
+.runs-title { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-muted); margin-bottom: 6px; }
+.run-line { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--app-border); font-size: 11px; color: var(--app-text-muted); }
+.run-line:last-child { border-bottom: 0; }
+.run-line .dot { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--app-text-faint); align-self: center; }
+.run-line.completed .dot { background: var(--app-accent); box-shadow: 0 0 5px var(--app-accent-glow); }
+.run-line.failed .dot { background: var(--app-danger); }
+.run-line .lbl { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.run-line.completed .lbl { color: var(--app-text); }
+.run-line.failed .lbl { color: var(--app-danger-text); }
+.run-line .when { flex: 0 0 auto; font-size: 10px; color: var(--app-text-subtle); }
+.run-line.completed { cursor: pointer; }
+.run-line.completed:hover .lbl { color: var(--app-accent-strong); }
+.run-line.completed .open { font-size: 9.5px; color: var(--app-text-faint); opacity: 0; }
+.run-line.completed:hover .open { opacity: 1; }
+.runs-empty { font-size: 11px; color: var(--app-text-subtle); padding: 4px 0; }
+
+/* ---- RUN (document) mode ---- */
+.back-link { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--app-text-muted); background: transparent; border: 0; padding: 0; font-family: inherit; cursor: pointer; margin-bottom: 16px; transition: color 0.12s ease; }
+.back-link:hover { color: var(--app-accent); }
+.doc-head { padding-bottom: 14px; margin-bottom: 18px; border-bottom: 1px solid var(--app-border); }
+.doc-eyebrow { display: inline-flex; align-items: center; gap: 6px; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--app-accent-strong); padding: 2px 8px; border-radius: 4px; border: 1px solid var(--app-accent-border); background: var(--app-accent-bg); margin-bottom: 9px; }
+.doc-title { margin: 0; font-size: 19px; line-height: 1.3; font-weight: 650; letter-spacing: -0.01em; color: var(--app-text-strong); }
+.doc-meta { margin-top: 4px; font-size: 10.5px; color: var(--app-text-muted); }
+.doc-meta .dotsep { color: var(--app-text-faint); margin: 0 6px; }
+.doc-body { font-size: 12.5px; color: var(--app-text); line-height: 1.7; }
+.doc-body h3 { margin: 24px 0 9px; font-size: 13px; font-weight: 650; color: var(--app-text-strong); padding-bottom: 5px; border-bottom: 1px dashed var(--app-border); }
+.doc-body h3:first-child { margin-top: 0; }
+.doc-body p { margin: 0 0 11px; }
+.doc-body ul { margin: 0 0 11px; padding-left: 20px; }
+.doc-body li { margin-bottom: 4px; }
+.doc-body li::marker { color: var(--app-text-subtle); }
+.doc-body strong { color: var(--app-text-strong); font-weight: 600; }
+.speaker { color: var(--app-accent-strong); font-weight: 600; }
+.checklist { list-style: none; padding-left: 2px; margin: 0 0 11px; }
+.checklist li { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
+.checklist .box { flex: 0 0 auto; width: 12px; height: 12px; border: 1px solid var(--app-border-strong); border-radius: 3px; background: var(--app-surface-raised); position: relative; top: 1px; cursor: pointer; }
+.checklist .box.done { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+.checklist .box.done::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 9px; color: var(--app-accent-strong); line-height: 1; }
+.checklist .owner { color: var(--app-text-muted); font-size: 10.5px; white-space: nowrap; }
+
+/* AnswerBlock panels (flat, bordered) */
+.answer-block { margin: 13px 0 15px; border: 1px solid var(--app-border); border-radius: 9px; background: var(--app-surface); padding: 12px 13px 13px; }
+.answer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 11px; }
+.block-title { display: flex; align-items: center; gap: 8px; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--app-text-muted); }
+.block-kind { font-size: 9px; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--app-border-strong); background: var(--app-surface-subtle); color: var(--app-text-subtle); text-transform: lowercase; }
+.answer-note { font-size: 10px; color: var(--app-text-muted); }
+.barchart { display: flex; flex-direction: column; gap: 8px; }
+.bar-row { display: grid; grid-template-columns: 70px 1fr 52px; align-items: center; gap: 10px; }
+.bar-label { font-size: 11px; color: var(--app-text); }
+.bar-track { position: relative; height: 13px; border-radius: 3px; background: var(--app-surface-hover); border: 1px solid var(--app-border); overflow: hidden; }
+.bar-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 2px 0 0 2px; background: var(--app-accent); opacity: 0.85; }
+.bar-val { font-size: 10.5px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.tl { display: flex; flex-direction: column; }
+.tl-row { display: flex; gap: 12px; }
+.tl-time { flex: 0 0 58px; text-align: right; font-size: 10px; color: var(--app-text-muted); font-variant-numeric: tabular-nums; padding-top: 1px; }
+.tl-spine { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
+.tl-dot { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow); margin-top: 6px; }
+.tl-row:last-child .tl-dot { background: var(--app-text-subtle); box-shadow: none; }
+.tl-line { flex: 1 1 auto; width: 1px; background: var(--app-border); min-height: 12px; }
+.tl-row:last-child .tl-line { display: none; }
+.tl-body { flex: 1 1 auto; min-width: 0; padding-bottom: 13px; }
+.tl-row:last-child .tl-body { padding-bottom: 2px; }
+.tl-title { font-size: 11.5px; color: var(--app-text-strong); }
+.tl-sub { font-size: 10px; color: var(--app-text-muted); margin-top: 1px; }
+.dossier { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+.dossier .kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dossier .k { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-subtle); }
+.dossier .v { font-size: 11.5px; color: var(--app-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* follow-up */
+.followup-divider { display: flex; align-items: center; gap: 10px; margin: 26px 0 16px; font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--app-text-subtle); }
+.followup-divider::before, .followup-divider::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--app-border); }
+.msg { display: flex; gap: 12px; margin-bottom: 18px; }
+.msg-user { justify-content: flex-end; }
+.user-bubble { max-width: 78%; background: var(--app-surface-raised); border: 1px solid var(--app-border-strong); border-radius: 10px; padding: 8px 12px; font-size: 12.5px; color: var(--app-text-strong); }
+.avatar { flex: 0 0 auto; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--app-accent-bg); border: 1px solid var(--app-accent-border); color: var(--app-accent-strong); font-size: 12px; margin-top: 1px; }
+.msg-body { min-width: 0; flex: 1 1 auto; }
+.msg-prose { font-size: 12.5px; color: var(--app-text); line-height: 1.65; }
+.msg-prose .strong { color: var(--app-text-strong); font-weight: 600; }
+.composer-wrap { flex: 0 0 auto; border-top: 1px solid var(--app-border); background: var(--app-bg); padding: 11px 28px 12px; }
+.composer { max-width: 680px; margin: 0 auto; }
+.composer-row { display: flex; align-items: center; gap: 9px; border: 1px solid var(--app-border-strong); border-radius: 10px; background: var(--app-surface); padding: 6px 7px 6px 12px; }
+.composer-row:focus-within { border-color: var(--app-border-hover); }
+.composer-input { flex: 1 1 auto; min-width: 0; border: none; background: transparent; font: inherit; font-size: 12.5px; color: var(--app-text-strong); outline: none; }
+.composer-input::placeholder { color: var(--app-text-faint); }
+.send-btn { flex: 0 0 auto; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; border: 1px solid var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-accent-strong); font-size: 14px; cursor: pointer; }
+.composer-hint { max-width: 680px; margin: 6px auto 0; font-size: 9.5px; color: var(--app-text-faint); text-align: center; }
+
+
+</style>
+</head>
+<body>
+
+<div class="mockup-bar">
+  <span><b>MOCKUP · FLOW 3 of 5 — Master-detail.</b> Everything on one screen: list on the left, edit or read runs on the right.</span>
+  <span class="spacer"></span>
+  <nav>
+    <a href="flow-1-dense-list.html">Flow 1</a>
+    <a href="flow-2-card-grid.html">Flow 2</a>
+    <a class="current" href="flow-3-master-detail.html">Flow 3</a>
+    <a href="flow-4-wizard.html">Flow 4</a>
+    <a href="flow-5-tui.html">Flow 5</a>
+  </nav>
+</div>
+
+<div class="app-window">
+  <header class="titlebar">
+    <div class="traffic-lights">
+      <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+    </div>
+    <div class="wordmark">MNEMA</div>
+    <div></div>
+  </header>
+
+  <div class="split">
+    <!-- ============ LEFT: trigger list ============ -->
+    <aside class="list-col" aria-label="Triggers">
+      <div class="list-head">
+        <h1>Triggers</h1>
+        <div class="spacer"></div>
+        <button class="mini-btn secondary" id="btn-import" title="Paste shared Trigger JSON — prefills the editor for review">Import</button>
+        <button class="mini-btn primary" id="btn-new">+ New</button>
+      </div>
+      <div class="mini-filter" role="tablist" aria-label="Filter triggers">
+        <button class="active" data-filter="All">All</button>
+        <button data-filter="Enabled">Enabled</button>
+        <button data-filter="Disabled">Disabled</button>
+      </div>
+      <div class="trigger-list" id="trigger-list"></div>
+      <div class="list-foot" id="list-foot"></div>
+    </aside>
+
+    <!-- ============ RIGHT PANE ============ -->
+    <section class="pane">
+
+      <!-- MODE: detail / new (one editor, two hats) -->
+      <div class="pane-scroll" id="pane-editor">
+        <div class="pane-col">
+          <div class="ed-head">
+            <h2 id="ed-title">Edit Trigger</h2>
+            <span class="crumb" id="ed-crumb">triggers / meeting-recap</span>
+            <span class="dirty-hint hidden" id="dirty-hint">unsaved changes</span>
+          </div>
+
+          <div class="import-banner hidden" id="import-banner">
+            <span aria-hidden="true">⚠</span>
+            <div>
+              Imported — review the prompt before saving.
+              <span class="sub">This prompt will run automatically when the condition fires. Make sure it says what you want.</span>
+            </div>
+          </div>
+
+          <div class="gate-banner hidden" id="gate-banner">
+            <span aria-hidden="true">⚠</span>
+            <div>
+              Needs an AI provider.
+              <span class="sub">This trigger can't run until an AI provider is configured in Settings → Intelligence.</span>
+            </div>
+          </div>
+
+          <div class="field-block">
+            <label class="field-label" for="f-name">Name</label>
+            <input class="text-input" id="f-name" type="text" />
+          </div>
+
+          <div class="field-block">
+            <span class="field-label">Condition</span>
+            <div class="seg" role="tablist" aria-label="Condition" id="cond-seg">
+              <button type="button" data-condition="meeting_ends">Meeting Ends</button>
+              <button type="button" data-condition="app_opened">App Opened</button>
+              <button type="button" data-condition="schedule">Schedule</button>
+            </div>
+
+            <div class="condition-params" id="params-meeting_ends">
+              Fires when a meeting app releases the microphone and stays quiet through the
+              release grace period. Detects <b>Zoom, Teams, Slack, FaceTime</b> and browser
+              tabs on known meeting URLs.
+            </div>
+
+            <div class="condition-params hidden" id="params-app_opened">
+              <select class="text-input app-picker" id="f-app" aria-label="App to watch">
+                <option>Figma</option>
+                <option>Xcode</option>
+                <option>Slack</option>
+                <option>Notion</option>
+                <option>Obsidian</option>
+                <option>Linear</option>
+              </select>
+              <span class="alt">Fires when this app becomes frontmost after a fresh session — at least 30 min away. Rapid window switching never counts.</span>
+            </div>
+
+            <div class="condition-params hidden" id="params-schedule">
+              <div class="sched-row">
+                <input class="text-input time-input" id="f-time" type="time" value="18:00" aria-label="Time of day" />
+                <div class="day-chips" id="day-chips" role="group" aria-label="Days of week">
+                  <button type="button" class="day-chip" data-day="Mon">Mon</button>
+                  <button type="button" class="day-chip" data-day="Tue">Tue</button>
+                  <button type="button" class="day-chip" data-day="Wed">Wed</button>
+                  <button type="button" class="day-chip" data-day="Thu">Thu</button>
+                  <button type="button" class="day-chip" data-day="Fri">Fri</button>
+                  <button type="button" class="day-chip" data-day="Sat">Sat</button>
+                  <button type="button" class="day-chip" data-day="Sun">Sun</button>
+                </div>
+              </div>
+              <span class="alt" id="sched-preview">runs weekdays at 6:00 PM</span>
+            </div>
+          </div>
+
+          <div class="field-block">
+            <div class="prompt-head">
+              <label class="field-label" for="f-prompt">Prompt</label>
+              <button type="button" class="quiet-btn" id="reset-template">Reset to template</button>
+              <span class="char-count" id="char-count"></span>
+            </div>
+            <textarea class="prompt-textarea" id="f-prompt" spellcheck="false"></textarea>
+            <span class="field-hint">Plain prose — no template variables. Mnema adds the firing window, transcript, speakers, and what it knows about you automatically.</span>
+          </div>
+
+          <details class="advanced" id="advanced">
+            <summary>
+              <span class="chev">▸</span>
+              <span>Advanced</span>
+              <span class="defaults-note">all defaults</span>
+            </summary>
+            <div class="advanced-body">
+              <div class="adv-row" id="row-min-length">
+                <div class="adv-copy">
+                  <span class="adv-name">Minimum meeting length</span>
+                  <span class="adv-hint">Shorter mic holds don't count as a meeting.</span>
+                </div>
+                <div class="stepper" data-min="1" data-max="30" data-key="minMeeting">
+                  <button type="button" class="step-btn" data-step="-1" aria-label="Decrease minimum meeting length">−</button>
+                  <div class="field"><input class="num-input" type="text" inputmode="numeric" value="5" aria-label="Minimum meeting length" /><span class="unit-chip">MIN</span></div>
+                  <button type="button" class="step-btn" data-step="1" aria-label="Increase minimum meeting length">+</button>
+                </div>
+              </div>
+              <div class="adv-row hidden" id="row-away-gap">
+                <div class="adv-copy">
+                  <span class="adv-name">Away gap</span>
+                  <span class="adv-hint">How long the app must be out of front before opening it counts as a fresh session.</span>
+                </div>
+                <div class="stepper" data-min="5" data-max="240" data-key="awayGap">
+                  <button type="button" class="step-btn" data-step="-1" aria-label="Decrease away gap">−</button>
+                  <div class="field"><input class="num-input" type="text" inputmode="numeric" value="30" aria-label="Away gap" /><span class="unit-chip">MIN</span></div>
+                  <button type="button" class="step-btn" data-step="1" aria-label="Increase away gap">+</button>
+                </div>
+              </div>
+              <div class="adv-row">
+                <div class="adv-copy">
+                  <span class="adv-name">Cooldown</span>
+                  <span class="adv-hint">Never fires again within this window of the last firing.</span>
+                </div>
+                <div class="stepper" data-min="0" data-max="120" data-key="cooldown">
+                  <button type="button" class="step-btn" data-step="-1" aria-label="Decrease cooldown">−</button>
+                  <div class="field"><input class="num-input" type="text" inputmode="numeric" value="10" aria-label="Cooldown" /><span class="unit-chip">MIN</span></div>
+                  <button type="button" class="step-btn" data-step="1" aria-label="Increase cooldown">+</button>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <div class="ed-actions">
+            <button type="button" class="btn-save" id="btn-save">Save Changes</button>
+            <button type="button" class="quiet-btn" id="btn-share">Share</button>
+            <span class="share-hint">Share copies this trigger as JSON — no provider or key data</span>
+            <span style="flex:1 1 auto"></span>
+            <button type="button" class="quiet-btn danger" id="btn-delete">Delete</button>
+          </div>
+
+          <div class="runs-block" id="runs-block">
+            <div class="runs-title">Recent runs</div>
+            <div id="runs-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MODE: run (document view) -->
+      <div class="pane-scroll hidden" id="pane-run">
+        <div class="pane-col">
+          <button type="button" class="back-link" id="back-link">◀ back to trigger</button>
+
+          <header class="doc-head">
+            <span class="doc-eyebrow" title="This conversation was started by a trigger, not by you">⚡ trigger run</span>
+            <h2 class="doc-title" id="doc-title">Meeting Recap — Product Sync</h2>
+            <div class="doc-meta" id="doc-meta">
+              Triggered by Meeting Ends<span class="dotsep">·</span>Zoom<span class="dotsep">·</span>today 2:03–2:47 PM<span class="dotsep">·</span>ran 2:14 PM
+            </div>
+          </header>
+
+          <article class="doc-body">
+            <h3>Summary</h3>
+            <p>
+              A 44-minute product sync focused on the <strong>v0.3 release scope</strong>.
+              The group agreed to ship semantic search behind a flag and to push the
+              onboarding redesign to v0.4. Most of the debate was about whether the
+              embedding backfill is safe to run on first launch.
+            </p>
+            <ul>
+              <li><span class="speaker">You</span>: argued the backfill should stay opt-in until the RSS ceiling is verified on 8&nbsp;GB machines; walked through the vmmap numbers.</li>
+              <li><span class="speaker">Sarah</span>: pushed for flag-on-by-default; conceded after the memory figures, asked for a follow-up benchmark by Friday.</li>
+              <li><span class="speaker">Dev</span>: confirmed the sidecar approach reclaims memory fully; volunteered to own the Friday benchmark.</li>
+            </ul>
+
+            <section class="answer-block">
+              <div class="answer-head">
+                <div class="block-title">Speaking time<span class="block-kind">mnema-bars</span></div>
+                <span class="answer-note">2:03–2:47 PM</span>
+              </div>
+              <div class="barchart">
+                <div class="bar-row">
+                  <div class="bar-label">You</div>
+                  <div class="bar-track"><span class="bar-fill" style="width:100%;"></span></div>
+                  <div class="bar-val">18 min</div>
+                </div>
+                <div class="bar-row">
+                  <div class="bar-label">Sarah</div>
+                  <div class="bar-track"><span class="bar-fill" style="width:67%;"></span></div>
+                  <div class="bar-val">12 min</div>
+                </div>
+                <div class="bar-row">
+                  <div class="bar-label">Dev</div>
+                  <div class="bar-track"><span class="bar-fill" style="width:50%;"></span></div>
+                  <div class="bar-val">9 min</div>
+                </div>
+              </div>
+            </section>
+
+            <h3>Decisions</h3>
+            <ul>
+              <li><strong>Semantic search ships in v0.3 behind a flag</strong>, off by default until the memory benchmark passes.</li>
+              <li><strong>Onboarding redesign moves to v0.4</strong> — no partial version in v0.3.</li>
+              <li>The backfill runs only on idle + AC power; Dev writes the gating check.</li>
+            </ul>
+
+            <section class="answer-block">
+              <div class="answer-head">
+                <div class="block-title">Meeting flow<span class="block-kind">mnema-timeline</span></div>
+              </div>
+              <div class="tl">
+                <div class="tl-row">
+                  <div class="tl-time">2:03 PM</div>
+                  <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                  <div class="tl-body">
+                    <div class="tl-title">Status round</div>
+                    <div class="tl-sub">quick per-person updates, ~6 min</div>
+                  </div>
+                </div>
+                <div class="tl-row">
+                  <div class="tl-time">2:09 PM</div>
+                  <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                  <div class="tl-body">
+                    <div class="tl-title">v0.3 scope debate</div>
+                    <div class="tl-sub">semantic search flag, backfill memory ceiling — the bulk of the meeting</div>
+                  </div>
+                </div>
+                <div class="tl-row">
+                  <div class="tl-time">2:34 PM</div>
+                  <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                  <div class="tl-body">
+                    <div class="tl-title">Onboarding deferral</div>
+                    <div class="tl-sub">agreed quickly; moved to v0.4</div>
+                  </div>
+                </div>
+                <div class="tl-row">
+                  <div class="tl-time">2:41 PM</div>
+                  <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                  <div class="tl-body">
+                    <div class="tl-title">Wrap-up &amp; owners</div>
+                    <div class="tl-sub">action items assigned, Friday checkpoint set</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <h3>Action items</h3>
+            <ul class="checklist">
+              <li><span class="box"></span><span>Run the 8&nbsp;GB-machine embedding benchmark and post numbers</span><span class="owner">— Dev, Fri</span></li>
+              <li><span class="box"></span><span>Write the idle + AC gating check for the backfill</span><span class="owner">— Dev</span></li>
+              <li><span class="box"></span><span>Draft the v0.3 flag rollout note for the changelog</span><span class="owner">— You</span></li>
+              <li><span class="box done"></span><span>Move onboarding-redesign issues to the v0.4 milestone</span><span class="owner">— Sarah, done in-call</span></li>
+            </ul>
+
+            <section class="answer-block">
+              <div class="answer-head">
+                <div class="block-title">Meeting facts<span class="block-kind">mnema-dossier</span></div>
+              </div>
+              <div class="dossier">
+                <div class="kv"><span class="k">Meeting</span><span class="v">Product Sync</span></div>
+                <div class="kv"><span class="k">Duration</span><span class="v">44 min</span></div>
+                <div class="kv"><span class="k">App</span><span class="v">zoom.us</span></div>
+                <div class="kv"><span class="k">Participants</span><span class="v">3</span></div>
+              </div>
+            </section>
+          </article>
+
+          <div class="followup-divider">follow-up</div>
+
+          <div id="followup">
+            <div class="msg msg-user">
+              <div class="user-bubble">Did Sarah agree to the flag being off by default, or just stop pushing?</div>
+            </div>
+            <div class="msg">
+              <div class="avatar">◈</div>
+              <div class="msg-body">
+                <div class="msg-prose">
+                  She explicitly agreed — at <span class="strong">2:31 PM</span> she said
+                  "fine, off by default until Friday's numbers", and then set the Friday
+                  checkpoint herself. It reads as a real concession, not a stalemate.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Composer: only visible in run mode -->
+      <div class="composer-wrap hidden" id="composer-wrap">
+        <div class="composer">
+          <div class="composer-row">
+            <input class="composer-input" id="composer-input" type="text" placeholder="Ask a follow-up about this run…" />
+            <button class="send-btn" id="composer-send" type="button" aria-label="Send">↑</button>
+          </div>
+        </div>
+        <div class="composer-hint">
+          Follow-ups continue this conversation. Trigger runs use read-only tools over your own capture history.
+        </div>
+      </div>
+
+    </section>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s) { return document.querySelector(s); };
+  var $$ = function (s) { return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+  /* ---------- data ---------- */
+  var TEMPLATES = {
+    meeting_ends: "Write a recap of the meeting that just ended.\n\nStart with a one-paragraph summary of what the meeting was about and what was decided.\n\nThen go speaker by speaker: for each person, summarize what they said, the points they pushed for, and anything they committed to doing.\n\nEnd with feedback for me: how I came across, whether I talked too much or too little, and one thing I could do better in the next meeting.\n\nKeep it direct and skip the pleasantries.",
+    app_opened: "I just came back to this app after being away for a while.\n\nRemind me where I left off: what I was working on in it last time, anything I said I'd do next, and any loose ends I left hanging.\n\nKeep it to a few sentences — just enough to get back into it fast.",
+    schedule: "It's the end of my workday.\n\nWrite a short review of today: what I actually spent time on, what moved forward, and what stalled.\n\nCall out anything I said I'd do but didn't get to, and suggest the first thing to pick up tomorrow.\n\nBe honest and keep it brief."
+  };
+  var DEFAULT_ADV = { minMeeting: 5, awayGap: 30, cooldown: 10 };
+  var WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri"];
+
+  function mk(id, name, cond, prompt, opts) {
+    var t = {
+      id: id, name: name, enabled: true, needsProvider: false,
+      condition: cond, prompt: prompt,
+      advanced: { minMeeting: 5, awayGap: 30, cooldown: 10 },
+      runs: []
+    };
+    Object.keys(opts || {}).forEach(function (k) { t[k] = opts[k]; });
+    return t;
+  }
+
+  var triggers = [
+    mk("meeting-recap", "Meeting Recap",
+      { type: "meeting_ends", params: {} }, TEMPLATES.meeting_ends,
+      { runs: [
+        { state: "completed", title: "Meeting Recap — Product Sync", when: "today 2:14 PM" },
+        { state: "completed", title: "Meeting Recap — 1:1 with Sarah", when: "today 10:04 AM" },
+        { state: "skipped", label: "skipped — wasn't recording", when: "yesterday 9:00 AM" }
+      ] }),
+    mk("standup-notes", "Standup Notes",
+      { type: "meeting_ends", params: {} },
+      "Draft my standup notes from this meeting: what I reported and any blockers raised.",
+      { runs: [
+        { state: "skipped", label: "skipped — wasn't recording", when: "yesterday 11:02 AM" },
+        { state: "completed", title: "Standup Notes — Daily Standup", when: "Jul 15 9:34 AM" }
+      ] }),
+    mk("figma-session-log", "Figma Session Log",
+      { type: "app_opened", params: { app: "Figma" } },
+      "Log what I worked on during this Figma session.",
+      { runs: [
+        { state: "failed", label: "failed — provider returned an error", when: "Jul 17" },
+        { state: "completed", title: "Figma Session Log — onboarding frames", when: "Jul 16 3:12 PM" }
+      ] }),
+    mk("daily-wrap-up", "Daily Wrap-Up",
+      { type: "schedule", params: { time: "18:00", days: WEEKDAYS.slice() } }, TEMPLATES.schedule,
+      { runs: [
+        { state: "completed", title: "Daily Wrap-Up — Thursday", when: "yesterday 6:03 PM" },
+        { state: "completed", title: "Daily Wrap-Up — Wednesday", when: "Jul 16 6:02 PM" }
+      ] }),
+    mk("one-on-one-followups", "1:1 Follow-Ups",
+      { type: "meeting_ends", params: {} },
+      "After a 1:1 ends, list what each of us committed to and draft a short follow-up message I can send.",
+      { enabled: false, needsProvider: true, runs: [] })
+  ];
+
+  /* ---------- state ---------- */
+  var filter = "All";
+  var selectedId = triggers[0].id;
+  var mode = "edit"; /* edit | new | run */
+  var importing = false;
+  var promptDirty = false;
+  var savedSnapshot = "";
+
+  function byId(id) { return triggers.filter(function (t) { return t.id === id; })[0] || null; }
+  function condLabel(t) {
+    if (t.condition.type === "meeting_ends") return "meeting ends";
+    if (t.condition.type === "app_opened") return "app opened · " + (t.condition.params.app || "?");
+    return "schedule · " + schedLabel(t.condition.params.days || []) + " " + fmtTime(t.condition.params.time || "18:00");
+  }
+
+  /* ---------- left list ---------- */
+  var listEl = $("#trigger-list");
+  var footEl = $("#list-foot");
+
+  function lastRunHtml(t) {
+    if (t.needsProvider) {
+      return '<span class="warn-chip" title="This trigger can\'t run until an AI provider is configured">⚠ needs an AI provider</span>';
+    }
+    if (!t.enabled) {
+      return '<span class="trow-status st-off"><span class="dot"></span><span class="lbl">disabled</span></span>';
+    }
+    var r = t.runs[0];
+    if (!r) return '<span class="trow-status"><span class="dot"></span><span class="lbl">never fired</span></span>';
+    return '<span class="trow-status st-' + r.state + '">' +
+      '<span class="dot"></span><span class="lbl"></span><span class="when"> · ' + r.when + "</span></span>";
+  }
+
+  function renderList() {
+    listEl.textContent = "";
+    var shown = 0;
+    triggers.forEach(function (t) {
+      if (filter === "Enabled" && !t.enabled) return;
+      if (filter === "Disabled" && t.enabled) return;
+      shown++;
+      var row = document.createElement("div");
+      row.className = "trow" + (t.needsProvider || !t.enabled ? " dim" : "") +
+        (mode !== "new" && t.id === selectedId ? " selected" : "");
+      row.innerHTML =
+        '<button class="switch' + (t.enabled ? " on" : "") + '" role="switch" aria-checked="' + t.enabled + '" aria-label="Enable ' + t.name + '"></button>' +
+        '<div class="trow-main">' +
+          '<div class="trow-line1"><span class="trow-name"></span><span class="cond-chip"></span></div>' +
+          '<div class="trow-status-slot">' + lastRunHtml(t) + "</div>" +
+        "</div>";
+      row.querySelector(".trow-name").textContent = t.name;
+      row.querySelector(".cond-chip").textContent = condLabel(t);
+      var lbl = row.querySelector(".trow-status .lbl");
+      if (lbl && !lbl.textContent) {
+        var r = t.runs[0];
+        if (r) lbl.textContent = r.state === "completed" ? "completed" : (r.label || r.state);
+      }
+      row.querySelector(".switch").addEventListener("click", function (e) {
+        e.stopPropagation();
+        t.enabled = !t.enabled;
+        renderList();
+      });
+      row.addEventListener("click", function () { selectTrigger(t.id); });
+      listEl.appendChild(row);
+    });
+    var on = triggers.filter(function (t) { return t.enabled; }).length;
+    footEl.textContent = triggers.length + " triggers · " + on + " enabled" +
+      (shown < triggers.length ? " · " + shown + " shown" : "");
+  }
+
+  $$(".mini-filter button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      $$(".mini-filter button").forEach(function (x) { x.classList.toggle("active", x === b); });
+      filter = b.dataset.filter;
+      renderList();
+    });
+  });
+
+  /* ---------- editor form ---------- */
+  var promptEl = $("#f-prompt");
+  var formCondition = "meeting_ends";
+
+  function fmtTime(hhmm) {
+    var p = (hhmm || "18:00").split(":");
+    var h = parseInt(p[0], 10);
+    var ampm = h >= 12 ? "PM" : "AM";
+    var h12 = h % 12 === 0 ? 12 : h % 12;
+    return h12 + ":" + p[1] + " " + ampm;
+  }
+  function schedLabel(days) {
+    if (days.length === 0) return "never";
+    if (days.length === 7) return "every day";
+    if (days.length === 5 && days.indexOf("Sat") < 0 && days.indexOf("Sun") < 0) return "weekdays";
+    if (days.length === 2 && days.indexOf("Sat") >= 0 && days.indexOf("Sun") >= 0) return "weekends";
+    return days.join(", ");
+  }
+  function activeDays() {
+    return $$("#day-chips .day-chip").filter(function (c) { return c.classList.contains("active"); })
+      .map(function (c) { return c.dataset.day; });
+  }
+  function updateSchedPreview() {
+    var days = activeDays();
+    $("#sched-preview").textContent = days.length === 0
+      ? "never fires — pick at least one day"
+      : "runs " + schedLabel(days) + " at " + fmtTime($("#f-time").value);
+  }
+  function updateCharCount() { $("#char-count").textContent = promptEl.value.length + " chars"; }
+
+  function stepperInput(key) {
+    return document.querySelector('.stepper[data-key="' + key + '"] .num-input');
+  }
+  function setAdvanced(adv) {
+    stepperInput("minMeeting").value = adv.minMeeting;
+    stepperInput("awayGap").value = adv.awayGap;
+    stepperInput("cooldown").value = adv.cooldown;
+    var isDefault = adv.minMeeting === DEFAULT_ADV.minMeeting &&
+      adv.awayGap === DEFAULT_ADV.awayGap && adv.cooldown === DEFAULT_ADV.cooldown;
+    $(".defaults-note").textContent = isDefault ? "all defaults" : "customized";
+  }
+
+  function setFormCondition(next) {
+    formCondition = next;
+    $$("#cond-seg button").forEach(function (b) {
+      b.classList.toggle("active", b.dataset.condition === next);
+    });
+    ["meeting_ends", "app_opened", "schedule"].forEach(function (c) {
+      $("#params-" + c).classList.toggle("hidden", c !== next);
+    });
+    $("#row-min-length").classList.toggle("hidden", next !== "meeting_ends");
+    $("#row-away-gap").classList.toggle("hidden", next !== "app_opened");
+  }
+
+  function readForm() {
+    var params;
+    if (formCondition === "meeting_ends") params = {};
+    else if (formCondition === "app_opened") params = { app: $("#f-app").value };
+    else params = { time: $("#f-time").value, days: activeDays() };
+    return {
+      name: $("#f-name").value.trim(),
+      condition: { type: formCondition, params: params },
+      prompt: promptEl.value,
+      advanced: {
+        minMeeting: parseInt(stepperInput("minMeeting").value, 10),
+        awayGap: parseInt(stepperInput("awayGap").value, 10),
+        cooldown: parseInt(stepperInput("cooldown").value, 10)
+      }
+    };
+  }
+
+  function fillForm(t) {
+    $("#f-name").value = t.name;
+    setFormCondition(t.condition.type);
+    if (t.condition.type === "app_opened") $("#f-app").value = t.condition.params.app || "Figma";
+    var days = t.condition.type === "schedule" ? (t.condition.params.days || WEEKDAYS) : WEEKDAYS;
+    $("#f-time").value = (t.condition.params && t.condition.params.time) || "18:00";
+    $$("#day-chips .day-chip").forEach(function (c) {
+      c.classList.toggle("active", days.indexOf(c.dataset.day) >= 0);
+    });
+    promptEl.value = t.prompt;
+    promptDirty = t.prompt !== TEMPLATES[t.condition.type];
+    setAdvanced(t.advanced);
+    updateSchedPreview();
+    updateCharCount();
+  }
+
+  function refreshDirty() {
+    var dirty = JSON.stringify(readForm()) !== savedSnapshot;
+    $("#dirty-hint").classList.toggle("hidden", mode === "new" || !dirty);
+  }
+  function snapshot() {
+    savedSnapshot = JSON.stringify(readForm());
+    refreshDirty();
+  }
+
+  /* form event wiring (dirty tracking rides on every change) */
+  ["#f-name", "#f-app", "#f-time"].forEach(function (sel) {
+    $(sel).addEventListener("input", function () {
+      if (sel === "#f-time") updateSchedPreview();
+      refreshDirty();
+    });
+  });
+  promptEl.addEventListener("input", function () {
+    promptDirty = promptEl.value !== TEMPLATES[formCondition];
+    updateCharCount();
+    refreshDirty();
+  });
+  $("#reset-template").addEventListener("click", function () {
+    promptEl.value = TEMPLATES[formCondition];
+    promptDirty = false;
+    updateCharCount();
+    refreshDirty();
+  });
+  $$("#cond-seg button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      setFormCondition(b.dataset.condition);
+      if (!promptDirty) {
+        promptEl.value = TEMPLATES[formCondition];
+        updateCharCount();
+      }
+      refreshDirty();
+    });
+  });
+  $$("#day-chips .day-chip").forEach(function (chip) {
+    chip.addEventListener("click", function () {
+      chip.classList.toggle("active");
+      updateSchedPreview();
+      refreshDirty();
+    });
+  });
+  $$(".stepper").forEach(function (stepper) {
+    var min = parseInt(stepper.dataset.min, 10);
+    var max = parseInt(stepper.dataset.max, 10);
+    var input = stepper.querySelector(".num-input");
+    function clamp(v) { return Math.min(max, Math.max(min, v)); }
+    stepper.querySelectorAll(".step-btn").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var cur = parseInt(input.value, 10);
+        if (isNaN(cur)) cur = min;
+        input.value = clamp(cur + parseInt(btn.dataset.step, 10));
+        refreshDirty();
+      });
+    });
+    input.addEventListener("change", function () {
+      var v = parseInt(input.value, 10);
+      input.value = isNaN(v) ? min : clamp(v);
+      refreshDirty();
+    });
+  });
+
+  /* ---------- recent runs ---------- */
+  function renderRuns(t) {
+    var list = $("#runs-list");
+    list.textContent = "";
+    if (!t || t.runs.length === 0) {
+      list.innerHTML = '<div class="runs-empty">No runs yet — this trigger hasn\'t fired.</div>';
+      return;
+    }
+    t.runs.forEach(function (r, idx) {
+      var line = document.createElement("div");
+      line.className = "run-line " + r.state;
+      var label = r.state === "completed" ? (r.title || "completed") : (r.label || r.state);
+      line.innerHTML = '<span class="dot"></span><span class="lbl"></span>' +
+        (r.state === "completed" ? '<span class="open">open ↗</span>' : "") +
+        '<span class="when"></span>';
+      line.querySelector(".lbl").textContent = label;
+      line.querySelector(".when").textContent = r.when;
+      if (r.state === "completed") {
+        line.addEventListener("click", function () { openRun(t, idx); });
+      }
+      list.appendChild(line);
+    });
+  }
+
+  /* ---------- pane mode switching ---------- */
+  function showPane(which) {
+    $("#pane-editor").classList.toggle("hidden", which !== "editor");
+    $("#pane-run").classList.toggle("hidden", which !== "run");
+    $("#composer-wrap").classList.toggle("hidden", which !== "run");
+  }
+
+  function selectTrigger(id) {
+    var t = byId(id);
+    if (!t) return;
+    selectedId = id;
+    mode = "edit";
+    importing = false;
+    $("#ed-title").textContent = "Edit Trigger";
+    $("#ed-crumb").textContent = "triggers / " + t.id;
+    $("#btn-save").textContent = "Save Changes";
+    $("#btn-delete").classList.remove("hidden");
+    $("#runs-block").classList.remove("hidden");
+    $("#import-banner").classList.add("hidden");
+    $("#gate-banner").classList.toggle("hidden", !t.needsProvider);
+    fillForm(t);
+    snapshot();
+    renderRuns(t);
+    showPane("editor");
+    renderList();
+    $("#pane-editor").scrollTop = 0;
+  }
+
+  function enterNew(prefill) {
+    mode = "new";
+    importing = !!prefill;
+    $("#ed-title").textContent = importing ? "Import Trigger" : "New Trigger";
+    $("#ed-crumb").textContent = "triggers / new";
+    $("#btn-save").textContent = "Create";
+    $("#btn-delete").classList.add("hidden");
+    $("#runs-block").classList.add("hidden");
+    $("#gate-banner").classList.add("hidden");
+    $("#import-banner").classList.toggle("hidden", !importing);
+    $("#dirty-hint").classList.add("hidden");
+    var blank = prefill || {
+      name: "", condition: { type: "meeting_ends", params: {} },
+      prompt: TEMPLATES.meeting_ends,
+      advanced: { minMeeting: 5, awayGap: 30, cooldown: 10 }
+    };
+    fillForm(blank);
+    snapshot();
+    showPane("editor");
+    renderList(); /* clears selection highlight */
+    $("#pane-editor").scrollTop = 0;
+    $("#f-name").focus();
+  }
+
+  function openRun(t, runIdx) {
+    mode = "run";
+    var r = t.runs[runIdx];
+    $("#doc-title").textContent = r.title || t.name;
+    var condBits = t.condition.type === "meeting_ends" ? "Meeting Ends" :
+      t.condition.type === "app_opened" ? ("App Opened · " + (t.condition.params.app || "")) :
+      ("Schedule · " + schedLabel(t.condition.params.days || []) + " " + fmtTime(t.condition.params.time));
+    $("#doc-meta").innerHTML = 'Triggered by ' + condBits +
+      '<span class="dotsep">·</span>Zoom<span class="dotsep">·</span>today 2:03–2:47 PM' +
+      '<span class="dotsep">·</span>ran ' + r.when;
+    showPane("run");
+    $("#pane-run").scrollTop = 0;
+    renderList();
+  }
+
+  $("#back-link").addEventListener("click", function () { selectTrigger(selectedId); });
+
+  /* ---------- header buttons ---------- */
+  $("#btn-new").addEventListener("click", function () { enterNew(null); });
+  $("#btn-import").addEventListener("click", function () {
+    /* ponytail: mockup — a canned example plays the pasted Trigger JSON */
+    enterNew({
+      name: "Design Crit Recap (imported)",
+      condition: { type: "meeting_ends", params: {} },
+      prompt: "Summarize the design crit that just ended: which screens were reviewed, the strongest objections raised, and what I agreed to change before the next crit.",
+      advanced: { minMeeting: 10, awayGap: 30, cooldown: 10 }
+    });
+  });
+
+  /* ---------- save / share / delete ---------- */
+  function slugify(name) {
+    return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "trigger";
+  }
+
+  $("#btn-save").addEventListener("click", function () {
+    var form = readForm();
+    if (!form.name) { $("#f-name").focus(); return; }
+    if (mode === "new") {
+      var id = slugify(form.name);
+      while (byId(id)) id += "-2";
+      var t = mk(id, form.name, form.condition, form.prompt, { advanced: form.advanced });
+      triggers.push(t);
+      selectTrigger(id);
+    } else {
+      var cur = byId(selectedId);
+      cur.name = form.name;
+      cur.condition = form.condition;
+      cur.prompt = form.prompt;
+      cur.advanced = form.advanced;
+      snapshot();
+      renderList();
+      var btn = $("#btn-save");
+      btn.textContent = "Saved ✓";
+      setTimeout(function () { btn.textContent = "Save Changes"; }, 900);
+    }
+  });
+
+  $("#btn-share").addEventListener("click", function () {
+    var form = readForm();
+    var json = JSON.stringify({
+      version: 1,
+      name: form.name,
+      condition: form.condition,
+      cooldown_minutes: form.advanced.cooldown,
+      prompt: form.prompt
+    }, null, 2);
+    var btn = $("#btn-share");
+    var done = function () {
+      btn.textContent = "copied";
+      setTimeout(function () { btn.textContent = "Share"; }, 900);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(done, done);
+    } else done();
+  });
+
+  $("#btn-delete").addEventListener("click", function () {
+    var t = byId(selectedId);
+    if (!t) return;
+    if (!confirm('Delete trigger "' + t.name + '"? Its past runs are kept.')) return;
+    triggers = triggers.filter(function (x) { return x.id !== t.id; });
+    if (triggers.length) selectTrigger(triggers[0].id);
+    else enterNew(null);
+  });
+
+  /* ---------- run mode: checklist + composer ---------- */
+  $$(".checklist .box").forEach(function (b) {
+    b.addEventListener("click", function () { b.classList.toggle("done"); });
+  });
+
+  var composerInput = $("#composer-input");
+  function sendFollowup() {
+    var text = composerInput.value.trim();
+    if (!text) return;
+    var u = document.createElement("div");
+    u.className = "msg msg-user";
+    u.innerHTML = '<div class="user-bubble"></div>';
+    u.firstChild.textContent = text;
+    var a = document.createElement("div");
+    a.className = "msg";
+    a.innerHTML = '<div class="avatar">◈</div><div class="msg-body"><div class="msg-prose" style="color:var(--app-text-muted)">(mock) In the real app the model would answer from your capture history — trigger runs use read-only tools only.</div></div>';
+    $("#followup").append(u, a);
+    composerInput.value = "";
+    a.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+  composerInput.addEventListener("keydown", function (e) { if (e.key === "Enter") sendFollowup(); });
+  $("#composer-send").addEventListener("click", sendFollowup);
+
+  /* ---------- init ---------- */
+  renderList();
+  selectTrigger(selectedId);
+})();
+</script>
+</body>
+</html>

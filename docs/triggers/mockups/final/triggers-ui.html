@@ -1,0 +1,1823 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Mnema · Triggers UI — final design</title>
+<style>
+/* Tokens copied from docs/user-context/mockups/tokens.css (dark only). */
+:root {
+  --app-bg: #0c0c0e;
+  --app-fg: #e2e2e8;
+
+  --app-titlebar-bg: #08080c;
+  --app-titlebar-border: #15151f;
+  --app-titlebar-title: #45455a;
+
+  --app-status-bg: #0a0a10;
+  --app-status-border: #161624;
+  --app-status-fg: #555574;
+  --app-status-running-fg: #ff5d6c;
+  --app-status-running-border: #3a1820;
+  --app-status-running-dot: #ff3148;
+  --app-status-running-dot-glow: rgba(255, 49, 72, 0.18);
+
+  --app-surface: #0e0e16;
+  --app-surface-subtle: #101018;
+  --app-surface-raised: #13131a;
+  --app-surface-hover: #1a1a2a;
+
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #7a7a9a;
+  --app-text-subtle: #44445a;
+  --app-text-faint: #33334a;
+
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+  --app-warn: #d6a14a;
+  --app-warn-bg: #1a1208;
+  --app-warn-border: #7a4a18;
+
+  --app-danger: #ff6b7a;
+  --app-danger-bg: #2e0f14;
+  --app-danger-border: #4a1a20;
+  --app-danger-text: #ff8090;
+
+  --app-neutral-bg: #1a1a2a;
+  --app-neutral-border: #2a2a3a;
+  --app-neutral-text: #7070a0;
+}
+
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  font-family: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
+    "Cascadia Code", "Fira Code", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  background: var(--app-bg);
+  color: var(--app-fg);
+}
+a { color: inherit; text-decoration: none; }
+
+/* ------------------------------------------------ mockup explainer bar */
+.mock-note {
+  max-width: 1180px;
+  margin: 14px auto 0;
+  padding: 8px 12px;
+  border: 1px dashed var(--app-border-strong);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--app-text-muted);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.mock-note strong { color: var(--app-text); font-weight: 600; letter-spacing: 0.04em; }
+.mock-note nav { margin-left: auto; display: flex; gap: 10px; white-space: nowrap; }
+.mock-note nav a { color: var(--app-text-subtle); text-decoration: underline; text-underline-offset: 2px; }
+.mock-note nav a:hover { color: var(--app-text); }
+.mock-note nav a.current { color: var(--app-accent-strong); text-decoration: none; }
+
+/* ------------------------------------------------ window frame */
+.app-window {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 1180px;
+  height: calc(100vh - 90px);
+  min-height: 620px;
+  margin: 12px auto 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--app-bg);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+}
+.titlebar {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  height: 36px;
+  flex: 0 0 36px;
+  padding: 0 12px;
+  background: var(--app-titlebar-bg);
+  border-bottom: 1px solid var(--app-titlebar-border);
+  user-select: none;
+}
+.titlebar-left { display: flex; align-items: center; gap: 12px; }
+.traffic-lights { display: flex; align-items: center; gap: 8px; }
+.traffic-lights span { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+.tl-close { background: #ff5f57; }
+.tl-min { background: #febc2e; }
+.tl-max { background: #28c840; }
+.wordmark { font-size: 11px; letter-spacing: 0.06em; color: var(--app-titlebar-title); }
+.titlebar-center { font-size: 11px; color: var(--app-titlebar-title); letter-spacing: 0.04em; }
+.titlebar-right { display: flex; align-items: center; justify-content: flex-end; }
+.status-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; padding: 3px 9px;
+  border: 1px solid var(--app-status-border);
+  border-radius: 999px;
+  background: var(--app-status-bg);
+  color: var(--app-status-fg);
+}
+.status-chip--running { color: var(--app-status-running-fg); border-color: var(--app-status-running-border); }
+.status-chip .dot { width: 7px; height: 7px; border-radius: 50%; }
+.status-chip--running .dot {
+  background: var(--app-status-running-dot);
+  box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
+}
+
+/* ------------------------------------------------ screens */
+.screen { display: none; flex: 1 1 auto; min-height: 0; flex-direction: column; }
+.screen.active { display: flex; }
+
+/* ------------------------------------------------ shared controls */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  font: inherit; font-size: 12px;
+  padding: 5px 11px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--app-text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.btn:hover { background: var(--app-surface-hover); border-color: var(--app-border-hover); color: var(--app-text-strong); }
+.btn--accent { background: var(--app-accent-bg); border-color: var(--app-accent-border); color: var(--app-accent-strong); }
+.btn--accent:hover { background: var(--app-accent-bg); border-color: var(--app-accent); color: var(--app-accent); }
+.btn--ghost { border-color: transparent; color: var(--app-text-muted); }
+.btn--ghost:hover { background: var(--app-surface-hover); border-color: transparent; color: var(--app-text-strong); }
+.btn[disabled] { opacity: 0.45; cursor: default; pointer-events: none; }
+.btn:active { transform: translateY(1px); }
+.btn:focus-visible, .switch:focus-visible, .day-chip:focus-visible {
+  outline: 2px solid var(--app-accent-border);
+  outline-offset: 1px;
+}
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px; height: 17px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 999px;
+  background: var(--app-surface-hover);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  background: var(--app-text-muted);
+  transition: left 0.12s ease, background 0.12s ease;
+}
+.switch.on { background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+.switch.on::after { left: 15px; background: var(--app-accent); }
+.switch[disabled] { opacity: 0.5; cursor: default; }
+
+/* ================================================ SCREEN 1 — LIST */
+.list-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 24px 28px; }
+.list-col { max-width: 860px; margin: 0 auto; }
+
+.page-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 22px; }
+.page-head h1 {
+  margin: 0;
+  font-size: 18px; font-weight: 600; letter-spacing: -0.01em;
+  color: var(--app-text-strong); line-height: 1.3;
+}
+.page-head .sub { margin: 3px 0 0; font-size: 11.5px; color: var(--app-text-muted); }
+.page-head .spacer { flex: 1 1 auto; }
+
+.cond-section { margin-bottom: 24px; }
+.cond-section-head { margin-bottom: 6px; }
+.cond-section-title {
+  display: flex; align-items: baseline; gap: 9px;
+  font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--app-text);
+}
+.cond-section-title .glyph { color: var(--app-accent-strong); font-size: 11px; }
+.cond-section-blurb { margin: 1px 0 0 20px; font-size: 11px; line-height: 1.55; color: var(--app-text-subtle); }
+
+.trigger-rows { border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); overflow: hidden; }
+.trow {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 13px;
+  min-height: 38px;
+  transition: background 0.12s ease;
+}
+.trow + .trow { border-top: 1px solid var(--app-border); }
+.trow:hover { background: var(--app-surface-subtle); }
+.trow-name {
+  font-size: 12.5px; color: var(--app-text-strong);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.trow-detail { font-size: 10.5px; color: var(--app-text-subtle); white-space: nowrap; }
+.trow .spacer { flex: 1 1 auto; }
+.trow-status { font-size: 11px; white-space: nowrap; display: inline-flex; align-items: baseline; gap: 6px; }
+.trow-status .dot { font-size: 10px; }
+.trow-status .rest { color: var(--app-text-muted); }
+.st-ok .dot, .st-ok .word { color: var(--app-accent-strong); }
+.st-skip .dot, .st-skip .word { color: var(--app-neutral-text); }
+.st-fail .dot, .st-fail .word { color: var(--app-danger-text); }
+.st-none .dot, .st-none .word { color: var(--app-text-subtle); }
+.st-wait .dot, .st-wait .word { color: var(--app-accent-strong); }
+.st-wait .dot { animation: waitPulse 1.4s ease-in-out infinite; }
+@keyframes waitPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.trow-status.st-ok { cursor: pointer; }
+.trow-status.st-ok:hover .rest { color: var(--app-text-strong); }
+.trow--off .trow-name, .trow--off .trow-detail, .trow--off .trow-status { opacity: 0.45; }
+
+/* hover row actions */
+.trow-actions { display: none; align-items: center; gap: 2px; flex: 0 0 auto; }
+.trow:hover .trow-actions { display: inline-flex; }
+.row-act {
+  font: inherit; font-size: 10.5px;
+  background: none; border: 0; padding: 2px 6px;
+  border-radius: 4px;
+  color: var(--app-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.row-act:hover { color: var(--app-text-strong); background: var(--app-surface-hover); }
+.row-act--danger:hover { color: var(--app-danger-text); background: var(--app-danger-bg); }
+
+/* newly created row flash (success feedback) */
+.trow--new { animation: rowFlash 1.8s ease; }
+@keyframes rowFlash { 0%, 35% { background: var(--app-accent-bg); } 100% { background: transparent; } }
+
+/* empty section state */
+.sec-empty { padding: 10px 13px 2px; font-size: 11px; color: var(--app-text-subtle); }
+
+/* provider-gated row */
+.trow--gated .trow-name, .trow--gated .trow-detail { opacity: 0.5; }
+.gate-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; padding: 1px 8px;
+  border: 1px solid var(--app-warn-border);
+  border-radius: 4px;
+  background: var(--app-warn-bg);
+  color: var(--app-warn);
+  white-space: nowrap;
+}
+.gate-link {
+  font-size: 11px; color: var(--app-warn);
+  text-decoration: underline; text-underline-offset: 2px;
+  white-space: nowrap; cursor: pointer;
+}
+.gate-link:hover { color: var(--app-text-strong); }
+
+/* ghost add row */
+.add-row {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%;
+  font: inherit; font-size: 11.5px;
+  padding: 7px 13px;
+  border: 0;
+  border-top: 1px dashed var(--app-border);
+  background: transparent;
+  color: var(--app-text-subtle);
+  cursor: pointer;
+  text-align: left;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+.add-row:hover { color: var(--app-accent); background: var(--app-surface-subtle); }
+.add-row .plus { color: var(--app-text-faint); transition: color 0.12s ease; }
+.add-row:hover .plus { color: var(--app-accent); }
+
+/* ================================================ SCREEN 1b — RUNS (per-trigger history) */
+.trow-name.clickable { cursor: pointer; }
+.trow-name.clickable:hover { color: var(--app-accent); }
+.runs-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; }
+.runs-head h1 { margin: 0; font-size: 16px; font-weight: 600; color: var(--app-text-strong); }
+.runs-head .cond-echo { font-size: 11px; color: var(--app-text-muted); }
+.runs-sub { margin: 0 0 18px; font-size: 11px; color: var(--app-text-subtle); }
+.crumb {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; color: var(--app-text-muted);
+  margin-bottom: 14px;
+}
+.crumb .back { cursor: pointer; color: var(--app-text-muted); background: none; border: 0; font: inherit; padding: 0; }
+.crumb .back:hover { color: var(--app-text-strong); }
+.crumb .sep { color: var(--app-text-faint); }
+.crumb .here { color: var(--app-text-strong); }
+.run-row { cursor: default; }
+.run-row.openable { cursor: pointer; }
+.run-row.openable:hover .run-title { color: var(--app-accent); }
+.run-title { font-size: 12.5px; color: var(--app-text-strong); transition: color 0.12s ease; }
+.run-when { font-size: 11px; color: var(--app-text-subtle); white-space: nowrap; }
+.run-open-hint { font-size: 10.5px; color: var(--app-text-subtle); display: none; }
+.run-row.openable:hover .run-open-hint { display: inline; }
+.runs-empty { padding: 18px 14px; font-size: 11.5px; color: var(--app-text-subtle); }
+.runs-note { margin: 14px 0 0; font-size: 10.5px; color: var(--app-text-faint); }
+
+/* ================================================ SCREEN 2 — WIZARD */
+.wiz-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 26px 24px 30px; }
+.wiz-panel { max-width: 640px; margin: 0 auto; }
+
+.wiz-crumb {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11.5px; color: var(--app-text-muted);
+  margin-bottom: 16px;
+}
+.wiz-crumb .back { cursor: pointer; color: var(--app-text-muted); background: none; border: 0; font: inherit; padding: 0; }
+.wiz-crumb .back:hover { color: var(--app-text-strong); }
+.wiz-crumb .sep { color: var(--app-text-faint); }
+.wiz-crumb .here { color: var(--app-text-strong); }
+
+/* step header: 01 Condition ── 02 Prompt ── 03 Review */
+.steps {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 20px;
+}
+.step-tab {
+  display: inline-flex; align-items: baseline; gap: 7px;
+  font: inherit; font-size: 11px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  background: none; border: 0; padding: 0;
+  color: var(--app-text-subtle);
+  cursor: default;
+  transition: color 0.12s ease;
+}
+.step-tab .num {
+  font-size: 10px;
+  padding: 1px 5px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 4px;
+  color: var(--app-text-subtle);
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.step-tab.done { color: var(--app-text-muted); cursor: pointer; }
+.step-tab.done .num { color: var(--app-accent-strong); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+.step-tab.done:hover { color: var(--app-text-strong); }
+.step-tab.current { color: var(--app-text-strong); }
+.step-tab.current .num { color: var(--app-accent); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+.step-rule { flex: 1 1 auto; height: 1px; background: var(--app-border); }
+.step-rule.done { background: var(--app-accent-border); }
+
+/* import review banner */
+.warn-banner {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 11px;
+  margin-bottom: 16px;
+  border: 1px solid var(--app-warn-border);
+  border-radius: 6px;
+  background: var(--app-warn-bg);
+  color: var(--app-warn);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.warn-banner .glyph { flex: 0 0 auto; }
+
+.wiz-step { display: none; }
+.wiz-step.active { display: block; }
+.wiz-lead { margin: 0 0 14px; font-size: 12.5px; color: var(--app-text); }
+.wiz-lead .q { color: var(--app-text-strong); font-weight: 600; }
+.wiz-lead .hint { display: block; font-size: 11px; color: var(--app-text-subtle); margin-top: 1px; }
+
+/* --- step 1: condition cards (stacked, params under selected) --- */
+.cond-pick { display: flex; flex-direction: column; gap: 9px; }
+.cond-card {
+  position: relative;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.cond-card:hover { border-color: var(--app-border-hover); }
+.cond-card .radio {
+  position: absolute; top: 14px; right: 14px;
+  width: 12px; height: 12px; border-radius: 50%;
+  border: 1px solid var(--app-border-strong);
+}
+.cond-card .cond-name { font-size: 13px; color: var(--app-text-strong); padding-right: 22px; }
+.cond-card .cond-desc { font-size: 11px; line-height: 1.55; color: var(--app-text-muted); }
+.cond-card.selected {
+  border-color: var(--app-accent-border);
+  background: var(--app-accent-bg);
+  box-shadow: 0 0 0 3px var(--app-accent-glow);
+}
+.cond-card.selected .cond-name { color: var(--app-accent); }
+.cond-card.selected .cond-desc { color: var(--app-text); }
+.cond-card.selected .radio {
+  border-color: var(--app-accent);
+  background: radial-gradient(circle at center, var(--app-accent) 0 3px, transparent 4px);
+}
+.cond-params {
+  margin: -3px 0 3px;
+  padding: 11px 14px 12px;
+  border: 1px solid var(--app-border);
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--app-surface-subtle);
+}
+.cond-params .params-lbl {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin: 0 0 7px;
+}
+.cond-params .hint { margin: 6px 0 0; font-size: 10.5px; line-height: 1.55; color: var(--app-text-subtle); }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 11px; color: var(--app-text-muted); }
+.text-input {
+  font: inherit; font-size: 12.5px;
+  padding: 6px 9px;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface);
+  color: var(--app-text-strong);
+  outline: none;
+  transition: border-color 0.12s ease;
+}
+.text-input:focus { border-color: var(--app-accent-border); }
+.text-input.invalid { border-color: var(--app-danger-border); }
+select.text-input { appearance: none; cursor: pointer; }
+input[type="time"].text-input { color-scheme: dark; }
+.sched-grid { display: flex; align-items: flex-end; gap: 14px; flex-wrap: wrap; }
+.day-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.day-chip {
+  font: inherit; font-size: 10.5px; padding: 2px 7px;
+  border: 1px solid var(--app-neutral-border); border-radius: 4px;
+  background: var(--app-neutral-bg); color: var(--app-neutral-text); cursor: pointer;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.day-chip:hover { border-color: var(--app-border-hover); color: var(--app-text-strong); }
+.day-chip.on { border-color: var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-accent); }
+.sched-preview { margin: 8px 0 0; font-size: 11px; color: var(--app-accent-strong); }
+
+/* --- step 2: prompt --- */
+.prompt-pane {
+  display: flex; flex-direction: column;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  overflow: hidden;
+}
+.prompt-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface-subtle);
+}
+.prompt-head .lbl { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--app-text-muted); }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 10.5px; letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border: 1px solid var(--app-neutral-border);
+  border-radius: 4px;
+  background: var(--app-neutral-bg);
+  color: var(--app-neutral-text);
+}
+.quiet-action {
+  margin-left: auto;
+  font: inherit; font-size: 11px;
+  background: none; border: 0; padding: 0;
+  color: var(--app-text-subtle);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.quiet-action:hover { color: var(--app-text-strong); }
+.prompt-editor {
+  font: inherit; font-size: 12.5px; line-height: 1.7;
+  min-height: 260px;
+  resize: none; border: 0; outline: none;
+  padding: 13px 15px;
+  background: transparent;
+  color: var(--app-text);
+}
+.prompt-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--app-border);
+  font-size: 10.5px; color: var(--app-text-subtle);
+}
+
+/* --- step 3: review --- */
+.review-card {
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  overflow: hidden;
+}
+.review-sec { padding: 12px 14px; }
+.review-sec + .review-sec { border-top: 1px solid var(--app-border); }
+.review-lbl {
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--app-text-subtle);
+  margin: 0 0 6px;
+}
+.name-err { margin: 5px 0 0; font-size: 10.5px; color: var(--app-danger-text); }
+.review-echo { font-size: 12px; color: var(--app-text-strong); }
+.review-echo .sub { display: block; font-size: 10.5px; color: var(--app-text-muted); margin-top: 1px; }
+.prompt-preview {
+  font-size: 11.5px; line-height: 1.65;
+  color: var(--app-text);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.preview-more {
+  font: inherit; font-size: 10.5px;
+  background: none; border: 0; padding: 0; margin-top: 4px;
+  color: var(--app-text-subtle);
+  border-bottom: 1px dotted var(--app-border-strong);
+  cursor: pointer;
+}
+.preview-more:hover { color: var(--app-text-strong); }
+.prompt-preview.expanded { display: block; -webkit-line-clamp: unset; }
+.auto-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.auto-list li { display: flex; gap: 8px; font-size: 11px; line-height: 1.5; color: var(--app-text-muted); }
+.auto-list li .tick { color: var(--app-accent-strong); flex: 0 0 auto; }
+.auto-note { margin: 8px 0 0; font-size: 10.5px; line-height: 1.5; color: var(--app-text-subtle); }
+
+.disclosure summary {
+  list-style: none;
+  display: flex; align-items: center; gap: 7px;
+  cursor: pointer;
+  font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--app-text-subtle);
+  user-select: none;
+}
+.disclosure summary::-webkit-details-marker { display: none; }
+.disclosure summary .caret { font-size: 10px; transition: transform 0.12s ease; }
+.disclosure[open] summary .caret { transform: rotate(90deg); }
+.disclosure summary .default-note { margin-left: auto; font-size: 10px; letter-spacing: 0; text-transform: none; color: var(--app-text-faint); }
+.disc-body { margin-top: 10px; display: flex; flex-direction: column; gap: 9px; }
+.stepper-row { display: flex; align-items: center; gap: 8px; }
+.stepper-row .stepper-lbl { flex: 1 1 auto; font-size: 11.5px; color: var(--app-text); }
+.stepper {
+  display: inline-flex; align-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-subtle);
+  overflow: hidden;
+}
+.stepper button {
+  font: inherit; font-size: 12px;
+  width: 22px; height: 22px;
+  border: 0; background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+.stepper button:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+.stepper .val {
+  min-width: 52px; text-align: center;
+  font-size: 11.5px; color: var(--app-text-strong);
+  border-left: 1px solid var(--app-border);
+  border-right: 1px solid var(--app-border);
+  padding: 0 6px; line-height: 22px;
+}
+
+/* wizard footer nav */
+.wiz-nav { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+.wiz-nav .spacer { flex: 1 1 auto; }
+.wiz-nav .note { font-size: 10.5px; color: var(--app-text-faint); margin-right: 4px; }
+
+/* ================================================ SCREEN 3 — REPORT */
+.report-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 22px 24px 20px; }
+.report-col { max-width: 720px; margin: 0 auto; }
+.report-topbar { margin-bottom: 22px; }
+.back-link {
+  font: inherit; font-size: 11.5px;
+  background: none; border: 0; padding: 0;
+  color: var(--app-text-muted);
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.back-link:hover { color: var(--app-text-strong); }
+
+.report-eyebrow {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--app-accent-strong);
+  margin-bottom: 10px;
+}
+.report-eyebrow .zap { font-size: 11px; }
+.report-eyebrow .tname {
+  color: var(--app-text-muted);
+  font: inherit; background: none; border: 0; padding: 0;
+  letter-spacing: inherit; text-transform: inherit;
+  cursor: pointer;
+  border-bottom: 1px dotted var(--app-border-strong);
+  transition: color 0.12s ease;
+}
+.report-eyebrow .tname:hover { color: var(--app-text-strong); }
+.report-title {
+  margin: 0 0 6px;
+  font-size: 26px; line-height: 1.25; font-weight: 650; letter-spacing: -0.02em;
+  color: var(--app-text-strong);
+}
+.report-meta { font-size: 11px; color: var(--app-text-muted); }
+.report-meta .dotsep { color: var(--app-text-faint); margin: 0 6px; }
+.report-rule { height: 2px; background: var(--app-accent); opacity: 0.7; border: 0; margin: 16px 0 22px; }
+
+.doc-body { font-size: 13px; color: var(--app-text); line-height: 1.7; }
+.doc-body h2 {
+  margin: 26px 0 10px;
+  font-size: 13px; font-weight: 650; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--app-text-strong);
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--app-border);
+}
+.doc-body h2:first-child { margin-top: 0; }
+.doc-body p { margin: 0 0 12px; }
+.doc-body ul { margin: 0 0 12px; padding-left: 20px; }
+.doc-body li { margin-bottom: 4px; }
+.doc-body li::marker { color: var(--app-text-subtle); }
+.doc-body strong { color: var(--app-text-strong); font-weight: 600; }
+.speaker { color: var(--app-accent-strong); font-weight: 600; }
+
+.checklist { list-style: none; padding-left: 2px; margin: 0 0 12px; }
+.checklist li { display: flex; align-items: baseline; gap: 9px; margin-bottom: 6px; }
+.checklist .box {
+  flex: 0 0 auto; width: 12px; height: 12px;
+  border: 1px solid var(--app-border-strong); border-radius: 3px;
+  background: var(--app-surface-raised);
+  position: relative; top: 1px; cursor: pointer;
+}
+.checklist .box.done { border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+.checklist .box.done::after {
+  content: "✓"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 9px; color: var(--app-accent-strong); line-height: 1;
+}
+.checklist .owner { color: var(--app-text-muted); font-size: 11px; white-space: nowrap; }
+
+/* AnswerBlocks as flat report panels */
+.answer-block {
+  margin: 14px 0 16px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-surface);
+  padding: 12px 14px 13px;
+}
+.answer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+.block-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+.block-kind {
+  font-size: 9px; letter-spacing: 0.06em;
+  padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--app-border-strong);
+  background: var(--app-surface-subtle);
+  color: var(--app-text-subtle);
+  text-transform: lowercase;
+}
+.answer-note { font-size: 10.5px; color: var(--app-text-muted); }
+
+.barchart { display: flex; flex-direction: column; gap: 9px; }
+.bar-row { display: grid; grid-template-columns: 76px 1fr 52px; align-items: center; gap: 10px; }
+.bar-label { font-size: 11px; color: var(--app-text); }
+.bar-track {
+  position: relative; height: 14px; border-radius: 3px;
+  background: var(--app-surface-hover);
+  border: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.bar-fill { position: absolute; inset: 0 auto 0 0; height: 100%; background: var(--app-accent); opacity: 0.85; }
+.bar-val { font-size: 11px; color: var(--app-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+
+.tl { display: flex; flex-direction: column; }
+.tl-row { display: flex; gap: 12px; }
+.tl-time {
+  flex: 0 0 62px; text-align: right;
+  font-size: 10.5px; color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums; padding-top: 1px;
+}
+.tl-spine { flex: 0 0 auto; display: flex; flex-direction: column; align-items: center; }
+.tl-dot {
+  flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--app-accent); box-shadow: 0 0 0 3px var(--app-accent-glow);
+  margin-top: 6px;
+}
+.tl-row:last-child .tl-dot { background: var(--app-text-subtle); box-shadow: none; }
+.tl-line { flex: 1 1 auto; width: 1px; background: var(--app-border); min-height: 14px; }
+.tl-row:last-child .tl-line { display: none; }
+.tl-body { flex: 1 1 auto; min-width: 0; padding-bottom: 14px; }
+.tl-row:last-child .tl-body { padding-bottom: 2px; }
+.tl-title { font-size: 12px; color: var(--app-text-strong); }
+.tl-sub { font-size: 10.5px; color: var(--app-text-muted); margin-top: 1px; }
+
+.dossier { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 20px; }
+.dossier .kv { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.dossier .k { font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--app-text-subtle); }
+.dossier .v { font-size: 12px; color: var(--app-text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* follow-up */
+.followup-divider {
+  display: flex; align-items: center; gap: 10px;
+  margin: 28px 0 18px;
+  font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+.followup-divider::before, .followup-divider::after {
+  content: ""; flex: 1 1 auto; height: 1px; background: var(--app-border);
+}
+.msg { display: flex; gap: 12px; margin-bottom: 20px; }
+.msg-user { justify-content: flex-end; }
+.user-bubble {
+  max-width: 78%;
+  background: var(--app-surface-raised);
+  border: 1px solid var(--app-border-strong);
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: 13px; color: var(--app-text-strong);
+}
+.avatar {
+  flex: 0 0 auto; width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  background: var(--app-accent-bg);
+  border: 1px solid var(--app-accent-border);
+  color: var(--app-accent-strong);
+  font-size: 13px; margin-top: 1px;
+}
+.msg-body { min-width: 0; flex: 1 1 auto; }
+.msg-prose { font-size: 13px; color: var(--app-text); line-height: 1.65; }
+.msg-prose .strong { color: var(--app-text-strong); font-weight: 600; }
+
+.composer-wrap {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--app-border);
+  background: var(--app-bg);
+  padding: 12px 24px 14px;
+}
+.composer { max-width: 720px; margin: 0 auto; }
+.composer-row {
+  display: flex; align-items: center; gap: 9px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 10px;
+  background: var(--app-surface);
+  padding: 7px 8px 7px 12px;
+}
+.composer-row:focus-within { border-color: var(--app-border-hover); }
+.composer-input {
+  flex: 1 1 auto; min-width: 0;
+  border: none; background: transparent;
+  font: inherit; font-size: 13px; color: var(--app-text-strong); outline: none;
+}
+.composer-input::placeholder { color: var(--app-text-faint); }
+.send-btn {
+  flex: 0 0 auto; width: 30px; height: 30px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--app-accent-border);
+  background: var(--app-accent-bg); color: var(--app-accent-strong);
+  font-size: 15px; cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+.send-btn:hover { color: var(--app-accent); border-color: var(--app-accent); }
+.send-btn:active { transform: translateY(1px); }
+.composer-hint {
+  max-width: 720px; margin: 7px auto 0;
+  font-size: 10px; color: var(--app-text-faint); text-align: center;
+}
+</style>
+</head>
+<body>
+
+<!-- mockup explainer — not part of the app UI -->
+<div class="mock-note">
+  <strong>TRIGGERS UI · FINAL DESIGN.</strong>
+  <span>Fully interactive: list grouped by condition → per-trigger runs → 3-step create/edit wizard → report-style document. Spec: <a href="DESIGN.md" style="text-decoration:underline;">DESIGN.md</a>.</span>
+</div>
+
+<div class="app-window">
+
+  <header class="titlebar">
+    <div class="titlebar-left">
+      <div class="traffic-lights">
+        <span class="tl-close"></span><span class="tl-min"></span><span class="tl-max"></span>
+      </div>
+      <span class="wordmark">MNEMA</span>
+    </div>
+    <div class="titlebar-center" id="title-path">/triggers</div>
+    <div class="titlebar-right">
+      <span class="status-chip status-chip--running"><span class="dot"></span>recording</span>
+    </div>
+  </header>
+
+  <!-- ================================================ SCREEN 1 — LIST -->
+  <section class="screen active" id="screen-list">
+    <div class="list-scroll">
+      <div class="list-col">
+        <div class="page-head">
+          <div>
+            <h1>Triggers</h1>
+            <p class="sub">When something happens, Mnema runs your prompt over what it captured and saves the result as a document.</p>
+          </div>
+          <span class="spacer"></span>
+          <button class="btn" id="btn-import" type="button" title="Paste shared Trigger JSON — it prefills the wizard for review, never saves directly">Import</button>
+        </div>
+        <div id="sections"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================ SCREEN 1b — RUNS -->
+  <section class="screen" id="screen-runs">
+    <div class="list-scroll">
+      <div class="list-col">
+        <nav class="crumb">
+          <button class="back" type="button" id="runs-back">triggers</button>
+          <span class="sep">/</span><span class="here" id="runs-crumb-name"></span>
+        </nav>
+        <div class="runs-head">
+          <h1 id="runs-title"></h1>
+          <span class="cond-echo" id="runs-cond"></span>
+        </div>
+        <p class="runs-sub">Every firing, including the quiet ones — skips and failures never notify, they just show up here.</p>
+        <div class="trigger-rows" id="runs-list"></div>
+        <p class="runs-note">Runs are ordinary conversations — they also live in your chat rail under the Triggers filter.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================ SCREEN 2 — WIZARD -->
+  <section class="screen" id="screen-wizard">
+    <div class="wiz-scroll">
+      <div class="wiz-panel">
+
+        <nav class="wiz-crumb">
+          <button class="back" type="button" id="wiz-cancel">triggers</button>
+          <span class="sep">/</span><span class="here" id="wiz-crumb-here">new trigger</span>
+        </nav>
+
+        <div class="warn-banner" id="import-banner" hidden>
+          <svg class="glyph" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M7 1.5 13 12.5H1L7 1.5Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+            <path d="M7 5.5v3.2M7 10.4v.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          <span>Imported — review this prompt before saving. It will run automatically, with read-only access to your capture history, whenever the condition fires.</span>
+        </div>
+
+        <div class="steps" id="steps">
+          <button class="step-tab" type="button" data-step="1"><span class="num">01</span>Condition</button>
+          <span class="step-rule" data-rule="1"></span>
+          <button class="step-tab" type="button" data-step="2"><span class="num">02</span>Prompt</button>
+          <span class="step-rule" data-rule="2"></span>
+          <button class="step-tab" type="button" data-step="3"><span class="num">03</span>Review</button>
+        </div>
+
+        <!-- STEP 1 — condition -->
+        <div class="wiz-step" data-wizstep="1">
+          <p class="wiz-lead">
+            <span class="q">When should this trigger run?</span>
+            <span class="hint">Conditions are situations Mnema can detect on its own — pick one; you can't define new kinds.</span>
+          </p>
+          <div class="cond-pick" role="radiogroup" aria-label="Condition">
+
+            <div class="cond-card" role="radio" tabindex="0" data-cond="meeting_ends" aria-checked="false">
+              <span class="radio" aria-hidden="true"></span>
+              <span class="cond-name">When a meeting ends</span>
+              <span class="cond-desc">A conferencing app (Zoom, Teams, Meet in a browser…) held your mic for at least 5 minutes, then released it and stayed quiet for ~2 minutes.</span>
+            </div>
+            <div class="cond-params" data-params="meeting_ends" hidden>
+              <p class="params-lbl">How Mnema detects it</p>
+              <p class="hint" style="margin-top:0;">Detection is automatic — nothing to configure. Mnema watches which app holds the microphone (the macOS "orange dot" signal); a browser counts when a meeting URL was seen during the call. Drop/rejoin gaps are absorbed.</p>
+            </div>
+
+            <div class="cond-card" role="radio" tabindex="0" data-cond="app_opened" aria-checked="false">
+              <span class="radio" aria-hidden="true"></span>
+              <span class="cond-name">When an app opens</span>
+              <span class="cond-desc">A chosen app comes to the front after you've been away from it for 30 minutes or more — a fresh working session, not window switching.</span>
+            </div>
+            <div class="cond-params" data-params="app_opened" hidden>
+              <p class="params-lbl">Which app?</p>
+              <div class="field">
+                <select class="text-input" id="app-pick">
+                  <option>Figma</option>
+                  <option>Xcode</option>
+                  <option>Slack</option>
+                  <option>Notion</option>
+                  <option>Obsidian</option>
+                </select>
+              </div>
+              <p class="hint">Any moment the app is frontmost resets the 30-minute clock, so rapid switching never fires it.</p>
+            </div>
+
+            <div class="cond-card" role="radio" tabindex="0" data-cond="schedule" aria-checked="false">
+              <span class="radio" aria-hidden="true"></span>
+              <span class="cond-name">On a schedule</span>
+              <span class="cond-desc">At a fixed local time on the days you pick — good for daily wrap-ups and weekly reviews.</span>
+            </div>
+            <div class="cond-params" data-params="schedule" hidden>
+              <p class="params-lbl">When?</p>
+              <div class="sched-grid">
+                <div class="field">
+                  <label for="sched-time">Time</label>
+                  <input class="text-input" id="sched-time" type="time" value="18:00" />
+                </div>
+                <div class="field">
+                  <label>Days</label>
+                  <div class="day-chips" id="day-chips" role="group" aria-label="Days"></div>
+                </div>
+              </div>
+              <p class="sched-preview" id="sched-preview"></p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- STEP 2 — prompt -->
+        <div class="wiz-step" data-wizstep="2">
+          <p class="wiz-lead">
+            <span class="q">What should Mnema do when it fires?</span>
+            <span class="hint">Write it like you'd brief a person. We started you off with a template for this condition.</span>
+          </p>
+          <section class="prompt-pane" aria-label="Prompt">
+            <div class="prompt-head">
+              <span class="lbl">Prompt</span>
+              <span class="chip" id="prompt-chip">starter template</span>
+              <button class="quiet-action" type="button" id="prompt-reset">Reset</button>
+            </div>
+            <textarea class="prompt-editor" id="prompt" spellcheck="false"></textarea>
+            <div class="prompt-foot">
+              <span>plain prose, no variables — Mnema adds context automatically</span>
+              <span id="char-count">0 chars</span>
+            </div>
+          </section>
+        </div>
+
+        <!-- STEP 3 — review -->
+        <div class="wiz-step" data-wizstep="3">
+          <p class="wiz-lead">
+            <span class="q">Review and create.</span>
+            <span class="hint">Name it, check the pieces, tune Advanced only if you must — the defaults are right for almost everyone.</span>
+          </p>
+          <div class="review-card">
+
+            <div class="review-sec">
+              <p class="review-lbl">Name</p>
+              <div class="field">
+                <input class="text-input" id="trig-name" type="text" placeholder="e.g. Meeting Recap" />
+              </div>
+              <p class="name-err" id="name-err" hidden>Give it a name — it labels runs in your chat rail and notifications.</p>
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">Condition</p>
+              <div class="review-echo" id="review-cond"></div>
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">Prompt</p>
+              <div class="prompt-preview" id="review-prompt"></div>
+              <button class="preview-more" type="button" id="preview-more">show all</button>
+            </div>
+
+            <div class="review-sec">
+              <p class="review-lbl">What Mnema adds automatically</p>
+              <ul class="auto-list">
+                <li><span class="tick">✓</span> the firing window — condition, time span, app</li>
+                <li><span class="tick">✓</span> your User Context — what Mnema has learned about your work</li>
+                <li><span class="tick">✓</span> speaker identity — which voice in the audio is you</li>
+                <li><span class="tick">✓</span> previous runs of this trigger, so results compound</li>
+              </ul>
+              <p class="auto-note">Assembled on every run. Nothing to configure — want a generic result? Just say so in the prompt.</p>
+            </div>
+
+            <div class="review-sec">
+              <details class="disclosure" id="advanced">
+                <summary>
+                  <span class="caret">▸</span> Advanced
+                  <span class="default-note" id="adv-note">all defaults</span>
+                </summary>
+                <div class="disc-body">
+                  <div class="stepper-row" data-adv="minlen">
+                    <span class="stepper-lbl">Minimum meeting length</span>
+                    <span class="stepper" data-key="minlen" data-min="1" data-max="30" data-step="1">
+                      <button type="button" aria-label="Decrease">−</button>
+                      <span class="val">5 min</span>
+                      <button type="button" aria-label="Increase">+</button>
+                    </span>
+                  </div>
+                  <div class="stepper-row" data-adv="awaygap" hidden>
+                    <span class="stepper-lbl">Away gap</span>
+                    <span class="stepper" data-key="awaygap" data-min="5" data-max="120" data-step="5">
+                      <button type="button" aria-label="Decrease">−</button>
+                      <span class="val">30 min</span>
+                      <button type="button" aria-label="Increase">+</button>
+                    </span>
+                  </div>
+                  <div class="stepper-row" data-adv="cooldown">
+                    <span class="stepper-lbl">Cooldown</span>
+                    <span class="stepper" data-key="cooldown" data-min="0" data-max="120" data-step="5">
+                      <button type="button" aria-label="Decrease">−</button>
+                      <span class="val">10 min</span>
+                      <button type="button" aria-label="Increase">+</button>
+                    </span>
+                  </div>
+                </div>
+              </details>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- wizard nav -->
+        <div class="wiz-nav">
+          <button class="btn" type="button" id="wiz-back">◀ Back</button>
+          <span class="spacer"></span>
+          <span class="note" id="wiz-note"></span>
+          <button class="btn btn--ghost" type="button" id="wiz-share" hidden title="Copies Trigger JSON — never carries provider or model config">Share as JSON</button>
+          <button class="btn btn--accent" type="button" id="wiz-next">Next ▶</button>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ================================================ SCREEN 3 — REPORT -->
+  <section class="screen" id="screen-report">
+    <div class="report-scroll">
+      <div class="report-col">
+
+        <div class="report-topbar">
+          <button class="back-link" type="button" id="report-back">◀ Triggers</button>
+        </div>
+
+        <div class="report-eyebrow"><span class="zap" title="Meeting Ends — this run's condition">◉</span>Trigger Run<span>·</span><button class="tname" type="button" id="report-trigger" title="Open the Meeting Recap trigger to edit it">Meeting Recap</button></div>
+        <h1 class="report-title">Product Sync</h1>
+        <div class="report-meta">
+          Triggered by Meeting Ends<span class="dotsep">·</span>Zoom<span class="dotsep">·</span>today 2:03–2:47 PM<span class="dotsep">·</span>ran 2:49 PM
+        </div>
+        <hr class="report-rule" />
+
+        <article class="doc-body">
+          <h2>Summary</h2>
+          <p>
+            A 44-minute product sync focused on the <strong>v0.3 release scope</strong>.
+            The group agreed to ship semantic search behind a flag and to push the
+            onboarding redesign to v0.4. Most of the debate was about whether the
+            embedding backfill is safe to run on first launch.
+          </p>
+          <ul>
+            <li><span class="speaker">You</span>: argued the backfill should stay opt-in until the RSS ceiling is verified on 8&nbsp;GB machines; walked through the vmmap numbers.</li>
+            <li><span class="speaker">Sarah</span>: pushed for flag-on-by-default; conceded after the memory figures, asked for a follow-up benchmark by Friday.</li>
+            <li><span class="speaker">Dev</span>: confirmed the sidecar approach reclaims memory fully; volunteered to own the Friday benchmark.</li>
+          </ul>
+
+          <section class="answer-block">
+            <div class="answer-head">
+              <div class="block-title">Speaking time<span class="block-kind">mnema-bars</span></div>
+              <span class="answer-note">2:03–2:47 PM</span>
+            </div>
+            <div class="barchart">
+              <div class="bar-row">
+                <div class="bar-label">You</div>
+                <div class="bar-track"><span class="bar-fill" style="width:100%;"></span></div>
+                <div class="bar-val">18 min</div>
+              </div>
+              <div class="bar-row">
+                <div class="bar-label">Sarah</div>
+                <div class="bar-track"><span class="bar-fill" style="width:67%;"></span></div>
+                <div class="bar-val">12 min</div>
+              </div>
+              <div class="bar-row">
+                <div class="bar-label">Dev</div>
+                <div class="bar-track"><span class="bar-fill" style="width:50%;"></span></div>
+                <div class="bar-val">9 min</div>
+              </div>
+            </div>
+          </section>
+
+          <h2>Decisions</h2>
+          <ul>
+            <li><strong>Semantic search ships in v0.3 behind a flag</strong>, off by default until the memory benchmark passes.</li>
+            <li><strong>Onboarding redesign moves to v0.4</strong> — no partial version in v0.3.</li>
+            <li>The backfill runs only on idle + AC power; Dev writes the gating check.</li>
+          </ul>
+
+          <section class="answer-block">
+            <div class="answer-head">
+              <div class="block-title">Meeting flow<span class="block-kind">mnema-timeline</span></div>
+            </div>
+            <div class="tl">
+              <div class="tl-row">
+                <div class="tl-time">2:03 PM</div>
+                <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                <div class="tl-body">
+                  <div class="tl-title">Status round</div>
+                  <div class="tl-sub">quick per-person updates, ~6 min</div>
+                </div>
+              </div>
+              <div class="tl-row">
+                <div class="tl-time">2:09 PM</div>
+                <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                <div class="tl-body">
+                  <div class="tl-title">v0.3 scope debate</div>
+                  <div class="tl-sub">semantic search flag, backfill memory ceiling — the bulk of the meeting</div>
+                </div>
+              </div>
+              <div class="tl-row">
+                <div class="tl-time">2:34 PM</div>
+                <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                <div class="tl-body">
+                  <div class="tl-title">Onboarding deferral</div>
+                  <div class="tl-sub">agreed quickly; moved to v0.4</div>
+                </div>
+              </div>
+              <div class="tl-row">
+                <div class="tl-time">2:41 PM</div>
+                <div class="tl-spine"><span class="tl-dot"></span><span class="tl-line"></span></div>
+                <div class="tl-body">
+                  <div class="tl-title">Wrap-up &amp; owners</div>
+                  <div class="tl-sub">action items assigned, Friday checkpoint set</div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <h2>Action items</h2>
+          <ul class="checklist">
+            <li><span class="box"></span><span>Run the 8&nbsp;GB-machine embedding benchmark and post numbers</span><span class="owner">— Dev, Fri</span></li>
+            <li><span class="box"></span><span>Write the idle + AC gating check for the backfill</span><span class="owner">— Dev</span></li>
+            <li><span class="box"></span><span>Draft the v0.3 flag rollout note for the changelog</span><span class="owner">— You</span></li>
+            <li><span class="box done"></span><span>Move onboarding-redesign issues to the v0.4 milestone</span><span class="owner">— Sarah, done in-call</span></li>
+          </ul>
+
+          <section class="answer-block">
+            <div class="answer-head">
+              <div class="block-title">Meeting facts<span class="block-kind">mnema-dossier</span></div>
+            </div>
+            <div class="dossier">
+              <div class="kv"><span class="k">Meeting</span><span class="v">Product Sync</span></div>
+              <div class="kv"><span class="k">Duration</span><span class="v">44 min</span></div>
+              <div class="kv"><span class="k">App</span><span class="v">zoom.us</span></div>
+              <div class="kv"><span class="k">Participants</span><span class="v">3</span></div>
+            </div>
+          </section>
+        </article>
+
+        <div class="followup-divider">follow-up</div>
+
+        <div id="followup">
+          <div class="msg msg-user">
+            <div class="user-bubble">Did Sarah agree to the flag being off by default, or just stop pushing?</div>
+          </div>
+          <div class="msg">
+            <div class="avatar">◈</div>
+            <div class="msg-body">
+              <div class="msg-prose">
+                She explicitly agreed — at <span class="strong">2:31 PM</span> she said
+                "fine, off by default until Friday's numbers", and then set the Friday
+                checkpoint herself. It reads as a real concession, not a stalemate.
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer">
+        <div class="composer-row">
+          <input class="composer-input" type="text" placeholder="Ask a follow-up about this meeting…" />
+          <button class="send-btn" type="button" aria-label="Send">↑</button>
+        </div>
+      </div>
+      <div class="composer-hint">
+        Follow-ups continue this conversation. Trigger runs use read-only tools over your own capture history.
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+  var $ = function (s, r) { return (r || document).querySelector(s); };
+  var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
+
+  /* ============================================ seed data */
+  var SECTIONS = [
+    { cond: "meeting_ends", title: "When a meeting ends", glyph: "◉",
+      blurb: "A conferencing app held your mic for at least 5 minutes, then released it and stayed quiet ~2 minutes." },
+    { cond: "app_opened", title: "When an app opens", glyph: "▣",
+      blurb: "A chosen app comes to the front after 30+ minutes away — a fresh session, not window switching." },
+    { cond: "schedule", title: "On a schedule", glyph: "◷",
+      blurb: "At a fixed local time on the days you pick." }
+  ];
+
+  var TRIGGERS = [
+    { id: "meeting-recap", name: "Meeting Recap", cond: "meeting_ends", enabled: true,
+      status: { kind: "ok", word: "completed", rest: "· today 2:14 PM" },
+      prompt: "Summarize the meeting that just ended: key decisions, action items with owners, and open questions." },
+    { id: "standup-notes", name: "Standup Notes", cond: "meeting_ends", enabled: true,
+      status: { kind: "skip", word: "skipped", rest: "— wasn't recording · yesterday 9:31 AM" },
+      prompt: "From the meeting that just ended, write my standup update: what I reported, blockers raised, and what I committed to." },
+    { id: "figma-session-log", name: "Figma Session Log", cond: "app_opened", app: "Figma", enabled: true,
+      status: { kind: "fail", word: "failed", rest: "— provider returned an error · today 11:02 AM" },
+      prompt: "Log what I worked on in this Figma session: files touched, components changed, and any feedback I left." },
+    { id: "daily-wrap-up", name: "Daily Wrap-Up", cond: "schedule", time: "18:00", days: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], enabled: true,
+      status: { kind: "ok", word: "completed", rest: "· yesterday 6:03 PM" },
+      prompt: "Write a wrap-up of my day: main threads of work, meetings and outcomes, and what to pick up tomorrow." },
+    { id: "one-on-one-follow-ups", name: "1:1 Follow-Ups", cond: "meeting_ends", enabled: false, gated: true,
+      prompt: "If the meeting that just ended was a 1:1, list follow-ups for each of us and anything I promised to send." },
+    { id: "design-crit-notes", name: "Design Crit Notes", cond: "meeting_ends", enabled: true,
+      status: { kind: "wait", word: "running", rest: "— waiting for the transcript · fired 3:12 PM" },
+      prompt: "Collect the feedback given in this design crit, grouped by screen, with who said what." }
+  ];
+
+  var TEMPLATES = {
+    meeting_ends: "Write a recap of the meeting that just ended.\n\nOpen with a one-paragraph summary of what the meeting was about and where it landed. Then give a speaker-labeled rundown: for each person, the main points they raised and anything they committed to. Call out decisions that were made, and list open questions separately.\n\nClose with short feedback for me: where I was clear, where I rambled, and anything I said I would follow up on. Plain prose throughout.",
+    app_opened: "Catch me up on this app.\n\nSummarize what I was doing the last time I had it open — the files, boards or documents I touched, where I left off, and anything I said I would do next. Note anything relevant that happened elsewhere since (messages, decisions) that changes what I should do here.\n\nEnd with a one-line suggestion for what to pick up first. Plain prose, short.",
+    schedule: "Write an end-of-day review.\n\nSummarize what I worked on today across apps: the main threads of work and where each one stands. Note anything I started but did not finish, and any commitments I made in meetings or messages.\n\nClose with a short plan for tomorrow — three items at most. Plain prose, no fluff."
+  };
+  var COND_LABEL = { meeting_ends: "Meeting Ends", app_opened: "App Opened", schedule: "Schedule" };
+
+  /* Per-trigger firing ledger (mock). kind: ok = opens the document; skip/fail stay quiet lines. */
+  var RUNS = {
+    "meeting-recap": [
+      { kind: "ok", title: "Product Sync", when: "today 2:14 PM" },
+      { kind: "ok", title: "1:1 with Sarah", when: "today 10:04 AM" },
+      { kind: "skip", reason: "wasn't recording", when: "yesterday 9:31 AM" },
+      { kind: "ok", title: "Design Review", when: "yesterday 3:20 PM" },
+      { kind: "fail", reason: "provider returned an error", when: "Jul 17, 4:02 PM" },
+      { kind: "ok", title: "Platform Weekly", when: "Jul 17, 11:03 AM" }
+    ],
+    "standup-notes": [
+      { kind: "skip", reason: "wasn't recording", when: "yesterday 9:31 AM" },
+      { kind: "ok", title: "Standup", when: "Jul 17, 9:34 AM" }
+    ],
+    "figma-session-log": [
+      { kind: "fail", reason: "provider returned an error", when: "today 11:02 AM" },
+      { kind: "ok", title: "Onboarding screens pass", when: "yesterday 2:11 PM" }
+    ],
+    "daily-wrap-up": [
+      { kind: "ok", title: "Daily Wrap-Up", when: "yesterday 6:03 PM" },
+      { kind: "ok", title: "Daily Wrap-Up", when: "Jul 17, 6:02 PM" },
+      { kind: "skip", reason: "Mac was asleep at 6:00 PM", when: "Jul 16" }
+    ]
+  };
+  var DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  var ADV_DEFAULTS = { minlen: 5, awaygap: 30, cooldown: 10 };
+
+  /* ============================================ screen switcher */
+  var PATHS = { "screen-list": "/triggers", "screen-runs": "/triggers/runs", "screen-wizard": "/triggers/new", "screen-report": "/triggers/run" };
+  function showScreen(id) {
+    $$(".screen").forEach(function (s) { s.classList.toggle("active", s.id === id); });
+    $("#title-path").textContent = PATHS[id];
+  }
+
+  /* ============================================ LIST rendering */
+  function condDetail(t) {
+    if (t.cond === "app_opened") return "— " + (t.app || "?") + ", after 30 min away";
+    if (t.cond === "schedule") return "— " + dayLabel(t.days || []) + " at " + fmtTime(t.time || "18:00");
+    return "";
+  }
+  function dayLabel(days) {
+    if (days.length === 7) return "every day";
+    if (days.join(",") === "Mon,Tue,Wed,Thu,Fri") return "weekdays";
+    return days.join(", ") || "never";
+  }
+  function fmtTime(hm) {
+    var p = hm.split(":"), h = +p[0], m = p[1];
+    var ap = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+    return h + ":" + m + " " + ap;
+  }
+
+  function renderList() {
+    var host = $("#sections");
+    host.innerHTML = "";
+    SECTIONS.forEach(function (sec) {
+      var wrap = document.createElement("section");
+      wrap.className = "cond-section";
+
+      var head = document.createElement("div");
+      head.className = "cond-section-head";
+      head.innerHTML =
+        '<div class="cond-section-title"><span class="glyph"></span><span class="tt"></span></div>' +
+        '<p class="cond-section-blurb"></p>';
+      head.querySelector(".glyph").textContent = sec.glyph;
+      head.querySelector(".tt").textContent = sec.title;
+      head.querySelector(".cond-section-blurb").textContent = sec.blurb;
+      wrap.appendChild(head);
+
+      var rows = document.createElement("div");
+      rows.className = "trigger-rows";
+      var secTriggers = TRIGGERS.filter(function (t) { return t.cond === sec.cond; });
+      if (!secTriggers.length) {
+        var empty = document.createElement("p");
+        empty.className = "sec-empty";
+        empty.textContent = "Nothing here yet.";
+        rows.appendChild(empty);
+      }
+      secTriggers.forEach(function (t) {
+        rows.appendChild(buildRow(t));
+      });
+
+      var add = document.createElement("button");
+      add.type = "button";
+      add.className = "add-row";
+      var addLabel = { meeting_ends: "add a meeting-ends trigger", app_opened: "add an app-opened trigger", schedule: "add a scheduled trigger" }[sec.cond];
+      add.innerHTML = '<span class="plus">＋</span><span></span>';
+      add.querySelector("span:last-child").textContent = addLabel;
+      add.addEventListener("click", function () { openWizard({ cond: sec.cond }); });
+      rows.appendChild(add);
+
+      wrap.appendChild(rows);
+      host.appendChild(wrap);
+    });
+  }
+
+  function buildRow(t) {
+    var row = document.createElement("div");
+    row.className = "trow" + (t.gated ? " trow--gated" : "") + (!t.enabled && !t.gated ? " trow--off" : "");
+
+    var sw = document.createElement("button");
+    sw.type = "button";
+    sw.className = "switch" + (t.enabled ? " on" : "");
+    sw.setAttribute("role", "switch");
+    sw.setAttribute("aria-checked", String(t.enabled));
+    sw.setAttribute("aria-label", "Enable " + t.name);
+    if (t.gated) sw.disabled = true;
+    sw.addEventListener("click", function () {
+      t.enabled = !t.enabled;
+      sw.classList.toggle("on", t.enabled);
+      sw.setAttribute("aria-checked", String(t.enabled));
+      row.classList.toggle("trow--off", !t.enabled);
+    });
+    row.appendChild(sw);
+
+    var name = document.createElement("span");
+    name.className = "trow-name clickable";
+    name.textContent = t.name;
+    name.title = "View this trigger's runs";
+    name.addEventListener("click", function () { openRuns(t); });
+    row.appendChild(name);
+
+    var detail = condDetail(t);
+    if (detail) {
+      var d = document.createElement("span");
+      d.className = "trow-detail";
+      d.textContent = detail;
+      row.appendChild(d);
+    }
+
+    var sp = document.createElement("span");
+    sp.className = "spacer";
+    row.appendChild(sp);
+
+    if (t.gated) {
+      var chipEl = document.createElement("span");
+      chipEl.className = "gate-chip";
+      chipEl.title = "This trigger can't run until an AI provider is configured — its condition is ignored until then";
+      chipEl.textContent = "▲ needs an AI provider";
+      row.appendChild(chipEl);
+      var link = document.createElement("a");
+      link.className = "gate-link";
+      link.textContent = "Set up provider";
+      link.href = "#";
+      link.addEventListener("click", function (e) {
+        e.preventDefault();
+        alert("Would open Settings → AI Providers");
+      });
+      row.appendChild(link);
+    } else {
+      var st = document.createElement("span");
+      var s = t.status || { kind: "none", word: "no runs yet", rest: "" };
+      st.className = "trow-status st-" + s.kind;
+      st.innerHTML = '<span class="dot">●</span><span class="word"></span><span class="rest"></span>';
+      st.querySelector(".word").textContent = s.word;
+      st.querySelector(".rest").textContent = s.rest;
+      if (s.kind === "ok") {
+        st.title = "The last run produced a document — click to read it";
+        st.addEventListener("click", function () { openReport(t); });
+      } else if (s.kind === "skip") {
+        st.title = "The condition fired but there was nothing to work with — no document, no notification";
+      } else if (s.kind === "fail") {
+        st.title = "The run started but the AI provider returned an error — it will try again next time";
+      } else if (s.kind === "wait") {
+        st.title = "The condition fired — Mnema is waiting for transcription to finish before running (up to ~15 min), then you'll get a notification";
+      }
+      row.appendChild(st);
+    }
+
+    var acts = document.createElement("span");
+    acts.className = "trow-actions";
+    var edit = document.createElement("button");
+    edit.type = "button"; edit.className = "row-act"; edit.textContent = "edit";
+    edit.addEventListener("click", function () { openWizard({ edit: t }); });
+    var share = document.createElement("button");
+    share.type = "button"; share.className = "row-act"; share.textContent = "share";
+    share.title = "Copies this trigger as JSON — never carries provider or model config";
+    share.addEventListener("click", function () {
+      (navigator.clipboard ? navigator.clipboard.writeText(triggerJsonFor(t)) : Promise.reject())
+        .catch(function () {})
+        .then(function () {
+          share.textContent = "copied ✓";
+          setTimeout(function () { share.textContent = "share"; }, 1100);
+        });
+    });
+    var del = document.createElement("button");
+    del.type = "button"; del.className = "row-act row-act--danger"; del.textContent = "delete";
+    del.addEventListener("click", function () {
+      if (!confirm('Delete "' + t.name + '"? Past runs stay in your chat rail.')) return;
+      TRIGGERS.splice(TRIGGERS.indexOf(t), 1);
+      renderList();
+    });
+    acts.append(edit, share, del);
+    row.appendChild(acts);
+
+    if (t._new) {
+      row.classList.add("trow--new");
+      delete t._new;
+    }
+    return row;
+  }
+
+  /* ============================================ RUNS (per-trigger history) */
+  var reportFrom = null; // trigger whose runs screen led to the open report
+
+  function openReport(t) {
+    reportFrom = t || null;
+    $("#report-back").textContent = reportFrom ? "◀ " + reportFrom.name + " · runs" : "◀ Triggers";
+    // ponytail: the document is always the canned Product Sync run — one sample doc per mockup
+    showScreen("screen-report");
+  }
+
+  function openRuns(t) {
+    var glyph = SECTIONS.filter(function (s) { return s.cond === t.cond; })[0].glyph;
+    $("#runs-crumb-name").textContent = t.name;
+    $("#runs-title").textContent = t.name;
+    $("#runs-cond").textContent = glyph + " " + COND_LABEL[t.cond] + " " + (condDetail(t) || "");
+    var host = $("#runs-list");
+    host.innerHTML = "";
+    var runs = RUNS[t.id] || [];
+    if (!runs.length) {
+      var empty = document.createElement("p");
+      empty.className = "runs-empty";
+      empty.textContent = t.gated
+        ? "No runs — this trigger needs an AI provider before it can fire."
+        : "No runs yet — it hasn't fired. You'll get a notification when a run completes.";
+      host.appendChild(empty);
+    }
+    runs.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "trow run-row" + (r.kind === "ok" ? " openable" : "");
+      var st = document.createElement("span");
+      st.className = "trow-status st-" + r.kind;
+      st.innerHTML = '<span class="dot">●</span><span class="word"></span>';
+      st.querySelector(".word").textContent = { ok: "completed", skip: "skipped", fail: "failed" }[r.kind];
+      row.appendChild(st);
+      var title = document.createElement("span");
+      title.className = "run-title";
+      title.textContent = r.kind === "ok" ? r.title : "— " + r.reason;
+      row.appendChild(title);
+      var hint = document.createElement("span");
+      hint.className = "run-open-hint";
+      hint.textContent = "open ↗";
+      row.appendChild(hint);
+      var sp = document.createElement("span");
+      sp.className = "spacer";
+      row.appendChild(sp);
+      var when = document.createElement("span");
+      when.className = "run-when";
+      when.textContent = r.when;
+      row.appendChild(when);
+      if (r.kind === "ok") {
+        row.title = "This run produced a document — click to read it";
+        row.addEventListener("click", function () { openReport(t); });
+      }
+      host.appendChild(row);
+    });
+    showScreen("screen-runs");
+  }
+  $("#runs-back").addEventListener("click", function () { showScreen("screen-list"); });
+
+  /* ============================================ WIZARD state */
+  var wiz = null;
+
+  function openWizard(opts) {
+    opts = opts || {};
+    var ed = opts.edit || null;
+    wiz = {
+      step: 1,
+      maxStep: 1,
+      cond: ed ? ed.cond : (opts.cond || "meeting_ends"),
+      prompt: "",
+      dirty: false,
+      name: ed ? ed.name : (opts.name || ""),
+      app: (ed && ed.app) || "Figma",
+      time: (ed && ed.time) || "18:00",
+      days: { Mon: true, Tue: true, Wed: true, Thu: true, Fri: true, Sat: false, Sun: false },
+      adv: ed && ed.adv ? { minlen: ed.adv.minlen, awaygap: ed.adv.awaygap, cooldown: ed.adv.cooldown }
+                        : { minlen: 5, awaygap: 30, cooldown: 10 },
+      imported: !!opts.imported,
+      editing: ed
+    };
+    if (ed && ed.days) {
+      DAYS.forEach(function (d) { wiz.days[d] = ed.days.indexOf(d) !== -1; });
+    }
+    if (ed) { wiz.prompt = ed.prompt || ""; wiz.dirty = wiz.prompt !== TEMPLATES[wiz.cond]; }
+    else if (opts.prompt) { wiz.prompt = opts.prompt; wiz.dirty = true; }
+
+    $("#import-banner").hidden = !wiz.imported;
+    $("#wiz-crumb-here").textContent = wiz.imported ? "import trigger" : (ed ? "edit · " + ed.name : "new trigger");
+    $("#trig-name").value = wiz.name;
+    $("#trig-name").classList.remove("invalid");
+    $("#name-err").hidden = true;
+    $("#app-pick").value = wiz.app;
+    $("#sched-time").value = wiz.time;
+    renderDayChips();
+    syncSteppers();
+    $("#advanced").open = false;
+    selectCond(wiz.cond, true);
+    if (wiz.dirty || ed) { setPromptValue(wiz.prompt, wiz.dirty); } else { applyTemplate(); }
+
+    // Import lands on the prompt (step 2) — that's what needs review.
+    // Edit lands on Review with every step unlocked — nothing is new to the user.
+    if (ed) { wiz.maxStep = 3; goStep(3); }
+    else if (wiz.imported) { wiz.maxStep = 2; goStep(2); }
+    else { goStep(1); }
+    showScreen("screen-wizard");
+    if (ed) $("#title-path").textContent = "/triggers/edit";
+  }
+
+  /* ---- step navigation ---- */
+  function goStep(n) {
+    wiz.step = n;
+    wiz.maxStep = Math.max(wiz.maxStep, n);
+    $$(".wiz-step").forEach(function (s) { s.classList.toggle("active", +s.dataset.wizstep === n); });
+    $$(".step-tab").forEach(function (tab) {
+      var sn = +tab.dataset.step;
+      tab.classList.toggle("current", sn === n);
+      tab.classList.toggle("done", sn !== n && sn <= wiz.maxStep);
+    });
+    $$(".step-rule").forEach(function (r) { r.classList.toggle("done", +r.dataset.rule < n); });
+    $("#wiz-back").hidden = n === 1;
+    $("#wiz-share").hidden = n !== 3;
+    var next = $("#wiz-next");
+    next.textContent = n === 3 ? (wiz.editing ? "Save Changes" : "Create Trigger") : "Next ▶";
+    $("#wiz-note").textContent = n === 3 ? "saved to triggers.json — runs stay on this Mac" : "";
+    if (n === 3) refreshReview();
+  }
+  $$(".step-tab").forEach(function (tab) {
+    tab.addEventListener("click", function () {
+      var n = +tab.dataset.step;
+      if (n !== wiz.step && n <= wiz.maxStep) goStep(n); // any visited step
+    });
+  });
+  $("#wiz-back").addEventListener("click", function () { if (wiz.step > 1) goStep(wiz.step - 1); });
+  $("#wiz-next").addEventListener("click", function () {
+    if (wiz.step < 3) { goStep(wiz.step + 1); return; }
+    createTrigger();
+  });
+  $("#wiz-cancel").addEventListener("click", function () { showScreen("screen-list"); });
+
+  /* ---- step 1: condition cards + params ---- */
+  function selectCond(cond, keepPrompt) {
+    wiz.cond = cond;
+    $$(".cond-card").forEach(function (c) {
+      var on = c.dataset.cond === cond;
+      c.classList.toggle("selected", on);
+      c.setAttribute("aria-checked", String(on));
+    });
+    $$(".cond-params").forEach(function (p) { p.hidden = p.dataset.params !== cond; });
+    $("[data-adv='minlen']").hidden = cond !== "meeting_ends";
+    $("[data-adv='awaygap']").hidden = cond !== "app_opened";
+    if (!keepPrompt && !wiz.dirty) applyTemplate();
+    schedPreview();
+  }
+  $$(".cond-card").forEach(function (c) {
+    c.addEventListener("click", function () { selectCond(c.dataset.cond); });
+    c.addEventListener("keydown", function (e) {
+      if (e.key === " " || e.key === "Enter") { e.preventDefault(); selectCond(c.dataset.cond); }
+    });
+  });
+  $("#app-pick").addEventListener("change", function () { wiz.app = this.value; });
+
+  function renderDayChips() {
+    var wrap = $("#day-chips");
+    wrap.innerHTML = "";
+    DAYS.forEach(function (d) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "day-chip" + (wiz.days[d] ? " on" : "");
+      b.textContent = d;
+      b.addEventListener("click", function () {
+        wiz.days[d] = !wiz.days[d];
+        b.classList.toggle("on", wiz.days[d]);
+        schedPreview();
+      });
+      wrap.appendChild(b);
+    });
+  }
+  function activeDays() { return DAYS.filter(function (d) { return wiz.days[d]; }); }
+  function schedPreview() {
+    var el = $("#sched-preview");
+    var on = activeDays();
+    el.textContent = on.length
+      ? "Runs " + dayLabel(on) + " at " + fmtTime($("#sched-time").value || "18:00") + "."
+      : "Never runs — pick at least one day.";
+  }
+  $("#sched-time").addEventListener("input", function () { wiz.time = this.value; schedPreview(); });
+
+  /* ---- step 2: prompt ---- */
+  var promptEl = $("#prompt");
+  function setPromptValue(v, dirty) {
+    promptEl.value = v;
+    wiz.prompt = v;
+    wiz.dirty = dirty;
+    $("#prompt-chip").textContent = dirty ? "edited" : "starter template";
+    $("#char-count").textContent = v.length + " chars";
+  }
+  function applyTemplate() { setPromptValue(TEMPLATES[wiz.cond], false); }
+  promptEl.addEventListener("input", function () {
+    wiz.prompt = promptEl.value;
+    wiz.dirty = promptEl.value !== TEMPLATES[wiz.cond];
+    $("#prompt-chip").textContent = wiz.dirty ? "edited" : "starter template";
+    $("#char-count").textContent = promptEl.value.length + " chars";
+  });
+  $("#prompt-reset").addEventListener("click", applyTemplate);
+
+  /* ---- step 3: review ---- */
+  function condEcho() {
+    if (wiz.cond === "meeting_ends")
+      return { main: "Meeting Ends", sub: "a conferencing app releases the mic after holding it ≥" + wiz.adv.minlen + " min" };
+    if (wiz.cond === "app_opened")
+      return { main: "App Opened — " + wiz.app, sub: "fires on a fresh session, after " + wiz.adv.awaygap + " min away" };
+    return { main: "Schedule", sub: "runs " + dayLabel(activeDays()) + " at " + fmtTime(wiz.time || "18:00") };
+  }
+  function refreshReview() {
+    var e = condEcho();
+    var host = $("#review-cond");
+    host.innerHTML = '<span class="main"></span><span class="sub"></span>';
+    host.querySelector(".main").textContent = e.main;
+    host.querySelector(".sub").textContent = e.sub;
+    var pv = $("#review-prompt");
+    pv.textContent = wiz.prompt;
+    pv.classList.remove("expanded");
+    $("#preview-more").textContent = "show all";
+    advNote();
+  }
+  $("#preview-more").addEventListener("click", function () {
+    var pv = $("#review-prompt");
+    var open = pv.classList.toggle("expanded");
+    this.textContent = open ? "show less" : "show all";
+  });
+  $("#trig-name").addEventListener("input", function () {
+    wiz.name = this.value;
+    if (this.value.trim()) { this.classList.remove("invalid"); $("#name-err").hidden = true; }
+  });
+
+  /* ---- advanced steppers ---- */
+  function advNote() {
+    var allDefault = Object.keys(ADV_DEFAULTS).every(function (k) { return wiz.adv[k] === ADV_DEFAULTS[k]; });
+    $("#adv-note").textContent = allDefault ? "all defaults" : "modified";
+  }
+  function syncSteppers() {
+    $$(".stepper").forEach(function (s) {
+      s.querySelector(".val").textContent = wiz.adv[s.dataset.key] + " min";
+    });
+    advNote();
+  }
+  $$(".stepper").forEach(function (s) {
+    var key = s.dataset.key, min = +s.dataset.min, max = +s.dataset.max, step = +s.dataset.step;
+    var val = s.querySelector(".val"), btns = s.querySelectorAll("button");
+    function apply(delta) {
+      wiz.adv[key] = Math.min(max, Math.max(min, wiz.adv[key] + delta));
+      val.textContent = wiz.adv[key] + " min";
+      advNote();
+    }
+    btns[0].addEventListener("click", function () { apply(-step); });
+    btns[1].addEventListener("click", function () { apply(step); });
+  });
+
+  /* ---- Trigger JSON (Share) ---- */
+  function triggerJsonFor(t) {
+    var adv = t.adv || ADV_DEFAULTS;
+    var params = { cooldown_minutes: adv.cooldown };
+    if (t.cond === "meeting_ends") params.min_meeting_minutes = adv.minlen;
+    if (t.cond === "app_opened") { params.app = t.app; params.away_gap_minutes = adv.awaygap; }
+    if (t.cond === "schedule") { params.time = t.time; params.days = t.days; }
+    return JSON.stringify({
+      version: 1,
+      name: t.name || "Untitled Trigger",
+      condition: { type: t.cond, params: params },
+      prompt: t.prompt
+    }, null, 2);
+  }
+  function triggerJson() {
+    return triggerJsonFor({
+      name: $("#trig-name").value, cond: wiz.cond, adv: wiz.adv,
+      app: wiz.app, time: wiz.time, days: activeDays(), prompt: wiz.prompt
+    });
+  }
+  $("#wiz-share").addEventListener("click", function () {
+    var btn = this;
+    // ponytail: clipboard may be unavailable on file:// — flash "copied" either way, it's a mockup
+    (navigator.clipboard ? navigator.clipboard.writeText(triggerJson()) : Promise.reject())
+      .catch(function () {})
+      .then(function () {
+        btn.textContent = "copied ✓";
+        setTimeout(function () { btn.textContent = "Share as JSON"; }, 1100);
+      });
+  });
+
+  /* ---- create / save ---- */
+  function createTrigger() {
+    var name = $("#trig-name").value.trim();
+    if (!name) {
+      $("#trig-name").classList.add("invalid");
+      $("#name-err").hidden = false;
+      $("#trig-name").focus();
+      return;
+    }
+    var t = wiz.editing || {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      enabled: true,
+      status: { kind: "none", word: "no runs yet", rest: "" }
+    };
+    t.name = name;
+    t.cond = wiz.cond;
+    t.prompt = wiz.prompt;
+    t.adv = { minlen: wiz.adv.minlen, awaygap: wiz.adv.awaygap, cooldown: wiz.adv.cooldown };
+    delete t.app; delete t.time; delete t.days;
+    if (wiz.cond === "app_opened") t.app = wiz.app;
+    if (wiz.cond === "schedule") { t.time = wiz.time; t.days = activeDays(); }
+    if (!wiz.editing) TRIGGERS.push(t);
+    t._new = true; // accent flash on the row = success feedback
+    renderList();
+    showScreen("screen-list");
+  }
+
+  /* ---- list header actions ---- */
+  $("#btn-import").addEventListener("click", function () {
+    // Import prefills the wizard only — the user reviews the prompt (step 2) and saves.
+    openWizard({
+      imported: true,
+      cond: "meeting_ends",
+      name: "Meeting Recap (imported)",
+      prompt: TEMPLATES.meeting_ends + "\n\nAlso list anything that sounded like a commitment to a customer."
+    });
+  });
+
+  /* ============================================ REPORT wiring */
+  $("#report-back").addEventListener("click", function () {
+    if (reportFrom) { openRuns(reportFrom); } else { showScreen("screen-list"); }
+  });
+  $("#report-trigger").addEventListener("click", function () {
+    var t = TRIGGERS.filter(function (x) { return x.id === "meeting-recap"; })[0];
+    if (t) openWizard({ edit: t });
+  });
+
+  $$(".checklist .box").forEach(function (b) {
+    b.addEventListener("click", function () { b.classList.toggle("done"); });
+  });
+
+  var composerInput = $(".composer-input");
+  function sendFollowup() {
+    var text = composerInput.value.trim();
+    if (!text) return;
+    var u = document.createElement("div");
+    u.className = "msg msg-user";
+    u.innerHTML = '<div class="user-bubble"></div>';
+    u.firstChild.textContent = text;
+    var a = document.createElement("div");
+    a.className = "msg";
+    a.innerHTML = '<div class="avatar">◈</div><div class="msg-body"><div class="msg-prose" style="color:var(--app-text-muted)">(mock) In the real app the model would answer from your capture history — trigger runs use read-only tools only.</div></div>';
+    $("#followup").append(u, a);
+    composerInput.value = "";
+    a.scrollIntoView({ behavior: "smooth", block: "end" });
+  }
+  composerInput.addEventListener("keydown", function (e) { if (e.key === "Enter") sendFollowup(); });
+  $(".send-btn").addEventListener("click", sendFollowup);
+
+  /* ============================================ boot */
+  renderList();
+})();
+</script>
+</body>
+</html>

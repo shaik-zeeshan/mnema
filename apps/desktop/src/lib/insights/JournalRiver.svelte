@@ -1,14 +1,18 @@
 <script lang="ts">
-  // JournalRiver — the river half of the Journal surface (Slice 3), split out of
+  // JournalRiver — the river half of the Today surface, split out of
   // DayTimeline.svelte to keep both files under the 800-line ceiling. Given the
   // banded river + pending model (built by the parent from `buildJournalDay` +
-  // `journal-view.ts`) it renders the `.slot` grid (when | spine | card), the
-  // away-gaps, the live-edge pending slot, plus the loading skeleton and the two
-  // empty-state panels. Activities under 5 minutes (`isShortActivity`) render as
-  // compact one-line rows instead of full cards to keep the river dense. It owns
-  // no data loading — pure presentation.
+  // `journal-view.ts`) it renders LEDGER PROSE (Warm Paper redesign, Slice 3;
+  // mockup story-first-v5.html frame 1): borderless entries on a hanging mono
+  // time gutter — a tinted small-caps category word leading the title sentence,
+  // a summary line, and a quiet mono receipt line. Sub-5-minute activities
+  // (`isShortActivity`) are single lines; away-gaps are italic notes; the live
+  // edge is a breathing "writing this hour…" entry. It owns no data loading —
+  // pure presentation. Clicking an entry opens its receipt via `onOpenActivity`
+  // (the parent owns the receipt surface).
   import { untrack } from "svelte";
-  import type { Activity, ActivityFocus } from "$lib/types/recording";
+  import { captureControls } from "$lib/capture-controls.svelte";
+  import type { Activity } from "$lib/types/recording";
   import type { JournalPending } from "$lib/insights/journal-day";
   import type { RiverBand } from "$lib/insights/journal-view";
   import { isShortActivity, pendingReasonCopy } from "$lib/insights/journal-view";
@@ -16,7 +20,6 @@
     CATEGORY_COLOR,
     UNCATEGORIZED_COLOR,
     categoryLabel,
-    focusHint,
     humanizeMs,
   } from "$lib/insights/activity-helpers";
   import Skeleton from "$lib/insights/Skeleton.svelte";
@@ -87,23 +90,24 @@
   function catVar(category: Activity["category"]): string {
     return category ? `var(${CATEGORY_COLOR[category]})` : `var(${UNCATEGORIZED_COLOR})`;
   }
-  const FOCUS_TOKEN: Record<ActivityFocus, string> = {
-    deep: "--focus-deep",
-    mixed: "--focus-mid",
-    distracted: "--focus-distracted",
-  };
   function frameLabel(n: number): string {
     return `▸ ${n} ${n === 1 ? "frame" : "frames"} · receipt`;
   }
+
+  // ---- Off-the-record live edge (today only): the hole forming in the story,
+  // in its own vocabulary (mockup story-first-v5.html frame 2 `.live-off`).
+  // State comes straight from the shared capture-controls store — the same
+  // seam the titlebar record pill reads.
+  const offRecord = $derived(isToday && captureControls.offTheRecord);
+  const offRecordDeadlineMs = $derived(captureControls.offRecordDeadlineUnixMs);
 </script>
 
 {#if showSkeleton}
   <section class="river" aria-busy="true">
     {#each Array.from({ length: 4 }) as _, i (i)}
-      <div class="slot">
-        <div class="when"><Skeleton variant="text" width="34px" height="11px" /></div>
-        <div class="spine"><span class="node node--sk"></span></div>
-        <div class="card card--sk">
+      <div class="entry entry--sk">
+        <div class="ewhen"><Skeleton variant="text" width="42px" height="11px" /></div>
+        <div class="ebody">
           <Skeleton variant="text" width="52%" height="12px" />
           <Skeleton variant="text" width="84%" height="10px" />
         </div>
@@ -118,84 +122,84 @@
       {#each band.rows as row (row.kind + row.atMs)}
         {#if row.kind === "gap"}
           <div class="gap-note" data-at-ms={row.atMs}>
-            <div class="when"></div>
-            <div class="spine"></div>
+            <div class="ewhen" aria-hidden="true"></div>
             <div class="txt">
-              {clock(row.gap.startMs)} – {clock(row.gap.endMs)} · away — no capture
+              — away <span class="m">{clock(row.gap.startMs)} – {clock(row.gap.endMs)}</span> · no capture —
             </div>
           </div>
         {:else if isShortActivity(row.slot.activity)}
           {@const a = row.slot.activity}
-          <div class="slot slot--compact" data-at-ms={row.atMs}>
-            <div class="when">
-              {clock(a.startedAtMs)}
-              <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
+          <button
+            type="button"
+            class="entry entry--minor"
+            data-at-ms={row.atMs}
+            onclick={() => onOpenActivity(a)}
+          >
+            <div class="ewhen">{clock(a.startedAtMs)}</div>
+            <div class="ebody">
+              <div class="line">
+                {#if a.category}<span class="cw" style="color:{catVar(a.category)};">{categoryLabel(a.category)}</span>{/if}{a.title}
+              </div>
             </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button type="button" class="row-compact" onclick={() => onOpenActivity(a)}>
-              <span class="swatch" style="background:{catVar(a.category)};"></span>
-              <span class="row-title">{a.title}</span>
-            </button>
-          </div>
+          </button>
         {:else}
           {@const a = row.slot.activity}
-          <div class="slot" data-at-ms={row.atMs}>
-            <div class="when">
+          <button
+            type="button"
+            class="entry"
+            data-at-ms={row.atMs}
+            onclick={() => onOpenActivity(a)}
+          >
+            <div class="ewhen">
               {clock(a.startedAtMs)}
               <span class="dur">{humanizeMs(a.endedAtMs - a.startedAtMs)}</span>
             </div>
-            <div class="spine">
-              <span class="node" style="background:{catVar(a.category)};"></span>
-            </div>
-            <button
-              type="button"
-              class="card"
-              style="--cat: {catVar(a.category)};"
-              onclick={() => onOpenActivity(a)}
-            >
-              <div class="card-top">
-                <span class="chip">
-                  <span class="swatch" style="background:{catVar(a.category)};"></span>
-                  {a.category ? categoryLabel(a.category) : "Uncategorized"}
-                </span>
-                {#if a.focus}
-                  <span class="focus">
-                    <i style="background:var({FOCUS_TOKEN[a.focus]});"></i>
-                    {focusHint(a.focus)}
-                  </span>
-                {/if}
+            <div class="ebody">
+              <div>
+                {#if a.category}<span class="cw" style="color:{catVar(a.category)};">{categoryLabel(a.category)}</span>{/if}<h3>{a.title}</h3>
               </div>
-              <h3>{a.title}</h3>
               <p>{a.summary}</p>
-              <div class="card-foot">
+              <div class="efoot">
                 <span class="receipt">
                   {row.slot.expired ? "footage expired" : frameLabel(row.slot.frameCount)}
                 </span>
               </div>
-            </button>
-          </div>
+            </div>
+          </button>
         {/if}
       {/each}
     {/each}
 
-    {#if pending.active && pending.reason}
-      <div class="slot">
-        <div class="when">
-          {pending.sinceMs !== null ? clock(pending.sinceMs) : ""}
-          <span class="dur">now</span>
+    <!-- Live edge — the record's state told in the story's vocabulary
+         (mockup .live-on / .live-off). Off the record wins over the pending
+         entry: the user sees the hole forming in their story. -->
+    {#if offRecord}
+      <div class="live-off" class:live-off--muted={offRecordDeadlineMs === null}>
+        <div class="ewhen" aria-hidden="true"></div>
+        <div class="txt">
+          {#if offRecordDeadlineMs !== null}
+            <span>— off the record · resumes <span class="m">{clock(offRecordDeadlineMs)}</span> —</span>
+          {:else}
+            <span>— off the record · until you turn it back on —</span>
+          {/if}
+          <span class="dash" aria-hidden="true"></span>
         </div>
-        <div class="spine"><span class="node node--pending"></span></div>
-        <div class="card card--pending">
+      </div>
+    {:else if pending.active && pending.reason}
+      <div class="entry entry--live">
+        <div class="ewhen">
+          {pending.sinceMs !== null ? clock(pending.sinceMs) : ""}
+          <span class="dur">→</span>
+        </div>
+        <div class="ebody">
           {#if pending.reason.kind === "summarizing"}
-            <div class="pt"><span class="spin"></span>Summarizing this window…</div>
-            <div class="sub">
-              The journal trails live capture by up to 30 minutes — the footage
-              itself is already on the Timeline.
+            <div class="live-txt">
+              <span class="breath" aria-hidden="true"></span>On the record — writing this hour…<span class="m">the journal trails live capture by up to 30 minutes</span>
             </div>
           {:else}
-            <div class="pt pt--paused">{pendingReasonCopy(pending.reason.reason)}</div>
+            <div class="live-txt live-txt--paused">
+              {pendingReasonCopy(pending.reason.reason)}
+            </div>
           {/if}
         </div>
       </div>
@@ -222,339 +226,277 @@
     <div class="glyph" aria-hidden="true">◇</div>
     <h4>Your day is being written</h4>
     <p>
-      Capture is landing. The first journal card appears once the first half-hour
+      Capture is landing. The first journal entry appears once the first half-hour
       window has been summarized.
     </p>
   </div>
 {/if}
 
 <style>
-  /* All colours are app tokens (`--app-*`, `--cat-*`, `--focus-*`); the mockup's
-     raw hex (docs/mockups/dayflow/01-day-journal.html) is only its self-contained
-     copy of these same tokens. */
+  /* Ledger prose — borderless entries on a hanging mono time gutter (mockup
+     story-first-v5.html frame 1 `.river`). All colours are app tokens
+     (`--app-*`, `--cat-*`); the mockup's raw hex is its self-contained copy of
+     the same tokens, and the Warm Paper retheme is a token swap. */
   .river {
     display: flex;
     flex-direction: column;
-    gap: 0;
     width: 100%;
+    padding-bottom: 48px;
   }
   .day-rule {
     display: flex;
     align-items: center;
     gap: 9px;
+    font-family: var(--app-font-mono);
     font-size: var(--text-xs);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
-    /* Sticks to the scrollport top while its band scrolls; part of the old
-       margins became padding so the solid bg covers cards passing beneath. */
+    /* Sticks to the scrollport top while its band scrolls; solid bg covers
+       entries passing beneath. */
     position: sticky;
     top: 0;
     z-index: 2;
     background: var(--app-bg);
     padding: 4px 0 6px;
-    margin: 2px 0 8px;
+    margin: 2px 0 4px;
   }
   .day-rule:not(:first-child) {
-    margin-top: 14px;
+    margin-top: 20px;
   }
   .day-rule .rule {
     flex: 1;
     height: 1px;
     background: var(--app-border);
   }
-  .slot {
-    display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-  }
-  .slot + .slot,
-  .gap-note + .slot,
-  .slot + .gap-note {
-    margin-top: 12px;
-  }
-  .slot .when {
-    padding-top: 16px;
-    text-align: right;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-  .slot .when .dur {
-    display: block;
-    font-size: var(--text-xs);
-    color: var(--app-text-faint);
-  }
-  .spine {
-    position: relative;
-  }
-  .spine::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 0;
-    bottom: -12px;
-    width: 1px;
-    background: var(--app-border);
-  }
-  /* Last slot can't rely on :last-child — the live-edge sentinel (and at times
-     the jump pill) now render after it. */
-  .river > .slot:not(:has(~ .slot, ~ .gap-note)) .spine::before {
-    bottom: 12px;
-  }
-  .spine .node {
-    position: absolute;
-    left: 50%;
-    top: 19px;
-    transform: translate(-50%, 0);
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 2px solid var(--app-bg);
-  }
-  .spine .node--pending {
-    background: var(--app-text-faint);
-  }
-  .spine .node--sk {
-    background: var(--app-border-strong);
-  }
 
-  .gap-note {
+  /* One ledger entry — a full-width button (whole entry opens the receipt,
+     keyboard reachable) laid out as [hanging time gutter | prose body]. */
+  .entry {
     display: grid;
-    grid-template-columns: 64px 20px 1fr;
-    gap: 0 10px;
-    margin-top: 12px;
-  }
-  .gap-note .spine::before {
-    bottom: -12px;
-    border-left: 1px dashed var(--app-border);
-    background: transparent;
-    width: 0;
-  }
-  .gap-note .txt {
-    font-size: var(--text-sm);
-    color: var(--app-text-faint);
-    padding: 4px 0;
-    font-style: italic;
-  }
-
-  /* Compact row — activities under 5 minutes render as one quiet clickable
-     line (swatch + title) instead of a full card; the click opens the receipt.
-     Tighter paddings + node top keep the spine node centered on the single
-     text line (row lands ~32px tall). */
-  .slot--compact .when {
-    padding-top: 7px;
-  }
-  .slot--compact .node {
-    top: 9px;
-  }
-  .row-compact {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    min-width: 0;
-    text-align: left;
+    grid-template-columns: 76px 1fr;
+    gap: 0 20px;
+    padding: 9px 10px 9px 0;
+    margin: 0 -10px 0 0;
     border: 0;
     border-radius: 8px;
     background: transparent;
-    padding: 7px 10px;
+    text-align: left;
     font: inherit;
     color: inherit;
     cursor: pointer;
     transition: background 0.12s ease;
   }
-  .row-compact:hover {
+  .entry + .entry,
+  .gap-note + .entry,
+  .entry + .gap-note {
+    margin-top: 3px;
+  }
+  .entry:hover {
     background: var(--app-surface-hover);
   }
-  .row-compact:hover .row-title {
-    color: var(--app-text-strong);
-  }
-  .row-compact:focus-visible {
+  .entry:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
   }
-  .row-compact .swatch {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex: none;
+  .entry:hover .receipt,
+  .entry:focus-visible .receipt {
+    color: var(--app-accent);
   }
-  .row-compact .row-title {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .ewhen {
+    text-align: right;
+    padding-top: 2.5px;
+    font-family: var(--app-font-mono);
     font-size: var(--text-sm);
-    line-height: 1.35;
     color: var(--app-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .ewhen .dur {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--app-text-faint);
+    margin-top: 2px;
+  }
+  .ebody {
+    min-width: 0;
+  }
+  /* Tinted small-caps category word leading the title sentence. */
+  .cw {
+    font-family: var(--app-font-mono);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    margin-right: 7px;
+    vertical-align: 2px;
+  }
+  .ebody h3 {
+    display: inline;
+    margin: 0;
+    font-family: var(--app-font-narrative);
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -0.003em;
+    color: var(--app-text-strong);
+  }
+  .ebody p {
+    margin: 3px 0 0;
+    font-family: var(--app-font-narrative);
+    font-size: var(--text-md);
+    line-height: 1.5;
+    color: var(--app-text-muted);
+  }
+  .efoot {
+    margin-top: 5px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .receipt {
+    font-family: var(--app-font-mono);
+    font-size: var(--text-xs);
+    letter-spacing: 0.05em;
+    color: var(--app-text-faint);
     transition: color 0.12s ease;
   }
 
-  /* Card — a full-width button so the whole card opens the receipt (keyboard
-     reachable). Category rides a left edge bar (`--cat`) on a neutral body. */
-  .card {
-    position: relative;
-    display: block;
-    width: 100%;
-    text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    padding: 13px 16px 12px 19px;
-    font: inherit;
-    color: inherit;
-    cursor: pointer;
-    transition: border-color 0.12s ease;
+  /* Sub-5-minute activities — one quiet line. */
+  .entry--minor {
+    padding-top: 5px;
+    padding-bottom: 5px;
   }
-  .card::before {
-    content: "";
-    position: absolute;
-    left: -1px;
-    top: -1px;
-    bottom: -1px;
-    width: 3px;
-    border-radius: 10px 0 0 10px;
-    background: var(--cat, transparent);
+  .entry--minor .ewhen {
+    padding-top: 1px;
   }
-  .card:hover {
-    border-color: var(--app-border-hover);
+  .entry--minor .line {
+    font-family: var(--app-font-narrative);
+    font-size: var(--text-md);
+    color: var(--app-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: color 0.12s ease;
   }
-  .card:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
+  .entry--minor:hover .line {
+    color: var(--app-text-strong);
   }
-  .card:hover .receipt,
-  .card:focus-visible .receipt {
-    color: var(--app-accent);
-    border-bottom-color: var(--app-accent-border);
+
+  /* Away-gap — an italic aside in the ledger. */
+  .gap-note {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 0 20px;
+    margin-top: 3px;
   }
-  .card--sk {
+  .gap-note .txt {
+    font-family: var(--app-font-narrative);
+    font-style: italic;
+    font-size: var(--text-base);
+    color: var(--app-text-faint);
+    padding: 5px 0;
+  }
+  .gap-note .txt .m {
+    font-family: var(--app-font-mono);
+    font-style: normal;
+    font-size: var(--text-sm);
+  }
+
+  /* Skeleton rows share the entry grid. */
+  .entry--sk {
     cursor: default;
+  }
+  .entry--sk:hover {
+    background: transparent;
+  }
+  .entry--sk .ebody {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
-  .card--sk::before {
-    display: none;
+
+  /* ---- Live edge — breathing "writing this hour…" entry ---- */
+  .entry--live {
+    cursor: default;
   }
-  .card-top {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 6px;
+  .entry--live:hover {
+    background: transparent;
   }
-  .chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
+  .live-txt {
+    font-family: var(--app-font-narrative);
+    font-style: italic;
+    font-size: var(--text-base);
     color: var(--app-text-muted);
+    padding: 3px 0;
   }
-  .chip .swatch {
+  .live-txt .breath {
+    display: inline-block;
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    flex: none;
+    /* The record's own colour (mockup .breath = var(--rec)), not the accent:
+       the breathing dot IS the on-the-record signal, same as the pill's. */
+    background: var(--app-status-running-dot);
+    margin-right: 9px;
+    vertical-align: -0.5px;
+    animation: journal-breathe 2.8s ease-in-out infinite;
   }
-  .focus {
-    margin-left: auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-  }
-  .focus i {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex: none;
-  }
-  .card h3 {
-    margin: 0 0 4px;
-    font-size: var(--text-md);
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    color: var(--app-text-strong);
-    line-height: 1.35;
-  }
-  .card p {
-    margin: 0;
-    font-size: var(--text-sm);
-    line-height: 1.65;
-    color: var(--app-text-muted);
-  }
-  .card-foot {
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    margin-top: 9px;
-    padding-top: 8px;
-    border-top: 1px dashed var(--app-border);
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-    flex-wrap: wrap;
-  }
-  .receipt {
-    margin-left: auto;
-    color: var(--app-text-muted);
-    border-bottom: 1px dotted var(--app-border-strong);
-    line-height: 1.3;
-    white-space: nowrap;
-    transition:
-      color 0.12s ease,
-      border-bottom-color 0.12s ease;
-  }
-
-  /* ---- Pending slot at the live edge ---- */
-  .card--pending {
-    border-style: dashed;
-    background: transparent;
-    cursor: default;
-  }
-  .card--pending::before {
-    display: none;
-  }
-  .card--pending:hover {
-    border-color: var(--app-border);
-  }
-  .card--pending .pt {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: var(--text-sm);
-    color: var(--app-text-subtle);
-  }
-  .card--pending .pt .spin {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-accent-strong);
-    animation: journal-pulse 1.6s ease-in-out infinite;
-  }
-  @keyframes journal-pulse {
+  @keyframes journal-breathe {
     0%,
     100% {
-      opacity: 0.35;
+      opacity: 1;
     }
     50% {
-      opacity: 1;
+      opacity: 0.45;
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .card--pending .pt .spin {
+    .live-txt .breath {
       animation: none;
     }
   }
-  .card--pending .sub {
-    margin-top: 3px;
+  .live-txt .m {
+    font-family: var(--app-font-mono);
+    font-style: normal;
     font-size: var(--text-xs);
     color: var(--app-text-faint);
+    margin-left: 7px;
+  }
+  .live-txt--paused {
+    color: var(--app-text-subtle);
+  }
+
+  /* ---- Live edge — off the record: the hole forming (mockup .live-off).
+     Amber while a timed window counts down; muted when indefinite. ---- */
+  .live-off {
+    display: grid;
+    grid-template-columns: 76px 1fr;
+    gap: 0 20px;
+    margin-top: 8px;
+  }
+  .live-off .txt {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--app-font-narrative);
+    font-style: italic;
+    font-size: var(--text-base);
+    color: var(--app-warn);
+    padding: 6px 0;
+  }
+  .live-off .txt .m {
+    font-family: var(--app-font-mono);
+    font-style: normal;
+    font-size: var(--text-xs);
+  }
+  .live-off .dash {
+    flex: 1;
+    border-top: 1px dashed var(--app-warn-border);
+  }
+  .live-off--muted .txt {
+    color: var(--app-text-subtle);
+  }
+  .live-off--muted .dash {
+    border-top-color: var(--app-border);
   }
 
   /* ---- Live edge: sentinel + "jump to now" pill ---- */

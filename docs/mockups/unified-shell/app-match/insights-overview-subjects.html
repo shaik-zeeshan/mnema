@@ -1,0 +1,1129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema — App Match · Insights Journal &amp; Subjects · Warm Paper</title>
+<style>
+  /* ============ tokens (pinned: direction-2-warm-paper) ============ */
+  :root {
+    --page-bg: #ece8dc;
+    --shell-bg: #faf8f2;
+    --rail-bg: #f4f1e7;
+    --card: #fffdf7;
+    --card-deep: #fbf9f1;
+    --border: #e4ddcb;
+    --border-soft: #ece6d6;
+    --border-strong: #d6cdb6;
+    --ink: #2b2a24;
+    --ink-2: #6d675a;
+    --ink-3: #9a927e;
+    --accent: #1f6f4a;
+    --accent-deep: #175a3b;
+    --accent-2: #2a8a60;
+    --tint: #e7f1e9;
+    --tint-2: #f0f6f0;
+    --tint-border: #c9dfd0;
+    --amber: #9a6b1f;
+    --amber-tint: #f6efdd;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --shadow-win: 0 1px 2px rgba(60,52,32,.06), 0 12px 40px rgba(60,52,32,.10), 0 2px 8px rgba(60,52,32,.05);
+    /* category hues, tuned to sit on paper */
+    --cat-creating: #2a8a60;
+    --cat-communication: #3a6ea8;
+    --cat-meetings: #8a5a2a;
+    --cat-research: #6d5a8a;
+    --cat-organizing: #9a6b1f;
+    --cat-uncat: #9a927e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { background: var(--page-bg); }
+  body {
+    font-family: var(--sans);
+    color: var(--ink);
+    padding: 72px 48px 120px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame-wrap { width: 1440px; margin: 0 auto 96px; }
+  .frame-label {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: #8a8270;
+    margin: 0 4px 14px;
+  }
+  .frame-label b { color: var(--accent); font-weight: 600; }
+  .window {
+    width: 1440px; height: 900px;
+    background: var(--shell-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    box-shadow: var(--shadow-win);
+    overflow: hidden;
+    display: flex;
+    position: relative;
+  }
+  .traffic { position: absolute; top: 18px; left: 18px; display: flex; gap: 8px; z-index: 5; }
+  .traffic span { width: 12px; height: 12px; border-radius: 50%; border: .5px solid rgba(0,0,0,.12); }
+  .traffic .r { background: #e8b3a6; } .traffic .y { background: #e9d3a1; } .traffic .g { background: #b7cfb6; }
+
+  /* ============ left rail — InsightsRail on warm paper ============ */
+  .rail {
+    width: 264px; flex: none;
+    background: var(--rail-bg);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 52px 0 0;
+  }
+  .brand {
+    font-family: var(--serif);
+    font-size: 19px; letter-spacing: .01em;
+    padding: 0 22px 18px;
+    color: var(--ink);
+  }
+  .brand .leaf { color: var(--accent); font-family: var(--mono); font-size: 15px; margin-right: 7px; }
+  .nav { padding: 0 12px; display: flex; flex-direction: column; gap: 2px; }
+  .nav a {
+    display: flex; align-items: center; gap: 11px;
+    padding: 8px 10px; border-radius: 8px;
+    color: var(--ink-2); text-decoration: none;
+    font-size: 13.5px; font-weight: 500;
+    transition: background .12s, color .12s;
+  }
+  .nav a svg { width: 15px; height: 15px; stroke: currentColor; flex: none; opacity: .8; }
+  .nav a:hover { background: #ece8da; color: var(--ink); }
+  .nav a.active { background: var(--tint); color: var(--accent-deep); box-shadow: inset 2px 0 0 var(--accent); }
+  .nav a.active svg { opacity: 1; }
+  .nav a .new-tag {
+    margin-left: auto; font-family: var(--mono); font-size: 9px;
+    letter-spacing: .1em; color: var(--accent-deep);
+    background: var(--tint); border: 1px solid var(--tint-border);
+    border-radius: 4px; padding: 1px 5px;
+  }
+  .rail-newchat {
+    display: flex; align-items: center; gap: 10px;
+    margin: 14px 12px 0; padding: 8px 10px;
+    border-radius: 8px; color: var(--ink-2);
+    font-size: 13.5px; font-weight: 500; text-decoration: none;
+    border-top: 0;
+  }
+  .rail-newchat:hover { background: #ece8da; color: var(--ink); }
+  .rail-newchat .plus { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+  .rail-sec {
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .13em; text-transform: uppercase;
+    color: var(--ink-3);
+    padding: 20px 22px 6px;
+  }
+  .recents { padding: 0 12px; overflow: hidden; }
+  .recents--grow { flex: 1; }
+  .recents a {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-radius: 8px;
+    text-decoration: none; color: var(--ink-2);
+    font-size: 13px; line-height: 1.35;
+  }
+  .recents a:hover { background: #ece8da; color: var(--ink); }
+  .recents .t { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .recents .when { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); flex: none; }
+  .rail-foot {
+    border-top: 1px solid var(--border);
+    padding: 12px 20px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .rail-foot .line { display: flex; align-items: center; gap: 8px; }
+  .engine-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); box-shadow: 0 0 0 3px rgba(42,138,96,.16); flex: none; }
+  .rail-foot .stat { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); line-height: 1.5; }
+  .rail-foot .stat b { color: var(--accent-deep); font-weight: 600; }
+  .rail-foot .stat .dim { color: var(--ink-3); }
+
+  /* ============ main pane ============ */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  .main-scroll { flex: 1; overflow-y: auto; padding: 54px 0 72px; }
+  .col { max-width: 860px; margin: 0 auto; padding: 0 40px; }
+
+  /* page header (Overview/Journal `.ov-header` shape) */
+  .ov-header { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+  .ov-header .titles { flex: 1 1 auto; min-width: 0; }
+  .ov-header h1 { font-family: var(--serif); font-size: 30px; font-weight: 400; letter-spacing: -.01em; color: var(--ink); }
+  .ov-header .subtitle { margin-top: 5px; font-size: 14px; color: var(--ink-2); }
+  .ov-controls { display: inline-flex; align-items: center; gap: 12px; flex: 0 0 auto; padding-top: 8px; }
+
+  /* date stepper (JournalDateStepper) */
+  .date-stepper { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+  .date-stepper .snav {
+    width: 24px; height: 24px; display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); border-radius: 6px; background: var(--card);
+    color: var(--ink-3); cursor: pointer; font: inherit;
+  }
+  .date-stepper .snav:hover:not(.disabled) { color: var(--ink); border-color: var(--border-strong); }
+  .date-stepper .snav.disabled { opacity: .4; cursor: default; }
+  .date-stepper .day-label {
+    font-family: var(--mono); font-size: 12px; color: var(--ink);
+    letter-spacing: .02em; padding: 2px 4px;
+    border-bottom: 1px dotted var(--border-strong); cursor: pointer;
+  }
+  .date-stepper .day-label:hover { color: var(--accent-deep); border-bottom-color: var(--accent-2); }
+
+  /* ============ digest lede (`.entry--lede`) ============ */
+  .entry--lede {
+    margin-top: 24px;
+    padding: 24px 26px 20px;
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--accent);
+    border-radius: 12px;
+    background: linear-gradient(to right, var(--tint-2), var(--card) 42%);
+    box-shadow: 0 1px 2px rgba(60,52,32,.03);
+  }
+  .eyebrow {
+    display: flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); margin-bottom: 12px;
+  }
+  .eyebrow .diamond { color: var(--accent); letter-spacing: 0; }
+  .eyebrow .tick { width: 5px; height: 5px; border-radius: 50%; background: var(--border-strong); flex: none; }
+  .eyebrow .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .eyebrow-when { letter-spacing: .04em; }
+  .re-read {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border: 1px solid var(--border); border-radius: 5px;
+    background: var(--card); color: var(--ink-2); cursor: pointer;
+    font-family: var(--mono); font-size: 10px; letter-spacing: .06em;
+  }
+  .re-read:hover { color: var(--accent-deep); border-color: var(--tint-border); background: var(--tint-2); }
+  .lede-headline { font-family: var(--serif); font-size: 21px; font-weight: 500; letter-spacing: -.005em; color: var(--ink); }
+  .lede-text { font-family: var(--serif); font-size: 15px; line-height: 1.65; color: #45412f; margin-top: 8px; }
+  .lede-stats {
+    display: flex; align-items: flex-end; gap: 34px;
+    margin-top: 18px; padding-top: 14px;
+    border-top: 1px solid var(--border-soft);
+  }
+  .lede-stat { display: flex; flex-direction: column; gap: 3px; }
+  .lede-stat-n { font-family: var(--mono); font-size: 16px; color: var(--ink); font-weight: 500; }
+  .lede-stat-n--cat { display: inline-flex; align-items: center; gap: 7px; font-family: var(--sans); font-size: 14px; font-weight: 600; }
+  .lede-stat-swatch { width: 9px; height: 9px; border-radius: 3px; display: inline-block; }
+  .lede-stat-cap { font-family: var(--mono); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-3); }
+  .lede-stat-delta { font-family: var(--mono); font-size: 10.5px; color: var(--accent-deep); margin-left: 6px; }
+
+  /* ============ journal river (JournalRiver) ============ */
+  .river { margin-top: 26px; display: flex; flex-direction: column; }
+  .day-rule {
+    display: flex; align-items: center; gap: 9px;
+    font-family: var(--mono); font-size: 10.5px;
+    letter-spacing: .18em; text-transform: uppercase;
+    color: var(--ink-3); padding: 4px 0 6px; margin: 2px 0 8px;
+  }
+  .day-rule:not(:first-child) { margin-top: 18px; }
+  .day-rule .rule { flex: 1; height: 1px; background: var(--border-soft); }
+  .slot, .gap-note {
+    display: grid;
+    grid-template-columns: 68px 20px 1fr;
+    gap: 0 12px;
+  }
+  .slot + .slot, .gap-note + .slot, .slot + .gap-note { margin-top: 12px; }
+  .slot .when {
+    padding-top: 16px; text-align: right;
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  }
+  .slot .when .dur { display: block; font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+  .spine { position: relative; }
+  .spine::before {
+    content: ""; position: absolute; left: 50%; top: 0; bottom: -12px;
+    width: 1px; background: var(--border);
+  }
+  .river > .slot:last-child .spine::before { bottom: 12px; }
+  .spine .node {
+    position: absolute; left: 50%; top: 19px; transform: translate(-50%, 0);
+    width: 9px; height: 9px; border-radius: 50%;
+    border: 2px solid var(--shell-bg);
+  }
+  .spine .node--pending { background: var(--ink-3); }
+  .gap-note { margin-top: 12px; }
+  .gap-note .spine::before { border-left: 1px dashed var(--border); background: transparent; width: 0; }
+  .gap-note .txt { font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--ink-3); padding: 5px 0; }
+  .gap-note .txt .m { font-family: var(--mono); font-style: normal; font-size: 11px; }
+
+  .jcard {
+    position: relative; display: block; width: 100%; text-align: left;
+    background: var(--card); border: 1px solid var(--border);
+    border-left: 3px solid var(--cat, var(--border-strong));
+    border-radius: 10px; padding: 13px 16px 11px;
+    cursor: pointer;
+    transition: border-color .13s, box-shadow .13s, transform .13s;
+  }
+  .jcard:hover { border-color: var(--tint-border); box-shadow: 0 2px 12px rgba(31,111,74,.07); transform: translateY(-1px); }
+  .jcard-top { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .cat-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 600; color: var(--ink-2);
+    background: var(--card-deep); border: 1px solid var(--border-soft);
+    border-radius: 999px; padding: 2px 9px;
+  }
+  .cat-chip .swatch { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+  .focus-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-3); }
+  .focus-chip i { width: 6px; height: 6px; border-radius: 2px; display: inline-block; }
+  .focus-deep i { background: var(--accent-2); }
+  .focus-mixed i { background: #c9a24a; }
+  .focus-scattered i { background: #c07a5a; }
+  .jcard h3 { font-family: var(--serif); font-size: 16.5px; font-weight: 500; letter-spacing: -.005em; color: var(--ink); }
+  .jcard p { font-family: var(--serif); font-size: 13.5px; line-height: 1.55; color: #55503e; margin-top: 4px; }
+  .jcard-foot { margin-top: 9px; }
+  .receipt { font-family: var(--mono); font-size: 10px; letter-spacing: .05em; color: var(--ink-3); }
+  .jcard:hover .receipt { color: var(--accent-deep); }
+
+  /* compact one-line rows for <5m activities */
+  .slot--compact .when { padding-top: 7px; }
+  .slot--compact .node { top: 10px; }
+  .row-compact {
+    display: flex; align-items: center; gap: 9px;
+    padding: 6px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .row-compact:hover { background: #f3efe2; }
+  .row-compact .swatch { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .row-compact .row-title { font-size: 13px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-compact:hover .row-title { color: var(--ink); }
+
+  /* pending slot at the live edge */
+  .jcard--pending { border-left: 3px solid var(--border-strong); background: var(--card-deep); cursor: default; }
+  .jcard--pending:hover { transform: none; box-shadow: none; border-color: var(--border); border-left-color: var(--border-strong); }
+  .jcard--pending .pt { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink-2); }
+  .jcard--pending .sub { font-size: 12px; color: var(--ink-3); margin-top: 4px; line-height: 1.5; }
+  .spin {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 50%; border: 1.5px solid var(--border-strong); border-top-color: var(--accent-2);
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ============ subjects — conviction view ============ */
+  .conv-sub { margin-top: 5px; font-size: 14px; color: var(--ink-2); max-width: 560px; }
+  .conv-summary { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: var(--ink-3); letter-spacing: .02em; }
+  .conv-summary .num { color: var(--ink); font-weight: 600; }
+  .conv-summary .up { color: var(--accent-2); }
+  .conv-summary .down { color: var(--amber); }
+  .conv-summary .sep { margin: 0 8px; color: var(--border-strong); }
+
+  .conv-controls { display: flex; align-items: center; gap: 12px; margin-top: 22px; }
+  .search {
+    flex: 1; display: flex; align-items: center; gap: 8px;
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 12px; color: var(--ink-3);
+  }
+  .search input {
+    flex: 1; border: 0; outline: 0; background: transparent;
+    font-family: var(--sans); font-size: 13px; color: var(--ink);
+  }
+  .search input::placeholder { color: var(--ink-3); }
+  .segmented { display: inline-flex; background: var(--card-deep); border: 1px solid var(--border); border-radius: 8px; padding: 2px; }
+  .segmented span {
+    font-size: 12.5px; font-weight: 500; color: var(--ink-2);
+    padding: 5px 14px; border-radius: 6px; cursor: pointer;
+  }
+  .segmented span.on { background: var(--card); color: var(--accent-deep); border: 1px solid var(--tint-border); box-shadow: 0 1px 2px rgba(60,52,32,.05); }
+  .axis-hint { margin-top: 10px; font-size: 12.5px; color: var(--ink-3); font-style: italic; font-family: var(--serif); }
+
+  .conv-tier { margin-top: 30px; }
+  .conv-tier-head { display: flex; align-items: baseline; gap: 12px; }
+  .conv-tier-head .section-title { font-family: var(--serif); font-size: 17px; font-weight: 500; color: var(--ink); }
+  .conv-tier-head .conv-tier-note { font-family: var(--mono); font-size: 10.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); }
+  .conv-rule { height: 1px; background: var(--border-soft); margin: 8px 0 12px; }
+  .conv-tier--faded .section-title { color: var(--ink-3); }
+
+  .conv-row {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; margin-bottom: 10px;
+    transition: border-color .13s, box-shadow .13s;
+  }
+  .conv-row:hover { border-color: var(--tint-border); box-shadow: 0 2px 12px rgba(31,111,74,.06); }
+  .conv-row.is-open { border-color: var(--tint-border); }
+  .conv-row.is-faded { opacity: .62; }
+  .conv-rowmain { display: flex; align-items: center; gap: 18px; padding: 14px 18px; cursor: pointer; }
+  .conv-meta { flex: 1; min-width: 0; }
+  .conv-metatop { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .conv-catdot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .conv-name { font-family: var(--serif); font-size: 16.5px; font-weight: 500; color: var(--ink); }
+  .conv-pin { color: var(--amber); font-size: 12px; }
+  .pill {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .07em;
+    border-radius: 999px; padding: 2px 8px; text-transform: uppercase;
+  }
+  .pill--warming { color: var(--accent-deep); background: var(--tint); border: 1px solid var(--tint-border); }
+  .pill--steady { color: var(--ink-2); background: var(--card-deep); border: 1px solid var(--border); }
+  .pill--cooling { color: var(--amber); background: var(--amber-tint); border: 1px solid #e7d8b4; }
+  .conv-cc { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+  .conv-headline { font-family: var(--serif); font-size: 13.5px; color: #55503e; margin-top: 5px; line-height: 1.5; }
+  .conv-hero { display: flex; align-items: center; gap: 16px; flex: none; }
+  .conv-spark svg { display: block; }
+  .conv-figure { text-align: right; width: 64px; }
+  .conv-conf { font-family: var(--mono); font-size: 18px; font-weight: 500; color: var(--ink); }
+  .conv-row.is-faded .conv-conf { color: var(--ink-3); }
+  .conv-moved { font-family: var(--mono); font-size: 10px; color: var(--ink-3); margin-top: 2px; }
+  .conv-caret {
+    width: 24px; height: 24px; flex: none; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--card-deep); color: var(--ink-3); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 9px;
+    transition: transform .13s;
+  }
+  .conv-caret:hover { color: var(--accent-deep); border-color: var(--tint-border); }
+  .conv-caret.is-open { transform: rotate(90deg); color: var(--accent-deep); }
+
+  /* expanded detail */
+  .conv-detail { border-top: 1px solid var(--border-soft); background: var(--card-deep); border-radius: 0 0 12px 12px; }
+  .conv-detail-inner { padding: 16px 18px 18px; }
+  .conv-detail-label {
+    font-family: var(--mono); font-size: 10px; letter-spacing: .13em;
+    text-transform: uppercase; color: var(--ink-3); margin-bottom: 10px;
+  }
+  .conv-detail-block + .conv-detail-block { margin-top: 18px; }
+  .conv-concl-row {
+    display: grid; grid-template-columns: 1fr 120px 40px 58px auto;
+    align-items: center; gap: 14px;
+    padding: 7px 0; border-bottom: 1px solid var(--border-soft);
+  }
+  .conv-concl-row:last-child { border-bottom: 0; }
+  .conv-concl-row.is-faded { opacity: .55; }
+  .conv-concl-stmt { font-family: var(--serif); font-size: 13.5px; color: #45412f; line-height: 1.45; }
+  .conv-concl-pin { color: var(--amber); margin-right: 5px; }
+  .confidence-bar { height: 5px; background: var(--border-soft); border-radius: 999px; overflow: hidden; }
+  .confidence-bar i { display: block; height: 100%; background: var(--accent-2); border-radius: 999px; }
+  .conv-concl-row.is-faded .confidence-bar i { background: var(--border-strong); }
+  .conv-concl-pct { font-family: var(--mono); font-size: 11px; color: var(--ink-2); text-align: right; }
+  .status-chip {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: .06em;
+    border-radius: 999px; padding: 2px 8px; text-align: center;
+  }
+  .status-active { color: var(--accent-deep); background: var(--tint); border: 1px solid var(--tint-border); }
+  .status-faded { color: var(--ink-3); background: var(--card); border: 1px dashed var(--border-strong); }
+  .concl-actions { display: flex; gap: 6px; }
+  .btn-sm {
+    font-size: 11.5px; font-weight: 500; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border); border-radius: 6px;
+    padding: 3px 10px; cursor: pointer;
+  }
+  .btn-sm:hover { color: var(--accent-deep); border-color: var(--tint-border); }
+  .btn-sm--pinned { color: var(--amber); border-color: #e7d8b4; background: var(--amber-tint); }
+  .conv-chiprow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ev-chip {
+    display: inline-flex; align-items: baseline; gap: 7px;
+    font-family: var(--mono); font-size: 10.5px; color: var(--ink-2);
+    background: var(--card); border: 1px solid var(--border); border-radius: 999px;
+    padding: 3px 11px;
+  }
+  .ev-chip .src-screen { color: var(--accent-deep); }
+  .ev-chip .src-mic { color: #3a6ea8; }
+  .ev-chip .chip-time { color: var(--ink-3); }
+  .view-frame {
+    font-size: 12px; font-weight: 500; color: var(--accent-deep);
+    background: var(--tint-2); border: 1px solid var(--tint-border); border-radius: 6px;
+    padding: 3px 11px; cursor: pointer;
+  }
+  .view-frame:hover { background: var(--tint); }
+
+  .conv-tier-more {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+    background: transparent; border: 1px dashed var(--border-strong); border-radius: 8px;
+    width: 100%; padding: 8px; cursor: pointer; margin-top: 2px;
+  }
+  .conv-tier-more:hover { color: var(--accent-deep); border-color: var(--tint-border); background: var(--tint-2); }
+  .conv-foot { margin-top: 26px; font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--ink-3); }
+</style>
+</head>
+<body>
+
+<!-- ================================================================ -->
+<!-- FRAME 1 · JOURNAL — day view, Wed Jul 23 2026                     -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 1</b> · Insights — Journal day view · Wed Jul 23 2026 · app-match on “Warm Paper”</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="7" rx="1.2"/><rect x="9.5" y="2" width="4.5" height="4" rx="1.2"/><rect x="9.5" y="8.5" width="4.5" height="5.5" rx="1.2"/><rect x="2" y="11.5" width="5" height="2.5" rx="1.2"/></svg>
+          Overview
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M5 1.5v3M11 1.5v3M2 6.5h12"/></svg>
+          Journal
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13.5h4M6.5 11.5C6.5 9.5 4 8.8 4 6a4 4 0 1 1 8 0c0 2.8-2.5 3.5-2.5 5.5z"/></svg>
+          Subjects
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings <span class="new-tag">NEW</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers <span class="new-tag">NEW</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>
+          Context
+        </a>
+      </nav>
+
+      <a href="#" class="rail-newchat"><span class="plus">＋</span> New chat</a>
+
+      <div class="rail-sec">Today</div>
+      <div class="recents">
+        <a href="#"><span class="t">Digest — Wed Jul 23</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></a>
+        <a href="#"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+      </div>
+      <div class="rail-sec">Yesterday</div>
+      <div class="recents recents--grow">
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where saved?</span><span class="when">Tue</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <div class="line"><span class="engine-dot"></span><span class="stat"><b>Engine on</b> · claude-sonnet-4-5</span></div>
+        <span class="stat dim"><span class="dim">recording · today 5h 12m · 2.1 GB</span></span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="main-scroll">
+        <div class="col">
+
+          <div class="ov-header">
+            <div class="titles">
+              <h1>Journal</h1>
+              <p class="subtitle">Your day, written down while you worked.</p>
+            </div>
+            <div class="ov-controls">
+              <div class="date-stepper">
+                <span class="snav">‹</span>
+                <span class="day-label">Wed, Jul 23</span>
+                <span class="snav disabled">›</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- digest lede -->
+          <article class="entry entry--lede">
+            <p class="eyebrow">
+              <span class="diamond">◆</span>
+              <span class="tick"></span>
+              The read · Wed, Jul 23
+              <span class="rule"></span>
+              <span class="eyebrow-when">26m ago</span>
+              <span class="re-read">↻ re-read</span>
+            </p>
+            <div class="lede-body">
+              <h2 class="lede-headline">A maker morning, a paper afternoon.</h2>
+              <p class="lede-text">
+                You spent the deepest stretch of the day inside the triggers runs ledger,
+                breaking only for the product sync — where the unified shell got its
+                go-ahead. After lunch the work turned visual: nearly two unbroken hours
+                on the warm-paper mockups, with the retention migration landed in between.
+                Communication stayed light and batched, which is why the deep-focus share
+                is the week's highest so far.
+              </p>
+            </div>
+            <div class="lede-stats">
+              <div class="lede-stat">
+                <span class="lede-stat-n">5h 12m<span class="lede-stat-delta">↑ 14%</span></span>
+                <span class="lede-stat-cap">tracked</span>
+              </div>
+              <div class="lede-stat">
+                <span class="lede-stat-n">62%</span>
+                <span class="lede-stat-cap">deep focus</span>
+              </div>
+              <div class="lede-stat">
+                <span class="lede-stat-n lede-stat-n--cat">
+                  <span class="lede-stat-swatch" style="background:var(--cat-creating);"></span>
+                  Creating
+                </span>
+                <span class="lede-stat-cap">top category</span>
+              </div>
+              <div class="lede-stat">
+                <span class="lede-stat-n">9</span>
+                <span class="lede-stat-cap">activities</span>
+              </div>
+            </div>
+          </article>
+
+          <!-- river -->
+          <section class="river">
+            <div class="day-rule"><span>Morning</span><span class="rule"></span></div>
+
+            <div class="slot slot--compact">
+              <div class="when">8:52 AM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Triaged overnight GitHub notifications on mnema</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">9:04 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Wired the per-trigger runs ledger into the insights rail</h3>
+                <p>Long uninterrupted stretch in Zed on swift-grove-15 — trigger_runs
+                   queries, the running-state badge, and a cargo test pass that stayed
+                   green. Brief detours into the sqlx migration folder.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 214 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">9:51 AM <span class="dur">3m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-research);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-research);"></span>
+                <span class="row-title">Skimmed an HN thread on local-first sync engines</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:00 AM <span class="dur">47m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-meetings);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-meetings);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-meetings);"></span>Meetings</span>
+                  <span class="focus-chip focus-mixed"><i></i>Mixed</span>
+                </div>
+                <h3>Weekly product sync over Zoom</h3>
+                <p>Four voices separated. The unified left rail was approved for v0.2,
+                   recap jobs get their own queue lane, and you took the trigger-gallery
+                   wizard as an action item.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 96 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">10:49 AM <span class="dur">1h 12m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Warm-paper mockup pass on the unified shell</h3>
+                <p>Deep session across Figma and the browser preview — cream surface
+                   tokens, the serif display scale, and the meetings list card anatomy.
+                   Copied hex values back into direction-2-warm-paper.html.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 318 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="gap-note">
+              <div class="when"></div>
+              <div class="spine"></div>
+              <div class="txt"><span class="m">12:01 PM – 1:08 PM</span> · away — no capture</div>
+            </div>
+
+            <div class="day-rule"><span>Afternoon</span><span class="rule"></span></div>
+
+            <div class="slot">
+              <div class="when">1:08 PM <span class="dur">26m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-communication);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-communication);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-communication);"></span>Communication</span>
+                  <span class="focus-chip focus-scattered"><i></i>Scattered</span>
+                </div>
+                <h3>Inbox sweep and licensing follow-ups</h3>
+                <p>Batched replies in Mail and the Polar dashboard — the webhook
+                   signature thread got its closing message, and two license-reset
+                   requests were approved.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 61 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">1:34 PM <span class="dur">58m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-creating);"></span></div>
+              <div class="jcard" style="--cat:var(--cat-creating);">
+                <div class="jcard-top">
+                  <span class="cat-chip"><span class="swatch" style="background:var(--cat-creating);"></span>Creating</span>
+                  <span class="focus-chip focus-deep"><i></i>Deep</span>
+                </div>
+                <h3>Retention GC index migration and its regression test</h3>
+                <p>Back in the app-infra crate: the orphan-cluster DELETE now rides the
+                   new speaker_turns index, with a test pinning the hoisted GC. One long
+                   cargo check against the desktop manifest to finish.</p>
+                <div class="jcard-foot"><span class="receipt">▸ 247 frames · receipt</span></div>
+              </div>
+            </div>
+
+            <div class="slot slot--compact">
+              <div class="when">2:32 PM <span class="dur">4m</span></div>
+              <div class="spine"><span class="node" style="background:var(--cat-organizing);"></span></div>
+              <div class="row-compact">
+                <span class="swatch" style="background:var(--cat-organizing);"></span>
+                <span class="row-title">Filed review comments on the triggers PR</span>
+              </div>
+            </div>
+
+            <div class="slot">
+              <div class="when">2:36 PM <span class="dur">now</span></div>
+              <div class="spine"><span class="node node--pending"></span></div>
+              <div class="jcard jcard--pending">
+                <div class="pt"><span class="spin"></span>Summarizing this window…</div>
+                <div class="sub">The journal trails live capture by up to 30 minutes —
+                     the footage itself is already on the Timeline.</div>
+              </div>
+            </div>
+          </section>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================ -->
+<!-- FRAME 2 · SUBJECTS — conviction tiers                             -->
+<!-- ================================================================ -->
+<div class="frame-wrap">
+  <p class="frame-label"><b>Frame 2</b> · Insights — Subjects, conviction view · one row expanded · app-match on “Warm Paper”</p>
+  <div class="window">
+    <div class="traffic"><span class="r"></span><span class="y"></span><span class="g"></span></div>
+
+    <aside class="rail">
+      <div class="brand"><span class="leaf">❦</span>Mnema</div>
+      <nav class="nav">
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="7" rx="1.2"/><rect x="9.5" y="2" width="4.5" height="4" rx="1.2"/><rect x="9.5" y="8.5" width="4.5" height="5.5" rx="1.2"/><rect x="2" y="11.5" width="5" height="2.5" rx="1.2"/></svg>
+          Overview
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="11" rx="2"/><path d="M5 1.5v3M11 1.5v3M2 6.5h12"/></svg>
+          Journal
+        </a>
+        <a href="#" class="active">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 13.5h4M6.5 11.5C6.5 9.5 4 8.8 4 6a4 4 0 1 1 8 0c0 2.8-2.5 3.5-2.5 5.5z"/></svg>
+          Subjects
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="2" width="5" height="8" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v1.5"/></svg>
+          Meetings <span class="new-tag">NEW</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2 4 9h3.5L7 14l5-7H8.5L9 2z"/></svg>
+          Triggers <span class="new-tag">NEW</span>
+        </a>
+        <a href="#">
+          <svg viewBox="0 0 16 16" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="2" width="10" height="12" rx="2"/><path d="M6 5.5h4M6 8h4M6 10.5h2.5"/></svg>
+          Context
+        </a>
+      </nav>
+
+      <a href="#" class="rail-newchat"><span class="plus">＋</span> New chat</a>
+
+      <div class="rail-sec">Today</div>
+      <div class="recents">
+        <a href="#"><span class="t">Digest — Wed Jul 23</span><span class="when">08:00</span></a>
+        <a href="#"><span class="t">Where did the retention GC index land?</span><span class="when">10:41</span></a>
+        <a href="#"><span class="t">Recap — Weekly product sync</span><span class="when">11:02</span></a>
+      </div>
+      <div class="rail-sec">Yesterday</div>
+      <div class="recents recents--grow">
+        <a href="#"><span class="t">When did I last touch build.rs and why</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Summarize the licensing CRL thread</span><span class="when">Tue</span></a>
+        <a href="#"><span class="t">Figma warm-palette tokens — where saved?</span><span class="when">Tue</span></a>
+      </div>
+
+      <div class="rail-foot">
+        <div class="line"><span class="engine-dot"></span><span class="stat"><b>Engine on</b> · claude-sonnet-4-5</span></div>
+        <span class="stat dim"><span class="dim">recording · today 5h 12m · 2.1 GB</span></span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="main-scroll">
+        <div class="col">
+
+          <div class="ov-header">
+            <div class="titles">
+              <h1>Subjects</h1>
+              <p class="conv-sub">What Mnema has come to believe about you — and how firmly.
+                 Strongest views first; fading ones are kept for history.</p>
+              <p class="conv-summary">
+                <span class="num">8</span> active views · <span class="num">1</span> fading<span class="sep">—</span><span class="num">3</span> warming <span class="up">▲</span> ·
+                <span class="num">4</span> steady · <span class="num">1</span> cooling <span class="down">▼</span>
+              </p>
+            </div>
+          </div>
+
+          <div class="conv-controls">
+            <div class="search">
+              <svg width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="6" cy="6" r="4.5"/><path d="M9.5 9.5 13 13"/></svg>
+              <input type="search" placeholder="Search subjects…">
+            </div>
+            <div class="segmented" role="tablist">
+              <span class="on" role="tab" data-tab="conviction">Conviction</span>
+              <span role="tab" data-tab="movement">Movement</span>
+            </div>
+          </div>
+          <p class="axis-hint">Conviction — how firmly the engine holds each view (its confidence).</p>
+
+          <!-- ── Strongly held ── -->
+          <section class="conv-tier">
+            <div class="conv-tier-head">
+              <span class="section-title">Strongly held</span>
+              <span class="conv-tier-note">held firmly</span>
+            </div>
+            <div class="conv-rule"></div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-creating);"></span>
+                    <span class="conv-name">Rust build tooling</span>
+                    <span class="conv-pin">★</span>
+                    <span class="pill pill--steady">steady</span>
+                    <span class="conv-cc">· 4 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Prefers cargo-first workflows and will fight the linker before abandoning static linking.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,14 20,12 40,11 60,10 80,9 100,8 120,7" fill="none" stroke="#2a8a60" stroke-width="1.5"/>
+                      <circle cx="120" cy="7" r="2.5" fill="#1f6f4a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.86</div>
+                    <div class="conv-moved">2h ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-research);"></span>
+                    <span class="conv-name">Local-first privacy</span>
+                    <span class="pill pill--steady">steady</span>
+                    <span class="conv-cc">· 3 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Treats on-device processing as the default; cloud paths need an explicit consent gate.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,11 20,10 40,10 60,9 80,10 100,9 120,9" fill="none" stroke="#6d675a" stroke-width="1.5"/>
+                      <circle cx="120" cy="9" r="2.5" fill="#6d675a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.81</div>
+                    <div class="conv-moved">1d ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-organizing);"></span>
+                    <span class="conv-name">Licensing model</span>
+                    <span class="pill pill--warming">warming</span>
+                    <span class="conv-cc">· 3 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Committed to one-time purchase with an update window; recurring billing keeps getting rejected.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,18 20,17 40,15 60,14 80,12 100,10 120,8" fill="none" stroke="#2a8a60" stroke-width="1.5"/>
+                      <circle cx="120" cy="8" r="2.5" fill="#1f6f4a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.74</div>
+                    <div class="conv-moved">5h ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Forming ── -->
+          <section class="conv-tier">
+            <div class="conv-tier-head">
+              <span class="section-title">Forming</span>
+              <span class="conv-tier-note">building support</span>
+            </div>
+            <div class="conv-rule"></div>
+
+            <!-- expanded row -->
+            <div class="conv-row is-open">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-creating);"></span>
+                    <span class="conv-name">Warm-paper design direction</span>
+                    <span class="pill pill--warming">warming</span>
+                    <span class="conv-cc">· 2 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Converging on the cream/serif “warm paper” shell for v0.2 over the darker terminal look.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,24 20,23 40,21 60,18 80,16 100,13 120,11" fill="none" stroke="#2a8a60" stroke-width="1.5"/>
+                      <circle cx="120" cy="11" r="2.5" fill="#1f6f4a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.52</div>
+                    <div class="conv-moved">3h ago</div>
+                  </div>
+                  <span class="conv-caret is-open">▶</span>
+                </div>
+              </div>
+              <div class="conv-detail">
+                <div class="conv-detail-inner">
+                  <div class="conv-detail-block">
+                    <p class="conv-detail-label">Conclusions · ranked by confidence</p>
+                    <div class="conv-concl-row">
+                      <span class="conv-concl-stmt"><span class="conv-concl-pin">★</span>Iterates on the warm-paper mockups almost daily since Jul 18 — it is the working direction, not an option.</span>
+                      <span class="confidence-bar"><i style="width:52%"></i></span>
+                      <span class="conv-concl-pct">52%</span>
+                      <span class="status-chip status-active">active</span>
+                      <span class="concl-actions">
+                        <span class="btn-sm btn-sm--pinned">★ Pinned</span>
+                        <span class="btn-sm">Dismiss</span>
+                      </span>
+                    </div>
+                    <div class="conv-concl-row">
+                      <span class="conv-concl-stmt">Keeps serif type for narrative and monospace for machine facts across every new mock.</span>
+                      <span class="confidence-bar"><i style="width:44%"></i></span>
+                      <span class="conv-concl-pct">44%</span>
+                      <span class="status-chip status-active">active</span>
+                      <span class="concl-actions">
+                        <span class="btn-sm">Pin</span>
+                        <span class="btn-sm">Dismiss</span>
+                      </span>
+                    </div>
+                  </div>
+                  <div class="conv-detail-block">
+                    <p class="conv-detail-label">Grounded in</p>
+                    <div class="conv-chiprow">
+                      <span class="ev-chip"><span class="src-screen">screen</span><span class="chip-time">3h ago</span></span>
+                      <span class="ev-chip"><span class="src-screen">screen</span><span class="chip-time">1d ago</span></span>
+                      <span class="ev-chip"><span class="src-mic">audio</span><span class="chip-time">2d ago</span></span>
+                      <span class="view-frame">View frame ›</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-research);"></span>
+                    <span class="conv-name">Diarization quality</span>
+                    <span class="pill pill--warming">warming</span>
+                    <span class="conv-cc">· 3 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Benchmarks speaker separation obsessively; DER numbers decide providers, not vibes.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,25 20,24 40,22 60,20 80,17 100,15 120,13" fill="none" stroke="#2a8a60" stroke-width="1.5"/>
+                      <circle cx="120" cy="13" r="2.5" fill="#1f6f4a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.48</div>
+                    <div class="conv-moved">6h ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-communication);"></span>
+                    <span class="conv-name">Bluetooth audio quirks</span>
+                    <span class="pill pill--steady">steady</span>
+                    <span class="conv-cc">· 2 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Runs into A2DP↔HFP renegotiation often enough that sample-rate checks are now reflexive.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,19 20,20 40,19 60,18 80,19 100,18 120,18" fill="none" stroke="#6d675a" stroke-width="1.5"/>
+                      <circle cx="120" cy="18" r="2.5" fill="#6d675a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.41</div>
+                    <div class="conv-moved">2d ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ── Just taking shape ── -->
+          <section class="conv-tier">
+            <div class="conv-tier-head">
+              <span class="section-title">Just taking shape</span>
+              <span class="conv-tier-note">early</span>
+            </div>
+            <div class="conv-rule"></div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-organizing);"></span>
+                    <span class="conv-name">Release distribution</span>
+                    <span class="pill pill--warming">warming</span>
+                    <span class="conv-cc">· 1 conclusion</span>
+                  </div>
+                  <div class="conv-headline">Moving releases off GitHub onto R2 static hosting — one data point so far, but decisive.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,26 30,26 60,25 90,23 120,21" fill="none" stroke="#2a8a60" stroke-width="1.5"/>
+                      <circle cx="120" cy="21" r="2.5" fill="#1f6f4a"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.27</div>
+                    <div class="conv-moved">4d ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-row">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-meetings);"></span>
+                    <span class="conv-name">Morning meeting rhythm</span>
+                    <span class="pill pill--cooling">cooling</span>
+                    <span class="conv-cc">· 2 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Calls used to cluster before noon; the last two weeks have drifted toward mid-afternoon.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,17 20,18 40,19 60,20 80,21 100,23 120,24" fill="none" stroke="#9a6b1f" stroke-width="1.5"/>
+                      <circle cx="120" cy="24" r="2.5" fill="#9a6b1f"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.22</div>
+                    <div class="conv-moved">6d ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="conv-tier-more">Show 2 more</div>
+          </section>
+
+          <!-- ── Fading ── -->
+          <section class="conv-tier conv-tier--faded">
+            <div class="conv-tier-head">
+              <span class="section-title">Fading · kept for history</span>
+              <span class="conv-tier-note">below display floor</span>
+            </div>
+            <div class="conv-rule"></div>
+
+            <div class="conv-row is-faded">
+              <div class="conv-rowmain">
+                <div class="conv-meta">
+                  <div class="conv-metatop">
+                    <span class="conv-catdot" style="background:var(--cat-uncat);"></span>
+                    <span class="conv-name">Sherpa-based diarization</span>
+                    <span class="conv-cc">· 2 conclusions</span>
+                  </div>
+                  <div class="conv-headline">Interest in the sherpa-onnx pipeline collapsed once speakrs became the sole provider.</div>
+                </div>
+                <div class="conv-hero">
+                  <div class="conv-spark">
+                    <svg width="120" height="32" viewBox="0 0 120 32">
+                      <line x1="0" y1="27" x2="120" y2="27" stroke="#d6cdb6" stroke-dasharray="2 3" stroke-width="1"/>
+                      <polyline points="0,10 20,12 40,15 60,19 80,23 100,26 120,28" fill="none" stroke="#9a927e" stroke-width="1.5"/>
+                      <circle cx="120" cy="28" r="2.5" fill="#9a927e"/>
+                    </svg>
+                  </div>
+                  <div class="conv-figure">
+                    <div class="conv-conf">0.12</div>
+                    <div class="conv-moved">3w ago</div>
+                  </div>
+                  <span class="conv-caret">▶</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <p class="conv-foot">Confidence is recency-weighted — views warm with fresh evidence and cool on their
+             own. Faded views are kept for history, never deleted.</p>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // ponytail: the only JS — the Conviction/Movement segmented control toggles
+  // its active state (visual tab affordance; a second tier layout is out of
+  // scope for a static mockup).
+  document.querySelectorAll('.segmented').forEach(function (seg) {
+    seg.addEventListener('click', function (e) {
+      var t = e.target.closest('[role="tab"]');
+      if (!t) return;
+      seg.querySelectorAll('[role="tab"]').forEach(function (x) { x.classList.toggle('on', x === t); });
+    });
+  });
+</script>
+
+</body>
+</html>

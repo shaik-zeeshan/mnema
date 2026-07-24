@@ -30,6 +30,7 @@ describe("settings rail: 5-group structure", () => {
     expect(byId.intelligence).toEqual([
       "intelligence",
       "askAi",
+      "triggers",
       "userContext",
       "ocr",
       "transcription",
@@ -51,6 +52,7 @@ describe("settings rail: 5-group structure", () => {
       privacy: "capture",
       intelligence: "intelligence",
       askAi: "intelligence",
+      triggers: "intelligence",
       userContext: "intelligence",
       ocr: "intelligence",
       transcription: "intelligence",
