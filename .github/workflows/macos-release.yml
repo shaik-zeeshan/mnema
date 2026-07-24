@@ -270,7 +270,9 @@ jobs:
           set -euo pipefail
           bundle="target/aarch64-apple-darwin/release/bundle"
           app="$bundle/macos/mnema.app"
-          tar_gz="$(ls "$bundle"/macos/*.app.tar.gz)"
+          # ponytail: canonical name, not a glob — the bundler now also emits
+          # mnema_aarch64.app.tar.gz, so *.app.tar.gz matched two paths.
+          tar_gz="$bundle/macos/mnema.app.tar.gz"
           tar -czf "$tar_gz" -C "$bundle/macos" mnema.app
           # Key/password come from the TAURI_SIGNING_* env vars the CLI reads
           # natively; passing them as flags broke when the empty password
