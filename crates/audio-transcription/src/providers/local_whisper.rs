@@ -23,7 +23,14 @@ const SAMPLE_RATE_OPTION: &str = "sampleRate";
 #[cfg(feature = "local-whisper")]
 const WHISPER_SAMPLE_RATE_HZ: u32 = 16_000;
 #[cfg(feature = "local-whisper")]
-type WhisperContextCache = Mutex<HashMap<PathBuf, Arc<whisper_rs::WhisperContext>>>;
+const WHISPER_IDLE_UNLOAD: std::time::Duration = std::time::Duration::from_secs(120);
+#[cfg(feature = "local-whisper")]
+struct CachedWhisperContext {
+    context: Arc<whisper_rs::WhisperContext>,
+    last_used: std::time::Instant,
+}
+#[cfg(feature = "local-whisper")]
+type WhisperContextCache = Mutex<HashMap<PathBuf, CachedWhisperContext>>;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LocalWhisperProvider;
@@ -282,8 +289,9 @@ fn cached_whisper_context(
     let mut cache = whisper_context_cache().lock().map_err(|_| {
         TranscriptionError::Transcription("local Whisper model cache is poisoned".to_string())
     })?;
-    if let Some(context) = cache.get(&model_path) {
-        return Ok(context.clone());
+    if let Some(entry) = cache.get_mut(&model_path) {
+        entry.last_used = std::time::Instant::now();
+        return Ok(entry.context.clone());
     }
 
     let mut params = whisper_rs::WhisperContextParameters::new();
@@ -298,8 +306,38 @@ fn cached_whisper_context(
                 model_path.display()
             ))
         })?;
-    cache.insert(model_path, context.clone());
+    cache.insert(
+        model_path,
+        CachedWhisperContext {
+            context: context.clone(),
+            last_used: std::time::Instant::now(),
+        },
+    );
+    drop(cache);
+    ensure_whisper_idle_sweeper();
     Ok(context)
+}
+
+/// One long-lived thread that evicts Whisper contexts idle beyond
+/// `WHISPER_IDLE_UNLOAD`. ponytail: single global sweeper (Whisper holds ~one
+/// model) instead of Parakeet's per-entry worker; in-use contexts (strong_count
+/// > 1) are kept so an active transcription is never yanked mid-run.
+#[cfg(feature = "local-whisper")]
+fn ensure_whisper_idle_sweeper() {
+    static SPAWNED: OnceLock<()> = OnceLock::new();
+    SPAWNED.get_or_init(|| {
+        let _ = std::thread::Builder::new()
+            .name("whisper-idle-unload".to_string())
+            .spawn(|| loop {
+                std::thread::sleep(WHISPER_IDLE_UNLOAD);
+                if let Ok(mut cache) = whisper_context_cache().lock() {
+                    cache.retain(|_, entry| {
+                        entry.last_used.elapsed() < WHISPER_IDLE_UNLOAD
+                            || Arc::strong_count(&entry.context) > 1
+                    });
+                }
+            });
+    });
 }
 
 #[cfg(feature = "local-whisper")]
