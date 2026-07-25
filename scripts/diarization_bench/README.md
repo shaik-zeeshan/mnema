@@ -123,6 +123,80 @@ aggregate DER and its confusion / miss / FA split.
   "system audio / video playing" case. For the meeting / call case, the same
   harness works against `diarizers-community/ami` with a few field tweaks.
 
+## Cross-segment identity: `segment_identity_bench.py`
+
+DER answers **"did we separate the voices inside this file"**. It cannot see the
+bug behind *"merge with Unknown Speaker 2, 3, 5…"* and *"I named someone and it
+didn't stick"*, because that decision is made by
+`resolve_stable_speaker_cluster` in `app-infra` — after diarization, comparing
+each segment's clusters against the ones already stored **for the same session**.
+A run can score DER 0% and still mint one Unknown Speaker per capture segment.
+
+`segment_identity_bench.py` measures that second thing, in two stages:
+
+1. **Dump** — slice a clip into fixed-length segments, run the real speakrs
+   provider on each (`diarize_to_rttm_speakrs --dump-clusters`), and label every
+   emitted cluster with the ground-truth speaker it mostly covers.
+2. **Replay** — feed those centroids through the real shipped resolver
+   (`replay_speaker_identity`, which calls
+   `processing::speaker_resolution::resolve_stable_speaker_cluster_from_candidates`
+   directly, so the harness can never drift from production rules).
+
+The split matters: embedding audio is the expensive step and it does **not**
+change when you tune a threshold. One CoreML pass per chunk size, then unlimited
+free threshold sweeps.
+
+```sh
+cargo build -p speaker-analysis --features speakrs --release --bin diarize_to_rttm_speakrs
+cargo build -p app-infra --release --bin replay_speaker_identity
+
+# stage 1 + 2: dump 3 three-speaker clips at each chunk size, replay shipped rules
+python segment_identity_bench.py --chunk-seconds 10,30,60,180,300 --clips 3
+
+# stage 2 only: sweep candidate fixes over the dumps already on disk (no CoreML)
+python segment_identity_bench.py --replay-only --sweep --mode both
+```
+
+### What the columns mean
+
+| Column | Reads as |
+|---|---|
+| `minted` / `over` | Clusters created vs. real speakers. `3.0x` means three "Unknown Speaker" rows per actual person. |
+| `auto` | Segments that silently reused an existing speaker — the invisible good path. |
+| `WRONG` | Auto-merges that fused **two different people**. Must stay 0; a config that wins on clicks but scores here is a regression, not a win. |
+| `clicks` | Merge suggestions raised — literally what the user is complaining about. |
+| `recog%` | `--mode multi-session` only. Of the named person's clusters in *later* sessions, how many the enrolled voiceprint matched. This is "did naming stick" — 0% means enrolling bought nothing. |
+| `notrec` | Later clusters of that person the voiceprint missed entirely: they surface as plain "Unknown Speaker". |
+| `0-click` | Later clusters that auto-linked to a cluster already carrying the person — the only outcome that costs the user nothing. Recognition alone never produces this today: a match is a *suggestion*, so a recognized voice still costs one confirm per cluster. |
+| `sug-BAD` | Recognition identified the person, yet resolution suggested merging with a **different** speaker's cluster. The veto-not-steer defect. |
+
+`--mode multi-session` resets the candidate pool every `--sessions-every`
+segments, reproducing what `store.rs` does across recordings (candidates are
+filtered `WHERE session_id = ?1`; enrolled voiceprints are the only bridge). That
+is where "naming someone doesn't stick" lives — measure it there, not in
+single-session.
+
+### Configurations in the sweep
+
+`--sweep` replays each dump under the `SWEEP` list in the script, isolating one
+change before stacking them:
+
+- `shipped` — today's rules; the baseline every other row is judged against.
+- `F4 reaverage` — auto-merge folds the incoming centroid into a
+  duration-weighted mean instead of the shipped upsert, which **overwrites** the
+  survivor's embedding with the newest segment's (`store.rs` `ON CONFLICT …
+  embedding = excluded.embedding`). The anchor does not merely fail to improve;
+  it drifts to whatever was seen last.
+- `F3 person-aware` — a near-tie blocks auto-reuse only between *different*
+  identities. Several unnamed fragments of one voice scoring alike currently make
+  the system *more* reluctant to merge them, the more of them there are.
+- `+steer` — a recognition match picks the right cluster instead of only
+  vetoing. Today a confirmed "this is Alice" blocks the auto-merge and then
+  suggests merging with whichever cluster scored highest — **even when that
+  cluster is Bob**.
+- `F6@0.70` — lower auto-reuse threshold, applied last, since the rows above
+  shift the score distribution and must be re-measured before tuning it.
+
 ## NME-SC over-clustering experiment (prototype)
 
 This experiment targeted the **removed sherpa** cross-chunk clustering, which
