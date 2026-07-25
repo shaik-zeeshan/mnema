@@ -28,6 +28,109 @@ use tempfile::NamedTempFile;
 ))]
 use std::time::{Duration, Instant};
 
+/// Upper bound on waveform buckets: the scrubber is a few hundred pixels wide,
+/// so anything past this is wasted work no caller can render.
+pub const MAX_WAVEFORM_BUCKETS: u32 = 2_000;
+
+/// Streaming `max(|sample|)`-per-bucket reducer for waveform scrubbers.
+///
+/// Buckets by sample index over the file's declared frame count, so it only
+/// ever holds `bucket_count` floats regardless of audio length.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) struct PeakReducer {
+    peaks: Vec<f32>,
+    total_samples: u64,
+    seen: u64,
+}
+
+#[allow(dead_code)]
+impl PeakReducer {
+    pub(crate) fn new(total_samples: u64, bucket_count: u32) -> Self {
+        let buckets = bucket_count.clamp(1, MAX_WAVEFORM_BUCKETS) as usize;
+        Self {
+            peaks: vec![0.0; buckets],
+            // ponytail: trailing buckets stay at 0 if the file reads short of
+            // its declared frame count; not worth a second pass to trim.
+            total_samples: total_samples.max(1),
+            seen: 0,
+        }
+    }
+
+    pub(crate) fn push(&mut self, samples: &[f32]) {
+        let buckets = self.peaks.len() as u64;
+        for sample in samples {
+            let index = self
+                .seen
+                .saturating_mul(buckets)
+                .checked_div(self.total_samples)
+                .unwrap_or(0)
+                .min(buckets - 1) as usize;
+            let magnitude = sample.abs();
+            if magnitude.is_finite() && magnitude > self.peaks[index] {
+                self.peaks[index] = magnitude;
+            }
+            self.seen += 1;
+        }
+    }
+
+    /// Peak-normalized 0.0..=1.0 buckets, or empty if no samples arrived.
+    pub(crate) fn finish(self) -> Vec<f32> {
+        if self.seen == 0 {
+            return Vec::new();
+        }
+        let loudest = self.peaks.iter().copied().fold(0.0_f32, f32::max);
+        if loudest <= 0.0 {
+            return vec![0.0; self.peaks.len()];
+        }
+        self.peaks
+            .into_iter()
+            .map(|peak| (peak / loudest).clamp(0.0, 1.0))
+            .collect()
+    }
+}
+
+/// Amplitude peaks for a waveform scrubber: one `max(|sample|)` per bucket,
+/// normalized to 0.0..=1.0. Any failure (missing file, unsupported/undecodable
+/// audio, silence-free zero-length input) yields an empty `Vec` so callers can
+/// degrade to a plain scrub bar.
+///
+/// ponytail: recomputed per request, no cache — a 5-minute segment decodes in
+/// well under a second. Add a cache only if it ever measurably drags.
+/// ponytail: primary AVAudioFile path only; the AVAssetReader temp-WAV
+/// fallback used by transcription is skipped because transcoding a whole
+/// segment just to draw a waveform is not worth it. Ceiling: exotic files that
+/// only decode via the fallback render as a plain scrub bar.
+pub fn audio_waveform_peaks(path: &std::path::Path, bucket_count: u32) -> Vec<f32> {
+    #[cfg(all(
+        target_os = "macos",
+        any(feature = "local-whisper", feature = "parakeet-onnx")
+    ))]
+    let peaks = {
+        let buckets = bucket_count.clamp(1, MAX_WAVEFORM_BUCKETS);
+        let mut reducer: Option<PeakReducer> = None;
+        match avaudiofile_decode_mono_streaming(path, None, |chunk, total_frames| {
+            reducer
+                .get_or_insert_with(|| PeakReducer::new(total_frames, buckets))
+                .push(chunk);
+        }) {
+            Ok(_) => reducer.map(PeakReducer::finish).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        }
+    };
+
+    #[cfg(not(all(
+        target_os = "macos",
+        any(feature = "local-whisper", feature = "parakeet-onnx")
+    )))]
+    let peaks = {
+        let _ = (path, bucket_count);
+        Vec::new()
+    };
+
+    peaks
+}
+
 #[cfg(any(
     test,
     all(
@@ -127,6 +230,29 @@ fn avaudiofile_decode_audio_to_mono(
     path: &Path,
     sample_rate_override: Option<f64>,
 ) -> TranscriptionResult<DecodedAudio> {
+    let mut samples = Vec::new();
+    let sample_rate_hz =
+        avaudiofile_decode_mono_streaming(path, sample_rate_override, |chunk, _total_frames| {
+            samples.extend_from_slice(chunk);
+        })?;
+    Ok(DecodedAudio {
+        samples,
+        sample_rate_hz,
+    })
+}
+
+/// Decodes to mono f32 and hands each decoded chunk to `sink` along with the
+/// file's total frame count, so callers that only need a reduction (waveform
+/// peaks) never hold the whole file in memory.
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "local-whisper", feature = "parakeet-onnx")
+))]
+fn avaudiofile_decode_mono_streaming(
+    path: &Path,
+    sample_rate_override: Option<f64>,
+    mut sink: impl FnMut(&[f32], u64),
+) -> TranscriptionResult<u32> {
     use cidre::{av, ns, objc};
 
     let path_str = path.to_str().ok_or_else(|| {
@@ -163,7 +289,7 @@ fn avaudiofile_decode_audio_to_mono(
         )));
     }
 
-    let mut out = Vec::new();
+    let mut chunk = Vec::new();
     let total_frames = file.len().max(0) as u64;
     let chunk_frames = 16_384_u32;
     let mut remaining = total_frames;
@@ -182,14 +308,13 @@ fn avaudiofile_decode_audio_to_mono(
         if frame_len == 0 {
             break;
         }
-        append_downmixed_f32(&mut out, &buffer, channels, frame_len)?;
+        chunk.clear();
+        append_downmixed_f32(&mut chunk, &buffer, channels, frame_len)?;
+        sink(&chunk, total_frames);
         remaining = remaining.saturating_sub(frame_len as u64);
     }
 
-    Ok(DecodedAudio {
-        samples: out,
-        sample_rate_hz,
-    })
+    Ok(sample_rate_hz)
 }
 
 #[cfg(all(
@@ -520,6 +645,44 @@ mod tests {
             samples: vec![0.1, -0.1],
             sample_rate_hz: 44_100,
         }
+    }
+
+    #[test]
+    fn peaks_bucket_by_sample_index_and_normalize() {
+        // 8 samples into 4 buckets: pairs peak at 0.25, 0.5, 0.75, 1.0.
+        let mut reducer = PeakReducer::new(8, 4);
+        reducer.push(&[0.1, 0.25, -0.5, 0.4]);
+        reducer.push(&[0.75, -0.3, 0.2, -1.0]);
+        assert_eq!(reducer.finish(), vec![0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn peaks_report_silence_in_silent_buckets() {
+        let mut reducer = PeakReducer::new(4, 2);
+        reducer.push(&[0.0, 0.0, 0.5, -0.25]);
+        assert_eq!(reducer.finish(), vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn peaks_are_empty_without_samples() {
+        assert!(PeakReducer::new(0, 16).finish().is_empty());
+        assert!(PeakReducer::new(1_000, 16).finish().is_empty());
+    }
+
+    #[test]
+    fn peaks_clamp_bucket_count() {
+        let mut reducer = PeakReducer::new(2, 0);
+        reducer.push(&[0.5, 1.0]);
+        assert_eq!(reducer.finish().len(), 1);
+
+        let mut huge = PeakReducer::new(2, u32::MAX);
+        huge.push(&[0.5, 1.0]);
+        assert_eq!(huge.finish().len(), MAX_WAVEFORM_BUCKETS as usize);
+    }
+
+    #[test]
+    fn peaks_for_a_missing_file_are_empty() {
+        assert!(audio_waveform_peaks(std::path::Path::new("/nope/missing.m4a"), 64).is_empty());
     }
 
     #[test]

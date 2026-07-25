@@ -380,6 +380,13 @@ pub struct GetAudioSegmentMediaRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetAudioSegmentWaveformPeaksRequest {
+    pub audio_segment_id: i64,
+    pub bucket_count: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GetAudioSegmentRequest {
     pub audio_segment_id: i64,
 }
@@ -4794,6 +4801,31 @@ pub async fn get_audio_segment_media(
             )
         })?
         .ok_or_else(|| format!("audio segment {} not found", request.audio_segment_id))
+}
+
+/// Amplitude peaks for the transcription reader's waveform scrubber.
+///
+/// Never errors: any failure (unknown segment, missing file, undecodable
+/// audio) returns an empty `Vec` so a decode hiccup degrades the scrubber to a
+/// plain bar instead of breaking the reader.
+#[tauri::command]
+pub async fn get_audio_segment_waveform_peaks(
+    request: GetAudioSegmentWaveformPeaksRequest,
+    state: tauri::State<'_, AppInfraState>,
+) -> Result<Vec<f32>, String> {
+    let infra = Arc::clone(&*state);
+    let Ok(Some(segment)) = infra.get_audio_segment(request.audio_segment_id).await else {
+        return Ok(Vec::new());
+    };
+    let file_path = PathBuf::from(&segment.file_path);
+    let bucket_count = request.bucket_count;
+    Ok(
+        tauri::async_runtime::spawn_blocking(move || {
+            audio_transcription::audio_waveform_peaks(&file_path, bucket_count)
+        })
+        .await
+        .unwrap_or_default(),
+    )
 }
 
 #[tauri::command]
