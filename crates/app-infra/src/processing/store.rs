@@ -11,6 +11,10 @@ use crate::db::CaptureDb;
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::secret_redaction_pipeline::SecretRedactionPipeline;
+use super::speaker_resolution::{
+    resolve_stable_speaker_cluster_from_candidates, SpeakerResolutionTuning,
+    StableSpeakerClusterCandidate, StableSpeakerClusterResolution,
+};
 use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
@@ -2864,23 +2868,6 @@ async fn purge_orphaned_speaker_cluster(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct StableSpeakerClusterResolution {
-    auto_merge_target_cluster_id: Option<i64>,
-    suggested_merge_target_cluster_id: Option<i64>,
-    suggested_merge_score: Option<f32>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StableSpeakerClusterCandidate {
-    id: i64,
-    score: f32,
-    person_id: Option<i64>,
-}
-
-const SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD: f32 = 0.82;
-const SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD: f32 = 0.68;
-const SPEAKER_CLUSTER_AMBIGUITY_MARGIN: f32 = 0.06;
 const TIMED_TEXT_NEARBY_TURN_FALLBACK_MS: u64 = 500;
 
 async fn resolve_stable_speaker_cluster(
@@ -2923,48 +2910,8 @@ async fn resolve_stable_speaker_cluster(
     Ok(resolve_stable_speaker_cluster_from_candidates(
         &mut candidates,
         recognition_person_id,
+        &SpeakerResolutionTuning::default(),
     ))
-}
-
-fn resolve_stable_speaker_cluster_from_candidates(
-    candidates: &mut [StableSpeakerClusterCandidate],
-    recognition_person_id: Option<i64>,
-) -> StableSpeakerClusterResolution {
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-
-    let Some(best) = candidates.first().copied() else {
-        return StableSpeakerClusterResolution::default();
-    };
-    let second_score = candidates.get(1).map(|candidate| candidate.score);
-    let ambiguous =
-        second_score.is_some_and(|score| best.score - score < SPEAKER_CLUSTER_AMBIGUITY_MARGIN);
-    let confirmed_person_conflict = recognition_person_id.zip(best.person_id).is_some_and(
-        |(incoming_person_id, existing_person_id)| incoming_person_id != existing_person_id,
-    );
-
-    if best.score >= SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD
-        && !ambiguous
-        && !confirmed_person_conflict
-    {
-        StableSpeakerClusterResolution {
-            auto_merge_target_cluster_id: Some(best.id),
-            ..Default::default()
-        }
-    } else if best.score >= SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD {
-        StableSpeakerClusterResolution {
-            suggested_merge_target_cluster_id: Some(best.id),
-            suggested_merge_score: Some(best.score),
-            ..Default::default()
-        }
-    } else {
-        StableSpeakerClusterResolution::default()
-    }
 }
 
 async fn existing_speaker_cluster_provider_id(
@@ -3230,14 +3177,6 @@ mod tests {
         }
     }
 
-    fn candidate(id: i64, score: f32, person_id: Option<i64>) -> StableSpeakerClusterCandidate {
-        StableSpeakerClusterCandidate {
-            id,
-            score,
-            person_id,
-        }
-    }
-
     #[test]
     fn timed_text_alignment_picks_greatest_overlap() {
         let turns = vec![turn(1, 0, 800), turn(2, 400, 1_400)];
@@ -3296,67 +3235,6 @@ mod tests {
             best_turn_for_timed_text_run(&turns, &run(1_600, 1_700)),
             None
         );
-    }
-
-    #[test]
-    fn stable_cluster_resolution_auto_reuses_unambiguous_high_similarity() {
-        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.70, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, Some(1));
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_suggests_for_ambiguous_high_similarity() {
-        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.78, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
-    }
-
-    #[test]
-    fn stable_cluster_resolution_suggests_for_medium_similarity() {
-        let mut candidates = vec![candidate(1, 0.70, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
-        assert_eq!(resolution.suggested_merge_score, Some(0.70));
-    }
-
-    #[test]
-    fn stable_cluster_resolution_creates_independent_for_low_similarity() {
-        let mut candidates = vec![candidate(1, 0.67, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_has_no_match_when_provider_or_model_filter_removed_candidates() {
-        let mut candidates = vec![];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_confirmed_person_conflict_blocks_auto_reuse() {
-        let mut candidates = vec![candidate(1, 0.90, Some(10))];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, Some(20));
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
     }
 
     fn speaker_analysis_job_with_payload(payload_json: Option<String>) -> ProcessingJob {
