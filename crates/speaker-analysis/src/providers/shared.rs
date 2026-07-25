@@ -37,12 +37,12 @@ pub(crate) const HIGH_RECOGNITION_SUGGESTION_SCORE: f32 = 0.72;
 /// If the top two distinct people are within this margin the match is ambiguous
 /// and is suppressed.
 pub(crate) const PERSON_AMBIGUITY_MARGIN: f32 = 0.05;
-/// A person is skipped if a prior rejection embedding for them is at least this
-/// similar to the cluster embedding.
-pub(crate) const REJECTED_PERSON_SIMILARITY_THRESHOLD: f32 = 0.80;
 
 /// Cautious recognition: returns the single best enrolled-person suggestion for
-/// a cluster embedding, or `None` when below threshold, rejected, or ambiguous.
+/// a cluster embedding, or `None` when below threshold or ambiguous. Prior
+/// rejections are **not** consulted here: they are per-cluster booleans applied
+/// at persist time, where cluster identity exists (no cluster row exists yet
+/// when this runs).
 /// Recognition only compares within the active preset's Voiceprint Space (the
 /// `model_id` filter), per CONTEXT.md.
 pub(crate) fn best_enrollment_match(
@@ -57,9 +57,7 @@ pub(crate) fn best_enrollment_match(
         .filter_map(|person| {
             let enrolled = f32_embedding_from_le_bytes(&person.embedding)?;
             let score = cosine_similarity(&enrolled, embedding);
-            if score < MIN_RECOGNITION_SUGGESTION_SCORE
-                || has_similar_rejection(request, person.person_id, embedding, model_id)
-            {
+            if score < MIN_RECOGNITION_SUGGESTION_SCORE {
                 return None;
             }
             let confidence = if score >= HIGH_RECOGNITION_SUGGESTION_SCORE {
@@ -92,26 +90,6 @@ pub(crate) fn best_enrollment_match(
         return None;
     }
     Some(best.clone())
-}
-
-/// Whether the request carries a prior rejection of `person_id` whose embedding
-/// is similar enough to this cluster embedding to suppress the suggestion.
-pub(crate) fn has_similar_rejection(
-    request: &SpeakerAnalysisRequest,
-    person_id: i64,
-    embedding: &[f32],
-    model_id: &str,
-) -> bool {
-    request
-        .rejected_people
-        .iter()
-        .filter(|rejection| {
-            rejection.person_id == person_id && rejection.embedding_model_id == model_id
-        })
-        .filter_map(|rejection| f32_embedding_from_le_bytes(&rejection.embedding))
-        .any(|rejected| {
-            cosine_similarity(&rejected, embedding) >= REJECTED_PERSON_SIMILARITY_THRESHOLD
-        })
 }
 
 // ---------------------------------------------------------------------------
@@ -334,8 +312,7 @@ pub(crate) fn decode_audio_to_mono_16khz(
 mod tests {
     use super::*;
     use crate::{
-        PersonEnrollment, PersonRecognitionRejection, SpeakerAnalysisRequest,
-        SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_PROVIDER_ID,
+        PersonEnrollment, SpeakerAnalysisRequest, SPEAKRS_DEFAULT_MODEL_ID, SPEAKRS_PROVIDER_ID,
     };
 
     fn request_with_enrollment(score: f32) -> SpeakerAnalysisRequest {
@@ -397,18 +374,6 @@ mod tests {
         assert_eq!(suggestion.confidence, RecognitionConfidence::Medium);
         assert!(suggestion.score >= 0.60);
         assert!(suggestion.score < 0.72);
-    }
-
-    #[test]
-    fn recognition_skips_person_with_similar_rejection() {
-        let mut request = request_with_enrollment(1.0);
-        request.rejected_people.push(PersonRecognitionRejection {
-            person_id: 1,
-            embedding: f32_embedding_to_le_bytes(&[1.0, 0.0]),
-            embedding_model_id: SPEAKRS_DEFAULT_MODEL_ID.to_string(),
-        });
-        let suggestion = best_enrollment_match(&request, &[1.0, 0.0], SPEAKRS_DEFAULT_MODEL_ID);
-        assert!(suggestion.is_none());
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use audio_transcription::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
-    PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
+    PersonEnrollment, RecognitionConfidence, SpeakerAnalysisOutput,
 };
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, Transaction};
 
@@ -2360,6 +2360,16 @@ impl ProcessingStore {
             )
             .await?;
         }
+        // The user just said this cluster *is* that person, which contradicts any
+        // prior "not this person" rejection for the same pair.
+        sqlx::query(
+            "DELETE FROM speaker_recognition_rejections \
+             WHERE source_cluster_id = ?1 AND person_id = ?2",
+        )
+        .bind(cluster_id)
+        .bind(person_id)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query(
             "UPDATE recording_speaker_clusters \
              SET person_id = ?2, transcript_local_label = NULL, updated_at = CURRENT_TIMESTAMP \
@@ -2554,31 +2564,22 @@ impl ProcessingStore {
             .collect()
     }
 
-    pub async fn list_person_recognition_rejections_for_speaker_model(
+    /// The people rejected **for this cluster** ("never suggest them for this
+    /// cluster"). Rejections are per-cluster booleans; rows orphaned to a NULL
+    /// `source_cluster_id` by `ON DELETE SET NULL` are ignored.
+    pub async fn list_rejected_person_ids_for_speaker_cluster(
         &self,
-        provider: &str,
-        model_id: Option<&str>,
-    ) -> Result<Vec<PersonRecognitionRejection>> {
-        let model_id = model_id.unwrap_or("");
-        let rows = sqlx::query(
-            "SELECT person_id, embedding, model_id AS embedding_model_id \
-             FROM speaker_recognition_rejections \
-             WHERE provider = ?1 AND model_id = ?2 \
-             ORDER BY person_id ASC, id ASC",
+        cluster_id: i64,
+    ) -> Result<Vec<i64>> {
+        let ids = sqlx::query_scalar(
+            "SELECT person_id FROM speaker_recognition_rejections \
+             WHERE source_cluster_id = ?1 \
+             ORDER BY person_id ASC",
         )
-        .bind(provider)
-        .bind(model_id)
+        .bind(cluster_id)
         .fetch_all(self.db.read())
         .await?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(PersonRecognitionRejection {
-                    person_id: row.get("person_id"),
-                    embedding: row.get("embedding"),
-                    embedding_model_id: row.get("embedding_model_id"),
-                })
-            })
-            .collect()
+        Ok(ids)
     }
 
     async fn get_required_frame(&self, frame_id: i64) -> Result<Frame> {
@@ -2689,7 +2690,7 @@ async fn persist_speaker_analysis_output(
 
     let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
     for cluster in &output.clusters {
-        let (suggested_person_id, recognition_confidence, recognition_score) = cluster
+        let (mut suggested_person_id, mut recognition_confidence, mut recognition_score) = cluster
             .suggestion
             .as_ref()
             .map(|suggestion| {
@@ -2716,6 +2717,38 @@ async fn persist_speaker_analysis_output(
             } else {
                 format!("{audio_segment_id}:{}", cluster.provider_cluster_id)
             };
+
+        // Per-cluster rejection veto: "never suggest P for *this* cluster". This is
+        // the first point where cluster identity exists (the provider runs before any
+        // cluster row does), and it covers the auto-merge case for free because the
+        // merge target is the cluster we resolve to. A brand-new cluster can carry no
+        // rejection, so a missing row simply means "nothing rejected".
+        if let Some(person_id) = suggested_person_id {
+            let existing_cluster_id: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM recording_speaker_clusters \
+                 WHERE session_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3",
+            )
+            .bind(&output.metadata.session_id)
+            .bind(&output.metadata.provider)
+            .bind(&stable_provider_cluster_id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+            if let Some(existing_cluster_id) = existing_cluster_id {
+                let rejected: Option<i64> = sqlx::query_scalar(
+                    "SELECT 1 FROM speaker_recognition_rejections \
+                     WHERE source_cluster_id = ?1 AND person_id = ?2",
+                )
+                .bind(existing_cluster_id)
+                .bind(person_id)
+                .fetch_optional(&mut **transaction)
+                .await?;
+                if rejected.is_some() {
+                    suggested_person_id = None;
+                    recognition_confidence = None;
+                    recognition_score = None;
+                }
+            }
+        }
 
         sqlx::query(
             "INSERT INTO recording_speaker_clusters (\
@@ -2835,12 +2868,23 @@ async fn purge_orphaned_speaker_clusters_for_session_provider(
     session_id: &str,
     provider: &str,
 ) -> Result<()> {
+    // A cluster carrying rejections must survive re-analysis: its turns are deleted
+    // moments before this runs, and dropping the row would null the rejections'
+    // `source_cluster_id` (`ON DELETE SET NULL`), silently un-rejecting the person.
+    // The row's id is then reused by the `ON CONFLICT` upsert below.
+    // ponytail: a rejected cluster whose provider_cluster_id stops appearing lingers
+    // with zero turns until the session is deleted. Fine — rows are tiny; revisit if
+    // empty clusters ever become user-visible.
     sqlx::query(
         "DELETE FROM recording_speaker_clusters \
          WHERE session_id = ?1 AND provider = ?2 \
            AND NOT EXISTS (\
                 SELECT 1 FROM speaker_turns \
                 WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_recognition_rejections \
+                WHERE speaker_recognition_rejections.source_cluster_id = recording_speaker_clusters.id\
            )",
     )
     .bind(session_id)
@@ -4693,9 +4737,14 @@ async fn persist_speaker_recognition_rejection_for_cluster(
     cluster_id: i64,
     person_id: Option<i64>,
 ) -> Result<()> {
-    let (Some(person_id), Some(embedding)) = (person_id, cluster.embedding.as_ref()) else {
+    let Some(person_id) = person_id else {
         return Ok(());
     };
+    // The `embedding` column is vestigial (rejections are per-cluster booleans) but
+    // `NOT NULL`, so a cluster without one gets an empty blob. Bailing here instead
+    // would drop the user's "not this person" while the caller still clears the
+    // suggestion and reports success.
+    let embedding = cluster.embedding.clone().unwrap_or_default();
     sqlx::query(
         "INSERT OR IGNORE INTO speaker_recognition_rejections (\
             person_id, provider, model_id, embedding, source_session_id, source_cluster_id\

@@ -1489,9 +1489,10 @@ async fn gc_orphan_speaker_rows(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Resul
     .execute(&mut **tx)
     .await?;
     sqlx::query(
+        // Also collects rows orphaned to a NULL `source_cluster_id` by the
+        // `ON DELETE SET NULL`: per-cluster rejections without a cluster mean nothing.
         "DELETE FROM speaker_recognition_rejections
-         WHERE source_cluster_id IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM recording_speaker_clusters WHERE recording_speaker_clusters.id = speaker_recognition_rejections.source_cluster_id)",
+         WHERE NOT EXISTS (SELECT 1 FROM recording_speaker_clusters WHERE recording_speaker_clusters.id = speaker_recognition_rejections.source_cluster_id)",
     )
     .execute(&mut **tx)
     .await?;

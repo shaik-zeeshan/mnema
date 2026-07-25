@@ -36,8 +36,6 @@ pub struct SpeakerAnalysisRequest {
     pub recognize_people: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub enrolled_people: Vec<PersonEnrollment>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rejected_people: Vec<PersonRecognitionRejection>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub options: BTreeMap<String, serde_json::Value>,
 }
@@ -58,7 +56,6 @@ impl SpeakerAnalysisRequest {
             audio_segment_id,
             recognize_people: false,
             enrolled_people: Vec::new(),
-            rejected_people: Vec::new(),
             options: BTreeMap::new(),
         }
     }
@@ -69,15 +66,6 @@ impl SpeakerAnalysisRequest {
 pub struct PersonEnrollment {
     pub person_id: i64,
     pub display_name: String,
-    #[serde(with = "serde_bytes")]
-    pub embedding: Vec<u8>,
-    pub embedding_model_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct PersonRecognitionRejection {
-    pub person_id: i64,
     #[serde(with = "serde_bytes")]
     pub embedding: Vec<u8>,
     pub embedding_model_id: String,

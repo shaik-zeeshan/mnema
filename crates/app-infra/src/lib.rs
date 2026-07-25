@@ -478,6 +478,49 @@ impl AppInfra {
         self.frame_batches
             .reconcile_open_batches_without_active_capture()
             .await?;
+        self.purge_legacy_speaker_recognition_rejections_once()
+            .await?;
+        Ok(())
+    }
+
+    /// One-shot deletion of every speaker-recognition rejection row written under
+    /// the old embedding-similarity blacklist, which suppressed a person globally
+    /// and permanently for any similar voice. The rows cannot be triaged (no origin
+    /// column: a genuine "not this person" is byte-identical to a casual unlink), so
+    /// they all go.
+    ///
+    /// Guarded by an `app_settings` one-shot key (same pattern as `crl_cache`):
+    /// unguarded this would eat every per-cluster rejection the user makes, on every
+    /// boot.
+    async fn purge_legacy_speaker_recognition_rejections_once(&self) -> Result<()> {
+        const PURGED_KEY: &str = "speaker.legacy_rejections_purged";
+        let already_purged: Option<String> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(PURGED_KEY)
+                .fetch_optional(self.read_pool())
+                .await?;
+        if already_purged.is_some() {
+            return Ok(());
+        }
+        let mut transaction = self.begin_write().await?;
+        let deleted = sqlx::query("DELETE FROM speaker_recognition_rejections")
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES (?1, '1') \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+        )
+        .bind(PURGED_KEY)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        if deleted > 0 {
+            capture_runtime::debug_log!(
+                "[app-infra] startup purged legacy speaker-recognition rejections (deleted={})",
+                deleted
+            );
+        }
         Ok(())
     }
 
@@ -3563,16 +3606,11 @@ mod tests {
             assert_eq!(rejected.suggested_person_id, None);
             let rejections = infra
                 .processing
-                .list_person_recognition_rejections_for_speaker_model(
-                    "sherpa_onnx",
-                    Some("pyannote-3.0-nemo-titanet-small"),
-                )
+                .list_rejected_person_ids_for_speaker_cluster(cluster.id)
                 .await
                 .expect("rejections should list");
 
-            assert_eq!(rejections.len(), 1);
-            assert_eq!(rejections[0].person_id, jack.id);
-            assert_eq!(rejections[0].embedding, test_embedding_bytes(&[1.0, 0.0]));
+            assert_eq!(rejections, vec![jack.id]);
         });
     }
 
@@ -3671,16 +3709,387 @@ mod tests {
             assert_eq!(unlinked.person_id, None);
             let rejections = infra
                 .processing
-                .list_person_recognition_rejections_for_speaker_model(
-                    "sherpa_onnx",
-                    Some("pyannote-3.0-nemo-titanet-small"),
-                )
+                .list_rejected_person_ids_for_speaker_cluster(cluster.id)
                 .await
                 .expect("rejections should list");
 
-            assert_eq!(rejections.len(), 1);
-            assert_eq!(rejections[0].person_id, jack.id);
-            assert_eq!(rejections[0].embedding, test_embedding_bytes(&[0.0, 1.0]));
+            assert_eq!(rejections, vec![jack.id]);
+        });
+    }
+
+    fn speaker_output_suggesting(
+        session_id: &str,
+        audio_segment_id: i64,
+        embedding: &[f32],
+        person_id: i64,
+    ) -> speaker_analysis::SpeakerAnalysisOutput {
+        let mut output = speaker_analysis_output_for_segment(
+            session_id,
+            audio_segment_id,
+            "speaker_00",
+            embedding,
+            Some("hello"),
+        );
+        output.clusters[0].suggestion = Some(speaker_analysis::SpeakerRecognitionSuggestion {
+            person_id,
+            display_name: "Jack".to_string(),
+            confidence: speaker_analysis::RecognitionConfidence::High,
+            score: 0.91,
+        });
+        output
+    }
+
+    /// A rejection is scoped to the cluster it was made on. The old rule vetoed
+    /// the person on *any* cluster within cosine 0.80 of the rejected embedding —
+    /// same-voice cosine is 0.96–1.00, so one unlink blacklisted that person's own
+    /// voice everywhere, permanently.
+    #[test]
+    fn speaker_rejection_does_not_suppress_the_person_on_another_cluster() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-rejection-scope");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let first = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-scope-session-a",
+                    1,
+                    "/tmp/rejection-scope-a.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("first segment should insert");
+            complete_speaker_output(
+                &infra,
+                &first,
+                speaker_output_suggesting("rejection-scope-session-a", first.id, &[1.0, 0.0], jack.id),
+            )
+            .await;
+            let rejected_cluster = infra
+                .list_speaker_clusters_for_session("rejection-scope-session-a")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(rejected_cluster.id)
+                .await
+                .expect("suggestion should reject");
+
+            // A different cluster (different session) with a near-identical voice.
+            let second = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-scope-session-b",
+                    1,
+                    "/tmp/rejection-scope-b.m4a",
+                    "2026-04-12T11:00:00Z",
+                    "2026-04-12T11:01:00Z",
+                ))
+                .await
+                .expect("second segment should insert");
+            complete_speaker_output(
+                &infra,
+                &second,
+                speaker_output_suggesting(
+                    "rejection-scope-session-b",
+                    second.id,
+                    &[0.999, 0.045],
+                    jack.id,
+                ),
+            )
+            .await;
+
+            let other_cluster = infra
+                .list_speaker_clusters_for_session("rejection-scope-session-b")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(other_cluster.suggested_person_id, Some(jack.id));
+        });
+    }
+
+    /// "Not this person" survives a reprocess of the same segment. The cluster row
+    /// must stay alive across re-analysis: destroying it nulls the rejection's
+    /// `source_cluster_id` (`ON DELETE SET NULL`) and the veto silently stops
+    /// applying.
+    #[test]
+    fn speaker_rejection_survives_reanalyzing_the_same_segment() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-rejection-reanalysis");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-reanalysis-session",
+                    1,
+                    "/tmp/rejection-reanalysis.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_suggesting(
+                    "rejection-reanalysis-session",
+                    segment.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("rejection-reanalysis-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(cluster.id)
+                .await
+                .expect("suggestion should reject");
+
+            // Re-analysis of the same segment (the `reprocess_audio_segment_speaker_analysis`
+            // path): same provider cluster, same suggestion.
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_suggesting(
+                    "rejection-reanalysis-session",
+                    segment.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("rejection-reanalysis-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 1);
+            assert_eq!(clusters[0].suggested_person_id, None);
+        });
+    }
+
+    /// "Not this person" still sticks on the cluster it was made on: a later
+    /// segment of the same voice auto-merges into that cluster and the suggestion
+    /// stays suppressed.
+    #[test]
+    fn speaker_rejection_keeps_suppressing_the_person_on_its_own_cluster() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-rejection-sticks");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let first = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-sticks-session",
+                    1,
+                    "/tmp/rejection-sticks-1.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("first segment should insert");
+            complete_speaker_output(
+                &infra,
+                &first,
+                speaker_output_suggesting("rejection-sticks-session", first.id, &[1.0, 0.0], jack.id),
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("rejection-sticks-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(cluster.id)
+                .await
+                .expect("suggestion should reject");
+
+            let second = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-sticks-session",
+                    2,
+                    "/tmp/rejection-sticks-2.m4a",
+                    "2026-04-12T10:01:00Z",
+                    "2026-04-12T10:02:00Z",
+                ))
+                .await
+                .expect("second segment should insert");
+            complete_speaker_output(
+                &infra,
+                &second,
+                speaker_output_suggesting(
+                    "rejection-sticks-session",
+                    second.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("rejection-sticks-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 1, "same voice should auto-merge into one cluster");
+            assert_eq!(clusters[0].id, cluster.id);
+            assert_eq!(clusters[0].suggested_person_id, None);
+        });
+    }
+
+    #[test]
+    fn linking_a_speaker_cluster_clears_its_rejection_of_that_person() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-rejection-contradiction");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "rejection-contradiction-session",
+                    1,
+                    "/tmp/rejection-contradiction.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_suggesting(
+                    "rejection-contradiction-session",
+                    segment.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("rejection-contradiction-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(cluster.id)
+                .await
+                .expect("suggestion should reject");
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(cluster.id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id]
+            );
+
+            infra
+                .link_speaker_cluster_to_person(cluster.id, jack.id, false)
+                .await
+                .expect("cluster should link");
+
+            assert!(infra
+                .processing
+                .list_rejected_person_ids_for_speaker_cluster(cluster.id)
+                .await
+                .expect("rejections should list")
+                .is_empty());
+        });
+    }
+
+    /// The legacy-rejection purge is one-shot. Unguarded it would delete every
+    /// per-cluster rejection the user makes, on every boot.
+    #[test]
+    fn legacy_speaker_rejection_purge_runs_once() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-rejection-purge");
+            let infra = AppInfra::initialize_fast_with_processing_registry(
+                dir.path(),
+                default_processing_registry(),
+            )
+            .await
+            .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            sqlx::query(
+                "INSERT INTO speaker_recognition_rejections (\
+                    person_id, provider, model_id, embedding\
+                 ) VALUES (?1, 'mock_speaker', 'voice-model', X'01020304')",
+            )
+            .bind(jack.id)
+            .execute(infra.pool())
+            .await
+            .expect("legacy rejection should insert");
+
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("first maintenance should run");
+            let remaining: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM speaker_recognition_rejections")
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("count should load");
+            assert_eq!(remaining, 0, "legacy rejections should be purged once");
+
+            // A rejection made after the purge survives every later boot.
+            sqlx::query(
+                "INSERT INTO speaker_recognition_rejections (\
+                    person_id, provider, model_id, embedding\
+                 ) VALUES (?1, 'mock_speaker', 'voice-model', X'05060708')",
+            )
+            .bind(jack.id)
+            .execute(infra.pool())
+            .await
+            .expect("new rejection should insert");
+            infra
+                .run_startup_maintenance()
+                .await
+                .expect("second maintenance should run");
+            let remaining: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM speaker_recognition_rejections")
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("count should load");
+            assert_eq!(remaining, 1, "the purge must not run a second time");
         });
     }
 
