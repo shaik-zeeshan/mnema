@@ -100,7 +100,9 @@ impl MnemaMcp {
         .await
     }
 
-    #[tool(description = "Fetch the full captured text behind a search result id.")]
+    #[tool(
+        description = "Fetch the full captured text behind a search result id. Audio results also list the speakers heard, each named only when the user assigned that voice to a person or it was recognized (with a confidence)."
+    )]
     async fn show_text(
         &self,
         Parameters(p): Parameters<ResultIdParams>,

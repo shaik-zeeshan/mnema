@@ -1,4 +1,5 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -267,6 +268,24 @@ pub struct BrokerShowTextResponse {
     pub opaque_id: String,
     pub kind: String,
     pub text: String,
+    /// One entry per speaker cluster heard in an audio result, ordered by first
+    /// turn. Empty for frames and for audio without speaker analysis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub speakers: Vec<BrokerSpeaker>,
+}
+
+/// A voice in a brokered audio result. `name` is only ever a person the user
+/// created a profile for — an unrecognized cluster carries `None`, never the
+/// internal "Speaker 2" label, which would be noise to the caller.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeaker {
+    pub name: Option<String>,
+    /// `assigned` (the user said so), `recognized` (voice match), `unknown`.
+    pub attribution: String,
+    /// Recognition confidence (`high`/`medium`/`low`) when `recognized`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1382,11 +1401,74 @@ async fn broker_show_text(
             message: "result is unavailable or outside the grant scope".to_string(),
         }));
     };
+    let speakers = if subject.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
+        broker_speakers_for_audio(infra, subject.subject_id).await?
+    } else {
+        Vec::new()
+    };
     Ok(Ok(BrokerShowTextResponse {
         opaque_id: opaque_id.to_string(),
         kind: reference.kind,
         text,
+        speakers,
     }))
+}
+
+async fn broker_speakers_for_audio(
+    infra: &AppInfra,
+    audio_segment_id: i64,
+) -> Result<Vec<BrokerSpeaker>> {
+    let turns = infra
+        .processing
+        .list_speaker_turns_for_audio_segment(audio_segment_id)
+        .await?;
+    if turns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: HashMap<i64, String> = infra
+        .processing
+        .list_person_profiles()
+        .await?
+        .into_iter()
+        .map(|person| (person.id, person.display_name))
+        .collect();
+    Ok(broker_collapse_speakers(turns, &names))
+}
+
+/// Collapses an audio segment's speaker turns (already ordered by start) to one
+/// entry per cluster. A user assignment wins over a recognition suggestion, and
+/// a person id we can't name is treated as unknown rather than a nameless claim.
+fn broker_collapse_speakers(
+    turns: Vec<crate::SpeakerTurnView>,
+    names: &HashMap<i64, String>,
+) -> Vec<BrokerSpeaker> {
+    let mut seen = HashSet::new();
+    let mut speakers = Vec::new();
+    for turn in turns {
+        if !seen.insert(turn.cluster_id) {
+            continue;
+        }
+        let assigned = turn.person_id.and_then(|id| names.get(&id));
+        let recognized = turn.suggested_person_id.and_then(|id| names.get(&id));
+        speakers.push(match (assigned, recognized) {
+            (Some(name), _) => BrokerSpeaker {
+                name: Some(name.clone()),
+                attribution: "assigned".to_string(),
+                confidence: None,
+            },
+            (None, Some(name)) => BrokerSpeaker {
+                name: Some(name.clone()),
+                attribution: "recognized".to_string(),
+                confidence: turn.recognition_confidence,
+            },
+            (None, None) => BrokerSpeaker {
+                name: None,
+                attribution: "unknown".to_string(),
+                confidence: None,
+            },
+        });
+    }
+    speakers
 }
 
 async fn broker_equivalent_reuse_text_for_frame(
@@ -4613,5 +4695,66 @@ mod tests {
 
             assert_eq!(response, None);
         });
+    }
+}
+
+#[cfg(test)]
+mod speaker_tests {
+    use super::*;
+    use crate::SpeakerTurnView;
+
+    fn turn(cluster_id: i64, person_id: Option<i64>, suggested: Option<i64>) -> SpeakerTurnView {
+        SpeakerTurnView {
+            id: cluster_id,
+            audio_segment_id: 1,
+            session_id: "s".to_string(),
+            cluster_id,
+            segment_cluster_id: None,
+            provider_cluster_id: "0".to_string(),
+            speaker_label: format!("Speaker {cluster_id}"),
+            person_id,
+            suggested_person_id: suggested,
+            recognition_confidence: suggested.map(|_| "high".to_string()),
+            recognition_score: None,
+            start_ms: 0,
+            end_ms: 1000,
+            transcript_text: None,
+            overlaps: false,
+        }
+    }
+
+    #[test]
+    fn collapses_to_one_entry_per_cluster_and_never_leaks_internal_labels() {
+        let names = HashMap::from([(7, "Ada".to_string()), (9, "Bo".to_string())]);
+        let speakers = broker_collapse_speakers(
+            vec![
+                turn(1, Some(7), None),
+                turn(1, Some(7), None),
+                turn(2, None, Some(9)),
+                turn(3, None, None),
+                // Assignment wins over a competing recognition suggestion.
+                turn(4, Some(7), Some(9)),
+                // A person id with no profile row must not become a nameless claim.
+                turn(5, Some(404), None),
+            ],
+            &names,
+        );
+
+        let shape: Vec<_> = speakers
+            .iter()
+            .map(|s| (s.name.as_deref(), s.attribution.as_str(), s.confidence.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (Some("Ada"), "assigned", None),
+                (Some("Bo"), "recognized", Some("high")),
+                (None, "unknown", None),
+                (Some("Ada"), "assigned", None),
+                (None, "unknown", None),
+            ]
+        );
+        let json = serde_json::to_string(&speakers).expect("serializes");
+        assert!(!json.contains("Speaker "), "internal labels must not leak: {json}");
     }
 }

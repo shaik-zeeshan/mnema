@@ -4,7 +4,7 @@ use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
-    BrokerErrorResponse, BrokerSearchRequest, BrokerTimelineRequest, BrokeredCaptureAccess,
+    BrokerErrorResponse, BrokerSearchRequest, BrokerSpeaker, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -243,6 +243,8 @@ struct ShowTextData {
     id: String,
     kind: String,
     text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    speakers: Vec<BrokerSpeaker>,
 }
 
 #[derive(Debug, Serialize)]
@@ -439,6 +441,7 @@ async fn execute_data_request(
                 id: response.opaque_id,
                 kind: map_kind(&response.kind),
                 text: response.text,
+                speakers: response.speakers,
             })
         }
         BrokeredCaptureResponse::OpenInMnema(response) if command == "open" => {

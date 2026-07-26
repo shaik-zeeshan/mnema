@@ -3190,6 +3190,7 @@ mod tests {
             opaque_id: "op-1".to_string(),
             kind: "frame".to_string(),
             text: "full redacted text".to_string(),
+            speakers: Vec::new(),
         });
 
         let value = broker_response_to_tool_value(response).expect("show_text serializes");
