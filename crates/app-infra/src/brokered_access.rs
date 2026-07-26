@@ -38,6 +38,10 @@ const BROKER_OPAQUE_SECRET_FILE_NAME: &str = "broker-opaque-secret.bin";
 const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
 const MAX_SEARCH_LIMIT: u32 = 100;
+/// How deep a cursor walk may go per anchor kind (20 full pages). The cursor is
+/// client round-tripped and unsigned, so its offsets are attacker-chosen; capping
+/// them keeps the work one request can buy bounded. See `BrokerSearchCursor::decode`.
+const MAX_CURSOR_OFFSET: u32 = 10 * MAX_SEARCH_LIMIT;
 const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
 const DEFAULT_APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 
@@ -286,7 +290,9 @@ pub struct BrokerSearchResponse {
 /// plus how many frame / audio anchors it has already consumed. Encoded as
 /// `v1:<snapshot>:<frameOffset>:<audioOffset>` — unsigned on purpose, since it
 /// carries no reference to data (scope is re-derived from live grants on every
-/// request, so a forged cursor can only skip rows, never widen access).
+/// request, so a forged cursor can only skip rows, never widen access) — but a
+/// forged OFFSET still buys work, so both offsets are bounded by
+/// [`MAX_CURSOR_OFFSET`] at decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BrokerSearchCursor {
     snapshot_document_id: i64,
@@ -315,6 +321,17 @@ impl BrokerSearchCursor {
         let audio_offset: u32 = next()?.parse().map_err(|_| invalid())?;
         if parts.next().is_some() || snapshot_document_id < 0 {
             return Err(invalid());
+        }
+        // The broker only ever mints an offset by ADVANCING it by what one page
+        // consumed, so anything past the paging window is a forgery. It is not
+        // harmless: `frame_offset` becomes `needed_groups` in the search layer's
+        // drain loop, which then fetches and re-groups (quadratically) the ENTIRE
+        // match set for the query before handing back an empty page.
+        if frame_offset > MAX_CURSOR_OFFSET || audio_offset > MAX_CURSOR_OFFSET {
+            return Err(AppInfraError::InvalidSearchRequest(
+                "cursor is past the end of the paging window — narrow the query or its time range"
+                    .into(),
+            ));
         }
         Ok(Self {
             snapshot_document_id,
@@ -1397,10 +1414,16 @@ async fn broker_search(
     if grants.is_empty() {
         return Ok(Err(BrokerErrorResponse::authorization_required()));
     }
+    // Clamped from BELOW too: a zero-sized page can never consume an anchor, so
+    // the cursor would advance by nothing and `more` would be false — the walk
+    // would report itself exhausted (`next_cursor: None`) on its first page while
+    // every match is still unseen. `limit` reaches here straight off the wire
+    // (the MCP `mnema_search` tool passes it through unvalidated), so the floor
+    // belongs here rather than in every caller.
     let limit = request
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
-        .min(MAX_SEARCH_LIMIT);
+        .clamp(1, MAX_SEARCH_LIMIT);
     let cursor = request
         .cursor
         .as_deref()
@@ -2341,10 +2364,14 @@ fn map_search_response(
     }
     // More to walk when either anchor kind has rows this page never emitted:
     // left behind by the `limit` cap, or still behind the per-kind `has_more`.
-    let more = (frames_taken as usize) < frame_page
-        || (audio_taken as usize) < audio_page
-        || has_more_frames
-        || has_more_audio;
+    // `limit == 0` emits nothing and so can never advance the cursor — handing one
+    // back would make the documented "page until nextCursor is absent" walk loop
+    // on an identical empty page forever.
+    let more = limit > 0
+        && ((frames_taken as usize) < frame_page
+            || (audio_taken as usize) < audio_page
+            || has_more_frames
+            || has_more_audio);
     let base = cursor.unwrap_or(BrokerSearchCursor {
         snapshot_document_id,
         frame_offset: 0,
@@ -3450,6 +3477,26 @@ mod tests {
         assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
     }
 
+    /// A `limit: 0` page can never emit a row, so a cursor on it promises progress
+    /// that re-sending it can never make: the agent contract is "page until
+    /// `nextCursor` is absent" (`.agents/skills/mnema-data/SKILL.md`), and the
+    /// identical request+cursor returns the identical empty page forever.
+    #[test]
+    fn zero_limit_search_page_hands_back_no_cursor_to_loop_on() {
+        let mapped = map_search_response(
+            two_frame_one_audio_response(),
+            0,
+            None,
+            Some("grant-1"),
+            &[7u8; 32],
+        );
+        assert!(mapped.results.is_empty(), "limit 0 emits no rows");
+        assert_eq!(
+            mapped.next_cursor, None,
+            "a page that can never emit a row must end the walk, not loop"
+        );
+    }
+
     #[test]
     fn search_cursor_resumes_from_consumed_anchors_and_stops_at_the_end() {
         let secret = &[7u8; 32];
@@ -3685,6 +3732,108 @@ mod tests {
 
         assert_eq!(mapped.results[0].kind, "audio");
         assert_eq!(mapped.results[0].context, None);
+    }
+
+
+    /// The cursor is UNSIGNED, so its `frame_offset` is attacker-chosen. It feeds
+    /// `needed_groups = offset + limit + 1` in the search layer's frame drain loop,
+    /// which then keeps fetching 5_000 hits at a time — re-grouping the whole
+    /// accumulated list (quadratic) on every iteration — until the ENTIRE match set
+    /// for the query is materialized in memory. A page the broker itself issued can
+    /// only ever advance the offset by what that page consumed, so an offset that
+    /// large is not a cursor the boundary can have minted: it must be refused
+    /// rather than executed.
+    #[test]
+    fn broker_search_refuses_a_forged_cursor_offset_it_could_never_have_issued() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("search-forged-offset");
+            let save_dir = temp_save_dir("search-forged-offset");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            for index in 0..3 {
+                seed_timeline_frame_with_browser_url(
+                    &infra,
+                    &save_dir,
+                    &format!("forged-offset-{index}.jpg"),
+                    &format!("2026-05-17T10:0{index}:00Z"),
+                    None,
+                )
+                .await;
+            }
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let page = |cursor: Option<String>| {
+                let infra = &infra;
+                let grant = grant.clone();
+                let config_dir = config_dir.clone();
+                async move {
+                    broker_search(
+                        &config_dir,
+                        infra,
+                        &[grant],
+                        BrokerSearchRequest {
+                            query: "timeline".to_string(),
+                            from: None,
+                            to: None,
+                            limit: Some(1),
+                            app: None,
+                            window_title: None,
+                            url: None,
+                            url_regex: None,
+                            cursor,
+                        },
+                    )
+                    .await
+                }
+            };
+
+            let first = page(None)
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
+            let issued = BrokerSearchCursor::decode(
+                first
+                    .next_cursor
+                    .as_deref()
+                    .expect("a first page of 1 leaves more to walk"),
+            )
+            .expect("the broker's own cursor should decode");
+            assert!(
+                issued.frame_offset <= 1,
+                "the broker only ever advances the offset by what a page consumed, got {issued:?}"
+            );
+
+            // Same walk, same query — only the offset is forged.
+            let forged = BrokerSearchCursor {
+                snapshot_document_id: issued.snapshot_document_id,
+                frame_offset: u32::MAX,
+                audio_offset: 0,
+            }
+            .encode();
+            let error = page(Some(forged))
+                .await
+                .expect_err("a forged paging offset must be refused, not executed");
+            assert!(
+                matches!(error, AppInfraError::InvalidSearchRequest(_)),
+                "expected an invalid-request refusal, got {error:?}"
+            );
+
+            // The honest cursor still pages, so the guard is not a blanket refusal.
+            let second = page(first.next_cursor.clone())
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
+            assert_eq!(second.results.len(), 1, "the honest walk must keep working");
+        });
     }
 
     #[test]
@@ -4922,6 +5071,94 @@ mod tests {
                 .expect("authorization should run");
 
             assert_eq!(response, None);
+        });
+    }
+
+
+
+    /// `limit: 0` is reachable from the wire (the MCP `mnema_search` tool passes
+    /// `limit` straight through with no lower bound). A zero page can never make
+    /// progress, so the walk terminates on its FIRST page with `next_cursor:
+    /// None` — which the response contract defines as "this page exhausted the
+    /// matches". A caller that honours that contract concludes the query has no
+    /// matches at all, silently dropping the entire result set.
+    #[test]
+    fn broker_search_with_zero_limit_does_not_claim_the_walk_is_exhausted() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("search-zero-limit");
+            let save_dir = temp_save_dir("search-zero-limit");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    save_dir.join("zero-limit.jpg").display().to_string(),
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("OCR job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("OCR job should claim")
+                .expect("OCR job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("zerolimit body text"),
+                )
+                .await
+                .expect("OCR job should complete");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let search = |limit: u32| {
+                let infra = &infra;
+                let grant = grant.clone();
+                let config_dir = config_dir.clone();
+                async move {
+                    broker_search(
+                        &config_dir,
+                        infra,
+                        &[grant],
+                        BrokerSearchRequest {
+                            query: "zerolimit".to_string(),
+                            from: None,
+                            to: None,
+                            limit: Some(limit),
+                            app: None,
+                            window_title: None,
+                            url: None,
+                            url_regex: None,
+                            cursor: None,
+                        },
+                    )
+                    .await
+                    .expect("search should run")
+                    .expect("search should be authorized")
+                }
+            };
+
+            // The match really is there.
+            assert_eq!(search(5).await.results.len(), 1);
+
+            let zero = search(0).await;
+            assert!(
+                !zero.results.is_empty() || zero.next_cursor.is_some(),
+                "limit 0 reported an exhausted walk over a non-empty match set: {zero:?}"
+            );
         });
     }
 }
