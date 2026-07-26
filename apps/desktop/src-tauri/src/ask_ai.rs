@@ -1090,7 +1090,8 @@ fn search_tool_schema() -> serde_json::Value {
             "to": { "type": "string", "description": "Inclusive upper time bound, RFC3339." },
             "limit": { "type": "number", "description": "Maximum number of snippets to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
-            "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." }
+            "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." },
+            "cursor": { "type": "string", "description": "The `nextCursor` from a previous search result, to fetch the next page. Re-send the identical query and filters alongside it; a result with no `nextCursor` is the end of the matches." }
         },
         "required": ["query"]
     })
@@ -2954,6 +2955,31 @@ mod tests {
         let value = broker_response_to_tool_value(response).expect("search serializes");
         assert_eq!(value["limit"], serde_json::json!(8));
         assert_eq!(value["results"][0]["opaqueId"], serde_json::json!("op-1"));
+    }
+
+    #[test]
+    fn search_tool_schema_lets_the_model_use_the_cursor_it_is_handed() {
+        // The whole `BrokerSearchResponse` is serialized straight to the model, so
+        // once the broker started minting a real `nextCursor` the Ask AI `search`
+        // tool started ADVERTISING a next page. The schema is
+        // `additionalProperties: false`, so unless it declares `cursor` the model
+        // literally cannot ask for that page — it is told the walk is unfinished
+        // and given no way to finish it. (The CLI's MCP schema in
+        // `crates/cli/src/mcp.rs` was updated for exactly this; this door was not.)
+        let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
+            results: vec![sample_result()],
+            limit: 8,
+            next_cursor: Some("v1:42:1:0".to_string()),
+        });
+        let value = broker_response_to_tool_value(response).expect("search serializes");
+        assert_eq!(value["nextCursor"], serde_json::json!("v1:42:1:0"));
+
+        let schema = search_tool_schema();
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert!(
+            schema["properties"].get("cursor").is_some(),
+            "search tool schema must expose `cursor` so the model can page: {schema}"
+        );
     }
 
     #[test]
