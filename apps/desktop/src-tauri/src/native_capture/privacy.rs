@@ -457,6 +457,11 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
     }
     let app_handle = app_handle.clone();
     std::thread::spawn(move || {
+        // A Rust-spawned thread has no autorelease pool; without this every
+        // autoreleased object the frontmost-app and browser-URL reads below
+        // create would leak for the life of the process. Scoped to the whole
+        // closure — the thread is one-shot, so the pool drains when it exits.
+        let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
         // This collection runs on its own background thread, off every capture
         // lock, so a live active-tab URL read here is safe (and is the one path
         // that keeps the Gecko AX URL fresh).
