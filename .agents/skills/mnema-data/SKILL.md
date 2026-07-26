@@ -48,6 +48,8 @@ mnema --format toon search --query "invoice" --limit 10
 mnema search --query "invoice" --limit 10
 mnema search --query "standup" --from 2026-05-21T09:00:00+05:30 --to 2026-05-21T18:00:00+05:30 --limit 20
 mnema search --query "roadmap" --app Linear --window-title "Grooming" --limit 10
+mnema search --query "review" --url github.com --limit 10
+mnema search --query "review" --url-regex '(?i)^github\.com/[^/]+/[^/]+/pull/' --limit 10
 mnema timeline --from 2026-05-21T09:00:00+05:30 --to 2026-05-21T10:00:00+05:30 --limit 50
 mnema timeline --from 2026-05-21T09:00:00+05:30 --to 2026-05-21T10:00:00+05:30 --app Linear --window-title "Grooming" --limit 50
 mnema show-text '<id-from-search>'
@@ -83,11 +85,12 @@ The bundled sidecar binary is named `mnema-cli`, but the user-facing installed c
 3. Run `mnema access status` before any data query.
 4. If status reports an inferred active grant, run data commands without `--client` so they use the same inferred identity.
 5. If there are `0 active grant(s)` for this client, run `mnema access request --scope last-day --duration 24h`, wait for approval, then rerun `mnema access status`. Do not run `search`, `timeline`, `show-text`, or `open` until an active grant exists.
-6. Use `mnema search --query ...` for keyword and semantic reconstruction from broker-visible OCR/transcript search results. Add `--from`, `--to`, `--limit`, `--app`, or `--window-title` when the request implies a time window or screen context. `--app` matches app bundle ID or app name; `--window-title` is a case-insensitive substring filter. App/window-filtered search is frame-only.
-7. Use `mnema timeline --from ... --to ...` for coarse activity intervals in a known window. Without app/window filters, timeline returns broker-visible audio activity intervals. With `--app` or `--window-title`, timeline returns matching screen intervals from broker-visible searchable frame projections.
-8. Use `mnema show-text <resultId>` only after a search result needs more context.
-9. Use `mnema open <resultId>` when the user asks to inspect the source in the app.
-10. Answer with concise synthesized findings. Mention uncertainty when the broker returns only snippets, no hits, or a time-scoped grant limits the search.
+6. Use `mnema search --query ...` for keyword and semantic reconstruction from broker-visible OCR/transcript search results. Add `--from`, `--to`, `--limit`, `--app`, `--window-title`, or a URL filter when the request implies a time window or screen context. `--app` matches app bundle ID or app name; `--window-title` is a case-insensitive substring filter. Context-filtered search is frame-only.
+7. Use `mnema timeline --from ... --to ...` for coarse activity intervals in a known window. Without context filters, timeline returns broker-visible audio activity intervals. With `--app`, `--window-title`, or a URL filter, timeline returns matching screen intervals from broker-visible searchable frame projections.
+8. Filter by site with `--url <substring>` (case-insensitive) or `--url-regex <pattern>` (case-sensitive; prefix `(?i)` to ignore case). The two are mutually exclusive. **Both match only the sanitized `host[:port]/path` form**: query strings and fragments are never indexed, so a filter containing `?` or `#` matches nothing, and high-entropy path segments may appear redacted. Filter on host and readable path segments, never on query parameters. Prefer `--url` unless the pattern genuinely needs alternation or anchoring.
+9. Use `mnema show-text <resultId>` only after a search result needs more context.
+10. Use `mnema open <resultId>` when the user asks to inspect the source in the app.
+11. Answer with concise synthesized findings. Mention uncertainty when the broker returns only snippets, no hits, or a time-scoped grant limits the search.
 
 ## Helper Commands
 
@@ -96,9 +99,9 @@ The bundled sidecar binary is named `mnema-cli`, but the user-facing installed c
 - `mnema access request [--scope last-day|all-retained] [--duration 1h|24h|7d]`: ask Mnema for a grant through the app-owned authorization channel.
 - `mnema access revoke <grantId>`: revoke one grant when the user asks.
 - `mnema access revoke-client <clientName> --yes`: revoke active grants for one client when the user asks.
-- `mnema search --query <text> [--from RFC3339] [--to RFC3339] [--limit n] [--app appOrBundleId] [--window-title text]`: search broker-visible redacted derived text and return snippets plus signed opaque result IDs. App/window filters apply to screen results; `--app` matches bundle ID or app name, and `--window-title` is a case-insensitive substring.
+- `mnema search --query <text> [--from RFC3339] [--to RFC3339] [--limit n] [--app appOrBundleId] [--window-title text] [--url text | --url-regex pattern]`: search broker-visible redacted derived text and return snippets plus signed opaque result IDs. Context filters apply to screen results; `--app` matches bundle ID or app name, `--window-title` is a case-insensitive substring, and the URL filters match the sanitized `host[:port]/path` form only (see step 8).
 - `mnema show-text <resultId>`: return broker-visible derived text for one result.
-- `mnema timeline --from RFC3339 --to RFC3339 [--limit n] [--app appOrBundleId] [--window-title text]`: return broker-visible activity intervals for a bounded window. Without app/window filters this is audio-oriented; with either filter it returns matching screen intervals.
+- `mnema timeline --from RFC3339 --to RFC3339 [--limit n] [--app appOrBundleId] [--window-title text] [--url text | --url-regex pattern]`: return broker-visible activity intervals for a bounded window. Without context filters this is audio-oriented; with any of them it returns matching screen intervals.
 - `mnema open <resultId>`: open Mnema to one result.
 
 Global options:
@@ -136,6 +139,7 @@ Structured error codes include `authorization_required`, `authorization_timeout`
 - Treat `context.appName`, `context.appBundleId`, `context.windowTitle`, and `context.url` as broker-visible search context. Use them to disambiguate results, but avoid over-reporting window titles when they are not relevant to the user's question. `context.url` is a guarded host+path (query/fragment stripped, secrets/tokens redacted), not the raw captured URL; cite it as a hint about where the user was, and never present it as a clickable or complete link.
 - Do not expose config paths, grant file paths, raw database paths, or media paths in final answers unless directly relevant and requested.
 - Result `startedAt` / `endedAt` are UTC (`Z`-suffixed). Convert them to the user's local timezone before describing time-of-day or reasoning about which record is "first", "earliest", "latest", "morning", or "evening"; the raw UTC clock can fall on a different local date.
-- `search` and `timeline` results are not guaranteed to be in chronological order. For "first / earliest / last / latest" requests, sort the candidate results by `startedAt` and pick the extreme — never assume the first item in the response is the earliest. Widen the time window and raise `--limit` (and page with `nextCursor` when present) so the true earliest/latest is not cut off before you conclude.
+- `search` and `timeline` results are not guaranteed to be in chronological order. For "first / earliest / last / latest" requests, sort the candidate results by `startedAt` and pick the extreme — never assume the first item in the response is the earliest.
+- **`--limit` is silently clamped to 100, and truncation is undetectable.** Values above 100 are accepted but capped; `data.limit` echoes the clamped value and `data.nextCursor` stays `null` even when matching records were dropped. There is no cursor flag on `search` or `timeline`, so paging is not possible from the CLI. Never raise `--limit` past 100 expecting more, and never conclude "that is all of it" from a full 100-result response. To reach beyond the cap, **narrow the time window and issue several bounded queries** — for a long-running span, probe slice by slice with `--limit 1` and widen only where you get a hit. Because results come back newest-first, a truncated response biases toward the recent end, which is exactly wrong for "earliest / first" questions.
 - Cite timestamps and opaque IDs when they help the user verify a claim, for example `2026-05-21T09:42:10+05:30`, `screenText <id>`, or `audioTranscript <id>`.
 - If a query is blocked by authorization, missing CLI installation, or an expired grant, stop and explain the exact next action.

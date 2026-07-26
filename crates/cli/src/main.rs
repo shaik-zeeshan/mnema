@@ -108,6 +108,14 @@ struct SearchArgs {
     app: Option<String>,
     #[arg(long)]
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    #[arg(long)]
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching).
+    #[arg(long, conflicts_with = "url")]
+    url_regex: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -122,6 +130,14 @@ struct TimelineArgs {
     app: Option<String>,
     #[arg(long)]
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    #[arg(long)]
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching).
+    #[arg(long, conflicts_with = "url")]
+    url_regex: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -326,6 +342,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 limit: args.limit,
                 app: args.app,
                 window_title: args.window_title,
+                url: args.url,
+                url_regex: args.url_regex,
             });
             run_data_command("search", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -336,6 +354,8 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 limit: args.limit,
                 app: args.app,
                 window_title: args.window_title,
+                url: args.url,
+                url_regex: args.url_regex,
             });
             run_data_command("timeline", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -1022,6 +1042,45 @@ mod tests {
         Cli::try_parse_from(["mnema", "show-text", "f1.deadbeef"]).unwrap();
         Cli::try_parse_from(["mnema", "open", "f1.deadbeef"]).unwrap();
         Cli::try_parse_from(["mnema", "--client", "Claude Desktop", "mcp"]).unwrap();
+    }
+
+    #[test]
+    fn cli_url_filters_are_mutually_exclusive() {
+        Cli::try_parse_from(["mnema", "search", "--query", "invoice", "--url", "github.com"])
+            .unwrap();
+        Cli::try_parse_from([
+            "mnema",
+            "search",
+            "--query",
+            "invoice",
+            "--url-regex",
+            "^github\\.com/",
+        ])
+        .unwrap();
+        assert!(Cli::try_parse_from([
+            "mnema",
+            "search",
+            "--query",
+            "invoice",
+            "--url",
+            "github.com",
+            "--url-regex",
+            "^github",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "mnema",
+            "timeline",
+            "--from",
+            "2026-05-22T10:00:00Z",
+            "--to",
+            "2026-05-22T11:00:00Z",
+            "--url",
+            "github.com",
+            "--url-regex",
+            "^github",
+        ])
+        .is_err());
     }
 
     #[test]

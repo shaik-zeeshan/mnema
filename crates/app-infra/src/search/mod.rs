@@ -166,6 +166,7 @@ impl SearchStore {
         backfill_missing_equivalent_reuse_projections(&self.db).await?;
         backfill_missing_app_bundle_id_projection(&self.db).await?;
         backfill_missing_app_name_search_key_projection(&self.db).await?;
+        backfill_missing_url_projection(&self.db).await?;
         Ok(())
     }
 

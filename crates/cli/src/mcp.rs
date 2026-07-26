@@ -30,6 +30,12 @@ struct SearchParams {
     app: Option<String>,
     /// Filter by window title.
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
+    url_regex: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -44,6 +50,12 @@ struct TimelineParams {
     app: Option<String>,
     /// Filter by window title.
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
+    url_regex: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -75,6 +87,8 @@ impl MnemaMcp {
                 limit: p.limit,
                 app: p.app,
                 window_title: p.window_title,
+                url: p.url,
+                url_regex: p.url_regex,
             }),
         )
         .await
@@ -95,6 +109,8 @@ impl MnemaMcp {
                 limit: p.limit,
                 app: p.app,
                 window_title: p.window_title,
+                url: p.url,
+                url_regex: p.url_regex,
             }),
         )
         .await

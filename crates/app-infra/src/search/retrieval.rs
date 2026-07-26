@@ -132,6 +132,18 @@ pub(super) fn push_search_refinement_predicates(
         query.push_bind(sqlite_contains_like_pattern(window_title));
         query.push(") ESCAPE '\\'");
     }
+    if let Some(url) = &refinements.url {
+        query.push(" AND LOWER(COALESCE(search_documents.url, '')) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(url));
+        query.push(") ESCAPE '\\'");
+    }
+    if let Some(url_regex) = &refinements.url_regex {
+        // SQLite rewrites `X REGEXP Y` as `regexp(Y, X)` — pattern first — which is
+        // exactly the argument order sqlx's registered `regexp` implementation
+        // expects, so the plain infix form is the correct one.
+        query.push(" AND COALESCE(search_documents.url, '') REGEXP ");
+        query.push_bind(url_regex.clone());
+    }
     if !refinements.audio_sources.is_empty() {
         query.push(" AND search_documents.source_kind IN (");
         for (index, source) in refinements.audio_sources.iter().enumerate() {
@@ -815,6 +827,88 @@ mod tests {
     use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
 
     #[test]
+    fn url_refinements_filter_frames_by_substring_and_regex() {
+        run_async_test(async {
+            let dir = test_dir("url-refinement");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let seed = |url: &'static str, path: &'static str, captured_at: &'static str| {
+                let infra = &infra;
+                async move {
+                    seed_frame_with_text(
+                        infra,
+                        path,
+                        captured_at,
+                        Some(capture_metadata::FrameMetadataSnapshot {
+                            browser_url: Some(url.to_string()),
+                            ..frame_with_app(Some("com.apple.Safari"), Some("Safari"))
+                        }),
+                        "urlrefine target",
+                    )
+                    .await
+                }
+            };
+            let github = seed(
+                "https://github.com/mnema/pulls",
+                "/tmp/url-refine-a.jpg",
+                "2026-05-17T10:00:00Z",
+            )
+            .await;
+            let linear = seed(
+                "https://linear.app/mnema/issue/MNE-1",
+                "/tmp/url-refine-b.jpg",
+                "2026-05-17T10:00:10Z",
+            )
+            .await;
+
+            let search = |url: Option<&str>, url_regex: Option<&str>| {
+                let infra = &infra;
+                let refinements = SearchCaptureRefinements {
+                    date_range: None,
+                    apps: Vec::new(),
+                    window_title: None,
+                    url: url.map(str::to_string),
+                    url_regex: url_regex.map(str::to_string),
+                    audio_sources: Vec::new(),
+                    screen_source: false,
+                };
+                async move {
+                    infra
+                        .search_capture(SearchCaptureRequest {
+                            query: "urlrefine".to_string(),
+                            frame_limit: Some(5),
+                            frame_offset: None,
+                            audio_limit: Some(0),
+                            audio_offset: None,
+                            snapshot_document_id: None,
+                            refinements: Some(refinements),
+                            query_embedding: None,
+                        })
+                        .await
+                        .expect("search should succeed")
+                        .frames
+                        .into_iter()
+                        .map(|frame| frame.representative_frame.id)
+                        .collect::<Vec<_>>()
+                }
+            };
+
+            // Substring is case-insensitive; regex is not (that is what `(?i)` is for).
+            assert_eq!(search(Some("GITHUB.com/mnema"), None).await, vec![github.id]);
+            assert_eq!(search(Some("linear.app"), None).await, vec![linear.id]);
+            assert!(search(Some("gitlab.com"), None).await.is_empty());
+
+            assert_eq!(
+                search(None, Some("^linear\\.app/mnema/issue/")).await,
+                vec![linear.id]
+            );
+            assert!(search(None, Some("^GITHUB")).await.is_empty());
+            assert_eq!(search(None, Some("(?i)^GITHUB")).await, vec![github.id]);
+        });
+    }
+
+    #[test]
     fn search_ranks_body_matches_ahead_of_context_matches() {
         run_async_test(async {
             let dir = test_dir("body-context-rank");
@@ -1117,6 +1211,7 @@ mod tests {
                         app_name: None,
                         app_name_search_key: None,
                         window_title: None,
+                        url: None,
                         group_key: &format!("frame:{frame_id}"),
                         text_source_kind: "direct",
                         body_text: Some("deepframe target"),
@@ -1191,6 +1286,7 @@ mod tests {
                         app_name: None,
                         app_name_search_key: None,
                         window_title: None,
+                        url: None,
                         group_key: &format!("audio:{}:{index}", segment.id),
                         text_source_kind: "direct",
                         body_text: Some("deepaudio target"),
@@ -1268,6 +1364,7 @@ mod tests {
                         app_name: None,
                         app_name_search_key: None,
                         window_title: None,
+                        url: None,
                         group_key: &format!("audio:{}:{start_ms}", segment.id),
                         text_source_kind: "direct",
                         body_text: Some(body_text),
@@ -1303,6 +1400,7 @@ mod tests {
                         app_name: None,
                         app_name_search_key: None,
                         window_title: None,
+                        url: None,
                         group_key: &format!("audio:{}:filler-{index}", segment.id),
                         text_source_kind: "direct",
                         body_text: Some("bridgeword"),
@@ -1751,6 +1849,8 @@ mod tests {
                             display_name: "Keep".to_string(),
                         }],
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),

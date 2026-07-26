@@ -216,6 +216,10 @@ pub struct BrokerSearchRequest {
     pub limit: Option<u32>,
     pub app: Option<String>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the indexed (guarded) url.
+    pub url: Option<String>,
+    /// Case-sensitive regex over the same url.
+    pub url_regex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -308,6 +312,10 @@ pub struct BrokerTimelineRequest {
     pub limit: Option<u32>,
     pub app: Option<String>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the indexed (guarded) url.
+    pub url: Option<String>,
+    /// Case-sensitive regex over the same url.
+    pub url_regex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1067,11 +1075,15 @@ fn broker_search_refinements(
     to: Option<String>,
     app: Option<String>,
     window_title: Option<String>,
+    url: Option<String>,
+    url_regex: Option<String>,
 ) -> Result<SearchCaptureRefinements> {
     Ok(SearchCaptureRefinements {
         date_range: scoped_date_range(grants, from, to)?,
         apps: broker_app_refinement(app)?.into_iter().collect(),
         window_title: broker_optional_filter(window_title, "windowTitle")?,
+        url: broker_optional_filter(url, "url")?,
+        url_regex: broker_url_regex_filter(url_regex)?,
         audio_sources: Vec::new(),
         screen_source: false,
     })
@@ -1086,6 +1098,22 @@ fn broker_app_refinement(app: Option<String>) -> Result<Option<SearchAppRefineme
         display_name: value.clone(),
         value,
     }))
+}
+
+/// `urlRegex`, rejected as a request error when it is not a valid pattern. Search
+/// also validates during refinement normalization, but the timeline builds its SQL
+/// directly — so a client typo surfaces here as a clear error on BOTH paths rather
+/// than as an opaque `REGEXP` failure from SQLite.
+fn broker_url_regex_filter(value: Option<String>) -> Result<Option<String>> {
+    let Some(value) = broker_optional_filter(value, "urlRegex")? else {
+        return Ok(None);
+    };
+    regex::Regex::new(&value).map_err(|error| {
+        AppInfraError::InvalidSearchRequest(format!(
+            "urlRegex is not a valid regular expression: {error}"
+        ))
+    })?;
+    Ok(Some(value))
 }
 
 fn broker_optional_filter(value: Option<String>, field_name: &str) -> Result<Option<String>> {
@@ -1107,6 +1135,8 @@ fn push_broker_timeline_context_filters(
     query: &mut QueryBuilder<'_, Sqlite>,
     app: Option<&SearchAppRefinement>,
     window_title: Option<&str>,
+    url: Option<&str>,
+    url_regex: Option<&str>,
 ) {
     if let Some(app) = app {
         query.push(" AND (LOWER(TRIM(COALESCE(app_bundle_id, ''))) = LOWER(");
@@ -1119,6 +1149,17 @@ fn push_broker_timeline_context_filters(
         query.push(" AND LOWER(COALESCE(window_title, '')) LIKE LOWER(");
         query.push_bind(sqlite_contains_like_pattern(window_title));
         query.push(") ESCAPE '\\'");
+    }
+    if let Some(url) = url {
+        query.push(" AND LOWER(COALESCE(url, '')) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(url));
+        query.push(") ESCAPE '\\'");
+    }
+    if let Some(url_regex) = url_regex {
+        // `X REGEXP Y` invokes `regexp(Y, X)` — pattern first, matching sqlx's
+        // registered implementation, so the infix form is correct as written.
+        query.push(" AND COALESCE(url, '') REGEXP ");
+        query.push_bind(url_regex.to_string());
     }
 }
 
@@ -1307,6 +1348,8 @@ async fn broker_search(
         request.to,
         request.app,
         request.window_title,
+        request.url,
+        request.url_regex,
     )?;
     let response = infra
         .search_capture(SearchCaptureRequest {
@@ -1511,13 +1554,24 @@ async fn broker_timeline(
         .expect("timeline always supplies a scoped date range");
     let app = broker_app_refinement(request.app)?;
     let window_title = broker_optional_filter(request.window_title, "windowTitle")?;
-    if app.is_some() || window_title.is_some() {
-        let intervals =
-            broker_frame_timeline(infra, &range, app.as_ref(), window_title.as_deref(), limit)
-                .await?;
+    let url = broker_optional_filter(request.url, "url")?;
+    let url_regex = broker_url_regex_filter(request.url_regex)?;
+    if app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some() {
+        // Any context filter narrows to captured frames: audio segments carry no
+        // app, window title, or url to match against.
+        let intervals = broker_frame_timeline(
+            infra,
+            &range,
+            app.as_ref(),
+            window_title.as_deref(),
+            url.as_deref(),
+            url_regex.as_deref(),
+            limit,
+        )
+        .await?;
         return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
     }
-    let mut intervals = broker_frame_timeline(infra, &range, None, None, limit).await?;
+    let mut intervals = broker_frame_timeline(infra, &range, None, None, None, None, limit).await?;
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?
@@ -1550,6 +1604,8 @@ async fn broker_frame_timeline(
     range: &SearchDateRangeRefinement,
     app: Option<&SearchAppRefinement>,
     window_title: Option<&str>,
+    url: Option<&str>,
+    url_regex: Option<&str>,
     limit: u32,
 ) -> Result<Vec<BrokerTimelineInterval>> {
     // `representative_frame_id` must be the frame_id of the SAME `MAX(id)` row that
@@ -1575,7 +1631,7 @@ async fn broker_frame_timeline(
     query.push(") AND julianday(absolute_start_at) <= julianday(");
     query.push_bind(range.end_at.clone());
     query.push(")");
-    push_broker_timeline_context_filters(&mut query, app, window_title);
+    push_broker_timeline_context_filters(&mut query, app, window_title, url, url_regex);
     query.push(
         "   GROUP BY group_key, app_bundle_id, app_name, window_title \
          ) \
@@ -2986,6 +3042,8 @@ mod tests {
                 limit: Some(5),
                 app: None,
                 window_title: None,
+                url: None,
+                url_regex: None,
             }),
         );
 
@@ -3189,6 +3247,8 @@ mod tests {
                 }),
                 apps: Vec::new(),
                 window_title: None,
+                url: None,
+                url_regex: None,
                 audio_sources: Vec::new(),
                 screen_source: false,
             },
@@ -3465,6 +3525,8 @@ mod tests {
                     limit: Some(5),
                     app: Some("Linear".to_string()),
                     window_title: Some("roadmap".to_string()),
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3663,6 +3725,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3722,6 +3786,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3856,6 +3922,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3930,6 +3998,8 @@ mod tests {
                     limit: Some(100),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -4018,6 +4088,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -4207,6 +4279,8 @@ mod tests {
                         limit: Some(50),
                         app: None,
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                     }),
                 )
                 .await

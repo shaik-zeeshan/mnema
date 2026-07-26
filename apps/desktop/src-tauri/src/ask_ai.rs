@@ -1733,6 +1733,8 @@ async fn run_ask_ai_turn(
             limit: Some(ASK_AI_SEED_LIMIT),
             app: None,
             window_title: None,
+            url: None,
+            url_regex: None,
         };
         if let Ok(BrokeredCaptureResponse::Search(response)) = execute_ask_ai_broker_request(
             app_handle.clone(),

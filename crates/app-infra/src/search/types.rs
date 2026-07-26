@@ -31,6 +31,16 @@ pub struct SearchCaptureRefinements {
     #[serde(default)]
     pub apps: Vec<SearchAppRefinement>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the frame's GUARDED url (`host[:port]/path`
+    /// — query strings and fragments are never indexed, so they can never be
+    /// filtered on either).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Case-sensitive regular expression over the same guarded url (opt into
+    /// case-insensitivity with `(?i)`). Validated at normalization time so an
+    /// invalid pattern surfaces a parse error instead of a SQL failure.
+    #[serde(default)]
+    pub url_regex: Option<String>,
     #[serde(default)]
     pub audio_sources: Vec<AudioSegmentSourceKind>,
     /// `source:screen` restricts results to captured frames (screen), skipping
@@ -174,6 +184,8 @@ pub(super) struct NormalizedSearchRefinements {
     pub(super) date_range: Option<NormalizedDateRange>,
     pub(super) apps: Vec<NormalizedAppRefinement>,
     pub(super) window_title: Option<String>,
+    pub(super) url: Option<String>,
+    pub(super) url_regex: Option<String>,
     pub(super) audio_sources: Vec<AudioSegmentSourceKind>,
     pub(super) screen_source: bool,
     pub(super) applied: SearchCaptureRefinements,

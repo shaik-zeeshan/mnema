@@ -131,7 +131,7 @@ async fn insert_direct_frame_ocr_document(
     result: &ProcessingResult,
     text: &str,
 ) -> Result<()> {
-    let (app_bundle_id, app_name, window_title) = frame
+    let (app_bundle_id, app_name, window_title, browser_url) = frame
         .metadata_snapshot
         .as_ref()
         .map(|metadata| {
@@ -139,13 +139,22 @@ async fn insert_direct_frame_ocr_document(
                 metadata.app_bundle_id.clone(),
                 metadata.app_name.clone(),
                 metadata.window_title.clone(),
+                metadata.browser_url.clone(),
             )
         })
-        .unwrap_or((None, None, None));
+        .unwrap_or((None, None, None, None));
 
     let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
     let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
+    // The index stores the GUARDED url, never the raw one — see migration 0050.
+    // Guarding moved from read-time (per search hit) to here (per projected
+    // document), so it now runs on the capture-rate path. Measured at 2.3us/call
+    // release (Url::parse + the process-wide `Lazy` redaction detectors over an
+    // 8KB-capped path), and frames with no browser_url short-circuit for free —
+    // so a same-url memo for consecutive frames of one page was measured as NOT
+    // worth its state, even at an absurd 30 documents/sec (~0.01% of a core).
+    let url = browser_url.as_deref().and_then(crate::guard_browser_url);
 
     insert_search_document(
         transaction,
@@ -164,6 +173,7 @@ async fn insert_direct_frame_ocr_document(
             app_name: app_name.as_deref(),
             app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
+            url: url.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
             body_text: Some(text),
@@ -292,6 +302,7 @@ async fn project_audio_transcription_result(
                 app_name: None,
                 app_name_search_key: None,
                 window_title: None,
+                url: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
                 body_text: Some(span_text),
@@ -320,6 +331,8 @@ pub(super) struct NewSearchDocument<'a> {
     pub(super) app_name: Option<&'a str>,
     pub(super) app_name_search_key: Option<&'a str>,
     pub(super) window_title: Option<&'a str>,
+    /// The GUARDED browser url (see `crate::guard_browser_url`), never the raw one.
+    pub(super) url: Option<&'a str>,
     pub(super) group_key: &'a str,
     pub(super) text_source_kind: &'a str,
     /// `None` for an `equivalent_reuse` row — it borrows the canonical `direct`
@@ -336,9 +349,9 @@ pub(super) async fn insert_search_document(
     let insert = sqlx::query(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
-            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, \
+            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, url, \
             group_key, text_source_kind, body_text, canonical_search_document_id, context_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -358,6 +371,7 @@ pub(super) async fn insert_search_document(
     .bind(doc.app_name)
     .bind(doc.app_name_search_key.unwrap_or_default())
     .bind(doc.window_title)
+    .bind(doc.url.unwrap_or_default())
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
     .bind(doc.body_text)
@@ -616,6 +630,52 @@ pub(super) async fn backfill_missing_app_bundle_id_projection(db: &CaptureDb) ->
     Ok(())
 }
 
+pub(super) async fn backfill_missing_url_projection(db: &CaptureDb) -> Result<()> {
+    // Same shape as the bundle-id backfill: scan on the Reader Pool, guard each raw
+    // url in Rust, then apply the UPDATEs in batched write transactions (an empty
+    // string marks "resolved, no broker-safe url" so the row is not rescanned next
+    // startup). Only the GUARDED url is ever stored — see migration 0050.
+    let rows = sqlx::query(
+        "SELECT search_documents.id, frame_metadata_snapshots.snapshot_json \
+         FROM search_documents \
+         JOIN frames ON frames.id = search_documents.frame_id \
+         LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+         WHERE search_documents.anchor_type = 'frame' \
+           AND search_documents.url IS NULL",
+    )
+    .fetch_all(db.read())
+    .await?;
+
+    let mut updates: Vec<(i64, String)> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let url = row
+            .get::<Option<String>, _>("snapshot_json")
+            .map(|snapshot_json| {
+                serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&snapshot_json)
+            })
+            .transpose()?
+            .and_then(|snapshot| snapshot.browser_url)
+            .as_deref()
+            .and_then(crate::guard_browser_url);
+        updates.push((row.get::<i64, _>("id"), url.unwrap_or_default()));
+    }
+
+    commit_in_batches(db, &updates, |transaction, item| {
+        let (id, url) = item;
+        Box::pin(async move {
+            sqlx::query("UPDATE search_documents SET url = ?1 WHERE id = ?2")
+                .bind(url)
+                .bind(id)
+                .execute(&mut **transaction)
+                .await?;
+            Ok(())
+        })
+    })
+    .await?;
+
+    Ok(())
+}
+
 pub(super) async fn backfill_missing_app_name_search_key_projection(db: &CaptureDb) -> Result<()> {
     // Scan on the Reader Pool, derive each search key in Rust, then apply the
     // UPDATEs in batched write transactions.
@@ -677,6 +737,55 @@ mod tests {
         ProcessingResultDraft,
     };
     use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    /// The index must hold the GUARDED url, never the raw one: if the refinement
+    /// could match a query string or a path secret, a client could use it as an
+    /// oracle for exactly the text the read-time guard refuses to emit.
+    #[test]
+    fn frame_url_projection_stores_only_the_guarded_url() {
+        run_async_test(async {
+            let dir = test_dir("url-projection");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = seed_frame_with_text(
+                &infra,
+                "/tmp/search-url-frame.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(capture_metadata::FrameMetadataSnapshot {
+                    browser_url: Some(
+                        "https://mail.example.com/reset/s3cr3tres3ttoken99?token=leakme&user=me#top"
+                            .to_string(),
+                    ),
+                    ..frame_with_app(Some("com.apple.Safari"), Some("Safari"))
+                }),
+                "urlprojection target",
+            )
+            .await;
+
+            let projected: String = sqlx::query_scalar(
+                "SELECT url FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("projected url should load");
+
+            assert!(
+                !projected.contains("leakme") && !projected.contains('?'),
+                "query string must never be indexed, got {projected}"
+            );
+            assert!(
+                !projected.contains("s3cr3tres3ttoken99"),
+                "armed path secret must be redacted, got {projected}"
+            );
+            assert!(
+                projected.starts_with("mail.example.com/reset/"),
+                "guarded host+path should survive, got {projected}"
+            );
+        });
+    }
 
     #[test]
     fn search_projects_completed_ocr_and_groups_equivalent_frames() {

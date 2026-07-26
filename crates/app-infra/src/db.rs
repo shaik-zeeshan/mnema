@@ -351,10 +351,18 @@ async fn connect_pool(
 ) -> Result<SqlitePool> {
     register_vec0_auto_extension();
 
+    // `with_regexp` registers sqlx's `regexp` SQL function, which backs the URL
+    // refinement's `url REGEXP ?` predicate (and nothing else). It compiles the
+    // pattern with the `regex` crate, whose matching is linear in the input — a
+    // client-supplied pattern cannot blow up into catastrophic backtracking — and
+    // caches the compiled `Regex` in SQLite auxdata so a scan compiles it once.
+    // Registered on the one builder that serves all four pool roles, including the
+    // Brokered Reader that actually runs the refinement.
     let mut options = SqliteConnectOptions::new()
         .filename(database_path)
         .create_if_missing(config.create_if_missing)
         .foreign_keys(true)
+        .with_regexp()
         .busy_timeout(config.busy_timeout);
 
     if config.set_wal {
