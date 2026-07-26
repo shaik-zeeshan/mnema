@@ -288,11 +288,21 @@ pub(super) fn push_in_scope_anchor_rowids(
 /// math; `anchor_id` reads the dedup key and `set_rank` writes the negated fused
 /// score, so the one body serves both `FrameHit` and `AudioHit`.
 ///
-/// Keyword-only path: with no meaning tier to fuse, return the **Text Search**
-/// list untouched so its raw BM25 `rank` (the grouping tie-break key) is preserved
-/// exactly. Overwriting every hit's `rank` with a position-derived RRF score here
-/// would change equal-BM25 group tie-break ordering, so skipping fusion keeps the
-/// keyword-only path byte-identical to pre-Semantic-Search.
+/// Keyword-only path (`hybrid == false`): with no meaning tier anywhere in the
+/// query, return the **Text Search** list untouched so its raw BM25 `rank` (the
+/// grouping tie-break key) is preserved exactly. Overwriting every hit's `rank`
+/// with a position-derived RRF score here would change equal-BM25 group tie-break
+/// ordering, so skipping fusion keeps the keyword-only path byte-identical to
+/// pre-Semantic-Search.
+///
+/// `hybrid` is the WHOLE QUERY's tier, not this list's: it must not be derived
+/// from `semantic_hits.is_empty()`. Frames and audio are fused independently, so
+/// deciding per-list would leave the kind with no meaning candidates on the raw
+/// BM25 scale (magnitude O(1..10)) while the other kind moved to the RRF scale
+/// (magnitude <= 1/RRF_K), and `FrameSearchResult::rank` / `AudioSearchResult::rank`
+/// are documented as comparable so a consumer can merge the two lists into ONE
+/// ranked page. That mismatch orders the merged page by scale instead of
+/// relevance — every audio hit ahead of every frame hit, or the reverse.
 ///
 /// Dedup prefers the **Text Search** row for an anchor present in both lists, so a
 /// keyword-and-meaning hit keeps its highlighted snippet. Both inputs are borrowed
@@ -301,10 +311,11 @@ pub(super) fn push_in_scope_anchor_rowids(
 fn rrf_fuse_hits<T: Clone>(
     text_hits: &[T],
     semantic_hits: &[T],
+    hybrid: bool,
     anchor_id: impl Fn(&T) -> i64,
     set_rank: impl Fn(&mut T, f64),
 ) -> Vec<T> {
-    if semantic_hits.is_empty() {
+    if !hybrid {
         return text_hits.to_vec();
     }
 
@@ -334,10 +345,12 @@ fn rrf_fuse_hits<T: Clone>(
 pub(super) fn rrf_fuse_frame_hits(
     text_hits: &[FrameHit],
     semantic_hits: &[FrameHit],
+    hybrid: bool,
 ) -> Vec<FrameHit> {
     rrf_fuse_hits(
         text_hits,
         semantic_hits,
+        hybrid,
         |hit| hit.anchor_id,
         |hit, rank| hit.rank = rank,
     )
@@ -347,10 +360,12 @@ pub(super) fn rrf_fuse_frame_hits(
 pub(super) fn rrf_fuse_audio_hits(
     text_hits: &[AudioHit],
     semantic_hits: &[AudioHit],
+    hybrid: bool,
 ) -> Vec<AudioHit> {
     rrf_fuse_hits(
         text_hits,
         semantic_hits,
+        hybrid,
         |hit| hit.anchor_id,
         |hit, rank| hit.rank = rank,
     )
@@ -458,6 +473,10 @@ pub(super) async fn fetch_grouped_frame_hits(
     // candidates once (a bounded top-k `vec0` KNN) and RRF-fuse them into the
     // **Text Search** list *before* grouping/pagination. With no vector the
     // fused list is just the FTS list, so keyword-only behavior is unchanged.
+    // The whole query's tier, not this list's: a hybrid query must fuse BOTH
+    // anchor kinds onto the RRF scale even when one kind has no meaning
+    // candidates, or the two `rank`s stop being comparable (see `rrf_fuse_hits`).
+    let hybrid = query_embedding.is_some();
     let semantic_hits = match query_embedding {
         Some(embedding) => degrade_to_keyword_only(
             "frame",
@@ -471,7 +490,7 @@ pub(super) async fn fetch_grouped_frame_hits(
     // fused list. `fts_is_searchable` is false only when there is a usable query
     // vector (the empty-everything case short-circuits earlier in `search_capture`).
     if !fts_is_searchable {
-        let fused = rrf_fuse_frame_hits(&[], &semantic_hits);
+        let fused = rrf_fuse_frame_hits(&[], &semantic_hits, hybrid);
         return Ok(group_frame_hits(&fused));
     }
 
@@ -491,7 +510,7 @@ pub(super) async fn fetch_grouped_frame_hits(
         .await?;
         let hit_count = hits.len() as i64;
         text_hits.extend(hits);
-        let fused = rrf_fuse_frame_hits(&text_hits, &semantic_hits);
+        let fused = rrf_fuse_frame_hits(&text_hits, &semantic_hits, hybrid);
         let groups = group_frame_hits(&fused);
         // Only **Text Search**-derived groups count toward the pagination
         // termination: the semantic snapshot is fetched whole up front, so the
@@ -572,6 +591,8 @@ pub(super) async fn fetch_grouped_audio_hits(
     refinements: &NormalizedSearchRefinements,
     query_embedding: Option<&[f32]>,
 ) -> Result<Vec<AudioSearchResult>> {
+    // See `fetch_grouped_frame_hits`: the tier is the query's, not this list's.
+    let hybrid = query_embedding.is_some();
     let semantic_hits = match query_embedding {
         Some(embedding) => degrade_to_keyword_only(
             "audio",
@@ -584,7 +605,7 @@ pub(super) async fn fetch_grouped_audio_hits(
     // loop entirely — an empty `MATCH` would error — and groups the semantic-only
     // fused list, exactly as the frame path does.
     if !fts_is_searchable {
-        let fused = rrf_fuse_audio_hits(&[], &semantic_hits);
+        let fused = rrf_fuse_audio_hits(&[], &semantic_hits, hybrid);
         return group_audio_hits(&fused);
     }
 
@@ -606,7 +627,7 @@ pub(super) async fn fetch_grouped_audio_hits(
         text_hits.extend(hits);
         if hit_count < MAX_HIT_FETCH_LIMIT {
             // RRF-fuse before grouping, exactly as the frame path does.
-            let fused = rrf_fuse_audio_hits(&text_hits, &semantic_hits);
+            let fused = rrf_fuse_audio_hits(&text_hits, &semantic_hits, hybrid);
             return group_audio_hits(&fused);
         }
         hit_offset = hit_offset.saturating_add(hit_count);
@@ -1552,7 +1573,7 @@ mod tests {
             frame_hit_for_fusion(3, "charlie meaning excerpt", true),
         ];
 
-        let fused = rrf_fuse_frame_hits(&text, &semantic);
+        let fused = rrf_fuse_frame_hits(&text, &semantic, true);
 
         // Three distinct anchors after dedup, none duplicated.
         let ids: Vec<i64> = fused.iter().map(|hit| hit.anchor_id).collect();
@@ -1643,6 +1664,80 @@ mod tests {
             assert!(frame_ids
                 .iter()
                 .any(|&id| id == keyword_result.thumbnail_frame_id));
+        });
+    }
+
+    /// `rank` is documented as comparable between frame and audio results so a
+    /// consumer can merge the two lists into one ranked page. When only one
+    /// anchor kind has vectors (mid-backfill, or an audio-free vector set), that
+    /// kind is RRF-scored while the other keeps raw BM25 — two different scales,
+    /// so the merge orders by scale, not relevance.
+    #[test]
+    fn hybrid_rank_is_comparable_across_anchor_kinds_when_only_frames_have_vectors() {
+        run_async_test(async {
+            let dir = test_dir("hybrid-cross-kind-rank");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+
+            // A realistic corpus: the query term is rare, so BM25 has a real
+            // magnitude (in a one-document index every IDF collapses to ~0).
+            for index in 0..30 {
+                seed_frame_anchor(
+                    &infra,
+                    &format!("2026-05-16T10:{index:02}:00Z"),
+                    &format!("filler corpus body number{index}"),
+                )
+                .await;
+            }
+
+            // A frame anchor that matches the query term AND the query vector.
+            let frame_id =
+                seed_frame_anchor(&infra, "2026-05-17T10:00:00Z", "quarterly budget keyword").await;
+            infra
+                .semantic_search()
+                .store_vector(frame_id, &seeded_vector(1))
+                .await
+                .expect("frame vector stores");
+
+            // An audio anchor that matches only the query term — no vector at all
+            // (audio embeddings not backfilled yet).
+            seed_audio_anchor(
+                &infra,
+                "2026-05-17T10:05:00Z",
+                "2026-05-17T10:05:02Z",
+                "unrelated chatter keyword",
+            )
+            .await;
+
+            let response = infra
+                .search_capture(SearchCaptureRequest {
+                    query: "keyword".to_string(),
+                    frame_limit: Some(10),
+                    frame_offset: None,
+                    audio_limit: Some(10),
+                    audio_offset: None,
+                    snapshot_document_id: None,
+                    refinements: None,
+                    query_embedding: Some(seeded_vector(1)),
+                })
+                .await
+                .expect("search should succeed");
+
+            assert_eq!(response.audio.len(), 1);
+            let frame_rank = response
+                .frames
+                .iter()
+                .find(|frame| !frame.found_by_meaning)
+                .expect("the keyword frame surfaces")
+                .rank;
+            let audio_rank = response.audio[0].rank;
+            assert!(
+                frame_rank <= audio_rank,
+                "the frame matched BOTH the query term and the query vector, so it must \
+                 not rank worse than a term-only audio hit on a merged page \
+                 (frame rank {frame_rank}, audio rank {audio_rank})"
+            );
         });
     }
 
