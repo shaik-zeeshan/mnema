@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended 2026-07-26 (the Ask AI pivot's structural half is gone — see Amendment)
 ---
 
 # Quick Recall search syntax uses a launcher-native autocomplete, not the dashboard dropdown
@@ -25,3 +25,30 @@ This is mostly a frontend surfacing change, not a new engine. `search_capture` a
 - The **Ask AI** pivot inherits the full visible scope. The seed broker search stays **structurally scoped** by the active chips (so the agent's starting evidence matches), while the **question** the agent receives gets a **natural-language scope suffix** derived from the chips — `in Safari`, `from {start} to {end}`, `in microphone audio` — which also renders as the read-only question header. **Body Match Operators** stay verbatim in the residual question text and are applied exactly by the seed FTS.
 - Two intentionally **divergent search autocompletes** now coexist — the dashboard's dropdown (a large modal surface) and Quick Recall's ghost-text + picker (a launcher surface). The divergence is justified by surface, not accidental; both desugar field operators into the same backend refinements and honor the explicit-reversible principle.
 - **Out of scope / parked**: recent searches (a follow-up of its own — it would add a persisted query-history store that reverses Quick Recall's documented ephemerality and introduces a privacy surface) and saved/watch searches (a separate feature). **Body Match Operators** stay text-only with a small static syntax help affordance near the input rather than picker entries.
+
+## Amendment (2026-07-26): the Ask AI pivot carries scope in natural language only
+
+**Ask AI no longer seeds.** The pre-turn broker search that ran before the model's first
+call is removed: a turn now starts with no capture context and the agent gathers what it
+needs through its own tool calls. That deletes the **structural** half of the pivot
+described above — there is no seed FTS query, so nothing re-parses the chips into a
+canonical `app:`/`after:`/`before:` operator string, and **Body Match Operators** are no
+longer applied exactly by a seed search.
+
+What survives is the **natural-language** half, unchanged: the question the agent receives
+still gets the chip-derived scope suffix (`in Safari`, `from {start} to {end}`,
+`in microphone audio`), which still renders as the read-only question header. Scope is
+therefore still legible to both user and agent, but it is now advisory prose the model acts
+on rather than a filter applied to its starting evidence.
+
+**Why.** The seed advertised a continuity it could not honour. Quick Recall displays up to
+24 screen + 12 audio results; the seed re-ran a *different* search capped at 8, and the UI
+labelled it "Seeded with N results" — which reads as "the AI looked at your search". It had
+not. The gap widened further whenever a **Semantic Search Model** was installed, since the
+displayed search is hybrid while the broker seed is keyword-only, so the seed could miss
+rows that were visibly on screen. Removing it costs one model round-trip on the first turn
+and makes the agent's context wholly its own, which is the honest story for a surface whose
+answer is allowed to range beyond the visible list anyway.
+
+The pivot keybinding, chip semantics, parse-error behavior, and every other decision above
+are unaffected.

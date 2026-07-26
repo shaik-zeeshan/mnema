@@ -34,7 +34,6 @@ pub struct ConversationTurn {
     /// `'streaming'` | `'done'` | `'error'` (frontend-owned phase string).
     pub phase: String,
     pub error_message: Option<String>,
-    pub seeded_result_count: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -167,7 +166,7 @@ pub struct ToolActivityEntry {
 
 /// The full render-ready view of ONE Ask AI turn. The backend owns every field;
 /// the frontend only renders. `phase` is the lifecycle string
-/// (`"seeding" | "thinking" | "streaming" | "done" | "error"`). `sources` is the
+/// (`"thinking" | "streaming" | "done" | "error"`). `sources` is the
 /// same opaque Answer-Sources JSON the frontend round-trips on a persisted turn.
 ///
 /// Unlike the item/block option fields (which are SKIPPED when absent), this
@@ -186,7 +185,6 @@ pub struct TurnView {
     /// Opaque Answer Sources JSON the frontend round-trips (a JSON array).
     pub sources: serde_json::Value,
     pub error_message: Option<String>,
-    pub seeded_result_count: Option<i64>,
     /// Tokens occupying the model's context window after the latest completion
     /// request of this turn (provider-reported input + output). Null until the
     /// provider reports usage, and on turns predating the field.
@@ -383,7 +381,6 @@ mod tests {
             live_activity: None,
             sources: json!([]),
             error_message: None,
-            seeded_result_count: None,
             context_tokens: None,
         };
         let value = serde_json::to_value(&view).unwrap();
@@ -393,10 +390,8 @@ mod tests {
         assert!(obj.contains_key("toolActivities"));
         assert!(obj.contains_key("liveActivity"));
         assert!(obj.contains_key("errorMessage"));
-        assert!(obj.contains_key("seededResultCount"));
         assert_eq!(obj["liveActivity"], json!(null));
         assert_eq!(obj["errorMessage"], json!(null));
-        assert_eq!(obj["seededResultCount"], json!(null));
         assert_eq!(obj["contextTokens"], json!(null));
         // The tool-activity entry omits its absent app/appIconPath options.
         assert_eq!(
@@ -425,7 +420,6 @@ mod tests {
                 }),
                 sources: json!([{ "kind": "frame" }]),
                 error_message: Some("boom".to_string()),
-                seeded_result_count: Some(5),
                 context_tokens: Some(12345),
             },
         };

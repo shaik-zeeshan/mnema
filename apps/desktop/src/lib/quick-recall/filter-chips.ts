@@ -3,7 +3,7 @@
 // change). Chips are RENDERED from the backend desugar (appliedRefinements),
 // but the operator TEXT lives in the raw `query` string; these helpers derive
 // the chip model, strip a chip's operator token(s) back out of the query, and
-// rebuild canonical operator/plain-language forms for the Ask AI pivot.
+// rebuild plain-language forms for the Ask AI pivot.
 import type {
   SearchAppRefinement,
   SearchDateRangeRefinement,
@@ -13,8 +13,6 @@ import type {
 } from "$lib/types/app-infra";
 import {
   tokenizeQuery,
-  quoteOperatorValue,
-  toOperatorDay,
   parseToolDate,
   isSameCalendarDay,
   shortDate,
@@ -215,63 +213,12 @@ export function stripChipTokens(raw: string, chip: ActiveFilterChip): string {
 // ---------------------------------------------------------------------------
 // Ask AI pivot scope inheritance (pure builders)
 //
-// Pivoting search → ask carries the active chip scope into the ask TWO ways:
-//
-//   1. Structurally, into the SEED. `ask_ai_start`'s `seedQuery` flows to the
-//      Rust broker search, which runs the SAME backend `parse_search_query`,
-//      so an operator-bearing seed is re-parsed and the seed context is scoped
-//      to the chips with no Rust change. We rebuild a CANONICAL operator string
-//      from the chips (the desugared truth) + residual rather than forwarding
-//      the raw typed query, so a messy/abbreviated raw query still yields a
-//      clean, parser-exact seed.
-//
-//   2. In natural language, into the QUESTION. The question's free-text base is
-//      the residual (operators stripped) plus a spoken scope suffix ("in Safari
-//      from May 1 to May 30") so the scope is legible to user and agent alike.
+// Pivoting search → ask carries the active chip scope into the ask in natural
+// language, via the QUESTION. The question's free-text base is the residual
+// (operators stripped) plus a spoken scope suffix ("in Safari from May 1 to
+// May 30") so the scope is legible to user and agent alike; the agent's own
+// tool calls do the gathering.
 // ---------------------------------------------------------------------------
-
-// The canonical operator token(s) one chip contributes to a reconstructed seed.
-// Mirrors the parser spellings: `app:<value>` (quoted as needed),
-// `source:screen`/`source:microphone`/`source:system_audio` (the audio kind is
-// already a parser-accepted word), and `after:<day> before:<day>` for a range
-// (or a single `after:<day>`/`before:<day>` when only one bound parses).
-export function operatorTokensForChip(chip: ActiveFilterChip): string {
-  switch (chip.kind) {
-    case "app":
-      return `app:${quoteOperatorValue(chip.data.value)}`;
-    case "source":
-      return `source:${chip.data.source}`;
-    case "date": {
-      const start = parseRefinementDate(chip.data.startAt);
-      const end = parseRefinementDate(chip.data.endAt);
-      const parts: string[] = [];
-      if (start) parts.push(`after:${toOperatorDay(start)}`);
-      if (end) parts.push(`before:${toOperatorDay(end)}`);
-      // If neither bound parses we emit nothing (the chip's structural scope is
-      // unrecoverable as an operator); the natural-language suffix still carries it.
-      return parts.join(" ");
-    }
-  }
-}
-
-// Build a parser-exact seed query from the active chips + residual free text,
-// e.g. chips `{app:Safari, date 5/1–5/30}` + residual `deploy error` →
-// `app:Safari after:2026-05-01 before:2026-05-30 deploy error`. With no chips
-// this is just the residual, so the seed is unchanged from today.
-export function buildScopedSeedQuery(
-  chips: ActiveFilterChip[],
-  residual: string,
-): string {
-  const operatorTokens = chips
-    .map((chip) => operatorTokensForChip(chip))
-    .filter((token) => token.length > 0);
-  const residualText = residual.trim();
-  const parts = [...operatorTokens];
-  if (residualText.length > 0) {
-    parts.push(residualText);
-  }
-  return parts.join(" ").trim();
-}
 
 // The plain-language scope suffix for one chip: `in Safari`,
 // `in microphone audio` / `in system audio`, `in screen captures`, or a date

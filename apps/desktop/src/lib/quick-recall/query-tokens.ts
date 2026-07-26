@@ -47,22 +47,7 @@ export function isTrailingOperatorPartial(raw: string): boolean {
   return /^(app|source|date|after|before):/i.test(trailingToken(raw));
 }
 
-// Quote an operator value when it contains whitespace (or is empty) so the
-// backend tokenizer keeps it as one token, e.g. `app:"Google Chrome"`. Bare
-// single-word values pass through unquoted (`app:Safari`, `app:com.apple.Safari`).
-export function quoteOperatorValue(value: string): string {
-  return /\s/.test(value) || value.length === 0 ? `"${value}"` : value;
-}
 
-// Format a Date as a local `YYYY-MM-DD` day, the form the backend
-// `after:`/`before:` parser accepts (resolve_point_date). Uses local calendar
-// fields (not toISOString, which would shift across the UTC boundary).
-export function toOperatorDay(d: Date): string {
-  const year = d.getFullYear().toString().padStart(4, "0");
-  const month = (d.getMonth() + 1).toString().padStart(2, "0");
-  const day = d.getDate().toString().padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 // Quote an app name that contains whitespace so `app:"Google Chrome"` parses as
 // one token; a single-word name is emitted bare (`app:Safari`).

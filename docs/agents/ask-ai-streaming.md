@@ -43,8 +43,8 @@ are the serde round-trip / exact-shape tests in `conversation.rs` and
   humane `label` AND the resolved icon **filesystem path**; the frontend's only
   transform is `convertFileSrc(appIconPath)` (a pure path→URL helper).
 - **`TurnView`** — `{ turnIndex, question, phase, blocks, reasoning, toolActivities,
-  liveActivity, sources, errorMessage, seededResultCount, contextTokens }`. `phase`
-  is one of `seeding | thinking | streaming | done | error`. `sources` is opaque
+  liveActivity, sources, errorMessage, contextTokens }`. `phase` is one of
+  `thinking | streaming | done | error`. `sources` is opaque
   JSON the frontend round-trips into source cards. `contextTokens` is the
   provider-reported context-window occupancy (input+output of the turn's latest
   completion request); it is NOT persisted, so it is null on cold-loaded turns
@@ -96,7 +96,7 @@ and reload will diverge.
   evict the newer turn's `LiveTurn` (`apply_live_update` / `remove_live_turn_if_owner`
   are token-guarded, exactly like `remove_inflight_if_owner`).
 - **A terminal update (`Done` / `Error`) is emitted on EVERY exit path** — clean
-  finish, error, cooperative cancel, displacement, and seeding-phase cancel — so the
+  finish, error, cooperative cancel, displacement, and pre-model cancel — so the
   UI's "Writing…" indicator always settles. A displaced turn (whose `LiveTurn` was
   overwritten) emits its terminal DIRECTLY at `last_version + 1` for its own
   `turnIndex`, continuing that turn's sequence with no gap. Early-return failures

@@ -93,7 +93,6 @@ impl ConversationStore {
         sources_json: &str,
         phase: &str,
         error_message: Option<&str>,
-        seeded_result_count: Option<i64>,
         now_ms: i64,
     ) -> Result<()> {
         // Round-trip the parsed blocks as opaque JSON text (the store does NO
@@ -134,8 +133,8 @@ impl ConversationStore {
         sqlx::query(
             "INSERT INTO conversation_turns \
                 (conversation_row_id, turn_index, question, answer, reasoning, blocks, tool_activities, sources, \
-                 phase, error_message, seeded_result_count, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12) \
+                 phase, error_message, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11) \
              ON CONFLICT(conversation_row_id, turn_index) DO UPDATE SET \
                 question = excluded.question, \
                 answer = excluded.answer, \
@@ -145,7 +144,6 @@ impl ConversationStore {
                 sources = excluded.sources, \
                 phase = excluded.phase, \
                 error_message = excluded.error_message, \
-                seeded_result_count = excluded.seeded_result_count, \
                 updated_at_ms = excluded.updated_at_ms \
              WHERE conversation_turns.phase NOT IN ('done', 'error')",
         )
@@ -159,7 +157,6 @@ impl ConversationStore {
         .bind(sources_json)
         .bind(phase)
         .bind(error_message)
-        .bind(seeded_result_count)
         .bind(now_ms)
         .execute(&mut *tx)
         .await?;
@@ -347,7 +344,7 @@ impl ConversationStore {
     async fn list_turns(&self, conversation_row_id: i64) -> Result<Vec<ConversationTurn>> {
         let rows = sqlx::query(
             "SELECT turn_index, question, answer, reasoning, blocks, tool_activities, sources, phase, \
-                    error_message, seeded_result_count, created_at_ms, updated_at_ms \
+                    error_message, created_at_ms, updated_at_ms \
              FROM conversation_turns \
              WHERE conversation_row_id = ?1 \
              ORDER BY turn_index ASC",
@@ -501,7 +498,6 @@ fn map_turn(row: SqliteRow) -> ConversationTurn {
         sources: parse_json(&sources),
         phase: row.get("phase"),
         error_message: row.get("error_message"),
-        seeded_result_count: row.get("seeded_result_count"),
         created_at_ms: row.get("created_at_ms"),
         updated_at_ms: row.get("updated_at_ms"),
     }
@@ -614,7 +610,6 @@ mod tests {
                     "[{\"id\":1}]",
                     "done",
                     None,
-                    Some(3),
                     1_000,
                 )
                 .await
@@ -632,7 +627,6 @@ mod tests {
                     "[]",
                     "[]",
                     "done",
-                    None,
                     None,
                     2_000,
                 )
@@ -659,7 +653,6 @@ mod tests {
                 conversation.turns[0].sources,
                 serde_json::json!([{ "id": 1 }])
             );
-            assert_eq!(conversation.turns[0].seeded_result_count, Some(3));
             // Reasoning round-trips: `Some(...)` is preserved, `None` stays `None`.
             assert_eq!(
                 conversation.turns[0].reasoning.as_deref(),
@@ -701,7 +694,6 @@ mod tests {
                     "[]",
                     "done",
                     None,
-                    None,
                     1_000,
                 )
                 .await
@@ -726,7 +718,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-legacy", "t", "chat", 0, "q", "an answer", None, None, "[]", "[]",
-                    "done", None, None, 1_000,
+                    "done", None, 1_000,
                 )
                 .await
                 .expect("legacy turn saves");
@@ -759,7 +751,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-empty", "t", "chat", 0, "q", "", None, Some(&[]), "[]", "[]",
-                    "streaming", None, None, 1_000,
+                    "streaming", None, 1_000,
                 )
                 .await
                 .expect("empty-blocks turn saves");
@@ -779,7 +771,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-a", "t", "chat", 0, "q", "", None, None, "[]", "[]", "streaming", None, None,
+                    "conv-a", "t", "chat", 0, "q", "", None, None, "[]", "[]", "streaming", None,
                     1_000,
                 )
                 .await
@@ -797,7 +789,6 @@ mod tests {
                     "[]",
                     "[]",
                     "done",
-                    None,
                     None,
                     2_000,
                 )
@@ -831,7 +822,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-done", "t", "chat", 0, "q", "final answer", None, None, "[]", "[]",
-                    "done", None, None, 1_000,
+                    "done", None, 1_000,
                 )
                 .await
                 .expect("initial done turn");
@@ -840,7 +831,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-done", "t", "chat", 0, "q", "LATE overwrite", None, None, "[]", "[]",
-                    "streaming", None, None, 2_000,
+                    "streaming", None, 2_000,
                 )
                 .await
                 .expect("late write returns Ok (no-op, not an error)");
@@ -861,14 +852,14 @@ mod tests {
             store
                 .save_turn(
                     "conv-error", "t", "chat", 0, "q", "", None, None, "[]", "[]", "error",
-                    Some("boom"), None, 1_000,
+                    Some("boom"), 1_000,
                 )
                 .await
                 .expect("initial error turn");
             store
                 .save_turn(
                     "conv-error", "t", "chat", 0, "q", "RECOVERED", None, None, "[]", "[]", "done",
-                    None, None, 2_000,
+                    None, 2_000,
                 )
                 .await
                 .expect("late write returns Ok (no-op)");
@@ -889,14 +880,14 @@ mod tests {
             store
                 .save_turn(
                     "conv-live", "t", "chat", 0, "q", "partial", None, None, "[]", "[]", "streaming",
-                    None, None, 1_000,
+                    None, 1_000,
                 )
                 .await
                 .expect("initial streaming turn");
             store
                 .save_turn(
                     "conv-live", "t", "chat", 0, "q", "final answer", None, None, "[]", "[]", "done",
-                    None, None, 2_000,
+                    None, 2_000,
                 )
                 .await
                 .expect("finalize streaming turn");
@@ -920,15 +911,15 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "older", "Older", "chat", 0, "old question", "", None, None, "[]", "[]", "done", None,
-                    None, 1_000,
+                    "older", "Older", "chat", 0, "old question", "", None, None, "[]", "[]",
+                    "done", None, 1_000,
                 )
                 .await
                 .expect("older saves");
             store
                 .save_turn(
-                    "newer", "Newer", "chat", 0, "new question", "", None, None, "[]", "[]", "done", None,
-                    None, 5_000,
+                    "newer", "Newer", "chat", 0, "new question", "", None, None, "[]", "[]",
+                    "done", None, 5_000,
                 )
                 .await
                 .expect("newer saves");
@@ -960,7 +951,6 @@ mod tests {
                     "[]",
                     "done",
                     None,
-                    None,
                     1_000,
                 )
                 .await
@@ -968,7 +958,7 @@ mod tests {
             store
                 .save_turn(
                     "c2", "Cooking", "chat", 0, "pasta recipe", "boil water", None, None, "[]", "[]",
-                    "done", None, None, 2_000,
+                    "done", None, 2_000,
                 )
                 .await
                 .expect("c2 saves");
@@ -1000,14 +990,14 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "alpha one", "", None, None, "[]", "[]", "done", None, None,
+                    "c1", "t", "chat", 0, "alpha one", "", None, None, "[]", "[]", "done", None,
                     1_000,
                 )
                 .await
                 .expect("turn 0");
             store
                 .save_turn(
-                    "c1", "t", "chat", 1, "alpha two", "", None, None, "[]", "[]", "done", None, None,
+                    "c1", "t", "chat", 1, "alpha two", "", None, None, "[]", "[]", "done", None,
                     2_000,
                 )
                 .await
@@ -1024,7 +1014,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "c1", "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
+                    "c1", "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, 1_000,
                 )
                 .await
                 .expect("saves");
@@ -1044,7 +1034,7 @@ mod tests {
             for id in ["a", "b", "c"] {
                 store
                     .save_turn(
-                        id, "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, None, 1_000,
+                        id, "t", "chat", 0, "q", "", None, None, "[]", "[]", "done", None, 1_000,
                     )
                     .await
                     .expect("saves");
@@ -1096,7 +1086,7 @@ mod tests {
             // A turn saved AFTER pinning must not clobber the pin.
             store
                 .save_turn(
-                    "conv-pin", "Pinned", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
+                    "conv-pin", "Pinned", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None,
                     2_000,
                 )
                 .await
@@ -1170,7 +1160,6 @@ mod tests {
                     "[]",
                     "done",
                     None,
-                    None,
                     1_000,
                 )
                 .await
@@ -1209,7 +1198,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-fb", "", "chat", 0, "what changed?", "a lot", None, None, "[]", "[]", "done",
-                    None, None, 1_000,
+                    None, 1_000,
                 )
                 .await
                 .expect("turn saves");
@@ -1234,7 +1223,7 @@ mod tests {
             store
                 .save_turn(
                     "conv-r", "first question", "chat", 0, "first question", "a", None, None,
-                    "[]", "[]", "done", None, None, 1_000,
+                    "[]", "[]", "done", None, 1_000,
                 )
                 .await
                 .expect("turn saves");
@@ -1261,7 +1250,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "conv-o", "q", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
+                    "conv-o", "q", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None,
                     1_000,
                 )
                 .await
@@ -1302,14 +1291,14 @@ mod tests {
             store
                 .save_turn(
                     "c1", "", "chat", 0, "question one", "answer", None, None, "[]", "[]", "done",
-                    None, None, 1_000,
+                    None, 1_000,
                 )
                 .await
                 .expect("c1 saves");
             store
                 .save_turn(
                     "c2", "", "chat", 0, "question two", "answer", None, None, "[]", "[]", "done",
-                    None, None, 2_000,
+                    None, 2_000,
                 )
                 .await
                 .expect("c2 saves");
@@ -1344,7 +1333,7 @@ mod tests {
             let store = test_store().await;
             store
                 .save_turn(
-                    "plain", "Plain", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None, None,
+                    "plain", "Plain", "chat", 0, "q", "a", None, None, "[]", "[]", "done", None,
                     1_000,
                 )
                 .await

@@ -38,7 +38,6 @@ export interface ConversationTurn {
   /** `"streaming"` | `"done"` | `"error"`. */
   phase: string;
   errorMessage: string | null;
-  seededResultCount: number | null;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -124,7 +123,7 @@ export interface ToolActivityEntry {
 export interface TurnView {
   turnIndex: number;
   question: string;
-  /** `"seeding" | "thinking" | "streaming" | "done" | "error"`. */
+  /** `"thinking" | "streaming" | "done" | "error"`. */
   phase: string;
   blocks: AnswerBlock[];
   reasoning: string | null;
@@ -132,7 +131,6 @@ export interface TurnView {
   liveActivity: ToolActivityEntry | null;
   sources: unknown;
   errorMessage: string | null;
-  seededResultCount: number | null;
   /** Tokens occupying the model's context window after the turn's latest
    *  completion request, or null when the provider reported no usage. */
   contextTokens: number | null;
