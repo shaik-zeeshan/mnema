@@ -172,6 +172,33 @@ const RESOURCE_ID_PREDECESSORS: &[&str] = &[
     "id",
 ];
 
+/// Which revision of the redaction rules below produced a stored guarded URL.
+///
+/// The broker recomputes the guard on every read, but `search_documents.url`
+/// stores a copy made ONCE at projection time so the URL refinement can filter
+/// on it. That equality — "the filter can only ever match text the boundary
+/// would also emit" — is the whole security argument for indexing the column at
+/// all (ADR 0038's 2026-07-26 amendment). It holds only while the two copies
+/// were made by the SAME rules.
+///
+/// So: **whenever the redaction rules in this module get stricter, bump this
+/// constant and add a migration that re-claims the now-stale rows**:
+///
+/// ```sql
+/// -- Re-guard rows written under an older rule revision. NULL is the
+/// -- "not yet projected" sentinel; the startup backfill re-derives them and
+/// -- stamps the new version.
+/// UPDATE search_documents SET url = NULL
+///  WHERE url_guard_version < <new value> AND COALESCE(url, '') <> '';
+/// ```
+///
+/// Skipping that step leaves old rows filterable at the OLD, looser redaction
+/// while the emit path applies the new one — a filter that matches text the
+/// display refuses to show, which is precisely the oracle ADR 0038 forbids.
+/// `url_guard_rules_changed_without_a_version_bump` in this module's tests
+/// fails when the rules move and this constant does not.
+pub const URL_GUARD_VERSION: i64 = 1;
+
 /// Read-time guard: raw captured URL -> `Option<guarded host+path>`.
 ///
 /// Returns `None` when there is no broker-safe text to emit (non-`http(s)`,
@@ -890,6 +917,7 @@ fn is_all_hex(segment: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     fn guard(raw: &str) -> Option<String> {
@@ -1709,6 +1737,68 @@ mod tests {
         assert!(!out.contains("user:"), "username must not leak: {out}");
         assert_eq!(out, "https://internal.example.com/dash?v=1");
     }
+    /// Golden pins for the guard's observable output, one per redaction pass.
+    ///
+    /// `search_documents.url` stores a copy of this output made ONCE at
+    /// projection time, while the broker recomputes it on every read. The URL
+    /// refinement is only safe because those two agree — a stored copy guarded
+    /// by LOOSER rules than the emit path is filterable text the display would
+    /// refuse to show, the oracle ADR 0038 forbids.
+    ///
+    /// So if you changed the rules and landed here: bump `URL_GUARD_VERSION` and
+    /// add a migration re-claiming the stale rows —
+    /// `UPDATE search_documents SET url = NULL WHERE url_guard_version < <new>
+    ///  AND COALESCE(url, '') <> ''` — then update these pins. Loosening a rule
+    /// needs no bump (already-stored text stays within the new policy), but it
+    /// does need the pins updated.
+    #[test]
+    fn url_guard_rules_changed_without_a_version_bump() {
+        let pins: &[(&str, Option<&str>)] = &[
+            // Query + fragment are always stripped.
+            (
+                "https://mail.example.com/inbox?token=leakme#top",
+                Some("mail.example.com/inbox"),
+            ),
+            // Known-shape pass.
+            (
+                "https://example.com/p/ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                Some("example.com/p/[REDACTED_SECRET: ACCESS_TOKEN]"),
+            ),
+            // Positional-arming pass: `reset` arms the segment after it.
+            (
+                "https://site.com/reset/abcdefghijklmnop",
+                Some("site.com/reset/[REDACTED_SECRET: ACCESS_TOKEN]"),
+            ),
+            // High-entropy backstop, no armed predecessor.
+            (
+                "https://site.com/s/aB3dE6gH9jK2mN5p",
+                Some("site.com/s/[REDACTED_SECRET: ACCESS_TOKEN]"),
+            ),
+            // Preserved shapes: hyphen-word slug and a public-id hex/UUID.
+            (
+                "https://blog.example.com/getting-started-with-rust",
+                Some("blog.example.com/getting-started-with-rust"),
+            ),
+            (
+                "https://github.com/o/r/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f",
+                Some("github.com/o/r/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
+            ),
+            // Port is kept; non-http(s) has no broker-safe form at all.
+            ("https://localhost:8443/app", Some("localhost:8443/app")),
+            ("file:///Users/me/private/notes.html", None),
+        ];
+
+        for (raw, expected) in pins {
+            assert_eq!(
+                guard_url(raw).as_deref(),
+                *expected,
+                "guard output moved for {raw} — if the rules got STRICTER, bump \
+                 URL_GUARD_VERSION (currently {URL_GUARD_VERSION}) and add the \
+                 re-claim migration before updating this pin"
+            );
+        }
+    }
+
 }
 
 #[cfg(test)]

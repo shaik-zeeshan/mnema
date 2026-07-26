@@ -27,6 +27,7 @@ mod url_guard;
 
 pub use url_guard::{
     guard_url, ip_is_disallowed_fetch_target, is_disallowed_fetch_url, secret_scrubbed_fetch_target,
+    URL_GUARD_VERSION,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
