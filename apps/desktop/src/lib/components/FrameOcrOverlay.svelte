@@ -6,7 +6,7 @@
   // status pill. Visuals mirror the Timeline's overlay and the mockup, keyed
   // off the global `--app-ocr-*` tokens.
 
-  import type { OcrStatus } from "$lib/frame-ocr";
+  import { MAX_OCR_BOXES, type OcrStatus } from "$lib/frame-ocr";
   import type { OcrObservation } from "$lib/types/app-infra";
 
   type Rect = { left: number; top: number; width: number; height: number };
@@ -31,11 +31,13 @@
     status === "success" && observations.length > 0 && (rect.width <= 0 || rect.height <= 0),
   );
 
-  // Only the hovered box renders its text chip. A chip in every box put each
-  // one on its own composited layer — on a dense frame that is ~1500 layers
-  // of graphics memory to show the one chip the CSS actually reveals. The
-  // `:hover` CSS gate stays, so a stale index just leaves an invisible chip
-  // rather than flashing on the wrong box. Mirrors the Timeline overlay.
+  // Only the hovered box renders its text chip. A chip in every box is layout
+  // + paint cost (not compositing — measured 0 composited layers either way):
+  // at 1500 boxes it more than doubles the overlay build and drops the frame
+  // rate to a 61-112ms median while the pointer sweeps it. See the matching
+  // comment in routes/+page.svelte for the numbers. The `:hover` CSS gate
+  // stays, so a stale index just leaves an invisible chip rather than
+  // flashing on the wrong box. Mirrors the Timeline overlay.
   let hoveredIndex = $state<number | null>(null);
 
   // Bare `Event` so the same handler serves both `mouseover` and `focusin`.
@@ -45,12 +47,11 @@
     hoveredIndex = index == null ? null : Number(index);
   }
 
-  // ponytail: runaway guard, not a routine limit — above the real 1000-2000
-  // range for dense frames. Truncation is positionally arbitrary (provider
-  // reading order), so it must not fire in normal use. Mirrors the Timeline.
-  const MAX_BOXES = 2000;
+  // Cap + count label live in this file's module script (shared with the
+  // Timeline overlay and both count chips) so a capped overlay and the number
+  // beside it can never disagree.
   const rendered = $derived(
-    observations.length > MAX_BOXES ? observations.slice(0, MAX_BOXES) : observations,
+    observations.length > MAX_OCR_BOXES ? observations.slice(0, MAX_OCR_BOXES) : observations,
   );
 </script>
 

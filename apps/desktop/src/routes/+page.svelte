@@ -35,6 +35,8 @@
     loadOcrForFrame,
     loadOcrFromJob,
     ocrBoxStyle,
+    ocrCountLabel,
+    MAX_OCR_BOXES,
     type OcrLoadResult,
     type OcrStatus,
   } from "$lib/frame-ocr";
@@ -5798,9 +5800,16 @@
   // box renders its text chip.
   //
   // A full-screen OCR of a code editor or browser yields 1000-2000
-  // observations, and rendering a chip inside every box put each one on its
-  // own composited layer: ~1500 layers / ~1.3GB of graphics memory in the
-  // WebContent process, held for as long as the dashboard sat on a frame.
+  // observations, and a chip inside every box is layout + paint cost, not
+  // compositing. Measured in WebKit (Playwright webkit-2336, 1500 boxes,
+  // this exact CSS): chip-in-every-box takes 109-140ms to build and lay out
+  // the overlay and holds a 61-112ms median frame while the pointer sweeps
+  // it (200ms+ spikes); hover-only builds in 46-50ms and holds vsync (17ms
+  // median). The inspector LayerTree domain reports *zero* composited layers
+  // for the overlay in both shapes — `opacity: 0` plus an idle transition
+  // does not promote; only `will-change` does, and 2942 real chip-sized
+  // layers measure 16MB, so per-chip layers could never cost ~1GB.
+  //
   // Only one chip is ever *visible* (the CSS reveals on `:hover`), so only
   // one needs to exist. The `:hover` CSS gate is deliberately left in place
   // alongside this: if the index goes stale (frame swap under a parked
@@ -5818,17 +5827,13 @@
     hoveredOcrIndex = index == null ? null : Number(index);
   }
 
-  // ponytail: runaway guard, not a routine limit. Dense frames run 1000-2000
-  // observations, so this sits above the real range on purpose — the layer
-  // cost was the per-box chip (now hover-only), not the boxes themselves.
-  // Truncation here is positionally arbitrary: observations arrive in the
-  // provider's reading order, so slicing drops a scattered set of boxes
-  // rather than an edge, which reads as "OCR missed that line". Copy-all and
-  // the region count in the OCR button both still use the full list.
-  const OCR_OVERLAY_MAX_BOXES = 2000;
+  // Cap + count label are shared with the modal overlay (see $lib/frame-ocr).
+  // Copy-all still uses the FULL list — only the drawn boxes are capped — but
+  // the region count next to the button goes through `ocrCountLabel`, so a
+  // capped overlay reports `2000+` instead of a number of boxes it never drew.
   const ocrRenderedObservations = $derived(
-    ocrObservations.length > OCR_OVERLAY_MAX_BOXES
-      ? ocrObservations.slice(0, OCR_OVERLAY_MAX_BOXES)
+    ocrObservations.length > MAX_OCR_BOXES
+      ? ocrObservations.slice(0, MAX_OCR_BOXES)
       : ocrObservations,
   );
 
@@ -6188,7 +6193,7 @@
       (ocrVisible
         ? "Hide OCR data for the active frame"
         : ocrStatus === "success"
-          ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
+          ? `${ocrCountLabel(ocrObservations.length)} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
           : ocrStatus === "empty"
             ? ocrUsingEarlierFrame
               ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
@@ -6675,7 +6680,7 @@
         <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
         <span>{ocrButtonLabel}</span>
         {#if ocrStatus === "success" && ocrObservations.length > 0}
-          <span class="timeline__ocr-count">{ocrObservations.length}</span>
+          <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
         {/if}
       </button>
       <button
