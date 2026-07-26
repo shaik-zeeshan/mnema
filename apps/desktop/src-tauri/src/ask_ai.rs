@@ -320,9 +320,6 @@ const ASK_AI_UPDATE_EVENT: &str = "ask_ai_update";
 const ASK_AI_SOURCE_FRAME_CAP: usize = 6;
 const ASK_AI_SOURCE_AUDIO_CAP: usize = 4;
 
-/// Number of seeded broker-search results requested.
-const ASK_AI_SEED_LIMIT: u32 = 8;
-
 /// Persist-throttle thresholds for the streaming partial answer. The accumulating
 /// answer is re-persisted to the turn row (phase `streaming`) once either many
 /// deltas or many new chars have accrued since the last persist, so a reattach
@@ -877,7 +874,6 @@ async fn handle_reference_captures(
 pub struct AskAiStartRequest {
     conversation_id: String,
     question: String,
-    seed_query: Option<String>,
     /// The door that created/owns the conversation: `"quick_recall"` | `"chat"`.
     /// Stamped on the turn row only when the conversation is newly created (the
     /// store preserves an existing row's origin). Optional for wire back-compat;
@@ -930,68 +926,10 @@ pub struct AskAiAvailability {
     reason: Option<String>,
 }
 
-/// Build a single seed-context line for one broker search result.
-///
-/// The line surfaces the result's `opaqueId` the same way a tool-call `search`
-/// result exposes it to the model. Without it, a model answering purely from
-/// seeded context — never calling `search` — would have no id to hand to
-/// `reference_captures`, so the answer would render zero Answer Source cards. The
-/// ids minted by the broker seed search are HMAC-signed identically to tool-call
-/// search ids, so a nominated seed id validates through the same
-/// `reference_captures` resolver.
-fn format_seed_result_line(
-    index: usize,
-    result: &BrokerSearchResult,
-    offset_minutes: Option<i32>,
-) -> String {
-    let app_label = result
-        .context
-        .as_ref()
-        .and_then(|context| {
-            context
-                .app_name
-                .clone()
-                .or_else(|| context.app_bundle_id.clone())
-        })
-        .unwrap_or_else(|| "unknown app".to_string());
-
-    let window_segment = result
-        .context
-        .as_ref()
-        .and_then(|context| context.window_title.as_ref())
-        .map(|title| format!(" · \"{title}\""))
-        .unwrap_or_default();
-
-    let time_range = match offset_minutes {
-        Some(offset) => {
-            let start_local = utc_rfc3339_to_local_display(&result.started_at, offset);
-            let end_local = utc_rfc3339_to_local_display(&result.ended_at, offset);
-            match (start_local, end_local) {
-                (Some(s), Some(e)) => {
-                    format!("{}–{} ({}–{} local)", result.started_at, result.ended_at, s, e)
-                }
-                _ => format!("{}–{}", result.started_at, result.ended_at),
-            }
-        }
-        None => format!("{}–{}", result.started_at, result.ended_at),
-    };
-
-    format!(
-        "{}. [{} · {}{} · {} · opaqueId={}] {}",
-        index + 1,
-        result.kind,
-        app_label,
-        window_segment,
-        time_range,
-        result.opaque_id,
-        result.snippet
-    )
-}
-
 /// The agent **preamble** (system instruction): documents the four data tools +
 /// the presentation `reference_captures` tool and the optional graphical-answer
-/// affordance. This is the engine-agnostic system text; the per-turn seeded
-/// context + the bare question live in the prompt (see [`build_ask_ai_prompt`]).
+/// affordance. This is the engine-agnostic system text; the per-turn temporal
+/// grounding + the bare question live in the prompt (see [`build_ask_ai_prompt`]).
 ///
 /// `mcp_notes` are the per-turn MCP-connector notes (the non-silent 32-cap trim
 /// lines from [`mcp::McpManager::tools_for_turn`]); when non-empty they are
@@ -1012,9 +950,9 @@ and recent activities relevant to the question — redacted, capped, never the w
 never sensitive-category conclusions — and is the best first tool for questions about the user's \
 habits, interests, projects, or what you know about them; it also accepts an optional `from`/`to` \
 UTC time window that scopes the returned ACTIVITIES by date (conclusions are standing beliefs and \
-are never time-scoped), so pass it when the question is about a specific day or period. When the \
-seeded context below is missing or insufficient to answer, ISSUE follow-up tool calls to gather \
-what you need before answering — prefer a concise `search` first, and use `show_text` sparingly \
+are never time-scoped), so pass it when the question is about a specific day or period. You start \
+each turn with NO capture context, so ISSUE tool calls to gather what you need before answering \
+— prefer a concise `search` first, and use `show_text` sparingly \
 for the specific results you need to read in full. Cite times and apps when useful, but never \
 invent details. When the captured text you cite already contains a URL, render it as a labeled \
 Markdown link `[label](url)` rather than bare text so the user can open it. If you still cannot \
@@ -1124,39 +1062,17 @@ such tools are present, the user has configured no connectors — do not mention
     preamble
 }
 
-/// Assemble the per-turn **prompt**: the seeded capture context (if any) followed
-/// by the bare question. The system instruction lives in the preamble (see
-/// [`build_ask_ai_preamble`]); conversation history is fed separately to the
-/// agent loop, so it is NOT in the prompt.
-fn build_ask_ai_prompt(
-    question: &str,
-    seed_query: Option<&str>,
-    results: &[BrokerSearchResult],
-    now_ms: i64,
-    clock: &ClientClock,
-) -> String {
+/// Assemble the per-turn **prompt**: the temporal grounding followed by the bare
+/// question. The model gathers all capture context itself through tool calls. The
+/// system instruction lives in the preamble (see [`build_ask_ai_preamble`]);
+/// conversation history is fed separately to the agent loop, so it is NOT in the
+/// prompt.
+fn build_ask_ai_prompt(question: &str, now_ms: i64, clock: &ClientClock) -> String {
     let mut prompt = String::new();
 
     // Temporal grounding leads the prompt so the model anchors relative dates and
     // knows the local↔UTC relationship before reading any captures.
     prompt.push_str(&build_temporal_grounding(now_ms, clock));
-
-    if let Some(seed_query) = seed_query {
-        if !results.is_empty() {
-            prompt.push_str(&format!(
-                "Context from the user's captures for \"{seed_query}\":\n"
-            ));
-            for (index, result) in results.iter().enumerate() {
-                prompt.push_str(&format_seed_result_line(
-                    index,
-                    result,
-                    clock.utc_offset_minutes,
-                ));
-                prompt.push('\n');
-            }
-            prompt.push('\n');
-        }
-    }
 
     prompt.push_str(&format!("Question: {question}"));
     prompt
@@ -1174,7 +1090,8 @@ fn search_tool_schema() -> serde_json::Value {
             "to": { "type": "string", "description": "Inclusive upper time bound, RFC3339." },
             "limit": { "type": "number", "description": "Maximum number of snippets to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
-            "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." }
+            "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." },
+            "cursor": { "type": "string", "description": "The `nextCursor` from a previous search result, to fetch the next page. Re-send the identical query and filters alongside it; a result with no `nextCursor` is the end of the matches." }
         },
         "required": ["query"]
     })
@@ -1430,7 +1347,6 @@ async fn persist_turn(
     sources: &[serde_json::Value],
     phase: &str,
     error_message: Option<&str>,
-    seeded_result_count: Option<i64>,
 ) -> bool {
     let tool_activities_json = serde_json::to_string(tool_activities).unwrap_or_else(|_| "[]".into());
     let sources_json = serde_json::to_string(sources).unwrap_or_else(|_| "[]".into());
@@ -1449,7 +1365,6 @@ async fn persist_turn(
             &sources_json,
             phase,
             error_message,
-            seeded_result_count,
             now_ms(),
         )
         .await
@@ -1591,8 +1506,7 @@ async fn generate_conversation_title(
 ///
 /// Loads the conversation's completed history + engine pin from the store,
 /// resolves the engine through the single precedence chain (ADR 0034: thread pin
-/// → Ask AI model override → global default model), seeds best-effort via broker
-/// search, persists a
+/// → Ask AI model override → global default model), persists a
 /// `streaming` turn row, then runs ONE `ai_engine::run_agent_loop` against the
 /// configured engine. The model's text streams as versioned `ask_ai_update`
 /// view updates (and is periodically persisted as a partial for reattach); tool
@@ -1608,7 +1522,6 @@ async fn run_ask_ai_turn(
     app_handle: tauri::AppHandle,
     conversation_id: String,
     question: String,
-    seed_query: Option<String>,
     origin: String,
     title: String,
     clock: ClientClock,
@@ -1714,41 +1627,10 @@ async fn run_ask_ai_turn(
         }
     };
 
-    // 3. Best-effort seeding via the broker search path (start only; follow-ups
-    //    pass `seed_query: None`). A broker error/empty result proceeds unseeded.
-    let seed_query = seed_query
-        .map(|query| query.trim().to_string())
-        .filter(|query| !query.is_empty());
-    // The live seeding progress is no longer streamed: the seeded result count is
-    // carried by the registered LiveTurn view (and the persisted row) once seeding
-    // finishes, which is what the snapshot/update stream surfaces. The frontend
-    // only listens to `ask_ai_update`, so a transient seeding status would be
-    // unobserved.
-    let mut seed_results: Vec<BrokerSearchResult> = Vec::new();
-    if let Some(seed_query) = seed_query.as_deref() {
-        let search_request = BrokerSearchRequest {
-            query: seed_query.to_string(),
-            from: None,
-            to: None,
-            limit: Some(ASK_AI_SEED_LIMIT),
-            app: None,
-            window_title: None,
-        };
-        if let Ok(BrokeredCaptureResponse::Search(response)) = execute_ask_ai_broker_request(
-            app_handle.clone(),
-            BrokeredCaptureRequest::Search(search_request),
-        )
-        .await
-        {
-            seed_results = response.results;
-        }
-    }
-    let seeded_result_count = Some(seed_results.len() as i64);
-
-    // A cancel arriving during seeding short-circuits before any model call. No
-    // LiveTurn is registered yet (that happens at step 4), so emit a direct
-    // terminal `ask_ai_update` Done — version 1, this turn's index — so any
-    // already-attached frontend view for this turn settles instead of hanging.
+    // 3. A cancel arriving before the model call short-circuits here. No LiveTurn
+    //    is registered yet (that happens at step 4), so emit a direct terminal
+    //    `ask_ai_update` Done — version 1, this turn's index — so any
+    //    already-attached frontend view for this turn settles instead of hanging.
     if cancel.load(Ordering::SeqCst) {
         let _ = app_handle.emit(
             ASK_AI_UPDATE_EVENT,
@@ -1764,7 +1646,7 @@ async fn run_ask_ai_turn(
     }
 
     // 4. Persist the turn row immediately (empty `streaming` answer) so a reattach
-    //    can read the in-flight partial. Seeded count is carried from the start.
+    //    can read the in-flight partial.
     //    The FIRST successful persist is when the conversation row exists, so it
     //    announces `conversation_changed` once — a brand-new chat appears in the
     //    history list while still streaming. The flag guards against re-announcing
@@ -1785,7 +1667,6 @@ async fn run_ask_ai_turn(
         &[],
         "streaming",
         None,
-        seeded_result_count,
     )
     .await
     {
@@ -1794,7 +1675,7 @@ async fn run_ask_ai_turn(
     }
 
     // Register the in-memory LiveTurn alongside the initial streaming row, at the
-    // point both `turn_index` and the seeded count are known. This view is what
+    // point `turn_index` is known. This view is what
     // `ask_ai_snapshot` returns to a (re)attaching frontend, and what the live
     // update stream mutates. The registered view already carries phase "thinking",
     // so an initial Phase emit is unnecessary — the snapshot covers a fresh attach.
@@ -1811,23 +1692,15 @@ async fn run_ask_ai_turn(
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
-            seeded_result_count,
             context_tokens: None,
         },
     );
 
-    // 5. Search results (and seed results) are recorded by opaque id so a later
-    //    `reference_captures` call can attach metadata and prove the model only
-    //    references ids it actually received.
+    // 5. Search results are recorded by opaque id so a later `reference_captures`
+    //    call can attach metadata and prove the model only references ids it
+    //    actually received.
     let search_metadata: Arc<Mutex<HashMap<String, BrokerSearchResult>>> =
         Arc::new(Mutex::new(HashMap::new()));
-    if !seed_results.is_empty() {
-        if let Ok(mut map) = search_metadata.lock() {
-            for result in &seed_results {
-                map.insert(result.opaque_id.clone(), result.clone());
-            }
-        }
-    }
 
     // Shared persistence buffers the executor appends to (tool-activity entries +
     // nominated Answer Sources) and the on_event closure reads when persisting.
@@ -1938,13 +1811,7 @@ async fn run_ask_ai_turn(
     let tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
     let preamble = build_ask_ai_preamble(&mcp_notes);
-    let prompt = build_ask_ai_prompt(
-        &question,
-        seed_query.as_deref(),
-        &seed_results,
-        now_ms(),
-        &clock,
-    );
+    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock);
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2101,7 +1968,6 @@ async fn run_ask_ai_turn(
                             &sources_snapshot,
                             "streaming",
                             None,
-                            seeded_result_count,
                         )
                         .await;
                         // Announce only the FIRST successful persist of the turn
@@ -2332,7 +2198,6 @@ async fn run_ask_ai_turn(
                 &final_sources,
                 "error",
                 Some(&message),
-                seeded_result_count,
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2355,7 +2220,6 @@ async fn run_ask_ai_turn(
                 &final_sources,
                 "done",
                 None,
-                seeded_result_count,
             )
             .await;
             // Terminal persist updated the row (answer/updated-at), so the
@@ -2398,7 +2262,6 @@ async fn run_ask_ai_turn(
                 &final_sources,
                 "error",
                 Some(&message),
-                seeded_result_count,
             )
             .await;
             let _ = app_handle.emit(CONVERSATION_CHANGED_EVENT, ());
@@ -2428,7 +2291,6 @@ pub async fn ask_ai_start(
     let AskAiStartRequest {
         conversation_id,
         question,
-        seed_query,
         origin,
         title,
         prior_transcript: _,
@@ -2464,7 +2326,6 @@ pub async fn ask_ai_start(
         app_handle,
         conversation_id,
         question,
-        seed_query,
         origin,
         title,
         clock,
@@ -2476,8 +2337,8 @@ pub async fn ask_ai_start(
 
 /// Run a follow-up question as another stateless turn on an existing thread.
 ///
-/// `conversationId` identifies the whole thread. Unlike start there is NO seeding
-/// and NO `seedQuery`: the prior turns' completed history is reloaded from the
+/// `conversationId` identifies the whole thread: the prior turns' completed
+/// history is reloaded from the
 /// store by [`run_ask_ai_turn`] and fed to the agent loop as conversation
 /// history. A follow-up always works — there is no resident session to be "no
 /// longer active".
@@ -2516,7 +2377,6 @@ pub async fn ask_ai_followup(
         app_handle,
         conversation_id,
         question,
-        None,
         ASK_AI_DEFAULT_ORIGIN.to_string(),
         String::new(),
         clock,
@@ -2739,35 +2599,12 @@ mod tests {
     }
 
     #[test]
-    fn prompt_unseeded_is_grounding_then_question() {
-        let prompt = build_ask_ai_prompt("What did I do?", None, &[], 0, &ClientClock::default());
-        assert!(!prompt.contains("Context from the user's captures"));
-        // The temporal grounding leads; the bare question trails.
+    fn prompt_is_grounding_then_question() {
+        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default());
+        // The temporal grounding leads; the bare question trails. No capture
+        // context is ever injected — the model gathers it with tool calls.
         assert!(prompt.starts_with("Temporal grounding: "));
         assert!(prompt.ends_with("Question: What did I do?"));
-    }
-
-    #[test]
-    fn prompt_with_empty_results_omits_context_block() {
-        let prompt = build_ask_ai_prompt("Q?", Some("build"), &[], 0, &ClientClock::default());
-        assert!(!prompt.contains("Context from the user's captures"));
-        assert!(prompt.ends_with("Question: Q?"));
-    }
-
-    #[test]
-    fn prompt_seeded_includes_numbered_context() {
-        let prompt = build_ask_ai_prompt(
-            "Did the build pass?",
-            Some("build"),
-            &[sample_result()],
-            0,
-            &ClientClock::default(),
-        );
-        assert!(prompt.contains("Context from the user's captures for \"build\":"));
-        assert!(prompt.contains(
-            "1. [frame · Xcode · \"ContentView.swift\" · 2026-01-01T10:00:00Z–2026-01-01T10:01:00Z · opaqueId=op-1] build passed"
-        ));
-        assert!(prompt.ends_with("Question: Did the build pass?"));
     }
 
     #[test]
@@ -2789,41 +2626,6 @@ mod tests {
         let grounding = build_temporal_grounding(0, &ClientClock::default());
         assert!(grounding.contains("1970-01-01 00:00 UTC"));
         assert!(grounding.contains("local offset is unknown"));
-    }
-
-    #[test]
-    fn seed_line_falls_back_to_bundle_id_then_unknown() {
-        let mut result = sample_result();
-        result.context = Some(BrokerSearchResultContext {
-            app_bundle_id: Some("com.example.app".to_string()),
-            app_name: None,
-            window_title: None,
-            url: None,
-        });
-        let line = format_seed_result_line(0, &result, None);
-        assert!(line.contains("· com.example.app ·"));
-        assert!(!line.contains("\""));
-
-        result.context = None;
-        let line = format_seed_result_line(2, &result, None);
-        assert!(line.starts_with("3. [frame · unknown app ·"));
-    }
-
-    #[test]
-    fn seed_line_surfaces_opaque_id_for_nomination() {
-        // The opaque id must appear in the seed line so a model answering from
-        // seeded context alone can still nominate it to `reference_captures`.
-        let line = format_seed_result_line(0, &sample_result(), None);
-        assert!(line.contains("opaqueId=op-1"));
-    }
-
-    #[test]
-    fn seed_line_annotates_local_time_when_offset_provided() {
-        // IST = UTC+05:30 (330 min). 2026-01-01T10:00:00Z → 2026-01-01 15:30 local.
-        let line = format_seed_result_line(0, &sample_result(), Some(330));
-        assert!(line.contains("2026-01-01T10:00:00Z"));
-        assert!(line.contains("2026-01-01 15:30"));
-        assert!(line.contains("local"));
     }
 
     #[test]
@@ -3147,11 +2949,37 @@ mod tests {
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![sample_result()],
             limit: 8,
+            next_cursor: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
         assert_eq!(value["limit"], serde_json::json!(8));
         assert_eq!(value["results"][0]["opaqueId"], serde_json::json!("op-1"));
+    }
+
+    #[test]
+    fn search_tool_schema_lets_the_model_use_the_cursor_it_is_handed() {
+        // The whole `BrokerSearchResponse` is serialized straight to the model, so
+        // once the broker started minting a real `nextCursor` the Ask AI `search`
+        // tool started ADVERTISING a next page. The schema is
+        // `additionalProperties: false`, so unless it declares `cursor` the model
+        // literally cannot ask for that page — it is told the walk is unfinished
+        // and given no way to finish it. (The CLI's MCP schema in
+        // `crates/cli/src/mcp.rs` was updated for exactly this; this door was not.)
+        let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
+            results: vec![sample_result()],
+            limit: 8,
+            next_cursor: Some("v1:42:1:0".to_string()),
+        });
+        let value = broker_response_to_tool_value(response).expect("search serializes");
+        assert_eq!(value["nextCursor"], serde_json::json!("v1:42:1:0"));
+
+        let schema = search_tool_schema();
+        assert_eq!(schema["additionalProperties"], serde_json::json!(false));
+        assert!(
+            schema["properties"].get("cursor").is_some(),
+            "search tool schema must expose `cursor` so the model can page: {schema}"
+        );
     }
 
     #[test]
@@ -3168,6 +2996,7 @@ mod tests {
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![audio],
             limit: 8,
+            next_cursor: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
@@ -3210,7 +3039,7 @@ mod tests {
     }
 
     #[test]
-    fn followup_request_deserializes_camel_case_without_seed_query() {
+    fn followup_request_deserializes_camel_case() {
         let request: AskAiFollowupRequest = serde_json::from_str(
             r#"{"conversationId":"conv-1","question":"what about in Slack?"}"#,
         )
@@ -3219,7 +3048,7 @@ mod tests {
         assert_eq!(request.question, "what about in Slack?");
 
         let request: AskAiFollowupRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-2","question":"more","seedQuery":"ignored"}"#,
+            r#"{"conversationId":"conv-2","question":"more","unknownField":"ignored"}"#,
         )
         .expect("extra fields are ignored");
         assert_eq!(request.conversation_id, "conv-2");
@@ -3230,12 +3059,11 @@ mod tests {
     fn start_request_deserializes_without_optional_fields() {
         // Existing callers (no origin/title/priorTranscript) keep working.
         let request: AskAiStartRequest = serde_json::from_str(
-            r#"{"conversationId":"conv-1","question":"what did I do?","seedQuery":"build"}"#,
+            r#"{"conversationId":"conv-1","question":"what did I do?"}"#,
         )
         .expect("start request without optional fields should deserialize");
         assert_eq!(request.conversation_id, "conv-1");
         assert_eq!(request.question, "what did I do?");
-        assert_eq!(request.seed_query.as_deref(), Some("build"));
         assert!(request.origin.is_none());
         assert!(request.title.is_none());
         assert!(request.prior_transcript.is_none());
@@ -3414,7 +3242,6 @@ mod tests {
             live_activity: None,
             sources: serde_json::json!([]),
             error_message: None,
-            seeded_result_count: None,
             context_tokens: None,
         }
     }

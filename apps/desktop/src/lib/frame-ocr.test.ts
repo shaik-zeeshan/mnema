@@ -1,7 +1,22 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { ocrBoxStyle, parseOcrPayload } from "./frame-ocr";
+import { MAX_OCR_BOXES, ocrBoxStyle, ocrCountLabel, parseOcrPayload } from "./frame-ocr";
+
+describe("ocrCountLabel", () => {
+  test("an uncapped count is reported exactly", () => {
+    expect(ocrCountLabel(0)).toBe("0");
+    expect(ocrCountLabel(1)).toBe("1");
+    expect(ocrCountLabel(MAX_OCR_BOXES - 1)).toBe("1999");
+    // Exactly at the cap every box IS drawn, so the plain number is honest.
+    expect(ocrCountLabel(MAX_OCR_BOXES)).toBe("2000");
+  });
+
+  test("past the cap the count stops claiming boxes that were never drawn", () => {
+    expect(ocrCountLabel(MAX_OCR_BOXES + 1)).toBe("2000+");
+    expect(ocrCountLabel(2350)).toBe("2000+");
+  });
+});
 
 describe("parseOcrPayload", () => {
   test("valid payload → observations + provider label", () => {

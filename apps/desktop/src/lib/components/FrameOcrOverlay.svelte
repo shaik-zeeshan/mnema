@@ -6,7 +6,7 @@
   // status pill. Visuals mirror the Timeline's overlay and the mockup, keyed
   // off the global `--app-ocr-*` tokens.
 
-  import type { OcrStatus } from "$lib/frame-ocr";
+  import { MAX_OCR_BOXES, type OcrStatus } from "$lib/frame-ocr";
   import type { OcrObservation } from "$lib/types/app-infra";
 
   type Rect = { left: number; top: number; width: number; height: number };
@@ -30,6 +30,29 @@
   const unpositionable = $derived(
     status === "success" && observations.length > 0 && (rect.width <= 0 || rect.height <= 0),
   );
+
+  // Only the hovered box renders its text chip. A chip in every box is layout
+  // + paint cost (not compositing — measured 0 composited layers either way):
+  // at 1500 boxes it more than doubles the overlay build and drops the frame
+  // rate to a 61-112ms median while the pointer sweeps it. See the matching
+  // comment in routes/+page.svelte for the numbers. The `:hover` CSS gate
+  // stays, so a stale index just leaves an invisible chip rather than
+  // flashing on the wrong box. Mirrors the Timeline overlay.
+  let hoveredIndex = $state<number | null>(null);
+
+  // Bare `Event` so the same handler serves both `mouseover` and `focusin`.
+  function onOverlayPointerMove(event: Event): void {
+    const box = (event.target as HTMLElement | null)?.closest?.(".frame-ocr-box");
+    const index = box?.getAttribute("data-ocr-index");
+    hoveredIndex = index == null ? null : Number(index);
+  }
+
+  // Cap + count label live in this file's module script (shared with the
+  // Timeline overlay and both count chips) so a capped overlay and the number
+  // beside it can never disagree.
+  const rendered = $derived(
+    observations.length > MAX_OCR_BOXES ? observations.slice(0, MAX_OCR_BOXES) : observations,
+  );
 </script>
 
 <!-- OCR overlay: boxes anchored to the measured contained-image rect. Text is
@@ -38,20 +61,31 @@
      Pointer-events off on the wrapper so the overlay never blocks the image;
      boxes re-enable them. -->
 {#if positioned}
+  <!-- Pointer handlers only pick which box renders its chip; the text reaches
+       AT via each box's `aria-label`, so there is no keyboard affordance to
+       mirror. `focusin` matches the existing `:focus-within` CSS. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- svelte-ignore a11y_mouse_events_have_key_events -->
   <div
     class="frame-ocr-overlay"
     role="list"
     aria-label="Recognized on-screen text"
     style={`left: ${rect.left}px; top: ${rect.top}px; width: ${rect.width}px; height: ${rect.height}px;`}
+    onmouseover={onOverlayPointerMove}
+    onfocusin={onOverlayPointerMove}
+    onmouseleave={() => (hoveredIndex = null)}
   >
-    {#each observations as obs, i (i)}
+    {#each rendered as obs, i (i)}
       <div
         class="frame-ocr-box"
         role="listitem"
+        data-ocr-index={i}
         style={boxStyle(obs)}
         aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
       >
-        <span class="frame-ocr-text">{obs.text}</span>
+        {#if i === hoveredIndex}
+          <span class="frame-ocr-text">{obs.text}</span>
+        {/if}
       </div>
     {/each}
     <span class="frame-ocr-hint" aria-hidden="true">hover to read</span>

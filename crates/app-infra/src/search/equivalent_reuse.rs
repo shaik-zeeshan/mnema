@@ -377,7 +377,7 @@ async fn project_equivalent_reuse_document_for_frame(
     processing_result_id: Option<i64>,
     canonical_search_document_id: i64,
 ) -> Result<()> {
-    let (app_bundle_id, app_name, window_title) = frame
+    let (app_bundle_id, app_name, window_title, browser_url) = frame
         .metadata_snapshot
         .as_ref()
         .map(|metadata| {
@@ -385,12 +385,14 @@ async fn project_equivalent_reuse_document_for_frame(
                 metadata.app_bundle_id.clone(),
                 metadata.app_name.clone(),
                 metadata.window_title.clone(),
+                metadata.browser_url.clone(),
             )
         })
-        .unwrap_or((None, None, None));
+        .unwrap_or((None, None, None, None));
     let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
     let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
+    let url = browser_url.as_deref().and_then(crate::guard_browser_url);
 
     delete_equivalent_reuse_projection_for_frame(transaction, frame.id).await?;
 
@@ -411,6 +413,7 @@ async fn project_equivalent_reuse_document_for_frame(
             app_name: app_name.as_deref(),
             app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
+            url: url.as_deref(),
             group_key: &group_key,
             text_source_kind: "equivalent_reuse",
             body_text: None,

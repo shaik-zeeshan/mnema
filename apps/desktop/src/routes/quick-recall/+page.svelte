@@ -38,10 +38,7 @@
     OPTION_ID_PREFIX,
   } from "$lib/quick-recall/searchStore.svelte";
   import { PICKER_OPT_PREFIX } from "$lib/quick-recall/filterSurfaces.svelte";
-  import {
-    buildScopedSeedQuery,
-    buildScopedQuestion,
-  } from "$lib/quick-recall/filter-chips";
+  import { buildScopedQuestion } from "$lib/quick-recall/filter-chips";
   import {
     handleSearchKeydown as searchKeydown,
     handleLauncherCaptureKeydown as captureKeydown,
@@ -269,8 +266,8 @@
   // ---------------------------------------------------------------------------
   // Ask AI
   //
-  // Ask AI pivots from the current Quick Search query into a PI-driven answer
-  // seeded with redacted broker results for that same query. The in-memory
+  // Ask AI pivots from the current Quick Search query into a PI-driven answer;
+  // the model gathers its own context via brokered tool calls. The in-memory
   // thread is still ephemeral for the live launcher experience — a fresh window
   // summon recreates the component, and returning to search mode resets the
   // in-memory state below.
@@ -299,7 +296,7 @@
   // `TurnSnapshot`, `TurnUpdate`, `AskAiUpdateEvent`, `AskAiSource`) are imported
   // from `$lib/insights/conversation`.
 
-  type AskAiPhase = "seeding" | "thinking" | "streaming" | "done" | "error";
+  type AskAiPhase = "thinking" | "streaming" | "done" | "error";
 
   let mode = $state<"search" | "ask">("search");
 
@@ -307,8 +304,8 @@
   // treated as unavailable so we never render a dead button that errors.
   let askAvailability = $state<AskAiAvailability | null>(null);
 
-  // The editable input used when Ask AI is opened with no seed query (turn 1).
-  // `askSubmitted` flips true once the FIRST turn exists (seeded or typed), at
+  // The editable input used when Ask AI is opened with no carried-over question
+  // (turn 1). `askSubmitted` flips true once the FIRST turn exists, at
   // which point the transcript renders and this input is replaced by per-turn
   // question headers.
   let askInput = $state("");
@@ -322,8 +319,8 @@
   // self-contained turns. `askConversationId` is the THREAD id (one per thread,
   // one live PI session server-side), NOT a per-turn id — every stream event
   // carries it and we ignore any whose id doesn't match (stale-thread guard).
-  // Streaming events route to the LAST turn in `askTurns` (the live one). Only
-  // turn 1 is seeded (via ask_ai_start); follow-ups go raw to ask_ai_followup.
+  // Streaming events route to the LAST turn in `askTurns` (the live one). Turn 1
+  // goes through ask_ai_start; follow-ups go raw to ask_ai_followup.
   // ---------------------------------------------------------------------------
 
   // One assistant turn in the transcript. This is the backend-owned `TurnView`
@@ -356,8 +353,6 @@
     sources: AskAiSource[];
     phase: AskAiPhase;
     errorMessage: string | null;
-    // Only turn 1 ever has a seeded-result count (follow-ups aren't seeded).
-    seededResultCount: number | null;
     // Tokens occupying the model's context window after this turn's latest
     // completion request; null when the provider reported no usage. Kept to
     // mirror the Rust reducer (Chat renders it; QR just carries it).
@@ -405,12 +400,8 @@
   // Cleared whenever a fresh thread starts or the thread state is reset.
   let askStopped = $state(false);
 
-  // The seed used for the current thread's FIRST turn, so an error "Retry"
-  // can re-run the exact same question + seed pairing as a fresh thread.
-  let askLastSeed = $state<string | null>(null);
-
   // The first-turn question, kept so retryAsk can rebuild a fresh thread with
-  // the same seeded question after a turn-1 error.
+  // the same question after a turn-1 error.
   let askFirstQuestion = $state("");
 
   // Per-turn copy-confirmation timers, keyed by the turn's array index. Cleared
@@ -445,8 +436,6 @@
       return "";
     }
     switch (live.phase) {
-      case "seeding":
-        return "Searching your captures.";
       case "thinking":
         return "Thinking.";
       case "streaming":
@@ -472,7 +461,7 @@
 
   // The composer is available once the FIRST answer has completed and no turn is
   // currently streaming-or-pending. It stays VISIBLE (but disabled) while a
-  // follow-up streams. Hidden entirely while turn 1 is still seeding / streaming
+  // follow-up streams. Hidden entirely while turn 1 is still thinking / streaming
   // / errored-with-no-completed-answer.
   let askHasCompletedTurn = $derived(askTurns.some((t) => t.phase === "done"));
   // Visible once the first answer completes. A STOPPED thread stays continuable
@@ -565,12 +554,12 @@
   }
 
   // The scrollable transcript region; focused on entry so Escape (back-to-search)
-  // and scroll keys are captured even when the seeded path renders no text input.
+  // and scroll keys are captured even when the pivot path renders no text input.
   // The scroll-to-bottom effect keeps the live turn / composer in view via this.
   let askAreaEl = $state<HTMLDivElement | null>(null);
 
   // The follow-up composer (bottom-pinned, present once the first answer is
-  // done). Mirrors the unseeded askInput textarea: Enter submits, Shift+Enter
+  // done). Mirrors the askInput textarea: Enter submits, Shift+Enter
   // inserts a newline. Disabled while any turn streams (askStreaming === true).
   let followupInput = $state("");
   let followupInputEl = $state<HTMLTextAreaElement | null>(null);
@@ -647,10 +636,9 @@
     }
   }
 
-  // Build a fresh, empty turn for a new question. `seeding` for turn 1 (the seed
-  // broker search runs first); `thinking` for follow-ups (no seed phase). The
-  // backend drives the render fields via versioned `ask_ai_update` ops starting
-  // at version 0.
+  // Build a fresh, empty turn for a new question. Every turn starts `thinking`
+  // (the model gathers its own context via tool calls). The backend drives the
+  // render fields via versioned `ask_ai_update` ops starting at version 0.
   function makeAskTurn(
     turnIndex: number,
     question: string,
@@ -667,7 +655,6 @@
       sources: [],
       phase,
       errorMessage: null,
-      seededResultCount: null,
       contextTokens: null,
       summaryExpanded: false,
       copied: false,
@@ -685,14 +672,13 @@
   }
 
   // Narrow an AskTurn phase from a persisted/streamed (string) phase. The full
-  // lifecycle (seeding | thinking | streaming | done | error) round-trips now
-  // that the backend owns the render model, so all five are accepted.
+  // lifecycle (thinking | streaming | done | error) round-trips now that the
+  // backend owns the render model, so all four are accepted.
   function normalizeAskPhase(phase: string): AskAiPhase {
     return phase === "done" ||
       phase === "error" ||
       phase === "streaming" ||
-      phase === "thinking" ||
-      phase === "seeding"
+      phase === "thinking"
       ? phase
       : "done";
   }
@@ -717,7 +703,6 @@
     t.toolActivities = coerceToolActivities(turn.toolActivities);
     t.sources = coerceSources(turn.sources);
     t.errorMessage = turn.errorMessage;
-    t.seededResultCount = turn.seededResultCount;
     return t;
   }
 
@@ -784,8 +769,7 @@
       askSubmitted = true;
       // Restore the first-turn question so the turn-1 "Retry" button (which
       // re-runs the whole thread via retryAsk) isn't silently dead after a
-      // re-summon. The seed isn't persisted per turn, so retry re-runs without
-      // one (askLastSeed stays null, which startAsk handles).
+      // re-summon.
       askFirstQuestion = hydrated[0].question;
       const last = hydrated[hydrated.length - 1];
       // A persisted "streaming" last turn is still in flight server-side; the
@@ -837,7 +821,6 @@
     turn.liveActivity = view.liveActivity;
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
-    turn.seededResultCount = view.seededResultCount;
     turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
@@ -967,10 +950,10 @@
     askStreaming = turn.phase !== "done" && turn.phase !== "error";
   }
 
-  // Begin a FRESH Ask AI thread with its first (seeded) turn. `question` is what
-  // gets answered; `seedQuery` seeds the broker search (the prior Quick Search
-  // query, or null). Cancels any in-flight thread and resets the transcript.
-  async function startAsk(question: string, seedQuery: string | null): Promise<void> {
+  // Begin a FRESH Ask AI thread with its first turn. `question` is what gets
+  // answered; the model gathers its own context via tool calls. Cancels any
+  // in-flight thread and resets the transcript.
+  async function startAsk(question: string): Promise<void> {
     const trimmedQuestion = question.trim();
     if (trimmedQuestion.length === 0) {
       return;
@@ -984,22 +967,18 @@
       await cancelActiveAsk();
     }
 
-    // Normalize and record the seed so an error "Retry" reuses it exactly.
-    const normalizedSeed =
-      seedQuery && seedQuery.trim().length > 0 ? seedQuery.trim() : null;
-    askLastSeed = normalizedSeed;
     askFirstQuestion = trimmedQuestion;
 
     const conversationId = crypto.randomUUID();
     askConversationId = conversationId;
     askSubmitted = true;
-    // Fresh thread: reset the transcript to a single seeding turn. A new ask's
+    // Fresh thread: reset the transcript to a single thinking turn. A new ask's
     // outcome has not been seen yet — re-arm so it survives dismiss/blur until
     // the user lays eyes on its terminal turn (one conversation, newest wins).
     askOutcomeSeen = false;
     askStopped = false;
     clearAskCopiedTimers();
-    askTurns = [makeAskTurn(0, trimmedQuestion, "seeding")];
+    askTurns = [makeAskTurn(0, trimmedQuestion, "thinking")];
     askStreaming = true;
     // The backend OWNS persistence: ask_ai_start upserts the conversation row
     // (from title/origin) and run_ask_ai_turn persists each turn.
@@ -1010,7 +989,6 @@
         request: {
           conversationId,
           question: trimmedQuestion,
-          seedQuery: normalizedSeed,
           origin: "quick_recall",
           title,
           ...askAiClock(),
@@ -1162,34 +1140,31 @@
     filters.pickerOpen = false;
     filters.pickerIndex = 0;
 
-    // Inherit the active chip scope into the pivot. The SEED is a canonical,
-    // parser-exact operator string (re-parsed by the broker search); the
+    // Inherit the active chip scope into the pivot, in natural language: the
     // QUESTION is the residual free text with a plain-language scope suffix.
-    // With no chips these collapse to the raw trimmed query (unchanged
-    // behavior): buildScopedSeedQuery → residual === trimmedQuery's free text,
-    // and buildScopedQuestion → the residual. We fall back to `trimmedQuery`
-    // when the backend hasn't populated `residualQuery` yet (e.g. a query
-    // below the parse threshold) so the seed/question are never blank when the
-    // user typed text.
+    // With no chips this collapses to the raw trimmed query (unchanged
+    // behavior): buildScopedQuestion → the residual. We fall back to
+    // `trimmedQuery` when the backend hasn't populated `residualQuery` yet
+    // (e.g. a query below the parse threshold) so the question is never blank
+    // when the user typed text.
     const chips = search.activeFilterChips;
     const residual =
       chips.length === 0 && search.residualQuery.trim().length === 0
         ? search.trimmedQuery
         : search.residualQuery;
-    const seed = buildScopedSeedQuery(chips, residual);
     const question = buildScopedQuestion(residual, chips);
     mode = "ask";
 
-    if (seed.length > 0 || question.length > 0) {
-      // Seeded: immediately submit the scoped question, seeded by the scoped
-      // operator query. Focus the transcript region (no text input renders) so
-      // Escape/scroll keys are caught.
+    if (question.length > 0) {
+      // Carried a question over: submit it immediately and focus the transcript
+      // region (no text input renders) so Escape/scroll keys are caught.
       askInput = "";
-      void startAsk(question, seed);
+      void startAsk(question);
       await tick();
       askAreaEl?.focus();
     } else {
-      // Unseeded: show an empty ask input for the user to type a question.
+      // Nothing carried over: show an empty ask input for the user to type a
+      // question.
       askInput = "";
       askSubmitted = false;
       clearAskCopiedTimers();
@@ -1199,25 +1174,25 @@
     }
   }
 
-  // Submit the typed question from the unseeded ask input (Enter). This starts
-  // the thread's first (unseeded) turn; focus moves to the transcript region.
+  // Submit the typed question from the empty ask input (Enter). This starts the
+  // thread's first turn; focus moves to the transcript region.
   async function submitAskInput(): Promise<void> {
     const typed = askInput.trim();
     if (typed.length === 0) {
       return;
     }
-    void startAsk(typed, null);
+    void startAsk(typed);
     await tick();
     askAreaEl?.focus();
   }
 
-  // Re-run a failed first turn as a FRESH thread with the same question + seed.
+  // Re-run a failed first turn as a FRESH thread with the same question.
   async function retryAsk(): Promise<void> {
     const question = askFirstQuestion;
     if (question.trim().length === 0) {
       return;
     }
-    void startAsk(question, askLastSeed);
+    void startAsk(question);
     await tick();
     askAreaEl?.focus();
   }
@@ -1334,7 +1309,7 @@
   }
 
   // Follow-up composer: Enter submits, Shift+Enter inserts a newline (mirrors
-  // the unseeded ask input). A guard keeps Enter inert while a turn streams (the
+  // the ask input). A guard keeps Enter inert while a turn streams (the
   // composer is disabled then anyway, but a stray keydown shouldn't submit).
   function handleFollowupKeydown(event: KeyboardEvent): void {
     // Keep the footer-advertised ⌃C copy working even though focus parks on the
@@ -1429,7 +1404,6 @@
     askSubmitted = false;
     askInput = "";
     followupInput = "";
-    askLastSeed = null;
     askFirstQuestion = "";
     askStreaming = false;
     askOutcomeSeen = false;
@@ -2187,7 +2161,7 @@
                     {turn.errorMessage ?? "Ask AI failed."}
                   </p>
                   <!-- Every errored turn gets a retry. Turn 1 rebuilds the whole
-                       thread (same question + seed); a follow-up error re-sends its
+                       thread (same question); a follow-up error re-sends its
                        question through ask_ai_followup on the still-resident session. -->
                   <div class="quick-recall__retry-row">
                     <button
@@ -2244,19 +2218,7 @@
                     {/if}
                   {/if}
 
-                  {#if turn.seededResultCount !== null && turn.seededResultCount > 0}
-                    <p class="quick-recall__seeded">
-                      Seeded with {turn.seededResultCount}
-                      {turn.seededResultCount === 1 ? "result" : "results"}
-                    </p>
-                  {/if}
-
-                  {#if turn.phase === "seeding"}
-                    <p class="quick-recall__state quick-recall__state--working">
-                      <span class="quick-recall__dot" aria-hidden="true"></span>
-                      Searching your captures…
-                    </p>
-                  {:else if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
+                  {#if turn.phase === "thinking" && turn.liveActivity === null && !reasoningIsLive(turn)}
                     <p class="quick-recall__state quick-recall__state--working">
                       <span class="quick-recall__dot" aria-hidden="true"></span>
                       Thinking…
@@ -3273,7 +3235,7 @@
   }
 
   /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
-     unseeded ask input but framed as its own bottom bar. Disabled (dimmed) while
+     ask input but framed as its own bottom bar. Disabled (dimmed) while
      a turn streams. */
   .quick-recall__composer {
     flex-shrink: 0;
@@ -3713,17 +3675,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .quick-recall__seeded {
-    margin: 0;
-    padding: 0 2px;
-    font-size: var(--text-sm);
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-    flex-shrink: 0;
   }
 
   .quick-recall__state--working {

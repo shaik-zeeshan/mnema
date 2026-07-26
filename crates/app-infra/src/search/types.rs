@@ -31,6 +31,16 @@ pub struct SearchCaptureRefinements {
     #[serde(default)]
     pub apps: Vec<SearchAppRefinement>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the frame's GUARDED url (`host[:port]/path`
+    /// — query strings and fragments are never indexed, so they can never be
+    /// filtered on either).
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Case-sensitive regular expression over the same guarded url (opt into
+    /// case-insensitivity with `(?i)`). Validated at normalization time so an
+    /// invalid pattern surfaces a parse error instead of a SQL failure.
+    #[serde(default)]
+    pub url_regex: Option<String>,
     #[serde(default)]
     pub audio_sources: Vec<AudioSegmentSourceKind>,
     /// `source:screen` restricts results to captured frames (screen), skipping
@@ -100,7 +110,7 @@ pub struct SearchableApp {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureResponse {
     pub normalized_query: String,
@@ -117,9 +127,17 @@ pub struct SearchCaptureResponse {
     pub parse_errors: Vec<SearchParseError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameSearchResult {
+    /// Relevance score of the group's best anchor — LOWER is better, matching the
+    /// BM25 ordering the grouping uses. Comparable between frame and audio results
+    /// because both score against the same `search_documents_fts` index with the
+    /// same weights, so a consumer can merge the two lists into one ranked page.
+    /// CAVEAT: under **Hybrid Search** this is an RRF score derived from a hit's
+    /// POSITION within its own kind's list, which is not comparable across kinds.
+    #[serde(default)]
+    pub rank: f64,
     pub group_key: String,
     pub representative_frame: Frame,
     pub group_start_at: String,
@@ -149,9 +167,17 @@ pub struct FrameSearchResult {
     pub found_by_meaning: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSearchResult {
+    /// Relevance score of the group's best anchor — LOWER is better, matching the
+    /// BM25 ordering the grouping uses. Comparable between frame and audio results
+    /// because both score against the same `search_documents_fts` index with the
+    /// same weights, so a consumer can merge the two lists into one ranked page.
+    /// CAVEAT: under **Hybrid Search** this is an RRF score derived from a hit's
+    /// POSITION within its own kind's list, which is not comparable across kinds.
+    #[serde(default)]
+    pub rank: f64,
     pub group_key: String,
     pub audio_segment: AudioSegment,
     pub source_kind: AudioSegmentSourceKind,
@@ -174,6 +200,8 @@ pub(super) struct NormalizedSearchRefinements {
     pub(super) date_range: Option<NormalizedDateRange>,
     pub(super) apps: Vec<NormalizedAppRefinement>,
     pub(super) window_title: Option<String>,
+    pub(super) url: Option<String>,
+    pub(super) url_regex: Option<String>,
     pub(super) audio_sources: Vec<AudioSegmentSourceKind>,
     pub(super) screen_source: bool,
     pub(super) applied: SearchCaptureRefinements,

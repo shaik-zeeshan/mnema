@@ -60,6 +60,14 @@ mod projection;
 mod retrieval;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod url_backfill_scale_check;
+#[cfg(test)]
+mod url_guard_rate_check;
+#[cfg(test)]
+mod url_insert_cost_check;
+#[cfg(test)]
+mod url_regex_auxdata_check;
 
 pub(crate) use equivalent_reuse::project_equivalent_frame_reuse_in_transaction;
 pub(crate) use projection::project_processing_result_direct_in_transaction;
@@ -166,6 +174,7 @@ impl SearchStore {
         backfill_missing_equivalent_reuse_projections(&self.db).await?;
         backfill_missing_app_bundle_id_projection(&self.db).await?;
         backfill_missing_app_name_search_key_projection(&self.db).await?;
+        backfill_missing_url_projection(&self.db).await?;
         Ok(())
     }
 

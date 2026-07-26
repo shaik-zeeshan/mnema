@@ -131,7 +131,7 @@ async fn insert_direct_frame_ocr_document(
     result: &ProcessingResult,
     text: &str,
 ) -> Result<()> {
-    let (app_bundle_id, app_name, window_title) = frame
+    let (app_bundle_id, app_name, window_title, browser_url) = frame
         .metadata_snapshot
         .as_ref()
         .map(|metadata| {
@@ -139,13 +139,22 @@ async fn insert_direct_frame_ocr_document(
                 metadata.app_bundle_id.clone(),
                 metadata.app_name.clone(),
                 metadata.window_title.clone(),
+                metadata.browser_url.clone(),
             )
         })
-        .unwrap_or((None, None, None));
+        .unwrap_or((None, None, None, None));
 
     let group_key = frame_search_group_key(frame);
     let context_text = search_context_text(app_name.as_deref(), window_title.as_deref(), None);
     let app_name_search_key = app_name.as_deref().and_then(normalize_app_name_for_search);
+    // The index stores the GUARDED url, never the raw one — see migration 0050.
+    // Guarding moved from read-time (per search hit) to here (per projected
+    // document), so it now runs on the capture-rate path. Measured at 2.3us/call
+    // release (Url::parse + the process-wide `Lazy` redaction detectors over an
+    // 8KB-capped path), and frames with no browser_url short-circuit for free —
+    // so a same-url memo for consecutive frames of one page was measured as NOT
+    // worth its state, even at an absurd 30 documents/sec (~0.01% of a core).
+    let url = browser_url.as_deref().and_then(crate::guard_browser_url);
 
     insert_search_document(
         transaction,
@@ -164,6 +173,7 @@ async fn insert_direct_frame_ocr_document(
             app_name: app_name.as_deref(),
             app_name_search_key: app_name_search_key.as_deref(),
             window_title: window_title.as_deref(),
+            url: url.as_deref(),
             group_key: &group_key,
             text_source_kind: "direct",
             body_text: Some(text),
@@ -292,6 +302,7 @@ async fn project_audio_transcription_result(
                 app_name: None,
                 app_name_search_key: None,
                 window_title: None,
+                url: None,
                 group_key: &group_key,
                 text_source_kind: "direct",
                 body_text: Some(span_text),
@@ -320,6 +331,8 @@ pub(super) struct NewSearchDocument<'a> {
     pub(super) app_name: Option<&'a str>,
     pub(super) app_name_search_key: Option<&'a str>,
     pub(super) window_title: Option<&'a str>,
+    /// The GUARDED browser url (see `crate::guard_browser_url`), never the raw one.
+    pub(super) url: Option<&'a str>,
     pub(super) group_key: &'a str,
     pub(super) text_source_kind: &'a str,
     /// `None` for an `equivalent_reuse` row — it borrows the canonical `direct`
@@ -336,9 +349,9 @@ pub(super) async fn insert_search_document(
     let insert = sqlx::query(
         "INSERT INTO search_documents (\
             anchor_type, frame_id, audio_segment_id, processing_result_id, span_start_ms, span_end_ms, \
-            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, \
+            absolute_start_at, absolute_end_at, source_kind, session_id, app_bundle_id, app_name, app_name_search_key, window_title, url, url_guard_version, \
             group_key, text_source_kind, body_text, canonical_search_document_id, context_text\
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
     )
     .bind(doc.anchor_type)
     .bind(doc.frame_id)
@@ -358,6 +371,10 @@ pub(super) async fn insert_search_document(
     .bind(doc.app_name)
     .bind(doc.app_name_search_key.unwrap_or_default())
     .bind(doc.window_title)
+    .bind(doc.url.unwrap_or_default())
+    // Stamp the rules that produced `url`, so a later stricter revision can find
+    // this row and re-guard it (see `URL_GUARD_VERSION`).
+    .bind(crate::brokered_access::URL_GUARD_VERSION)
     .bind(doc.group_key)
     .bind(doc.text_source_kind)
     .bind(doc.body_text)
@@ -616,6 +633,95 @@ pub(super) async fn backfill_missing_app_bundle_id_projection(db: &CaptureDb) ->
     Ok(())
 }
 
+/// Un-projected documents claimed per pass of the URL backfill. Unlike the
+/// app-identity backfills, this one runs against installs whose
+/// `search_documents` table is already millions of rows deep, and every row it
+/// materializes carries a whole `snapshot_json` blob (measured ~660 bytes/row) —
+/// so the scan is chunked rather than `fetch_all`-ed whole. Peak memory is one
+/// chunk, not one table. Sized big enough that the read/write interleave does
+/// not slow the one-time cold pass: measured over 300k documents, 20k/chunk runs
+/// in 14.2s holding 18 MB, against 15.9s holding 199 MB unchunked (a 2k chunk
+/// bounds memory just as well but pays 42s to re-snapshot a growing WAL).
+const URL_BACKFILL_SCAN_CHUNK: i64 = 20_000;
+
+pub(super) async fn backfill_missing_url_projection(db: &CaptureDb) -> Result<()> {
+    // Scan on the Reader Pool, guard each raw url in Rust, then apply the UPDATEs
+    // in batched write transactions (an empty string marks "resolved, no
+    // broker-safe url" so the row is not rescanned next startup). Only the GUARDED
+    // url is ever stored — see migration 0050.
+    //
+    // Two things this does NOT copy from the bundle-id backfill, because the two
+    // shapes only look alike:
+    //   - it claims rows a CHUNK at a time. `fetch_all` over `url IS NULL` on the
+    //     first launch after upgrade materializes one `SqliteRow` per frame
+    //     document — snapshot JSON and all — and then builds the `updates` Vec
+    //     while that Vec is still alive (measured ~670 bytes/row: ~200 MB at 300k
+    //     documents, ~3.3 GB at 5M).
+    //   - it drains audio anchors too (LEFT JOIN, no `anchor_type` filter). They
+    //     have no browser url, but leaving them on the NULL sentinel would keep the
+    //     partial backfill index of migration 0050 permanently non-empty, so the
+    //     startup probe would never reach zero work.
+    loop {
+        let rows = sqlx::query(
+            "SELECT search_documents.id, frame_metadata_snapshots.snapshot_json \
+             FROM search_documents \
+             LEFT JOIN frames ON frames.id = search_documents.frame_id \
+             LEFT JOIN frame_metadata_snapshots ON frame_metadata_snapshots.id = frames.metadata_snapshot_id \
+             WHERE search_documents.url IS NULL \
+             LIMIT ?1",
+        )
+        .bind(URL_BACKFILL_SCAN_CHUNK)
+        .fetch_all(db.read())
+        .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+
+        let mut updates: Vec<(i64, String)> = Vec::with_capacity(rows.len());
+        for row in rows {
+            // A snapshot the current `FrameMetadataSnapshot` cannot read resolves to the
+            // "no broker-safe url" sentinel instead of failing the pass. This is the one
+            // backfill that reads EVERY historical snapshot (the app-bundle-id one
+            // converged long ago and now scans nothing), so propagating a single
+            // unreadable row would abort `run_startup_maintenance` on every launch,
+            // leave every other frame row on the NULL sentinel forever, and skip the
+            // reconciliation passes that run after it.
+            let snapshot = row
+                .get::<Option<String>, _>("snapshot_json")
+                .and_then(|snapshot_json| {
+                    serde_json::from_str::<capture_metadata::FrameMetadataSnapshot>(&snapshot_json)
+                        .map_err(|error| {
+                            capture_runtime::debug_log!(
+                                "[app-infra][search] url backfill could not read a frame metadata snapshot, resolving it to no url: {error}"
+                            );
+                        })
+                        .ok()
+                });
+            let url = snapshot
+                .and_then(|snapshot| snapshot.browser_url)
+                .as_deref()
+                .and_then(crate::guard_browser_url);
+            updates.push((row.get::<i64, _>("id"), url.unwrap_or_default()));
+        }
+
+        commit_in_batches(db, &updates, |transaction, item| {
+            let (id, url) = item;
+            Box::pin(async move {
+                sqlx::query(
+                    "UPDATE search_documents SET url = ?1, url_guard_version = ?2 WHERE id = ?3",
+                )
+                .bind(url)
+                .bind(crate::brokered_access::URL_GUARD_VERSION)
+                .bind(id)
+                .execute(&mut **transaction)
+                .await?;
+                Ok(())
+            })
+        })
+        .await?;
+    }
+}
+
 pub(super) async fn backfill_missing_app_name_search_key_projection(db: &CaptureDb) -> Result<()> {
     // Scan on the Reader Pool, derive each search key in Rust, then apply the
     // UPDATEs in batched write transactions.
@@ -677,6 +783,213 @@ mod tests {
         ProcessingResultDraft,
     };
     use audio_transcription::{TranscriptionMetadata, TranscriptionSegment};
+
+    /// The index must hold the GUARDED url, never the raw one: if the refinement
+    /// could match a query string or a path secret, a client could use it as an
+    /// oracle for exactly the text the read-time guard refuses to emit.
+    #[test]
+    fn frame_url_projection_stores_only_the_guarded_url() {
+        run_async_test(async {
+            let dir = test_dir("url-projection");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = seed_frame_with_text(
+                &infra,
+                "/tmp/search-url-frame.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(capture_metadata::FrameMetadataSnapshot {
+                    browser_url: Some(
+                        "https://mail.example.com/reset/s3cr3tres3ttoken99?token=leakme&user=me#top"
+                            .to_string(),
+                    ),
+                    ..frame_with_app(Some("com.apple.Safari"), Some("Safari"))
+                }),
+                "urlprojection target",
+            )
+            .await;
+
+            let projected: String = sqlx::query_scalar(
+                "SELECT url FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("projected url should load");
+
+            assert!(
+                !projected.contains("leakme") && !projected.contains('?'),
+                "query string must never be indexed, got {projected}"
+            );
+            assert!(
+                !projected.contains("s3cr3tres3ttoken99"),
+                "armed path secret must be redacted, got {projected}"
+            );
+            assert!(
+                projected.starts_with("mail.example.com/reset/"),
+                "guarded host+path should survive, got {projected}"
+            );
+        });
+    }
+
+    /// The url backfill is the ONE pass that reads every historical frame's
+    /// `snapshot_json` on the first launch after migration 0050 (the app-bundle-id
+    /// backfill converged long ago and now scans nothing). A single stored snapshot
+    /// the current `FrameMetadataSnapshot` cannot parse must therefore not abort the
+    /// pass: propagating it fails `run_startup_maintenance` on EVERY launch, leaves
+    /// every other frame row on the `NULL` sentinel forever, and skips the
+    /// orphaned-job / frame-batch reconciliation passes that run after it.
+
+    /// The stored `url` is guarded ONCE at projection time while the broker
+    /// re-guards on every read, so the URL refinement is only safe while both
+    /// used the same rules. `url_guard_version` is what a later, stricter rule
+    /// revision uses to find its stale rows; if it were never stamped, those
+    /// rows would be invisible to the re-claim and stay filterable at the older,
+    /// looser redaction — the oracle ADR 0038 forbids.
+    #[test]
+    fn projected_urls_carry_the_guard_version_and_a_stale_one_is_reclaimed() {
+        run_async_test(async {
+            let dir = test_dir("url-guard-version");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let frame = seed_frame_with_text(
+                &infra,
+                "/tmp/url-guard-version.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(capture_metadata::FrameMetadataSnapshot {
+                    browser_url: Some("https://github.com/mnema/pulls".to_string()),
+                    ..frame_with_app(Some("com.apple.Safari"), Some("Safari"))
+                }),
+                "guardversion target",
+            )
+            .await;
+
+            let stamped: Option<i64> = sqlx::query_scalar(
+                "SELECT url_guard_version FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(frame.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("guard version should load");
+            assert_eq!(
+                stamped,
+                Some(crate::brokered_access::URL_GUARD_VERSION),
+                "the insert path must stamp the rules that produced the stored url"
+            );
+
+            // A future stricter revision re-claims its stale rows exactly this
+            // way (see the recipe on `URL_GUARD_VERSION` and migration 0050).
+            sqlx::query(
+                "UPDATE search_documents SET url = NULL \
+                 WHERE url_guard_version < ?1 AND COALESCE(url, '') <> ''",
+            )
+            .bind(crate::brokered_access::URL_GUARD_VERSION + 1)
+            .execute(infra.pool())
+            .await
+            .expect("re-claim should apply");
+            let unclaimed: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents WHERE url IS NULL",
+            )
+            .fetch_one(infra.pool())
+            .await
+            .expect("unclaimed count should load");
+            assert_eq!(unclaimed, 1, "the stale row must be handed back to the backfill");
+
+            // The startup backfill re-guards it and stamps the new rules.
+            drop(infra);
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should reopen");
+            let (url, version): (String, Option<i64>) = sqlx::query_as(
+                "SELECT url, url_guard_version FROM search_documents \
+                 WHERE frame_id = ?1 AND text_source_kind = 'direct' LIMIT 1",
+            )
+            .bind(frame.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("re-guarded row should load");
+            assert_eq!(url, "github.com/mnema/pulls");
+            assert_eq!(version, Some(crate::brokered_access::URL_GUARD_VERSION));
+        });
+    }
+
+    #[test]
+    fn startup_url_backfill_survives_an_unreadable_metadata_snapshot() {
+        run_async_test(async {
+            let dir = test_dir("url-backfill-unreadable-snapshot");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let good = seed_frame_with_text(
+                &infra,
+                "/tmp/url-backfill-good.jpg",
+                "2026-05-17T10:00:00Z",
+                Some(capture_metadata::FrameMetadataSnapshot {
+                    browser_url: Some("https://github.com/mnema/pulls".to_string()),
+                    ..frame_with_app(Some("com.apple.Safari"), Some("Safari"))
+                }),
+                "urlbackfill target one",
+            )
+            .await;
+            let drifted = seed_frame_with_text(
+                &infra,
+                "/tmp/url-backfill-drifted.jpg",
+                "2026-05-17T10:00:01Z",
+                Some(frame_with_app(Some("com.apple.Safari"), Some("Safari"))),
+                "urlbackfill target two",
+            )
+            .await;
+
+            // The pre-0050 state every existing install upgrades into: every frame
+            // row carries the "not yet projected" NULL sentinel.
+            sqlx::query("UPDATE search_documents SET url = NULL WHERE anchor_type = 'frame'")
+                .execute(infra.pool())
+                .await
+                .expect("url reset should apply");
+            // One stored snapshot whose shape the current struct cannot read (a
+            // drifted writer, a rolled-back build, or a partially-written row).
+            sqlx::query(
+                "UPDATE frame_metadata_snapshots SET snapshot_json = '{\"displayId\":\"main\"}' \
+                 WHERE id = (SELECT metadata_snapshot_id FROM frames WHERE id = ?1)",
+            )
+            .bind(drifted.id)
+            .execute(infra.pool())
+            .await
+            .expect("snapshot drift should apply");
+            drop(infra);
+
+            let reopened = AppInfra::initialize(&dir)
+                .await
+                .expect("one unreadable snapshot must not fail startup maintenance");
+
+            let unclaimed: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM search_documents \
+                 WHERE anchor_type = 'frame' AND url IS NULL",
+            )
+            .fetch_one(reopened.pool())
+            .await
+            .expect("unclaimed count should load");
+            assert_eq!(
+                unclaimed, 0,
+                "every frame row must be claimed, so the next launch rescans nothing"
+            );
+
+            let projected: String = sqlx::query_scalar(
+                "SELECT url FROM search_documents WHERE frame_id = ?1 LIMIT 1",
+            )
+            .bind(good.id)
+            .fetch_one(reopened.pool())
+            .await
+            .expect("projected url should load");
+            assert_eq!(
+                projected, "github.com/mnema/pulls",
+                "a readable neighbour must still be projected"
+            );
+        });
+    }
 
     #[test]
     fn search_projects_completed_ocr_and_groups_equivalent_frames() {

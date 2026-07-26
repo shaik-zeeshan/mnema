@@ -35,6 +35,8 @@
     loadOcrForFrame,
     loadOcrFromJob,
     ocrBoxStyle,
+    ocrCountLabel,
+    MAX_OCR_BOXES,
     type OcrLoadResult,
     type OcrStatus,
   } from "$lib/frame-ocr";
@@ -5794,6 +5796,47 @@
   // user's intent to view or dismiss the OCR surface.
   let ocrVisible = $state(false);
 
+  // Index of the OCR box the pointer is currently over, or null. Only that
+  // box renders its text chip.
+  //
+  // A full-screen OCR of a code editor or browser yields 1000-2000
+  // observations, and a chip inside every box is layout + paint cost, not
+  // compositing. Measured in WebKit (Playwright webkit-2336, 1500 boxes,
+  // this exact CSS): chip-in-every-box takes 109-140ms to build and lay out
+  // the overlay and holds a 61-112ms median frame while the pointer sweeps
+  // it (200ms+ spikes); hover-only builds in 46-50ms and holds vsync (17ms
+  // median). The inspector LayerTree domain reports *zero* composited layers
+  // for the overlay in both shapes — `opacity: 0` plus an idle transition
+  // does not promote; only `will-change` does, and 2942 real chip-sized
+  // layers measure 16MB, so per-chip layers could never cost ~1GB.
+  //
+  // Only one chip is ever *visible* (the CSS reveals on `:hover`), so only
+  // one needs to exist. The `:hover` CSS gate is deliberately left in place
+  // alongside this: if the index goes stale (frame swap under a parked
+  // pointer) the leftover chip simply stays at `opacity: 0` rather than
+  // flashing on the wrong box, so no reset plumbing is needed.
+  let hoveredOcrIndex = $state<number | null>(null);
+
+  // Takes a bare `Event` so the same handler serves both `mouseover` and
+  // `focusin` — it only ever reads `target`.
+  function onOcrOverlayPointerMove(event: Event): void {
+    const box = (event.target as HTMLElement | null)?.closest?.(
+      ".timeline__ocr-box",
+    );
+    const index = box?.getAttribute("data-ocr-index");
+    hoveredOcrIndex = index == null ? null : Number(index);
+  }
+
+  // Cap + count label are shared with the modal overlay (see $lib/frame-ocr).
+  // Copy-all still uses the FULL list — only the drawn boxes are capped — but
+  // the region count next to the button goes through `ocrCountLabel`, so a
+  // capped overlay reports `2000+` instead of a number of boxes it never drew.
+  const ocrRenderedObservations = $derived(
+    ocrObservations.length > MAX_OCR_BOXES
+      ? ocrObservations.slice(0, MAX_OCR_BOXES)
+      : ocrObservations,
+  );
+
   // Clear stale overlay state whenever the active frame id changes.
   $effect(() => {
     const id = timelineActive?.id ?? null;
@@ -6150,7 +6193,7 @@
       (ocrVisible
         ? "Hide OCR data for the active frame"
         : ocrStatus === "success"
-          ? `${ocrObservations.length} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
+          ? `${ocrCountLabel(ocrObservations.length)} text region${ocrObservations.length === 1 ? "" : "s"} detected${ocrUsingEarlierFrame ? ` (reused from frame ${ocrSourceFrame?.id})` : ""}${ocrProviderLabel ? ` · ${ocrProviderLabel}` : ""}`
           : ocrStatus === "empty"
             ? ocrUsingEarlierFrame
               ? `no text detected (reused from frame ${ocrSourceFrame?.id})`
@@ -6637,7 +6680,7 @@
         <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
         <span>{ocrButtonLabel}</span>
         {#if ocrStatus === "success" && ocrObservations.length > 0}
-          <span class="timeline__ocr-count">{ocrObservations.length}</span>
+          <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
         {/if}
       </button>
       <button
@@ -6857,13 +6900,22 @@
              the exact active-frame preview is painted and an OCR run has
              produced observations for the currently active frame. -->
         {#if displayedActiveExactPreview && ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0 && renderedImageRect.width > 0 && renderedImageRect.height > 0}
+          <!-- The pointer handlers only pick which box renders its chip; the
+               text itself reaches AT through each box's `aria-label`, so there
+               is no keyboard/focus affordance to mirror here. `focusin` is
+               wired anyway to match the existing `:focus-within` CSS. -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <!-- svelte-ignore a11y_mouse_events_have_key_events -->
           <div
             class="timeline__ocr-overlay"
             role="list"
             aria-label="Recognized on-screen text"
             style={`left: ${renderedImageRect.left}px; top: ${renderedImageRect.top}px; width: ${renderedImageRect.width}px; height: ${renderedImageRect.height}px;`}
+            onmouseover={onOcrOverlayPointerMove}
+            onfocusin={onOcrOverlayPointerMove}
+            onmouseleave={() => (hoveredOcrIndex = null)}
           >
-            {#each ocrObservations as obs, i (i)}
+            {#each ocrRenderedObservations as obs, i (i)}
               <!-- Boxes are a pixel-positioned visual overlay; the recognized
                    text is exposed to assistive tech via the list/listitem role
                    + aria-label (no per-box tabindex — that would add dozens of
@@ -6872,11 +6924,14 @@
               <div
                 class="timeline__ocr-box"
                 role="listitem"
+                data-ocr-index={i}
                 style={ocrBoxStyleLocal(obs)}
                 aria-label={`${obs.text} (${(obs.confidence * 100).toFixed(0)}% confidence)`}
                 use:tip={`${obs.text} · ${(obs.confidence * 100).toFixed(0)}%`}
               >
-                <span class="timeline__ocr-text">{obs.text}</span>
+                {#if i === hoveredOcrIndex}
+                  <span class="timeline__ocr-text">{obs.text}</span>
+                {/if}
               </div>
             {/each}
             <span class="timeline__ocr-overlay-hint" aria-hidden="true">

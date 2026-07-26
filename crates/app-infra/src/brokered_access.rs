@@ -27,6 +27,7 @@ mod url_guard;
 
 pub use url_guard::{
     guard_url, ip_is_disallowed_fetch_target, is_disallowed_fetch_url, secret_scrubbed_fetch_target,
+    URL_GUARD_VERSION,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
@@ -37,6 +38,10 @@ const BROKER_OPAQUE_SECRET_FILE_NAME: &str = "broker-opaque-secret.bin";
 const RECORDING_SETTINGS_FILE_NAME: &str = "recording-settings.json";
 const DEFAULT_SEARCH_LIMIT: u32 = 20;
 const MAX_SEARCH_LIMIT: u32 = 100;
+/// How deep a cursor walk may go per anchor kind (20 full pages). The cursor is
+/// client round-tripped and unsigned, so its offsets are attacker-chosen; capping
+/// them keeps the work one request can buy bounded. See `BrokerSearchCursor::decode`.
+const MAX_CURSOR_OFFSET: u32 = 10 * MAX_SEARCH_LIMIT;
 const OPAQUE_SIGNATURE_HEX_LEN: usize = 32;
 const DEFAULT_APP_IDENTIFIER: &str = env!("MNEMA_APP_IDENTIFIER");
 
@@ -216,6 +221,16 @@ pub struct BrokerSearchRequest {
     pub limit: Option<u32>,
     pub app: Option<String>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the indexed (guarded) url.
+    pub url: Option<String>,
+    /// Case-sensitive regex over the same url.
+    pub url_regex: Option<String>,
+    /// Opaque `nextCursor` from a previous page of the SAME query. Carries the
+    /// search-document high-water mark plus per-anchor offsets, so a walk stays
+    /// pinned to the snapshot it started on and never re-reads or skips rows as
+    /// new captures land. Absent = first page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -258,7 +273,72 @@ pub struct BrokerSearchResultContext {
 #[serde(rename_all = "camelCase")]
 pub struct BrokerSearchResponse {
     pub results: Vec<BrokerSearchResult>,
+    /// Page-size CEILING applied after server-side clamping to
+    /// [`MAX_SEARCH_LIMIT`] — not a promise of how many rows came back. The
+    /// search layer additionally caps each anchor kind at its own group limit,
+    /// so a short page can still have a `next_cursor`; that field, never the
+    /// row count, is what says whether the walk is done.
     pub limit: u32,
+    /// Cursor for the next page, or `None` when this page exhausted the matches.
+    /// Feed it back verbatim as [`BrokerSearchRequest::cursor`] with the same
+    /// query and filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Decoded [`BrokerSearchRequest::cursor`]: the snapshot the walk is pinned to
+/// plus how many frame / audio anchors it has already consumed. Encoded as
+/// `v1:<snapshot>:<frameOffset>:<audioOffset>` — unsigned on purpose, since it
+/// carries no reference to data (scope is re-derived from live grants on every
+/// request, so a forged cursor can only skip rows, never widen access) — but a
+/// forged OFFSET still buys work, so both offsets are bounded by
+/// [`MAX_CURSOR_OFFSET`] at decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrokerSearchCursor {
+    snapshot_document_id: i64,
+    frame_offset: u32,
+    audio_offset: u32,
+}
+
+impl BrokerSearchCursor {
+    fn encode(&self) -> String {
+        format!(
+            "v1:{}:{}:{}",
+            self.snapshot_document_id, self.frame_offset, self.audio_offset
+        )
+    }
+
+    fn decode(raw: &str) -> Result<Self> {
+        let invalid =
+            || AppInfraError::InvalidSearchRequest("cursor is not a valid search cursor".into());
+        let mut parts = raw.trim().split(':');
+        if parts.next() != Some("v1") {
+            return Err(invalid());
+        }
+        let mut next = || parts.next().ok_or_else(invalid);
+        let snapshot_document_id: i64 = next()?.parse().map_err(|_| invalid())?;
+        let frame_offset: u32 = next()?.parse().map_err(|_| invalid())?;
+        let audio_offset: u32 = next()?.parse().map_err(|_| invalid())?;
+        if parts.next().is_some() || snapshot_document_id < 0 {
+            return Err(invalid());
+        }
+        // The broker only ever mints an offset by ADVANCING it by what one page
+        // consumed, so anything past the paging window is a forgery. It is not
+        // harmless: `frame_offset` becomes `needed_groups` in the search layer's
+        // drain loop, which then fetches and re-groups (quadratically) the ENTIRE
+        // match set for the query before handing back an empty page.
+        if frame_offset > MAX_CURSOR_OFFSET || audio_offset > MAX_CURSOR_OFFSET {
+            return Err(AppInfraError::InvalidSearchRequest(
+                "cursor is past the end of the paging window — narrow the query or its time range"
+                    .into(),
+            ));
+        }
+        Ok(Self {
+            snapshot_document_id,
+            frame_offset,
+            audio_offset,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -308,6 +388,10 @@ pub struct BrokerTimelineRequest {
     pub limit: Option<u32>,
     pub app: Option<String>,
     pub window_title: Option<String>,
+    /// Case-insensitive substring over the indexed (guarded) url.
+    pub url: Option<String>,
+    /// Case-sensitive regex over the same url.
+    pub url_regex: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1067,11 +1151,15 @@ fn broker_search_refinements(
     to: Option<String>,
     app: Option<String>,
     window_title: Option<String>,
+    url: Option<String>,
+    url_regex: Option<String>,
 ) -> Result<SearchCaptureRefinements> {
     Ok(SearchCaptureRefinements {
         date_range: scoped_date_range(grants, from, to)?,
         apps: broker_app_refinement(app)?.into_iter().collect(),
         window_title: broker_optional_filter(window_title, "windowTitle")?,
+        url: broker_optional_filter(url, "url")?,
+        url_regex: broker_url_regex_filter(url_regex)?,
         audio_sources: Vec::new(),
         screen_source: false,
     })
@@ -1086,6 +1174,22 @@ fn broker_app_refinement(app: Option<String>) -> Result<Option<SearchAppRefineme
         display_name: value.clone(),
         value,
     }))
+}
+
+/// `urlRegex`, rejected as a request error when it is not a valid pattern. Search
+/// also validates during refinement normalization, but the timeline builds its SQL
+/// directly — so a client typo surfaces here as a clear error on BOTH paths rather
+/// than as an opaque `REGEXP` failure from SQLite.
+fn broker_url_regex_filter(value: Option<String>) -> Result<Option<String>> {
+    let Some(value) = broker_optional_filter(value, "urlRegex")? else {
+        return Ok(None);
+    };
+    regex::Regex::new(&value).map_err(|error| {
+        AppInfraError::InvalidSearchRequest(format!(
+            "urlRegex is not a valid regular expression: {error}"
+        ))
+    })?;
+    Ok(Some(value))
 }
 
 fn broker_optional_filter(value: Option<String>, field_name: &str) -> Result<Option<String>> {
@@ -1107,6 +1211,8 @@ fn push_broker_timeline_context_filters(
     query: &mut QueryBuilder<'_, Sqlite>,
     app: Option<&SearchAppRefinement>,
     window_title: Option<&str>,
+    url: Option<&str>,
+    url_regex: Option<&str>,
 ) {
     if let Some(app) = app {
         query.push(" AND (LOWER(TRIM(COALESCE(app_bundle_id, ''))) = LOWER(");
@@ -1119,6 +1225,17 @@ fn push_broker_timeline_context_filters(
         query.push(" AND LOWER(COALESCE(window_title, '')) LIKE LOWER(");
         query.push_bind(sqlite_contains_like_pattern(window_title));
         query.push(") ESCAPE '\\'");
+    }
+    if let Some(url) = url {
+        query.push(" AND LOWER(COALESCE(url, '')) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(url));
+        query.push(") ESCAPE '\\'");
+    }
+    if let Some(url_regex) = url_regex {
+        // `X REGEXP Y` invokes `regexp(Y, X)` — pattern first, matching sqlx's
+        // registered implementation, so the infix form is correct as written.
+        query.push(" AND COALESCE(url, '') REGEXP ");
+        query.push_bind(url_regex.to_string());
     }
 }
 
@@ -1297,25 +1414,38 @@ async fn broker_search(
     if grants.is_empty() {
         return Ok(Err(BrokerErrorResponse::authorization_required()));
     }
+    // Clamped from BELOW too: a zero-sized page can never consume an anchor, so
+    // the cursor would advance by nothing and `more` would be false — the walk
+    // would report itself exhausted (`next_cursor: None`) on its first page while
+    // every match is still unseen. `limit` reaches here straight off the wire
+    // (the MCP `mnema_search` tool passes it through unvalidated), so the floor
+    // belongs here rather than in every caller.
     let limit = request
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
-        .min(MAX_SEARCH_LIMIT);
+        .clamp(1, MAX_SEARCH_LIMIT);
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(BrokerSearchCursor::decode)
+        .transpose()?;
     let refinements = broker_search_refinements(
         grants,
         request.from,
         request.to,
         request.app,
         request.window_title,
+        request.url,
+        request.url_regex,
     )?;
     let response = infra
         .search_capture(SearchCaptureRequest {
             query: request.query,
             frame_limit: Some(limit),
-            frame_offset: Some(0),
+            frame_offset: Some(cursor.map(|cursor| cursor.frame_offset).unwrap_or(0)),
             audio_limit: Some(limit),
-            audio_offset: Some(0),
-            snapshot_document_id: None,
+            audio_offset: Some(cursor.map(|cursor| cursor.audio_offset).unwrap_or(0)),
+            snapshot_document_id: cursor.map(|cursor| cursor.snapshot_document_id),
             refinements: Some(refinements),
             // Brokered access is keyword-only: the broker never runs the local
             // **Semantic Search Model**, so it passes no query vector.
@@ -1326,6 +1456,7 @@ async fn broker_search(
     Ok(Ok(map_search_response(
         response,
         limit,
+        cursor,
         opaque_issuing_grant(grants).map(|grant| grant.id.as_str()),
         &opaque_secret,
     )))
@@ -1511,13 +1642,24 @@ async fn broker_timeline(
         .expect("timeline always supplies a scoped date range");
     let app = broker_app_refinement(request.app)?;
     let window_title = broker_optional_filter(request.window_title, "windowTitle")?;
-    if app.is_some() || window_title.is_some() {
-        let intervals =
-            broker_frame_timeline(infra, &range, app.as_ref(), window_title.as_deref(), limit)
-                .await?;
+    let url = broker_optional_filter(request.url, "url")?;
+    let url_regex = broker_url_regex_filter(request.url_regex)?;
+    if app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some() {
+        // Any context filter narrows to captured frames: audio segments carry no
+        // app, window title, or url to match against.
+        let intervals = broker_frame_timeline(
+            infra,
+            &range,
+            app.as_ref(),
+            window_title.as_deref(),
+            url.as_deref(),
+            url_regex.as_deref(),
+            limit,
+        )
+        .await?;
         return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
     }
-    let mut intervals = broker_frame_timeline(infra, &range, None, None, limit).await?;
+    let mut intervals = broker_frame_timeline(infra, &range, None, None, None, None, limit).await?;
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?
@@ -1550,6 +1692,8 @@ async fn broker_frame_timeline(
     range: &SearchDateRangeRefinement,
     app: Option<&SearchAppRefinement>,
     window_title: Option<&str>,
+    url: Option<&str>,
+    url_regex: Option<&str>,
     limit: u32,
 ) -> Result<Vec<BrokerTimelineInterval>> {
     // `representative_frame_id` must be the frame_id of the SAME `MAX(id)` row that
@@ -1575,7 +1719,7 @@ async fn broker_frame_timeline(
     query.push(") AND julianday(absolute_start_at) <= julianday(");
     query.push_bind(range.end_at.clone());
     query.push(")");
-    push_broker_timeline_context_filters(&mut query, app, window_title);
+    push_broker_timeline_context_filters(&mut query, app, window_title, url, url_regex);
     query.push(
         "   GROUP BY group_key, app_bundle_id, app_name, window_title \
          ) \
@@ -2137,15 +2281,34 @@ fn open_external_url(url: &str) -> Result<()> {
 fn map_search_response(
     response: SearchCaptureResponse,
     limit: u32,
+    cursor: Option<BrokerSearchCursor>,
     grant_id: Option<&str>,
     opaque_secret: &[u8],
 ) -> BrokerSearchResponse {
+    // ONE ranked page across both anchor kinds. Search returns frames and audio
+    // as two separately-ranked lists; merging them by score (rather than
+    // alternating one of each) is sound because both are scored by the same BM25
+    // weights over the same `search_documents_fts` index. Each list is already
+    // rank-ordered, so a front-of-list merge yields the global top `limit`.
+    let (frame_page, audio_page) = (response.frames.len(), response.audio.len());
+    let snapshot_document_id = response.snapshot_document_id;
+    let (has_more_frames, has_more_audio) = (response.has_more_frames, response.has_more_audio);
+    let mut frames = response.frames.into_iter().peekable();
+    let mut audio = response.audio.into_iter().peekable();
+    let (mut frames_taken, mut audio_taken) = (0u32, 0u32);
     let mut results = Vec::new();
-    let mut frames = response.frames.into_iter();
-    let mut audio = response.audio.into_iter();
     while results.len() < limit as usize {
-        let before = results.len();
-        if let Some(frame) = frames.next() {
+        let take_frame = match (frames.peek(), audio.peek()) {
+            (Some(frame), Some(audio_result)) => frame_outranks_audio(
+                (frame.rank, &frame.group_start_at),
+                (audio_result.rank, &audio_result.absolute_start_at),
+            ),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        if take_frame {
+            let Some(frame) = frames.next() else { break };
             results.push(BrokerSearchResult {
                 opaque_id: encode_signed_opaque_id(
                     "frame",
@@ -2175,11 +2338,9 @@ fn map_search_response(
                 span_end_ms: None,
                 aligned_frame_id: None,
             });
-            if results.len() >= limit as usize {
-                break;
-            }
-        }
-        if let Some(audio_result) = audio.next() {
+            frames_taken += 1;
+        } else {
+            let Some(audio_result) = audio.next() else { break };
             results.push(BrokerSearchResult {
                 opaque_id: encode_signed_opaque_id(
                     "audio",
@@ -2198,12 +2359,51 @@ fn map_search_response(
                 span_end_ms: Some(audio_result.span_end_ms as i64),
                 aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
             });
-        }
-        if results.len() == before {
-            break;
+            audio_taken += 1;
         }
     }
-    BrokerSearchResponse { results, limit }
+    // More to walk when either anchor kind has rows this page never emitted:
+    // left behind by the `limit` cap, or still behind the per-kind `has_more`.
+    // `limit == 0` emits nothing and so can never advance the cursor — handing one
+    // back would make the documented "page until nextCursor is absent" walk loop
+    // on an identical empty page forever.
+    let more = limit > 0
+        && ((frames_taken as usize) < frame_page
+            || (audio_taken as usize) < audio_page
+            || has_more_frames
+            || has_more_audio);
+    let base = cursor.unwrap_or(BrokerSearchCursor {
+        snapshot_document_id,
+        frame_offset: 0,
+        audio_offset: 0,
+    });
+    let next_cursor = more.then(|| {
+        BrokerSearchCursor {
+            // Pin every later page to the snapshot this walk started on, so
+            // captures landing mid-walk cannot shift rows across pages.
+            snapshot_document_id: base.snapshot_document_id,
+            // Resume from what this page CONSUMED per kind, not `offset + limit`:
+            // a rank-merged page can be all frames, all audio, or any split.
+            frame_offset: base.frame_offset + frames_taken,
+            audio_offset: base.audio_offset + audio_taken,
+        }
+        .encode()
+    });
+    BrokerSearchResponse {
+        results,
+        limit,
+        next_cursor,
+    }
+}
+
+/// Order one frame result against one audio result: better (LOWER) rank first,
+/// newest first on an exact tie, frame before audio to keep the merge total.
+fn frame_outranks_audio(frame: (f64, &str), audio: (f64, &str)) -> bool {
+    match frame.0.total_cmp(&audio.0) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => frame.1 >= audio.1,
+    }
 }
 
 fn broker_search_result_context(
@@ -2986,6 +3186,9 @@ mod tests {
                 limit: Some(5),
                 app: None,
                 window_title: None,
+                url: None,
+                url_regex: None,
+                cursor: None,
             }),
         );
 
@@ -3093,8 +3296,41 @@ mod tests {
     }
 
     #[test]
-    fn broker_search_interleaves_audio_before_applying_limit() {
+    fn broker_search_page_mixes_kinds_by_rank_before_applying_limit() {
         let secret = b"test broker opaque secret with enough bytes";
+        let response = two_frame_one_audio_response();
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
+
+        assert_eq!(
+            mapped
+                .results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio"]
+        );
+        assert!(mapped.results[0].opaque_id.contains('.'));
+        assert_ne!(mapped.results[0].opaque_id, "fb");
+        assert_eq!(
+            mapped.results[0].context,
+            Some(BrokerSearchResultContext {
+                app_bundle_id: Some("com.example.Linear".to_string()),
+                app_name: Some("Linear".to_string()),
+                window_title: Some("Roadmap".to_string()),
+                url: None,
+            })
+        );
+        assert_eq!(mapped.results[1].context, None);
+        // Ranks are frame -5, audio -3, frame -1: the page takes the best frame
+        // and the audio hit, leaving the weakest frame behind. The next page must
+        // resume at frame 1 / audio 1 — what was CONSUMED — not at `offset +
+        // limit` (2/2), which would silently skip that leftover frame.
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
+    }
+
+    /// Two frame groups + one audio group, the shape `map_search_response` has
+    /// to merge. Ranks are placeholders — every test that cares sets them.
+    fn two_frame_one_audio_response() -> SearchCaptureResponse {
         let frame = |id: i64| crate::Frame {
             id,
             session_id: "screen-session".to_string(),
@@ -3125,11 +3361,12 @@ mod tests {
             created_at: "2026-05-17T10:00:00Z".to_string(),
             updated_at: "2026-05-17T10:00:00Z".to_string(),
         };
-        let response = SearchCaptureResponse {
+        SearchCaptureResponse {
             normalized_query: "target".to_string(),
             snapshot_document_id: 1,
             frames: vec![
                 crate::FrameSearchResult {
+                    rank: -5.0,
                     group_key: "frame:11".to_string(),
                     representative_frame: frame(11),
                     group_start_at: "2026-05-17T10:00:00Z".to_string(),
@@ -3147,6 +3384,7 @@ mod tests {
                     found_by_meaning: false,
                 },
                 crate::FrameSearchResult {
+                    rank: -1.0,
                     group_key: "frame:12".to_string(),
                     representative_frame: frame(12),
                     group_start_at: "2026-05-17T10:01:00Z".to_string(),
@@ -3165,6 +3403,7 @@ mod tests {
                 },
             ],
             audio: vec![crate::AudioSearchResult {
+                rank: -3.0,
                 group_key: "audio:22:0-1000".to_string(),
                 audio_segment,
                 source_kind: AudioSegmentSourceKind::Microphone,
@@ -3189,35 +3428,137 @@ mod tests {
                 }),
                 apps: Vec::new(),
                 window_title: None,
+                url: None,
+                url_regex: None,
                 audio_sources: Vec::new(),
                 screen_source: false,
             },
             residual_query: "target".to_string(),
-            parse_errors: Vec::new(),
-        };
+            parse_errors: Vec::new()
+        }
+    }
 
-        let mapped = map_search_response(response, 2, Some("grant-1"), secret);
-
+    #[test]
+    fn search_page_is_ranked_across_both_anchor_kinds_not_alternated() {
+        let secret = &[7u8; 32];
+        // Both frames outrank the audio result (-9 / -8 beat -3), so a ranked
+        // page of 2 is all frames. Alternating would have surfaced the weaker
+        // audio hit ahead of the second-best frame.
+        let mut response = two_frame_one_audio_response();
+        response.frames[0].rank = -9.0;
+        response.frames[1].rank = -8.0;
+        response.audio[0].rank = -3.0;
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
         assert_eq!(
             mapped
                 .results
                 .iter()
                 .map(|result| result.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["frame", "audio"]
+            vec!["frame", "frame"]
         );
-        assert!(mapped.results[0].opaque_id.contains('.'));
-        assert_ne!(mapped.results[0].opaque_id, "fb");
+        // Nothing audio was consumed, so only the frame offset advances.
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:2:0"));
+
+        // Same rows, audio now the strongest hit: it leads the page.
+        let mut response = two_frame_one_audio_response();
+        response.frames[0].rank = -2.0;
+        response.frames[1].rank = -1.0;
+        response.audio[0].rank = -9.0;
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
         assert_eq!(
-            mapped.results[0].context,
-            Some(BrokerSearchResultContext {
-                app_bundle_id: Some("com.example.Linear".to_string()),
-                app_name: Some("Linear".to_string()),
-                window_title: Some("Roadmap".to_string()),
-                url: None,
-            })
+            mapped
+                .results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["audio", "frame"]
         );
-        assert_eq!(mapped.results[1].context, None);
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
+    }
+
+    /// A `limit: 0` page can never emit a row, so a cursor on it promises progress
+    /// that re-sending it can never make: the agent contract is "page until
+    /// `nextCursor` is absent" (`.agents/skills/mnema-data/SKILL.md`), and the
+    /// identical request+cursor returns the identical empty page forever.
+    #[test]
+    fn zero_limit_search_page_hands_back_no_cursor_to_loop_on() {
+        let mapped = map_search_response(
+            two_frame_one_audio_response(),
+            0,
+            None,
+            Some("grant-1"),
+            &[7u8; 32],
+        );
+        assert!(mapped.results.is_empty(), "limit 0 emits no rows");
+        assert_eq!(
+            mapped.next_cursor, None,
+            "a page that can never emit a row must end the walk, not loop"
+        );
+    }
+
+    #[test]
+    fn search_cursor_resumes_from_consumed_anchors_and_stops_at_the_end() {
+        let secret = &[7u8; 32];
+        let exhausted = map_search_response(
+            frame_search_response_with_browser_url(11, None),
+            5,
+            Some(BrokerSearchCursor {
+                snapshot_document_id: 9,
+                frame_offset: 4,
+                audio_offset: 2,
+            }),
+            Some("grant-1"),
+            secret,
+        );
+        assert_eq!(
+            exhausted.next_cursor, None,
+            "a page that emitted everything available ends the walk"
+        );
+
+        // Same page, but the search layer says more frames remain: the cursor
+        // advances by what THIS page consumed and stays pinned to the snapshot
+        // the walk started on, not the fresher one in the response.
+        let mut response = frame_search_response_with_browser_url(11, None);
+        response.snapshot_document_id = 77;
+        response.has_more_frames = true;
+        let paged = map_search_response(
+            response,
+            5,
+            Some(BrokerSearchCursor {
+                snapshot_document_id: 9,
+                frame_offset: 4,
+                audio_offset: 2,
+            }),
+            Some("grant-1"),
+            secret,
+        );
+        assert_eq!(paged.next_cursor.as_deref(), Some("v1:9:5:2"));
+    }
+
+    #[test]
+    fn search_cursor_round_trips_and_rejects_garbage() {
+        let cursor = BrokerSearchCursor {
+            snapshot_document_id: 42,
+            frame_offset: 7,
+            audio_offset: 0,
+        };
+        assert_eq!(cursor.encode(), "v1:42:7:0");
+        assert_eq!(BrokerSearchCursor::decode("v1:42:7:0").unwrap(), cursor);
+        for bad in [
+            "",
+            "42:7:0",
+            "v2:42:7:0",
+            "v1:42:7",
+            "v1:42:7:0:1",
+            "v1:-1:7:0",
+            "v1:a:7:0",
+        ] {
+            assert!(
+                BrokerSearchCursor::decode(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
     }
 
     /// Mint a `Frame` for a search-result fixture. The `browser_url` is carried on
@@ -3255,6 +3596,7 @@ mod tests {
             normalized_query: "target".to_string(),
             snapshot_document_id: 1,
             frames: vec![crate::FrameSearchResult {
+                rank: -1.0,
                 group_key: format!("frame:{id}"),
                 representative_frame: search_result_frame(id),
                 group_start_at: "2026-05-17T10:00:00Z".to_string(),
@@ -3292,7 +3634,7 @@ mod tests {
             Some("https://github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
         );
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let context = mapped.results[0]
             .context
@@ -3312,7 +3654,7 @@ mod tests {
             Some("https://site.com/reset-password/AbC9xK2mP4qR7sT0"),
         );
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let url = mapped.results[0]
             .context
@@ -3334,7 +3676,7 @@ mod tests {
         let secret = b"test broker opaque secret with enough bytes";
         let response = frame_search_response_with_browser_url(11, None);
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let context = mapped.results[0]
             .context
@@ -3364,6 +3706,7 @@ mod tests {
             snapshot_document_id: 1,
             frames: Vec::new(),
             audio: vec![crate::AudioSearchResult {
+                rank: -3.0,
                 group_key: "audio:22:0-1000".to_string(),
                 audio_segment,
                 source_kind: AudioSegmentSourceKind::Microphone,
@@ -3385,10 +3728,112 @@ mod tests {
             parse_errors: Vec::new(),
         };
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         assert_eq!(mapped.results[0].kind, "audio");
         assert_eq!(mapped.results[0].context, None);
+    }
+
+
+    /// The cursor is UNSIGNED, so its `frame_offset` is attacker-chosen. It feeds
+    /// `needed_groups = offset + limit + 1` in the search layer's frame drain loop,
+    /// which then keeps fetching 5_000 hits at a time — re-grouping the whole
+    /// accumulated list (quadratic) on every iteration — until the ENTIRE match set
+    /// for the query is materialized in memory. A page the broker itself issued can
+    /// only ever advance the offset by what that page consumed, so an offset that
+    /// large is not a cursor the boundary can have minted: it must be refused
+    /// rather than executed.
+    #[test]
+    fn broker_search_refuses_a_forged_cursor_offset_it_could_never_have_issued() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("search-forged-offset");
+            let save_dir = temp_save_dir("search-forged-offset");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            for index in 0..3 {
+                seed_timeline_frame_with_browser_url(
+                    &infra,
+                    &save_dir,
+                    &format!("forged-offset-{index}.jpg"),
+                    &format!("2026-05-17T10:0{index}:00Z"),
+                    None,
+                )
+                .await;
+            }
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let page = |cursor: Option<String>| {
+                let infra = &infra;
+                let grant = grant.clone();
+                let config_dir = config_dir.clone();
+                async move {
+                    broker_search(
+                        &config_dir,
+                        infra,
+                        &[grant],
+                        BrokerSearchRequest {
+                            query: "timeline".to_string(),
+                            from: None,
+                            to: None,
+                            limit: Some(1),
+                            app: None,
+                            window_title: None,
+                            url: None,
+                            url_regex: None,
+                            cursor,
+                        },
+                    )
+                    .await
+                }
+            };
+
+            let first = page(None)
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
+            let issued = BrokerSearchCursor::decode(
+                first
+                    .next_cursor
+                    .as_deref()
+                    .expect("a first page of 1 leaves more to walk"),
+            )
+            .expect("the broker's own cursor should decode");
+            assert!(
+                issued.frame_offset <= 1,
+                "the broker only ever advances the offset by what a page consumed, got {issued:?}"
+            );
+
+            // Same walk, same query — only the offset is forged.
+            let forged = BrokerSearchCursor {
+                snapshot_document_id: issued.snapshot_document_id,
+                frame_offset: u32::MAX,
+                audio_offset: 0,
+            }
+            .encode();
+            let error = page(Some(forged))
+                .await
+                .expect_err("a forged paging offset must be refused, not executed");
+            assert!(
+                matches!(error, AppInfraError::InvalidSearchRequest(_)),
+                "expected an invalid-request refusal, got {error:?}"
+            );
+
+            // The honest cursor still pages, so the guard is not a blanket refusal.
+            let second = page(first.next_cursor.clone())
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
+            assert_eq!(second.results.len(), 1, "the honest walk must keep working");
+        });
     }
 
     #[test]
@@ -3465,6 +3910,8 @@ mod tests {
                     limit: Some(5),
                     app: Some("Linear".to_string()),
                     window_title: Some("roadmap".to_string()),
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3663,6 +4110,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3722,6 +4171,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3856,6 +4307,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -3930,6 +4383,8 @@ mod tests {
                     limit: Some(100),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -4018,6 +4473,8 @@ mod tests {
                     limit: Some(5),
                     app: None,
                     window_title: None,
+                    url: None,
+                    url_regex: None,
                 },
             )
             .await
@@ -4207,6 +4664,8 @@ mod tests {
                         limit: Some(50),
                         app: None,
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                     }),
                 )
                 .await
@@ -4612,6 +5071,94 @@ mod tests {
                 .expect("authorization should run");
 
             assert_eq!(response, None);
+        });
+    }
+
+
+
+    /// `limit: 0` is reachable from the wire (the MCP `mnema_search` tool passes
+    /// `limit` straight through with no lower bound). A zero page can never make
+    /// progress, so the walk terminates on its FIRST page with `next_cursor:
+    /// None` — which the response contract defines as "this page exhausted the
+    /// matches". A caller that honours that contract concludes the query has no
+    /// matches at all, silently dropping the entire result set.
+    #[test]
+    fn broker_search_with_zero_limit_does_not_claim_the_walk_is_exhausted() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("search-zero-limit");
+            let save_dir = temp_save_dir("search-zero-limit");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    save_dir.join("zero-limit.jpg").display().to_string(),
+                    "2026-05-17T10:00:00Z",
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("OCR job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("OCR job should claim")
+                .expect("OCR job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("zerolimit body text"),
+                )
+                .await
+                .expect("OCR job should complete");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let search = |limit: u32| {
+                let infra = &infra;
+                let grant = grant.clone();
+                let config_dir = config_dir.clone();
+                async move {
+                    broker_search(
+                        &config_dir,
+                        infra,
+                        &[grant],
+                        BrokerSearchRequest {
+                            query: "zerolimit".to_string(),
+                            from: None,
+                            to: None,
+                            limit: Some(limit),
+                            app: None,
+                            window_title: None,
+                            url: None,
+                            url_regex: None,
+                            cursor: None,
+                        },
+                    )
+                    .await
+                    .expect("search should run")
+                    .expect("search should be authorized")
+                }
+            };
+
+            // The match really is there.
+            assert_eq!(search(5).await.results.len(), 1);
+
+            let zero = search(0).await;
+            assert!(
+                !zero.results.is_empty() || zero.next_cursor.is_some(),
+                "limit 0 reported an exhausted walk over a non-empty match set: {zero:?}"
+            );
         });
     }
 }

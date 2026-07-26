@@ -26,6 +26,7 @@
     loadOcrForFrame,
     loadOcrFromJob,
     ocrBoxStyle,
+    ocrCountLabel,
     type OcrLoadResult,
     type OcrStatus,
   } from "$lib/frame-ocr";
@@ -524,7 +525,9 @@
           disabled={!frame}
           aria-pressed={ocrVisible}
         >
-          show ocr{#if ocrStatus === "success"}<span class="frame-act__count"> · {ocrObservations.length}</span>{/if}
+          show ocr{#if ocrStatus === "success"}<span class="frame-act__count">
+              · {ocrCountLabel(ocrObservations.length)}</span
+            >{/if}
         </button>
 
         <span class="frame-actions__spacer"></span>
