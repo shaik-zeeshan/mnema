@@ -36,6 +36,9 @@ struct SearchParams {
     /// Case-sensitive regular expression over the same sanitized host/path URL
     /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
     url_regex: Option<String>,
+    /// nextCursor from a previous search response, to fetch the next page of the
+    /// same query. Re-send the identical query and filters alongside it.
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -89,6 +92,7 @@ impl MnemaMcp {
                 window_title: p.window_title,
                 url: p.url,
                 url_regex: p.url_regex,
+                cursor: p.cursor,
             }),
         )
         .await

@@ -220,6 +220,12 @@ pub struct BrokerSearchRequest {
     pub url: Option<String>,
     /// Case-sensitive regex over the same url.
     pub url_regex: Option<String>,
+    /// Opaque `nextCursor` from a previous page of the SAME query. Carries the
+    /// search-document high-water mark plus per-anchor offsets, so a walk stays
+    /// pinned to the snapshot it started on and never re-reads or skips rows as
+    /// new captures land. Absent = first page.
+    #[serde(default)]
+    pub cursor: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -262,7 +268,59 @@ pub struct BrokerSearchResultContext {
 #[serde(rename_all = "camelCase")]
 pub struct BrokerSearchResponse {
     pub results: Vec<BrokerSearchResult>,
+    /// Page-size CEILING applied after server-side clamping to
+    /// [`MAX_SEARCH_LIMIT`] — not a promise of how many rows came back. The
+    /// search layer additionally caps each anchor kind at its own group limit,
+    /// so a short page can still have a `next_cursor`; that field, never the
+    /// row count, is what says whether the walk is done.
     pub limit: u32,
+    /// Cursor for the next page, or `None` when this page exhausted the matches.
+    /// Feed it back verbatim as [`BrokerSearchRequest::cursor`] with the same
+    /// query and filters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+}
+
+/// Decoded [`BrokerSearchRequest::cursor`]: the snapshot the walk is pinned to
+/// plus how many frame / audio anchors it has already consumed. Encoded as
+/// `v1:<snapshot>:<frameOffset>:<audioOffset>` — unsigned on purpose, since it
+/// carries no reference to data (scope is re-derived from live grants on every
+/// request, so a forged cursor can only skip rows, never widen access).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BrokerSearchCursor {
+    snapshot_document_id: i64,
+    frame_offset: u32,
+    audio_offset: u32,
+}
+
+impl BrokerSearchCursor {
+    fn encode(&self) -> String {
+        format!(
+            "v1:{}:{}:{}",
+            self.snapshot_document_id, self.frame_offset, self.audio_offset
+        )
+    }
+
+    fn decode(raw: &str) -> Result<Self> {
+        let invalid =
+            || AppInfraError::InvalidSearchRequest("cursor is not a valid search cursor".into());
+        let mut parts = raw.trim().split(':');
+        if parts.next() != Some("v1") {
+            return Err(invalid());
+        }
+        let mut next = || parts.next().ok_or_else(invalid);
+        let snapshot_document_id: i64 = next()?.parse().map_err(|_| invalid())?;
+        let frame_offset: u32 = next()?.parse().map_err(|_| invalid())?;
+        let audio_offset: u32 = next()?.parse().map_err(|_| invalid())?;
+        if parts.next().is_some() || snapshot_document_id < 0 {
+            return Err(invalid());
+        }
+        Ok(Self {
+            snapshot_document_id,
+            frame_offset,
+            audio_offset,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1342,6 +1400,11 @@ async fn broker_search(
         .limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
         .min(MAX_SEARCH_LIMIT);
+    let cursor = request
+        .cursor
+        .as_deref()
+        .map(BrokerSearchCursor::decode)
+        .transpose()?;
     let refinements = broker_search_refinements(
         grants,
         request.from,
@@ -1355,10 +1418,10 @@ async fn broker_search(
         .search_capture(SearchCaptureRequest {
             query: request.query,
             frame_limit: Some(limit),
-            frame_offset: Some(0),
+            frame_offset: Some(cursor.map(|cursor| cursor.frame_offset).unwrap_or(0)),
             audio_limit: Some(limit),
-            audio_offset: Some(0),
-            snapshot_document_id: None,
+            audio_offset: Some(cursor.map(|cursor| cursor.audio_offset).unwrap_or(0)),
+            snapshot_document_id: cursor.map(|cursor| cursor.snapshot_document_id),
             refinements: Some(refinements),
             // Brokered access is keyword-only: the broker never runs the local
             // **Semantic Search Model**, so it passes no query vector.
@@ -1369,6 +1432,7 @@ async fn broker_search(
     Ok(Ok(map_search_response(
         response,
         limit,
+        cursor,
         opaque_issuing_grant(grants).map(|grant| grant.id.as_str()),
         &opaque_secret,
     )))
@@ -2193,15 +2257,34 @@ fn open_external_url(url: &str) -> Result<()> {
 fn map_search_response(
     response: SearchCaptureResponse,
     limit: u32,
+    cursor: Option<BrokerSearchCursor>,
     grant_id: Option<&str>,
     opaque_secret: &[u8],
 ) -> BrokerSearchResponse {
+    // ONE ranked page across both anchor kinds. Search returns frames and audio
+    // as two separately-ranked lists; merging them by score (rather than
+    // alternating one of each) is sound because both are scored by the same BM25
+    // weights over the same `search_documents_fts` index. Each list is already
+    // rank-ordered, so a front-of-list merge yields the global top `limit`.
+    let (frame_page, audio_page) = (response.frames.len(), response.audio.len());
+    let snapshot_document_id = response.snapshot_document_id;
+    let (has_more_frames, has_more_audio) = (response.has_more_frames, response.has_more_audio);
+    let mut frames = response.frames.into_iter().peekable();
+    let mut audio = response.audio.into_iter().peekable();
+    let (mut frames_taken, mut audio_taken) = (0u32, 0u32);
     let mut results = Vec::new();
-    let mut frames = response.frames.into_iter();
-    let mut audio = response.audio.into_iter();
     while results.len() < limit as usize {
-        let before = results.len();
-        if let Some(frame) = frames.next() {
+        let take_frame = match (frames.peek(), audio.peek()) {
+            (Some(frame), Some(audio_result)) => frame_outranks_audio(
+                (frame.rank, &frame.group_start_at),
+                (audio_result.rank, &audio_result.absolute_start_at),
+            ),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        if take_frame {
+            let Some(frame) = frames.next() else { break };
             results.push(BrokerSearchResult {
                 opaque_id: encode_signed_opaque_id(
                     "frame",
@@ -2231,11 +2314,9 @@ fn map_search_response(
                 span_end_ms: None,
                 aligned_frame_id: None,
             });
-            if results.len() >= limit as usize {
-                break;
-            }
-        }
-        if let Some(audio_result) = audio.next() {
+            frames_taken += 1;
+        } else {
+            let Some(audio_result) = audio.next() else { break };
             results.push(BrokerSearchResult {
                 opaque_id: encode_signed_opaque_id(
                     "audio",
@@ -2254,12 +2335,47 @@ fn map_search_response(
                 span_end_ms: Some(audio_result.span_end_ms as i64),
                 aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
             });
-        }
-        if results.len() == before {
-            break;
+            audio_taken += 1;
         }
     }
-    BrokerSearchResponse { results, limit }
+    // More to walk when either anchor kind has rows this page never emitted:
+    // left behind by the `limit` cap, or still behind the per-kind `has_more`.
+    let more = (frames_taken as usize) < frame_page
+        || (audio_taken as usize) < audio_page
+        || has_more_frames
+        || has_more_audio;
+    let base = cursor.unwrap_or(BrokerSearchCursor {
+        snapshot_document_id,
+        frame_offset: 0,
+        audio_offset: 0,
+    });
+    let next_cursor = more.then(|| {
+        BrokerSearchCursor {
+            // Pin every later page to the snapshot this walk started on, so
+            // captures landing mid-walk cannot shift rows across pages.
+            snapshot_document_id: base.snapshot_document_id,
+            // Resume from what this page CONSUMED per kind, not `offset + limit`:
+            // a rank-merged page can be all frames, all audio, or any split.
+            frame_offset: base.frame_offset + frames_taken,
+            audio_offset: base.audio_offset + audio_taken,
+        }
+        .encode()
+    });
+    BrokerSearchResponse {
+        results,
+        limit,
+        next_cursor,
+    }
+}
+
+/// Order one frame result against one audio result: better (LOWER) rank first,
+/// newest first on an exact tie, frame before audio to keep the merge total.
+fn frame_outranks_audio(frame: (f64, &str), audio: (f64, &str)) -> bool {
+    match frame.0.total_cmp(&audio.0) {
+        std::cmp::Ordering::Less => true,
+        std::cmp::Ordering::Greater => false,
+        std::cmp::Ordering::Equal => frame.1 >= audio.1,
+    }
 }
 
 fn broker_search_result_context(
@@ -3044,6 +3160,7 @@ mod tests {
                 window_title: None,
                 url: None,
                 url_regex: None,
+                cursor: None,
             }),
         );
 
@@ -3151,8 +3268,41 @@ mod tests {
     }
 
     #[test]
-    fn broker_search_interleaves_audio_before_applying_limit() {
+    fn broker_search_page_mixes_kinds_by_rank_before_applying_limit() {
         let secret = b"test broker opaque secret with enough bytes";
+        let response = two_frame_one_audio_response();
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
+
+        assert_eq!(
+            mapped
+                .results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio"]
+        );
+        assert!(mapped.results[0].opaque_id.contains('.'));
+        assert_ne!(mapped.results[0].opaque_id, "fb");
+        assert_eq!(
+            mapped.results[0].context,
+            Some(BrokerSearchResultContext {
+                app_bundle_id: Some("com.example.Linear".to_string()),
+                app_name: Some("Linear".to_string()),
+                window_title: Some("Roadmap".to_string()),
+                url: None,
+            })
+        );
+        assert_eq!(mapped.results[1].context, None);
+        // Ranks are frame -5, audio -3, frame -1: the page takes the best frame
+        // and the audio hit, leaving the weakest frame behind. The next page must
+        // resume at frame 1 / audio 1 — what was CONSUMED — not at `offset +
+        // limit` (2/2), which would silently skip that leftover frame.
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
+    }
+
+    /// Two frame groups + one audio group, the shape `map_search_response` has
+    /// to merge. Ranks are placeholders — every test that cares sets them.
+    fn two_frame_one_audio_response() -> SearchCaptureResponse {
         let frame = |id: i64| crate::Frame {
             id,
             session_id: "screen-session".to_string(),
@@ -3183,11 +3333,12 @@ mod tests {
             created_at: "2026-05-17T10:00:00Z".to_string(),
             updated_at: "2026-05-17T10:00:00Z".to_string(),
         };
-        let response = SearchCaptureResponse {
+        SearchCaptureResponse {
             normalized_query: "target".to_string(),
             snapshot_document_id: 1,
             frames: vec![
                 crate::FrameSearchResult {
+                    rank: -5.0,
                     group_key: "frame:11".to_string(),
                     representative_frame: frame(11),
                     group_start_at: "2026-05-17T10:00:00Z".to_string(),
@@ -3205,6 +3356,7 @@ mod tests {
                     found_by_meaning: false,
                 },
                 crate::FrameSearchResult {
+                    rank: -1.0,
                     group_key: "frame:12".to_string(),
                     representative_frame: frame(12),
                     group_start_at: "2026-05-17T10:01:00Z".to_string(),
@@ -3223,6 +3375,7 @@ mod tests {
                 },
             ],
             audio: vec![crate::AudioSearchResult {
+                rank: -3.0,
                 group_key: "audio:22:0-1000".to_string(),
                 audio_segment,
                 source_kind: AudioSegmentSourceKind::Microphone,
@@ -3253,31 +3406,111 @@ mod tests {
                 screen_source: false,
             },
             residual_query: "target".to_string(),
-            parse_errors: Vec::new(),
-        };
+            parse_errors: Vec::new()
+        }
+    }
 
-        let mapped = map_search_response(response, 2, Some("grant-1"), secret);
-
+    #[test]
+    fn search_page_is_ranked_across_both_anchor_kinds_not_alternated() {
+        let secret = &[7u8; 32];
+        // Both frames outrank the audio result (-9 / -8 beat -3), so a ranked
+        // page of 2 is all frames. Alternating would have surfaced the weaker
+        // audio hit ahead of the second-best frame.
+        let mut response = two_frame_one_audio_response();
+        response.frames[0].rank = -9.0;
+        response.frames[1].rank = -8.0;
+        response.audio[0].rank = -3.0;
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
         assert_eq!(
             mapped
                 .results
                 .iter()
                 .map(|result| result.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["frame", "audio"]
+            vec!["frame", "frame"]
         );
-        assert!(mapped.results[0].opaque_id.contains('.'));
-        assert_ne!(mapped.results[0].opaque_id, "fb");
+        // Nothing audio was consumed, so only the frame offset advances.
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:2:0"));
+
+        // Same rows, audio now the strongest hit: it leads the page.
+        let mut response = two_frame_one_audio_response();
+        response.frames[0].rank = -2.0;
+        response.frames[1].rank = -1.0;
+        response.audio[0].rank = -9.0;
+        let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
         assert_eq!(
-            mapped.results[0].context,
-            Some(BrokerSearchResultContext {
-                app_bundle_id: Some("com.example.Linear".to_string()),
-                app_name: Some("Linear".to_string()),
-                window_title: Some("Roadmap".to_string()),
-                url: None,
-            })
+            mapped
+                .results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["audio", "frame"]
         );
-        assert_eq!(mapped.results[1].context, None);
+        assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
+    }
+
+    #[test]
+    fn search_cursor_resumes_from_consumed_anchors_and_stops_at_the_end() {
+        let secret = &[7u8; 32];
+        let exhausted = map_search_response(
+            frame_search_response_with_browser_url(11, None),
+            5,
+            Some(BrokerSearchCursor {
+                snapshot_document_id: 9,
+                frame_offset: 4,
+                audio_offset: 2,
+            }),
+            Some("grant-1"),
+            secret,
+        );
+        assert_eq!(
+            exhausted.next_cursor, None,
+            "a page that emitted everything available ends the walk"
+        );
+
+        // Same page, but the search layer says more frames remain: the cursor
+        // advances by what THIS page consumed and stays pinned to the snapshot
+        // the walk started on, not the fresher one in the response.
+        let mut response = frame_search_response_with_browser_url(11, None);
+        response.snapshot_document_id = 77;
+        response.has_more_frames = true;
+        let paged = map_search_response(
+            response,
+            5,
+            Some(BrokerSearchCursor {
+                snapshot_document_id: 9,
+                frame_offset: 4,
+                audio_offset: 2,
+            }),
+            Some("grant-1"),
+            secret,
+        );
+        assert_eq!(paged.next_cursor.as_deref(), Some("v1:9:5:2"));
+    }
+
+    #[test]
+    fn search_cursor_round_trips_and_rejects_garbage() {
+        let cursor = BrokerSearchCursor {
+            snapshot_document_id: 42,
+            frame_offset: 7,
+            audio_offset: 0,
+        };
+        assert_eq!(cursor.encode(), "v1:42:7:0");
+        assert_eq!(BrokerSearchCursor::decode("v1:42:7:0").unwrap(), cursor);
+        for bad in [
+            "",
+            "42:7:0",
+            "v2:42:7:0",
+            "v1:42:7",
+            "v1:42:7:0:1",
+            "v1:-1:7:0",
+            "v1:a:7:0",
+        ] {
+            assert!(
+                BrokerSearchCursor::decode(bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
     }
 
     /// Mint a `Frame` for a search-result fixture. The `browser_url` is carried on
@@ -3315,6 +3548,7 @@ mod tests {
             normalized_query: "target".to_string(),
             snapshot_document_id: 1,
             frames: vec![crate::FrameSearchResult {
+                rank: -1.0,
                 group_key: format!("frame:{id}"),
                 representative_frame: search_result_frame(id),
                 group_start_at: "2026-05-17T10:00:00Z".to_string(),
@@ -3352,7 +3586,7 @@ mod tests {
             Some("https://github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
         );
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let context = mapped.results[0]
             .context
@@ -3372,7 +3606,7 @@ mod tests {
             Some("https://site.com/reset-password/AbC9xK2mP4qR7sT0"),
         );
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let url = mapped.results[0]
             .context
@@ -3394,7 +3628,7 @@ mod tests {
         let secret = b"test broker opaque secret with enough bytes";
         let response = frame_search_response_with_browser_url(11, None);
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         let context = mapped.results[0]
             .context
@@ -3424,6 +3658,7 @@ mod tests {
             snapshot_document_id: 1,
             frames: Vec::new(),
             audio: vec![crate::AudioSearchResult {
+                rank: -3.0,
                 group_key: "audio:22:0-1000".to_string(),
                 audio_segment,
                 source_kind: AudioSegmentSourceKind::Microphone,
@@ -3445,7 +3680,7 @@ mod tests {
             parse_errors: Vec::new(),
         };
 
-        let mapped = map_search_response(response, 5, Some("grant-1"), secret);
+        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
         assert_eq!(mapped.results[0].kind, "audio");
         assert_eq!(mapped.results[0].context, None);

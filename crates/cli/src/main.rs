@@ -116,6 +116,10 @@ struct SearchArgs {
     /// (prefix with `(?i)` for case-insensitive matching).
     #[arg(long, conflicts_with = "url")]
     url_regex: Option<String>,
+    /// `nextCursor` from a previous search response, to fetch the next page.
+    /// Re-send the identical query and filters alongside it.
+    #[arg(long)]
+    cursor: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -205,7 +209,12 @@ struct ErrorEnvelope {
 #[serde(rename_all = "camelCase")]
 struct SearchData {
     results: Vec<SearchResultData>,
+    /// Effective (server-clamped) limit actually applied — not necessarily the
+    /// `--limit` the caller asked for.
     limit: u32,
+    /// Cursor for the next page, or absent when this page exhausted the matches.
+    /// Pass it back as `--cursor` with the same query and filters.
+    #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
 }
 
@@ -238,8 +247,10 @@ struct SearchResultContextData {
 #[serde(rename_all = "camelCase")]
 struct TimelineData {
     intervals: Vec<TimelineIntervalData>,
+    /// Effective (server-clamped) limit actually applied.
     limit: u32,
-    next_cursor: Option<String>,
+    /// True when the intervals filled the effective limit — see [`SearchData`].
+    truncated: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -344,6 +355,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 window_title: args.window_title,
                 url: args.url,
                 url_regex: args.url_regex,
+                cursor: args.cursor,
             });
             run_data_command("search", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -838,6 +850,7 @@ fn print_serialized<T: Serialize>(value: &T, format: OutputFormat) -> Result<(),
 }
 
 fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -> SearchData {
+    let next_cursor = response.next_cursor.clone();
     SearchData {
         results: response
             .results
@@ -857,11 +870,12 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
             })
             .collect(),
         limit: response.limit,
-        next_cursor: None,
+        next_cursor,
     }
 }
 
 fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineResponse) -> TimelineData {
+    let truncated = response.intervals.len() as u32 >= response.limit;
     TimelineData {
         intervals: response
             .intervals
@@ -884,7 +898,7 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
             })
             .collect(),
         limit: response.limit,
-        next_cursor: None,
+        truncated,
     }
 }
 
@@ -1141,6 +1155,7 @@ mod tests {
                 aligned_frame_id: None,
             }],
             limit: 1,
+            next_cursor: None,
         });
 
         let context = data.results[0]
@@ -1179,6 +1194,45 @@ mod tests {
         assert_eq!(context.app_name.as_deref(), Some("Linear"));
         assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
         assert_eq!(context.url.as_deref(), Some("linear.app/team/roadmap"));
+    }
+
+    #[test]
+    fn search_cursor_and_timeline_truncation_reach_the_envelope() {
+        let paged = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![search_result("f1")],
+            limit: 1,
+            next_cursor: Some("v1:42:1:0".to_string()),
+        });
+        assert_eq!(paged.next_cursor.as_deref(), Some("v1:42:1:0"));
+
+        let last = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![search_result("f1")],
+            limit: 20,
+            next_cursor: None,
+        });
+        assert!(last.next_cursor.is_none());
+
+        // Timeline has no cursor: it merges two independently-limited sources and
+        // re-sorts, so a full page only reports that records may have been dropped.
+        let timeline = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
+            intervals: Vec::new(),
+            limit: 0,
+        });
+        assert!(timeline.truncated, "limit 0 can never be complete");
+    }
+
+    fn search_result(id: &str) -> app_infra::brokered_access::BrokerSearchResult {
+        app_infra::brokered_access::BrokerSearchResult {
+            opaque_id: id.to_string(),
+            kind: "frame".to_string(),
+            snippet: String::new(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: "2026-05-17T10:00:00Z".to_string(),
+            context: None,
+            span_start_ms: None,
+            span_end_ms: None,
+            aligned_frame_id: None,
+        }
     }
 
     #[test]

@@ -2948,6 +2948,7 @@ mod tests {
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![sample_result()],
             limit: 8,
+            next_cursor: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
@@ -2969,6 +2970,7 @@ mod tests {
         let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
             results: vec![audio],
             limit: 8,
+            next_cursor: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");

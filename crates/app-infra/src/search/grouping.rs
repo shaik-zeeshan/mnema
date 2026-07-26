@@ -105,6 +105,7 @@ pub(super) fn group_frame_hits(hits: &[FrameHit]) -> Vec<FrameSearchResult> {
             Some((
                 best_rank,
                 FrameSearchResult {
+                    rank: best_rank,
                     group_key,
                     representative_frame: representative.frame.clone(),
                     group_start_at,
@@ -220,6 +221,7 @@ pub(super) fn group_audio_hits(hits: &[AudioHit]) -> Result<Vec<AudioSearchResul
         results.push((
             first.rank,
             AudioSearchResult {
+                rank: first.rank,
                 group_key: format!(
                     "audio:{}:{}-{}",
                     first.audio_segment.id, span_start_ms, span_end_ms

@@ -110,7 +110,7 @@ pub struct SearchableApp {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchCaptureResponse {
     pub normalized_query: String,
@@ -127,9 +127,17 @@ pub struct SearchCaptureResponse {
     pub parse_errors: Vec<SearchParseError>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FrameSearchResult {
+    /// Relevance score of the group's best anchor — LOWER is better, matching the
+    /// BM25 ordering the grouping uses. Comparable between frame and audio results
+    /// because both score against the same `search_documents_fts` index with the
+    /// same weights, so a consumer can merge the two lists into one ranked page.
+    /// CAVEAT: under **Hybrid Search** this is an RRF score derived from a hit's
+    /// POSITION within its own kind's list, which is not comparable across kinds.
+    #[serde(default)]
+    pub rank: f64,
     pub group_key: String,
     pub representative_frame: Frame,
     pub group_start_at: String,
@@ -159,9 +167,17 @@ pub struct FrameSearchResult {
     pub found_by_meaning: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioSearchResult {
+    /// Relevance score of the group's best anchor — LOWER is better, matching the
+    /// BM25 ordering the grouping uses. Comparable between frame and audio results
+    /// because both score against the same `search_documents_fts` index with the
+    /// same weights, so a consumer can merge the two lists into one ranked page.
+    /// CAVEAT: under **Hybrid Search** this is an RRF score derived from a hit's
+    /// POSITION within its own kind's list, which is not comparable across kinds.
+    #[serde(default)]
+    pub rank: f64,
     pub group_key: String,
     pub audio_segment: AudioSegment,
     pub source_kind: AudioSegmentSourceKind,
