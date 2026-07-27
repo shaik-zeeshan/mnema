@@ -15,6 +15,7 @@
   // routes/+page.svelte and arrive here as props/callbacks.
   import { tick } from "svelte";
   import { waveformPeaks } from "./waveform-peaks.svelte";
+  import { AudioTransport } from "./audio-transport.svelte";
   import { getFocusableElements, trapTabKey } from "$lib/keyboard";
   import { tip } from "$lib/components/tooltip";
   import DrawerHeader from "./DrawerHeader.svelte";
@@ -226,102 +227,27 @@
   });
 
   // ── audio element + transport ─────────────────────────────────────────────
-  let audioEl = $state<HTMLAudioElement | null>(null);
-  let isPlaying = $state(false);
-  let currentTime = $state(0);
-  let duration = $state(0);
-  let scrubbing = $state(false);
-  let hasSeeked = $state(false);
-  /** Bounded-sample playback: stop at this time, then move to the next sample. */
-  let sampleStopAt: number | null = null;
-  let sampleQueue: number[] = [];
+  const transport = new AudioTransport(() => onMediaError());
 
   $effect(() => {
     void segmentId;
-    isPlaying = false;
-    currentTime = 0;
-    duration = 0;
-    scrubbing = false;
-    hasSeeked = false;
-    sampleStopAt = null;
-    sampleQueue = [];
+    transport.reset();
   });
 
-  const currentMs = $derived(Math.round(currentTime * 1000));
+  const currentMs = $derived(transport.currentMs);
 
-  /** Any explicit user transport action ends bounded-sample mode: from here on
-   *  playback is theirs, and a live `sampleStopAt` would otherwise pause them or
-   *  yank them back to the merge candidate on the next `timeupdate`. EVERY path
-   *  that writes `audioEl.currentTime` or starts playback must call this. */
-  function endSamplePreview(): void {
-    sampleStopAt = null;
-    sampleQueue = [];
-  }
-
-  function togglePlayPause(): void {
-    const el = audioEl;
-    if (!el) return;
-    endSamplePreview();
-    if (el.paused) void el.play().catch(onMediaError);
-    else el.pause();
-  }
-
-  function onTimeUpdate(): void {
-    const el = audioEl;
-    if (!el) return;
-    if (sampleStopAt != null && el.currentTime >= sampleStopAt) {
-      const next = sampleQueue.shift();
-      if (next == null) {
-        sampleStopAt = null;
-        el.pause();
-      } else {
-        sampleStopAt = next / 1000 + SAMPLE_SECONDS;
-        el.currentTime = next / 1000;
-      }
-    }
-    if (scrubbing) return;
-    currentTime = el.currentTime;
-  }
-
-  function onLoadedMetadata(): void {
-    if (!audioEl) return;
-    duration = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
-  }
-
+  /** A seek the user asked for by pointing at a word re-attaches the reader:
+   *  they just told us where they want to be. `seekBySeconds` and the scrubber
+   *  deliberately do not, so scrubbing while reading elsewhere stays possible. */
   function seekToMs(startMs: number): void {
-    const el = audioEl;
-    if (!el) return;
-    endSamplePreview();
-    const cap = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
-    const next = Math.max(0, Math.min(cap, startMs / 1000));
-    if (!Number.isFinite(next)) return;
-    el.currentTime = next;
-    currentTime = next;
-    hasSeeked = true;
+    transport.seekToMs(startMs);
     followDetached = false;
-  }
-
-  function seekBySeconds(delta: number): void {
-    const el = audioEl;
-    if (!el) return;
-    endSamplePreview();
-    const cap =
-      Number.isFinite(duration) && duration > 0
-        ? duration
-        : Number.isFinite(el.duration) && el.duration > 0
-          ? el.duration
-          : Infinity;
-    const next = Math.max(0, Math.min(cap, el.currentTime + delta));
-    if (!Number.isFinite(next)) return;
-    el.currentTime = next;
-    currentTime = next;
-    hasSeeked = true;
   }
 
   // A one-shot seek handed down from the timeline (play-this-moment).
   $effect(() => {
     const seekMs = pendingSeekMs;
-    const el = audioEl;
+    const el = transport.element;
     if (seekMs == null || !el || audioSrc == null) return;
     const applySeek = () => {
       seekToMs(seekMs);
@@ -334,22 +260,6 @@
     el.addEventListener("loadedmetadata", applySeek, { once: true });
     return () => el.removeEventListener("loadedmetadata", applySeek);
   });
-
-  /** "Play 8s of each": this cluster's first turn, then the merge candidate's.
-   *  Bounded by `sampleStopAt` in the timeupdate handler — no new audio element. */
-  const SAMPLE_SECONDS = 8;
-
-  function playSamples(group: SpeakerTranscriptGroup): void {
-    const el = audioEl;
-    if (!el) return;
-    const heads = samplePreviewHeadsMs(group, turns);
-    if (heads.length === 0) return;
-    sampleQueue = heads.slice(1);
-    el.currentTime = heads[0] / 1000;
-    currentTime = heads[0] / 1000;
-    sampleStopAt = heads[0] / 1000 + SAMPLE_SECONDS;
-    void el.play().catch(onMediaError);
-  }
 
   const peaks = waveformPeaks(() => segmentId);
 
@@ -365,7 +275,7 @@
   const distinctSpeakers = $derived(new Set(speakerGroups.map((g) => g.clusterId)).size);
 
   const activeGroupIndex = $derived(
-    resolveActiveGroupIndex(groups, currentMs, isPlaying || currentTime > 0 || hasSeeked),
+    resolveActiveGroupIndex(groups, currentMs, transport.engaged),
   );
 
   const repairGroup = $derived(repairIndex == null ? null : groups[repairIndex] ?? null);
@@ -489,12 +399,12 @@
     const shortcut = shortcutFor(event);
     if (shortcut === "playPause") {
       event.preventDefault();
-      togglePlayPause();
+      transport.togglePlayPause();
       return;
     }
     if (shortcut) {
       event.preventDefault();
-      seekBySeconds(
+      transport.seekBySeconds(
         shortcut === "seekBackFast"
           ? -30
           : shortcut === "seekForwardFast"
@@ -509,7 +419,7 @@
   }
 
   const waveBars = $derived(
-    waveformBars(peaks.value, duration * 1000, turns, marks),
+    waveformBars(peaks.value, transport.duration * 1000, turns, marks),
   );
 </script>
 
@@ -568,17 +478,14 @@
         class="audio-drawer__native"
         preload="metadata"
         src={audioSrc}
-        bind:this={audioEl}
+        bind:this={transport.element}
         onerror={onMediaError}
-        ontimeupdate={onTimeUpdate}
-        onloadedmetadata={onLoadedMetadata}
-        ondurationchange={onLoadedMetadata}
-        onplay={() => (isPlaying = true)}
-        onpause={() => (isPlaying = false)}
-        onended={() => {
-          isPlaying = false;
-          currentTime = audioEl?.duration ?? currentTime;
-        }}
+        ontimeupdate={transport.onTimeUpdate}
+        onloadedmetadata={transport.onLoadedMetadata}
+        ondurationchange={transport.onLoadedMetadata}
+        onplay={() => (transport.isPlaying = true)}
+        onpause={() => (transport.isPlaying = false)}
+        onended={transport.onEnded}
         aria-hidden="true"
       ></audio>
     {/key}
@@ -644,7 +551,7 @@
         rerunLoading={transcriptRerunLoading}
         {speakerRetryDisabled}
         {speakerRetryLoading}
-        onPlayAnyway={togglePlayPause}
+        onPlayAnyway={transport.togglePlayPause}
         onRerun={onRerunTranscript}
         onRetrySpeakers={onRetrySpeakerAnalysis}
         onReadWithoutSpeakers={() => (ignoreSpeakerFailure = true)}
@@ -682,34 +589,28 @@
           }}
           onNotThisPerson={() => onNotThisPerson(repairGroup)}
           onMoveGroupTo={(target) => onMoveGroup(repairGroup, target)}
-          onPlaySamples={() => playSamples(repairGroup)}
+          onPlaySamples={() => transport.playSamples(samplePreviewHeadsMs(repairGroup, turns))}
         />
       </div>
     {/if}
   </div>
 
   <DrawerTransport
-    {isPlaying}
-    {currentTime}
-    {duration}
+    isPlaying={transport.isPlaying}
+    currentTime={transport.currentTime}
+    duration={transport.duration}
     playable={audioSrc != null}
     {mediaLoading}
     bars={waveBars}
     compact={!expanded}
-    onToggle={togglePlayPause}
+    onToggle={transport.togglePlayPause}
     onScrubInput={(event) => {
-      scrubbing = true;
-      currentTime = Number((event.currentTarget as HTMLInputElement).value);
+      transport.scrubbing = true;
+      transport.currentTime = Number((event.currentTarget as HTMLInputElement).value);
     }}
     onScrubChange={(event) => {
-      scrubbing = false;
-      const next = Number((event.currentTarget as HTMLInputElement).value);
-      if (audioEl && Number.isFinite(next)) {
-        endSamplePreview();
-        audioEl.currentTime = next;
-        currentTime = next;
-        hasSeeked = true;
-      }
+      transport.scrubbing = false;
+      transport.seekToSeconds(Number((event.currentTarget as HTMLInputElement).value));
     }}
   />
 
