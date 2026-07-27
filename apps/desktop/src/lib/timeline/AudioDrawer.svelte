@@ -98,6 +98,11 @@
     onRetrySpeakerAnalysis: () => void;
 
     correctionError: string | null;
+    /**
+     * The cluster a speaker write is in flight for, or null. The route serialises
+     * these writes, so a non-null value disables *every* speaker control — one
+     * left enabled would swallow the click instead of acting on it.
+     */
     busyClusterId: number | null;
     inlineBusy: { clusterId: number; action: SpeakerInlineAction } | null;
     developerMode: boolean;
@@ -601,7 +606,7 @@
         suggestionFor={(group, index) =>
           suggestionChipFor(groups, group, index, profiles, developerMode)}
         suggestionBusy={(group) =>
-          busyClusterId === group.clusterId ||
+          busyClusterId !== null ||
           (inlineBusy?.clusterId === group.clusterId && inlineBusy.action === "confirm")}
         {onConfirmSuggestion}
         onSeekMs={seekToMs}
@@ -656,7 +661,7 @@
           {profiles}
           persistedName={speakerPersistedName(repairGroup, profiles)}
           unnamed={speakerIsUnnamed(repairGroup, profiles)}
-          busy={busyClusterId === repairGroup.clusterId}
+          busy={busyClusterId !== null}
           error={correctionError}
           unnamedRemaining={Math.max(
             0,

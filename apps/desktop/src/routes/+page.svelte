@@ -1253,14 +1253,21 @@
     return job?.status === "queued" || job?.status === "running";
   }
 
-  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
-    const trimmedLabel = label.trim();
-    if (trimmedLabel.length === 0) return;
+  // One speaker write at a time, and every one of them routed through here.
+  // `speakerCorrectionBusyClusterId` is a single shared id: with two clusters
+  // written concurrently, the first `finally` clears it while the second write is
+  // still in flight, so every chip re-enables mid-write and a second click lands
+  // on a row the first write is still changing. Speaker writes have no backend
+  // inverse, so that is not something the user can undo.
+  async function runSpeakerCorrection(
+    clusterId: number,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    if (speakerCorrectionBusyClusterId !== null) return;
     speakerCorrectionBusyClusterId = clusterId;
     speakerCorrectionError = null;
     try {
-      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
-      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
+      await write();
     } catch (err) {
       speakerCorrectionError = humanizeError(err);
     } finally {
@@ -1268,12 +1275,19 @@
     }
   }
 
+  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
+    const trimmedLabel = label.trim();
+    if (trimmedLabel.length === 0) return;
+    await runSpeakerCorrection(clusterId, async () => {
+      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
+    });
+  }
+
   async function createAndLinkSpeakerProfile(clusterId: number, displayName: string): Promise<void> {
     const trimmedDisplayName = displayName.trim();
     if (trimmedDisplayName.length === 0) return;
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       const profile = await invoke<PersonProfileDto>("create_person_profile", {
         request: { displayName: trimmedDisplayName, notes: null },
       });
@@ -1281,68 +1295,40 @@
         request: { clusterId, personId: profile.id, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function linkSpeakerCluster(clusterId: number, personId: number): Promise<void> {
     if (!Number.isFinite(personId) || personId <= 0) return;
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("link_speaker_cluster_to_person", {
         request: { clusterId, personId, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function confirmSpeakerSuggestion(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("confirm_speaker_recognition_suggestion", {
         request: { clusterId, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function rejectSpeakerSuggestion(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("reject_speaker_recognition_suggestion", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function unlinkSpeakerProfile(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("unlink_speaker_cluster_from_person", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function mergeSpeakerClusterById(
@@ -1350,18 +1336,12 @@
     targetClusterId: number | null,
   ): Promise<void> {
     if (targetClusterId == null || !Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    speakerCorrectionBusyClusterId = sourceClusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(sourceClusterId, async () => {
       await invoke("merge_speaker_clusters", {
         request: { sourceClusterId, targetClusterId },
       });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function moveSpeakerBlockTurns(
@@ -1369,20 +1349,14 @@
     targetClusterId: number,
   ): Promise<void> {
     if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    speakerCorrectionBusyClusterId = group.clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(group.clusterId, async () => {
       for (const turnId of group.turnIds) {
         await invoke("move_speaker_turn_to_cluster", {
           request: { turnId, targetClusterId },
         });
       }
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   function clearSelectedAudioTranscriptPoll(): void {
