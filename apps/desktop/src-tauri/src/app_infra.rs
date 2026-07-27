@@ -4807,25 +4807,62 @@ pub async fn get_audio_segment_media(
 ///
 /// Never errors: any failure (unknown segment, missing file, undecodable
 /// audio) returns an empty `Vec` so a decode hiccup degrades the scrubber to a
-/// plain bar instead of breaking the reader.
+/// plain bar instead of breaking the reader. A *failure* still leaves a log
+/// breadcrumb on the way out — otherwise a `SQLITE_BUSY` lookup or a panicking
+/// FFI decode is byte-identical to a genuinely silent segment and undiagnosable.
 #[tauri::command]
 pub async fn get_audio_segment_waveform_peaks(
     request: GetAudioSegmentWaveformPeaksRequest,
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Vec<f32>, String> {
     let infra = Arc::clone(&*state);
-    let Ok(Some(segment)) = infra.get_audio_segment(request.audio_segment_id).await else {
-        return Ok(Vec::new());
+    let lookup = infra.get_audio_segment(request.audio_segment_id).await;
+    let file_path = match waveform_peaks_segment_path(request.audio_segment_id, lookup) {
+        Ok(Some(file_path)) => file_path,
+        Ok(None) => return Ok(Vec::new()),
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(error);
+            return Ok(Vec::new());
+        }
     };
-    let file_path = PathBuf::from(&segment.file_path);
     let bucket_count = request.bucket_count;
+    let task = tauri::async_runtime::spawn_blocking(move || {
+        audio_transcription::audio_waveform_peaks(&file_path, bucket_count)
+    });
     Ok(
-        tauri::async_runtime::spawn_blocking(move || {
-            audio_transcription::audio_waveform_peaks(&file_path, bucket_count)
-        })
-        .await
-        .unwrap_or_default(),
+        join_waveform_peaks(request.audio_segment_id, task)
+            .await
+            .unwrap_or_else(|error| {
+                crate::native_capture::debug_log::log_error(error);
+                Vec::new()
+            }),
     )
+}
+
+/// `Ok(None)` = "this segment has no waveform" (unknown id). A lookup *failure*
+/// is not the same thing and must not be silently reported as one.
+fn waveform_peaks_segment_path(
+    audio_segment_id: i64,
+    lookup: ::app_infra::Result<Option<::app_infra::AudioSegment>>,
+) -> Result<Option<PathBuf>, String> {
+    match lookup {
+        Ok(Some(segment)) => Ok(Some(PathBuf::from(&segment.file_path))),
+        Ok(None) => Ok(None),
+        Err(error) => Err(format!(
+            "failed to get audio segment {audio_segment_id}: {error}"
+        )),
+    }
+}
+
+/// Joins the blocking decode. A panic inside the AVFoundation/cidre FFI still
+/// degrades to an empty waveform, but must not vanish without a breadcrumb.
+async fn join_waveform_peaks(
+    audio_segment_id: i64,
+    task: JoinHandle<Vec<f32>>,
+) -> Result<Vec<f32>, String> {
+    task.await.map_err(|error| {
+        format!("waveform peak decode for audio segment {audio_segment_id} failed: {error}")
+    })
 }
 
 #[tauri::command]
@@ -5376,6 +5413,65 @@ mod tests {
                 "non-http(s) captured url must be rejected by the open gate: {rejected:?}"
             );
         }
+    }
+
+    // The waveform scrubber degrades to a plain bar on an empty peak list, so
+    // "empty" is only allowed to mean "this segment genuinely has no waveform".
+    // A failed lookup (SQLITE_BUSY under a lock storm, pool starvation) is a
+    // failure: the command still degrades, but it must not be indistinguishable
+    // from success on the way there.
+    #[test]
+    fn a_failed_segment_lookup_is_not_an_empty_waveform() {
+        let failure = waveform_peaks_segment_path(
+            41,
+            Err(::app_infra::AppInfraError::Sqlx(sqlx::Error::PoolTimedOut)),
+        );
+
+        let error = failure
+            .expect_err("a database failure must not be reported as a segment with no waveform");
+        assert!(
+            error.contains("41"),
+            "the error should name the audio segment: {error}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_segment_is_still_an_empty_waveform() {
+        assert_eq!(
+            waveform_peaks_segment_path(41, Ok(None)).expect("an unknown segment is not an error"),
+            None
+        );
+    }
+
+    // A panic inside the AVFoundation/cidre decode still degrades to a plain
+    // scrub bar, but it must leave a breadcrumb: an FFI crash that produces the
+    // exact same value as "this file is silent" is undiagnosable.
+    #[test]
+    fn a_panicking_waveform_decode_is_reported_not_defaulted_away() {
+        let outcome = tauri::async_runtime::block_on(join_waveform_peaks(
+            41,
+            tauri::async_runtime::spawn_blocking(|| -> Vec<f32> { panic!("cidre decode blew up") }),
+        ));
+
+        let error = outcome
+            .expect_err("a panicking decode must be reported, not returned as an empty waveform");
+        assert!(
+            error.contains("41"),
+            "the failure should name the audio segment: {error}"
+        );
+    }
+
+    #[test]
+    fn a_successful_waveform_decode_passes_its_peaks_through() {
+        let outcome = tauri::async_runtime::block_on(join_waveform_peaks(
+            41,
+            tauri::async_runtime::spawn_blocking(|| vec![0.25_f32, 1.0]),
+        ));
+
+        assert_eq!(
+            outcome.expect("a successful decode should not be an error"),
+            vec![0.25, 1.0]
+        );
     }
 
     struct TestDir {
