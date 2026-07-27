@@ -2360,6 +2360,26 @@ impl ProcessingStore {
             )
             .await?;
         }
+        // Assigning someone else also answers a *pending* guess with "no, it is this
+        // other person" — the one-click correction, with no "Not Jack" press. That is
+        // a veto too, and recording it is what makes it stick: without it the guess is
+        // merely masked by `person_id`, so a later unlink resurfaces the name the user
+        // took back (timeline, Ask AI, broker), recognition re-suggests that person on
+        // every later segment, and the confirmed-person conflict in
+        // `resolve_stable_speaker_cluster` splits the corrected voice into a fresh
+        // cluster each time.
+        if cluster
+            .recognition_person_id
+            .is_some_and(|existing| existing != person_id)
+        {
+            persist_speaker_recognition_rejection_for_cluster(
+                &mut transaction,
+                &cluster,
+                cluster_id,
+                cluster.recognition_person_id,
+            )
+            .await?;
+        }
         // The user just said this cluster *is* that person, which contradicts any
         // prior "not this person" rejection for the same pair.
         sqlx::query(
@@ -2509,6 +2529,26 @@ impl ProcessingStore {
         .bind(source_cluster_id)
         .bind(target_cluster_id)
         .bind(target.person_id)
+        .execute(&mut *transaction)
+        .await?;
+        // Inheriting a veto has to take the matching guess with it, like every other
+        // veto path: a target left publishing "is this Jack?" while carrying "not
+        // Jack" hands the timeline a Confirm button for the person the user just
+        // rejected on the voice being merged in, and republishes that name to Ask AI
+        // and the broker. The correlated `EXISTS` keeps the whole recognition triple
+        // coherent and is a no-op when there is no guess.
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 \
+               AND EXISTS (\
+                    SELECT 1 FROM speaker_recognition_rejections \
+                    WHERE source_cluster_id = ?1 \
+                      AND person_id = recording_speaker_clusters.recognition_person_id\
+               )",
+        )
+        .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
         purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
@@ -2698,6 +2738,10 @@ async fn persist_speaker_analysis_output(
     .await?;
 
     let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
+    // Every `provider_cluster_id` this run has already put a voice on. Two voices
+    // sharing one would fold them onto a single row through the `ON CONFLICT`
+    // upsert below — see the mint guard further down.
+    let mut claimed_provider_cluster_ids = BTreeSet::<String>::new();
     for cluster in &output.clusters {
         let (mut suggested_person_id, mut recognition_confidence, mut recognition_score) = cluster
             .suggestion
@@ -2720,12 +2764,44 @@ async fn persist_speaker_analysis_output(
             suggested_person_id,
         )
         .await?;
+        let own_provider_cluster_id = format!("{audio_segment_id}:{}", cluster.provider_cluster_id);
         let stable_provider_cluster_id =
             if let Some(target_cluster_id) = merge_candidate.auto_merge_target_cluster_id {
+                // An auto-merge makes the same claim `merge_speaker_clusters` does —
+                // one speaker — so the absorbed cluster's "not this person" has to
+                // travel with its turns. Without this the absorbed row ends the
+                // transaction turn-less and link-less, the second pass collects it,
+                // `ON DELETE SET NULL` orphans the veto, and the person the user
+                // rejected gets suggested again on the surviving cluster.
+                carry_speaker_rejections_to_auto_merge_target(
+                    transaction,
+                    &output.metadata.session_id,
+                    &output.metadata.provider,
+                    &own_provider_cluster_id,
+                    target_cluster_id,
+                )
+                .await?;
                 existing_speaker_cluster_provider_id(transaction, target_cluster_id).await?
             } else {
-                format!("{audio_segment_id}:{}", cluster.provider_cluster_id)
+                // A rejection-carrying cluster survives re-analysis still owning its
+                // old `{segment}:{label}` id, and diarizers renumber labels between
+                // runs — so an earlier cluster of THIS run can already have claimed
+                // the id this voice would mint (by auto-merging into that survivor).
+                // Sharing it collapses two speakers onto one row via `ON CONFLICT`:
+                // one speaker in the timeline instead of two, both voices' turns on
+                // one cluster, and the second voice overwriting the first's embedding.
+                let mut minted = own_provider_cluster_id;
+                let mut attempt = 2;
+                while claimed_provider_cluster_ids.contains(&minted) {
+                    minted = format!(
+                        "{audio_segment_id}:{}:{attempt}",
+                        cluster.provider_cluster_id
+                    );
+                    attempt += 1;
+                }
+                minted
             };
+        claimed_provider_cluster_ids.insert(stable_provider_cluster_id.clone());
 
         // Per-cluster rejection veto: "never suggest P for *this* cluster". This is
         // the first point where cluster identity exists (the provider runs before any
@@ -2879,12 +2955,52 @@ async fn persist_speaker_analysis_output(
     Ok(())
 }
 
+/// Move an auto-merged-away cluster's rejections onto the cluster that absorbed
+/// its turns — the same transfer `merge_speaker_clusters` does, for the same
+/// reason. `OR IGNORE` skips a veto the target already carries, and `IS NOT` is
+/// NULL-safe so an unnamed target inherits all of them; a veto of the person the
+/// target *is* stays behind and dies with the absorbed row.
+async fn carry_speaker_rejections_to_auto_merge_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+    absorbed_provider_cluster_id: &str,
+    target_cluster_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE OR IGNORE speaker_recognition_rejections \
+         SET source_cluster_id = ?4 \
+         WHERE source_cluster_id = (\
+                SELECT id FROM recording_speaker_clusters \
+                WHERE session_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3\
+           ) \
+           AND person_id IS NOT (\
+                SELECT person_id FROM recording_speaker_clusters WHERE id = ?4\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .bind(absorbed_provider_cluster_id)
+    .bind(target_cluster_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
 /// Second pass, run once the turns are back. A rejection-carrying cluster is
-/// spared by the first pass only so re-analysis can reclaim its id; one that did
-/// not get its turns back is obsolete exactly like any other, and leaving it
-/// behind puts a turn-less ghost speaker into `list_speaker_clusters_for_session`
-/// (what the timeline renders) forever. Its rejections go with it — they
-/// described a cluster that no longer exists.
+/// spared by the first pass only so re-analysis can reclaim its id; one that is
+/// genuinely obsolete has to go, or it leaves a turn-less ghost speaker in
+/// `list_speaker_clusters_for_session` (what the timeline renders) forever.
+///
+/// "Obsolete" is retention's own definition (`gc_orphan_speaker_rows`): no turns
+/// AND no segment-cluster link. Turns alone is not enough — a provider can
+/// re-emit a cluster with no turns at all, because speakrs derives clusters from
+/// per-chunk centroids and turns from the diarization segments, two independent
+/// arrays. Deleting on "no turns" alone destroys the user's veto for a voice this
+/// very run confirmed is still there, while the identical turn-less cluster
+/// *without* a veto survives — carrying user data cannot be what makes a row
+/// deletable. A cluster absorbed by an auto-merge has already handed its
+/// rejections to the merge target, so nothing is lost when this collects it.
 async fn purge_spared_rejected_speaker_clusters_without_turns(
     transaction: &mut Transaction<'_, Sqlite>,
     session_id: &str,
@@ -2896,6 +3012,10 @@ async fn purge_spared_rejected_speaker_clusters_without_turns(
            AND NOT EXISTS (\
                 SELECT 1 FROM speaker_turns \
                 WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_segment_clusters \
+                WHERE speaker_segment_clusters.stable_cluster_id = recording_speaker_clusters.id\
            ) \
            AND EXISTS (\
                 SELECT 1 FROM speaker_recognition_rejections \

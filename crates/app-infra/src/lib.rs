@@ -4813,6 +4813,493 @@ mod tests {
         });
     }
 
+    /// One output, several voices, explicit labels and embeddings — the shape a
+    /// diarizer actually varies between runs of the same segment.
+    fn speaker_output_for_voices(
+        session_id: &str,
+        audio_segment_id: i64,
+        voices: &[(&str, &[f32])],
+    ) -> speaker_analysis::SpeakerAnalysisOutput {
+        let mut output = speaker_analysis_output_for_segment(
+            session_id,
+            audio_segment_id,
+            voices[0].0,
+            voices[0].1,
+            Some("hello"),
+        );
+        for (label, embedding) in &voices[1..] {
+            let mut next = speaker_analysis_output_for_segment(
+                session_id,
+                audio_segment_id,
+                label,
+                embedding,
+                Some("hello"),
+            );
+            output.clusters.append(&mut next.clusters);
+            output.turns.append(&mut next.turns);
+        }
+        output
+    }
+
+    fn jack_suggestion(person_id: i64) -> speaker_analysis::SpeakerRecognitionSuggestion {
+        speaker_analysis::SpeakerRecognitionSuggestion {
+            person_id,
+            display_name: "Jack".to_string(),
+            confidence: speaker_analysis::RecognitionConfidence::High,
+            score: 0.91,
+        }
+    }
+
+    /// Naming someone else answers a pending guess with "no, it is this other
+    /// person" — a veto with no "Not Jack" press, and the one-click path users
+    /// actually take. Unrecorded, `person_id` merely masks the guess: a later
+    /// unlink resurfaces the name the user took back (timeline, Ask AI, broker)
+    /// and recognition keeps re-suggesting it on every later segment.
+    #[test]
+    fn linking_over_an_unconfirmed_guess_vetoes_the_guessed_person() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-link-over-guess");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let jill = infra
+                .create_person_profile("Jill", None)
+                .await
+                .expect("person profile should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "link-over-guess-session",
+                    1,
+                    "/tmp/link-over-guess.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_suggesting(
+                    "link-over-guess-session",
+                    segment.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("link-over-guess-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.suggested_person_id, Some(jack.id));
+
+            // No explicit rejection — the user just says who it really is.
+            infra
+                .link_speaker_cluster_to_person(cluster.id, jill.id, false)
+                .await
+                .expect("cluster should link");
+
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(cluster.id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id],
+                "naming someone else is a veto of the guess it replaced"
+            );
+            let after = infra
+                .list_speaker_clusters_for_session("link-over-guess-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(after.person_id, Some(jill.id));
+            assert_eq!(after.suggested_person_id, None);
+        });
+    }
+
+    /// A target that inherits "not Jack" must lose its own "is this Jack?" with
+    /// it. Left behind, the timeline shows a Confirm button for the person the
+    /// user just rejected on the voice being merged in — and republishes that
+    /// name to Ask AI and the broker.
+    #[test]
+    fn merging_a_vetoed_cluster_clears_the_targets_guess_for_that_person() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-merge-clears-guess");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let mut segments = Vec::new();
+            for index in 1..=2 {
+                segments.push(
+                    infra
+                        .upsert_audio_segment(&NewAudioSegment::new(
+                            AudioSegmentSourceKind::Microphone,
+                            "merge-clears-guess-session",
+                            index,
+                            format!("/tmp/merge-clears-guess-{index}.m4a"),
+                            "2026-04-12T10:00:00Z",
+                            "2026-04-12T10:01:00Z",
+                        ))
+                        .await
+                        .expect("segment should insert"),
+                );
+            }
+            // Two voices the resolver keeps apart, both guessed as Jack.
+            for (segment, embedding) in segments.iter().zip([[1.0, 0.0], [0.0, 1.0]]) {
+                complete_speaker_output(
+                    &infra,
+                    segment,
+                    speaker_output_suggesting(
+                        "merge-clears-guess-session",
+                        segment.id,
+                        &embedding,
+                        jack.id,
+                    ),
+                )
+                .await;
+            }
+            let clusters = infra
+                .list_speaker_clusters_for_session("merge-clears-guess-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 2);
+            let target_cluster_id = clusters[0].id;
+            let source_cluster_id = clusters[1].id;
+            infra
+                .reject_speaker_recognition_suggestion(source_cluster_id)
+                .await
+                .expect("suggestion should reject");
+            assert_eq!(clusters[0].suggested_person_id, Some(jack.id));
+
+            infra
+                .merge_speaker_clusters(source_cluster_id, target_cluster_id)
+                .await
+                .expect("clusters should merge");
+
+            let merged = infra
+                .list_speaker_clusters_for_session("merge-clears-guess-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .find(|cluster| cluster.id == target_cluster_id)
+                .expect("target should survive");
+            assert_eq!(
+                merged.suggested_person_id, None,
+                "a cluster carrying 'not Jack' must not still be asking 'is this Jack?'"
+            );
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(target_cluster_id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id]
+            );
+        });
+    }
+
+    /// An auto-merge makes the same claim a manual merge does — one speaker — so
+    /// the absorbed cluster's veto has to travel with its turns. Without the
+    /// carry, the absorbed row ends the transaction turn-less, the second pass
+    /// collects it, `ON DELETE SET NULL` orphans the veto, and the person the
+    /// user rejected gets suggested again on the surviving cluster.
+    #[test]
+    fn reanalysis_auto_merge_carries_the_rejection_to_the_cluster_that_took_the_turns() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-auto-merge-carry");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let mut segments = Vec::new();
+            for index in 1..=2 {
+                segments.push(
+                    infra
+                        .upsert_audio_segment(&NewAudioSegment::new(
+                            AudioSegmentSourceKind::Microphone,
+                            "auto-merge-carry-session",
+                            index,
+                            format!("/tmp/auto-merge-carry-{index}.m4a"),
+                            "2026-04-12T10:00:00Z",
+                            "2026-04-12T10:01:00Z",
+                        ))
+                        .await
+                        .expect("segment should insert"),
+                );
+            }
+            complete_speaker_output(
+                &infra,
+                &segments[0],
+                speaker_output_suggesting(
+                    "auto-merge-carry-session",
+                    segments[0].id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+            let rejected_cluster = infra
+                .list_speaker_clusters_for_session("auto-merge-carry-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(rejected_cluster.id)
+                .await
+                .expect("suggestion should reject");
+            // A second voice, its own cluster.
+            complete_speaker_output(
+                &infra,
+                &segments[1],
+                speaker_analysis_output_for_segment(
+                    "auto-merge-carry-session",
+                    segments[1].id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    Some("other"),
+                ),
+            )
+            .await;
+
+            // Re-analysis of the first segment now hears the second voice, so its
+            // cluster auto-merges into the one that already owns it.
+            complete_speaker_output(
+                &infra,
+                &segments[0],
+                speaker_analysis_output_for_segment(
+                    "auto-merge-carry-session",
+                    segments[0].id,
+                    "speaker_00",
+                    &[0.0, 1.0],
+                    Some("hello"),
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("auto-merge-carry-session")
+                .await
+                .expect("clusters should list");
+            let survivor = clusters
+                .iter()
+                .find(|cluster| {
+                    cluster.provider_cluster_id == format!("{}:speaker_00", segments[1].id)
+                })
+                .expect("the absorbing cluster should survive");
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(survivor.id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id],
+                "the veto follows the turns into the cluster that absorbed them"
+            );
+        });
+    }
+
+    /// A veto-carrying cluster survives re-analysis still owning its old
+    /// `{segment}:{label}` id, and diarizers renumber labels between runs — so an
+    /// earlier cluster of the same run can auto-merge into that survivor and claim
+    /// the id a later voice would mint. Sharing it collapses two speakers onto one
+    /// row through the `ON CONFLICT` upsert: one speaker in the timeline instead of
+    /// two, both voices' turns on it, the second overwriting the first's embedding.
+    #[test]
+    fn reanalysis_with_swapped_provider_labels_keeps_two_speakers_apart() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-label-swap");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "label-swap-session",
+                    1,
+                    "/tmp/label-swap.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            let mut first_run = speaker_output_for_voices(
+                "label-swap-session",
+                segment.id,
+                &[("speaker_00", &[1.0, 0.0, 0.0]), ("speaker_01", &[0.0, 1.0, 0.0])],
+            );
+            first_run.clusters[1].suggestion = Some(jack_suggestion(jack.id));
+            complete_speaker_output(&infra, &segment, first_run).await;
+            let vetoed_cluster = infra
+                .list_speaker_clusters_for_session("label-swap-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .find(|cluster| {
+                    cluster.provider_cluster_id == format!("{}:speaker_01", segment.id)
+                })
+                .expect("second cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(vetoed_cluster.id)
+                .await
+                .expect("suggestion should reject");
+
+            // Same segment re-analysed: the veto-carrying voice now comes back under
+            // `speaker_00`, and a voice nobody has heard before takes `speaker_01`.
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_for_voices(
+                    "label-swap-session",
+                    segment.id,
+                    &[("speaker_00", &[0.0, 1.0, 0.0]), ("speaker_01", &[0.0, 0.0, 1.0])],
+                ),
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("label-swap-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(
+                clusters.len(),
+                2,
+                "a renumbered label must not fold two voices onto one cluster row"
+            );
+            let survivor = clusters
+                .iter()
+                .find(|cluster| cluster.id == vetoed_cluster.id)
+                .expect("the veto-carrying cluster should survive");
+            let newcomer = clusters
+                .iter()
+                .find(|cluster| cluster.id != vetoed_cluster.id)
+                .expect("the new voice should get its own cluster");
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(survivor.id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id]
+            );
+            assert!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(newcomer.id)
+                    .await
+                    .expect("rejections should list")
+                    .is_empty(),
+                "a stranger's voice must not inherit the veto"
+            );
+        });
+    }
+
+    /// "Obsolete" is retention's definition — no turns AND no segment-cluster
+    /// link. Turns alone is not enough: speakrs derives clusters from per-chunk
+    /// centroids and turns from diarization segments, two independent arrays, so a
+    /// provider can re-emit a cluster with no turns at all. Deleting on "no turns"
+    /// destroys the veto for a voice this very run confirmed is still there, while
+    /// the identical turn-less cluster *without* a veto survives.
+    #[test]
+    fn reanalysis_keeps_a_rejected_cluster_the_provider_re_emitted_without_turns() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-reemitted-turnless");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "reemitted-turnless-session",
+                    1,
+                    "/tmp/reemitted-turnless.m4a",
+                    "2026-04-12T10:00:00Z",
+                    "2026-04-12T10:01:00Z",
+                ))
+                .await
+                .expect("segment should insert");
+            complete_speaker_output(
+                &infra,
+                &segment,
+                speaker_output_suggesting(
+                    "reemitted-turnless-session",
+                    segment.id,
+                    &[1.0, 0.0],
+                    jack.id,
+                ),
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("reemitted-turnless-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .reject_speaker_recognition_suggestion(cluster.id)
+                .await
+                .expect("suggestion should reject");
+
+            // The same voice comes back as a centroid with no diarization segments.
+            let mut turnless = speaker_analysis_output_for_segment(
+                "reemitted-turnless-session",
+                segment.id,
+                "speaker_00",
+                &[1.0, 0.0],
+                Some("hello"),
+            );
+            turnless.turns.clear();
+            complete_speaker_output(&infra, &segment, turnless).await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("reemitted-turnless-session")
+                .await
+                .expect("clusters should list");
+            assert_eq!(
+                clusters.len(),
+                1,
+                "a cluster the provider just re-emitted is not obsolete"
+            );
+            assert_eq!(
+                infra
+                    .processing
+                    .list_rejected_person_ids_for_speaker_cluster(clusters[0].id)
+                    .await
+                    .expect("rejections should list"),
+                vec![jack.id],
+                "carrying the user's veto must not be what makes a row deletable"
+            );
+        });
+    }
+
     #[test]
     fn saved_speaker_profile_embedding_is_available_to_later_sessions() {
         run_async_test(async {
