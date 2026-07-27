@@ -259,7 +259,10 @@ struct TimelineIntervalData {
     kind: String,
     started_at: String,
     ended_at: String,
-    summary: Option<String>,
+    /// Followable capture id — pass it to `show-text`. Absent when the interval has
+    /// no representative capture to point at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opaque_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<SearchResultContextData>,
 }
@@ -471,7 +474,7 @@ async fn execute_data_request(
         BrokeredCaptureResponse::ShowText(response) if command == "show-text" => {
             serde_json::to_value(ShowTextData {
                 id: response.opaque_id,
-                kind: map_kind(&response.kind),
+                kind: response.kind,
                 text: response.text,
                 speakers: response.speakers,
             })
@@ -860,7 +863,7 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
             .into_iter()
             .map(|result| SearchResultData {
                 id: result.opaque_id,
-                kind: map_kind(&result.kind),
+                kind: result.kind,
                 snippet: result.snippet,
                 started_at: result.started_at,
                 ended_at: result.ended_at,
@@ -884,14 +887,12 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
             .intervals
             .into_iter()
             .map(|interval| TimelineIntervalData {
-                kind: if interval.kind.starts_with("audio") {
-                    "audio".to_string()
-                } else {
-                    "screen".to_string()
-                },
+                // Broker kinds pass through verbatim: renaming them here would hide
+                // mic-vs-system audio from every agent reading this output.
+                kind: interval.kind,
                 started_at: interval.started_at,
                 ended_at: interval.ended_at.unwrap_or_default(),
-                summary: None,
+                opaque_id: interval.opaque_id,
                 context: interval.context.map(|context| SearchResultContextData {
                     app_bundle_id: context.app_bundle_id,
                     app_name: context.app_name,
@@ -903,15 +904,6 @@ fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineRespons
         limit: response.limit,
         truncated,
     }
-}
-
-fn map_kind(kind: &str) -> String {
-    match kind {
-        "frame" => "screenText",
-        "audio" => "audioTranscript",
-        other => other,
-    }
-    .to_string()
 }
 
 fn client_envelope(identity: &BrokerClientIdentity) -> ClientEnvelope {
@@ -1175,10 +1167,10 @@ mod tests {
     fn timeline_mapping_preserves_allowlisted_context() {
         let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
             intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
-                kind: "screen".to_string(),
+                kind: "frame".to_string(),
                 started_at: "2026-05-17T10:00:00Z".to_string(),
                 ended_at: Some("2026-05-17T10:00:00Z".to_string()),
-                reason: None,
+                opaque_id: None,
                 context: Some(app_infra::brokered_access::BrokerSearchResultContext {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
@@ -1197,6 +1189,82 @@ mod tests {
         assert_eq!(context.app_name.as_deref(), Some("Linear"));
         assert_eq!(context.window_title.as_deref(), Some("Roadmap"));
         assert_eq!(context.url.as_deref(), Some("linear.app/team/roadmap"));
+    }
+
+    #[test]
+    fn timeline_mapping_passes_broker_kinds_and_opaque_ids_through() {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
+            intervals: vec![
+                timeline_interval("frame", Some("f1.signature")),
+                timeline_interval("audio_microphone", Some("a1.signature")),
+                timeline_interval("audio_system", None),
+            ],
+            limit: 3,
+        });
+
+        assert_eq!(
+            data.intervals
+                .iter()
+                .map(|interval| interval.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio_microphone", "audio_system"],
+            "broker kinds must reach the agent unrenamed"
+        );
+        assert_eq!(data.intervals[1].opaque_id.as_deref(), Some("a1.signature"));
+
+        let json = serde_json::to_string(&data.intervals[2]).expect("interval should serialize");
+        assert!(
+            !json.contains("opaqueId"),
+            "an interval with nothing to follow omits the field: {json}"
+        );
+        assert!(
+            !json.contains("summary"),
+            "the phantom summary field is gone: {json}"
+        );
+    }
+
+    #[test]
+    fn search_mapping_passes_broker_kinds_through() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![
+                search_result_with_kind("f1", "frame"),
+                search_result_with_kind("a1", "audio_microphone"),
+                search_result_with_kind("a2", "audio_system"),
+            ],
+            limit: 3,
+            next_cursor: None,
+        });
+
+        assert_eq!(
+            data.results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio_microphone", "audio_system"]
+        );
+    }
+
+    fn timeline_interval(
+        kind: &str,
+        opaque_id: Option<&str>,
+    ) -> app_infra::brokered_access::BrokerTimelineInterval {
+        app_infra::brokered_access::BrokerTimelineInterval {
+            kind: kind.to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: Some("2026-05-17T10:00:30Z".to_string()),
+            opaque_id: opaque_id.map(str::to_string),
+            context: None,
+        }
+    }
+
+    fn search_result_with_kind(
+        id: &str,
+        kind: &str,
+    ) -> app_infra::brokered_access::BrokerSearchResult {
+        app_infra::brokered_access::BrokerSearchResult {
+            kind: kind.to_string(),
+            ..search_result(id)
+        }
     }
 
     #[test]

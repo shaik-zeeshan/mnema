@@ -419,7 +419,10 @@ pub struct BrokerTimelineInterval {
     pub kind: String,
     pub started_at: String,
     pub ended_at: Option<String>,
-    pub reason: Option<String>,
+    /// Followable capture id for this interval (`show-text` resolves it). Absent
+    /// when the interval has no representative capture to point at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub opaque_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<BrokerSearchResultContext>,
 }
@@ -704,7 +707,7 @@ impl BrokeredCaptureAccess {
             }
             BrokeredCaptureRequest::Timeline(request) => {
                 let infra = self.initialize_infra().await?;
-                match broker_timeline(&infra, grants, request).await? {
+                match broker_timeline(&self.config_dir, &infra, grants, request).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::Timeline(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
@@ -1532,17 +1535,35 @@ async fn broker_show_text(
             message: "result is unavailable or outside the grant scope".to_string(),
         }));
     };
-    let speakers = if subject.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
-        broker_speakers_for_audio(infra, subject.subject_id).await?
+    let (kind, speakers) = if subject.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
+        // Kind comes from the segment, not from the opaque id's `"audio"` prefix:
+        // reporting the prefix here would leave a third audio vocabulary behind
+        // the one `search` and `timeline` publish.
+        let Some(segment) = infra.get_audio_segment(subject.subject_id).await? else {
+            return Ok(Err(outside_scope_error()));
+        };
+        (
+            broker_audio_kind(&segment.source_kind).to_string(),
+            broker_speakers_for_audio(infra, subject.subject_id).await?,
+        )
     } else {
-        Vec::new()
+        (reference.kind, Vec::new())
     };
     Ok(Ok(BrokerShowTextResponse {
         opaque_id: opaque_id.to_string(),
-        kind: reference.kind,
+        kind,
         text,
         speakers,
     }))
+}
+
+/// One audio vocabulary across `search`, `timeline`, and `show-text`: an agent that
+/// cannot tell the user's own voice from playback will attribute a podcast to them.
+fn broker_audio_kind(source_kind: &AudioSegmentSourceKind) -> &'static str {
+    match source_kind {
+        AudioSegmentSourceKind::Microphone => "audio_microphone",
+        AudioSegmentSourceKind::SystemAudio => "audio_system",
+    }
 }
 
 async fn broker_speakers_for_audio(
@@ -1745,6 +1766,7 @@ async fn broker_authorize_opaque_reference(
 }
 
 async fn broker_timeline(
+    config_dir: &Path,
     infra: &AppInfra,
     grants: &[BrokerGrant],
     request: BrokerTimelineRequest,
@@ -1762,6 +1784,8 @@ async fn broker_timeline(
     let window_title = broker_optional_filter(request.window_title, "windowTitle")?;
     let url = broker_optional_filter(request.url, "url")?;
     let url_regex = broker_url_regex_filter(request.url_regex)?;
+    let opaque_secret = load_or_create_opaque_secret(config_dir)?;
+    let opaque_grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
     if app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some() {
         // Any context filter narrows to captured frames: audio segments carry no
         // app, window title, or url to match against.
@@ -1773,11 +1797,24 @@ async fn broker_timeline(
             url.as_deref(),
             url_regex.as_deref(),
             limit,
+            opaque_grant_id,
+            &opaque_secret,
         )
         .await?;
         return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
     }
-    let mut intervals = broker_frame_timeline(infra, &range, None, None, None, None, limit).await?;
+    let mut intervals = broker_frame_timeline(
+        infra,
+        &range,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        opaque_grant_id,
+        &opaque_secret,
+    )
+    .await?;
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?
@@ -1785,13 +1822,15 @@ async fn broker_timeline(
         .take(limit as usize)
     {
         intervals.push(BrokerTimelineInterval {
-            kind: match audio.source_kind {
-                AudioSegmentSourceKind::Microphone => "audio_microphone".to_string(),
-                AudioSegmentSourceKind::SystemAudio => "audio_system".to_string(),
-            },
+            kind: broker_audio_kind(&audio.source_kind).to_string(),
             started_at: audio.started_at,
             ended_at: Some(audio.ended_at),
-            reason: None,
+            opaque_id: Some(encode_signed_opaque_id(
+                "audio",
+                audio.id,
+                opaque_grant_id,
+                &opaque_secret,
+            )),
             context: None,
         });
     }
@@ -1813,6 +1852,8 @@ async fn broker_frame_timeline(
     url: Option<&str>,
     url_regex: Option<&str>,
     limit: u32,
+    opaque_grant_id: Option<&str>,
+    opaque_secret: &[u8],
 ) -> Result<Vec<BrokerTimelineInterval>> {
     // `representative_frame_id` must be the frame_id of the SAME `MAX(id)` row that
     // drives the interval's ordering (its landing frame), DETERMINISTICALLY. A bare
@@ -1878,10 +1919,12 @@ async fn broker_frame_timeline(
             .and_then(|snapshot| snapshot.browser_url.as_deref())
             .and_then(url_guard::guard_url);
         intervals.push(BrokerTimelineInterval {
-            kind: "screen".to_string(),
+            kind: "frame".to_string(),
             started_at: row.get("started_at"),
             ended_at: Some(row.get("ended_at")),
-            reason: None,
+            opaque_id: representative_frame_id.map(|frame_id| {
+                encode_signed_opaque_id("frame", frame_id, opaque_grant_id, opaque_secret)
+            }),
             context: broker_search_result_context(app_bundle_id, app_name, window_title, url),
         });
     }
@@ -2466,7 +2509,7 @@ fn map_search_response(
                     grant_id,
                     opaque_secret,
                 ),
-                kind: "audio".to_string(),
+                kind: broker_audio_kind(&audio_result.audio_segment.source_kind).to_string(),
                 snippet: audio_result.snippet,
                 started_at: audio_result.absolute_start_at,
                 ended_at: audio_result.absolute_end_at,
@@ -3425,7 +3468,7 @@ mod tests {
                 .iter()
                 .map(|result| result.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["frame", "audio"]
+            vec!["frame", "audio_microphone"]
         );
         assert!(mapped.results[0].opaque_id.contains('.'));
         assert_ne!(mapped.results[0].opaque_id, "fb");
@@ -3590,7 +3633,7 @@ mod tests {
                 .iter()
                 .map(|result| result.kind.as_str())
                 .collect::<Vec<_>>(),
-            vec!["audio", "frame"]
+            vec!["audio_microphone", "frame"]
         );
         assert_eq!(mapped.next_cursor.as_deref(), Some("v1:1:1:1"));
     }
@@ -3848,7 +3891,7 @@ mod tests {
 
         let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
 
-        assert_eq!(mapped.results[0].kind, "audio");
+        assert_eq!(mapped.results[0].kind, "audio_microphone");
         assert_eq!(mapped.results[0].context, None);
     }
 
@@ -4020,6 +4063,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4037,7 +4081,7 @@ mod tests {
             .expect("timeline should be authorized");
 
             assert_eq!(response.intervals.len(), 1);
-            assert_eq!(response.intervals[0].kind, "screen");
+            assert_eq!(response.intervals[0].kind, "frame");
             assert_eq!(
                 response.intervals[0]
                     .context
@@ -4220,6 +4264,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4239,7 +4284,7 @@ mod tests {
             let screen = response
                 .intervals
                 .iter()
-                .find(|interval| interval.kind == "screen")
+                .find(|interval| interval.kind == "frame")
                 .expect("screen interval should be present");
             assert_eq!(
                 screen
@@ -4281,6 +4326,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4300,7 +4346,7 @@ mod tests {
             let screen = response
                 .intervals
                 .iter()
-                .find(|interval| interval.kind == "screen")
+                .find(|interval| interval.kind == "frame")
                 .expect("screen interval should be present");
             let context = screen
                 .context
@@ -4417,6 +4463,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4436,7 +4483,7 @@ mod tests {
             let screen = response
                 .intervals
                 .iter()
-                .find(|interval| interval.kind == "screen")
+                .find(|interval| interval.kind == "frame")
                 .expect("screen interval should be present");
             assert_eq!(
                 screen
@@ -4493,6 +4540,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4512,7 +4560,7 @@ mod tests {
             let screen_with_url = response
                 .intervals
                 .iter()
-                .filter(|interval| interval.kind == "screen")
+                .filter(|interval| interval.kind == "frame")
                 .filter(|interval| {
                     interval
                         .context
@@ -4529,7 +4577,7 @@ mod tests {
     }
 
     #[test]
-    fn broker_timeline_without_context_filters_includes_screen_and_audio_intervals() {
+    fn broker_timeline_without_context_filters_includes_frame_and_audio_intervals() {
         run_async_test(async {
             let config_dir = temp_config_dir("timeline-all-sources");
             let save_dir = temp_save_dir("timeline-all-sources");
@@ -4573,6 +4621,17 @@ mod tests {
                 ))
                 .await
                 .expect("audio segment should insert");
+            infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::SystemAudio,
+                    "system-session",
+                    1,
+                    save_dir.join("system.m4a").display().to_string(),
+                    "2026-05-17T09:59:00Z",
+                    "2026-05-17T09:59:30Z",
+                ))
+                .await
+                .expect("system audio segment should insert");
 
             let grant = create_grant(
                 &config_dir,
@@ -4583,6 +4642,7 @@ mod tests {
             .expect("grant should create");
 
             let response = broker_timeline(
+                &config_dir,
                 &infra,
                 &[grant],
                 BrokerTimelineRequest {
@@ -4599,15 +4659,269 @@ mod tests {
             .expect("timeline should run")
             .expect("timeline should be authorized");
 
+            // Newest first, and one vocabulary with `search`: the user's own voice
+            // must never read the same as a video playing through the speakers.
             assert_eq!(
                 response
                     .intervals
                     .iter()
                     .map(|interval| interval.kind.as_str())
                     .collect::<Vec<_>>(),
-                vec!["screen", "audio_microphone"]
+                vec!["frame", "audio_microphone", "audio_system"]
             );
         });
+    }
+
+    #[test]
+    fn broker_timeline_audio_interval_opaque_id_round_trips_through_show_text() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-audio-opaque");
+            let save_dir = temp_save_dir("timeline-audio-opaque");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let segment = infra
+                .upsert_audio_segment(&NewAudioSegment::new(
+                    AudioSegmentSourceKind::Microphone,
+                    "mic-session",
+                    1,
+                    save_dir.join("audio.m4a").display().to_string(),
+                    "2026-05-17T10:00:00Z",
+                    "2026-05-17T10:00:30Z",
+                ))
+                .await
+                .expect("audio segment should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                    segment.id,
+                ))
+                .await
+                .expect("transcription job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("transcription job should claim")
+                .expect("transcription job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("timeline transcript"),
+                )
+                .await
+                .expect("transcription job should complete");
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &config_dir,
+                &infra,
+                &[grant.clone()],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                    url: None,
+                    url_regex: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let opaque_id = response
+                .intervals
+                .iter()
+                .find(|interval| interval.kind.starts_with("audio"))
+                .expect("audio interval should exist")
+                .opaque_id
+                .clone()
+                .expect("audio interval should carry an opaque id");
+
+            let text = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("timeline opaque id should be authorized");
+            assert_eq!(text.text, "timeline transcript");
+        });
+    }
+
+    #[test]
+    fn broker_timeline_screen_interval_opaque_id_round_trips_through_show_text() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("timeline-screen-opaque");
+            let save_dir = temp_save_dir("timeline-screen-opaque");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            seed_timeline_frame_with_browser_url(
+                &infra,
+                &save_dir,
+                "timeline-screen-opaque.jpg",
+                "2026-05-17T10:00:00Z",
+                None,
+            )
+            .await;
+
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::AllRetainedHistory,
+            )
+            .expect("grant should create");
+
+            let response = broker_timeline(
+                &config_dir,
+                &infra,
+                &[grant.clone()],
+                BrokerTimelineRequest {
+                    from: "2026-05-17T00:00:00Z".to_string(),
+                    to: "2026-05-18T00:00:00Z".to_string(),
+                    limit: Some(5),
+                    app: None,
+                    window_title: None,
+                    url: None,
+                    url_regex: None,
+                },
+            )
+            .await
+            .expect("timeline should run")
+            .expect("timeline should be authorized");
+
+            let opaque_id = response
+                .intervals
+                .iter()
+                .find(|interval| interval.kind == "frame")
+                .expect("screen interval should exist")
+                .opaque_id
+                .clone()
+                .expect("screen interval should carry an opaque id");
+
+            let text = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("timeline opaque id should be authorized");
+            assert_eq!(text.text, "timeline body");
+        });
+    }
+
+    #[test]
+    fn broker_timeline_omits_opaque_id_when_no_representative_frame() {
+        // An interval with no representative frame has nothing to follow up on: the
+        // field must be ABSENT from the wire, never a literal null (the shape the
+        // deleted `reason` field emitted on every interval ever sent). Asserted on
+        // the struct rather than through a seeded row because `search_documents`
+        // CHECKs `anchor_type = 'frame' AND frame_id IS NOT NULL` — the None arm is
+        // reachable only from the nullable column type, not from legal data.
+        let interval = BrokerTimelineInterval {
+            kind: "frame".to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: Some("2026-05-17T10:00:30Z".to_string()),
+            opaque_id: None,
+            context: None,
+        };
+        let json = serde_json::to_string(&interval).expect("interval should serialize");
+        assert!(
+            !json.contains("opaqueId"),
+            "absent representative frame must omit the field, not emit null: {json}"
+        );
+    }
+
+    #[test]
+    fn broker_show_text_reports_the_split_audio_kind_per_source() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("show-text-audio-kind");
+            let save_dir = temp_save_dir("show-text-audio-kind");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let now = now_unix_ms();
+            let started_at = format_unix_ms(now.saturating_sub(2 * 60 * 60 * 1000));
+            let ended_at = format_unix_ms(now);
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+
+            for (index, source_kind, expected) in [
+                (1, AudioSegmentSourceKind::Microphone, "audio_microphone"),
+                (2, AudioSegmentSourceKind::SystemAudio, "audio_system"),
+            ] {
+                let segment = infra
+                    .upsert_audio_segment(&NewAudioSegment::new(
+                        source_kind,
+                        "kind-session",
+                        index,
+                        save_dir
+                            .join(format!("audio-{index}.m4a"))
+                            .display()
+                            .to_string(),
+                        started_at.clone(),
+                        ended_at.clone(),
+                    ))
+                    .await
+                    .expect("segment should insert");
+                let job = infra
+                    .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                        segment.id,
+                    ))
+                    .await
+                    .expect("job should enqueue");
+                let running = infra
+                    .claim_queued_processing_job(job.id)
+                    .await
+                    .expect("job should claim")
+                    .expect("job should exist");
+                infra
+                    .complete_processing_job(
+                        running.id,
+                        &ProcessingResultDraft::new().with_result_text("kinded transcript"),
+                    )
+                    .await
+                    .expect("job should complete");
+                let opaque_id =
+                    encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
+
+                let response =
+                    broker_show_text(&config_dir, &infra, std::slice::from_ref(&grant), &opaque_id)
+                        .await
+                        .expect("show text should run")
+                        .expect("audio should be authorized");
+
+                // The opaque id's prefix is `audio` for both: the reported kind must
+                // come from the segment, or `show-text` contradicts `search`.
+                assert_eq!(response.kind, expected);
+            }
+        });
+    }
+
+    #[test]
+    fn broker_search_splits_audio_kind_by_segment_source() {
+        let secret = &[7u8; 32];
+        for (source_kind, expected) in [
+            (AudioSegmentSourceKind::Microphone, "audio_microphone"),
+            (AudioSegmentSourceKind::SystemAudio, "audio_system"),
+        ] {
+            let mut response = two_frame_one_audio_response();
+            response.frames.clear();
+            response.audio[0].audio_segment.source_kind = source_kind;
+            let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+            assert_eq!(mapped.results[0].kind, expected);
+        }
     }
 
     #[test]
@@ -5765,17 +6079,17 @@ mod speaker_tests {
 
         let response = BrokerShowTextResponse {
             opaque_id: "op-1".to_string(),
-            kind: "audio".to_string(),
+            kind: "audio_microphone".to_string(),
             text: "hello".to_string(),
             speakers: Vec::new(),
         };
         assert_eq!(
             serde_json::to_value(&response).expect("response should serialize"),
-            serde_json::json!({"opaqueId": "op-1", "kind": "audio", "text": "hello"})
+            serde_json::json!({"opaqueId": "op-1", "kind": "audio_microphone", "text": "hello"})
         );
 
         let legacy: BrokerShowTextResponse = serde_json::from_value(
-            serde_json::json!({"opaqueId": "op-1", "kind": "audio", "text": "hello"}),
+            serde_json::json!({"opaqueId": "op-1", "kind": "audio_microphone", "text": "hello"}),
         )
         .expect("a payload without speakers should decode");
         assert!(legacy.speakers.is_empty());

@@ -664,6 +664,21 @@ struct ResolvedAskAiSource {
     // segment start. Always `None` for frame sources.
     span_start_ms: Option<i64>,
     aligned_frame_id: Option<i64>,
+    /// Microphone-vs-system distinction for audio sources, read off the broker
+    /// search result's kind. `None` for frames (and for any unknown kind).
+    source_kind: Option<&'static str>,
+}
+
+/// Map a broker search-result kind onto the `sourceKind` vocabulary the source
+/// cards render (`AnswerSourceCard.svelte`). The broker already splits audio by
+/// channel on the wire, so this needs no database round-trip. Frames (and any
+/// unknown kind) carry no source kind.
+fn ask_ai_source_kind(result_kind: &str) -> Option<&'static str> {
+    match result_kind {
+        "audio_microphone" => Some("microphone"),
+        "audio_system" => Some("system"),
+        _ => None,
+    }
 }
 
 /// Build the capped, de-duped, ordered Answer Source list from nominated opaque
@@ -728,10 +743,9 @@ where
             // unchanged.
             "spanStartMs": source.span_start_ms,
             "alignedFrameId": source.aligned_frame_id,
-            // Microphone/system distinction for audio sources. The pure builder
-            // never sets it; a best-effort async post-pass in
-            // `handle_reference_captures` fills audio sources from the DB.
-            "sourceKind": serde_json::Value::Null,
+            // Microphone/system distinction for audio sources, carried on the
+            // broker search result the model received (frame sources: null).
+            "sourceKind": source.source_kind,
         }));
     }
 
@@ -770,7 +784,7 @@ async fn handle_reference_captures(
         .map(|guard| guard.clone())
         .unwrap_or_default();
 
-    let (mut sources, accepted, dropped) = build_ask_ai_sources(&opaque_ids, |id| {
+    let (sources, accepted, dropped) = build_ask_ai_sources(&opaque_ids, |id| {
         // Authoritative frame/audio identity via the signed reference. A failed
         // HMAC validation or unparseable id yields `None` (dropped).
         let reference =
@@ -801,58 +815,9 @@ async fn handle_reference_captures(
             // leaves these `None` for frames.
             span_start_ms: result.span_start_ms,
             aligned_frame_id: result.aligned_frame_id,
+            source_kind: ask_ai_source_kind(&result.kind),
         })
     });
-
-    // Best-effort enrichment: color each audio source by its real microphone vs
-    // system-audio kind from the DB. The pure builder cannot do this (no async DB
-    // access), so we patch `sourceKind` here. Capped naturally at the audio cap
-    // (≤4 lookups); a missing AppInfra or a single failed lookup just leaves that
-    // source's `sourceKind` null and never aborts the emit.
-    //
-    // The lookups are issued concurrently rather than sequentially: the audio cap
-    // bounds them at ≤4, but a per-source await chain serializes them needlessly.
-    // We first collect `(index, audio_segment_id)` from an immutable read of
-    // `sources`, drive the cloned-`Arc` lookups through `join_all`, then apply the
-    // resolved kinds back by index (the only mutable borrow of `sources`).
-    if let Some(infra) = app_handle.try_state::<AppInfraState>() {
-        // Own a cloned `Arc<AppInfra>` so each concurrent lookup future can hold it
-        // for the life of its `await` without borrowing the Tauri `State` guard.
-        let infra = Arc::clone(&*infra);
-        let audio_lookups: Vec<(usize, i64)> = sources
-            .iter()
-            .enumerate()
-            .filter_map(|(index, source)| {
-                if source.get("kind").and_then(|kind| kind.as_str()) != Some("audio") {
-                    return None;
-                }
-                let audio_segment_id = source
-                    .get("audioSegmentId")
-                    .and_then(|value| value.as_i64())?;
-                Some((index, audio_segment_id))
-            })
-            .collect();
-
-        let segments = futures_util::future::join_all(audio_lookups.into_iter().map(
-            |(index, audio_segment_id)| {
-                let infra = Arc::clone(&infra);
-                async move { (index, infra.get_audio_segment(audio_segment_id).await) }
-            },
-        ))
-        .await;
-
-        for (index, lookup) in segments {
-            let Ok(Some(segment)) = lookup else {
-                continue;
-            };
-            let source_kind = match segment.source_kind.as_str() {
-                "system_audio" => "system",
-                // `microphone` (and any unexpected value) colors as microphone.
-                _ => "microphone",
-            };
-            sources[index]["sourceKind"] = serde_json::json!(source_kind);
-        }
-    }
 
     Ok((
         serde_json::json!({ "accepted": accepted, "dropped": dropped }),
@@ -1176,7 +1141,8 @@ fn build_ask_ai_tools(
             name: "search".to_string(),
             description:
                 "Search the user's redacted on-device capture history (screen OCR + audio \
-transcripts). Returns snippets with opaque ids, kinds (screenText/audioTranscript), \
+transcripts). Returns snippets with opaque ids, kinds (frame | audio_microphone | audio_system; \
+audio_system is sound that played through the speakers, not the user speaking), \
 startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle)."
                     .to_string(),
             parameters_schema: search_tool_schema(),
@@ -2816,6 +2782,7 @@ mod tests {
             ended_at: ended_at.to_string(),
             span_start_ms: None,
             aligned_frame_id: None,
+            source_kind: None,
         }
     }
 
@@ -2831,7 +2798,17 @@ mod tests {
             ended_at: ended_at.to_string(),
             span_start_ms: Some(3_000),
             aligned_frame_id: Some(99),
+            source_kind: Some("microphone"),
         }
+    }
+
+    #[test]
+    fn ask_ai_source_kind_splits_microphone_from_system_audio() {
+        // A system-audio citation is playback, not the user speaking — swapping
+        // these two would have the answer card attribute a podcast to the user.
+        assert_eq!(ask_ai_source_kind("audio_microphone"), Some("microphone"));
+        assert_eq!(ask_ai_source_kind("audio_system"), Some("system"));
+        assert_eq!(ask_ai_source_kind("frame"), None);
     }
 
     #[test]
@@ -2938,8 +2915,8 @@ mod tests {
         assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert_eq!(audio["url"], serde_json::Value::Null);
-        assert!(audio.as_object().unwrap().contains_key("sourceKind"));
-        assert_eq!(audio["sourceKind"], serde_json::Value::Null);
+        // Mic-vs-system now rides the search result's kind, not a DB post-pass.
+        assert_eq!(audio["sourceKind"], serde_json::json!("microphone"));
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));
         assert_eq!(audio["alignedFrameId"], serde_json::json!(99));
     }
