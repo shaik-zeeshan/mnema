@@ -4,7 +4,7 @@ use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
-    BrokerErrorResponse, BrokerSearchRequest, BrokerSpeaker, BrokerTimelineRequest, BrokeredCaptureAccess,
+    BrokerErrorResponse, BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerTurn, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -275,6 +275,10 @@ struct ShowTextData {
     text: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     speakers: Vec<BrokerSpeaker>,
+    /// Who said which words, each turn indexing into `speakers`. ABSENT MEANS
+    /// "COULD NOT ATTRIBUTE", never "nobody spoke" — `text` still has the words.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -477,6 +481,7 @@ async fn execute_data_request(
                 kind: response.kind,
                 text: response.text,
                 speakers: response.speakers,
+                turns: response.turns,
             })
         }
         BrokeredCaptureResponse::OpenInMnema(response) if command == "open" => {

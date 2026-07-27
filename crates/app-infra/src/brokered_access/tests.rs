@@ -3039,6 +3039,18 @@ fn speaker_turn(
     }
 }
 
+fn speaker_turn_saying(
+    provider_cluster_id: &str,
+    start_ms: u64,
+    end_ms: u64,
+    text: &str,
+) -> speaker_analysis::SpeakerTurn {
+    speaker_analysis::SpeakerTurn {
+        transcript_text: Some(text.to_string()),
+        ..speaker_turn(provider_cluster_id, start_ms, end_ms)
+    }
+}
+
 fn speaker_analysis_output(
     session_id: &str,
     audio_segment_id: i64,
@@ -3205,19 +3217,22 @@ fn broker_show_text_lists_audio_speakers_in_first_turn_order() {
             .expect("show text should run")
             .expect("audio should be authorized");
 
+        let shape: Vec<_> = response
+            .speakers
+            .iter()
+            .map(|speaker| {
+                (
+                    speaker.name.as_deref(),
+                    speaker.attribution.as_str(),
+                    speaker.handle.kind.as_str(),
+                )
+            })
+            .collect();
         assert_eq!(
-            response.speakers,
+            shape,
             vec![
-                BrokerSpeaker {
-                    name: Some("Ada".to_string()),
-                    attribution: "assigned".to_string(),
-                    confidence: None,
-                },
-                BrokerSpeaker {
-                    name: None,
-                    attribution: "unknown".to_string(),
-                    confidence: None,
-                },
+                (Some("Ada"), "assigned", "person"),
+                (None, "unknown", "voice"),
             ],
             "speakers must follow first-turn order, not cluster order"
         );
@@ -3345,18 +3360,210 @@ fn broker_show_text_omits_a_recognition_the_user_rejected_for_that_cluster() {
             .expect("show text should run")
             .expect("audio should be authorized");
 
-        assert_eq!(
-            response.speakers,
-            vec![BrokerSpeaker {
-                name: None,
-                attribution: "unknown".to_string(),
-                confidence: None,
-            }]
-        );
+        assert_eq!(response.speakers.len(), 1);
+        assert_eq!(response.speakers[0].name, None);
+        assert_eq!(response.speakers[0].attribution, "unknown");
+        assert_eq!(response.speakers[0].confidence, None);
+        assert_eq!(response.speakers[0].handle.kind, "voice");
         let json = serde_json::to_string(&response).expect("response should serialize");
         assert!(
             !json.contains("Ada"),
             "a rejected recognition must never reach an agent: {json}"
+        );
+    });
+}
+
+/// `turns` is what lets an agent quote the right person: every turn points at a
+/// `speakers[]` index, so identity is decided once by the collapse and never
+/// re-derived from a name string. `text` stays whole beside it — the turns are an
+/// overlay on the transcript, not a replacement for it.
+#[test]
+fn broker_show_text_attributes_turns_to_the_speakers_it_publishes() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-turns");
+        let save_dir = temp_save_dir("speaker-turns");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let (segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+            &config_dir,
+            &save_dir,
+            &infra,
+            "attributed-session",
+            "morning all morning Ada",
+        )
+        .await;
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        complete_speaker_analysis(
+            &infra,
+            segment_id,
+            speaker_analysis_output(
+                "attributed-session",
+                segment_id,
+                vec![
+                    speaker_cluster("speaker_00", &[1.0, 0.0]),
+                    speaker_cluster("speaker_01", &[0.0, 1.0]),
+                ],
+                vec![
+                    speaker_turn_saying("speaker_00", 0, 1_000, "morning all"),
+                    speaker_turn_saying("speaker_01", 2_000, 3_000, "morning Ada"),
+                ],
+            ),
+        )
+        .await;
+        let clusters = infra
+            .list_speaker_clusters_for_session("attributed-session")
+            .await
+            .expect("clusters should list");
+        let ada_cluster = clusters
+            .iter()
+            .find(|cluster| cluster.provider_cluster_id.ends_with("speaker_00"))
+            .expect("the first cluster should exist");
+        infra
+            .link_speaker_cluster_to_person(ada_cluster.id, ada.id, false)
+            .await
+            .expect("cluster should link");
+
+        let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+            .await
+            .expect("show text should run")
+            .expect("audio should be authorized");
+
+        let attributed: Vec<_> = response
+            .turns
+            .iter()
+            .map(|turn| {
+                let speaker = response
+                    .speakers
+                    .get(turn.speaker)
+                    .expect("every turn index must resolve into speakers[]");
+                (
+                    speaker.name.as_deref(),
+                    speaker.handle.kind.as_str(),
+                    turn.start_ms,
+                    turn.end_ms,
+                    turn.text.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            attributed,
+            vec![
+                (Some("Ada"), "person", 0, 1_000, "morning all"),
+                (None, "voice", 2_000, 3_000, "morning Ada"),
+            ]
+        );
+        assert_eq!(
+            response.text, "morning all morning Ada",
+            "turns are an overlay: the full transcript must survive beside them"
+        );
+    });
+}
+
+/// Diarization yields nothing for plenty of audio the transcriber handled fine.
+/// That segment must still carry its words, with BOTH keys off the wire — absent
+/// `turns` means "could not attribute", and an agent that finds an empty array
+/// where the transcript is full would read the recording as silence.
+#[test]
+fn broker_show_text_without_diarization_omits_turns_and_speakers_from_the_wire() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-turns-undiarized");
+        let save_dir = temp_save_dir("speaker-turns-undiarized");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let (_segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+            &config_dir,
+            &save_dir,
+            &infra,
+            "undiarized-session",
+            "a transcript nobody was attributed in",
+        )
+        .await;
+
+        let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+            .await
+            .expect("show text should run")
+            .expect("audio should be authorized");
+
+        assert_eq!(response.text, "a transcript nobody was attributed in");
+        let json = serde_json::to_value(&response).expect("response should serialize");
+        assert!(
+            json.get("turns").is_none() && json.get("speakers").is_none(),
+            "unattributed audio must not publish empty attribution: {json}"
+        );
+    });
+}
+
+/// A speaker handle addresses a PERSON, and a person is not captured content.
+/// It is signed by the same broker, so the only thing keeping it out of
+/// `show-text`/`open` is its separate kind space — if that ever collided, an
+/// agent could hand a person id to `open` and land on frame number 7.
+#[test]
+fn a_speaker_handle_is_not_a_capture_reference_for_show_text_or_open() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-handle-not-capture");
+        let save_dir = temp_save_dir("speaker-handle-not-capture");
+        write_recording_settings(&config_dir, &save_dir);
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let (segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+            &config_dir,
+            &save_dir,
+            &infra,
+            "handle-session",
+            "one voice",
+        )
+        .await;
+        complete_speaker_analysis(
+            &infra,
+            segment_id,
+            speaker_analysis_output(
+                "handle-session",
+                segment_id,
+                vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+                vec![speaker_turn("speaker_00", 0, 1_000)],
+            ),
+        )
+        .await;
+        let response = broker_show_text(&config_dir, &infra, &[grant.clone()], &opaque_id)
+            .await
+            .expect("show text should run")
+            .expect("audio should be authorized");
+        let handle = response
+            .speakers
+            .first()
+            .expect("the segment has a voice")
+            .handle
+            .id
+            .clone();
+        assert!(
+            opaque_capture_reference(&handle).is_none(),
+            "a speaker handle must never decode as a capture reference"
+        );
+
+        let shown = broker_show_text(&config_dir, &infra, &[grant], &handle)
+            .await
+            .expect("show text should run");
+        assert_eq!(shown, Err(invalid_opaque_id_error()));
+
+        let opened = BrokeredCaptureAccess::from_config_dir(config_dir.clone())
+            .execute(
+                "mnema-cli",
+                BrokeredCaptureRequest::OpenInMnema {
+                    opaque_id: handle.clone(),
+                },
+            )
+            .await
+            .expect("open should run");
+        assert_eq!(
+            opened,
+            BrokeredCaptureResponse::Error(invalid_opaque_id_error()),
+            "a person must not be openable as a capture"
         );
     });
 }

@@ -355,6 +355,18 @@ pub struct BrokerShowTextResponse {
     /// turn. Empty for frames and for audio without speaker analysis.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub speakers: Vec<BrokerSpeaker>,
+    /// Which speaker said which words, each turn pointing at a `speakers[]` index.
+    ///
+    /// An ATTRIBUTION OVERLAY on `text`, never a decomposition of it: it may cover
+    /// only part of the recording, and `text` always carries the full transcript.
+    ///
+    /// ABSENT `turns` MEANS "COULD NOT ATTRIBUTE", **NOT** "NOBODY SPOKE". Speaker
+    /// detection produces nothing at all for plenty of audio the transcriber
+    /// handled fine, so a recording with words in `text` and no `turns` is normal
+    /// and is NOT silence. Never report an unattributed recording as empty, as
+    /// nobody speaking, or as no one being present — read `text` instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<BrokerSpeakerTurn>,
 }
 
 /// A voice in a brokered audio result. `name` is only ever a person the user
@@ -369,6 +381,43 @@ pub struct BrokerSpeaker {
     /// Recognition confidence (`high`/`medium`/`low`) when `recognized`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub confidence: Option<String>,
+    /// How to address this speaker. Always present: address people by handle,
+    /// never by matching the `name` string, which two profiles can share.
+    pub handle: BrokerSpeakerHandle,
+}
+
+/// An opaque id addressing a speaker. NOT a capture reference — `show-text` and
+/// `open` reject it, because a person is not a captured frame or recording.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakerHandle {
+    pub id: String,
+    /// `person` — a person the user has a profile for. Stable: it spans sessions
+    /// and channels and survives a rename.
+    ///
+    /// `voice` — ONE voice inside ONE recording, **not a person**. The same human
+    /// gets a different `voice` handle in every recording (and often several
+    /// within one), and the handle dies when that recording is re-analyzed. Never
+    /// persist it, never merge two of them, and never present it as an identity.
+    pub kind: String,
+    /// `voice` only: the span this voice was heard over, in ms from the start of
+    /// the recording — the whole extent this handle means anything across.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_ms: Option<u64>,
+}
+
+/// One attributed stretch of speech: who said it, when, and the words.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakerTurn {
+    /// Index into the response's `speakers[]`.
+    pub speaker: usize,
+    /// Milliseconds from the start of the recording.
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1538,25 +1587,37 @@ async fn broker_show_text(
             message: "result is unavailable or outside the grant scope".to_string(),
         }));
     };
-    let (kind, speakers) = if subject.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
+    let (kind, speakers, turns) = if subject.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE {
         // Kind comes from the segment, not from the opaque id's `"audio"` prefix:
         // reporting the prefix here would leave a third audio vocabulary behind
         // the one `search` and `timeline` publish.
         let Some(segment) = infra.get_audio_segment(subject.subject_id).await? else {
             return Ok(Err(outside_scope_error()));
         };
+        // Handles are minted under the grant that authorized THIS read, so they
+        // never outlive the scope the caller already holds.
+        let secret = load_or_create_opaque_secret(config_dir)?;
+        let (speakers, turns) = broker_speakers_for_audio(
+            infra,
+            subject.subject_id,
+            reference.grant_id.as_deref(),
+            &secret,
+        )
+        .await?;
         (
             broker_audio_kind(&segment.source_kind).to_string(),
-            broker_speakers_for_audio(infra, subject.subject_id).await?,
+            speakers,
+            turns,
         )
     } else {
-        (reference.kind, Vec::new())
+        (reference.kind, Vec::new(), Vec::new())
     };
     Ok(Ok(BrokerShowTextResponse {
         opaque_id: opaque_id.to_string(),
         kind,
         text,
         speakers,
+        turns,
     }))
 }
 
@@ -2496,152 +2557,3 @@ fn broker_search_result_context(
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod speaker_tests {
-    use std::collections::HashMap;
-
-    use super::speakers::broker_collapse_speakers;
-    use super::*;
-    use crate::SpeakerTurnView;
-
-    fn turn(cluster_id: i64, person_id: Option<i64>, suggested: Option<i64>) -> SpeakerTurnView {
-        SpeakerTurnView {
-            id: cluster_id,
-            audio_segment_id: 1,
-            session_id: "s".to_string(),
-            cluster_id,
-            segment_cluster_id: None,
-            provider_cluster_id: "0".to_string(),
-            speaker_label: format!("Speaker {cluster_id}"),
-            person_id,
-            suggested_person_id: suggested,
-            recognition_confidence: suggested.map(|_| "high".to_string()),
-            recognition_score: None,
-            start_ms: 0,
-            end_ms: 1000,
-            transcript_text: None,
-            overlaps: false,
-        }
-    }
-
-    /// The user assigned this cluster to a person we can no longer name (the
-    /// profile went away between the turn read and the profile read). A stale
-    /// recognition suggestion for a DIFFERENT person must not fill the gap: the
-    /// assignment is the user overriding recognition, so the honest answer is
-    /// "unknown", never "this was Bo".
-    #[test]
-    fn an_unnameable_assignment_never_falls_back_to_the_recognition_suggestion() {
-        let names = HashMap::from([(9, "Bo".to_string())]);
-
-        let speakers = broker_collapse_speakers(vec![turn(1, Some(404), Some(9))], &names);
-
-        assert_eq!(
-            speakers,
-            vec![BrokerSpeaker {
-                name: None,
-                attribution: "unknown".to_string(),
-                confidence: None,
-            }]
-        );
-    }
-
-    /// One entry per person, not per cluster: over-clustering splits a voice
-    /// across clusters routinely, and an agent asked "who was in this meeting?"
-    /// must not count Ada twice because her voice landed in two of them.
-    #[test]
-    fn collapses_to_one_entry_per_person_and_never_leaks_internal_labels() {
-        let names = HashMap::from([
-            (7, "Ada".to_string()),
-            (9, "Bo".to_string()),
-            (11, "Cy".to_string()),
-        ]);
-        let speakers = broker_collapse_speakers(
-            vec![
-                turn(1, Some(7), None),
-                turn(1, Some(7), None),
-                turn(2, None, Some(9)),
-                turn(3, None, None),
-                // Assignment wins over a competing recognition suggestion, and Ada
-                // is already published from cluster 1 — one voice, one entry.
-                turn(4, Some(7), Some(9)),
-                // A person id with no profile row must not become a nameless claim,
-                // and two of them stay separate: there is no identity to merge on.
-                turn(5, Some(404), None),
-                // Guessed on one cluster, confirmed on another: the user settled it.
-                turn(6, None, Some(11)),
-                turn(7, Some(11), None),
-            ],
-            &names,
-        );
-
-        let shape: Vec<_> = speakers
-            .iter()
-            .map(|s| (s.name.as_deref(), s.attribution.as_str(), s.confidence.as_deref()))
-            .collect();
-        assert_eq!(
-            shape,
-            vec![
-                (Some("Ada"), "assigned", None),
-                (Some("Bo"), "recognized", Some("high")),
-                (None, "unknown", None),
-                (None, "unknown", None),
-                (Some("Cy"), "assigned", None),
-            ]
-        );
-        let json = serde_json::to_string(&speakers).expect("serializes");
-        assert!(!json.contains("Speaker "), "internal labels must not leak: {json}");
-    }
-
-    /// The wire shape a second crate re-serializes: `crates/cli/src/main.rs`
-    /// embeds `Vec<BrokerSpeaker>` in its stdout JSON and `crates/cli/src/mcp.rs`
-    /// documents it to every MCP client. Pins the emitted key names, the omitted
-    /// `confidence`/`speakers` keys, and the `#[serde(default)]` that keeps a
-    /// payload from an older client decoding.
-    #[test]
-    fn broker_speaker_wire_shape_round_trips() {
-        let recognized = BrokerSpeaker {
-            name: Some("Ada".to_string()),
-            attribution: "recognized".to_string(),
-            confidence: Some("high".to_string()),
-        };
-        assert_eq!(
-            serde_json::to_value(&recognized).expect("speaker should serialize"),
-            serde_json::json!({"name": "Ada", "attribution": "recognized", "confidence": "high"})
-        );
-
-        let unknown = BrokerSpeaker {
-            name: None,
-            attribution: "unknown".to_string(),
-            confidence: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&unknown).expect("speaker should serialize"),
-            serde_json::json!({"name": null, "attribution": "unknown"})
-        );
-        assert_eq!(
-            serde_json::from_value::<BrokerSpeaker>(
-                serde_json::to_value(&unknown).expect("speaker should serialize")
-            )
-            .expect("speaker should decode"),
-            unknown
-        );
-
-        let response = BrokerShowTextResponse {
-            opaque_id: "op-1".to_string(),
-            kind: "audio_microphone".to_string(),
-            text: "hello".to_string(),
-            speakers: Vec::new(),
-        };
-        assert_eq!(
-            serde_json::to_value(&response).expect("response should serialize"),
-            serde_json::json!({"opaqueId": "op-1", "kind": "audio_microphone", "text": "hello"})
-        );
-
-        let legacy: BrokerShowTextResponse = serde_json::from_value(
-            serde_json::json!({"opaqueId": "op-1", "kind": "audio_microphone", "text": "hello"}),
-        )
-        .expect("a payload without speakers should decode");
-        assert!(legacy.speakers.is_empty());
-    }
-}
