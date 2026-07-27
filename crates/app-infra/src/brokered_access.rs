@@ -1418,44 +1418,14 @@ async fn broker_speakers_for_audio(
     infra: &AppInfra,
     audio_segment_id: i64,
 ) -> Result<Vec<BrokerSpeaker>> {
-    let mut turns = infra
+    // A person the user vetoed for this cluster is already off the row: every write
+    // path that records the veto clears the matching guess with it.
+    let turns = infra
         .processing
         .list_speaker_turns_for_audio_segment(audio_segment_id)
         .await?;
     if turns.is_empty() {
         return Ok(Vec::new());
-    }
-    // Re-apply the user's per-cluster "never this person" veto at read time. It is
-    // only enforced when speaker analysis *writes* a suggestion, so a rejection
-    // recorded afterwards (unlinking a person the user had confirmed) leaves the
-    // stale `recognition_person_id` on the cluster. In-app that stale guess is a
-    // visible, dismissible chip; across the broker it would name a person the user
-    // took back to an external agent, with no way to see or correct it.
-    let suggested_clusters: HashSet<i64> = turns
-        .iter()
-        .filter(|turn| turn.suggested_person_id.is_some())
-        .map(|turn| turn.cluster_id)
-        .collect();
-    let mut rejected: HashMap<i64, Vec<i64>> = HashMap::new();
-    for cluster_id in suggested_clusters {
-        let people = infra
-            .processing
-            .list_rejected_person_ids_for_speaker_cluster(cluster_id)
-            .await?;
-        rejected.insert(cluster_id, people);
-    }
-    for turn in &mut turns {
-        let Some(person_id) = turn.suggested_person_id else {
-            continue;
-        };
-        if rejected
-            .get(&turn.cluster_id)
-            .is_some_and(|people| people.contains(&person_id))
-        {
-            turn.suggested_person_id = None;
-            turn.recognition_confidence = None;
-            turn.recognition_score = None;
-        }
     }
     let names: HashMap<i64, String> = infra
         .processing
@@ -5010,11 +4980,11 @@ mod tests {
         });
     }
 
-    /// Confirming a recognition and then unlinking the person is the path that
-    /// leaves a STALE `recognition_person_id` on the cluster next to a fresh
-    /// per-cluster rejection. In-app that stale guess is a dismissible chip; over
-    /// the broker it would name a person the user took back to an external agent,
-    /// so the read must re-apply the veto and fall back to `unknown`.
+    /// Confirming a recognition and then unlinking the person used to leave a STALE
+    /// `recognition_person_id` on the cluster next to the fresh per-cluster
+    /// rejection. The unlink now clears it, so the broker reads the row straight;
+    /// this pins the end result at the wire — a name the user took back never
+    /// reaches an external agent.
     #[test]
     fn broker_show_text_omits_a_recognition_the_user_rejected_for_that_cluster() {
         run_async_test(async {
@@ -5065,11 +5035,8 @@ mod tests {
                 .unlink_speaker_cluster_from_person(cluster.id)
                 .await
                 .expect("cluster should unlink");
-            // Precondition, not the assertion under test: the unlink drops the
-            // assignment but leaves the recognition guess on the row. If that ever
-            // changes this test stops covering the broker's read-time veto.
             assert_eq!(unlinked.person_id, None);
-            assert_eq!(unlinked.suggested_person_id, Some(person.id));
+            assert_eq!(unlinked.suggested_person_id, None);
 
             let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
                 .await

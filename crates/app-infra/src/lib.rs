@@ -3678,6 +3678,88 @@ mod tests {
         });
     }
 
+    /// Vetoing a person clears the guess pointing at them, wherever the veto comes
+    /// from. Unlinking a confirmed recognition and reassigning the cluster to
+    /// someone else both record "not this person" without clearing the guess
+    /// themselves; a leftover `recognition_person_id` republishes a name the user
+    /// took back to every reader (timeline, Ask AI, broker).
+    #[test]
+    fn vetoing_a_person_clears_the_recognition_guess_for_them() {
+        run_async_test(async {
+            let dir = TestDir::new("speaker-veto-clears-guess");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+            let mia = infra
+                .create_person_profile("Mia", None)
+                .await
+                .expect("person profile should insert");
+
+            for (session_id, veto) in [("veto-unlink", false), ("veto-reassign", true)] {
+                let segment = infra
+                    .upsert_audio_segment(&NewAudioSegment::new(
+                        AudioSegmentSourceKind::Microphone,
+                        session_id,
+                        1,
+                        format!("/tmp/{session_id}.m4a"),
+                        "2026-04-12T10:00:00Z",
+                        "2026-04-12T10:01:00Z",
+                    ))
+                    .await
+                    .expect("segment should insert");
+                complete_speaker_output(
+                    &infra,
+                    &segment,
+                    speaker_output_suggesting(session_id, segment.id, &[1.0, 0.0], jack.id),
+                )
+                .await;
+                let cluster = infra
+                    .list_speaker_clusters_for_session(session_id)
+                    .await
+                    .expect("clusters should list")
+                    .into_iter()
+                    .next()
+                    .expect("cluster should exist");
+                assert_eq!(cluster.suggested_person_id, Some(jack.id));
+                infra
+                    .confirm_speaker_recognition_suggestion(cluster.id, false)
+                    .await
+                    .expect("suggestion should confirm");
+
+                let vetoed = if veto {
+                    // Reassigning to someone else is the user saying "not Jack" too.
+                    infra
+                        .link_speaker_cluster_to_person(cluster.id, mia.id, false)
+                        .await
+                        .expect("cluster should relink")
+                } else {
+                    infra
+                        .unlink_speaker_cluster_from_person(cluster.id)
+                        .await
+                        .expect("cluster should unlink")
+                };
+
+                assert_eq!(
+                    vetoed.suggested_person_id, None,
+                    "{session_id}: the vetoed guess must not survive"
+                );
+                assert_eq!(
+                    infra
+                        .processing
+                        .list_rejected_person_ids_for_speaker_cluster(cluster.id)
+                        .await
+                        .expect("rejections should list"),
+                    vec![jack.id],
+                    "{session_id}: the veto itself must be recorded"
+                );
+            }
+        });
+    }
+
     fn speaker_output_suggesting(
         session_id: &str,
         audio_segment_id: i64,

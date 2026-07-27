@@ -2453,15 +2453,8 @@ impl ProcessingStore {
             cluster.recognition_person_id,
         )
         .await?;
-        sqlx::query(
-            "UPDATE recording_speaker_clusters \
-             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?1",
-        )
-        .bind(cluster_id)
-        .execute(&mut *transaction)
-        .await?;
+        // The clear lives in the rejection helper: every path that vetoes a person
+        // drops the matching guess, not just this one.
         transaction.commit().await?;
         self.get_required_speaker_cluster(cluster_id).await
     }
@@ -4837,6 +4830,22 @@ async fn persist_speaker_recognition_rejection_for_cluster(
     .bind(cluster_id)
     .execute(&mut **transaction)
     .await?;
+    // A veto of the person the cluster is *currently* guessing has to take the
+    // guess with it. Unlinking a confirmed person and reassigning to someone else
+    // both land here, and neither clears `recognition_person_id` on its own: the
+    // row would keep publishing a name the user just took back, to the timeline,
+    // Ask AI, and the broker alike.
+    if cluster.recognition_person_id == Some(person_id) {
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
     Ok(())
 }
 
