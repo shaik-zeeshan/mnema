@@ -479,7 +479,7 @@ impl AppInfra {
             .reconcile_open_batches_without_active_capture()
             .await?;
         // NOTE: the one-shot purge of legacy embedding-blacklist rejections is
-        // migration `0050_purge_legacy_speaker_recognition_rejections.sql`, not a
+        // migration `0051_purge_legacy_speaker_recognition_rejections.sql`, not a
         // pass here. Maintenance runs after the window is live, so a DELETE here
         // also eats rejections the user makes while it is still scanning.
         Ok(())
@@ -4430,7 +4430,7 @@ mod tests {
             .expect("legacy rejection should insert");
             // Rewind the purge migration so the next open is an upgrade from the
             // build that wrote those rows.
-            sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 50")
+            sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 51")
                 .execute(infra.pool())
                 .await
                 .expect("migration ledger row should clear");

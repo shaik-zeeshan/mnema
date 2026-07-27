@@ -6222,6 +6222,7 @@ mod tests {
             metadata_snapshot: None,
         };
         let result = ::app_infra::FrameSearchResult {
+            rank: -1.0,
             group_key: "frame:9".to_string(),
             representative_frame: frame,
             group_start_at: "2026-05-12T10:00:00Z".to_string(),

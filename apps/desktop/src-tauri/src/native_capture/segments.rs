@@ -4616,6 +4616,14 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
         // the resulting process-object list and only rebuilds when it moves.
         let mut last_system_audio_excluded_bundle_ids: Vec<String> = Vec::new();
         loop {
+            // A Rust-spawned thread has no autorelease pool, so every
+            // autoreleased object this tick touches leaks for the life of the
+            // process. The privacy-filter path alone enumerates ScreenCaptureKit
+            // shareable content (one `SCRunningApplication` + bundle
+            // `NSURL`/`CFString`s per running app) and had grown the heap to
+            // ~5M live objects / 770MB after 40h of recording. Per-iteration so
+            // the pool drains on every tick, including the `break` paths.
+            let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
             let sleep_duration = {
                 let capture_state = app_handle.state::<NativeCaptureState>();
                 let runtime = match capture_state.lock() {

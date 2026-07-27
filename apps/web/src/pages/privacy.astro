@@ -1,0 +1,219 @@
+---
+import Base from "../layouts/Base.astro";
+import TopBar from "../components/TopBar.astro";
+import Footer from "../components/Footer.astro";
+
+const pageTitle = "mnema — privacy";
+const pageDescription =
+  "What Mnema collects and what it never does. Your recordings stay on your Mac. The website uses cookieless analytics; purchases and support are handled by named processors.";
+
+const processors = [
+  {
+    name: "Umami Cloud",
+    what: "Anonymous website analytics: page views, referrer, country, browser, and download-button clicks.",
+    why: "So we know whether the site explains the product well enough for people to try it.",
+    note: "No cookies, no fingerprinting, no personal data — nothing that identifies you as a visitor.",
+  },
+  {
+    name: "Polar",
+    what: "Your email and billing details when you buy a license.",
+    why: "Polar is our merchant of record — it takes the payment, handles tax, and issues receipts.",
+    note: "We never see or store your card details.",
+  },
+  {
+    name: "License server (mnema.day)",
+    what: "A one-way hash of your Mac's hardware id, plus your license key, when the app activates.",
+    why: "So a license runs on up to 3 Macs and can't be shared endlessly. After activation the app verifies offline.",
+    note: "The hash can't be reversed into anything about you or your machine.",
+  },
+  {
+    name: "Email (support)",
+    what: "Whatever you write to support@mnema.day, and your email address.",
+    why: "So a human can answer you.",
+  },
+];
+
+const never = [
+  "Your screen recordings, screenshots, audio, or transcripts — these are written to an encrypted database on your Mac and are never uploaded anywhere.",
+  "Anything about which apps you use, what you type, or what you search for inside Mnema.",
+  "Usage analytics, telemetry, or crash reports from inside the app.",
+];
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <TopBar />
+  <main class="docs">
+    <article class="docs-col">
+      <header class="docs-hero">
+        <p class="kicker">// privacy</p>
+        <h1 class="docs-title">What we collect, and what we never touch</h1>
+        <p class="docs-sub">
+          Mnema records your screen and audio, so the honest answer matters more
+          here than a page of legal boilerplate. Everything Mnema captures stays
+          on your Mac. The only data that reaches us comes from this website,
+          buying a license, and emailing support.
+        </p>
+        <p class="docs-meta">// last updated 2026-07-25</p>
+      </header>
+
+      <section class="docs-section" aria-labelledby="never">
+        <p class="kicker">// never leaves your Mac</p>
+        <h2 class="section-heading" id="never">
+          What Mnema never sends anywhere
+        </h2>
+        <ul class="plain-list">
+          {never.map((n) => <li>{n}</li>)}
+        </ul>
+        <p class="docs-sub">
+          If you turn on a cloud AI provider or cloud transcription in Settings,
+          the app sends data to <em>your own</em> account with that provider,
+          using your own API key. That is your arrangement with them — it never
+          passes through us.
+        </p>
+      </section>
+
+      <section class="docs-section" aria-labelledby="processors">
+        <p class="kicker">// who touches what</p>
+        <h2 class="section-heading" id="processors">
+          The four services involved
+        </h2>
+        <div class="channel-list">
+          {
+            processors.map((p) => (
+              <div class="channel-item">
+                <span class="channel-label">{p.name}</span>
+                <span class="channel-detail">{p.what}</span>
+                <span class="channel-detail">{p.why}</span>
+                {p.note && <span class="channel-note">{p.note}</span>}
+              </div>
+            ))
+          }
+        </div>
+      </section>
+
+      <section class="docs-section" aria-labelledby="rights">
+        <p class="kicker">// your call</p>
+        <h2 class="section-heading" id="rights">Removing your data</h2>
+        <p class="docs-sub">
+          Recordings are yours to delete from inside the app at any time — we
+          can't delete them for you, because we never had them. For anything we
+          do hold (your purchase record, your support emails, your license
+          activations), write to <a href="mailto:support@mnema.day"
+            >support@mnema.day</a
+          > and we'll remove it.
+        </p>
+        <p class="docs-sub">
+          Questions about any of this go to the same address. If this page ever
+          disagrees with what the app actually does, treat it as a bug and tell
+          us.
+        </p>
+      </section>
+    </article>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  /* ---- Docs layout shell (lifted pattern) ---- */
+  .docs {
+    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  }
+
+  .docs-col {
+    max-width: 44rem;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .docs-hero {
+    padding-bottom: var(--space-xl);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .docs-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-3xl);
+    margin-bottom: var(--space-sm);
+    max-width: 22ch;
+  }
+
+  .docs-sub {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.7;
+    max-width: 60ch;
+    margin-bottom: var(--space-md);
+  }
+
+  .docs-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .docs-section {
+    margin-bottom: var(--space-2xl);
+  }
+
+  .section-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-sm);
+    max-width: 26ch;
+  }
+
+  .plain-list {
+    display: grid;
+    gap: var(--space-sm);
+    margin: var(--space-md) 0 var(--space-lg);
+    padding-left: 1.1rem;
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+  }
+
+  /* ---- Processor list ---- */
+  .channel-list {
+    display: grid;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+
+  .channel-item {
+    display: grid;
+    gap: 0.35rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: var(--space-md) var(--space-lg);
+  }
+
+  .channel-label {
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .channel-detail {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .channel-note {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    line-height: 1.6;
+  }
+</style>

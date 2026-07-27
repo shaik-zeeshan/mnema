@@ -238,3 +238,17 @@ export function ocrBoxStyle(obs: OcrObservation, renderedImageHeight: number): s
   const fontSizePx = Math.max(6, heightPx * 0.78);
   return `left: ${leftPct}%; top: ${topPct}%; width: ${widthPct}%; height: ${heightPct}%; --ocr-font-size: ${fontSizePx.toFixed(2)}px;`;
 }
+
+// The most boxes an OCR overlay draws. Dense frames (code editor, full page)
+// really do run 1000-2000 observations, so this sits AT the top of the normal
+// range rather than above it — a busy screen can reach it. Truncation is
+// positionally arbitrary: observations arrive in the provider's reading order,
+// so slicing drops a scattered set of boxes rather than an edge.
+export const MAX_OCR_BOXES = 2000;
+
+// The count to show beside an OCR affordance. Copy-all still uses the full
+// list — only the DRAWN boxes are capped — so an uncapped count would promise
+// more boxes than exist and read as "OCR missed those lines".
+export function ocrCountLabel(total: number): string {
+  return total > MAX_OCR_BOXES ? `${MAX_OCR_BOXES}+` : String(total);
+}

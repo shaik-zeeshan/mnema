@@ -30,6 +30,15 @@ struct SearchParams {
     app: Option<String>,
     /// Filter by window title.
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
+    url_regex: Option<String>,
+    /// nextCursor from a previous search response, to fetch the next page of the
+    /// same query. Re-send the identical query and filters alongside it.
+    cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -44,6 +53,61 @@ struct TimelineParams {
     app: Option<String>,
     /// Filter by window title.
     window_title: Option<String>,
+    /// Case-insensitive substring of the page URL, matched against the sanitized
+    /// host/path form (query strings and fragments are never indexed).
+    url: Option<String>,
+    /// Case-sensitive regular expression over the same sanitized host/path URL
+    /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
+    url_regex: Option<String>,
+}
+
+/// `url` and `url_regex` are mutually exclusive. Clap enforces that on the CLI
+/// door; without this the MCP door had no guard at all and the broker would AND
+/// both predicates together — a narrower filter than any client asked for, and
+/// usually zero rows, which reads to an agent as "nothing was captured".
+fn reject_both_url_filters(
+    url: &Option<String>,
+    url_regex: &Option<String>,
+) -> Result<(), ErrorData> {
+    if url.is_some() && url_regex.is_some() {
+        return Err(ErrorData::invalid_params(
+            "url and url_regex are mutually exclusive; pass only one",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+impl SearchParams {
+    fn into_request(self) -> Result<BrokeredCaptureRequest, ErrorData> {
+        reject_both_url_filters(&self.url, &self.url_regex)?;
+        Ok(BrokeredCaptureRequest::Search(BrokerSearchRequest {
+            query: self.query,
+            from: self.from,
+            to: self.to,
+            limit: self.limit,
+            app: self.app,
+            window_title: self.window_title,
+            url: self.url,
+            url_regex: self.url_regex,
+            cursor: self.cursor,
+        }))
+    }
+}
+
+impl TimelineParams {
+    fn into_request(self) -> Result<BrokeredCaptureRequest, ErrorData> {
+        reject_both_url_filters(&self.url, &self.url_regex)?;
+        Ok(BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
+            from: self.from,
+            to: self.to,
+            limit: self.limit,
+            app: self.app,
+            window_title: self.window_title,
+            url: self.url,
+            url_regex: self.url_regex,
+        }))
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -66,18 +130,7 @@ impl MnemaMcp {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(
-            "search",
-            BrokeredCaptureRequest::Search(BrokerSearchRequest {
-                query: p.query,
-                from: p.from,
-                to: p.to,
-                limit: p.limit,
-                app: p.app,
-                window_title: p.window_title,
-            }),
-        )
-        .await
+        self.run("search", p.into_request()?).await
     }
 
     #[tool(
@@ -87,17 +140,7 @@ impl MnemaMcp {
         &self,
         Parameters(p): Parameters<TimelineParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.run(
-            "timeline",
-            BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
-                from: p.from,
-                to: p.to,
-                limit: p.limit,
-                app: p.app,
-                window_title: p.window_title,
-            }),
-        )
-        .await
+        self.run("timeline", p.into_request()?).await
     }
 
     #[tool(
@@ -180,6 +223,59 @@ pub(crate) async fn serve(identity: BrokerClientIdentity) -> Result<(), CliError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `url` and `url_regex` are documented as mutually exclusive — SKILL.md step
+    /// 8, the params' own doc comments, and `conflicts_with = "url"` on the CLI
+    /// door. The MCP door has to refuse the pair too: the broker ANDs both
+    /// predicates, so forwarding them silently answers a narrower query than any
+    /// client asked for.
+    #[test]
+    fn mcp_rejects_both_url_filters_in_one_call() {
+        let search: SearchParams = serde_json::from_value(serde_json::json!({
+            "query": "review",
+            "url": "github.com",
+            "url_regex": "^github\\."
+        }))
+        .expect("search params should deserialize");
+        assert_eq!(
+            search
+                .into_request()
+                .expect_err("both url filters in one search call must be rejected")
+                .code,
+            rmcp::model::ErrorCode::INVALID_PARAMS
+        );
+
+        let timeline: TimelineParams = serde_json::from_value(serde_json::json!({
+            "from": "2026-05-22T10:00:00Z",
+            "to": "2026-05-22T11:00:00Z",
+            "url": "github.com",
+            "url_regex": "^github\\."
+        }))
+        .expect("timeline params should deserialize");
+        assert_eq!(
+            timeline
+                .into_request()
+                .expect_err("both url filters in one timeline call must be rejected")
+                .code,
+            rmcp::model::ErrorCode::INVALID_PARAMS
+        );
+    }
+
+    #[test]
+    fn mcp_forwards_a_single_url_filter() {
+        let search: SearchParams = serde_json::from_value(serde_json::json!({
+            "query": "review",
+            "url_regex": "(?i)^github\\.com/"
+        }))
+        .expect("search params should deserialize");
+        let BrokeredCaptureRequest::Search(request) =
+            search.into_request().expect("one filter is allowed")
+        else {
+            panic!("search params must build a search request");
+        };
+        assert_eq!(request.url, None);
+        assert_eq!(request.url_regex.as_deref(), Some("(?i)^github\\.com/"));
+    }
 
     #[test]
     fn mcp_router_exposes_exactly_the_four_data_tools() {

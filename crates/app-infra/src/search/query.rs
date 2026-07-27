@@ -97,6 +97,45 @@ pub(super) fn normalize_search_refinements(
         None => None,
     };
 
+    let url = match refinements.url {
+        Some(value) => {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                errors.push(whole_query_parse_error("empty_value", "url must be non-empty"));
+                None
+            } else {
+                Some(value)
+            }
+        }
+        None => None,
+    };
+
+    // Compile the pattern HERE, not in SQL. The `REGEXP` function fails an invalid
+    // pattern with an opaque SQLITE_CONSTRAINT_FUNCTION mid-query; validating it
+    // up front turns an operator's typo into the same in-band parse error every
+    // other bad refinement gets.
+    let url_regex = match refinements.url_regex {
+        Some(value) => {
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                errors.push(whole_query_parse_error(
+                    "empty_value",
+                    "urlRegex must be non-empty",
+                ));
+                None
+            } else if let Err(error) = regex::Regex::new(&value) {
+                errors.push(whole_query_parse_error(
+                    "bad_regex",
+                    format!("urlRegex is not a valid regular expression: {error}"),
+                ));
+                None
+            } else {
+                Some(value)
+            }
+        }
+        None => None,
+    };
+
     let mut audio_sources = Vec::new();
     for source in refinements.audio_sources {
         if !audio_sources.contains(&source) {
@@ -114,12 +153,16 @@ pub(super) fn normalize_search_refinements(
             .map(|(normalized, _)| normalized.clone()),
         apps: normalized_apps,
         window_title: window_title.clone(),
+        url: url.clone(),
+        url_regex: url_regex.clone(),
         audio_sources: audio_sources.clone(),
         screen_source,
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
             apps: applied_apps,
             window_title,
+            url,
+            url_regex,
             audio_sources,
             screen_source,
         },
@@ -840,6 +883,8 @@ mod tests {
             }),
             apps: Vec::new(),
             window_title: None,
+            url: None,
+            url_regex: None,
             audio_sources: Vec::new(),
             screen_source: false,
         }))
@@ -1152,6 +1197,8 @@ mod tests {
                 display_name: "Linear".to_string(),
             }],
             window_title: None,
+            url: None,
+            url_regex: None,
             audio_sources: vec![AudioSegmentSourceKind::Microphone],
             screen_source: false,
         }))
@@ -1164,6 +1211,48 @@ mod tests {
                 .any(|error| error.kind == "app_source_conflict"
                     && error.message.contains("cannot be combined")),
             "expected an app_source_conflict parse error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn url_refinements_validate_before_reaching_sql() {
+        let refinements = |url: Option<&str>, url_regex: Option<&str>| SearchCaptureRefinements {
+            date_range: None,
+            apps: Vec::new(),
+            window_title: None,
+            url: url.map(str::to_string),
+            url_regex: url_regex.map(str::to_string),
+            audio_sources: Vec::new(),
+            screen_source: false,
+        };
+
+        let normalized = normalize_search_refinements(Some(refinements(
+            Some("  github.com/mnema  "),
+            Some("^github\\.com/"),
+        )))
+        .expect("valid url refinements should not throw")
+        .expect("valid url refinements should normalize");
+        assert_eq!(normalized.url.as_deref(), Some("github.com/mnema"));
+        assert_eq!(normalized.url_regex.as_deref(), Some("^github\\.com/"));
+
+        // An unbalanced group must never reach SQLite, where `REGEXP` fails with an
+        // opaque SQLITE_CONSTRAINT_FUNCTION.
+        let errors = normalize_search_refinements(Some(refinements(None, Some("("))))
+            .expect("invalid regex should not throw")
+            .expect_err("invalid regex should surface an in-band parse error");
+        assert!(
+            errors.iter().any(|error| error.kind == "bad_regex"),
+            "expected a bad_regex parse error, got {errors:?}"
+        );
+
+        let errors = normalize_search_refinements(Some(refinements(Some("   "), None)))
+            .expect("empty url should not throw")
+            .expect_err("empty url should surface an in-band parse error");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "empty_value" && error.message.contains("url")),
+            "expected an empty_value parse error, got {errors:?}"
         );
     }
 
@@ -1288,6 +1377,8 @@ mod tests {
                             display_name: "Linear".to_string(),
                         }],
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
@@ -1352,6 +1443,8 @@ mod tests {
                             display_name: "linear".to_string(),
                         }],
                         window_title: Some("plan".to_string()),
+                        url: None,
+                        url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
@@ -1376,6 +1469,8 @@ mod tests {
                         date_range: None,
                         apps: Vec::new(),
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                         audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
                         screen_source: false,
                     }),
@@ -1446,6 +1541,8 @@ mod tests {
                         }),
                         apps: Vec::new(),
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),
@@ -1543,6 +1640,8 @@ mod tests {
                             display_name: "éditeur".to_string(),
                         }],
                         window_title: None,
+                        url: None,
+                        url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
                     }),

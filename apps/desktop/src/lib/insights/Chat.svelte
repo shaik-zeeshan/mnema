@@ -118,7 +118,7 @@
   interface ChatTurn {
     turnIndex: number;
     question: string;
-    phase: "seeding" | "thinking" | "streaming" | "done" | "error";
+    phase: "thinking" | "streaming" | "done" | "error";
     // Render-ready answer blocks (prose markdown stays rendered on the frontend
     // via AnswerProse; the graphical variants carry already-parsed data).
     blocks: AnswerBlock[];
@@ -134,7 +134,6 @@
     // depend on its fields. The backend's `Sources` update carries the same JSON.
     sources: AskAiSource[];
     errorMessage: string | null;
-    seededResultCount: number | null;
     // Tokens occupying the model's context window after this turn's latest
     // completion request; null when the provider reported no usage (and on
     // hydrated past turns — usage isn't persisted).
@@ -336,7 +335,6 @@
       liveActivity: null,
       sources: [],
       errorMessage: null,
-      seededResultCount: null,
       contextTokens: null,
       version: 0,
       reasoningExpanded: false,
@@ -488,7 +486,6 @@
     turn.liveActivity = view.liveActivity;
     turn.sources = coerceSources(view.sources);
     turn.errorMessage = view.errorMessage;
-    turn.seededResultCount = view.seededResultCount;
     turn.contextTokens = view.contextTokens;
     turn.version = version;
     void loadSourceThumbnails(turn.sources);
@@ -530,7 +527,6 @@
     t.toolActivities = coerceToolActivities(turn.toolActivities);
     t.sources = coerceSources(turn.sources);
     t.errorMessage = turn.errorMessage;
-    t.seededResultCount = turn.seededResultCount;
     return t;
   }
 
@@ -538,8 +534,7 @@
     return phase === "done" ||
       phase === "error" ||
       phase === "streaming" ||
-      phase === "thinking" ||
-      phase === "seeding"
+      phase === "thinking"
       ? phase
       : "done";
   }
@@ -608,19 +603,16 @@
     // otherwise keep showing its inline working line beneath a finished answer
     // once a new turn is appended below it.
     for (const t of turns) {
-      if (t.phase === "streaming" || t.phase === "thinking" || t.phase === "seeding") {
+      if (t.phase === "streaming" || t.phase === "thinking") {
         t.liveActivity = null;
         t.phase = "done";
       }
     }
     const turnIndex = turns.length;
-    const turn = makeTurn(turnIndex, question, isFirstTurn ? "seeding" : "thinking");
+    const turn = makeTurn(turnIndex, question, "thinking");
     turns = [...turns, turn];
     streaming = true;
-    liveActivity = {
-      kind: "other",
-      label: isFirstTurn ? "Searching your captures…" : "Thinking…",
-    };
+    liveActivity = { kind: "other", label: "Thinking…" };
     await tick();
     scrollTranscriptToBottom();
 
@@ -648,7 +640,6 @@
           request: {
             conversationId,
             question,
-            seedQuery: question,
             origin: "chat",
             title,
             ...askAiClock(),
@@ -1145,7 +1136,7 @@
 
   // Keep the composer-level streaming flag + live activity line in sync with the
   // active (last) turn after an update settles it. When the turn is working but
-  // has no explicit live-activity line (plain seeding/thinking, before a tool
+  // has no explicit live-activity line (plain thinking, before a tool
   // call or the first answer token), synthesize the phase label so the composer
   // working line never goes blank mid-turn — mirroring the in-transcript states.
   function reconcileComposer(turn: ChatTurn): void {
@@ -1159,12 +1150,7 @@
     } else {
       liveActivity = {
         kind: "other",
-        label:
-          turn.phase === "seeding"
-            ? "Searching your captures…"
-            : turn.phase === "streaming"
-              ? "Writing…"
-              : "Thinking…",
+        label: turn.phase === "streaming" ? "Writing…" : "Thinking…",
       };
     }
   }
@@ -1262,7 +1248,7 @@
 {/snippet}
 
 <!-- Answer-shaped placeholder shown beneath the working line while a turn is
-     seeding/thinking (before any prose block arrives), so the answer region
+     thinking (before any prose block arrives), so the answer region
      reads as "an answer is forming" rather than a lone pulsing dot. -->
 {#snippet answerSkeleton()}
   <div class="answer-sk" aria-hidden="true">
@@ -1422,13 +1408,7 @@
                     {/if}
                   {/if}
 
-                  {#if turn.phase === "seeding"}
-                    <p class="state state--working">
-                      <span class="dot" aria-hidden="true"></span>
-                      Searching your captures…
-                    </p>
-                    {@render answerSkeleton()}
-                  {:else if turn.phase === "thinking" && turn.liveActivity === null}
+                  {#if turn.phase === "thinking" && turn.liveActivity === null}
                     <p class="state state--working">
                       <span class="dot" aria-hidden="true"></span>
                       Thinking…
@@ -1636,8 +1616,8 @@
   <!-- Composer (engine-on) or quiet enable card (engine-off). -->
   {#if askAvailable}
     <div class="composer-wrap">
-      <!-- Live activity line: what the engine is doing right now (seeding →
-           thinking → tool → writing). Space is reserved so the composer
+      <!-- Live activity line: what the engine is doing right now (thinking →
+           tool → writing). Space is reserved so the composer
            doesn't jump when it appears/clears. -->
       <div class="composer-activity" aria-live="polite">
         {#if liveActivity !== null}
