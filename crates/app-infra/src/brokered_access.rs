@@ -32,7 +32,7 @@ pub use url_guard::{
 
 mod speakers;
 
-use speakers::broker_speakers_for_audio;
+use speakers::{broker_speakers, broker_speakers_for_audio};
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
 const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";
@@ -486,6 +486,50 @@ pub struct BrokerTimelineResponse {
     pub limit: u32,
 }
 
+/// Who was heard **inside the grant's own time scope** — never the global people
+/// list, which spans audio this grant does not cover.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakersRequest {
+    /// Case-insensitive substring over a person's name. Present, it searches
+    /// NAMED people only — a quiet person ranks below the cap and is otherwise
+    /// unfindable, which is what this filter exists for.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakersResponse {
+    /// Ranked by total speaking time in scope, longest first.
+    pub speakers: Vec<BrokerSpeakerSummary>,
+    /// Page-size ceiling after server-side clamping.
+    pub limit: u32,
+    /// More speakers were heard than `limit` returned. **This list is NOT
+    /// everyone** when set — narrow the search with `name` rather than reading
+    /// the ranked page as the full roster.
+    pub truncated: bool,
+}
+
+/// One voice heard in scope: how to address it, how long it spoke, and how much
+/// of that identity the user actually confirmed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakerSummary {
+    /// `None` for a `voice` handle — an unnamed voice has no name to report.
+    pub name: Option<String>,
+    pub handle: BrokerSpeakerHandle,
+    /// Total speaking time in scope, milliseconds. The ranking key.
+    pub speaking_ms: u64,
+    /// Turns the USER assigned to this person. Confirmed identity.
+    pub assigned_turns: u32,
+    /// Turns matched to this person by VOICE RECOGNITION with no assignment —
+    /// guesses, not confirmations. Weigh them before filtering on this handle.
+    pub recognized_turns: u32,
+}
+
 /// A `recall_context` request: the user's question, an optional cap on how many
 /// recalled items to return, and optional `from`/`to` RFC3339 UTC bounds that
 /// scope the recalled ACTIVITIES by date (mirroring `search`/`timeline`). The
@@ -544,6 +588,7 @@ pub enum BrokeredCaptureRequest {
     Search(BrokerSearchRequest),
     ShowText { opaque_id: String },
     Timeline(BrokerTimelineRequest),
+    Speakers(BrokerSpeakersRequest),
     RecallContext(BrokerRecallContextRequest),
     OpenInMnema { opaque_id: String },
     OpenCapturedUrl { opaque_id: String },
@@ -556,6 +601,10 @@ impl BrokeredCaptureRequest {
             Self::Search(_) => Some("search"),
             Self::ShowText { .. } => Some("show_text"),
             Self::Timeline(_) => Some("timeline"),
+            // The audit records THAT a speaker lookup ran, never the name it was
+            // given or the handles it returned — `record_audit_event` stores no
+            // request parameters, deliberately.
+            Self::Speakers(_) => Some("speakers"),
             Self::RecallContext(_) => Some("recall_context"),
             Self::OpenInMnema { .. } => Some("open_in_mnema"),
             Self::OpenCapturedUrl { .. } => Some("open_captured_url"),
@@ -570,6 +619,7 @@ pub enum BrokeredCaptureResponse {
     Search(BrokerSearchResponse),
     ShowText(BrokerShowTextResponse),
     Timeline(BrokerTimelineResponse),
+    Speakers(BrokerSpeakersResponse),
     RecallContext(BrokerRecallContextResponse),
     OpenInMnema(BrokerOpenInMnemaResponse),
     OpenCapturedUrl(BrokerOpenCapturedUrlResponse),
@@ -582,6 +632,7 @@ impl BrokeredCaptureResponse {
             Self::Search(response) => response.results.len() as u32,
             Self::ShowText(_) | Self::OpenInMnema(_) | Self::OpenCapturedUrl(_) => 1,
             Self::Timeline(response) => response.intervals.len() as u32,
+            Self::Speakers(response) => response.speakers.len() as u32,
             Self::RecallContext(response) => {
                 (response.conclusions.len() + response.activities.len()) as u32
             }
@@ -761,6 +812,13 @@ impl BrokeredCaptureAccess {
                 let infra = self.initialize_infra().await?;
                 match broker_timeline(&self.config_dir, &infra, grants, request).await? {
                     Ok(response) => Ok(BrokeredCaptureResponse::Timeline(response)),
+                    Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
+                }
+            }
+            BrokeredCaptureRequest::Speakers(request) => {
+                let infra = self.initialize_infra().await?;
+                match broker_speakers(&self.config_dir, &infra, grants, request).await? {
+                    Ok(response) => Ok(BrokeredCaptureResponse::Speakers(response)),
                     Err(error) => Ok(BrokeredCaptureResponse::Error(error)),
                 }
             }

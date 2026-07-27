@@ -638,6 +638,7 @@ fn broker_response_to_tool_value(
             .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
         BrokeredCaptureResponse::AuthStatus(_)
+        | BrokeredCaptureResponse::Speakers(_)
         | BrokeredCaptureResponse::OpenInMnema(_)
         | BrokeredCaptureResponse::OpenCapturedUrl(_) => {
             Err("unexpected Ask AI broker response".to_string())

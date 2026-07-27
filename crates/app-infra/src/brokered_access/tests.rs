@@ -3567,3 +3567,561 @@ fn a_speaker_handle_is_not_a_capture_reference_for_show_text_or_open() {
         );
     });
 }
+
+/// Seeds one diarized audio segment over an EXPLICIT window, so a discovery test
+/// can place a voice inside or outside the grant's time scope. One session per
+/// call keeps the segment's unique file path unique too.
+async fn seed_diarized_segment(
+    save_dir: &Path,
+    infra: &AppInfra,
+    session_id: &str,
+    started_at_ms: u64,
+    ended_at_ms: u64,
+    clusters: Vec<speaker_analysis::SpeakerCluster>,
+    turns: Vec<speaker_analysis::SpeakerTurn>,
+) -> i64 {
+    let segment = infra
+        .upsert_audio_segment(&NewAudioSegment::new(
+            AudioSegmentSourceKind::Microphone,
+            session_id,
+            1,
+            save_dir
+                .join(format!("{session_id}.m4a"))
+                .display()
+                .to_string(),
+            format_unix_ms(started_at_ms),
+            format_unix_ms(ended_at_ms),
+        ))
+        .await
+        .expect("segment should insert");
+    complete_speaker_analysis(
+        infra,
+        segment.id,
+        speaker_analysis_output(session_id, segment.id, clusters, turns),
+    )
+    .await;
+    segment.id
+}
+
+async fn cluster_id_for(infra: &AppInfra, session_id: &str, provider_cluster_id: &str) -> i64 {
+    infra
+        .list_speaker_clusters_for_session(session_id)
+        .await
+        .expect("clusters should list")
+        .into_iter()
+        .find(|cluster| cluster.provider_cluster_id.ends_with(provider_cluster_id))
+        .unwrap_or_else(|| panic!("{provider_cluster_id} should exist in {session_id}"))
+        .id
+}
+
+async fn assign_cluster(
+    infra: &AppInfra,
+    session_id: &str,
+    provider_cluster_id: &str,
+    person_id: i64,
+) {
+    let cluster_id = cluster_id_for(infra, session_id, provider_cluster_id).await;
+    infra
+        .link_speaker_cluster_to_person(cluster_id, person_id, false)
+        .await
+        .expect("cluster should link");
+}
+
+fn recognized_cluster(
+    provider_cluster_id: &str,
+    embedding: &[f32],
+    person_id: i64,
+    display_name: &str,
+) -> speaker_analysis::SpeakerCluster {
+    speaker_analysis::SpeakerCluster {
+        suggestion: Some(speaker_analysis::SpeakerRecognitionSuggestion {
+            person_id,
+            display_name: display_name.to_string(),
+            confidence: speaker_analysis::RecognitionConfidence::High,
+            score: 0.9,
+        }),
+        ..speaker_cluster(provider_cluster_id, embedding)
+    }
+}
+
+async fn discover_speakers(
+    config_dir: &Path,
+    infra: &AppInfra,
+    grant: &BrokerGrant,
+    name: Option<&str>,
+    limit: Option<u32>,
+) -> BrokerSpeakersResponse {
+    broker_speakers(
+        config_dir,
+        infra,
+        std::slice::from_ref(grant),
+        BrokerSpeakersRequest {
+            name: name.map(str::to_string),
+            limit,
+        },
+    )
+    .await
+    .expect("speakers should run")
+    .expect("the grant should authorize the roster")
+}
+
+fn roster_shape(response: &BrokerSpeakersResponse) -> Vec<(Option<&str>, &str, u64)> {
+    response
+        .speakers
+        .iter()
+        .map(|speaker| {
+            (
+                speaker.name.as_deref(),
+                speaker.handle.kind.as_str(),
+                speaker.speaking_ms,
+            )
+        })
+        .collect()
+}
+
+/// Discovery is what makes a handle reachable at all, so it must rank by how long
+/// each voice actually spoke — not by name, not by insertion — and it must publish
+/// the SAME handle `show-text` publishes for that person. A parallel identity here
+/// would send an agent filtering on a handle nothing else recognizes.
+#[test]
+fn broker_speakers_ranks_named_and_unnamed_voices_by_speaking_time() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-roster");
+        let save_dir = temp_save_dir("speakers-roster");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let (segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+            &config_dir,
+            &save_dir,
+            &infra,
+            "roster-session",
+            "two voices",
+        )
+        .await;
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        complete_speaker_analysis(
+            &infra,
+            segment_id,
+            speaker_analysis_output(
+                "roster-session",
+                segment_id,
+                vec![
+                    speaker_cluster("speaker_00", &[1.0, 0.0]),
+                    speaker_cluster("speaker_01", &[0.0, 1.0]),
+                ],
+                vec![
+                    speaker_turn("speaker_00", 0, 2_000),
+                    speaker_turn("speaker_01", 3_000, 12_000),
+                ],
+            ),
+        )
+        .await;
+        assign_cluster(&infra, "roster-session", "speaker_00", ada.id).await;
+
+        let roster = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+
+        assert_eq!(
+            roster_shape(&roster),
+            vec![(None, "voice", 9_000), (Some("Ada"), "person", 2_000)],
+            "the longer-speaking unnamed voice outranks the named person"
+        );
+        assert!(!roster.truncated);
+
+        let shown = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+            .await
+            .expect("show text should run")
+            .expect("audio should be authorized");
+        let ada_in_show_text = shown
+            .speakers
+            .iter()
+            .find(|speaker| speaker.name.as_deref() == Some("Ada"))
+            .expect("show-text publishes Ada");
+        assert_eq!(
+            roster.speakers[1].handle, ada_in_show_text.handle,
+            "discovery must hand back the handle show-text already uses"
+        );
+    });
+}
+
+/// A ranked page that quietly dropped the rest reads to an agent as "that is
+/// everyone". The flag is the only thing that says otherwise — and it must stay
+/// clear when the cap did not bite, or it means nothing.
+#[test]
+fn broker_speakers_flags_truncation_only_when_the_cap_bites() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-truncation");
+        let save_dir = temp_save_dir("speakers-truncation");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let now = now_unix_ms();
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "truncation-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                speaker_cluster("speaker_01", &[0.0, 1.0]),
+            ],
+            vec![
+                speaker_turn("speaker_00", 0, 9_000),
+                speaker_turn("speaker_01", 10_000, 11_000),
+            ],
+        )
+        .await;
+
+        let capped = discover_speakers(&config_dir, &infra, &grant, None, Some(1)).await;
+        assert_eq!(capped.speakers.len(), 1);
+        assert_eq!(capped.limit, 1);
+        assert_eq!(capped.speakers[0].speaking_ms, 9_000);
+        assert!(capped.truncated, "a dropped voice must be admitted to");
+
+        let whole = discover_speakers(&config_dir, &infra, &grant, None, Some(5)).await;
+        assert_eq!(whole.speakers.len(), 2);
+        assert!(
+            !whole.truncated,
+            "the flag must stay clear when everyone fit: {whole:?}"
+        );
+    });
+}
+
+/// The "Skywalker" case: a person who barely spoke ranks below the cap and is
+/// unreachable from the ranked page alone. The name fragment is the only way to
+/// a handle for them — case-insensitively, on part of the name.
+#[test]
+fn broker_speakers_name_fragment_reaches_a_person_below_the_cap() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-fragment");
+        let save_dir = temp_save_dir("speakers-fragment");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let yoda = infra
+            .create_person_profile("Yoda", None)
+            .await
+            .expect("person profile should insert");
+        let anakin = infra
+            .create_person_profile("Anakin Skywalker", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "fragment-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                speaker_cluster("speaker_01", &[0.0, 1.0]),
+            ],
+            vec![
+                speaker_turn("speaker_00", 0, 20_000),
+                speaker_turn("speaker_01", 21_000, 22_000),
+            ],
+        )
+        .await;
+        assign_cluster(&infra, "fragment-session", "speaker_00", yoda.id).await;
+        assign_cluster(&infra, "fragment-session", "speaker_01", anakin.id).await;
+
+        let ranked = discover_speakers(&config_dir, &infra, &grant, None, Some(1)).await;
+        assert_eq!(roster_shape(&ranked), vec![(Some("Yoda"), "person", 20_000)]);
+
+        let found = discover_speakers(&config_dir, &infra, &grant, Some("skywalker"), Some(1)).await;
+
+        assert_eq!(
+            roster_shape(&found),
+            vec![(Some("Anakin Skywalker"), "person", 1_000)],
+            "a half-remembered name must reach a person the ranking hid"
+        );
+        assert!(!found.truncated);
+    });
+}
+
+/// `person_profiles.display_name` is plain TEXT, so two people really can share
+/// one. Both must come back as separate handles: an agent that saw one row would
+/// filter on one of them and silently answer for the wrong human.
+#[test]
+fn broker_speakers_gives_two_people_sharing_a_name_two_handles() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-duplicate-name");
+        let save_dir = temp_save_dir("speakers-duplicate-name");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let first = infra
+            .create_person_profile("Ada Lovelace", None)
+            .await
+            .expect("person profile should insert");
+        let second = infra
+            .create_person_profile("Ada Lovelace", None)
+            .await
+            .expect("a second person may share the name");
+        assert_ne!(first.id, second.id);
+        let now = now_unix_ms();
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "duplicate-name-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                speaker_cluster("speaker_01", &[0.0, 1.0]),
+            ],
+            vec![
+                speaker_turn("speaker_00", 0, 5_000),
+                speaker_turn("speaker_01", 6_000, 9_000),
+            ],
+        )
+        .await;
+        assign_cluster(&infra, "duplicate-name-session", "speaker_00", first.id).await;
+        assign_cluster(&infra, "duplicate-name-session", "speaker_01", second.id).await;
+
+        let found = discover_speakers(&config_dir, &infra, &grant, Some("lovelace"), None).await;
+
+        assert_eq!(
+            roster_shape(&found),
+            vec![
+                (Some("Ada Lovelace"), "person", 5_000),
+                (Some("Ada Lovelace"), "person", 3_000),
+            ]
+        );
+        assert_ne!(
+            found.speakers[0].handle.id, found.speakers[1].handle.id,
+            "one name, two people, two handles"
+        );
+    });
+}
+
+/// `person_profiles` is global; the grant is not. A roster that read the profile
+/// table would name people the caller was never granted the audio for — the whole
+/// reason this command is scoped rather than a people list.
+#[test]
+fn broker_speakers_never_names_a_person_heard_outside_the_grant_scope() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-scope");
+        let save_dir = temp_save_dir("speakers-scope");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        let bo = infra
+            .create_person_profile("Bo", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        let day_ms = 24 * 60 * 60 * 1000;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "in-scope-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn("speaker_00", 0, 1_000)],
+        )
+        .await;
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "out-of-scope-session",
+            now.saturating_sub(3 * day_ms),
+            now.saturating_sub(3 * day_ms - 60 * 60 * 1000),
+            vec![speaker_cluster("speaker_00", &[0.0, 1.0])],
+            vec![speaker_turn("speaker_00", 0, 60_000)],
+        )
+        .await;
+        assign_cluster(&infra, "in-scope-session", "speaker_00", ada.id).await;
+        assign_cluster(&infra, "out-of-scope-session", "speaker_00", bo.id).await;
+
+        let roster = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+
+        assert_eq!(
+            roster_shape(&roster),
+            vec![(Some("Ada"), "person", 1_000)],
+            "the louder voice from three days ago is outside a one-day grant"
+        );
+        let by_name = discover_speakers(&config_dir, &infra, &grant, Some("bo"), None).await;
+        assert!(
+            by_name.speakers.is_empty(),
+            "a name fragment must not reach past the grant either: {by_name:?}"
+        );
+    });
+}
+
+/// Both counts hang off ONE handle, because a person confirmed on one cluster and
+/// merely voice-matched on another is one person. The split is how an agent weighs
+/// how much of the answer is guesswork before it filters — an unnamed voice has
+/// nothing confirmed and nothing recognized, and must say so.
+#[test]
+fn broker_speakers_reports_the_assigned_and_recognized_split_per_handle() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-split");
+        let save_dir = temp_save_dir("speakers-split");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "split-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![
+                // Deliberately far apart: near-identical embeddings resolve onto
+                // ONE stable cluster row, which would collapse the split before
+                // the broker ever sees it.
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                recognized_cluster("speaker_01", &[0.0, 1.0], ada.id, "Ada"),
+                speaker_cluster("speaker_02", &[-1.0, 0.0]),
+            ],
+            vec![
+                speaker_turn("speaker_00", 0, 1_000),
+                speaker_turn("speaker_00", 2_000, 3_000),
+                speaker_turn("speaker_01", 4_000, 5_000),
+                speaker_turn("speaker_02", 6_000, 7_000),
+            ],
+        )
+        .await;
+        assign_cluster(&infra, "split-session", "speaker_00", ada.id).await;
+
+        let roster = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+
+        let split: Vec<_> = roster
+            .speakers
+            .iter()
+            .map(|speaker| {
+                (
+                    speaker.name.as_deref(),
+                    speaker.handle.kind.as_str(),
+                    speaker.assigned_turns,
+                    speaker.recognized_turns,
+                )
+            })
+            .collect();
+        assert_eq!(
+            split,
+            vec![
+                (Some("Ada"), "person", 2, 1),
+                (None, "voice", 0, 0),
+            ],
+            "confirmed and guessed turns collapse onto one person handle"
+        );
+        assert_eq!(roster.speakers[0].speaking_ms, 3_000);
+    });
+}
+
+/// The dispatch, audit-name, and result-count arms in one pass — and the audit
+/// row must show only THAT a speaker lookup ran. `record_audit_event` stores no
+/// request parameters on purpose: the trail says a lookup happened, never who it
+/// named.
+#[test]
+fn broker_speakers_is_audited_without_recording_who_it_named() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-audit");
+        let save_dir = temp_save_dir("speakers-audit");
+        write_recording_settings(&config_dir, &save_dir);
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let ada = infra
+            .create_person_profile("Ada", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        seed_diarized_segment(
+            &save_dir,
+            &infra,
+            "audit-session",
+            now.saturating_sub(60 * 60 * 1000),
+            now,
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn("speaker_00", 0, 1_000)],
+        )
+        .await;
+        assign_cluster(&infra, "audit-session", "speaker_00", ada.id).await;
+
+        let response = BrokeredCaptureAccess::from_config_dir(config_dir.clone())
+            .execute(
+                "mnema-cli",
+                BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
+                    name: Some("ada".to_string()),
+                    limit: None,
+                }),
+            )
+            .await
+            .expect("speakers should run");
+
+        let BrokeredCaptureResponse::Speakers(roster) = &response else {
+            panic!("expected a Speakers response, got {response:?}");
+        };
+        assert_eq!(roster_shape(roster), vec![(Some("Ada"), "person", 1_000)]);
+
+        let audit = load_audit_events(&config_dir).expect("audit should load");
+        assert_eq!(audit.events.len(), 1);
+        assert_eq!(audit.events[0].command_type, "speakers");
+        assert_eq!(audit.events[0].result_count, 1);
+        let json = serde_json::to_string(&audit).expect("audit should serialize");
+        assert!(
+            !json.to_lowercase().contains("ada"),
+            "the audit trail must never record who a speaker lookup named: {json}"
+        );
+    });
+}

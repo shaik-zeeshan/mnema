@@ -1,8 +1,13 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
+
+use sqlx::{QueryBuilder, Row, Sqlite};
 
 use super::{
-    opaque_signature, opaque_signature_matches, BrokerSpeaker, BrokerSpeakerHandle,
-    BrokerSpeakerTurn, OPAQUE_SIGNATURE_HEX_LEN,
+    broker_optional_filter, load_or_create_opaque_secret, opaque_issuing_grant, opaque_signature,
+    opaque_signature_matches, scoped_date_range, sqlite_contains_like_pattern, BrokerErrorResponse,
+    BrokerGrant, BrokerSpeaker, BrokerSpeakerHandle, BrokerSpeakerSummary, BrokerSpeakerTurn,
+    BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
+    OPAQUE_SIGNATURE_HEX_LEN,
 };
 use crate::{AppInfra, Result};
 
@@ -12,6 +17,100 @@ pub(super) const SPEAKER_HANDLE_KIND_PERSON: &str = "person";
 /// re-diarization. Marked apart from `person` on the wire because an agent that
 /// cannot tell them apart will treat a voice as a human being.
 pub(super) const SPEAKER_HANDLE_KIND_VOICE: &str = "voice";
+
+/// Who was heard inside the grant's own time scope, ranked by how long they
+/// spoke. The roster is SCOPED, never the global `person_profiles` list: grants
+/// are time-bounded, so an unscoped roster would name people from audio this
+/// caller was never granted. Scoped, it gives up only what `show-text` already
+/// does for the same recordings.
+///
+/// Handles come from the same rule [`broker_collapse_speakers`] applies — one per
+/// PERSON when named or recognized, one per CLUSTER when not — so a handle here is
+/// the handle `show-text` publishes for that voice, and the SQL below is that rule
+/// written as a `GROUP BY`. Keep the two in step.
+pub(super) async fn broker_speakers(
+    config_dir: &Path,
+    infra: &AppInfra,
+    grants: &[BrokerGrant],
+    request: BrokerSpeakersRequest,
+) -> Result<std::result::Result<BrokerSpeakersResponse, BrokerErrorResponse>> {
+    if grants.is_empty() {
+        return Ok(Err(BrokerErrorResponse::authorization_required()));
+    }
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_SEARCH_LIMIT)
+        .clamp(1, MAX_SEARCH_LIMIT);
+    let name = broker_optional_filter(request.name, "name")?;
+    // No `from`/`to`: the grant IS the scope here. `None` means All Retained
+    // History, which needs no time predicate at all.
+    let range = scoped_date_range(grants, None, None)?;
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT person.id AS person_id, person.display_name AS display_name, \
+                CASE WHEN person.id IS NULL THEN turn.cluster_id END AS cluster_id, \
+                SUM(turn.end_ms - turn.start_ms) AS speaking_ms, \
+                SUM(CASE WHEN person.id IS NULL THEN 0 \
+                         WHEN cluster.person_id IS NULL THEN 0 ELSE 1 END) AS assigned_turns, \
+                SUM(CASE WHEN person.id IS NULL THEN 0 \
+                         WHEN cluster.person_id IS NULL THEN 1 ELSE 0 END) AS recognized_turns \
+         FROM speaker_turns turn \
+         JOIN recording_speaker_clusters cluster ON cluster.id = turn.cluster_id \
+         JOIN audio_segments segment ON segment.id = turn.audio_segment_id \
+         LEFT JOIN person_profiles person \
+                ON person.id = COALESCE(cluster.person_id, cluster.recognition_person_id) \
+         WHERE 1 = 1",
+    );
+    if let Some(range) = range.as_ref() {
+        query.push(" AND segment.started_at <= ");
+        query.push_bind(range.end_at.clone());
+        query.push(" AND segment.ended_at >= ");
+        query.push_bind(range.start_at.clone());
+    }
+    if let Some(name) = name.as_deref() {
+        query.push(" AND LOWER(person.display_name) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(name));
+        query.push(") ESCAPE '\\'");
+    }
+    query.push(
+        " GROUP BY person.id, person.display_name, \
+                  CASE WHEN person.id IS NULL THEN turn.cluster_id END \
+          ORDER BY speaking_ms DESC, person.id ASC, cluster_id ASC LIMIT ",
+    );
+    // One past the cap, so truncation is observed rather than guessed: a ranked
+    // page read as the whole roster is an agent reporting "that is everyone".
+    query.push_bind(i64::from(limit) + 1);
+
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
+    let truncated = rows.len() > limit as usize;
+    let secret = load_or_create_opaque_secret(config_dir)?;
+    let grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
+    let speakers = rows
+        .iter()
+        .take(limit as usize)
+        .map(|row| {
+            let person_id: Option<i64> = row.get("person_id");
+            let handle = match person_id {
+                Some(person_id) => person_handle(person_id, grant_id, &secret),
+                // No span: a cluster's turn offsets are relative to each audio
+                // segment's own start, and one cluster spans several of them.
+                None => voice_handle(row.get("cluster_id"), None, grant_id, &secret),
+            };
+            BrokerSpeakerSummary {
+                name: row.get("display_name"),
+                handle,
+                speaking_ms: row.get::<i64, _>("speaking_ms").max(0) as u64,
+                assigned_turns: row.get::<i64, _>("assigned_turns").max(0) as u32,
+                recognized_turns: row.get::<i64, _>("recognized_turns").max(0) as u32,
+            }
+        })
+        .collect();
+    Ok(Ok(BrokerSpeakersResponse {
+        speakers,
+        limit,
+        truncated,
+    }))
+}
 
 pub(super) async fn broker_speakers_for_audio(
     infra: &AppInfra,
@@ -102,8 +201,7 @@ pub(super) fn broker_collapse_speakers(
                     confidence: None,
                     handle: voice_handle(
                         turn.cluster_id,
-                        turn.start_ms,
-                        turn.end_ms,
+                        Some((turn.start_ms, turn.end_ms)),
                         grant_id,
                         secret,
                     ),
@@ -160,18 +258,20 @@ fn person_handle(person_id: i64, grant_id: Option<&str>, secret: &[u8]) -> Broke
     }
 }
 
+/// `span` is the stretch this voice was heard over WITHIN ONE RECORDING, in ms
+/// from that recording's start. `None` where the caller spans several — the
+/// offsets share no origin then, and a bound stitched across them is a lie.
 fn voice_handle(
     cluster_id: i64,
-    start_ms: u64,
-    end_ms: u64,
+    span: Option<(u64, u64)>,
     grant_id: Option<&str>,
     secret: &[u8],
 ) -> BrokerSpeakerHandle {
     BrokerSpeakerHandle {
         id: encode_speaker_handle(SPEAKER_HANDLE_KIND_VOICE, cluster_id, grant_id, secret),
         kind: SPEAKER_HANDLE_KIND_VOICE.to_string(),
-        start_ms: Some(start_ms),
-        end_ms: Some(end_ms),
+        start_ms: span.map(|(start_ms, _)| start_ms),
+        end_ms: span.map(|(_, end_ms)| end_ms),
     }
 }
 
