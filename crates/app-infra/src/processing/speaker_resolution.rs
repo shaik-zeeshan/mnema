@@ -314,6 +314,43 @@ mod tests {
         );
     }
 
+    /// Exactly-equal scores must not let row order pick the winner. Rust's sort
+    /// is stable, so without the explicit lowest-id tie-break the DB's row order
+    /// decides the merge target — and `segment_identity_bench.py` replays this
+    /// function, so every benchmark number stops being reproducible.
+    #[test]
+    fn equal_scores_resolve_to_the_lowest_id_regardless_of_input_order() {
+        let mut ascending = vec![candidate(3, 0.90, None), candidate(7, 0.90, None)];
+        let mut descending = vec![candidate(7, 0.90, None), candidate(3, 0.90, None)];
+
+        let from_ascending =
+            resolve_stable_speaker_cluster_from_candidates(&mut ascending, None, &shipped());
+        let from_descending =
+            resolve_stable_speaker_cluster_from_candidates(&mut descending, None, &shipped());
+
+        assert_eq!(from_ascending, from_descending);
+        assert_eq!(from_ascending.suggested_merge_target_cluster_id, Some(3));
+    }
+
+    /// A named cluster tied with an unnamed one is still a conflict under the
+    /// person-aware rule. Auto-merging there would file an unidentified voice
+    /// under a real person's name with no user action — the one outcome the rule
+    /// exists to prevent.
+    #[test]
+    fn person_aware_ambiguity_still_blocks_a_named_tie_with_an_unnamed_cluster() {
+        let mut candidates = vec![candidate(1, 0.86, Some(10)), candidate(2, 0.84, None)];
+        let tuning = SpeakerResolutionTuning {
+            person_aware_ambiguity: true,
+            ..Default::default()
+        };
+
+        let resolution =
+            resolve_stable_speaker_cluster_from_candidates(&mut candidates, None, &tuning);
+
+        assert_eq!(resolution.auto_merge_target_cluster_id, None);
+        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
+    }
+
     #[test]
     fn person_aware_ambiguity_still_blocks_two_different_people() {
         let mut candidates = vec![candidate(1, 0.86, Some(10)), candidate(2, 0.84, Some(20))];

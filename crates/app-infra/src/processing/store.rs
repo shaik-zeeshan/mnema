@@ -2502,6 +2502,22 @@ impl ProcessingStore {
         .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
+        // The merge says both clusters are the same speaker, so the source's "not
+        // this person" applies to the target. Without this the source row is purged
+        // below, `ON DELETE SET NULL` orphans the rejection and retention GCs it —
+        // silently un-rejecting. `OR IGNORE` skips a rejection the target already
+        // has (that row dies with the source), and `IS NOT` is NULL-safe, so an
+        // unnamed target inherits all of them.
+        sqlx::query(
+            "UPDATE OR IGNORE speaker_recognition_rejections \
+             SET source_cluster_id = ?2 \
+             WHERE source_cluster_id = ?1 AND person_id IS NOT ?3",
+        )
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .bind(target.person_id)
+        .execute(&mut *transaction)
+        .await?;
         purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
         transaction.commit().await?;
         self.get_required_speaker_cluster(target_cluster_id).await
@@ -2860,6 +2876,43 @@ async fn persist_speaker_analysis_output(
         .await?;
     }
 
+    purge_spared_rejected_speaker_clusters_without_turns(
+        transaction,
+        &output.metadata.session_id,
+        &output.metadata.provider,
+    )
+    .await?;
+
+    Ok(())
+}
+
+/// Second pass, run once the turns are back. A rejection-carrying cluster is
+/// spared by the first pass only so re-analysis can reclaim its id; one that did
+/// not get its turns back is obsolete exactly like any other, and leaving it
+/// behind puts a turn-less ghost speaker into `list_speaker_clusters_for_session`
+/// (what the timeline renders) forever. Its rejections go with it — they
+/// described a cluster that no longer exists.
+async fn purge_spared_rejected_speaker_clusters_without_turns(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND EXISTS (\
+                SELECT 1 FROM speaker_recognition_rejections \
+                WHERE speaker_recognition_rejections.source_cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .execute(&mut **transaction)
+    .await?;
     Ok(())
 }
 
@@ -2951,11 +3004,37 @@ async fn resolve_stable_speaker_cluster(
             })
         })
         .collect::<Vec<_>>();
-    Ok(resolve_stable_speaker_cluster_from_candidates(
+    let resolution = resolve_stable_speaker_cluster_from_candidates(
         &mut candidates,
         recognition_person_id,
         &SpeakerResolutionTuning::default(),
-    ))
+    );
+    // A per-cluster rejection of the recognized person contradicts the recognition
+    // claim *for that cluster*, so it must not also veto reusing it. Without this,
+    // "not Jack — this is Jill" leaves recognition suggesting Jack forever, the
+    // confirmed-person conflict blocks reuse of Jill's cluster, and every later
+    // segment of her voice mints a fresh Jack-suggesting cluster.
+    if let (Some(person_id), Some(target_cluster_id)) = (
+        recognition_person_id,
+        resolution.suggested_merge_target_cluster_id,
+    ) {
+        let rejected: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM speaker_recognition_rejections \
+             WHERE source_cluster_id = ?1 AND person_id = ?2",
+        )
+        .bind(target_cluster_id)
+        .bind(person_id)
+        .fetch_optional(&mut **transaction)
+        .await?;
+        if rejected.is_some() {
+            return Ok(resolve_stable_speaker_cluster_from_candidates(
+                &mut candidates,
+                None,
+                &SpeakerResolutionTuning::default(),
+            ));
+        }
+    }
+    Ok(resolution)
 }
 
 async fn existing_speaker_cluster_provider_id(

@@ -1759,6 +1759,7 @@ mod tests {
             )",
             "CREATE TABLE speaker_recognition_rejections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER,
                 source_cluster_id INTEGER
             )",
             "CREATE TABLE retention_cleanup_runs (
@@ -2250,6 +2251,91 @@ mod tests {
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
             }
+        });
+    }
+
+    /// The orphan-rejection GC dropped its `AND source_cluster_id IS NOT NULL`
+    /// guard so it also collects rows the `ON DELETE SET NULL` orphaned. That
+    /// predicate then runs over the WHOLE table on every sweep that deletes
+    /// anything, so it must spare a rejection whose cluster is still alive —
+    /// widening it any further silently un-rejects every "not this person" the
+    /// user ever made, on the next scheduled cleanup.
+    #[test]
+    fn cleanup_collects_cluster_less_rejections_and_spares_live_ones() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // Expired — this is what gives the sweep work to do (the speaker GC
+            // is skipped entirely on a sweep that deletes nothing).
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id)
+                 VALUES (1, 'microphone', 'mic-source-1', 1, '/tmp/mnema-expired-audio.m4a', '2026-05-10T15:00:00Z', '2026-05-10T15:01:00Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("expired audio segment should insert");
+            // Well inside the retention window: this segment, its turn and the
+            // cluster behind it all survive the sweep.
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id)
+                 VALUES (2, 'microphone', 'mic-source-1', 2, '/tmp/mnema-retained-audio.m4a', '2026-05-17T14:00:00Z', '2026-05-17T14:01:00Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("retained audio segment should insert");
+            sqlx::query("INSERT INTO recording_speaker_clusters (id) VALUES (1)")
+                .execute(&pool)
+                .await
+                .expect("cluster should insert");
+            sqlx::query("INSERT INTO speaker_turns (audio_segment_id, cluster_id) VALUES (2, 1)")
+                .execute(&pool)
+                .await
+                .expect("speaker turn should insert");
+            for (person_id, source_cluster_id) in [
+                (1_i64, Some(1_i64)), // live: cluster 1 is still there
+                (2, Some(99)),        // dangling: cluster 99 never existed
+                (3, None),            // legacy: orphaned to NULL by ON DELETE SET NULL
+            ] {
+                sqlx::query(
+                    "INSERT INTO speaker_recognition_rejections (person_id, source_cluster_id) VALUES (?1, ?2)",
+                )
+                .bind(person_id)
+                .bind(source_cluster_id)
+                .execute(&pool)
+                .await
+                .expect("rejection should insert");
+            }
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_audio_segments, 1);
+            let survivors: Vec<i64> = sqlx::query_scalar(
+                "SELECT person_id FROM speaker_recognition_rejections ORDER BY person_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("rejections should query");
+            assert_eq!(
+                survivors,
+                vec![1],
+                "the sweep must collect cluster-less rejections and keep the live one"
+            );
         });
     }
 
