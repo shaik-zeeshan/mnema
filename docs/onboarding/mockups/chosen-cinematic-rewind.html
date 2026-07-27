@@ -582,6 +582,16 @@
       <span>Motion on two screens only, Welcome and the Finale. All of it degrades under <code>prefers-reduced-motion</code>.</span>
       <span>Numbers are real: ~400 MB a day at the default rate, 729 MB of downloads.</span>
     </div>
+    <p class="deck" style="border-left:3px solid var(--page-accent); padding-left:14px; margin-top:26px">
+      <strong>Correction, added when this shipped (2026-07-28):</strong> every download figure below
+      is a stale placeholder and was <em>not</em> built. Speakrs is <strong>419 MB</strong>, not the
+      31 MB shown — verified against <code>crates/speaker-analysis/src/lib.rs</code>, which asserts
+      it in a test. So the real default set is <strong>about 1.1 GB</strong>, not 729 MB, and
+      dropping Semantic Search leaves ~567 MB, not 179 MB. The ~400 MB/day storage figure is
+      unaffected and is real. The shipped screens compute every total from the model manifests via
+      <code>workListBytes()</code>; nothing pastes a constant. Treat this file as the source of
+      truth for <em>layout, copy and structure only</em> — never for bytes.
+    </p>
   </header>
 
   <!-- ================= FLOW MAP ================= -->
