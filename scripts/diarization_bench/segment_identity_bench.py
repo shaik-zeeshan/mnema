@@ -63,9 +63,13 @@ def find_binary(name: str, explicit: str | None) -> Path:
         candidate = REPO_ROOT / "target" / profile / name
         if candidate.is_file():
             return candidate
+    # The speakrs bin builds OpenBLAS from source, which needs the gcc lib dir on
+    # LIBRARY_PATH or it dies at its own test link (AGENTS.md).
+    prefix = ". scripts/openblas-build-env.sh && " if "diarize" in name else ""
     sys.exit(
-        f"{name} not found. Build it first:\n"
-        f"  cargo build -p {'speaker-analysis --features speakrs' if 'diarize' in name else 'app-infra'} "
+        f"{name} not found. Build it first (from the repo root):\n"
+        f"  {prefix}cargo build -p "
+        f"{'speaker-analysis --features speakrs' if 'diarize' in name else 'app-infra'} "
         f"--release --bin {name}"
     )
 

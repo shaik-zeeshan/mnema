@@ -147,6 +147,9 @@ change when you tune a threshold. One CoreML pass per chunk size, then unlimited
 free threshold sweeps.
 
 ```sh
+# speakrs builds OpenBLAS from source; without this the build dies at its own
+# test link (`-lgfortran` not found). See AGENTS.md.
+. ../../scripts/openblas-build-env.sh
 cargo build -p speaker-analysis --features speakrs --release --bin diarize_to_rttm_speakrs
 cargo build -p app-infra --release --bin replay_speaker_identity
 
