@@ -4549,12 +4549,15 @@ mod tests {
         });
     }
 
-    /// Correcting a wrong suggestion ("not Jack" then "this is Jill") must not
-    /// fragment the speaker. Recognition keeps re-suggesting Jack now that the
-    /// provider no longer filters rejections, and the confirmed-person conflict
-    /// would block reuse of the very cluster that already rejected Jack.
+    /// "Not Jack" must not silently become "filed as Jill". Recognition keeps
+    /// suggesting Jack, and the cluster it scores against is one the user
+    /// confirmed is Jill — so the incoming voice gets a merge *suggestion* the
+    /// user arbitrates, never a silent reuse of Jill's cluster. Speaker writes
+    /// have no undo, which is what makes the silent version unacceptable: a
+    /// genuine Jack segment scoring high against Jill's voice would be filed
+    /// under Jill with no prompt.
     #[test]
-    fn rejected_person_does_not_block_reuse_of_the_cluster_that_rejected_them() {
+    fn a_veto_never_silently_files_the_next_segment_under_the_other_person() {
         run_async_test(async {
             let dir = TestDir::new("speaker-rejection-conflict");
             let infra = AppInfra::initialize(dir.path())
@@ -4636,12 +4639,24 @@ mod tests {
                 .expect("clusters should list");
             assert_eq!(
                 clusters.len(),
-                1,
-                "the rejected person must not split Jill's voice into a new cluster"
+                2,
+                "the second segment must stand on its own until the user says otherwise"
             );
             assert_eq!(clusters[0].id, cluster.id);
             assert_eq!(clusters[0].person_id, Some(jill.id));
             assert_eq!(clusters[0].suggested_person_id, None);
+            assert_eq!(
+                clusters[1].person_id, None,
+                "a vetoed guess must not hand the next segment Jill's name"
+            );
+            assert_eq!(
+                clusters[1].suggested_merge_target_cluster_id,
+                Some(cluster.id),
+                "the user gets a merge suggestion to arbitrate instead"
+            );
+            // The accepted cost of the per-cluster veto: the guess reappears on the
+            // next cluster, because the veto describes the cluster it was made on.
+            assert_eq!(clusters[1].suggested_person_id, Some(jack.id));
         });
     }
 

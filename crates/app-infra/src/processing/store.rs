@@ -3117,37 +3117,19 @@ async fn resolve_stable_speaker_cluster(
             })
         })
         .collect::<Vec<_>>();
-    let resolution = resolve_stable_speaker_cluster_from_candidates(
+    // A veto on the top candidate ("not Jack — this is Jill") is the user
+    // arbitrating this exact pair, so the recognition claim keeps its full weight
+    // here: the confirmed-person conflict holds and the incoming voice gets a merge
+    // *suggestion* rather than being reused silently. Dropping the claim to unblock
+    // reuse is how "not Jack" turns into "filed as Jill" with no prompt — a speaker
+    // write with no undo path, on a cluster the user confirmed is someone else.
+    // The fragmentation this costs is self-limiting: linking the corrected cluster
+    // adds its voice to Jill's profile, so recognition stops naming Jack.
+    Ok(resolve_stable_speaker_cluster_from_candidates(
         &mut candidates,
         recognition_person_id,
         &SpeakerResolutionTuning::default(),
-    );
-    // A per-cluster rejection of the recognized person contradicts the recognition
-    // claim *for that cluster*, so it must not also veto reusing it. Without this,
-    // "not Jack — this is Jill" leaves recognition suggesting Jack forever, the
-    // confirmed-person conflict blocks reuse of Jill's cluster, and every later
-    // segment of her voice mints a fresh Jack-suggesting cluster.
-    if let (Some(person_id), Some(target_cluster_id)) = (
-        recognition_person_id,
-        resolution.suggested_merge_target_cluster_id,
-    ) {
-        let rejected: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM speaker_recognition_rejections \
-             WHERE source_cluster_id = ?1 AND person_id = ?2",
-        )
-        .bind(target_cluster_id)
-        .bind(person_id)
-        .fetch_optional(&mut **transaction)
-        .await?;
-        if rejected.is_some() {
-            return Ok(resolve_stable_speaker_cluster_from_candidates(
-                &mut candidates,
-                None,
-                &SpeakerResolutionTuning::default(),
-            ));
-        }
-    }
-    Ok(resolution)
+    ))
 }
 
 async fn existing_speaker_cluster_provider_id(
