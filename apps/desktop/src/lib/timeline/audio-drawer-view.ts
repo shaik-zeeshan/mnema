@@ -310,7 +310,13 @@ export function karaokeWordsForRange(
     const text = word.text.trim();
     if (!text) continue;
     const mid = (word.startMs + word.endMs) / 2;
-    if (mid < startMs || mid > endMs) continue;
+    // Half-open at the START — `(startMs, endMs]`. Adjacent paragraphs share an
+    // edge (contiguous transcription runs always do), and an inclusive-both-ends
+    // test hands a word centred exactly on that edge to BOTH of them, which
+    // renders it twice. Excluding the start rather than the end keeps the word
+    // in the paragraph that owns the audio you already heard, and never drops it
+    // at the tail of a paragraph followed by silence.
+    if (mid <= startMs || mid > endMs) continue;
     out.push({ text, startMs: word.startMs, endMs: Math.max(word.startMs, word.endMs) });
   }
   out.sort((a, b) => a.startMs - b.startMs);
@@ -337,11 +343,59 @@ export function activeKaraokeIndex(
     const word = words[i];
     if (currentMs < word.startMs - toleranceMs) break; // silence before this word
     const next = words[i + 1];
-    // The tolerance must never let a finished word outrank the one now speaking.
-    if (next && currentMs >= next.startMs - toleranceMs) continue;
+    // The tolerance must never let a finished word outrank the one now speaking —
+    // and equally, it must never hand the floor to the NEXT word while this one is
+    // still being spoken. It only bridges the gap AFTER this word ends, so words
+    // closer together than the tolerance (adjacent words usually abut) don't make
+    // the highlight run up to 150 ms ahead of the audio on every word.
+    if (next && currentMs >= Math.max(word.endMs, next.startMs - toleranceMs)) continue;
     return currentMs <= word.endMs + toleranceMs ? i : -1;
   }
   return -1;
+}
+
+/** A paragraph whose word timings cover less than this fraction of its
+ *  characters is NOT karaoke-able: rendering only the words we have would
+ *  silently drop the rest of the text off the page. */
+export const KARAOKE_MIN_COVERAGE = 0.8;
+
+/**
+ * The karaoke words for one paragraph, or null when the reader must degrade to
+ * the whole-paragraph seek target: no `words[]` at all, none in this range, or a
+ * partial `words[]` covering under `KARAOKE_MIN_COVERAGE` of the text.
+ */
+export function karaokeForGroup(
+  words: TranscriptionWord[],
+  group: Pick<SpeakerTranscriptGroup, "startMs" | "endMs" | "text">,
+): KaraokeWord[] | null {
+  if (words.length === 0) return null;
+  const picked = karaokeWordsForRange(words, group.startMs, group.endMs);
+  if (picked.length === 0) return null;
+  const joined = picked.map((w) => w.text).join(" ").length;
+  return joined >= group.text.length * KARAOKE_MIN_COVERAGE ? picked : null;
+}
+
+/**
+ * Index of the paragraph holding the playhead, or null before playback has ever
+ * moved (a drawer just opened highlights nothing).
+ *
+ * ponytail: start-bounded only — once `currentMs` passes the last paragraph's
+ * start it stays active forever, even past its `endMs`. That is deliberately
+ * ASYMMETRIC with `activeKaraokeIndex`, which is bounded at both ends; upgrade
+ * path is an `endMs` bound here too, but it changes what the reader highlights
+ * during trailing silence, so it is a product decision, not a cleanup.
+ */
+export function activeGroupIndex(
+  groups: Pick<SpeakerTranscriptGroup, "startMs">[],
+  currentMs: number,
+  started: boolean,
+): number | null {
+  if (groups.length === 0) return null;
+  if (!started) return null;
+  for (let i = groups.length - 1; i >= 0; i -= 1) {
+    if (currentMs >= groups[i].startMs) return i;
+  }
+  return null;
 }
 
 // ── Seek boundaries ─────────────────────────────────────────────────────────
