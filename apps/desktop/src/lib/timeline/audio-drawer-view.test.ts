@@ -664,10 +664,9 @@ describe("activeGroupIndex", () => {
   });
 
   it("picks the last paragraph already started — and keeps it lit past its end", () => {
-    // OPEN QUESTION (pinned as current behaviour, not endorsed): this is bounded
-    // at the START only, so a paragraph stays highlighted through the silence
-    // after it and the final one stays lit forever. That is asymmetric with
-    // `activeKaraokeIndex`, which is bounded at both ends.
+    // Start-bounded by design: the paragraph highlight is the reader's position
+    // anchor, so it holds through the silence after a paragraph and stays on the
+    // last one past the final word. Only `activeKaraokeIndex` blanks.
     expect(activeGroupIndex(groups, 4999, true)).toBe(0); // 4s past group 0's endMs
     expect(activeGroupIndex(groups, 999_999, true)).toBe(1);
   });
@@ -753,19 +752,15 @@ describe("formatScore", () => {
     expect(formatScore(Number.POSITIVE_INFINITY)).toBeNull();
   });
 
-  it("reads <=1 as a fraction and >1 as a percentage, on both sides of the boundary", () => {
+  it("renders the cosine as-is, including a float epsilon past 1", () => {
     expect(formatScore(0)).toBe("0.00");
     expect(formatScore(0.88)).toBe("0.88");
     expect(formatScore(1)).toBe("1.00");
-    expect(formatScore(100)).toBe("1.00");
-    expect(formatScore(71)).toBe("0.71");
+    expect(formatScore(1.0000001)).toBe("1.00");
   });
 
-  it("OPEN QUESTION: a score in the (1, 10) band renders as near-zero", () => {
-    // Neither a fraction nor a percentage under the heuristic. Pinned as CURRENT
-    // behaviour only — nobody has decided what this band should render as, or
-    // whether a provider can even emit it.
-    expect(formatScore(1.5)).toBe("0.01");
+  it("does not rescale an out-of-range score into a plausible-looking fraction", () => {
+    expect(formatScore(71)).toBe("71.00");
   });
 });
 

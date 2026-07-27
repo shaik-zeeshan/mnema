@@ -197,10 +197,13 @@ export function isFirstVisibleClusterOccurrence(
   return groups.findIndex((candidate) => candidate.clusterId === group.clusterId) === index;
 }
 
+/** Both callers pass a cosine (`recognitionScore`, `suggestedMergeScore`), so
+ *  the value is already a fraction — no percentage sniffing. A float epsilon
+ *  over 1 renders as `1.00`, and a genuinely out-of-range score renders loudly
+ *  instead of being silently rescaled. */
 export function formatScore(score: number | null | undefined): string | null {
   if (score == null || !Number.isFinite(score)) return null;
-  const value = score <= 1 ? score : score / 100;
-  return value.toFixed(2);
+  return score.toFixed(2);
 }
 
 /** The suggestion chip's meta line: `high · 0.88` (score only in dev mode). */
@@ -379,11 +382,13 @@ export function karaokeForGroup(
  * Index of the paragraph holding the playhead, or null before playback has ever
  * moved (a drawer just opened highlights nothing).
  *
- * ponytail: start-bounded only — once `currentMs` passes the last paragraph's
- * start it stays active forever, even past its `endMs`. That is deliberately
- * ASYMMETRIC with `activeKaraokeIndex`, which is bounded at both ends; upgrade
- * path is an `endMs` bound here too, but it changes what the reader highlights
- * during trailing silence, so it is a product decision, not a cleanup.
+ * Start-bounded ON PURPOSE: the paragraph highlight is "where you are in the
+ * document", so it must never blank. It holds through the silence after a
+ * paragraph ends and stays on the last one past the final word. The asymmetry
+ * with `activeKaraokeIndex` (bounded at both ends) is the design: the coarse
+ * level anchors position, the fine level is precise and may show nothing.
+ * Bounding this one too would flicker the highlight — and the follow-mode
+ * auto-scroll — off and on across every inter-speaker gap.
  */
 export function activeGroupIndex(
   groups: Pick<SpeakerTranscriptGroup, "startMs">[],
