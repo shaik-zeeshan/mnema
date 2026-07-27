@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -1569,40 +1569,71 @@ async fn broker_speakers_for_audio(
 }
 
 /// Collapses an audio segment's speaker turns (already ordered by start) to one
-/// entry per cluster. A user assignment wins over a recognition suggestion, and
-/// a person id we can't name is treated as unknown rather than a nameless claim.
+/// entry per **person**, falling back to one per cluster for voices we cannot
+/// name. A user assignment wins over a recognition suggestion, and a person id we
+/// can't name is treated as unknown rather than a nameless claim.
+///
+/// Person, not cluster, because over-clustering routinely splits one voice across
+/// several clusters — this pipeline's documented ceiling. Publishing each of them
+/// makes an agent answering "who was in this meeting?" invent a participant.
+/// Unnamed clusters stay separate: there is no identity to merge them on.
 fn broker_collapse_speakers(
     turns: Vec<crate::SpeakerTurnView>,
     names: &HashMap<i64, String>,
 ) -> Vec<BrokerSpeaker> {
-    let mut seen = HashSet::new();
-    let mut speakers = Vec::new();
+    #[derive(PartialEq, Eq, Hash)]
+    enum SpeakerKey {
+        Person(i64),
+        Cluster(i64),
+    }
+    let mut index_by_key: HashMap<SpeakerKey, usize> = HashMap::new();
+    let mut speakers: Vec<BrokerSpeaker> = Vec::new();
     for turn in turns {
-        if !seen.insert(turn.cluster_id) {
-            continue;
-        }
-        let assigned = turn.person_id.and_then(|id| names.get(&id));
-        let recognized = turn.suggested_person_id.and_then(|id| names.get(&id));
-        speakers.push(match (assigned, recognized) {
-            (Some(name), _) => BrokerSpeaker {
-                name: Some(name.clone()),
-                attribution: "assigned".to_string(),
-                confidence: None,
-            },
+        let assigned = turn
+            .person_id
+            .and_then(|id| names.get(&id).map(|name| (id, name)));
+        let recognized = turn
+            .suggested_person_id
+            .and_then(|id| names.get(&id).map(|name| (id, name)));
+        let (key, speaker) = match (assigned, recognized) {
+            (Some((id, name)), _) => (
+                SpeakerKey::Person(id),
+                BrokerSpeaker {
+                    name: Some(name.clone()),
+                    attribution: "assigned".to_string(),
+                    confidence: None,
+                },
+            ),
             // An assignment we cannot name still overrides recognition: the user
             // said this voice is someone else, so fall through to `unknown`
             // rather than publishing the guess they overrode.
-            (None, Some(name)) if turn.person_id.is_none() => BrokerSpeaker {
-                name: Some(name.clone()),
-                attribution: "recognized".to_string(),
-                confidence: turn.recognition_confidence,
-            },
-            _ => BrokerSpeaker {
-                name: None,
-                attribution: "unknown".to_string(),
-                confidence: None,
-            },
-        });
+            (None, Some((id, name))) if turn.person_id.is_none() => (
+                SpeakerKey::Person(id),
+                BrokerSpeaker {
+                    name: Some(name.clone()),
+                    attribution: "recognized".to_string(),
+                    confidence: turn.recognition_confidence,
+                },
+            ),
+            _ => (
+                SpeakerKey::Cluster(turn.cluster_id),
+                BrokerSpeaker {
+                    name: None,
+                    attribution: "unknown".to_string(),
+                    confidence: None,
+                },
+            ),
+        };
+        match index_by_key.get(&key) {
+            // The same person confirmed on one cluster and merely guessed on
+            // another is settled: publish what the user decided, not the guess.
+            Some(&at) if speaker.attribution == "assigned" => speakers[at] = speaker,
+            Some(_) => {}
+            None => {
+                index_by_key.insert(key, speakers.len());
+                speakers.push(speaker);
+            }
+        }
     }
     speakers
 }
@@ -5651,19 +5682,31 @@ mod speaker_tests {
         );
     }
 
+    /// One entry per person, not per cluster: over-clustering splits a voice
+    /// across clusters routinely, and an agent asked "who was in this meeting?"
+    /// must not count Ada twice because her voice landed in two of them.
     #[test]
-    fn collapses_to_one_entry_per_cluster_and_never_leaks_internal_labels() {
-        let names = HashMap::from([(7, "Ada".to_string()), (9, "Bo".to_string())]);
+    fn collapses_to_one_entry_per_person_and_never_leaks_internal_labels() {
+        let names = HashMap::from([
+            (7, "Ada".to_string()),
+            (9, "Bo".to_string()),
+            (11, "Cy".to_string()),
+        ]);
         let speakers = broker_collapse_speakers(
             vec![
                 turn(1, Some(7), None),
                 turn(1, Some(7), None),
                 turn(2, None, Some(9)),
                 turn(3, None, None),
-                // Assignment wins over a competing recognition suggestion.
+                // Assignment wins over a competing recognition suggestion, and Ada
+                // is already published from cluster 1 — one voice, one entry.
                 turn(4, Some(7), Some(9)),
-                // A person id with no profile row must not become a nameless claim.
+                // A person id with no profile row must not become a nameless claim,
+                // and two of them stay separate: there is no identity to merge on.
                 turn(5, Some(404), None),
+                // Guessed on one cluster, confirmed on another: the user settled it.
+                turn(6, None, Some(11)),
+                turn(7, Some(11), None),
             ],
             &names,
         );
@@ -5678,8 +5721,8 @@ mod speaker_tests {
                 (Some("Ada"), "assigned", None),
                 (Some("Bo"), "recognized", Some("high")),
                 (None, "unknown", None),
-                (Some("Ada"), "assigned", None),
                 (None, "unknown", None),
+                (Some("Cy"), "assigned", None),
             ]
         );
         let json = serde_json::to_string(&speakers).expect("serializes");
