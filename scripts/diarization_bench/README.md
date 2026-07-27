@@ -51,11 +51,14 @@ desktop app once and let it download a preset, which lands them at
 1. Build the Rust binary (macOS; no `mnema-cli` sidecar required since this targets
    the `speaker-analysis` crate, not the Tauri app).
 
-   Build the shipped **speakrs** provider's bench bin (needs the `speakrs` feature;
-   OpenBLAS must be installed first — `brew install openblas pkgconf` and
-   `export PKG_CONFIG_PATH=$(brew --prefix openblas)/lib/pkgconfig`):
+   Build the shipped **speakrs** provider's bench bin (needs the `speakrs`
+   feature). OpenBLAS is built from source and linked statically, so there is no
+   runtime OpenBLAS to install — what it needs is the Fortran toolchain
+   (`brew install gcc`) and the build env sourced first, exactly like any other
+   direct `cargo` invocation in this repo:
 
    ```sh
+   . scripts/openblas-build-env.sh
    cargo build -p speaker-analysis --features speakrs --release --bin diarize_to_rttm_speakrs
    ```
 

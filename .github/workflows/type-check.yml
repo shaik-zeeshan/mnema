@@ -41,6 +41,12 @@ jobs:
       - name: Check frontend
         run: bun run check
 
+      # The frontend suite was local-only, so every pure-logic guard in
+      # apps/desktop (reader grouping, karaoke, seek clamping, waveform peaks)
+      # could regress without CI noticing.
+      - name: Test frontend
+        run: bun --cwd=apps/desktop test
+
       - name: Set up Rust
         run: rustup toolchain install stable --profile minimal
 

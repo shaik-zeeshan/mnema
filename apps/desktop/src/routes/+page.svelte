@@ -1060,37 +1060,6 @@
     return gen === selectedAudioTranscriptGeneration && selectedAudioSegmentId === id;
   }
 
-  function overlapDurationMs(
-    startA: number,
-    endA: number,
-    startB: number,
-    endB: number,
-  ): number {
-    return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
-  }
-
-  function segmentMidpointDistanceMs(
-    turn: Pick<SpeakerTurnDto, "startMs" | "endMs">,
-    segment: Pick<TranscriptionSegment, "startMs" | "endMs">,
-  ): number {
-    const turnMidpoint = (turn.startMs + turn.endMs) / 2;
-    const segmentMidpoint = (segment.startMs + segment.endMs) / 2;
-    return Math.abs(turnMidpoint - segmentMidpoint);
-  }
-
-  function transcriptTextsBySpeakerTurn(turns: SpeakerTurnDto[]): Map<number, string> {
-    const textByTurnId = new Map<number, string>();
-
-    for (const turn of turns) {
-      const direct = turn.transcriptText?.trim();
-      if (direct) {
-        textByTurnId.set(turn.id, direct);
-      }
-    }
-
-    return textByTurnId;
-  }
-
   type SpeakerTurnsLoadOptions = {
     refreshPersonProfiles?: boolean;
   };
