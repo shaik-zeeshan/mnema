@@ -1418,12 +1418,44 @@ async fn broker_speakers_for_audio(
     infra: &AppInfra,
     audio_segment_id: i64,
 ) -> Result<Vec<BrokerSpeaker>> {
-    let turns = infra
+    let mut turns = infra
         .processing
         .list_speaker_turns_for_audio_segment(audio_segment_id)
         .await?;
     if turns.is_empty() {
         return Ok(Vec::new());
+    }
+    // Re-apply the user's per-cluster "never this person" veto at read time. It is
+    // only enforced when speaker analysis *writes* a suggestion, so a rejection
+    // recorded afterwards (unlinking a person the user had confirmed) leaves the
+    // stale `recognition_person_id` on the cluster. In-app that stale guess is a
+    // visible, dismissible chip; across the broker it would name a person the user
+    // took back to an external agent, with no way to see or correct it.
+    let suggested_clusters: HashSet<i64> = turns
+        .iter()
+        .filter(|turn| turn.suggested_person_id.is_some())
+        .map(|turn| turn.cluster_id)
+        .collect();
+    let mut rejected: HashMap<i64, Vec<i64>> = HashMap::new();
+    for cluster_id in suggested_clusters {
+        let people = infra
+            .processing
+            .list_rejected_person_ids_for_speaker_cluster(cluster_id)
+            .await?;
+        rejected.insert(cluster_id, people);
+    }
+    for turn in &mut turns {
+        let Some(person_id) = turn.suggested_person_id else {
+            continue;
+        };
+        if rejected
+            .get(&turn.cluster_id)
+            .is_some_and(|people| people.contains(&person_id))
+        {
+            turn.suggested_person_id = None;
+            turn.recognition_confidence = None;
+            turn.recognition_score = None;
+        }
     }
     let names: HashMap<i64, String> = infra
         .processing
@@ -1456,12 +1488,15 @@ fn broker_collapse_speakers(
                 attribution: "assigned".to_string(),
                 confidence: None,
             },
-            (None, Some(name)) => BrokerSpeaker {
+            // An assignment we cannot name still overrides recognition: the user
+            // said this voice is someone else, so fall through to `unknown`
+            // rather than publishing the guess they overrode.
+            (None, Some(name)) if turn.person_id.is_none() => BrokerSpeaker {
                 name: Some(name.clone()),
                 attribution: "recognized".to_string(),
                 confidence: turn.recognition_confidence,
             },
-            (None, None) => BrokerSpeaker {
+            _ => BrokerSpeaker {
                 name: None,
                 attribution: "unknown".to_string(),
                 confidence: None,
@@ -4173,6 +4208,10 @@ mod tests {
                 .expect("overlapping audio should be authorized");
 
             assert_eq!(response.text, "overlapping transcript");
+            assert!(
+                response.speakers.is_empty(),
+                "audio without speaker analysis must carry no speakers"
+            );
         });
     }
 
@@ -4696,6 +4735,362 @@ mod tests {
             assert_eq!(response, None);
         });
     }
+
+    fn speaker_embedding_bytes(values: &[f32]) -> Vec<u8> {
+        values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    }
+
+    fn speaker_cluster(
+        provider_cluster_id: &str,
+        embedding: &[f32],
+    ) -> speaker_analysis::SpeakerCluster {
+        speaker_analysis::SpeakerCluster {
+            provider_cluster_id: provider_cluster_id.to_string(),
+            stable_label: format!("Unknown {provider_cluster_id}"),
+            embedding: speaker_embedding_bytes(embedding),
+            embedding_model_id: "voice-model".to_string(),
+            suggestion: None,
+        }
+    }
+
+    fn speaker_turn(
+        provider_cluster_id: &str,
+        start_ms: u64,
+        end_ms: u64,
+    ) -> speaker_analysis::SpeakerTurn {
+        speaker_analysis::SpeakerTurn {
+            provider_cluster_id: provider_cluster_id.to_string(),
+            start_ms,
+            end_ms,
+            transcript_text: None,
+            overlaps: false,
+        }
+    }
+
+    fn speaker_analysis_output(
+        session_id: &str,
+        audio_segment_id: i64,
+        clusters: Vec<speaker_analysis::SpeakerCluster>,
+        turns: Vec<speaker_analysis::SpeakerTurn>,
+    ) -> speaker_analysis::SpeakerAnalysisOutput {
+        speaker_analysis::SpeakerAnalysisOutput {
+            clusters,
+            turns,
+            metadata: speaker_analysis::SpeakerAnalysisMetadata {
+                provider: "mock_speaker".to_string(),
+                model_id: Some("voice-model".to_string()),
+                session_id: session_id.to_string(),
+                audio_segment_id,
+                provenance: Default::default(),
+            },
+            provider_version: None,
+        }
+    }
+
+    /// Seeds an in-scope audio segment whose transcript the broker will serve and
+    /// returns the segment id plus the grant-signed opaque id an agent presents.
+    async fn seed_brokered_audio_segment(
+        config_dir: &Path,
+        save_dir: &Path,
+        infra: &AppInfra,
+        session_id: &str,
+        transcript: &str,
+    ) -> (i64, BrokerGrant, String) {
+        let now = now_unix_ms();
+        let segment = infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                session_id,
+                1,
+                save_dir.join("audio.m4a").display().to_string(),
+                format_unix_ms(now.saturating_sub(60 * 60 * 1000)),
+                format_unix_ms(now),
+            ))
+            .await
+            .expect("segment should insert");
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                segment.id,
+            ))
+            .await
+            .expect("transcription job should enqueue");
+        let running = infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("transcription job should claim")
+            .expect("transcription job should exist");
+        infra
+            .complete_processing_job(
+                running.id,
+                &ProcessingResultDraft::new().with_result_text(transcript),
+            )
+            .await
+            .expect("transcription should complete");
+        let grant = create_grant(
+            config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let secret = load_or_create_opaque_secret(config_dir).expect("secret should load");
+        let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
+        (segment.id, grant, opaque_id)
+    }
+
+    /// Persists speaker clusters/turns through the real speaker-analysis job
+    /// completion path (the only writer of `recording_speaker_clusters`).
+    async fn complete_speaker_analysis(
+        infra: &AppInfra,
+        audio_segment_id: i64,
+        output: speaker_analysis::SpeakerAnalysisOutput,
+    ) {
+        let job = infra
+            .enqueue_processing_job(
+                &ProcessingJobDraft::for_audio_segment_speaker_analysis(audio_segment_id)
+                    .with_payload_json(
+                        serde_json::to_string(&crate::SpeakerAnalysisJobPayload::new(
+                            "mock_speaker",
+                            Some("voice-model".to_string()),
+                        ))
+                        .expect("payload should encode"),
+                    ),
+            )
+            .await
+            .expect("speaker analysis job should enqueue");
+        let running = infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("speaker analysis job should claim")
+            .expect("speaker analysis job should exist");
+        infra
+            .complete_processing_job(
+                running.id,
+                &ProcessingResultDraft::new().with_structured_payload_json(
+                    serde_json::to_string(&output).expect("output should encode"),
+                ),
+            )
+            .await
+            .expect("speaker analysis should complete");
+    }
+
+    /// `speakers` promises "ordered by first turn". The EARLIER turn here belongs
+    /// to the SECOND cluster, so an ordering that fell back to cluster/insertion
+    /// order (or dropped the `ORDER BY start_ms` in the turn query) flips the
+    /// list and hands the agent the wrong voice as the one who spoke first.
+    #[test]
+    fn broker_show_text_lists_audio_speakers_in_first_turn_order() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("speakers-turn-order");
+            let save_dir = temp_save_dir("speakers-turn-order");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let (segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+                &config_dir,
+                &save_dir,
+                &infra,
+                "turn-order-session",
+                "two voices",
+            )
+            .await;
+            let ada = infra
+                .create_person_profile("Ada", None)
+                .await
+                .expect("person profile should insert");
+            complete_speaker_analysis(
+                &infra,
+                segment_id,
+                speaker_analysis_output(
+                    "turn-order-session",
+                    segment_id,
+                    vec![
+                        speaker_cluster("speaker_00", &[1.0, 0.0]),
+                        speaker_cluster("speaker_01", &[0.0, 1.0]),
+                    ],
+                    vec![
+                        speaker_turn("speaker_00", 5_000, 6_000),
+                        speaker_turn("speaker_01", 1_000, 2_000),
+                    ],
+                ),
+            )
+            .await;
+            let clusters = infra
+                .list_speaker_clusters_for_session("turn-order-session")
+                .await
+                .expect("clusters should list");
+            let later_cluster = clusters
+                .iter()
+                .find(|cluster| cluster.provider_cluster_id.ends_with("speaker_01"))
+                .expect("the second cluster should exist");
+            infra
+                .link_speaker_cluster_to_person(later_cluster.id, ada.id, false)
+                .await
+                .expect("cluster should link");
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("audio should be authorized");
+
+            assert_eq!(
+                response.speakers,
+                vec![
+                    BrokerSpeaker {
+                        name: Some("Ada".to_string()),
+                        attribution: "assigned".to_string(),
+                        confidence: None,
+                    },
+                    BrokerSpeaker {
+                        name: None,
+                        attribution: "unknown".to_string(),
+                        confidence: None,
+                    },
+                ],
+                "speakers must follow first-turn order, not cluster order"
+            );
+        });
+    }
+
+    /// The subject-type gate: a frame result carries no speakers, and the key is
+    /// absent from the wire entirely so an older CLI/MCP client still parses it.
+    #[test]
+    fn broker_show_text_for_a_frame_carries_no_speakers() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("frame-no-speakers");
+            let save_dir = temp_save_dir("frame-no-speakers");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let frame = infra
+                .insert_frame(&NewFrame::new(
+                    "screen-session",
+                    save_dir.join("frame.jpg").display().to_string(),
+                    &format_unix_ms(now_unix_ms().saturating_sub(60 * 1000)),
+                ))
+                .await
+                .expect("frame should insert");
+            let job = infra
+                .enqueue_processing_job(&ProcessingJobDraft::for_frame_ocr(frame.id))
+                .await
+                .expect("OCR job should enqueue");
+            let running = infra
+                .claim_queued_processing_job(job.id)
+                .await
+                .expect("OCR job should claim")
+                .expect("OCR job should exist");
+            infra
+                .complete_processing_job(
+                    running.id,
+                    &ProcessingResultDraft::new().with_result_text("frame body"),
+                )
+                .await
+                .expect("OCR job should complete");
+            let grant = create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create");
+            let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
+            let opaque_id = encode_signed_opaque_id("frame", frame.id, Some(&grant.id), &secret);
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("frame should be authorized");
+
+            assert!(response.speakers.is_empty(), "frames have no speakers");
+            let json = serde_json::to_value(&response).expect("response should serialize");
+            assert!(
+                json.get("speakers").is_none(),
+                "the speakers key must stay off frame results: {json}"
+            );
+        });
+    }
+
+    /// Confirming a recognition and then unlinking the person is the path that
+    /// leaves a STALE `recognition_person_id` on the cluster next to a fresh
+    /// per-cluster rejection. In-app that stale guess is a dismissible chip; over
+    /// the broker it would name a person the user took back to an external agent,
+    /// so the read must re-apply the veto and fall back to `unknown`.
+    #[test]
+    fn broker_show_text_omits_a_recognition_the_user_rejected_for_that_cluster() {
+        run_async_test(async {
+            let config_dir = temp_config_dir("speakers-rejected-recognition");
+            let save_dir = temp_save_dir("speakers-rejected-recognition");
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let (segment_id, grant, opaque_id) = seed_brokered_audio_segment(
+                &config_dir,
+                &save_dir,
+                &infra,
+                "rejected-session",
+                "a private conversation",
+            )
+            .await;
+            let person = infra
+                .create_person_profile("Ada", None)
+                .await
+                .expect("person profile should insert");
+            let mut output = speaker_analysis_output(
+                "rejected-session",
+                segment_id,
+                vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+                vec![speaker_turn("speaker_00", 0, 1_000)],
+            );
+            output.clusters[0].suggestion =
+                Some(speaker_analysis::SpeakerRecognitionSuggestion {
+                    person_id: person.id,
+                    display_name: "Ada".to_string(),
+                    confidence: speaker_analysis::RecognitionConfidence::High,
+                    score: 0.91,
+                });
+            complete_speaker_analysis(&infra, segment_id, output).await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("rejected-session")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.suggested_person_id, Some(person.id));
+            infra
+                .confirm_speaker_recognition_suggestion(cluster.id, false)
+                .await
+                .expect("suggestion should confirm");
+            let unlinked = infra
+                .unlink_speaker_cluster_from_person(cluster.id)
+                .await
+                .expect("cluster should unlink");
+            // Precondition, not the assertion under test: the unlink drops the
+            // assignment but leaves the recognition guess on the row. If that ever
+            // changes this test stops covering the broker's read-time veto.
+            assert_eq!(unlinked.person_id, None);
+            assert_eq!(unlinked.suggested_person_id, Some(person.id));
+
+            let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
+                .await
+                .expect("show text should run")
+                .expect("audio should be authorized");
+
+            assert_eq!(
+                response.speakers,
+                vec![BrokerSpeaker {
+                    name: None,
+                    attribution: "unknown".to_string(),
+                    confidence: None,
+                }]
+            );
+            let json = serde_json::to_string(&response).expect("response should serialize");
+            assert!(
+                !json.contains("Ada"),
+                "a rejected recognition must never reach an agent: {json}"
+            );
+        });
+    }
 }
 
 #[cfg(test)]
@@ -4721,6 +5116,27 @@ mod speaker_tests {
             transcript_text: None,
             overlaps: false,
         }
+    }
+
+    /// The user assigned this cluster to a person we can no longer name (the
+    /// profile went away between the turn read and the profile read). A stale
+    /// recognition suggestion for a DIFFERENT person must not fill the gap: the
+    /// assignment is the user overriding recognition, so the honest answer is
+    /// "unknown", never "this was Bo".
+    #[test]
+    fn an_unnameable_assignment_never_falls_back_to_the_recognition_suggestion() {
+        let names = HashMap::from([(9, "Bo".to_string())]);
+
+        let speakers = broker_collapse_speakers(vec![turn(1, Some(404), Some(9))], &names);
+
+        assert_eq!(
+            speakers,
+            vec![BrokerSpeaker {
+                name: None,
+                attribution: "unknown".to_string(),
+                confidence: None,
+            }]
+        );
     }
 
     #[test]
@@ -4756,5 +5172,57 @@ mod speaker_tests {
         );
         let json = serde_json::to_string(&speakers).expect("serializes");
         assert!(!json.contains("Speaker "), "internal labels must not leak: {json}");
+    }
+
+    /// The wire shape a second crate re-serializes: `crates/cli/src/main.rs`
+    /// embeds `Vec<BrokerSpeaker>` in its stdout JSON and `crates/cli/src/mcp.rs`
+    /// documents it to every MCP client. Pins the emitted key names, the omitted
+    /// `confidence`/`speakers` keys, and the `#[serde(default)]` that keeps a
+    /// payload from an older client decoding.
+    #[test]
+    fn broker_speaker_wire_shape_round_trips() {
+        let recognized = BrokerSpeaker {
+            name: Some("Ada".to_string()),
+            attribution: "recognized".to_string(),
+            confidence: Some("high".to_string()),
+        };
+        assert_eq!(
+            serde_json::to_value(&recognized).expect("speaker should serialize"),
+            serde_json::json!({"name": "Ada", "attribution": "recognized", "confidence": "high"})
+        );
+
+        let unknown = BrokerSpeaker {
+            name: None,
+            attribution: "unknown".to_string(),
+            confidence: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&unknown).expect("speaker should serialize"),
+            serde_json::json!({"name": null, "attribution": "unknown"})
+        );
+        assert_eq!(
+            serde_json::from_value::<BrokerSpeaker>(
+                serde_json::to_value(&unknown).expect("speaker should serialize")
+            )
+            .expect("speaker should decode"),
+            unknown
+        );
+
+        let response = BrokerShowTextResponse {
+            opaque_id: "op-1".to_string(),
+            kind: "audio".to_string(),
+            text: "hello".to_string(),
+            speakers: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&response).expect("response should serialize"),
+            serde_json::json!({"opaqueId": "op-1", "kind": "audio", "text": "hello"})
+        );
+
+        let legacy: BrokerShowTextResponse = serde_json::from_value(
+            serde_json::json!({"opaqueId": "op-1", "kind": "audio", "text": "hello"}),
+        )
+        .expect("a payload without speakers should decode");
+        assert!(legacy.speakers.is_empty());
     }
 }
