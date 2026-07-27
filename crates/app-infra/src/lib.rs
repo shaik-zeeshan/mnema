@@ -106,11 +106,15 @@ pub use ocr_budget::{
     OcrAdmissionDecision, OcrAdmissionOutcome, OcrAdmissionReason, OcrAdmissionSignals,
 };
 pub use processing::{
+    processing_job_model_is_locked, MODEL_LOCK_REASON_ABSENT, MODEL_LOCK_REASON_CLEANUP,
+    MODEL_LOCK_REASON_DOWNLOADING,
+};
+pub use processing::{
     AudioTranscriptionJobPayload, AudioTranscriptionProcessorBackend, FocusedFrameWindow, Frame,
     FrameEquivalence, FrameEquivalenceStatus, FrameProcessingJob, FrameSummary, NewFrame,
     OcrProcessorBackend, PersonProfile, ProcessingJob, ProcessingJobCompletion, ProcessingJobDraft,
     ProcessingJobListing, ProcessingJobReclamationSummary, ProcessingJobRunOutcome,
-    ProcessingJobStatus, ProcessingModelCleanupLock, ProcessingResult, ProcessingResultDraft,
+    ProcessingJobStatus, ProcessingModelLock, ProcessingResult, ProcessingResultDraft,
     ProcessingRuntime, ProcessingStore, ProcessingSubject, ProcessorBackend, ProcessorPipelineStatus,
     ProcessorRegistry, SegmentWorkspaceOcrReference, SpeakerAnalysisJobPayload,
     SpeakerAnalysisProcessorBackend,
@@ -459,7 +463,7 @@ impl AppInfra {
         // live and holding a freshly acquired cleanup lock, so only clear locks old enough to be
         // orphaned by a prior crash (see `MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS`).
         self.processing
-            .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
+            .clear_stale_model_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
             .await?;
         self.processing.backfill_frame_equivalence().await?;
         self.search.backfill_missing_projections().await?;
@@ -1480,8 +1484,8 @@ impl AppInfra {
     pub async fn acquire_ocr_model_cleanup_locks(
         &self,
         model_keys: &BTreeSet<String>,
-    ) -> Result<ProcessingModelCleanupLock> {
-        self.acquire_processing_model_cleanup_locks(OCR_PROCESSOR, model_keys)
+    ) -> Result<ProcessingModelLock> {
+        self.acquire_processing_model_locks(OCR_PROCESSOR, model_keys, processing::MODEL_LOCK_REASON_CLEANUP)
             .await
     }
 
@@ -1504,8 +1508,8 @@ impl AppInfra {
     pub async fn acquire_audio_transcription_model_cleanup_locks(
         &self,
         model_keys: &BTreeSet<String>,
-    ) -> Result<ProcessingModelCleanupLock> {
-        self.acquire_processing_model_cleanup_locks(AUDIO_TRANSCRIPTION_PROCESSOR, model_keys)
+    ) -> Result<ProcessingModelLock> {
+        self.acquire_processing_model_locks(AUDIO_TRANSCRIPTION_PROCESSOR, model_keys, processing::MODEL_LOCK_REASON_CLEANUP)
             .await
     }
 
@@ -1552,8 +1556,8 @@ impl AppInfra {
     pub async fn acquire_speaker_analysis_model_cleanup_locks(
         &self,
         model_keys: &BTreeSet<String>,
-    ) -> Result<ProcessingModelCleanupLock> {
-        self.acquire_processing_model_cleanup_locks(SPEAKER_ANALYSIS_PROCESSOR, model_keys)
+    ) -> Result<ProcessingModelLock> {
+        self.acquire_processing_model_locks(SPEAKER_ANALYSIS_PROCESSOR, model_keys, processing::MODEL_LOCK_REASON_CLEANUP)
             .await
     }
 
@@ -1633,11 +1637,51 @@ impl AppInfra {
         Ok(updated)
     }
 
-    pub async fn release_processing_model_cleanup_locks(
+    pub async fn release_processing_model_locks(
         &self,
-        lock: &ProcessingModelCleanupLock,
+        lock: &ProcessingModelLock,
     ) -> Result<u64> {
-        self.processing.release_model_cleanup_locks(lock).await
+        self.processing.release_model_locks(lock).await
+    }
+
+    /// Locks a model for the duration of its download. The download wipes the install directory
+    /// before it writes, so without this a queued job would be claimed against a half-present model
+    /// and spend its failure attempts (`failure_count`) on a model that is simply not there yet.
+    /// Release with [`Self::release_processing_model_locks`].
+    pub async fn acquire_processing_model_download_lock(
+        &self,
+        processor: &str,
+        model_key: String,
+    ) -> Result<ProcessingModelLock> {
+        self.acquire_processing_model_locks(
+            processor,
+            &BTreeSet::from([model_key]),
+            processing::MODEL_LOCK_REASON_DOWNLOADING,
+        )
+        .await
+    }
+
+    /// Makes the absent-model locks for `processor` exactly `absent_model_keys`. Unlike cleanup and
+    /// download locks there is no command owning an absent lock's lifetime, so it is recomputed
+    /// from what is installed on disk (startup, and after a download settles).
+    pub async fn sync_absent_processing_model_locks(
+        &self,
+        processor: &str,
+        absent_model_keys: &BTreeSet<String>,
+    ) -> Result<()> {
+        self.processing
+            .sync_model_locks_for_reason(
+                processor,
+                processing::MODEL_LOCK_REASON_ABSENT,
+                absent_model_keys,
+            )
+            .await
+    }
+
+    /// Every locked `(processor, model_key)` pair; pair with [`processing_job_model_is_locked`] to
+    /// tell a parked ("Preparing") queued job from one that is merely waiting its turn.
+    pub async fn list_locked_processing_model_keys(&self) -> Result<BTreeSet<(String, String)>> {
+        self.processing.list_locked_model_keys().await
     }
 
     pub async fn claim_queued_processing_job(&self, job_id: i64) -> Result<Option<ProcessingJob>> {
@@ -1714,6 +1758,22 @@ impl AppInfra {
 
     pub async fn delete_person_profile(&self, person_id: i64) -> Result<()> {
         self.processing.delete_person_profile(person_id).await
+    }
+
+    pub async fn account_owner_person_id(&self) -> Result<Option<i64>> {
+        self.processing.account_owner_person_id().await
+    }
+
+    pub async fn upsert_account_owner_voiceprint(
+        &self,
+        display_name: &str,
+        provider: &str,
+        model_id: &str,
+        embedding: &[u8],
+    ) -> Result<PersonProfile> {
+        self.processing
+            .upsert_account_owner_voiceprint(display_name, provider, model_id, embedding)
+            .await
     }
 
     pub async fn list_speaker_clusters_for_session(
@@ -1934,14 +1994,15 @@ impl AppInfra {
 }
 
 impl AppInfra {
-    async fn acquire_processing_model_cleanup_locks(
+    async fn acquire_processing_model_locks(
         &self,
         processor: &str,
         model_keys: &BTreeSet<String>,
-    ) -> Result<ProcessingModelCleanupLock> {
+        reason: &str,
+    ) -> Result<ProcessingModelLock> {
         let lock_token = processing_model_cleanup_lock_token(processor);
         self.processing
-            .acquire_model_cleanup_locks(processor, model_keys, &lock_token)
+            .acquire_model_locks(processor, model_keys, &lock_token, reason)
             .await
     }
 }
@@ -2433,6 +2494,7 @@ mod tests {
             provider: "mock_speaker".to_string(),
             model_id: Some(model_id.to_string()),
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         }
     }
@@ -3684,6 +3746,453 @@ mod tests {
         });
     }
 
+    // ---------------------------------------------------------------------
+    // Voice enrollment storage + owner-only auto-linking
+    // ---------------------------------------------------------------------
+
+    const OWNER_ENROLLMENT_EMBEDDING: [f32; 2] = [1.0, 0.0];
+
+    /// A one-cluster, one-turn speaker output whose cluster carries a hand-made
+    /// recognition suggestion. In production the suggestion only exists once the
+    /// provider's score / ambiguity / rejection guards all passed; these tests
+    /// stand in for that verdict so they exercise the store's consumption of it,
+    /// never the thresholds themselves.
+    fn speaker_output_with_suggestion(
+        session_id: &str,
+        audio_segment_id: i64,
+        embedding: &[f32],
+        suggestion: Option<speaker_analysis::SpeakerRecognitionSuggestion>,
+    ) -> speaker_analysis::SpeakerAnalysisOutput {
+        speaker_analysis::SpeakerAnalysisOutput {
+            clusters: vec![speaker_analysis::SpeakerCluster {
+                provider_cluster_id: "speaker_00".to_string(),
+                stable_label: "Unknown Speaker 1".to_string(),
+                embedding: test_embedding_bytes(embedding),
+                embedding_model_id: "voice-model".to_string(),
+                suggestion,
+            }],
+            turns: vec![speaker_analysis::SpeakerTurn {
+                provider_cluster_id: "speaker_00".to_string(),
+                start_ms: 0,
+                end_ms: 1_000,
+                transcript_text: Some("hello".to_string()),
+                overlaps: false,
+            }],
+            metadata: speaker_analysis::SpeakerAnalysisMetadata {
+                provider: "mock_speaker".to_string(),
+                model_id: Some("voice-model".to_string()),
+                session_id: session_id.to_string(),
+                audio_segment_id,
+                provenance: Default::default(),
+            },
+            provider_version: None,
+        }
+    }
+
+    fn owner_suggestion(
+        person_id: i64,
+        confidence: speaker_analysis::RecognitionConfidence,
+        score: f32,
+    ) -> speaker_analysis::SpeakerRecognitionSuggestion {
+        speaker_analysis::SpeakerRecognitionSuggestion {
+            person_id,
+            display_name: "You".to_string(),
+            confidence,
+            score,
+        }
+    }
+
+    /// Complete a speaker-analysis job whose frozen payload carries the
+    /// "label my voice automatically" setting.
+    async fn complete_speaker_output_with_auto_label(
+        infra: &AppInfra,
+        segment: &AudioSegment,
+        output: speaker_analysis::SpeakerAnalysisOutput,
+        auto_label_owner: bool,
+    ) -> ProcessingJob {
+        let mut payload = mock_speaker_payload("voice-model");
+        payload.recognize_people = true;
+        payload.auto_label_owner = auto_label_owner;
+        let job = infra
+            .enqueue_processing_job(
+                &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
+                    .with_payload_json(
+                        serde_json::to_string(&payload).expect("speaker payload should encode"),
+                    ),
+            )
+            .await
+            .expect("speaker job should enqueue");
+        infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("speaker job should claim")
+            .expect("claimed speaker job should exist");
+        infra
+            .complete_processing_job(
+                job.id,
+                &ProcessingResultDraft::new().with_structured_payload_json(
+                    serde_json::to_string(&output).expect("speaker output should encode"),
+                ),
+            )
+            .await
+            .expect("speaker output should complete");
+        job
+    }
+
+    async fn enroll_owner(infra: &AppInfra) -> PersonProfile {
+        infra
+            .upsert_account_owner_voiceprint(
+                "You",
+                "mock_speaker",
+                "voice-model",
+                &test_embedding_bytes(&OWNER_ENROLLMENT_EMBEDDING),
+            )
+            .await
+            .expect("owner voiceprint should store")
+    }
+
+    async fn audio_segment_for(infra: &AppInfra, session_id: &str, index: i64) -> AudioSegment {
+        infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                session_id,
+                index,
+                &format!("/tmp/{session_id}-{index}.m4a"),
+                "2026-04-12T10:00:00Z",
+                "2026-04-12T10:01:00Z",
+            ))
+            .await
+            .expect("audio segment should insert")
+    }
+
+    /// Test 11 (storage half): enrolling marks exactly one profile as the account
+    /// owner, and re-enrolling replaces the voiceprint instead of stacking. The
+    /// `recognize_saved_people` flip lives in the Tauri adapter that owns
+    /// recording settings (`voice_enrollment.rs`), and is checked there.
+    #[test]
+    fn enrolling_marks_exactly_one_account_owner_profile() {
+        run_async_test(async {
+            let dir = TestDir::new("voice-enrollment-owner");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            // A pre-existing, unrelated person must not become the owner.
+            infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+
+            let owner = enroll_owner(&infra).await;
+            assert!(owner.is_account_owner);
+            assert_eq!(owner.embedding_count, 1);
+
+            // Re-enrolling (Settings re-enroll) reuses the same profile.
+            let reenrolled = enroll_owner(&infra).await;
+            assert_eq!(reenrolled.id, owner.id);
+            assert_eq!(reenrolled.embedding_count, 1);
+
+            let owners = infra
+                .list_person_profiles()
+                .await
+                .expect("profiles should list")
+                .into_iter()
+                .filter(|profile| profile.is_account_owner)
+                .count();
+            assert_eq!(owners, 1);
+            assert_eq!(
+                infra
+                    .account_owner_person_id()
+                    .await
+                    .expect("owner id should read"),
+                Some(owner.id)
+            );
+
+            // The voiceprint is what recognition loads, in the preset's
+            // Voiceprint Space, and it carries no source cluster (so the
+            // retention orphan sweep cannot collect it).
+            let enrollments = infra
+                .processing
+                .list_person_enrollments_for_speaker_model("mock_speaker", Some("voice-model"))
+                .await
+                .expect("enrollments should list");
+            assert_eq!(enrollments.len(), 1);
+            assert_eq!(enrollments[0].person_id, owner.id);
+            let orphan_safe: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM person_voice_embeddings \
+                 WHERE person_id = ?1 AND source_cluster_id IS NULL AND is_deliberate = 1",
+            )
+            .bind(owner.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("voiceprint row should count");
+            assert_eq!(orphan_safe, 1);
+        });
+    }
+
+    /// Test 12: a `High` suggestion for the owner links itself, and — the
+    /// load-bearing safety constraint — never adds an embedding.
+    #[test]
+    fn owner_high_suggestion_auto_links_without_adding_an_embedding() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-owner-high");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let segment = audio_segment_for(&infra, "auto-link-high", 1).await;
+
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &segment,
+                speaker_output_with_suggestion(
+                    "auto-link-high",
+                    segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-high")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.person_id, Some(owner.id));
+            assert!(
+                cluster.person_link_auto,
+                "an auto-link must be distinguishable from a human confirmation"
+            );
+
+            // Still exactly the enrollment voiceprint: an auto-link that fed the
+            // profile would make the next wrong match more likely.
+            let profile = infra
+                .list_person_profiles()
+                .await
+                .expect("profiles should list")
+                .into_iter()
+                .find(|profile| profile.id == owner.id)
+                .expect("owner profile should exist");
+            assert_eq!(profile.embedding_count, 1);
+        });
+    }
+
+    /// Test 12: everything that is not "owner + High" stays suggest-and-confirm.
+    #[test]
+    fn auto_linking_is_owner_only_and_high_only() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-owner-only");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let jack = infra
+                .create_person_profile("Jack", None)
+                .await
+                .expect("person profile should insert");
+
+            // Medium confidence for the owner.
+            let medium_segment = audio_segment_for(&infra, "auto-link-medium", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &medium_segment,
+                speaker_output_with_suggestion(
+                    "auto-link-medium",
+                    medium_segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::Medium,
+                        0.65,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            // High confidence, but for somebody who is not the account owner.
+            let other_segment = audio_segment_for(&infra, "auto-link-other", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &other_segment,
+                speaker_output_with_suggestion(
+                    "auto-link-other",
+                    other_segment.id,
+                    &[0.0, 1.0],
+                    Some(owner_suggestion(
+                        jack.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.95,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            // An ambiguous or previously-rejected match reaches the store as no
+            // suggestion at all — the provider suppressed it.
+            let ambiguous_segment = audio_segment_for(&infra, "auto-link-ambiguous", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &ambiguous_segment,
+                speaker_output_with_suggestion(
+                    "auto-link-ambiguous",
+                    ambiguous_segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    None,
+                ),
+                true,
+            )
+            .await;
+
+            for session_id in [
+                "auto-link-medium",
+                "auto-link-other",
+                "auto-link-ambiguous",
+            ] {
+                let cluster = infra
+                    .list_speaker_clusters_for_session(session_id)
+                    .await
+                    .expect("clusters should list")
+                    .into_iter()
+                    .next()
+                    .expect("cluster should exist");
+                assert_eq!(
+                    cluster.person_id, None,
+                    "{session_id} must stay suggest-and-confirm"
+                );
+                assert!(!cluster.person_link_auto);
+            }
+        });
+    }
+
+    /// Test 12: the setting off reverts to suggest-and-confirm.
+    #[test]
+    fn auto_labelling_off_leaves_the_owner_suggestion_to_confirm() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-setting-off");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let segment = audio_segment_for(&infra, "auto-link-off", 1).await;
+
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &segment,
+                speaker_output_with_suggestion(
+                    "auto-link-off",
+                    segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                false,
+            )
+            .await;
+
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-off")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.person_id, None);
+            assert_eq!(cluster.suggested_person_id, Some(owner.id));
+        });
+    }
+
+    /// Test 12: rejecting an auto-link works exactly as rejecting a suggestion
+    /// does, and the persisted rejection keeps it from coming straight back on
+    /// the next segment of the same session.
+    #[test]
+    fn rejecting_an_auto_link_stops_it_recurring() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-reject");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let first = audio_segment_for(&infra, "auto-link-reject", 1).await;
+
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &first,
+                speaker_output_with_suggestion(
+                    "auto-link-reject",
+                    first.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-reject")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.person_id, Some(owner.id));
+
+            // Rejecting is the existing unlink affordance; it persists the
+            // negative voice example the recognition guard reads.
+            let unlinked = infra
+                .unlink_speaker_cluster_from_person(cluster.id)
+                .await
+                .expect("auto-link should unlink");
+            assert_eq!(unlinked.person_id, None);
+            assert!(!unlinked.person_link_auto);
+
+            // Same session, same voice, next segment: the cluster is reused and
+            // the suggestion is re-stored, but the rejection blocks the re-link.
+            let second = audio_segment_for(&infra, "auto-link-reject", 2).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &second,
+                speaker_output_with_suggestion(
+                    "auto-link-reject",
+                    second.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("auto-link-reject")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 1, "the stable cluster should be reused");
+            assert_eq!(
+                clusters[0].person_id, None,
+                "a rejected auto-link must not come back"
+            );
+        });
+    }
+
     #[test]
     fn saved_speaker_profile_embedding_is_available_to_later_sessions() {
         run_async_test(async {
@@ -4710,7 +5219,7 @@ mod tests {
             assert_eq!(queued.status, ProcessingJobStatus::Queued);
 
             infra
-                .release_processing_model_cleanup_locks(&lock)
+                .release_processing_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
             let claimed = infra
@@ -4779,7 +5288,7 @@ mod tests {
             assert_eq!(locked.status, ProcessingJobStatus::Queued);
 
             infra
-                .release_processing_model_cleanup_locks(&lock)
+                .release_processing_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
         });
@@ -4801,7 +5310,7 @@ mod tests {
                 .await
                 .expect("stale cleanup lock should acquire");
             sqlx::query(
-                "UPDATE processing_model_cleanup_locks \
+                "UPDATE processing_model_locks \
                  SET created_at = datetime('now', '-1 day') \
                  WHERE model_key = ?1",
             )
@@ -4820,13 +5329,13 @@ mod tests {
 
             let cleared = infra
                 .processing()
-                .clear_stale_model_cleanup_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
+                .clear_stale_model_locks(processing::MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS)
                 .await
                 .expect("stale-only clear should run");
             assert_eq!(cleared, 1, "only the stale lock should be cleared");
 
             let stale_remaining: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM processing_model_cleanup_locks WHERE model_key = ?1",
+                "SELECT COUNT(*) FROM processing_model_locks WHERE model_key = ?1",
             )
             .bind("tesseract/tesseract-5.5.2")
             .fetch_one(infra.pool())
@@ -4835,7 +5344,7 @@ mod tests {
             assert_eq!(stale_remaining, 0, "stale orphaned lock should be gone");
 
             let fresh_remaining: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM processing_model_cleanup_locks WHERE model_key = ?1",
+                "SELECT COUNT(*) FROM processing_model_locks WHERE model_key = ?1",
             )
             .bind("paddleocr/paddleocr-en-v5")
             .fetch_one(infra.pool())
@@ -4847,12 +5356,12 @@ mod tests {
             );
 
             infra
-                .release_processing_model_cleanup_locks(&fresh_lock)
+                .release_processing_model_locks(&fresh_lock)
                 .await
                 .expect("fresh cleanup lock should release");
             // The stale lock was already cleared; releasing it is a no-op but must not error.
             infra
-                .release_processing_model_cleanup_locks(&stale_lock)
+                .release_processing_model_locks(&stale_lock)
                 .await
                 .expect("releasing an already-cleared lock should be a no-op");
         });
@@ -5105,7 +5614,7 @@ mod tests {
             assert_eq!(queued.status, ProcessingJobStatus::Queued);
 
             infra
-                .release_processing_model_cleanup_locks(&lock)
+                .release_processing_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
             let claimed = infra
@@ -5144,6 +5653,7 @@ mod tests {
                 provider: "sherpa_onnx".to_string(),
                 model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
                 recognize_people: false,
+                auto_label_owner: false,
                 options: serde_json::Map::new(),
             })
             .expect("payload should serialize");
@@ -5177,7 +5687,7 @@ mod tests {
             assert_eq!(queued.status, ProcessingJobStatus::Queued);
 
             infra
-                .release_processing_model_cleanup_locks(&lock)
+                .release_processing_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
             let claimed = infra
@@ -5233,6 +5743,7 @@ mod tests {
                 provider: "sherpa_onnx".to_string(),
                 model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
                 recognize_people: false,
+                auto_label_owner: false,
                 options: serde_json::Map::new(),
             })
             .expect("legacy payload should serialize");
@@ -5272,7 +5783,7 @@ mod tests {
 
             // After release the same job is claimable and runs to completion.
             infra
-                .release_processing_model_cleanup_locks(&lock)
+                .release_processing_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
             let claimed = infra
@@ -5349,6 +5860,7 @@ mod tests {
                 provider: "sherpa_onnx".to_string(),
                 model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
                 recognize_people: false,
+                auto_label_owner: false,
                 options: serde_json::Map::new(),
             })
             .expect("completed payload should serialize");
@@ -5426,7 +5938,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_clears_stale_processing_model_cleanup_locks() {
+    fn startup_clears_stale_processing_model_locks() {
         run_async_test(async {
             let dir = TestDir::new("stale-processing-model-cleanup-locks");
             let initial = AppInfra::initialize(dir.path())
@@ -5445,7 +5957,7 @@ mod tests {
             // stale locks (it runs while live model-deletion commands may hold a
             // fresh lock), so the orphaned lock must be backdated to be cleared.
             sqlx::query(
-                "UPDATE processing_model_cleanup_locks \
+                "UPDATE processing_model_locks \
                  SET created_at = datetime('now', '-1 day') \
                  WHERE model_key = ?1",
             )

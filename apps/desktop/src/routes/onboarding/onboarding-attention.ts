@@ -1,8 +1,11 @@
-// Pure attention / validation / permission-display helpers for the onboarding
-// flow. Lifted 1:1 out of `OnboardingController` (only `this.x` → parameters) to
-// keep that file under the size budget. No reactive state lives here — these are
-// stateless transforms the controller composes from its `$derived`s and the
-// per-feature bodies render. Behavior is byte-identical to the inlined versions.
+// Pure permission-display + custom-value validation helpers for the onboarding
+// flow. No reactive state lives here — these are stateless transforms the
+// controller composes from its `$derived`s and the screens render.
+//
+// The per-feature "needs attention" predicates that used to live here are GONE
+// (issue #195, slice 17). The attention-item concept — where a selected but
+// missing model blocked finishing — is deleted outright; model readiness is now
+// classified by `$lib/onboarding/model-readiness` and never gates anything.
 import type { PermissionStatus } from "$lib/types";
 
 // PermissionValue mirrors the legacy page: the backend may return statuses the
@@ -77,55 +80,4 @@ export function customBitrateErrors(
   return customMbps === null
     ? ["Bitrate must be a whole number from 1 to 40 Mbps."]
     : [];
-}
-
-// ── Per-feature model "needs attention" predicates ─────────────────────────
-// A model is "not available" for attention/finish purposes when its feature is
-// on but the selected model isn't ready. Each predicate only reads `available`,
-// so a minimal `{ available }` view keeps them decoupled from the four distinct
-// model-status shapes.
-type ModelAvailability = { available: boolean } | null | undefined;
-
-// OCR: needs attention whenever the feature is on and the selected model isn't
-// available — whether unselected, missing, downloading, or failed. A completed
-// download flips `available` true on the next status reload (mirrors the
-// transcription/speaker rules).
-export function ocrModelNeedsAttention(
-  enabled: boolean,
-  model: ModelAvailability,
-): boolean {
-  if (!enabled) return false;
-  if (!model) return true;
-  return !model.available;
-}
-
-export function transcriptionModelNeedsAttention(
-  enabled: boolean,
-  model: ModelAvailability,
-): boolean {
-  if (!enabled) return false;
-  if (!model) return true;
-  return !model.available;
-}
-
-export function speakerModelNeedsAttention(
-  enabled: boolean,
-  model: ModelAvailability,
-): boolean {
-  if (!enabled) return false;
-  if (!model) return true;
-  return !model.available;
-}
-
-// Semantic search is inert until a model is installed: enabled but no model
-// selected, or the selected model isn't downloaded yet (mirrors the
-// transcription attention rule). A completed download flips `available` true on
-// the next status reload.
-export function semanticSearchModelNeedsAttention(
-  enabled: boolean,
-  model: ModelAvailability,
-): boolean {
-  if (!enabled) return false;
-  if (!model) return true;
-  return !model.available;
 }

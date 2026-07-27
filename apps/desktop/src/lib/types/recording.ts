@@ -683,6 +683,8 @@ export interface AudioSpeechDetectionSettings {
 export interface SpeakerAnalysisSettings {
 	separateSpeakers: boolean;
 	recognizeSavedPeople: boolean;
+	/** "Label my voice automatically" — a High match for the account owner links itself. */
+	autoLabelOwner: boolean;
 	provider: "speakrs" | string;
 	modelId: string | null;
 	timeoutSeconds: number;

@@ -89,6 +89,7 @@ export interface OnboardingDraftTarget {
   draftTranscriptionSystemAudioEnabled: boolean;
   draftSpeakerSeparateSpeakers: boolean;
   draftSpeakerRecognizeSavedPeople: boolean;
+  draftSpeakerAutoLabelOwner: boolean;
   draftSpeakerProvider: string;
   draftSpeakerModelId: string | null;
   draftSpeakerTimeoutMinutes: number;
@@ -171,10 +172,11 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
   draft.draftOcrTesseractUpscaleFactor = next.ocr?.tesseractUpscaleFactor ?? 1;
   draft.draftTranscriptionEnabled = next.transcription?.enabled ?? true;
   // Reconcile the per-source transcribe flags to the master on rehydrate, mirroring
-  // `toggleFeature("transcribe")`'s off-branch (onboarding.svelte.ts): when the master
-  // is off, zero the per-source requests so a returning user (saved enabled=false,
-  // microphoneEnabled=true, captureMicrophone=true) doesn't get phantom attention
-  // (`transcriptionRequestedWhileOff`) that deadlocks the finale CTAs.
+  // `applyToggle`'s transcription-off cascade (`$lib/onboarding/feature-rules`):
+  // when the master is off, zero the per-source requests so a returning user
+  // (saved enabled=false, microphoneEnabled=true, captureMicrophone=true) is not
+  // rehydrated into a half-configured state — a source flagged for transcription
+  // while the master that would run it is off.
   draft.draftTranscriptionMicrophoneEnabled = next.transcription?.enabled
     ? (next.transcription?.microphoneEnabled ?? true)
     : false;
@@ -189,6 +191,7 @@ export function syncDraftsInto(draft: OnboardingDraftTarget, next: RecordingSett
   draft.draftTranscriptionChunkSeconds = next.transcription?.chunkSeconds ?? 30;
   draft.draftSpeakerSeparateSpeakers = next.speakerAnalysis?.separateSpeakers ?? false;
   draft.draftSpeakerRecognizeSavedPeople = next.speakerAnalysis?.recognizeSavedPeople ?? false;
+  draft.draftSpeakerAutoLabelOwner = next.speakerAnalysis?.autoLabelOwner ?? true;
   // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)
   // no longer exist, so old settings resolve to the speakrs default — else the
   // preset picker would select a provider/model the backend manifest never
@@ -273,6 +276,7 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
     speakerAnalysis: {
       separateSpeakers: draft.draftSpeakerSeparateSpeakers,
       recognizeSavedPeople: draft.draftSpeakerRecognizeSavedPeople,
+      autoLabelOwner: draft.draftSpeakerAutoLabelOwner,
       provider: draft.draftSpeakerProvider,
       modelId: draft.draftSpeakerModelId,
       timeoutSeconds: Math.max(
@@ -325,19 +329,4 @@ export function buildSettingsRequestFrom(draft: OnboardingDraftTarget): Recordin
       mcpServers: base.aiRuntime?.mcpServers ?? [],
     },
   };
-}
-
-// Concise reason the finale CTAs are disabled, or null when nothing to surface.
-// Lives here (not in the controller) only to keep `onboarding.svelte.ts` under
-// the file-size budget. `active` is the controller's "on the finale and not
-// busy" gate; `names` are the regressed FEATURE rows. Surfaces ONLY for an
-// attention regression (gate active AND ≥1 named row) — never for an in-flight
-// load/save/complete (those CTAs render their own busy labels) and never when
-// nothing regressed (empty names → null, so the finale stays clean).
-export function finaleBlockReasonFor(active: boolean, names: string[]): string | null {
-  if (!active || names.length === 0) return null;
-  // Only "Start recording" is gated by these — the "Just open the dashboard"
-  // escape hatch stays enabled, so the copy points at both the recover path
-  // (back to setup) and the still-available skip rather than implying a dead end.
-  return `Start recording is waiting on: ${names.join(", ")}. Open the dashboard now, or return to setup to fix it.`;
 }

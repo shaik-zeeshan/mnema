@@ -384,6 +384,14 @@ pub fn default_speaker_recognition_enabled() -> bool {
     false
 }
 
+/// "Label my voice automatically". On by default, but inert until voice
+/// enrollment exists: with no account-owner voiceprint there is no owner
+/// suggestion to promote, and `recognize_saved_people` is off too. Enrolling is
+/// what makes it take effect — turning it off reverts to suggest-and-confirm.
+pub fn default_speaker_auto_label_owner() -> bool {
+    true
+}
+
 pub fn default_speaker_analysis_provider() -> String {
     // speakrs is the sole on-device diarization provider; sherpa-onnx is removed.
     "speakrs".to_string()
@@ -407,6 +415,8 @@ pub struct SpeakerAnalysisSettings {
     pub separate_speakers: bool,
     #[serde(default = "default_speaker_recognition_enabled")]
     pub recognize_saved_people: bool,
+    #[serde(default = "default_speaker_auto_label_owner")]
+    pub auto_label_owner: bool,
     #[serde(default = "default_speaker_analysis_provider")]
     pub provider: String,
     #[serde(default = "default_speaker_analysis_model_id")]
@@ -419,6 +429,7 @@ pub fn default_speaker_analysis_settings() -> SpeakerAnalysisSettings {
     SpeakerAnalysisSettings {
         separate_speakers: default_speaker_separation_enabled(),
         recognize_saved_people: default_speaker_recognition_enabled(),
+        auto_label_owner: default_speaker_auto_label_owner(),
         provider: default_speaker_analysis_provider(),
         model_id: default_speaker_analysis_model_id(),
         timeout_seconds: default_speaker_analysis_timeout_seconds(),

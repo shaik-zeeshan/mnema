@@ -32,6 +32,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod voice_enrollment;
 mod webview_cache;
 mod windows;
 
@@ -796,6 +797,8 @@ pub fn run() {
             app_infra::list_person_profiles,
             app_infra::create_person_profile,
             app_infra::delete_person_profile,
+            voice_enrollment::enroll_account_owner_voice,
+            voice_enrollment::get_account_owner_person_id,
             app_infra::list_speaker_clusters,
             app_infra::name_speaker_cluster,
             app_infra::link_speaker_cluster_to_person,
@@ -886,6 +889,8 @@ pub fn run() {
             native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
+            native_capture::get_microphone_activity_level,
+            native_capture::record_bounded_microphone_clip,
             native_capture::start_native_capture,
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
@@ -901,6 +906,7 @@ pub fn run() {
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
+            managed_storage_layout::probe_storage_path,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,

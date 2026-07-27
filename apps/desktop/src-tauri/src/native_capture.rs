@@ -2718,6 +2718,169 @@ pub fn update_microphone_controller(
     update_microphone_controller_impl(request, &app_handle, state)
 }
 
+/// Longest clip the bounded recorder will take. The caller picks the length
+/// (the Voice screen asks for ~15 s); this only stops a runaway request from
+/// holding the microphone open indefinitely. No other judgment lives here —
+/// whether a clip is usable is the enrollment embedder's call, not this
+/// adapter's.
+#[cfg(target_os = "macos")]
+const MAX_BOUNDED_MICROPHONE_CLIP_MS: u64 = 60_000;
+#[cfg(target_os = "macos")]
+const MIN_BOUNDED_MICROPHONE_CLIP_MS: u64 = 500;
+
+// ponytail: one process-wide flag instead of a queue — the microphone is a
+// single device and there is exactly one enrollment surface. If a second caller
+// ever needs to wait rather than be refused, make it a mutex.
+#[cfg(target_os = "macos")]
+static BOUNDED_MICROPHONE_CLIP_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Latest normalized microphone level (0.0–1.0), or `None` when no microphone
+/// session has produced a sample. Read off the one activity probe every
+/// microphone session already feeds — the level meter costs nothing beyond this
+/// poll and never opens a second audio tap.
+#[tauri::command]
+pub fn get_microphone_activity_level() -> Option<f32> {
+    microphone_capture::microphone_activity_level()
+}
+
+#[cfg(target_os = "macos")]
+fn microphone_device_id_for_bounded_clip(
+    preferences: &MicrophoneControllerPreferencesState,
+) -> Option<String> {
+    let runtime = preferences.lock().ok()?;
+    let controller_state = microphone_capture::microphone_controller_state(
+        runtime.preference.clone(),
+        runtime.disconnect_policy.clone(),
+    )
+    .ok()?;
+    resolve_capture_microphone_device_id(&controller_state)
+}
+
+/// Record a fixed-length microphone clip to a temp file and return its path.
+///
+/// A hardware adapter with no judgment: it does not inspect, score, or reject
+/// what it recorded. The live-capture guard (pause the microphone, record,
+/// resume) is owned by `native_capture::lifecycle`, so this runs anywhere —
+/// onboarding, or Settings re-enroll during a live session.
+#[tauri::command]
+pub async fn record_bounded_microphone_clip(
+    duration_ms: u64,
+    app_handle: tauri::AppHandle,
+) -> Result<String, CaptureErrorResponse> {
+    #[cfg(target_os = "macos")]
+    {
+        // The take blocks for its whole duration; keep it off the UI thread and,
+        // more importantly, off the `NativeCaptureState` mutex the segment loop
+        // ticks on.
+        tauri::async_runtime::spawn_blocking(move || {
+            record_bounded_microphone_clip_blocking(&app_handle, duration_ms)
+        })
+        .await
+        .map_err(|error| CaptureErrorResponse {
+            code: "microphone_clip_task_failed".to_string(),
+            message: format!("Bounded microphone recording task failed: {error}"),
+        })?
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (duration_ms, app_handle);
+        Err(CaptureErrorResponse {
+            code: "unsupported_platform".to_string(),
+            message: "Bounded microphone recording is only implemented on macOS".to_string(),
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn record_bounded_microphone_clip_blocking(
+    app_handle: &tauri::AppHandle,
+    duration_ms: u64,
+) -> Result<String, CaptureErrorResponse> {
+    if BOUNDED_MICROPHONE_CLIP_IN_FLIGHT.swap(true, Ordering::SeqCst) {
+        return Err(CaptureErrorResponse {
+            code: "microphone_clip_already_recording".to_string(),
+            message: "A bounded microphone recording is already in progress".to_string(),
+        });
+    }
+    let _in_flight = BoundedMicrophoneClipGuard;
+
+    let device_id = microphone_device_id_for_bounded_clip(
+        &app_handle.state::<MicrophoneControllerPreferencesState>(),
+    );
+
+    let capture_state = app_handle.state::<NativeCaptureState>();
+    let released = {
+        let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
+        lifecycle.release_microphone_for_out_of_band_recording()?
+    };
+
+    let clip = take_bounded_microphone_clip(
+        duration_ms.clamp(MIN_BOUNDED_MICROPHONE_CLIP_MS, MAX_BOUNDED_MICROPHONE_CLIP_MS),
+        device_id.as_deref(),
+    );
+
+    if released {
+        let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
+        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
+            // The clip itself is fine; log and let the next rotation or a
+            // device-change reconnect re-arm the microphone.
+            debug_log::log_error(format!(
+                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
+                error.code, error.message
+            ));
+        }
+    }
+
+    // The enrollment surface plays the take back before committing to it, and
+    // the asset protocol serves only explicitly-allowed paths (empty default
+    // scope). Grant this one clip; without it `convertFileSrc` 403s and the
+    // playback confirmation is a dead button.
+    if let Ok(path) = &clip {
+        if let Err(error) = app_handle.asset_protocol_scope().allow_file(path) {
+            debug_log::log_error(format!(
+                "failed to allow bounded microphone clip {path} in asset scope: {error}"
+            ));
+        }
+    }
+
+    clip
+}
+
+#[cfg(target_os = "macos")]
+struct BoundedMicrophoneClipGuard;
+
+#[cfg(target_os = "macos")]
+impl Drop for BoundedMicrophoneClipGuard {
+    fn drop(&mut self) {
+        BOUNDED_MICROPHONE_CLIP_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn take_bounded_microphone_clip(
+    duration_ms: u64,
+    device_id: Option<&str>,
+) -> Result<String, CaptureErrorResponse> {
+    let output_file = std::env::temp_dir()
+        .join(format!(
+            "mnema-voice-enrollment-{}.m4a",
+            runtime::now_unix_ms()
+        ))
+        .to_string_lossy()
+        .to_string();
+
+    let mut session =
+        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
+            &output_file,
+            device_id,
+        )?;
+    std::thread::sleep(Duration::from_millis(duration_ms));
+    session.stop()?;
+
+    Ok(output_file)
+}
+
 pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     reset_capture_log_snapshots();
     let settings_state = app_handle.state::<RecordingSettingsState>();

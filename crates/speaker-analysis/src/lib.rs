@@ -6,8 +6,15 @@
 //! cautious recognition suggestions.
 
 mod core;
+// Voice enrollment judgment (audio path -> voiceprint or typed rejection). It
+// drives the speakrs provider, so it is gated with it.
+#[cfg(feature = "speakrs")]
+pub mod enrollment;
 mod macos_audio_decode;
 pub mod providers;
+
+#[cfg(feature = "speakrs")]
+pub use enrollment::{embed_enrollment_clip, EnrollmentOutcome, MIN_ENROLLMENT_AUDIO_MS};
 
 pub use core::{
     PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisError,

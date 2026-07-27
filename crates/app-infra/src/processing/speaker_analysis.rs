@@ -30,6 +30,13 @@ pub struct SpeakerAnalysisJobPayload {
     pub provider: String,
     pub model_id: Option<String>,
     pub recognize_people: bool,
+    /// "Label my voice automatically": a `High` recognition suggestion for the
+    /// account-owner profile is linked without asking. Frozen on the payload
+    /// alongside `recognize_people`. `#[serde(default)]` so a payload written
+    /// before this field reads as off — nobody confirms an auto-link, so the
+    /// unknown case must be the cautious one.
+    #[serde(default)]
+    pub auto_label_owner: bool,
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub options: serde_json::Map<String, serde_json::Value>,
 }
@@ -40,6 +47,7 @@ impl SpeakerAnalysisJobPayload {
             provider: provider.into(),
             model_id,
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         };
         payload.normalize_model_selection();
@@ -240,6 +248,7 @@ mod tests {
             provider: SPEAKRS_PROVIDER_ID.to_string(),
             model_id: Some(SPEAKRS_DEFAULT_MODEL_ID.to_string()),
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         };
 
@@ -255,6 +264,7 @@ mod tests {
             provider: SPEAKRS_PROVIDER_ID.to_string(),
             model_id: Some("bogus-model-xyz".to_string()),
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         };
 
@@ -273,6 +283,7 @@ mod tests {
             provider: "sherpa_onnx".to_string(),
             model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         };
 

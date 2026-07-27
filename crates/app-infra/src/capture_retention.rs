@@ -1484,6 +1484,7 @@ async fn gc_orphan_speaker_rows(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Resul
     sqlx::query(
         "DELETE FROM person_voice_embeddings
          WHERE source_cluster_id IS NOT NULL
+           AND is_deliberate = 0
            AND NOT EXISTS (SELECT 1 FROM recording_speaker_clusters WHERE recording_speaker_clusters.id = person_voice_embeddings.source_cluster_id)",
     )
     .execute(&mut **tx)
@@ -1754,7 +1755,8 @@ mod tests {
             )",
             "CREATE TABLE person_voice_embeddings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_cluster_id INTEGER
+                source_cluster_id INTEGER,
+                is_deliberate INTEGER NOT NULL DEFAULT 0
             )",
             "CREATE TABLE speaker_recognition_rejections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2220,6 +2222,14 @@ mod tests {
                 .execute(&pool)
                 .await
                 .expect("voice embedding should insert");
+            // A voiceprint the user deliberately created by naming this cluster:
+            // same dangling source_cluster_id, but retention must not collect it.
+            sqlx::query(
+                "INSERT INTO person_voice_embeddings (source_cluster_id, is_deliberate) VALUES (1, 1)",
+            )
+            .execute(&pool)
+            .await
+            .expect("deliberate voice embedding should insert");
             sqlx::query("INSERT INTO speaker_recognition_rejections (source_cluster_id) VALUES (1)")
                 .execute(&pool)
                 .await
@@ -2239,7 +2249,6 @@ mod tests {
                 "audio_segments",
                 "speaker_turns",
                 "recording_speaker_clusters",
-                "person_voice_embeddings",
                 "speaker_recognition_rejections",
             ] {
                 let count: i64 = sqlx::query(&format!("SELECT COUNT(*) AS count FROM {table}"))
@@ -2249,6 +2258,17 @@ mod tests {
                     .get("count");
                 assert_eq!(count, 0, "{table} should be empty after cleanup");
             }
+
+            let surviving: Vec<i64> =
+                sqlx::query_scalar("SELECT is_deliberate FROM person_voice_embeddings")
+                    .fetch_all(&pool)
+                    .await
+                    .expect("voice embeddings should query");
+            assert_eq!(
+                surviving,
+                vec![1],
+                "only the deliberately created voiceprint should survive the sweep"
+            );
         });
     }
 

@@ -194,7 +194,16 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "speakers",
         anchor: "settings-section-speakers",
         label: "Speakers",
-        keywords: ["diarization", "speaker separation", "recognize people"],
+        keywords: [
+          "diarization",
+          "speaker separation",
+          "recognize people",
+          "voice",
+          "my voice",
+          "voiceprint",
+          "enroll",
+          "label my voice automatically",
+        ],
       },
       {
         id: "semanticSearch",

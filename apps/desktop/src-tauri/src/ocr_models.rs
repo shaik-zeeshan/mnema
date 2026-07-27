@@ -321,7 +321,7 @@ pub async fn delete_unused_ocr_models(
     }
     .await;
     let release_result = infra
-        .release_processing_model_cleanup_locks(&cleanup_lock)
+        .release_processing_model_locks(&cleanup_lock)
         .await
         .map_err(|error| format!("failed to release OCR model cleanup reservation: {error}"));
 
@@ -347,6 +347,24 @@ pub(crate) fn selected_ocr_model_available(
         return Ok(false);
     }
     Ok(provider_runtime_available(provider))
+}
+
+/// The model key of the selected OCR model when its files are **not** on disk, so its queued jobs
+/// can be parked (claim-time model gating) instead of burning their failure attempts against a
+/// model that is not there. `None` when the selection needs no model files (Apple Vision) or the
+/// model is installed. Deliberately files-only: unlike [`selected_ocr_model_available`] it ignores
+/// runtime availability, which is not something a download can fix.
+pub(crate) fn absent_selected_ocr_model_key(
+    app_data_dir: &Path,
+    settings: &OcrSettings,
+) -> Option<String> {
+    let provider = provider_id_for_settings(settings.provider);
+    let model_id = resolved_model_id_for_settings(settings)?;
+    let manifest = builtin_model_manifest();
+    let installed = find_model_descriptor(&manifest, provider, Some(&model_id))
+        .and_then(|descriptor| detect_model_status(ocr_models_dir(app_data_dir), descriptor).ok())
+        .is_some_and(|status| status.is_available());
+    (!installed).then(|| model_key(provider, &model_id))
 }
 
 pub(crate) fn provider_id_for_settings(provider: OcrProvider) -> &'static str {
@@ -699,7 +717,14 @@ async fn run_model_download_task(
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
 ) {
+    let download_lock = crate::app_infra::acquire_model_download_lock(
+        &app_handle,
+        app_infra::OCR_PROCESSOR,
+        model_key(&plan.provider, &plan.model_id),
+    )
+    .await;
     let result = download_and_install_model(&app_handle, &plan, &cancel_requested).await;
+    crate::app_infra::release_model_download_lock(&app_handle, download_lock).await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {

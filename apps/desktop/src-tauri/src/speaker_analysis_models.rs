@@ -283,7 +283,7 @@ pub async fn delete_speaker_analysis_model(
     }
     .await;
     let release_result = infra
-        .release_processing_model_cleanup_locks(&cleanup_lock)
+        .release_processing_model_locks(&cleanup_lock)
         .await
         .map_err(|error| {
             format!("failed to release speaker analysis model cleanup reservation: {error}")
@@ -442,6 +442,33 @@ fn model_key(provider: &str, model_id: &str) -> String {
     format!("{provider}/{model_id}")
 }
 
+/// The model key of the selected speaker-analysis model when its files are **not** on disk, so its
+/// queued jobs can be parked (claim-time model gating) instead of burning their failure attempts
+/// against a model that is not there. The selection is normalized onto speakrs first, matching the
+/// key every other seam derives for a speaker_analysis job (including the claim SQL).
+pub(crate) fn absent_selected_speaker_analysis_model_key(
+    app_data_dir: &Path,
+    settings: &capture_types::SpeakerAnalysisSettings,
+) -> Option<String> {
+    let mut payload = ::app_infra::SpeakerAnalysisJobPayload::new(
+        settings.provider.clone(),
+        settings.model_id.clone(),
+    );
+    payload.normalize_model_selection();
+    let model_id = payload
+        .model_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|model_id| !model_id.is_empty())?;
+    let manifest = builtin_model_manifest();
+    let installed = find_model_descriptor(&manifest, &payload.provider, Some(model_id))
+        .and_then(|descriptor| {
+            detect_model_status(speaker_analysis_models_dir(app_data_dir), descriptor).ok()
+        })
+        .is_some_and(|status| status.status == ModelStatusKind::Installed);
+    (!installed).then(|| model_key(&payload.provider, model_id))
+}
+
 fn clear_active_download(app_handle: &tauri::AppHandle, provider: &str, model_id: &str) {
     if let Ok(mut active) = app_handle
         .state::<SpeakerAnalysisModelDownloadState>()
@@ -468,7 +495,14 @@ async fn run_model_download_task(
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
 ) {
+    let download_lock = crate::app_infra::acquire_model_download_lock(
+        &app_handle,
+        app_infra::SPEAKER_ANALYSIS_PROCESSOR,
+        model_key(&plan.provider, &plan.model_id),
+    )
+    .await;
     let result = download_and_install_model(&app_handle, &plan, &cancel_requested).await;
+    crate::app_infra::release_model_download_lock(&app_handle, download_lock).await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
     match result {
         Ok(()) => emit_download_progress(

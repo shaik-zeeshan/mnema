@@ -2592,6 +2592,7 @@ fn speaker_analysis_admission_for_app_handle(
             );
             payload.normalize_model_selection();
             payload.recognize_people = speaker_settings.recognize_saved_people;
+            payload.auto_label_owner = speaker_settings.auto_label_owner;
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
                     ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)

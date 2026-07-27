@@ -691,6 +691,11 @@ pub struct ProcessingJobDto {
     pub updated_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// The job's model is locked (downloading, absent, or being deleted), so the claim predicate
+    /// skips it. `status = "queued"` **and** `modelLocked` is the "Preparing" state: the job is
+    /// waiting for its model, not queued behind other work and not burning failure attempts.
+    /// `false` unless the caller resolved it — only the job-listing commands do.
+    pub model_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -767,6 +772,7 @@ pub struct SpeakerTurnDto {
     pub provider_cluster_id: String,
     pub speaker_label: String,
     pub person_id: Option<i64>,
+    pub person_link_auto: bool,
     pub suggested_person_id: Option<i64>,
     pub recognition_confidence: Option<String>,
     pub recognition_score: Option<f32>,
@@ -783,6 +789,7 @@ pub struct PersonProfileDto {
     pub display_name: String,
     pub notes: Option<String>,
     pub embedding_count: i64,
+    pub is_account_owner: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -797,6 +804,7 @@ pub struct SpeakerClusterDto {
     pub provider_cluster_id: String,
     pub speaker_label: String,
     pub person_id: Option<i64>,
+    pub person_link_auto: bool,
     pub suggested_person_id: Option<i64>,
     pub recognition_confidence: Option<String>,
     pub recognition_score: Option<f32>,
@@ -970,6 +978,20 @@ impl From<::app_infra::ProcessingJob> for ProcessingJobDto {
             updated_at: job.updated_at,
             started_at: job.started_at,
             finished_at: job.finished_at,
+            model_locked: false,
+        }
+    }
+}
+
+impl ProcessingJobDto {
+    fn from_job(
+        job: ::app_infra::ProcessingJob,
+        locked_model_keys: &BTreeSet<(String, String)>,
+    ) -> Self {
+        let model_locked = ::app_infra::processing_job_model_is_locked(&job, locked_model_keys);
+        Self {
+            model_locked,
+            ..Self::from(job)
         }
     }
 }
@@ -1001,6 +1023,7 @@ impl From<::app_infra::SpeakerTurnView> for SpeakerTurnDto {
             provider_cluster_id: value.provider_cluster_id,
             speaker_label: value.speaker_label,
             person_id: value.person_id,
+            person_link_auto: value.person_link_auto,
             suggested_person_id: value.suggested_person_id,
             recognition_confidence: value.recognition_confidence,
             recognition_score: value.recognition_score,
@@ -1019,6 +1042,7 @@ impl From<::app_infra::PersonProfile> for PersonProfileDto {
             display_name: value.display_name,
             notes: value.notes,
             embedding_count: value.embedding_count,
+            is_account_owner: value.is_account_owner,
             created_at: value.created_at,
             updated_at: value.updated_at,
         }
@@ -1035,6 +1059,7 @@ impl From<::app_infra::SpeakerClusterView> for SpeakerClusterDto {
             provider_cluster_id: value.provider_cluster_id,
             speaker_label: value.speaker_label,
             person_id: value.person_id,
+            person_link_auto: value.person_link_auto,
             suggested_person_id: value.suggested_person_id,
             recognition_confidence: value.recognition_confidence,
             recognition_score: value.recognition_score,
@@ -1891,6 +1916,8 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
             );
         }
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
+        // Park queued jobs whose model is not installed before the workers can claim them.
+        tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
     }));
     if post_maintenance.is_err() {
         // The panic itself is already recorded by the installed panic hook; we
@@ -2013,6 +2040,108 @@ pub(crate) async fn run_audio_transcription_backfill_after_model_install(
     app_handle: &tauri::AppHandle,
 ) {
     run_audio_transcription_backfill_pass(infra, app_handle, "post-download").await;
+}
+
+/// Takes the `downloading` model lock a model download holds for its whole run. A download wipes
+/// the install directory before it writes, so without the lock a queued job would be claimed
+/// against a model that is not readable and spend a failure attempt on it. Pair with
+/// [`release_model_download_lock`], which releases it on success, failure **and** cancel.
+pub(crate) async fn acquire_model_download_lock(
+    app_handle: &tauri::AppHandle,
+    processor: &str,
+    model_key: String,
+) -> Option<::app_infra::ProcessingModelLock> {
+    let infra = app_handle.try_state::<AppInfraState>()?;
+    match infra
+        .acquire_processing_model_download_lock(processor, model_key)
+        .await
+    {
+        Ok(lock) => Some(lock),
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to lock {processor} model for download; its queued jobs may fail against the in-flight model: {error}"
+            ));
+            None
+        }
+    }
+}
+
+/// Releases a [`acquire_model_download_lock`] lock and re-derives the absent-model locks, so a
+/// download that failed or was cancelled leaves the (now missing) model locked rather than letting
+/// its jobs run against nothing.
+pub(crate) async fn release_model_download_lock(
+    app_handle: &tauri::AppHandle,
+    lock: Option<::app_infra::ProcessingModelLock>,
+) {
+    if let (Some(lock), Some(infra)) = (lock, app_handle.try_state::<AppInfraState>()) {
+        if let Err(error) = infra.release_processing_model_locks(&lock).await {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to release model download lock: {error}"
+            ));
+        }
+    }
+    reconcile_absent_model_locks(app_handle).await;
+}
+
+/// Locks every selected model that is not installed, and unlocks the ones that are. A locked model
+/// is skipped by the claim predicate, so its jobs sit `queued` — not running, not failing, not
+/// burning an attempt — until the model arrives. Recomputed rather than tracked, because nothing
+/// owns an absent model's lifetime: run it at startup and whenever a download settles.
+///
+/// ponytail: only the *selected* model per subsystem is checked, because that is the model jobs are
+/// frozen onto at admission. A job frozen onto some other model that later vanishes is not parked;
+/// widen to the distinct model keys of queued jobs if that ever shows up in practice.
+pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) {
+    let Some(infra) = app_handle.try_state::<AppInfraState>() else {
+        return;
+    };
+    let app_data_dir = match app_handle.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir,
+        Err(error) => {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to resolve app data directory for absent-model lock reconciliation: {error}"
+            ));
+            return;
+        }
+    };
+    let Some(settings_state) = app_handle.try_state::<crate::native_capture::RecordingSettingsState>()
+    else {
+        return;
+    };
+    let settings = crate::native_capture::read_recording_settings(settings_state.inner());
+
+    let absent = [
+        (
+            ::app_infra::OCR_PROCESSOR,
+            crate::ocr_models::absent_selected_ocr_model_key(&app_data_dir, &settings.ocr),
+        ),
+        (
+            ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
+            crate::audio_transcription_models::absent_selected_audio_transcription_model_key(
+                &app_data_dir,
+                &settings.transcription,
+            ),
+        ),
+        (
+            ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
+            crate::speaker_analysis_models::absent_selected_speaker_analysis_model_key(
+                &app_data_dir,
+                &settings.speaker_analysis,
+            ),
+        ),
+    ];
+
+    for (processor, absent_model_key) in absent {
+        let model_keys: BTreeSet<String> = absent_model_key.into_iter().collect();
+        if let Err(error) = infra
+            .sync_absent_processing_model_locks(processor, &model_keys)
+            .await
+        {
+            crate::native_capture::debug_log::log_error(format!(
+                "failed to reconcile absent-model locks for {processor}: {error}"
+            ));
+        }
+    }
 }
 
 fn run_audio_transcription_backfill_startup_pass(
@@ -2168,6 +2297,7 @@ fn speaker_analysis_admission_for_settings(
                 ::app_infra::SpeakerAnalysisJobPayload::new(provider, model_id.clone());
             payload.normalize_model_selection();
             payload.recognize_people = speaker_settings.recognize_saved_people;
+            payload.auto_label_owner = speaker_settings.auto_label_owner;
             insert_speaker_analysis_timeout_option(&mut payload, speaker_settings.timeout_seconds);
             match serde_json::to_string(&payload) {
                 Ok(payload_json) => {
@@ -2344,6 +2474,7 @@ fn attach_speaker_analysis_payload(
     );
     speaker_payload.normalize_model_selection();
     speaker_payload.recognize_people = speaker_settings.recognize_saved_people;
+    speaker_payload.auto_label_owner = speaker_settings.auto_label_owner;
     insert_speaker_analysis_timeout_option(&mut speaker_payload, speaker_settings.timeout_seconds);
     if let Ok(value) = serde_json::to_value(speaker_payload) {
         payload.options.insert(
@@ -4983,10 +5114,19 @@ pub async fn list_processing_jobs(
     let infra = Arc::clone(&*state);
     let subject = processing_subject(request.subject_type, request.subject_id);
 
+    let locked_model_keys = infra
+        .list_locked_processing_model_keys()
+        .await
+        .map_err(|error| format!("failed to list locked processing models: {error}"))?;
+
     infra
         .list_processing_jobs_for_subject(&subject)
         .await
-        .map(|jobs| jobs.into_iter().map(ProcessingJobDto::from).collect())
+        .map(|jobs| {
+            jobs.into_iter()
+                .map(|job| ProcessingJobDto::from_job(job, &locked_model_keys))
+                .collect()
+        })
         .map_err(|error| format!("failed to list processing jobs: {error}"))
 }
 
@@ -4996,10 +5136,14 @@ pub async fn get_processing_job(
     state: tauri::State<'_, AppInfraState>,
 ) -> Result<Option<ProcessingJobDto>, String> {
     let infra = Arc::clone(&*state);
+    let locked_model_keys = infra
+        .list_locked_processing_model_keys()
+        .await
+        .map_err(|error| format!("failed to list locked processing models: {error}"))?;
     infra
         .get_processing_job(request.job_id)
         .await
-        .map(|job| job.map(ProcessingJobDto::from))
+        .map(|job| job.map(|job| ProcessingJobDto::from_job(job, &locked_model_keys)))
         .map_err(|error| format!("failed to get processing job {}: {error}", request.job_id))
 }
 

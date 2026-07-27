@@ -6,6 +6,7 @@
   import Ocr from "./Ocr.svelte";
   import Transcription from "./Transcription.svelte";
   import Speakers from "./Speakers.svelte";
+  import VoiceEnrollment from "./VoiceEnrollment.svelte";
   import SemanticSearch from "./SemanticSearch.svelte";
 </script>
 
@@ -17,5 +18,9 @@
   <Ocr />
   <Transcription />
   <Speakers />
+  <!-- Voice enrollment stacks under Speakers: it is the same section (one rail
+       entry), and the read-out only makes sense beside the two toggles it
+       reports on. -->
+  <VoiceEnrollment />
   <SemanticSearch />
 </div>

@@ -253,6 +253,7 @@ export function syntheticTurnsFromTranscription(
     segmentClusterId: null,
     providerClusterId: "transcription-fallback",
     speakerLabel: "Voice",
+    personLinkAuto: false,
     personId: null,
     suggestedPersonId: null,
     recognitionConfidence: null,

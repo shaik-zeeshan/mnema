@@ -424,6 +424,61 @@ impl RecordingLifecycle {
         Ok(self.session())
     }
 
+    /// Hand the microphone to a bounded out-of-band recording (voice enrollment)
+    /// and report whether it was actually taken from a live session, so the
+    /// caller knows to hand it back.
+    ///
+    /// Microphone family only, deliberately: screen and the system-audio tap
+    /// neither share the device nor say anything about who is speaking, so
+    /// nothing here touches them. It lives on this seam because enrollment must
+    /// be runnable anywhere — onboarding orders capture after it, but Settings
+    /// re-enroll can run mid-session.
+    ///
+    /// A stop rather than a soft pause: `pause_output_file` leaves the
+    /// AVCaptureSession running, and `capture-microphone`'s activity/VAD feeds are
+    /// process-global, so a second concurrent session would corrupt the live
+    /// session's VAD boundary trimming.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn release_microphone_for_out_of_band_recording(
+        &mut self,
+    ) -> Result<bool, CaptureErrorResponse> {
+        let Some(session) = self.runtime.active_microphone_session.as_mut() else {
+            return Ok(false);
+        };
+        session.stop()?;
+        self.runtime.active_microphone_session = None;
+        Ok(true)
+    }
+
+    /// Give the microphone back after a bounded out-of-band recording. A no-op
+    /// unless the runtime still wants it: anything that legitimately took
+    /// ownership meanwhile — a device-change reconnect, an inactivity pause, a
+    /// user pause, or a stop — wins.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn restore_microphone_after_out_of_band_recording(
+        &mut self,
+    ) -> Result<(), CaptureErrorResponse> {
+        if !self.runtime.is_running
+            || self.runtime.user_capture_paused
+            || self.runtime.inactivity.is_microphone_paused()
+            || self.runtime.active_microphone_session.is_some()
+            || !self
+                .runtime
+                .requested_sources
+                .as_ref()
+                .is_some_and(|sources| sources.microphone)
+        {
+            return Ok(());
+        }
+
+        let device_id = self.runtime.microphone_device_id_for_capture.clone();
+        super::microphone::restart_microphone_session_for_runtime(
+            &mut self.runtime,
+            device_id.as_deref(),
+            "restoring microphone after a bounded enrollment recording",
+        )
+    }
+
     pub(crate) fn recover_after_wake(
         &mut self,
         app_handle: Option<&tauri::AppHandle>,

@@ -1101,6 +1101,7 @@
     clusterId: number;
     speakerLabel: string;
     personId: number | null;
+    personLinkAuto: boolean;
     suggestedPersonId: number | null;
     recognitionConfidence: SpeakerTurnDto["recognitionConfidence"];
     recognitionScore: number | null;
@@ -1135,6 +1136,7 @@
         clusterId: turn.clusterId,
         speakerLabel: turn.speakerLabel,
         personId: turn.personId,
+        personLinkAuto: turn.personLinkAuto,
         suggestedPersonId: turn.suggestedPersonId,
         recognitionConfidence: turn.recognitionConfidence,
         recognitionScore: turn.recognitionScore,
@@ -7631,7 +7633,8 @@
                       </button>
                       {#if group.personId != null}
                         <span class="audio-drawer__speaker-profile">
-                          Linked to {speakerProfileName(group.personId) ?? speakerCleanLabel(group.speakerLabel)}
+                          {group.personLinkAuto ? "Labelled automatically as" : "Linked to"}
+                          {speakerProfileName(group.personId) ?? speakerCleanLabel(group.speakerLabel)}
                         </span>
                       {/if}
                       {#if selectablePersonProfiles(group).length > 0}

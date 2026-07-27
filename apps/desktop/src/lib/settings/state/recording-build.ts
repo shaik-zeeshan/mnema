@@ -212,6 +212,7 @@ export interface RecordingDraftState {
 
   draftSpeakerSeparateSpeakers: boolean;
   draftSpeakerRecognizeSavedPeople: boolean;
+  draftSpeakerAutoLabelOwner: boolean;
   draftSpeakerProvider: string;
   draftSpeakerModelId: string | null;
   draftSpeakerTimeoutMinutes: number;
@@ -305,6 +306,7 @@ function buildProcessingRequest(rec: RecordingDraftState): UpdateProcessingSetti
     speakerAnalysis: {
       separateSpeakers: rec.draftSpeakerSeparateSpeakers,
       recognizeSavedPeople: rec.draftSpeakerRecognizeSavedPeople,
+      autoLabelOwner: rec.draftSpeakerAutoLabelOwner,
       provider: rec.draftSpeakerProvider,
       modelId: rec.draftSpeakerModelId,
       timeoutSeconds: Math.max(

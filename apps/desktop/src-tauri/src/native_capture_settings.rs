@@ -381,6 +381,7 @@ fn validate_speaker_analysis_settings(value: SpeakerAnalysisSettings) -> Speaker
     SpeakerAnalysisSettings {
         separate_speakers: value.separate_speakers,
         recognize_saved_people: value.recognize_saved_people,
+        auto_label_owner: value.auto_label_owner,
         provider,
         model_id,
         timeout_seconds: if value.timeout_seconds == 0 {
