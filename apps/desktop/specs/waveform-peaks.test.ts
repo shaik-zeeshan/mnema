@@ -144,26 +144,36 @@ test("clears peaks when the segment changes and ignores the stale response", asy
 	invokeImpl = () => new Promise((r) => pending.push(r));
 	calls.length = 0;
 
-	const d = drive([{ id: 41 }, { id: 42 }], 41);
+	const d = drive([{ id: 41 }, { id: 42 }, { id: 43 }], 41);
 	await settle();
 	expect(pending.length).toBe(1);
 
-	// Switch before 41's decode comes back: the scrubber must go blank rather
-	// than keep drawing 41's shape over 42's transcript.
+	// 41's shape is on screen — without this the "went blank" assertion below is
+	// vacuous, since `[]` is also the initial value.
+	pending[0]([0.41, 0.41]);
+	await settle();
+	expect(d.value).toEqual([0.41, 0.41]);
+
+	// Switching must blank it rather than keep drawing 41's shape over 42's
+	// transcript, and it must not wait for 42's decode to do so.
 	d.select(42);
 	await settle();
 	expect(d.value).toEqual([]);
 	expect(pending.length).toBe(2);
 
-	// 41's decode lands late — it must be dropped, not painted.
-	pending[0]([0.41, 0.41]);
+	// Switch again while 42 is still in flight: its decode lands late and must be
+	// dropped, not painted over 43.
+	d.select(43);
+	await settle();
+	expect(pending.length).toBe(3);
+	pending[1]([0.42, 0.42]);
 	await settle();
 	expect(d.value).toEqual([]);
 
-	// 42's own decode is what shows.
-	pending[1]([0.42, 0.42]);
+	// 43's own decode is what shows.
+	pending[2]([0.43, 0.43]);
 	await settle();
-	expect(d.value).toEqual([0.42, 0.42]);
+	expect(d.value).toEqual([0.43, 0.43]);
 	d.stop();
 });
 
