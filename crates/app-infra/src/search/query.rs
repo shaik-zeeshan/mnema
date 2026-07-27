@@ -40,6 +40,7 @@ pub(super) fn normalize_search_refinements(
 ) -> Result<NormalizationOutcome> {
     let refinements = refinements.unwrap_or_default();
     let screen_source = refinements.screen_source;
+    let speaker = refinements.speaker;
     let mut errors: Vec<SearchParseError> = Vec::new();
 
     if !refinements.apps.is_empty() && !refinements.audio_sources.is_empty() {
@@ -157,6 +158,9 @@ pub(super) fn normalize_search_refinements(
         url_regex: url_regex.clone(),
         audio_sources: audio_sources.clone(),
         screen_source,
+        // Carried through untouched: the handle was already decoded (and its
+        // conflicts refused) at the broker boundary, the only thing that mints one.
+        speaker: speaker.clone(),
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
             apps: applied_apps,
@@ -165,6 +169,7 @@ pub(super) fn normalize_search_refinements(
             url_regex,
             audio_sources,
             screen_source,
+            speaker,
         },
     }))
 }
@@ -887,6 +892,7 @@ mod tests {
             url_regex: None,
             audio_sources: Vec::new(),
             screen_source: false,
+            speaker: None,
         }))
         .expect("refinements should not error")
         .expect("refinements should normalize");
@@ -1201,6 +1207,7 @@ mod tests {
             url_regex: None,
             audio_sources: vec![AudioSegmentSourceKind::Microphone],
             screen_source: false,
+            speaker: None,
         }))
         .expect("conflict should not throw")
         .expect_err("incompatible refinements should surface in-band parse errors");
@@ -1224,6 +1231,7 @@ mod tests {
             url_regex: url_regex.map(str::to_string),
             audio_sources: Vec::new(),
             screen_source: false,
+            speaker: None,
         };
 
         let normalized = normalize_search_refinements(Some(refinements(
@@ -1381,6 +1389,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1447,6 +1456,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1473,6 +1483,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1545,6 +1556,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1644,6 +1656,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })

@@ -40,7 +40,7 @@ mod types;
 pub use types::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchableApp,
+    SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement, SearchableApp,
 };
 use types::{
     normalize_app_bundle_id_for_search, normalize_app_name_for_search, EquivalentReuseText,
@@ -270,7 +270,12 @@ impl SearchStore {
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
-        let all_frame_groups = if frame_limit == 0 || !refinements.audio_sources.is_empty() {
+        // A speaker filter narrows to audio for the same reason `audio_sources`
+        // does: the voice is on the recording, and a captured frame carries none.
+        let all_frame_groups = if frame_limit == 0
+            || !refinements.audio_sources.is_empty()
+            || refinements.speaker.is_some()
+        {
             Vec::new()
         } else {
             fetch_grouped_frame_hits(

@@ -123,7 +123,8 @@ pub use processing::{
 pub use search::{
     semantic_search_residual_query, AudioSearchResult, FrameSearchResult, SearchAppRefinement,
     SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse,
-    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchStore, SearchableApp,
+    SearchDateRangeOrigin, SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement,
+    SearchStore, SearchableApp,
 };
 pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;

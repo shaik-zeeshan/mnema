@@ -365,6 +365,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 url: args.url,
                 url_regex: args.url_regex,
                 cursor: args.cursor,
+                speaker: None,
             });
             run_data_command("search", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -377,6 +378,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 window_title: args.window_title,
                 url: args.url,
                 url_regex: args.url_regex,
+                speaker: None,
             });
             run_data_command("timeline", &identity, request, cli.format, cli.no_prompt).await
         }

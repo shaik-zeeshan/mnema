@@ -16,7 +16,7 @@ use crate::{
     AppInfra, AppInfraError, AudioSegmentSourceKind, ProcessingSubject, Result,
     SearchAppRefinement, SearchAppRefinementKind, SearchCaptureRefinements, SearchCaptureRequest,
     SearchCaptureResponse, SearchDateRangeOrigin, SearchDateRangeRefinement,
-    AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
+    SearchSpeakerRefinement, AUDIO_SEGMENT_SUBJECT_TYPE, FRAME_SUBJECT_TYPE,
 };
 
 // Read-time URL guard. The `guard_url` entry point turns a raw captured browser
@@ -32,7 +32,10 @@ pub use url_guard::{
 
 mod speakers;
 
-use speakers::{broker_speakers, broker_speakers_for_audio};
+use speakers::{
+    broker_speaker_refinement, broker_speakers, broker_speakers_for_audio,
+    speaker_matched_audio_segment_ids,
+};
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
 const BROKER_GRANTS_LOCK_FILE_NAME: &str = "broker-grants.lock";
@@ -229,6 +232,14 @@ pub struct BrokerSearchRequest {
     pub url: Option<String>,
     /// Case-sensitive regex over the same url.
     pub url_regex: Option<String>,
+    /// An opaque speaker handle from `speakers` (or from any `show-text` speaker),
+    /// narrowing to AUDIO this person or voice was heard in. Matches turns the user
+    /// ASSIGNED and turns voice recognition GUESSED where no assignment exists, so
+    /// results can include people the user never confirmed. Cannot be combined with
+    /// `app`, `windowTitle`, `url`, or `urlRegex` — those live on captured frames,
+    /// which carry no voice.
+    #[serde(default)]
+    pub speaker: Option<String>,
     /// Opaque `nextCursor` from a previous page of the SAME query. Carries the
     /// search-document high-water mark plus per-anchor offsets, so a walk stays
     /// pinned to the snapshot it started on and never re-reads or skips rows as
@@ -463,6 +474,12 @@ pub struct BrokerTimelineRequest {
     pub url: Option<String>,
     /// Case-sensitive regex over the same url.
     pub url_regex: Option<String>,
+    /// An opaque speaker handle, narrowing the timeline to audio this person or
+    /// voice was heard in — "when was Priya talking yesterday" has no query string
+    /// in it, so it is answerable here and nowhere else. Same matching rules and
+    /// same conflict as [`BrokerSearchRequest::speaker`].
+    #[serde(default)]
+    pub speaker: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1285,6 +1302,7 @@ fn broker_search_refinements(
     window_title: Option<String>,
     url: Option<String>,
     url_regex: Option<String>,
+    speaker: Option<SearchSpeakerRefinement>,
 ) -> Result<SearchCaptureRefinements> {
     Ok(SearchCaptureRefinements {
         date_range: scoped_date_range(grants, from, to)?,
@@ -1294,7 +1312,22 @@ fn broker_search_refinements(
         url_regex: broker_url_regex_filter(url_regex)?,
         audio_sources: Vec::new(),
         screen_source: false,
+        speaker,
     })
+}
+
+/// "What did Priya say in Zoom" reads answerable and is not: the app, window
+/// title, and url live on captured FRAMES, the voice lives on AUDIO, and no row
+/// joins the two. Answering it with an empty page would be reported to the user as
+/// "Priya said nothing in Zoom" — a confident lie — so the combination is refused
+/// outright, as a request error rather than a result.
+fn speaker_screen_filter_conflict() -> AppInfraError {
+    AppInfraError::InvalidSearchRequest(
+        "speaker cannot be combined with app, windowTitle, url, or urlRegex: a speaker filter \
+         matches recorded audio, and audio carries no app, window title, or url to match against \
+         — ask for the speaker first, then search the screen filters over the times it returns"
+            .to_string(),
+    )
 }
 
 fn broker_app_refinement(app: Option<String>) -> Result<Option<SearchAppRefinement>> {
@@ -1561,6 +1594,18 @@ async fn broker_search(
         .as_deref()
         .map(BrokerSearchCursor::decode)
         .transpose()?;
+    let speaker = match broker_speaker_refinement(config_dir, grants, request.speaker)? {
+        Ok(speaker) => speaker,
+        Err(error) => return Ok(Err(error)),
+    };
+    if speaker.is_some()
+        && (request.app.is_some()
+            || request.window_title.is_some()
+            || request.url.is_some()
+            || request.url_regex.is_some())
+    {
+        return Err(speaker_screen_filter_conflict());
+    }
     let refinements = broker_search_refinements(
         grants,
         request.from,
@@ -1569,6 +1614,7 @@ async fn broker_search(
         request.window_title,
         request.url,
         request.url_regex,
+        speaker,
     )?;
     let response = infra
         .search_capture(SearchCaptureRequest {
@@ -1813,6 +1859,15 @@ async fn broker_timeline(
     let window_title = broker_optional_filter(request.window_title, "windowTitle")?;
     let url = broker_optional_filter(request.url, "url")?;
     let url_regex = broker_url_regex_filter(request.url_regex)?;
+    let speaker = match broker_speaker_refinement(config_dir, grants, request.speaker)? {
+        Ok(speaker) => speaker,
+        Err(error) => return Ok(Err(error)),
+    };
+    if speaker.is_some()
+        && (app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some())
+    {
+        return Err(speaker_screen_filter_conflict());
+    }
     let opaque_secret = load_or_create_opaque_secret(config_dir)?;
     let opaque_grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
     if app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some() {
@@ -1832,22 +1887,39 @@ async fn broker_timeline(
         .await?;
         return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
     }
-    let mut intervals = broker_frame_timeline(
-        infra,
-        &range,
-        None,
-        None,
-        None,
-        None,
-        limit,
-        opaque_grant_id,
-        &opaque_secret,
-    )
-    .await?;
+    // The mirror of the context-filter branch above: a speaker filter narrows to
+    // audio, because a captured frame carries no voice to match against.
+    let speaker_matched = match speaker.as_ref() {
+        Some(speaker) => Some(speaker_matched_audio_segment_ids(infra, speaker, &range).await?),
+        None => None,
+    };
+    let mut intervals = if speaker.is_some() {
+        Vec::new()
+    } else {
+        broker_frame_timeline(
+            infra,
+            &range,
+            None,
+            None,
+            None,
+            None,
+            limit,
+            opaque_grant_id,
+            &opaque_secret,
+        )
+        .await?
+    };
     for audio in infra
         .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
         .await?
         .into_iter()
+        // Filtered BEFORE the cap, or a page of unmatched segments would hide
+        // every one the speaker was actually heard in.
+        .filter(|audio| {
+            speaker_matched
+                .as_ref()
+                .is_none_or(|matched| matched.contains(&audio.id))
+        })
         .take(limit as usize)
     {
         intervals.push(BrokerTimelineInterval {
@@ -2406,6 +2478,15 @@ fn invalid_opaque_id_error() -> BrokerErrorResponse {
     BrokerErrorResponse {
         error: BrokerAuthStatusKind::AuthorizationRequired,
         message: "invalid opaque result id".to_string(),
+    }
+}
+
+/// A handle this broker never signed, or one mangled in transit. Rejected the way
+/// an invalid opaque capture id is: never as "everyone" and never as "nobody".
+fn invalid_speaker_handle_error() -> BrokerErrorResponse {
+    BrokerErrorResponse {
+        error: BrokerAuthStatusKind::AuthorizationRequired,
+        message: "invalid speaker handle".to_string(),
     }
 }
 

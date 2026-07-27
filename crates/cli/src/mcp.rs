@@ -91,6 +91,7 @@ impl SearchParams {
             url: self.url,
             url_regex: self.url_regex,
             cursor: self.cursor,
+            speaker: None,
         }))
     }
 }
@@ -106,6 +107,7 @@ impl TimelineParams {
             window_title: self.window_title,
             url: self.url,
             url_regex: self.url_regex,
+            speaker: None,
         }))
     }
 }

@@ -3,13 +3,14 @@ use std::{collections::HashMap, path::Path};
 use sqlx::{QueryBuilder, Row, Sqlite};
 
 use super::{
-    broker_optional_filter, load_or_create_opaque_secret, opaque_issuing_grant, opaque_signature,
-    opaque_signature_matches, scoped_date_range, sqlite_contains_like_pattern, BrokerErrorResponse,
-    BrokerGrant, BrokerSpeaker, BrokerSpeakerHandle, BrokerSpeakerSummary, BrokerSpeakerTurn,
+    broker_optional_filter, invalid_speaker_handle_error, load_or_create_opaque_secret,
+    opaque_issuing_grant, opaque_signature, opaque_signature_matches, outside_scope_error,
+    scoped_date_range, sqlite_contains_like_pattern, BrokerErrorResponse, BrokerGrant,
+    BrokerSpeaker, BrokerSpeakerHandle, BrokerSpeakerSummary, BrokerSpeakerTurn,
     BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
     OPAQUE_SIGNATURE_HEX_LEN,
 };
-use crate::{AppInfra, Result};
+use crate::{AppInfra, Result, SearchDateRangeRefinement, SearchSpeakerRefinement};
 
 /// A person profile: stable across sessions, channels, and renames.
 pub(super) const SPEAKER_HANDLE_KIND_PERSON: &str = "person";
@@ -110,6 +111,62 @@ pub(super) async fn broker_speakers(
         limit,
         truncated,
     }))
+}
+
+/// Resolve a wire speaker handle into the row `search`/`timeline` filter on.
+///
+/// Gated exactly like a capture reference in `broker_authorize_opaque_reference`:
+/// a handle this broker never signed does not decode, and a handle whose issuing
+/// grant is gone (expired, revoked, or simply another client's) is out of scope.
+/// Neither may quietly become "no filter" — an unfiltered page answered for a
+/// person is a worse lie than an error.
+pub(super) fn broker_speaker_refinement(
+    config_dir: &Path,
+    grants: &[BrokerGrant],
+    handle: Option<String>,
+) -> Result<std::result::Result<Option<SearchSpeakerRefinement>, BrokerErrorResponse>> {
+    let Some(handle) = broker_optional_filter(handle, "speaker")? else {
+        return Ok(Ok(None));
+    };
+    let secret = load_or_create_opaque_secret(config_dir)?;
+    let Some(decoded) = decode_speaker_handle(&handle, &secret) else {
+        return Ok(Err(invalid_speaker_handle_error()));
+    };
+    let in_scope = decoded
+        .grant_id
+        .as_deref()
+        .is_some_and(|grant_id| grants.iter().any(|grant| grant.id == grant_id));
+    if !in_scope {
+        return Ok(Err(outside_scope_error()));
+    }
+    Ok(Ok(Some(if decoded.kind == SPEAKER_HANDLE_KIND_PERSON {
+        SearchSpeakerRefinement::Person(decoded.id)
+    } else {
+        SearchSpeakerRefinement::Cluster(decoded.id)
+    })))
+}
+
+/// The audio segments in `range` this speaker was heard in. The timeline scans
+/// `audio_segments` rather than the search index, so it asks the same question
+/// with the same predicate — `search` cannot answer "when was Priya talking
+/// yesterday", which carries no query string at all.
+pub(super) async fn speaker_matched_audio_segment_ids(
+    infra: &AppInfra,
+    speaker: &SearchSpeakerRefinement,
+    range: &SearchDateRangeRefinement,
+) -> Result<std::collections::HashSet<i64>> {
+    // Range predicate copied from `list_overlapping_range`, whose rows this set
+    // filters: a different overlap convention would silently drop a boundary
+    // segment the timeline had already listed.
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT id FROM audio_segments WHERE started_at <= ");
+    query.push_bind(range.end_at.clone());
+    query.push(" AND ended_at >= ");
+    query.push_bind(range.start_at.clone());
+    query.push(" AND ");
+    speaker.push_exists_predicate(&mut query, "audio_segments.id");
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
+    Ok(rows.iter().map(|row| row.get::<i64, _>("id")).collect())
 }
 
 pub(super) async fn broker_speakers_for_audio(
@@ -298,9 +355,6 @@ fn encode_speaker_handle(kind: &str, id: i64, grant_id: Option<&str>, secret: &[
 /// A handle the broker itself signed, decoded back to the row it addresses.
 /// `grant_id` is the grant it was issued under — callers scope by it exactly as
 /// they do for capture references.
-// Kept beside the encoder so the two halves cannot drift; the speaker filter is
-// the first caller outside the round-trip test.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DecodedSpeakerHandle {
     pub kind: &'static str,
@@ -308,7 +362,6 @@ pub(super) struct DecodedSpeakerHandle {
     pub grant_id: Option<String>,
 }
 
-#[allow(dead_code)]
 pub(super) fn decode_speaker_handle(value: &str, secret: &[u8]) -> Option<DecodedSpeakerHandle> {
     let (payload, signature) = value.split_once('.')?;
     if signature.len() != OPAQUE_SIGNATURE_HEX_LEN
