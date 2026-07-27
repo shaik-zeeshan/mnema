@@ -83,9 +83,18 @@
   // now and writes NOTHING. The destructive twin ("Not this person") lives in the
   // repair slide-over with danger styling and its consequence spelled out.
   let softDismissed = $state<number[]>([]);
+  // Reset when the transcript's SPEAKER SET changes — never on `groups`' array
+  // identity. `groups` is rebuilt by every `refreshCurrentSpeakerTurns()` (which
+  // every speaker write ends in) and by every transcript-poll tick while a job is
+  // pending, so keying the reset on the array threw the user's dismissals away
+  // seconds after they pressed the hide button: answering one voice resurrected the
+  // chip they had just hidden on another. A `$derived` only propagates when its
+  // VALUE changes, so this survives an equal-content reload and still resets on a
+  // real change (different segment, a merge, a cluster appearing).
+  const speakerSetKey = $derived(groups.map((group) => group.clusterId).join(","));
   $effect(() => {
     // Reset when the transcript itself changes.
-    void groups;
+    void speakerSetKey;
     softDismissed = [];
   });
 
@@ -103,8 +112,15 @@
   // user-only: `scrollIntoView` moves the container without ever firing them, so
   // no "was that us?" timing guard is needed (an earlier guard here refreshed on
   // every follow scroll and therefore made detaching during playback impossible).
+  // The element the reader last centred on. NOT `$state`: it is written from inside
+  // the follow effect, and a reactive write there would re-trigger it.
+  let centredOn: HTMLElement | null = null;
+
   function detach(): void {
     followDetached = true;
+    // The user moved the container out from under the last centred element, so
+    // re-attaching has to scroll again even if the same word still holds the floor.
+    centredOn = null;
   }
 
   // `wheel` is attached by hand because Svelte auto-passives only `touchstart`
@@ -126,6 +142,13 @@
       container.querySelector<HTMLElement>(".para .w.is-now") ??
       container.querySelector<HTMLElement>('[data-speaker-group-index].is-active');
     if (!target) return;
+    // `currentMs` ticks ~4x/s but the highlighted word only moves ~2.5x/s, so a
+    // third of the ticks re-centre on the element already centred. That matters more
+    // than the wasted call: `behavior: "smooth"` restarts a scroll animation WebKit
+    // has not finished, so the container never settles and its ~800-word subtree
+    // keeps compositing for the whole of playback.
+    if (target === centredOn) return;
+    centredOn = target;
     target.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
@@ -220,7 +243,8 @@
 
           {#if karaoke[index]}
             {@const wordList = karaoke[index] ?? []}
-            {@const nowIndex = activeKaraokeIndex(wordList, currentMs)}
+            {@const nowIndex =
+              activeGroupIndex === index ? activeKaraokeIndex(wordList, currentMs) : -1}
             <p class="para">
               {#each wordList as word, wi (wi)}<button
                   type="button"

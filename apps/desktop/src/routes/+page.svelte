@@ -1153,9 +1153,14 @@
         // Always read the result (it carries the provenance the frame-6 no-speech
         // panel footnotes with); only word it as a notice when the transcript
         // itself succeeded, since otherwise the panel already says what happened.
-        const notice = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+        const empty = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+        // The drawer is non-modal, so the user can click another audio bar during
+        // that round trip. Neither the provenance footnote (`skipReason silent ·
+        // audioPeak 0.004`) nor the notice may land on the segment open NOW.
+        if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+        selectedAudioSpeakerProvenance = empty.provenance;
         if (selectedAudioTranscriptStatus === "success") {
-          selectedAudioSpeakerTurnsNotice = notice;
+          selectedAudioSpeakerTurnsNotice = empty.notice;
         }
       }
     } catch (err) {
@@ -1185,23 +1190,25 @@
     }
   }
 
-  async function loadSpeakerAnalysisEmptyNotice(jobId: number): Promise<string> {
+  async function loadSpeakerAnalysisEmptyNotice(
+    jobId: number,
+  ): Promise<{ notice: string; provenance: SpeakerAnalysisProvenance | null }> {
     const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
       request: { jobId } satisfies GetProcessingResultRequest,
     });
     // Same fetch feeds the frame-6 panels' provenance footnote (skipReason,
-    // audioPeak, chunkingMode) — no extra round trip.
-    selectedAudioSpeakerProvenance = parseSpeakerAnalysisProvenance(
-      result?.structuredPayloadJson ?? null,
-    );
+    // audioPeak, chunkingMode) — no extra round trip. RETURNED, not written from
+    // here: this runs after an await, so only the caller still holds the (id, gen)
+    // pair that says whether the drawer is still on this segment.
+    const provenance = parseSpeakerAnalysisProvenance(result?.structuredPayloadJson ?? null);
     const skipReason = parseSpeakerAnalysisSkipReason(result?.structuredPayloadJson ?? null);
-    if (skipReason === "too_short") {
-      return "Speaker analysis skipped: audio segment is too short.";
-    }
-    if (skipReason === "silent") {
-      return "Speaker analysis skipped: no speech-level audio detected.";
-    }
-    return "No speaker turns found.";
+    const notice =
+      skipReason === "too_short"
+        ? "Speaker analysis skipped: audio segment is too short."
+        : skipReason === "silent"
+          ? "Speaker analysis skipped: no speech-level audio detected."
+          : "No speaker turns found.";
+    return { notice, provenance };
   }
 
   function parseSpeakerAnalysisSkipReason(

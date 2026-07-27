@@ -188,6 +188,19 @@
   // transport mid-playback, closes the repair panel mid-edit, and steals focus.
   const segmentId = $derived(segment.id);
 
+  // Every OTHER read off the row object needs the same treatment, for the same
+  // reason. `transcriptFallbackGroups(..., segment.durationSeconds)` returns a
+  // fresh array, and it IS the reader's `groups` whenever diarization has no turns
+  // yet — the routine state while capture runs (transcription lands first), and the
+  // permanent state when speakrs yields zero turns. A new `groups` identity then
+  // re-derives every paragraph's karaoke word list (each a full scan of `words[]`
+  // plus a sort, a join and two regex passes), rebuilds the speaker-mark map, and
+  // rebuilds all 150 waveform bars: measured at ~20ms per poll for a 5-minute
+  // 800-word segment, four times a minute for as long as the drawer stays open.
+  // A `$derived` scalar only propagates when its VALUE changes.
+  const segmentSource = $derived(segment.source);
+  const segmentDurationSeconds = $derived(segment.durationSeconds);
+
   // ── drawer view state ─────────────────────────────────────────────────────
   let expanded = $state(false);
   let showTimestamps = $state(false);
@@ -339,7 +352,7 @@
   const speakerGroups = $derived(buildSpeakerGroups(turns, clusters));
 
   const fallbackGroups = $derived(
-    transcriptFallbackGroups(transcriptSegments, transcriptText, segment.durationSeconds),
+    transcriptFallbackGroups(transcriptSegments, transcriptText, segmentDurationSeconds),
   );
 
   const groups = $derived(speakerGroups.length > 0 ? speakerGroups : fallbackGroups);
@@ -351,6 +364,32 @@
   );
 
   const repairGroup = $derived(repairIndex == null ? null : groups[repairIndex] ?? null);
+
+  // The slide-over is aimed by INDEX, but `groups` is rebuilt from `turns` by every
+  // speaker write, and `buildSpeakerGroups` collapses consecutive same-cluster turns
+  // — so a merge deletes a paragraph and every index below it shifts up by one. The
+  // merge button lives INSIDE this panel, which makes that the common path: left
+  // alone the panel stays open silently aimed at the next voice down, and the user's
+  // next name / unlink / move lands on a speaker they never opened — writes with no
+  // backend inverse. Follow the cluster instead, and close if it is gone.
+  let repairPin: { index: number; clusterId: number } | null = null;
+  $effect(() => {
+    const index = repairIndex;
+    const group = repairGroup;
+    const pin = repairPin;
+    if (index == null || group == null) {
+      repairPin = null;
+      return;
+    }
+    if (pin == null || pin.index !== index) {
+      repairPin = { index, clusterId: group.clusterId };
+      return;
+    }
+    if (pin.clusterId === group.clusterId) return;
+    const next = groups.findIndex((candidate) => candidate.clusterId === pin.clusterId);
+    repairPin = next < 0 ? null : { index: next, clusterId: pin.clusterId };
+    repairIndex = next < 0 ? null : next;
+  });
   const unnamedRemaining = $derived(
     new Set(
       speakerGroups.filter((g) => g.personId == null).map((g) => g.clusterId),
@@ -359,7 +398,7 @@
 
   const status = $derived(
     drawerStatusPill({
-      source: segment.source,
+      source: segmentSource,
       transcriptStatus,
       speakerAnalysisRunning,
       speakerAnalysisFailed,
@@ -379,7 +418,7 @@
   const processingFootnote = $derived.by(() => {
     if (!pendingJob) return "";
     const stage = processingStageLabel(
-      segment.source,
+      segmentSource,
       pendingJob.processor as "audio_transcription",
     );
     const ago = queuedAgoLabel(pendingJob.queuedAt);
@@ -573,7 +612,15 @@
         bind:followDetached
         bind:containerEl={transcriptContainerEl}
       />
-      {#if speakerTurnsNotice && !speakerTurnsError}
+      <!-- The reader IS reachable with `speakerTurnsError` set: the page's
+           `loadSelectedAudioSpeakerTurns` catch clears the failed-job id and keeps
+           the error, so `groups` falls back to the transcript's own runs, the panel
+           is "reader", and DrawerStatePanels — the only other place this renders —
+           never mounts. Without this a SQLITE_BUSY `list_speaker_turns` reads as
+           "nobody spoke". Error outranks notice, as the old guard implied. -->
+      {#if speakerTurnsError}
+        <p class="stage__error" role="alert">{speakerTurnsError}</p>
+      {:else if speakerTurnsNotice}
         <p class="stage__note">{speakerTurnsNotice}</p>
       {/if}
       {#if correctionError}

@@ -89,13 +89,27 @@
   // Seed on mount, and re-seed whenever the panel is pointed at a different
   // cluster (the drawer reuses one panel instance across gutter clicks).
   let seededClusterId = $state<number | null>(null);
+  let seededName = $state("");
   $effect(() => {
-    if (seededClusterId === group.clusterId) return;
-    seededClusterId = group.clusterId;
-    nameDraft = persistedName;
-    scope = "speaker";
-    linkChoice = "";
-    moveChoice = "";
+    if (seededClusterId !== group.clusterId) {
+      seededClusterId = group.clusterId;
+      seededName = persistedName;
+      nameDraft = persistedName;
+      scope = "speaker";
+      linkChoice = "";
+      moveChoice = "";
+      return;
+    }
+    // Same cluster, but the persisted name moved under us — which is what a landed
+    // write looks like from here, above all an unlink/reject: the cluster loses its
+    // person and `persistedName` reverts to the diarizer label. The field has to show
+    // what the DB says NOW, or it keeps offering the person the user just vetoed, one
+    // Enter from re-applying that name as a cluster label. A draft the user typed
+    // themselves is theirs, and survives.
+    if (persistedName === seededName) return;
+    const untouched = nameDraft === seededName;
+    seededName = persistedName;
+    if (untouched) nameDraft = persistedName;
   });
 
   const validation = $derived(validateSpeakerName(nameDraft));

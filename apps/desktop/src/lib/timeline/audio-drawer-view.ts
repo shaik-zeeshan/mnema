@@ -374,8 +374,21 @@ export function karaokeForGroup(
   if (words.length === 0) return null;
   const picked = karaokeWordsForRange(words, group.startMs, group.endMs);
   if (picked.length === 0) return null;
-  const joined = picked.map((w) => w.text).join(" ").length;
-  return joined >= group.text.length * KARAOKE_MIN_COVERAGE ? picked : null;
+  const joined = picked.map((w) => w.text).join(" ");
+  if (joined.length < group.text.length * KARAOKE_MIN_COVERAGE) return null;
+  // The symmetric failure, and the one that MISATTRIBUTES speech rather than hiding
+  // it: words this paragraph does not own. Turns from different clusters overlap in
+  // time (`SpeakerTurnDto.overlaps` is exactly that flag) and the backend gives each
+  // word to ONE turn by maximum overlap, so a nested turn's words sit inside this
+  // paragraph's range while their TEXT belongs to the other paragraph. Karaoke
+  // replaces the paragraph text with these words, so rendering them here prints one
+  // speaker's words under another's name, and again in their own paragraph below.
+  // Counted without whitespace: the " " join would otherwise read as a leak for a
+  // script whose word tokens are one character (CJK).
+  // ponytail: a ratio, like the lower bound — a leak too small to move it stays.
+  const spoken = (text: string) => text.replace(/\s+/g, "").length;
+  if (spoken(joined) > spoken(group.text) / KARAOKE_MIN_COVERAGE) return null;
+  return picked;
 }
 
 /**

@@ -612,6 +612,42 @@ describe("activeKaraokeIndex tolerance", () => {
 });
 
 describe("karaokeForGroup", () => {
+  it("degrades a paragraph another speaker's overlapping words leak into", () => {
+    // Cross-cluster overlap is real diarizer output (`SpeakerTurnDto.overlaps`, set by
+    // mark_cross_cluster_overlaps), typically a short backchannel nested inside a long
+    // turn. The backend gives each word to exactly ONE turn by maximum overlap
+    // (best_turn_for_timed_text_run), so the nested cluster owns "mm hmm" and the long
+    // turn's text does not contain it. Karaoke REPLACES the paragraph's text with the
+    // words it picks, so returning the nested cluster's words here prints one speaker's
+    // words under another speaker's name — and a second time in their own paragraph.
+    const overlapping: TranscriptionWord[] = [
+      { startMs: 0, endMs: 1000, text: "so" },
+      { startMs: 1000, endMs: 2000, text: "anyway" },
+      { startMs: 2500, endMs: 3000, text: "mm" },
+      { startMs: 3000, endMs: 3500, text: "hmm" },
+      { startMs: 5000, endMs: 6000, text: "right" },
+    ];
+    const host = group({ clusterId: 1, startMs: 0, endMs: 10_000, text: "so anyway right" });
+    expect(karaokeForGroup(overlapping, host)).toBeNull();
+    // ...while the nested paragraph still karaokes the words it does own.
+    const nested = group({ clusterId: 2, startMs: 2000, endMs: 4000, text: "mm hmm" });
+    expect(karaokeForGroup(overlapping, nested)?.map((w) => w.text)).toEqual(["mm", "hmm"]);
+  });
+
+  it("keeps karaoke for a script whose word tokens are shorter than the join space", () => {
+    // Guard against an over-broad upper bound: the " " join makes the joined length
+    // LONGER than the paragraph for per-character tokens, which must not read as a leak.
+    const cjk: TranscriptionWord[] = [
+      { startMs: 0, endMs: 200, text: "\u4f60" },
+      { startMs: 200, endMs: 400, text: "\u597d" },
+      { startMs: 400, endMs: 600, text: "\u4e16" },
+      { startMs: 600, endMs: 800, text: "\u754c" },
+    ];
+    expect(
+      karaokeForGroup(cjk, group({ startMs: 0, endMs: 1000, text: "\u4f60\u597d\u4e16\u754c" })),
+    ).toHaveLength(4);
+  });
+
   const words: TranscriptionWord[] = [
     { startMs: 0, endMs: 400, text: "one" },
     { startMs: 400, endMs: 900, text: "two" },
