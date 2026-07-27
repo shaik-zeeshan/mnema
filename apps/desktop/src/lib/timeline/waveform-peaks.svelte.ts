@@ -18,9 +18,15 @@ export function waveformPeaks(
   bucketCount: number = WAVEFORM_BUCKETS,
 ): { readonly value: number[] } {
   let peaks = $state<number[]>([]);
+  // Depend on the ID VALUE, not on whatever object the caller read it off. The
+  // timeline replaces its audio-segment rows wholesale on every
+  // `refreshAudioSegments()` (~1.5s head poll while capturing), so a closure that
+  // reads `row.id` re-fires on identity alone — and each re-fire is a full
+  // AVFoundation decode of a segment up to the 5-minute cap on the blocking pool.
+  const id = $derived.by(segmentId);
 
   $effect(() => {
-    const audioSegmentId = segmentId();
+    const audioSegmentId = id;
     peaks = [];
     let cancelled = false;
     void invoke<number[]>("get_audio_segment_waveform_peaks", {

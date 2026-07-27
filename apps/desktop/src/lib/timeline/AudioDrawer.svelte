@@ -23,6 +23,7 @@
   import SpeakerRepairPanel from "./SpeakerRepairPanel.svelte";
   import TranscriptReader from "./TranscriptReader.svelte";
   import {
+    activeGroupIndex as resolveActiveGroupIndex,
     assignSpeakerMarks,
     buildSpeakerGroups,
     drawerPanelKind,
@@ -176,6 +177,17 @@
     transcriptContainerEl = $bindable(null),
   }: Props = $props();
 
+  // The per-segment reset key. It MUST be the id, not `segment` itself: the page
+  // resolves `segment` out of `audioSegments`, and `refreshAudioSegments()` (the
+  // ~1.5s head poll while capture runs) reassigns that array with freshly mapped
+  // DTO objects, so the same segment arrives as a new object identity. Reading
+  // `segment.id` inside an effect subscribes to that identity; reading a
+  // `$derived` number does not, because a derived only propagates when its value
+  // actually changes. Without this every poll wipes `duration` (which only
+  // `loadedmetadata` ever restores, so the scrubber dies for good), resets the
+  // transport mid-playback, closes the repair panel mid-edit, and steals focus.
+  const segmentId = $derived(segment.id);
+
   // ── drawer view state ─────────────────────────────────────────────────────
   let expanded = $state(false);
   let showTimestamps = $state(false);
@@ -189,7 +201,7 @@
   $effect(() => {
     // Reset per-segment view state, but keep the user's density preferences
     // (expanded / timestamps) — those are about how they read, not what.
-    void segment.id;
+    void segmentId;
     followDetached = false;
     repairIndex = null;
     ignoreSpeakerFailure = false;
@@ -207,7 +219,7 @@
   let sampleQueue: number[] = [];
 
   $effect(() => {
-    void segment.id;
+    void segmentId;
     isPlaying = false;
     currentTime = 0;
     duration = 0;
@@ -219,11 +231,19 @@
 
   const currentMs = $derived(Math.round(currentTime * 1000));
 
+  /** Any explicit user transport action ends bounded-sample mode: from here on
+   *  playback is theirs, and a live `sampleStopAt` would otherwise pause them or
+   *  yank them back to the merge candidate on the next `timeupdate`. EVERY path
+   *  that writes `audioEl.currentTime` or starts playback must call this. */
+  function endSamplePreview(): void {
+    sampleStopAt = null;
+    sampleQueue = [];
+  }
+
   function togglePlayPause(): void {
     const el = audioEl;
     if (!el) return;
-    sampleStopAt = null;
-    sampleQueue = [];
+    endSamplePreview();
     if (el.paused) void el.play().catch(onMediaError);
     else el.pause();
   }
@@ -253,8 +273,7 @@
   function seekToMs(startMs: number): void {
     const el = audioEl;
     if (!el) return;
-    sampleStopAt = null;
-    sampleQueue = [];
+    endSamplePreview();
     const cap = Number.isFinite(duration) && duration > 0 ? duration : Infinity;
     const next = Math.max(0, Math.min(cap, startMs / 1000));
     if (!Number.isFinite(next)) return;
@@ -267,6 +286,7 @@
   function seekBySeconds(delta: number): void {
     const el = audioEl;
     if (!el) return;
+    endSamplePreview();
     const cap =
       Number.isFinite(duration) && duration > 0
         ? duration
@@ -313,7 +333,7 @@
     void el.play().catch(onMediaError);
   }
 
-  const peaks = waveformPeaks(() => segment.id);
+  const peaks = waveformPeaks(() => segmentId);
 
   // ── the reading model ─────────────────────────────────────────────────────
   const speakerGroups = $derived(buildSpeakerGroups(turns, clusters));
@@ -326,14 +346,9 @@
   const marks = $derived(assignSpeakerMarks(groups.map((g) => g.clusterId)));
   const distinctSpeakers = $derived(new Set(speakerGroups.map((g) => g.clusterId)).size);
 
-  const activeGroupIndex = $derived.by(() => {
-    if (groups.length === 0) return null;
-    if (!isPlaying && currentTime <= 0 && !hasSeeked) return null;
-    for (let i = groups.length - 1; i >= 0; i -= 1) {
-      if (currentMs >= groups[i].startMs) return i;
-    }
-    return null;
-  });
+  const activeGroupIndex = $derived(
+    resolveActiveGroupIndex(groups, currentMs, isPlaying || currentTime > 0 || hasSeeked),
+  );
 
   const repairGroup = $derived(repairIndex == null ? null : groups[repairIndex] ?? null);
   const unnamedRemaining = $derived(
@@ -373,7 +388,7 @@
 
   // ── a11y: focus in on open, restore on close, trap Tab while open ─────────
   $effect(() => {
-    void segment.id;
+    void segmentId;
     returnFocusEl ??= document.activeElement as HTMLElement | null;
     let cancelled = false;
     void tick().then(() => {
@@ -402,6 +417,14 @@
     });
     return () => {
       cancelled = true;
+      // Focus was moved INTO a panel that is now being removed. Without this it
+      // falls to <body>, and every drawer key (Escape, the transport shortcuts,
+      // the Tab trap) is handled on the drawer element — so they all go dead
+      // until the user happens to click back inside.
+      const active = document.activeElement as HTMLElement | null;
+      if (!active || active === document.body || repairEl?.contains(active)) {
+        (closeEl ?? drawerEl)?.focus({ preventScroll: true });
+      }
     };
   });
 
@@ -496,7 +519,7 @@
   {/if}
 
   {#if audioSrc}
-    {#key segment.id}
+    {#key segmentId}
       <audio
         class="audio-drawer__native"
         preload="metadata"
@@ -630,6 +653,7 @@
       scrubbing = false;
       const next = Number((event.currentTarget as HTMLInputElement).value);
       if (audioEl && Number.isFinite(next)) {
+        endSamplePreview();
         audioEl.currentTime = next;
         currentTime = next;
         hasSeeked = true;

@@ -11,7 +11,7 @@
   // at a coarser unit rather than the feature quietly disappearing.
   import {
     activeKaraokeIndex,
-    karaokeWordsForRange,
+    karaokeForGroup,
     formatTranscriptSegmentTitle,
     segmentSeekMs,
     wordSeekMs,
@@ -95,13 +95,7 @@
    * paragraph's text, so anything under 80% coverage degrades to the paragraph.
    */
   const karaoke = $derived.by<(KaraokeWord[] | null)[]>(() =>
-    groups.map((group) => {
-      if (words.length === 0) return null;
-      const picked = karaokeWordsForRange(words, group.startMs, group.endMs);
-      if (picked.length === 0) return null;
-      const joined = picked.map((w) => w.text).join(" ").length;
-      return joined >= group.text.length * 0.8 ? picked : null;
-    }),
+    groups.map((group) => karaokeForGroup(words, group)),
   );
 
   // ── Follow mode ───────────────────────────────────────────────────────────
@@ -112,6 +106,18 @@
   function detach(): void {
     followDetached = true;
   }
+
+  // `wheel` is attached by hand because Svelte auto-passives only `touchstart`
+  // and `touchmove` (its PASSIVE_EVENTS list). A non-passive wheel listener on
+  // the scroll container makes WebKit dispatch every wheel tick to the main
+  // thread BEFORE it is allowed to scroll — and `detach` never calls
+  // preventDefault, so there is nothing to wait for.
+  $effect(() => {
+    const container = containerEl;
+    if (!container) return;
+    container.addEventListener("wheel", detach, { passive: true });
+    return () => container.removeEventListener("wheel", detach);
+  });
 
   function scrollActiveIntoView(): void {
     const container = containerEl;
@@ -146,7 +152,6 @@
     class="reader__scroll"
     role="list"
     bind:this={containerEl}
-    onwheel={detach}
     ontouchmove={detach}
   >
     <article class="doc">
