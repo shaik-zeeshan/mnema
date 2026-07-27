@@ -1757,10 +1757,16 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 source_cluster_id INTEGER
             )",
+            // The FK is load-bearing, not decoration: `ON DELETE SET NULL` is what
+            // orphans a rejection when its cluster goes, and the pool runs with
+            // `foreign_keys` on. Declared bare, this harness lets tests seed states
+            // production cannot reach — and stops the sweep tests from seeing the
+            // orphaning they exist to cover. `person_voice_embeddings` below has no
+            // FK in migration 0010, so it stays bare on purpose.
             "CREATE TABLE speaker_recognition_rejections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 person_id INTEGER,
-                source_cluster_id INTEGER
+                source_cluster_id INTEGER REFERENCES recording_speaker_clusters(id) ON DELETE SET NULL
             )",
             "CREATE TABLE retention_cleanup_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2300,9 +2306,11 @@ mod tests {
                 .execute(&pool)
                 .await
                 .expect("speaker turn should insert");
+            // No "dangling cluster 99" row: the FK makes that unreachable in
+            // production, so seeding it would test a state that cannot happen.
+            // NULL is the orphan the sweep actually meets.
             for (person_id, source_cluster_id) in [
                 (1_i64, Some(1_i64)), // live: cluster 1 is still there
-                (2, Some(99)),        // dangling: cluster 99 never existed
                 (3, None),            // legacy: orphaned to NULL by ON DELETE SET NULL
             ] {
                 sqlx::query(
