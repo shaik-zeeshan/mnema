@@ -2,8 +2,10 @@
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, it } from "bun:test";
 import {
+  activeGroupIndex,
   activeKaraokeIndex,
   assignSpeakerMarks,
+  buildSpeakerGroups,
   clampSeekMs,
   segmentSeekMs,
   wordSeekMs,
@@ -12,16 +14,35 @@ import {
   transcriptFallbackGroups,
   clusterSummaryLabel,
   embeddingCountLabel,
+  formatPlayerTime,
+  formatScore,
+  formatTranscriptSegmentTitle,
+  isDefaultSpeakerLabel,
+  karaokeForGroup,
   karaokeWordsForRange,
+  parseSpeakerAnalysisProvenance,
   processingStageLabel,
   provenanceFootnote,
   queuedAgoLabel,
   samplePreviewHeadsMs,
+  speakerCleanLabel,
+  speakerClusterOptionLabel,
+  speakerIsUnnamed,
+  speakerPersistedName,
+  speakerProfileName,
+  speakerSuggestedPersonName,
+  suggestedMergeTargetLabel,
   suggestionChipFor,
   validateSpeakerName,
   waveformBars,
+  type SpeakerTranscriptGroup,
 } from "./audio-drawer-view";
-import type { SpeakerTurnDto, TranscriptionWord } from "$lib/types/app-infra";
+import type {
+  PersonProfileDto,
+  SpeakerClusterDto,
+  SpeakerTurnDto,
+  TranscriptionWord,
+} from "$lib/types/app-infra";
 
 function turn(over: Partial<SpeakerTurnDto>): SpeakerTurnDto {
   return {
@@ -43,6 +64,55 @@ function turn(over: Partial<SpeakerTurnDto>): SpeakerTurnDto {
     ...over,
   };
 }
+
+function group(over: Partial<SpeakerTranscriptGroup> = {}): SpeakerTranscriptGroup {
+  return {
+    clusterId: 7,
+    speakerLabel: "Unknown Speaker 1",
+    personId: null,
+    suggestedPersonId: null,
+    recognitionConfidence: null,
+    recognitionScore: null,
+    suggestedMergeTargetClusterId: null,
+    suggestedMergeScore: null,
+    startMs: 0,
+    endMs: 1000,
+    text: "hi",
+    overlaps: false,
+    turnIds: [1],
+    ...over,
+  };
+}
+
+function cluster(over: Partial<SpeakerClusterDto> = {}): SpeakerClusterDto {
+  return {
+    id: 7,
+    sessionId: "s",
+    provider: "speakrs",
+    modelId: null,
+    providerClusterId: "0",
+    speakerLabel: "Unknown Speaker 1",
+    personId: null,
+    suggestedPersonId: null,
+    recognitionConfidence: null,
+    recognitionScore: null,
+    suggestedMergeTargetClusterId: null,
+    suggestedMergeScore: null,
+    ...over,
+  };
+}
+
+const PROFILES: PersonProfileDto[] = [
+  { id: 1, displayName: "Priya", notes: null, embeddingCount: 4, createdAt: "", updatedAt: "" },
+  {
+    id: 2,
+    displayName: "Daniel Okafor",
+    notes: null,
+    embeddingCount: 12,
+    createdAt: "",
+    updatedAt: "",
+  },
+];
 
 describe("assignSpeakerMarks", () => {
   it("gives distinct colour AND shape to the first four clusters", () => {
@@ -78,6 +148,15 @@ describe("karaokeWordsForRange", () => {
     expect(b.map((w) => w.text)).toEqual(["three", "later"]);
   });
 
+  it("gives a word straddling a shared paragraph boundary to exactly one paragraph", () => {
+    // Adjacent paragraphs meeting at 1000 (contiguous transcription runs are the
+    // norm on the fallback path) and a word centred on that boundary.
+    const straddling: TranscriptionWord[] = [{ startMs: 800, endMs: 1200, text: "boundary" }];
+    const first = karaokeWordsForRange(straddling, 0, 1000);
+    const second = karaokeWordsForRange(straddling, 1000, 2000);
+    expect(first.length + second.length).toBe(1);
+  });
+
   it("returns empty for a provider with no word timings (the fallback branch)", () => {
     expect(karaokeWordsForRange([], 0, 1000)).toEqual([]);
     // malformed entries are dropped, never thrown on
@@ -89,6 +168,14 @@ describe("karaokeWordsForRange", () => {
     expect(activeKaraokeIndex(w, -1000)).toBe(-1);
     expect(activeKaraokeIndex(w, 0)).toBe(0);
     expect(activeKaraokeIndex(w, 500)).toBe(1);
+  });
+
+  it("keeps the word being spoken lit until it ends, even with the next one abutting", () => {
+    // "one" runs 0–400 and "two" starts at 400: at 300ms the user still hears
+    // "one", so the highlight must not have jumped ahead already.
+    const w = karaokeWordsForRange(words, 0, 1000);
+    expect(activeKaraokeIndex(w, 300)).toBe(0);
+    expect(activeKaraokeIndex(w, 399)).toBe(0);
   });
 
   it("goes dark in a silence instead of leaving the last word lit", () => {
@@ -116,7 +203,6 @@ describe("seek boundaries", () => {
 
   it("leaves an in-bounds word alone", () => {
     expect(wordSeekMs({ startMs: 6200 }, group)).toBe(6200);
-    expect(clampSeekMs(6200, 4000, 9000)).toBe(6200);
     // reversed range and non-finite input never escape the turn
     expect(clampSeekMs(6200, 9000, 4000)).toBe(6200);
     expect(clampSeekMs(Number.NaN, 4000, 9000)).toBe(4000);
@@ -163,6 +249,13 @@ describe("waveformBars", () => {
   it("floors a silent bucket to a visible hairline", () => {
     expect(waveformBars([0], 1000, turns, marks)[0].heightPct).toBe(4);
   });
+
+  it("clamps a peak above 1 and survives a non-finite one", () => {
+    // ponytail: no below-0 case — the 4% floor swallows it, so such a test could
+    // never fail even with the lower clamp deleted.
+    expect(waveformBars([2, Number.NaN], 1000, turns, marks).map((b) => b.heightPct))
+      .toEqual([100, 4]);
+  });
 });
 
 describe("validateSpeakerName", () => {
@@ -185,6 +278,12 @@ describe("labels", () => {
         turn({ id: 3, clusterId: 9, startMs: 0, endMs: 5_000 }),
       ]),
     ).toBe("cluster 7 · 2 turns · 1m 48s");
+  });
+
+  it("uses the singular for one turn and still names an empty cluster", () => {
+    expect(clusterSummaryLabel(7, [turn({ id: 1, startMs: 0, endMs: 5000 })]))
+      .toBe("cluster 7 · 1 turn · 5s");
+    expect(clusterSummaryLabel(4, [])).toBe("cluster 4 · 0 turns · 0s");
   });
 
   it("names the pipeline stage per source kind", () => {
@@ -228,8 +327,20 @@ describe("drawerStatusPill", () => {
     expect(drawerStatusPill(base)).toEqual({ tone: "ok", label: "3 speakers", busy: false });
   });
 
-  it("prefers the in-flight speaker pass over everything else", () => {
-    expect(drawerStatusPill({ ...base, speakerAnalysisRunning: true }).busy).toBe(true);
+  it("prefers the in-flight speaker pass over a competing busy status AND a failure", () => {
+    // `busy` alone can't tell this branch from any other busy one, so assert the
+    // whole pill against statuses that would otherwise win.
+    expect(
+      drawerStatusPill({ ...base, speakerAnalysisRunning: true, transcriptStatus: "loading" }),
+    ).toEqual({ tone: "work", label: "speakers", busy: true });
+    expect(
+      drawerStatusPill({
+        ...base,
+        speakerAnalysisRunning: true,
+        transcriptStatus: "error",
+        speakerAnalysisFailed: true,
+      }),
+    ).toEqual({ tone: "work", label: "speakers", busy: true });
   });
 
   it("uses system-audio wording for the speech-detection stage", () => {
@@ -246,6 +357,41 @@ describe("drawerStatusPill", () => {
 
   it("treats not-run as a warning, not an error", () => {
     expect(drawerStatusPill({ ...base, transcriptStatus: "missing" }).tone).toBe("warn");
+  });
+
+  it("uses system-audio wording for a FAILED transcript too, not just a running one", () => {
+    expect(
+      drawerStatusPill({ ...base, source: "systemAudio", transcriptStatus: "error" }),
+    ).toEqual({ tone: "bad", label: "speech detection failed", busy: false });
+    expect(drawerStatusPill({ ...base, transcriptStatus: "error" })).toEqual({
+      tone: "bad",
+      label: "error",
+      busy: false,
+    });
+  });
+
+  it("covers the rest of the vocabulary: loading, empty, no speakers, idle", () => {
+    expect(drawerStatusPill({ ...base, transcriptStatus: "loading" })).toEqual({
+      tone: "work",
+      label: "loading",
+      busy: true,
+    });
+    expect(drawerStatusPill({ ...base, transcriptStatus: "empty" })).toEqual({
+      tone: "idle",
+      label: "no speech",
+      busy: false,
+    });
+    // transcribed, but diarization attributed it to nobody
+    expect(drawerStatusPill({ ...base, distinctSpeakers: 0 })).toEqual({
+      tone: "ok",
+      label: "completed",
+      busy: false,
+    });
+    expect(drawerStatusPill({ ...base, transcriptStatus: "idle" })).toEqual({
+      tone: "idle",
+      label: "unavailable",
+      busy: false,
+    });
   });
 });
 
@@ -341,7 +487,318 @@ describe("suggestionChipFor / samplePreviewHeadsMs", () => {
       turn({ id: 2, clusterId: 9, startMs: 42_000 }),
     ];
     expect(samplePreviewHeadsMs(groups[0], turns)).toEqual([5000, 42_000]);
-    // no merge candidate → one preview
+    // no merge candidate → ONE preview, this cluster's own head
+    expect(samplePreviewHeadsMs({ ...groups[2], clusterId: 7 }, turns)).toEqual([5000]);
+    // a merge candidate with no loaded turn yields one head, not a hole
+    expect(samplePreviewHeadsMs(groups[0], [turns[0]])).toEqual([5000]);
+    // neither this cluster nor a candidate has a turn → nothing to play
     expect(samplePreviewHeadsMs(groups[2], turns)).toEqual([]);
+  });
+});
+
+describe("buildSpeakerGroups", () => {
+  it("merges only CONSECUTIVE turns of one cluster", () => {
+    const groups = buildSpeakerGroups(
+      [
+        turn({ id: 1, clusterId: 7, startMs: 0, endMs: 5000, transcriptText: "hello" }),
+        // a provider that hands back a shorter tail must not SHRINK the paragraph:
+        // endMs bounds both the karaoke range and the seek clamp.
+        turn({ id: 2, clusterId: 7, startMs: 1000, endMs: 2000, transcriptText: "again" }),
+        turn({ id: 3, clusterId: 9, startMs: 5000, endMs: 6000, transcriptText: "hi" }),
+        turn({ id: 4, clusterId: 7, startMs: 6000, endMs: 7000, transcriptText: "back" }),
+      ],
+      [],
+    );
+    // cluster 7 recurring AFTER 9 opens a new paragraph; folding it back into the
+    // first would silently reorder the transcript.
+    expect(groups.map((g) => [g.clusterId, g.text])).toEqual([
+      [7, "hello again"],
+      [9, "hi"],
+      [7, "back"],
+    ]);
+    expect(groups[0].turnIds).toEqual([1, 2]);
+    expect(groups[0].endMs).toBe(5000);
+    expect(groups[2].startMs).toBe(6000);
+  });
+
+  it("drops turns with no transcript text", () => {
+    const groups = buildSpeakerGroups(
+      [
+        turn({ id: 1, clusterId: 7, transcriptText: "hello" }),
+        turn({ id: 2, clusterId: 9, transcriptText: "   " }),
+        turn({ id: 3, clusterId: 4, transcriptText: null }),
+        turn({ id: 4, clusterId: 7, transcriptText: "world" }),
+      ],
+      [],
+    );
+    // A wordless cluster is not a speaker, so the two cluster-7 turns become
+    // adjacent and merge across the gap.
+    expect(groups).toHaveLength(1);
+    expect(groups[0].text).toBe("hello world");
+    expect(groups[0].turnIds).toEqual([1, 4]);
+  });
+
+  it("OR-propagates overlaps forward on merge and never backwards", () => {
+    const merged = buildSpeakerGroups(
+      [
+        turn({ id: 1, clusterId: 7, overlaps: false, transcriptText: "a" }),
+        turn({ id: 2, clusterId: 7, overlaps: true, transcriptText: "b" }),
+      ],
+      [],
+    );
+    expect(merged[0].overlaps).toBe(true);
+    // a merge never CLEARS a flag already set
+    const sticky = buildSpeakerGroups(
+      [
+        turn({ id: 1, clusterId: 7, overlaps: true, transcriptText: "a" }),
+        turn({ id: 2, clusterId: 7, overlaps: false, transcriptText: "b" }),
+      ],
+      [],
+    );
+    expect(sticky[0].overlaps).toBe(true);
+    // …and a later paragraph's overlap must not mark the earlier one
+    const later = buildSpeakerGroups(
+      [
+        turn({ id: 1, clusterId: 7, overlaps: false, transcriptText: "a" }),
+        turn({ id: 2, clusterId: 9, overlaps: true, transcriptText: "b" }),
+      ],
+      [],
+    );
+    expect(later.map((g) => g.overlaps)).toEqual([false, true]);
+  });
+
+  it("nulls the merge suggestion when the cluster row is absent", () => {
+    const row = cluster({ id: 7, suggestedMergeTargetClusterId: 9, suggestedMergeScore: 0.71 });
+    const [withRow] = buildSpeakerGroups([turn({ clusterId: 7 })], [row]);
+    expect(withRow.suggestedMergeTargetClusterId).toBe(9);
+    expect(withRow.suggestedMergeScore).toBe(0.71);
+    // clusters loaded for a different session/segment must not leak a suggestion
+    const [without] = buildSpeakerGroups([turn({ clusterId: 7 })], [{ ...row, id: 42 }]);
+    expect(without.suggestedMergeTargetClusterId).toBeNull();
+    expect(without.suggestedMergeScore).toBeNull();
+  });
+});
+
+describe("activeKaraokeIndex tolerance", () => {
+  // The literal edges below encode the 150 ms default on purpose: writing them as
+  // `KARAOKE_TOLERANCE_MS ± 1` would pass for any value the constant ever takes.
+  const lone = [{ text: "solo", startMs: 1000, endMs: 2000 }];
+
+  it("lights a word 150ms early and holds it 150ms past its end", () => {
+    expect(activeKaraokeIndex(lone, 849)).toBe(-1);
+    expect(activeKaraokeIndex(lone, 850)).toBe(0);
+    expect(activeKaraokeIndex(lone, 2150)).toBe(0);
+    expect(activeKaraokeIndex(lone, 2151)).toBe(-1);
+  });
+
+  it("goes dark mid-gap and hands over exactly 150ms before the next word", () => {
+    const pair = [
+      { text: "first", startMs: 0, endMs: 1000 },
+      { text: "second", startMs: 2000, endMs: 3000 },
+    ];
+    expect(activeKaraokeIndex(pair, 1150)).toBe(0);
+    expect(activeKaraokeIndex(pair, 1151)).toBe(-1);
+    expect(activeKaraokeIndex(pair, 1849)).toBe(-1);
+    expect(activeKaraokeIndex(pair, 1850)).toBe(1);
+  });
+
+  it("honours an explicit tolerance, and has nothing to light with no words", () => {
+    expect(activeKaraokeIndex(lone, 999, 0)).toBe(-1);
+    expect(activeKaraokeIndex(lone, 1000, 0)).toBe(0);
+    expect(activeKaraokeIndex(lone, 2000, 0)).toBe(0);
+    expect(activeKaraokeIndex(lone, 2001, 0)).toBe(-1);
+    expect(activeKaraokeIndex([], 500)).toBe(-1);
+  });
+});
+
+describe("karaokeForGroup", () => {
+  const words: TranscriptionWord[] = [
+    { startMs: 0, endMs: 400, text: "one" },
+    { startMs: 400, endMs: 900, text: "two" },
+    { startMs: 900, endMs: 1400, text: "three" },
+  ];
+
+  it("karaokes a paragraph its words actually cover", () => {
+    const picked = karaokeForGroup(words, group({ startMs: 0, endMs: 2000, text: "one two three" }));
+    expect(picked?.map((w) => w.text)).toEqual(["one", "two", "three"]);
+  });
+
+  it("degrades to the paragraph when the words cover too little of it", () => {
+    // ~20% covered: rendering only these would drop most of the text off the page.
+    const sparse = group({
+      startMs: 0,
+      endMs: 2000,
+      text: "one two three and a great deal more the provider never timed at all",
+    });
+    expect(karaokeForGroup(words, sparse)).toBeNull();
+  });
+
+  it("keeps karaoke at exactly the 80% coverage edge and drops it one char below", () => {
+    const timed: TranscriptionWord[] = [
+      { startMs: 0, endMs: 400, text: "abcd" },
+      { startMs: 400, endMs: 900, text: "efg" },
+    ];
+    // joined = "abcd efg" = 8 chars
+    expect(karaokeForGroup(timed, group({ startMs: 0, endMs: 2000, text: "0123456789" }))).toHaveLength(2);
+    expect(karaokeForGroup(timed, group({ startMs: 0, endMs: 2000, text: "01234567890" }))).toBeNull();
+  });
+
+  it("degrades with no words at all and with none in this paragraph's range", () => {
+    expect(karaokeForGroup([], group({ text: "one two three" }))).toBeNull();
+    expect(karaokeForGroup(words, group({ startMs: 9000, endMs: 10_000, text: "elsewhere" }))).toBeNull();
+  });
+});
+
+describe("activeGroupIndex", () => {
+  const groups = [
+    group({ clusterId: 7, startMs: 0, endMs: 1000 }),
+    group({ clusterId: 9, startMs: 5000, endMs: 6000 }),
+  ];
+
+  it("highlights nothing until playback has actually moved", () => {
+    expect(activeGroupIndex(groups, 5500, false)).toBeNull();
+    expect(activeGroupIndex(groups, 5500, true)).toBe(1);
+    expect(activeGroupIndex([], 5500, true)).toBeNull();
+    expect(activeGroupIndex([group({ startMs: 2000 })], 1999, true)).toBeNull();
+    expect(activeGroupIndex([group({ startMs: 2000 })], 2000, true)).toBe(0);
+  });
+
+  it("picks the last paragraph already started — and keeps it lit past its end", () => {
+    // OPEN QUESTION (pinned as current behaviour, not endorsed): this is bounded
+    // at the START only, so a paragraph stays highlighted through the silence
+    // after it and the final one stays lit forever. That is asymmetric with
+    // `activeKaraokeIndex`, which is bounded at both ends.
+    expect(activeGroupIndex(groups, 4999, true)).toBe(0); // 4s past group 0's endMs
+    expect(activeGroupIndex(groups, 999_999, true)).toBe(1);
+  });
+});
+
+describe("speaker labels", () => {
+  it("strips a leading Maybe and recognises the diarizer's placeholder label", () => {
+    expect(speakerCleanLabel("Maybe Priya")).toBe("Priya");
+    expect(speakerCleanLabel("maybe   Priya  ")).toBe("Priya");
+    expect(speakerCleanLabel("Priya")).toBe("Priya");
+    expect(speakerCleanLabel("Not Maybe Priya")).toBe("Not Maybe Priya");
+    // speakrs emits "Unknown Speaker N" (crates/speaker-analysis/.../speakrs.rs)
+    expect(isDefaultSpeakerLabel("Unknown Speaker 1")).toBe(true);
+    expect(isDefaultSpeakerLabel("Maybe Unknown Speaker 12")).toBe(true);
+    expect(isDefaultSpeakerLabel("Priya")).toBe(false);
+  });
+
+  it("falls back to the cluster label when the linked profile is gone", () => {
+    expect(speakerProfileName(PROFILES, null)).toBeNull();
+    expect(speakerProfileName(PROFILES, 2)).toBe("Daniel Okafor");
+    expect(speakerProfileName(PROFILES, 404)).toBeNull();
+    // a person deleted out from under a still-linked cluster must not blank the gutter
+    expect(speakerPersistedName(group({ personId: 404, speakerLabel: "Maybe Priya" }), PROFILES))
+      .toBe("Priya");
+    expect(speakerPersistedName(group({ personId: 1 }), PROFILES)).toBe("Priya");
+    expect(speakerPersistedName(group({ speakerLabel: "Unknown Speaker 1" }), PROFILES))
+      .toBe("Unknown Speaker 1");
+    expect(
+      speakerSuggestedPersonName(
+        group({ suggestedPersonId: 404, speakerLabel: "Maybe Priya" }),
+        PROFILES,
+      ),
+    ).toBe("Priya");
+  });
+
+  it("calls only an unlinked placeholder unnamed", () => {
+    expect(speakerIsUnnamed(group({ speakerLabel: "Unknown Speaker 1" }), PROFILES)).toBe(true);
+    expect(speakerIsUnnamed(group({ speakerLabel: "Priya" }), PROFILES)).toBe(false);
+    // a link wins even while the label is still the placeholder
+    expect(speakerIsUnnamed(group({ personId: 1, speakerLabel: "Unknown Speaker 1" }), PROFILES))
+      .toBe(false);
+  });
+
+  it("labels a cluster option linked > suggested > raw, tolerating a dangling id", () => {
+    expect(speakerClusterOptionLabel(cluster({ personId: 1, suggestedPersonId: 2 }), PROFILES))
+      .toBe("Priya");
+    expect(speakerClusterOptionLabel(cluster({ personId: 404, speakerLabel: "Priya" }), PROFILES))
+      .toBe("Priya");
+    expect(speakerClusterOptionLabel(cluster({ suggestedPersonId: 2 }), PROFILES))
+      .toBe("Daniel Okafor");
+    expect(
+      speakerClusterOptionLabel(
+        cluster({ suggestedPersonId: 404, speakerLabel: "Unknown Speaker 3" }),
+        PROFILES,
+      ),
+    ).toBe("Maybe Unknown Speaker 3");
+    expect(speakerClusterOptionLabel(cluster({ speakerLabel: "Maybe Priya" }), PROFILES))
+      .toBe("Priya");
+  });
+
+  it("never invents a name for a merge target that no longer exists", () => {
+    const target = cluster({ id: 9, personId: 2 });
+    expect(suggestedMergeTargetLabel(group(), [target], PROFILES)).toBeNull();
+    expect(
+      suggestedMergeTargetLabel(group({ suggestedMergeTargetClusterId: 9 }), [target], PROFILES),
+    ).toBe("Daniel Okafor");
+    // the target was merged away or deleted: no label beats a wrong one
+    expect(
+      suggestedMergeTargetLabel(
+        group({ suggestedMergeTargetClusterId: 9 }),
+        [cluster({ id: 3 })],
+        PROFILES,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("formatScore", () => {
+  it("returns null for anything unscorable", () => {
+    expect(formatScore(null)).toBeNull();
+    expect(formatScore(undefined)).toBeNull();
+    expect(formatScore(Number.NaN)).toBeNull();
+    expect(formatScore(Number.POSITIVE_INFINITY)).toBeNull();
+  });
+
+  it("reads <=1 as a fraction and >1 as a percentage, on both sides of the boundary", () => {
+    expect(formatScore(0)).toBe("0.00");
+    expect(formatScore(0.88)).toBe("0.88");
+    expect(formatScore(1)).toBe("1.00");
+    expect(formatScore(100)).toBe("1.00");
+    expect(formatScore(71)).toBe("0.71");
+  });
+
+  it("OPEN QUESTION: a score in the (1, 10) band renders as near-zero", () => {
+    // Neither a fraction nor a percentage under the heuristic. Pinned as CURRENT
+    // behaviour only — nobody has decided what this band should render as, or
+    // whether a provider can even emit it.
+    expect(formatScore(1.5)).toBe("0.01");
+  });
+});
+
+describe("parseSpeakerAnalysisProvenance", () => {
+  it("reads the provenance, and returns null on anything else instead of throwing", () => {
+    const payload = JSON.stringify({
+      metadata: { provenance: { skipReason: "silent", audioPeak: 0.004 } },
+    });
+    expect(parseSpeakerAnalysisProvenance(payload)).toEqual({
+      skipReason: "silent",
+      audioPeak: 0.004,
+    });
+    expect(parseSpeakerAnalysisProvenance("{not json")).toBeNull();
+    expect(parseSpeakerAnalysisProvenance("{}")).toBeNull();
+    expect(parseSpeakerAnalysisProvenance(JSON.stringify({ metadata: null }))).toBeNull();
+    expect(parseSpeakerAnalysisProvenance(null)).toBeNull();
+    expect(parseSpeakerAnalysisProvenance("")).toBeNull();
+  });
+});
+
+describe("time formatting", () => {
+  it("formats M:SS and never shows a negative or NaN clock", () => {
+    expect(formatPlayerTime(0)).toBe("0:00");
+    expect(formatPlayerTime(5)).toBe("0:05");
+    expect(formatPlayerTime(65.9)).toBe("1:05");
+    expect(formatPlayerTime(3661)).toBe("61:01");
+    expect(formatPlayerTime(-3)).toBe("0:00");
+    expect(formatPlayerTime(Number.NaN)).toBe("0:00");
+  });
+
+  it("titles a transcript run as a range, collapsing a zero-length one", () => {
+    expect(formatTranscriptSegmentTitle({ startMs: 5000, endMs: 12_000 })).toBe("0:05–0:12");
+    expect(formatTranscriptSegmentTitle({ startMs: 5000, endMs: 5000 })).toBe("0:05");
+    expect(formatTranscriptSegmentTitle({ startMs: 5000, endMs: 1000 })).toBe("0:05");
   });
 });
