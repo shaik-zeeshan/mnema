@@ -1411,6 +1411,30 @@ mod tests {
         .is_err());
     }
 
+    /// SKILL.md step 9 offers `mnema search --speaker <handle>` and
+    /// `mnema timeline --speaker <handle>` as interchangeable answers to "what did
+    /// *someone* say". They are not: `search` still requires `--query`, so the
+    /// keyword-free question the speaker filter exists for ("what did Priya say
+    /// yesterday") parses only through `timeline`.
+    #[test]
+    fn a_keyword_free_speaker_question_only_parses_through_timeline() {
+        assert!(
+            Cli::try_parse_from(["mnema", "search", "--speaker", "p1.sig"]).is_err(),
+            "search still requires --query"
+        );
+        Cli::try_parse_from([
+            "mnema",
+            "timeline",
+            "--from",
+            "2026-05-22T00:00:00Z",
+            "--to",
+            "2026-05-22T23:59:59Z",
+            "--speaker",
+            "p1.sig",
+        ])
+        .expect("timeline is the keyword-free door");
+    }
+
     fn speaker_turn(text: &str) -> BrokerSpeakerTurn {
         BrokerSpeakerTurn {
             speaker: None,
