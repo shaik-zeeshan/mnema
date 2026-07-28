@@ -96,6 +96,17 @@ pub(crate) fn query_carries_date_operator(raw: &str) -> bool {
     parse_search_query(raw).date_range.is_some()
 }
 
+/// The same question for the SCREEN-side operators: `app:` and `source:screen`
+/// are merged into the caller's refinements the same way the date operators are,
+/// so a caller that refuses a screen filter beside a speaker filter must ask here
+/// too. Refused rather than answered: a speaker filter drops the frame pass and a
+/// screen filter drops the audio pass, so the combination returns a clean empty
+/// page that reads as "she said nothing there".
+pub(crate) fn query_carries_screen_filter(raw: &str) -> bool {
+    let parsed = parse_search_query(raw);
+    !parsed.apps.is_empty() || parsed.screen_source
+}
+
 #[derive(Clone)]
 pub struct SearchStore {
     db: CaptureDb,

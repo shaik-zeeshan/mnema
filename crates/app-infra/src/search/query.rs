@@ -57,6 +57,25 @@ pub(super) fn normalize_search_refinements(
         ));
     }
 
+    // The speaker filter is the audio side of the same conflict `app_source_conflict`
+    // reports: it drops the frame pass, and every one of these drops the audio pass,
+    // so the pair can only ever answer with an empty page — read as "this person said
+    // nothing in that app". Checked HERE and not only at the caller because `app:` and
+    // `source:screen` have a QUERY-STRING spelling that is merged into these
+    // refinements after any caller-side check has already run.
+    if speaker.is_some()
+        && (!refinements.apps.is_empty()
+            || refinements.window_title.is_some()
+            || refinements.url.is_some()
+            || refinements.url_regex.is_some()
+            || screen_source)
+    {
+        errors.push(whole_query_parse_error(
+            "speaker_screen_filter_conflict",
+            "speaker cannot be combined with app, windowTitle, url, urlRegex, or source:screen: a speaker filter matches recorded audio, and audio carries no app, window title, or url to match against",
+        ));
+    }
+
     let date_range = match refinements.date_range {
         Some(range) => match normalize_date_range_refinement(range) {
             Ok(resolved) => Some(resolved),
@@ -1218,6 +1237,41 @@ mod tests {
                 .any(|error| error.kind == "app_source_conflict"
                     && error.message.contains("cannot be combined")),
             "expected an app_source_conflict parse error, got {errors:?}"
+        );
+    }
+
+    #[test]
+    fn search_rejects_a_speaker_filter_combined_with_screen_only_refinements() {
+        // The broker refuses `speaker` beside its own `app`/`windowTitle`/`url`
+        // REQUEST FIELDS, but an `app:` OPERATOR inside the query string is merged
+        // into the refinements AFTER that guard, in `search_capture`. Nothing then
+        // refuses the pair: the frame pass is skipped (speaker narrows to audio)
+        // and the audio pass is skipped (apps narrows to frames), so the caller is
+        // handed a confident empty page — "Priya said nothing in Zoom" — instead of
+        // the in-band conflict its sibling `app_source_conflict` reports.
+        let merged = merge_parsed_field_operators(
+            Some(SearchCaptureRefinements {
+                speaker: Some(crate::search::SearchSpeakerRefinement::Person(7)),
+                ..Default::default()
+            }),
+            &parse_search_query("standup app:Zoom"),
+        );
+        assert!(
+            !merged.apps.is_empty(),
+            "the app: operator should merge into the caller's refinements"
+        );
+
+        let errors = normalize_search_refinements(Some(merged))
+            .expect("conflict should not throw")
+            .expect_err(
+                "a speaker filter beside a screen-only filter should surface in-band parse errors",
+            );
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "speaker_screen_filter_conflict"),
+            "expected a speaker_screen_filter_conflict parse error, got {errors:?}"
         );
     }
 

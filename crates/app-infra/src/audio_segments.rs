@@ -247,7 +247,12 @@ where
     map_audio_segment(row)
 }
 
-fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {
+/// The projection every `audio_segments` read shares. Public within the crate so
+/// a caller that has to build its own predicate (the broker's speaker page) reads
+/// the same columns into the same type instead of a second, drifting mapping.
+pub(crate) const AUDIO_SEGMENT_COLUMNS: &str = "id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id, created_at, updated_at";
+
+pub(crate) fn map_audio_segment(row: SqliteRow) -> Result<AudioSegment> {
     Ok(AudioSegment {
         id: row.get("id"),
         source_kind: AudioSegmentSourceKind::from_str(row.get("source_kind")),

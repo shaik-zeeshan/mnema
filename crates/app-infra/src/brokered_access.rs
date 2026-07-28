@@ -35,7 +35,7 @@ mod speakers;
 
 use speakers::{
     broker_speaker_refinement, broker_speakers, broker_speakers_for_audio, speaker_coverage,
-    speaker_matched_turns_for_segments, speaker_matched_turns_in_range,
+    speaker_matched_recordings_in_range, speaker_matched_turns_for_segments,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
@@ -424,6 +424,12 @@ pub struct BrokerShowTextResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerSpeaker {
+    /// OMITTED rather than sent as `null` when there is no name — the same rule
+    /// [`BrokerSpeakerSummary::name`] follows, because both published contracts
+    /// (`SKILL.md`, `crates/cli/CONTEXT.md`) describe one `name` rule for a
+    /// nameless voice and an agent testing presence must not read the same voice
+    /// as named on `show-text` and unnamed on `speakers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// `assigned` (the user said so), `recognized` (voice match), `unknown`.
     pub attribution: String,
@@ -1681,7 +1687,11 @@ async fn broker_search(
         && (request.app.is_some()
             || request.window_title.is_some()
             || request.url.is_some()
-            || request.url_regex.is_some())
+            || request.url_regex.is_some()
+            // Spelled as a query operator it is the SAME filter: `app:`/
+            // `source:screen` merge into the refinements below, and the pair
+            // would come back as an empty page instead of this refusal.
+            || crate::search::query_carries_screen_filter(&request.query))
     {
         return Err(speaker_screen_filter_conflict());
     }
@@ -1724,7 +1734,7 @@ async fn broker_search(
                 .collect();
             (
                 speaker_matched_turns_for_segments(infra, speaker, &audio_segment_ids).await?,
-                Some(speaker_coverage(infra, range.as_ref()).await?),
+                Some(speaker_coverage(infra, speaker, range.as_ref()).await?),
             )
         }
         None => (HashMap::new(), None),
@@ -1996,12 +2006,17 @@ async fn broker_timeline(
     // The mirror of the context-filter branch above: a speaker filter narrows to
     // audio, because a captured frame carries no voice to match against. The one
     // query yields both the matched recordings and what was said in them.
-    let (speaker_matched, speaker_coverage) = match speaker.as_ref() {
-        Some(speaker) => (
-            Some(speaker_matched_turns_in_range(infra, speaker, &range, limit).await?),
-            Some(speaker_coverage(infra, Some(&range)).await?),
-        ),
-        None => (None, None),
+    let (speaker_page, speaker_matched, speaker_coverage) = match speaker.as_ref() {
+        Some(speaker) => {
+            let (page, matched) =
+                speaker_matched_recordings_in_range(infra, speaker, &range, limit).await?;
+            (
+                Some(page),
+                Some(matched),
+                Some(speaker_coverage(infra, speaker, Some(&range)).await?),
+            )
+        }
+        None => (None, None, None),
     };
     let mut intervals = if speaker.is_some() {
         Vec::new()
@@ -2019,19 +2034,20 @@ async fn broker_timeline(
         )
         .await?
     };
-    for audio in infra
-        .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
-        .await?
-        .into_iter()
-        // Filtered BEFORE the cap, or a page of unmatched segments would hide
-        // every one the speaker was actually heard in.
-        .filter(|audio| {
-            speaker_matched
-                .as_ref()
-                .is_none_or(|matched| matched.contains_key(&audio.id))
-        })
-        .take(limit as usize)
-    {
+    // The speaker page IS the answer: it already applied `list_overlapping_range`'s
+    // overlap predicate, its ordering, AND the cap, so re-reading the window here
+    // would materialize every recording in the grant only to throw all but `limit`
+    // of them away. Retention defaults to NEVER and segments are capped at five
+    // minutes, so "the window" on a months-wide grant is tens of thousands of rows.
+    let recordings = match speaker_page {
+        Some(page) => page,
+        None => {
+            infra
+                .list_audio_segments_overlapping_range(&range.start_at, &range.end_at, None, None)
+                .await?
+        }
+    };
+    for audio in recordings.into_iter().take(limit as usize) {
         intervals.push(BrokerTimelineInterval {
             kind: broker_audio_kind(&audio.source_kind).to_string(),
             started_at: audio.started_at,

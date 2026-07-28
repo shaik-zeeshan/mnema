@@ -1617,6 +1617,40 @@ mod tests {
         assert_eq!(json["turns"][0]["text"], "we ship on Friday");
     }
 
+    /// ONE rule for a nameless voice across both commands, because both are
+    /// published in the same sentence of `.agents/skills/mnema-data/SKILL.md`:
+    /// `speakers` entries carry "`name` (absent for an unnamed voice)" and
+    /// `show-text` speakers carry "an optional `name` (absent for `unknown`)".
+    /// `speakers` omits the key (asserted above); `show-text` must too, or an
+    /// agent testing presence reads the same voice as named on one command and
+    /// unnamed on the other.
+    #[test]
+    fn show_text_omits_the_name_of_an_unknown_speaker() {
+        let data = ShowTextData {
+            id: "a1.signature".to_string(),
+            kind: "audio_microphone".to_string(),
+            text: "we ship on Friday".to_string(),
+            speakers: vec![BrokerSpeaker {
+                name: None,
+                attribution: "unknown".to_string(),
+                confidence: None,
+                handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                    id: "v1.signature".to_string(),
+                    kind: "voice".to_string(),
+                    start_ms: Some(0),
+                    end_ms: Some(30_000),
+                },
+            }],
+            turns: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&data).expect("show-text data should serialize");
+        assert!(
+            json["speakers"][0].get("name").is_none(),
+            "an unknown speaker omits `name`, never reports it as null: {json}"
+        );
+    }
+
     fn search_result(id: &str) -> app_infra::brokered_access::BrokerSearchResult {
         app_infra::brokered_access::BrokerSearchResult {
             opaque_id: id.to_string(),

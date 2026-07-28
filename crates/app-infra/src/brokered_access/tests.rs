@@ -48,10 +48,7 @@ fn write_recording_settings(config_dir: &Path, save_dir: &Path) {
     .expect("settings should write");
 }
 
-fn execute_request(
-    config_dir: &Path,
-    request: BrokeredCaptureRequest,
-) -> BrokeredCaptureResponse {
+fn execute_request(config_dir: &Path, request: BrokeredCaptureRequest) -> BrokeredCaptureResponse {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let access = BrokeredCaptureAccess::from_config_dir(config_dir.to_path_buf());
     runtime
@@ -141,8 +138,12 @@ fn recall_context_caps_relevant_conclusions() {
         })
         .collect();
     let tokens = recall_query_tokens("project alpha");
-    let recalled =
-        select_relevant_conclusions(&conclusions, &tokens, MAX_RECALL_CONTEXT_LIMIT as usize, true);
+    let recalled = select_relevant_conclusions(
+        &conclusions,
+        &tokens,
+        MAX_RECALL_CONTEXT_LIMIT as usize,
+        true,
+    );
     assert_eq!(recalled.len(), MAX_RECALL_CONTEXT_LIMIT as usize);
     assert!(recalled.len() < conclusions.len());
 }
@@ -251,7 +252,11 @@ fn recall_word_boundary_matching_rejects_substrings() {
     ];
     let tokens = recall_query_tokens("cat");
     let recalled = select_relevant_conclusions(&conclusions, &tokens, 10, true);
-    assert_eq!(recalled.len(), 1, "only the whole-word match should survive");
+    assert_eq!(
+        recalled.len(),
+        1,
+        "only the whole-word match should survive"
+    );
     assert_eq!(recalled[0].subject, "pets");
 }
 
@@ -368,7 +373,10 @@ fn recall_context_drops_sensitive_activities() {
     // "therapy" too) — confirm guardrail symmetry: anything matching the
     // sensitive term list is dropped, biasing to over-suppression like
     // conclusions do. So NOTHING relevant survives here.
-    assert!(recalled.is_empty(), "over-suppression by design: {recalled:?}");
+    assert!(
+        recalled.is_empty(),
+        "over-suppression by design: {recalled:?}"
+    );
 }
 
 #[test]
@@ -635,9 +643,10 @@ fn sensitive_activity_never_egresses_via_recall_context() {
         // The sensitive activity must NOT appear in the response, in neither
         // title nor summary (no sensitive text crosses the boundary).
         assert!(
-            response.activities.iter().all(|a| {
-                !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary)
-            }),
+            response
+                .activities
+                .iter()
+                .all(|a| { !crate::user_context::guardrail::is_sensitive(&a.title, &a.summary) }),
             "sensitive activity egressed via recall_context: {:?}",
             response.activities
         );
@@ -1009,7 +1018,7 @@ fn two_frame_one_audio_response() -> SearchCaptureResponse {
             speaker: None,
         },
         residual_query: "target".to_string(),
-        parse_errors: Vec::new()
+        parse_errors: Vec::new(),
     }
 }
 
@@ -1312,7 +1321,6 @@ fn broker_search_audio_result_has_no_context_or_url() {
     assert_eq!(mapped.results[0].context, None);
 }
 
-
 /// The cursor is UNSIGNED, so its `frame_offset` is attacker-chosen. It feeds
 /// `needed_groups = offset + limit + 1` in the search layer's frame drain loop,
 /// which then keeps fetching 5_000 hits at a time — re-grouping the whole
@@ -1585,17 +1593,15 @@ fn get_frame_metadata_snapshots_skips_corrupt_row_instead_of_failing_page() {
             .await
             .expect("infra should initialize");
 
-        let snapshot = |title: &str, url: &str| {
-            capture_metadata::FrameMetadataSnapshot {
-                app_bundle_id: Some("com.google.Chrome".to_string()),
-                app_name: Some("Google Chrome".to_string()),
-                window_title: Some(title.to_string()),
-                window_id: None,
-                browser_url: Some(url.to_string()),
-                display_id: Some(1),
-                metadata_redaction_reason: None,
-                metadata_redaction_source_id: None,
-            }
+        let snapshot = |title: &str, url: &str| capture_metadata::FrameMetadataSnapshot {
+            app_bundle_id: Some("com.google.Chrome".to_string()),
+            app_name: Some("Google Chrome".to_string()),
+            window_title: Some(title.to_string()),
+            window_id: None,
+            browser_url: Some(url.to_string()),
+            display_id: Some(1),
+            metadata_redaction_reason: None,
+            metadata_redaction_source_id: None,
         };
         let good = infra
             .insert_frame(
@@ -2320,14 +2326,17 @@ fn broker_show_text_reports_the_split_audio_kind_per_source() {
                 )
                 .await
                 .expect("job should complete");
-            let opaque_id =
-                encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
+            let opaque_id = encode_signed_opaque_id("audio", segment.id, Some(&grant.id), &secret);
 
-            let response =
-                broker_show_text(&config_dir, &infra, std::slice::from_ref(&grant), &opaque_id)
-                    .await
-                    .expect("show text should run")
-                    .expect("audio should be authorized");
+            let response = broker_show_text(
+                &config_dir,
+                &infra,
+                std::slice::from_ref(&grant),
+                &opaque_id,
+            )
+            .await
+            .expect("show text should run")
+            .expect("audio should be authorized");
 
             // The opaque id's prefix is `audio` for both: the reported kind must
             // come from the segment, or `show-text` contradicts `search`.
@@ -2554,8 +2563,7 @@ fn ask_ai_timeline_reaches_all_retained_history() {
 #[test]
 fn ask_ai_rejects_open_in_mnema_as_non_data_tool() {
     run_async_test(async {
-        let access =
-            BrokeredCaptureAccess::from_config_dir(temp_config_dir("ask-ai-open").clone());
+        let access = BrokeredCaptureAccess::from_config_dir(temp_config_dir("ask-ai-open").clone());
         let identity =
             BrokerClientIdentity::new("PI", BrokerClientIdentitySource::Inferred).unwrap();
 
@@ -2736,8 +2744,7 @@ fn broker_show_text_resolves_equivalent_reuse_frame_text() {
         )
         .expect("grant should create");
         let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-        let opaque_id =
-            encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
+        let opaque_id = encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
 
         let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
             .await
@@ -2814,8 +2821,7 @@ fn broker_show_text_rejects_equivalent_reuse_source_outside_scope() {
         )
         .expect("grant should create");
         let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
-        let opaque_id =
-            encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
+        let opaque_id = encode_signed_opaque_id("frame", second.frame.id, Some(&grant.id), &secret);
 
         let response = broker_show_text(&config_dir, &infra, &[grant], &opaque_id)
             .await
@@ -3027,7 +3033,10 @@ fn broker_search_with_zero_limit_does_not_claim_the_walk_is_exhausted() {
 }
 
 fn speaker_embedding_bytes(values: &[f32]) -> Vec<u8> {
-    values.iter().flat_map(|value| value.to_le_bytes()).collect()
+    values
+        .iter()
+        .flat_map(|value| value.to_le_bytes())
+        .collect()
 }
 
 fn speaker_cluster(
@@ -3346,13 +3355,12 @@ fn broker_show_text_omits_a_recognition_the_user_rejected_for_that_cluster() {
             vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
             vec![speaker_turn("speaker_00", 0, 1_000)],
         );
-        output.clusters[0].suggestion =
-            Some(speaker_analysis::SpeakerRecognitionSuggestion {
-                person_id: person.id,
-                display_name: "Ada".to_string(),
-                confidence: speaker_analysis::RecognitionConfidence::High,
-                score: 0.91,
-            });
+        output.clusters[0].suggestion = Some(speaker_analysis::SpeakerRecognitionSuggestion {
+            person_id: person.id,
+            display_name: "Ada".to_string(),
+            confidence: speaker_analysis::RecognitionConfidence::High,
+            score: 0.91,
+        });
         complete_speaker_analysis(&infra, segment_id, output).await;
         let cluster = infra
             .list_speaker_clusters_for_session("rejected-session")
@@ -3456,7 +3464,10 @@ fn broker_show_text_attributes_turns_to_the_speakers_it_publishes() {
             .map(|turn| {
                 let speaker = response
                     .speakers
-                    .get(turn.speaker.expect("show-text always attributes to a speaker"))
+                    .get(
+                        turn.speaker
+                            .expect("show-text always attributes to a speaker"),
+                    )
                     .expect("every turn index must resolve into speakers[]");
                 (
                     speaker.name.as_deref(),
@@ -3863,9 +3874,13 @@ fn broker_speakers_name_fragment_reaches_a_person_below_the_cap() {
         assign_cluster(&infra, "fragment-session", "speaker_01", anakin.id).await;
 
         let ranked = discover_speakers(&config_dir, &infra, &grant, None, Some(1)).await;
-        assert_eq!(roster_shape(&ranked), vec![(Some("Yoda"), "person", 20_000)]);
+        assert_eq!(
+            roster_shape(&ranked),
+            vec![(Some("Yoda"), "person", 20_000)]
+        );
 
-        let found = discover_speakers(&config_dir, &infra, &grant, Some("skywalker"), Some(1)).await;
+        let found =
+            discover_speakers(&config_dir, &infra, &grant, Some("skywalker"), Some(1)).await;
 
         assert_eq!(
             roster_shape(&found),
@@ -4069,10 +4084,7 @@ fn broker_speakers_reports_the_assigned_and_recognized_split_per_handle() {
             .collect();
         assert_eq!(
             split,
-            vec![
-                (Some("Ada"), "person", 2, 1),
-                (None, "voice", 0, 0),
-            ],
+            vec![(Some("Ada"), "person", 2, 1), (None, "voice", 0, 0),],
             "confirmed and guessed turns collapse onto one person handle"
         );
         assert_eq!(roster.speakers[0].speaking_ms, 3_000);
@@ -4296,7 +4308,12 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
             "2026-05-17T11:00:00Z",
             "2026-05-17T11:05:00Z",
             "standup notes from the recognized recording",
-            vec![recognized_cluster("speaker_00", &[0.0, 1.0], priya.id, "Priya")],
+            vec![recognized_cluster(
+                "speaker_00",
+                &[0.0, 1.0],
+                priya.id,
+                "Priya",
+            )],
             vec![speaker_turn("speaker_00", 0, 1_000)],
         )
         .await;
@@ -4307,7 +4324,12 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
             "2026-05-17T12:00:00Z",
             "2026-05-17T12:05:00Z",
             "standup notes from the overridden recording",
-            vec![recognized_cluster("speaker_00", &[-1.0, 0.0], priya.id, "Priya")],
+            vec![recognized_cluster(
+                "speaker_00",
+                &[-1.0, 0.0],
+                priya.id,
+                "Priya",
+            )],
             vec![speaker_turn("speaker_00", 0, 1_000)],
         )
         .await;
@@ -4323,10 +4345,11 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
         .expect("grant should create");
         let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
 
-        let unfiltered = search_with_speaker(&config_dir, &infra, &[grant.clone()], "standup", None)
-            .await
-            .expect("search should run")
-            .expect("search should be authorized");
+        let unfiltered =
+            search_with_speaker(&config_dir, &infra, &[grant.clone()], "standup", None)
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
         let mut all = vec![assigned, recognized, overridden];
         all.sort_unstable();
         assert_eq!(
@@ -4335,16 +4358,10 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
             "all three recordings must be reachable without the filter"
         );
 
-        let filtered = search_with_speaker(
-            &config_dir,
-            &infra,
-            &[grant],
-            "standup",
-            Some(&handle),
-        )
-        .await
-        .expect("search should run")
-        .expect("search should be authorized");
+        let filtered = search_with_speaker(&config_dir, &infra, &[grant], "standup", Some(&handle))
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
 
         let mut expected = vec![assigned, recognized];
         expected.sort_unstable();
@@ -4403,27 +4420,27 @@ fn broker_search_speaker_filter_by_voice_handle_stays_inside_its_own_session() {
         .expect("grant should create");
         let secret = load_or_create_opaque_secret(&config_dir).expect("secret should load");
         let opaque_id = encode_signed_opaque_id("audio", first, Some(&grant.id), &secret);
-        let handle = broker_show_text(&config_dir, &infra, std::slice::from_ref(&grant), &opaque_id)
-            .await
-            .expect("show text should run")
-            .expect("audio should be authorized")
-            .speakers
-            .first()
-            .expect("the first recording has a voice")
-            .handle
-            .clone();
-        assert_eq!(handle.kind, "voice");
-
-        let filtered = search_with_speaker(
+        let handle = broker_show_text(
             &config_dir,
             &infra,
-            &[grant],
-            "handoff",
-            Some(&handle.id),
+            std::slice::from_ref(&grant),
+            &opaque_id,
         )
         .await
-        .expect("search should run")
-        .expect("search should be authorized");
+        .expect("show text should run")
+        .expect("audio should be authorized")
+        .speakers
+        .first()
+        .expect("the first recording has a voice")
+        .handle
+        .clone();
+        assert_eq!(handle.kind, "voice");
+
+        let filtered =
+            search_with_speaker(&config_dir, &infra, &[grant], "handoff", Some(&handle.id))
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
 
         assert_eq!(
             matched_audio_segment_ids(&filtered),
@@ -4617,6 +4634,85 @@ fn speaker_filter_combined_with_screen_filters_is_refused_on_search_and_timeline
 
         // Not a blanket refusal, and not an empty answer dressed as one: the same
         // speaker filter without the screen filter returns the person's audio.
+        let allowed = search_with_speaker(&config_dir, &infra, &[grant], "planning", Some(&handle))
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
+        assert_eq!(allowed.results.len(), 1);
+    });
+}
+
+/// The same conflict, spelled the other way an agent can spell it: `app:`/`source:`
+/// are QUERY OPERATORS that `search_capture` merges over the caller's refinements,
+/// exactly as `before:`/`date:` do. The broker's conflict check only inspects the
+/// request PARAMETERS, so "app:zoom planning" beside a speaker handle skips the
+/// refusal, matches no frames (a speaker filter drops the frame pass) and no audio
+/// (an app filter drops the audio pass), and comes back as a clean empty page —
+/// which is precisely the "Priya said nothing in Zoom" the refusal exists to stop.
+#[test]
+fn broker_search_query_app_operator_cannot_smuggle_a_screen_filter_past_a_speaker_filter() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-app-operator-escape");
+        let save_dir = temp_save_dir("speaker-app-operator-escape");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "operator-conflict-session",
+            "2026-05-17T10:00:00Z",
+            "2026-05-17T10:05:00Z",
+            "planning the launch",
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn_saying(
+                "speaker_00",
+                0,
+                1_000,
+                "planning the launch",
+            )],
+        )
+        .await;
+        assign_cluster(&infra, "operator-conflict-session", "speaker_00", priya.id).await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        for query in ["app:zoom planning", "source:screen planning"] {
+            let smuggled = search_with_speaker(
+                &config_dir,
+                &infra,
+                std::slice::from_ref(&grant),
+                query,
+                Some(&handle),
+            )
+            .await;
+
+            if let Ok(Ok(response)) = &smuggled {
+                assert!(
+                    !response.results.is_empty(),
+                    "`{query}` beside a speaker filter answered with an empty page, \
+                     which reads as \"she said nothing there\": {response:?}"
+                );
+            }
+            assert!(
+                matches!(&smuggled, Err(AppInfraError::InvalidSearchRequest(message))
+                    if message.contains("speaker cannot be combined")),
+                "the broker must refuse `{query}` beside a speaker filter: {smuggled:?}"
+            );
+        }
+
+        // Still not a blanket refusal: the same speaker filter without a screen
+        // operator answers.
         let allowed = search_with_speaker(&config_dir, &infra, &[grant], "planning", Some(&handle))
             .await
             .expect("search should run")
@@ -4884,10 +4980,11 @@ fn broker_search_filtered_results_carry_only_the_matched_speakers_words() {
         .expect("grant should create");
         let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
 
-        let unfiltered = search_with_speaker(&config_dir, &infra, &[grant.clone()], "roadmap", None)
-            .await
-            .expect("search should run")
-            .expect("search should be authorized");
+        let unfiltered =
+            search_with_speaker(&config_dir, &infra, &[grant.clone()], "roadmap", None)
+                .await
+                .expect("search should run")
+                .expect("search should be authorized");
         assert_eq!(matched_audio_segment_ids(&unfiltered), vec![segment]);
         assert!(
             unfiltered
@@ -5096,8 +5193,7 @@ fn broker_timeline_filtered_intervals_carry_the_speakers_words() {
             "no speaker was named, so no words are attributed: {unfiltered:?}"
         );
 
-        let filtered =
-            broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle)).await;
+        let filtered = broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle)).await;
 
         assert_eq!(filtered.intervals.len(), 1, "{filtered:?}");
         assert_eq!(
@@ -5476,4 +5572,94 @@ async fn broker_timeline_over_may_17(
     .await
     .expect("timeline should run")
     .expect("timeline should be authorized")
+}
+
+/// `speakerCoverage` is the audio the filter had NO WAY to check — that is the
+/// only reading under which "a non-zero count means this answer may be
+/// incomplete" is true. A recording the filter matched and RETURNED is checked
+/// audio, so it can never be part of the blind spot.
+///
+/// A `voice` handle is where the two collide: the handle addresses an unnamed
+/// voice, so every recording it reaches is by definition "a recording holding a
+/// voice nobody has named". Counted, the response admits it may be incomplete
+/// about the very recordings that ARE the answer — and it does so on every single
+/// voice-filtered query, which trains an agent to discount the count entirely.
+#[test]
+fn speaker_coverage_never_counts_a_recording_the_filter_returned() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-coverage-self-report");
+        let save_dir = temp_save_dir("speaker-coverage-self-report");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let heard = seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "heard-session",
+            "2026-05-17T10:00:00Z",
+            "2026-05-17T10:05:00Z",
+            "the voice that was asked about",
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn_saying(
+                "speaker_00",
+                0,
+                9_000,
+                "this is the one",
+            )],
+        )
+        .await;
+        // A DIFFERENT unnamed voice, in its own session: genuinely out of the
+        // filter's reach, and the count must keep reporting it.
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "stranger-session",
+            "2026-05-17T11:00:00Z",
+            "2026-05-17T11:05:00Z",
+            "somebody else entirely",
+            vec![speaker_cluster("speaker_00", &[0.0, 1.0])],
+            vec![speaker_turn_saying("speaker_00", 0, 1_000, "who is this")],
+        )
+        .await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let roster = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+        let loudest = roster
+            .speakers
+            .first()
+            .expect("a voice should be discoverable");
+        assert_eq!(loudest.handle.kind, "voice");
+        let handle = loudest.handle.id.clone();
+
+        let filtered = broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle)).await;
+
+        assert_eq!(
+            filtered
+                .intervals
+                .iter()
+                .map(|interval| interval
+                    .opaque_id
+                    .as_deref()
+                    .and_then(opaque_capture_reference)
+                    .and_then(|reference| reference.audio_segment_id))
+                .collect::<Vec<_>>(),
+            vec![Some(heard)],
+            "the voice handle reaches its own recording: {filtered:?}"
+        );
+        assert_eq!(
+            filtered.speaker_coverage,
+            Some(BrokerSpeakerCoverage {
+                // The stranger's recording only. The returned one was checked.
+                recordings_with_unnamed_voices: 1,
+                recordings_without_speaker_data: 0,
+            }),
+            "a recording this answer already published is not audio the filter \
+             could not check: {filtered:?}"
+        );
+    });
 }

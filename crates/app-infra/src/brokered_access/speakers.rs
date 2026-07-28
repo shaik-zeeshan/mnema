@@ -10,7 +10,7 @@ use super::{
     BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT,
     MAX_SEARCH_LIMIT, OPAQUE_SIGNATURE_HEX_LEN,
 };
-use crate::{AppInfra, Result, SearchDateRangeRefinement, SearchSpeakerRefinement};
+use crate::{AppInfra, AudioSegment, Result, SearchDateRangeRefinement, SearchSpeakerRefinement};
 
 /// A person profile: stable across sessions, channels, and renames.
 pub(super) const SPEAKER_HANDLE_KIND_PERSON: &str = "person";
@@ -48,49 +48,10 @@ pub(super) async fn broker_speakers(
     // History, which needs no time predicate at all.
     let range = scoped_date_range(grants, None, None)?;
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT person.id AS person_id, person.display_name AS display_name, \
-                CASE WHEN person.id IS NULL THEN turn.cluster_id END AS cluster_id, \
-                SUM(turn.end_ms - turn.start_ms) AS speaking_ms, \
-                SUM(CASE WHEN person.id IS NULL THEN 0 \
-                         WHEN cluster.person_id IS NULL THEN 0 ELSE 1 END) AS assigned_turns, \
-                SUM(CASE WHEN person.id IS NULL THEN 0 \
-                         WHEN cluster.person_id IS NULL THEN 1 ELSE 0 END) AS recognized_turns \
-         FROM speaker_turns turn \
-         JOIN recording_speaker_clusters cluster ON cluster.id = turn.cluster_id ",
-    );
-    // Joined only when there is a range to apply. All Retained History has none,
-    // and the join then filters nothing while costing one `audio_segments` rowid
-    // lookup per turn in scope — every turn ever recorded, to answer `1 = 1`.
-    if range.is_some() {
-        query.push("JOIN audio_segments segment ON segment.id = turn.audio_segment_id ");
-    }
-    query.push(
-        "LEFT JOIN person_profiles person \
-                ON person.id = COALESCE(cluster.person_id, cluster.recognition_person_id) \
-         WHERE 1 = 1",
-    );
-    if let Some(range) = range.as_ref() {
-        query.push(" AND segment.started_at <= ");
-        query.push_bind(range.end_at.clone());
-        query.push(" AND segment.ended_at >= ");
-        query.push_bind(range.start_at.clone());
-    }
-    if let Some(name) = name.as_deref() {
-        query.push(" AND LOWER(person.display_name) LIKE LOWER(");
-        query.push_bind(sqlite_contains_like_pattern(name));
-        query.push(") ESCAPE '\\'");
-    }
-    query.push(
-        " GROUP BY person.id, person.display_name, \
-                  CASE WHEN person.id IS NULL THEN turn.cluster_id END \
-          ORDER BY speaking_ms DESC, person.id ASC, cluster_id ASC LIMIT ",
-    );
-    // One past the cap, so truncation is observed rather than guessed: a ranked
-    // page read as the whole roster is an agent reporting "that is everyone".
-    query.push_bind(i64::from(limit) + 1);
-
-    let rows = query.build().fetch_all(infra.read_pool()).await?;
+    let rows = broker_speakers_query(range.as_ref(), name.as_deref(), limit)
+        .build()
+        .fetch_all(infra.read_pool())
+        .await?;
     let truncated = rows.len() > limit as usize;
     let secret = load_or_create_opaque_secret(config_dir)?;
     let grant_id = opaque_issuing_grant(grants).map(|grant| grant.id.as_str());
@@ -119,6 +80,72 @@ pub(super) async fn broker_speakers(
         limit,
         truncated,
     }))
+}
+
+/// The roster read, split out so its QUERY PLAN is testable: which table drives
+/// this join decides whether a ranged grant reads its own window or the whole
+/// `speaker_turns` table.
+fn broker_speakers_query<'a>(
+    range: Option<&SearchDateRangeRefinement>,
+    name: Option<&str>,
+    limit: u32,
+) -> QueryBuilder<'a, Sqlite> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT person.id AS person_id, person.display_name AS display_name, \
+                CASE WHEN person.id IS NULL THEN turn.cluster_id END AS cluster_id, \
+                SUM(turn.end_ms - turn.start_ms) AS speaking_ms, \
+                SUM(CASE WHEN person.id IS NULL THEN 0 \
+                         WHEN cluster.person_id IS NULL THEN 0 ELSE 1 END) AS assigned_turns, \
+                SUM(CASE WHEN person.id IS NULL THEN 0 \
+                         WHEN cluster.person_id IS NULL THEN 1 ELSE 0 END) AS recognized_turns \
+         FROM ",
+    );
+    // Joined only when there is a range to apply. All Retained History has none,
+    // and the join would then filter nothing while costing one `audio_segments`
+    // rowid lookup per turn ever recorded, to answer `1 = 1`.
+    //
+    // `CROSS JOIN` is load-bearing, not decoration: it is SQLite's only way to
+    // pin the join ORDER (there are no hash joins and no stats — nothing in this
+    // app runs `ANALYZE`). Written `FROM speaker_turns JOIN audio_segments` the
+    // planner drives from `speaker_turns` and demotes the grant's window to a
+    // rowid post-filter — a FULL scan of every turn ever recorded to answer a
+    // 30-day roster. Driven from `audio_segments` the window is an index seek on
+    // `audio_segments_time_range_idx`, then `idx_speaker_turns_segment` per
+    // segment in scope. Same rows, same order, work proportional to the grant.
+    if range.is_some() {
+        query.push(
+            "audio_segments segment \
+             CROSS JOIN speaker_turns turn ON turn.audio_segment_id = segment.id ",
+        );
+    } else {
+        query.push("speaker_turns turn ");
+    }
+    query.push(
+        "JOIN recording_speaker_clusters cluster ON cluster.id = turn.cluster_id \
+         LEFT JOIN person_profiles person \
+                ON person.id = COALESCE(cluster.person_id, cluster.recognition_person_id) \
+         WHERE 1 = 1",
+    );
+    if let Some(range) = range {
+        query.push(" AND segment.started_at <= ");
+        query.push_bind(range.end_at.clone());
+        query.push(" AND segment.ended_at >= ");
+        query.push_bind(range.start_at.clone());
+    }
+    if let Some(name) = name {
+        query.push(" AND LOWER(person.display_name) LIKE LOWER(");
+        query.push_bind(sqlite_contains_like_pattern(name));
+        query.push(") ESCAPE '\\'");
+    }
+    query.push(
+        " GROUP BY person.id, person.display_name, \
+                  CASE WHEN person.id IS NULL THEN turn.cluster_id END \
+          ORDER BY speaking_ms DESC, person.id ASC, cluster_id ASC LIMIT ",
+    );
+    // One past the cap, so truncation is observed rather than guessed: a ranked
+    // page read as the whole roster is an agent reporting "that is everyone".
+    query.push_bind(i64::from(limit) + 1);
+    query
 }
 
 /// Resolve a wire speaker handle into the row `search`/`timeline` filter on.
@@ -223,30 +250,38 @@ pub(super) async fn speaker_matched_turns_for_segments(
 /// only that page's turns. Read as a single range query it fetched every turn the
 /// speaker ever spoke inside the grant — on a months-wide grant, thousands of rows
 /// and megabytes of transcript materialized to publish `limit` of them.
-pub(super) async fn speaker_matched_turns_in_range(
+///
+/// Returns the RECORDINGS as well as their turns, because the timeline publishes
+/// both and this read already selected exactly the page it publishes. Handing
+/// back only the turns left the caller re-deriving the same page by scanning
+/// every recording in the grant's window — the read this one exists to avoid.
+pub(super) async fn speaker_matched_recordings_in_range(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
     range: &SearchDateRangeRefinement,
     limit: u32,
-) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
+) -> Result<(Vec<AudioSegment>, HashMap<i64, Vec<BrokerSpeakerTurn>>)> {
     let page = speaker_matched_segments_in_range(infra, speaker, range, limit).await?;
-    speaker_matched_turns_for_segments(infra, speaker, &page).await
+    let ids: Vec<i64> = page.iter().map(|segment| segment.id).collect();
+    let turns = speaker_matched_turns_for_segments(infra, speaker, &ids).await?;
+    Ok((page, turns))
 }
 
 /// The first `limit` recordings in `range` this speaker was heard in.
 ///
-/// Range predicate AND ordering copied from `list_overlapping_range`, whose rows
-/// the timeline filters against this set and then takes the first `limit` of: a
-/// different overlap convention would silently drop a boundary segment, and a
-/// different order would return a different page than the unbounded scan did.
+/// Range predicate AND ordering copied from `list_overlapping_range`, whose page
+/// this replaces on the speaker path: a different overlap convention would
+/// silently drop a boundary segment, and a different order would return a
+/// different page than the unbounded scan did.
 async fn speaker_matched_segments_in_range(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
     range: &SearchDateRangeRefinement,
     limit: u32,
-) -> Result<Vec<i64>> {
-    let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT id FROM audio_segments WHERE started_at <= ");
+) -> Result<Vec<AudioSegment>> {
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT ");
+    query.push(crate::audio_segments::AUDIO_SEGMENT_COLUMNS);
+    query.push(" FROM audio_segments WHERE started_at <= ");
     query.push_bind(range.end_at.clone());
     query.push(" AND ended_at >= ");
     query.push_bind(range.start_at.clone());
@@ -254,14 +289,22 @@ async fn speaker_matched_segments_in_range(
     speaker.push_exists_predicate(&mut query, "audio_segments.id");
     query.push(" ORDER BY started_at ASC, ended_at ASC, id ASC LIMIT ");
     query.push_bind(i64::from(limit));
-    let rows = query.build().fetch_all(infra.read_pool()).await?;
-    Ok(rows.iter().map(|row| row.get("id")).collect())
+    query
+        .build()
+        .fetch_all(infra.read_pool())
+        .await?
+        .into_iter()
+        .map(crate::audio_segments::map_audio_segment)
+        .collect()
 }
 
-/// How much audio in `range` a speaker filter could not check at all. ONE query
+/// How much audio in `range` this speaker filter could not check at all. ONE query
 /// for both counts, and only on a filtered request — the ceiling of this whole
 /// feature is diarization coverage, not the filter, so it is reported with every
 /// answer instead of arriving later as a bug report.
+///
+/// Counts only recordings the filter did NOT reach: a recording it matched is in
+/// the answer, so calling it unchecked contradicts the answer itself.
 ///
 /// `range` is `None` only for an All Retained History grant that asked for no
 /// bounds, where "in range" means every retained recording.
@@ -270,6 +313,7 @@ async fn speaker_matched_segments_in_range(
 // one ever drags, cache the counts per range rather than adding a second query.
 pub(super) async fn speaker_coverage(
     infra: &AppInfra,
+    speaker: &SearchSpeakerRefinement,
     range: Option<&SearchDateRangeRefinement>,
 ) -> Result<BrokerSpeakerCoverage> {
     let mut query = QueryBuilder::<Sqlite>::new(
@@ -280,7 +324,15 @@ pub(super) async fn speaker_coverage(
                        WHERE speaker_turns.audio_segment_id = audio_segments.id \
                          AND recording_speaker_clusters.person_id IS NULL \
                          AND recording_speaker_clusters.recognition_person_id IS NULL \
-                    ) THEN 1 ELSE 0 END) AS unnamed_voices, \
+                    ) AND NOT ",
+    );
+    // A recording the filter MATCHED is checked audio — it is in the answer. Left
+    // in, a `voice` handle counts every recording it reached (the handle addresses
+    // an unnamed voice, so each one holds one) and the response admits it may be
+    // incomplete about the very recordings that ARE the answer.
+    speaker.push_exists_predicate(&mut query, "audio_segments.id");
+    query.push(
+        " THEN 1 ELSE 0 END) AS unnamed_voices, \
                 SUM(CASE WHEN NOT EXISTS ( \
                       SELECT 1 FROM speaker_turns \
                        WHERE speaker_turns.audio_segment_id = audio_segments.id \
@@ -631,18 +683,36 @@ mod tests {
             .await
             .expect("turns should insert");
 
-            let matched = speaker_matched_turns_in_range(
+            let range = SearchDateRangeRefinement {
+                start_at: "2026-01-01T00:00:00Z".to_string(),
+                end_at: "2027-01-01T00:00:00Z".to_string(),
+                origin: None,
+            };
+            // The trap this test exists to catch: the grant's window really does
+            // hold every recording, so a read of the WINDOW is not a read of the
+            // page no matter how few rows the page finally publishes.
+            assert_eq!(
+                infra
+                    .list_audio_segments_overlapping_range(
+                        &range.start_at,
+                        &range.end_at,
+                        None,
+                        None
+                    )
+                    .await
+                    .expect("the window should list")
+                    .len(),
+                SEGMENTS as usize
+            );
+
+            let (page, matched) = speaker_matched_recordings_in_range(
                 &infra,
                 &SearchSpeakerRefinement::Person(priya.id),
-                &SearchDateRangeRefinement {
-                    start_at: "2026-01-01T00:00:00Z".to_string(),
-                    end_at: "2027-01-01T00:00:00Z".to_string(),
-                    origin: None,
-                },
+                &range,
                 LIMIT,
             )
             .await
-            .expect("matched turns should read");
+            .expect("matched recordings should read");
 
             let transcript_bytes: usize = matched
                 .values()
@@ -655,11 +725,90 @@ mod tests {
                  ({transcript_bytes} bytes of transcript) to publish {LIMIT}",
                 matched.len()
             );
+            // The RECORDINGS too, not just their turns: the timeline publishes both,
+            // and a bounded turn read behind an unbounded segment scan is a bounded
+            // output array standing in for bounded work.
+            assert!(
+                page.len() <= LIMIT as usize,
+                "a {LIMIT}-interval page materialized {} of {SEGMENTS} recordings \
+                 to publish {LIMIT}",
+                page.len()
+            );
             // The page it did read is the page the timeline publishes: the first
             // `limit` matches of `list_overlapping_range`'s own ordering.
+            assert_eq!(
+                page.iter().map(|segment| segment.id).collect::<Vec<_>>(),
+                (1..=i64::from(LIMIT)).collect::<Vec<_>>()
+            );
             let mut published: Vec<i64> = matched.keys().copied().collect();
             published.sort_unstable();
             assert_eq!(published, (1..=i64::from(LIMIT)).collect::<Vec<_>>());
+
+            let _ = fs::remove_dir_all(&save_dir);
+        });
+    }
+
+    /// A grant with a window must read ITS OWN WINDOW, not every turn ever
+    /// recorded. SQLite has no hash joins and nothing in this app ever runs
+    /// `ANALYZE`, so the join ORDER the planner picks IS the cost of this query:
+    /// driven from `speaker_turns` the grant's date range is demoted to a rowid
+    /// post-filter over a full table scan, and `RecentDays` — the common grant —
+    /// then pays for months of capture it was never allowed to see.
+    ///
+    /// Asserts the PLAN, not a clock: `SCAN` vs `SEARCH … USING INDEX` is the
+    /// whole difference and it is deterministic.
+    #[test]
+    fn a_ranged_roster_seeks_its_window_instead_of_scanning_every_turn() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+        runtime.block_on(async {
+            let save_dir = std::env::temp_dir().join(format!(
+                "mnema-roster-window-{}-{}",
+                std::process::id(),
+                now_unix_ms()
+            ));
+            let _ = fs::remove_dir_all(&save_dir);
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+
+            let range = SearchDateRangeRefinement {
+                start_at: "2026-01-01T00:00:00Z".to_string(),
+                end_at: "2026-01-31T00:00:00Z".to_string(),
+                origin: None,
+            };
+            let plan: Vec<String> = sqlx::query(&format!(
+                "EXPLAIN QUERY PLAN {}",
+                broker_speakers_query(Some(&range), None, DEFAULT_SEARCH_LIMIT).sql()
+            ))
+            .fetch_all(infra.read_pool())
+            .await
+            .expect("the roster query should plan")
+            .iter()
+            .map(|row| row.get::<String, _>("detail"))
+            .collect();
+
+            assert!(
+                !plan.iter().any(|step| step.starts_with("SCAN turn")),
+                "a ranged roster full-scans `speaker_turns` — every turn ever \
+                 recorded, to answer a windowed grant:\n{}",
+                plan.join("\n")
+            );
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("audio_segments_time_range_idx")),
+                "the grant's window must be an index seek on `audio_segments`, \
+                 not a post-filter:\n{}",
+                plan.join("\n")
+            );
+            assert!(
+                plan.iter()
+                    .any(|step| step.contains("idx_speaker_turns_segment")),
+                "turns must be reached per segment in scope:\n{}",
+                plan.join("\n")
+            );
 
             let _ = fs::remove_dir_all(&save_dir);
         });
@@ -778,10 +927,13 @@ mod tests {
                 end_ms: Some(1_000),
             },
         };
+        // `name` is OMITTED, not `null` — the same rule `BrokerSpeakerSummary`
+        // follows, and the one both published contracts state for BOTH surfaces:
+        // `.agents/skills/mnema-data/SKILL.md` ("an optional `name` (absent for
+        // `unknown`)") describes `show-text`'s `data.speakers[]`, this type.
         assert_eq!(
             serde_json::to_value(&unknown).expect("speaker should serialize"),
             serde_json::json!({
-                "name": null,
                 "attribution": "unknown",
                 "handle": {"id": "sv3.sig", "kind": "voice", "startMs": 0, "endMs": 1000},
             })
