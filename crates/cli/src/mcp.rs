@@ -97,9 +97,42 @@ fn reject_both_url_filters(
     Ok(())
 }
 
+/// `speaker` excludes every screen filter. Clap refuses the pair on the CLI door
+/// before the round trip; without this the MCP door would let it reach the
+/// broker, which rejects it as a plain operation failure — and only after an
+/// approval dialog when no grant is active yet, for a request that can never
+/// succeed. Both published contracts say the door refuses it, so both doors do.
+fn reject_speaker_beside_screen_filters(
+    speaker: &Option<String>,
+    app: &Option<String>,
+    window_title: &Option<String>,
+    url: &Option<String>,
+    url_regex: &Option<String>,
+) -> Result<(), ErrorData> {
+    if speaker.is_some()
+        && (app.is_some() || window_title.is_some() || url.is_some() || url_regex.is_some())
+    {
+        return Err(ErrorData::invalid_params(
+            "speaker cannot be combined with app, window_title, url, or url_regex: a speaker \
+             filter matches recorded audio, and audio carries no app, window title, or url to \
+             match against — ask for the speaker first, then search the screen filters over the \
+             times it returns",
+            None,
+        ));
+    }
+    Ok(())
+}
+
 impl SearchParams {
     fn into_request(self) -> Result<BrokeredCaptureRequest, ErrorData> {
         reject_both_url_filters(&self.url, &self.url_regex)?;
+        reject_speaker_beside_screen_filters(
+            &self.speaker,
+            &self.app,
+            &self.window_title,
+            &self.url,
+            &self.url_regex,
+        )?;
         Ok(BrokeredCaptureRequest::Search(BrokerSearchRequest {
             query: self.query,
             from: self.from,
@@ -118,6 +151,13 @@ impl SearchParams {
 impl TimelineParams {
     fn into_request(self) -> Result<BrokeredCaptureRequest, ErrorData> {
         reject_both_url_filters(&self.url, &self.url_regex)?;
+        reject_speaker_beside_screen_filters(
+            &self.speaker,
+            &self.app,
+            &self.window_title,
+            &self.url,
+            &self.url_regex,
+        )?;
         Ok(BrokeredCaptureRequest::Timeline(BrokerTimelineRequest {
             from: self.from,
             to: self.to,
@@ -315,6 +355,55 @@ mod tests {
         };
         assert_eq!(request.url, None);
         assert_eq!(request.url_regex.as_deref(), Some("(?i)^github\\.com/"));
+    }
+
+    /// Both doors publish the same refusal — SKILL.md ("`--speaker` ... cannot be
+    /// combined with any of them"), `crates/cli/CONTEXT.md` ("the CLI rejects the
+    /// pair at the door rather than returning an empty page"), and these params'
+    /// own schema descriptions ("Cannot be combined with app, window_title, url,
+    /// or url_regex"). Clap enforces it on the CLI door; delegating it to the
+    /// broker here makes the MCP door answer the same call differently — and,
+    /// with no active grant yet, only *after* firing the user's approval dialog
+    /// for a request that can never succeed.
+    #[test]
+    fn mcp_rejects_a_speaker_filter_beside_every_screen_filter() {
+        for (field, value) in [
+            ("app", "Zoom"),
+            ("window_title", "Standup"),
+            ("url", "zoom.us"),
+            ("url_regex", "^zoom\\."),
+        ] {
+            let search: SearchParams = serde_json::from_value(serde_json::json!({
+                "query": "standup",
+                "speaker": "p1.deadbeef",
+                field: value,
+            }))
+            .expect("search params should deserialize");
+            assert_eq!(
+                search
+                    .into_request()
+                    .expect_err(&format!("search speaker + {field} must be rejected"))
+                    .code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "search speaker + {field}"
+            );
+
+            let timeline: TimelineParams = serde_json::from_value(serde_json::json!({
+                "from": "2026-05-22T10:00:00Z",
+                "to": "2026-05-22T11:00:00Z",
+                "speaker": "p1.deadbeef",
+                field: value,
+            }))
+            .expect("timeline params should deserialize");
+            assert_eq!(
+                timeline
+                    .into_request()
+                    .expect_err(&format!("timeline speaker + {field} must be rejected"))
+                    .code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "timeline speaker + {field}"
+            );
+        }
     }
 
     #[test]
