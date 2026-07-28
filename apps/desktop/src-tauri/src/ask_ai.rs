@@ -979,7 +979,10 @@ and `timeline` take as `speaker` — a handle is the ONLY way to address a perso
 did X say\" or \"when was X talking\" call `speakers` FIRST and then ONE filtered `search` or \
 `timeline`, whose results already carry that person's words as `turns` (a `voice` handle is one \
 voice in ONE capture session, not a person — it covers every consecutive recording in that \
-sitting: never merge two of them or present one as an identity); \
+sitting: never merge two of them or present one as an identity); `search` still REQUIRES a \
+`query`, so a question with no keyword in it (\"what did X say yesterday\") is answerable only \
+through `timeline` — never invent a keyword to force it through `search`, because the invented \
+word silently drops every recording that does not contain it; \
 `show_text` returns the full redacted text for one opaque id returned by `search` or `timeline`; \
 `recall_context` returns ONLY the User-Context conclusions (distilled beliefs about the user) \
 and recent activities relevant to the question — redacted, capped, never the whole dossier, and \
@@ -1171,7 +1174,7 @@ fn show_text_tool_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "opaqueId": { "type": "string", "description": "An opaque id from a prior `search` result (required)." }
+            "opaqueId": { "type": "string", "description": "An opaque id from a prior `search` or `timeline` result (required)." }
         },
         "required": ["opaqueId"]
     })
@@ -1203,7 +1206,7 @@ fn reference_captures_tool_schema() -> serde_json::Value {
         "properties": {
             "opaqueIds": {
                 "type": "array",
-                "items": { "type": "string", "description": "An opaque id from a prior search result." },
+                "items": { "type": "string", "description": "An opaque id from a prior `search` or `timeline` result." },
                 "description": "Opaque ids of the captures behind the answer, most-relevant-first."
             }
         },
@@ -1274,7 +1277,7 @@ not everyone — narrow with `name`."
             name: "show_text".to_string(),
             description:
                 "Return the broker-visible derived text for ONE opaque id previously returned by \
-`search`. Use sparingly, only when a snippet is insufficient to answer."
+`search` or `timeline`. Use sparingly, only when a snippet is insufficient to answer."
                     .to_string(),
             parameters_schema: show_text_tool_schema(),
         },
@@ -2613,6 +2616,55 @@ mod tests {
         assert_eq!(value["truncated"], true);
     }
 
+    /// The preamble sends BOTH "what did X say" and "when was X talking" to "ONE
+    /// filtered `search` or `timeline`" — but `search` REQUIRES a `query`, and
+    /// neither of those questions carries a keyword. A model obeying that
+    /// instruction has to invent one, and an invented keyword silently narrows a
+    /// person's words down to the recordings that happen to match it; the answer
+    /// then reports that slice as everything they said, which the new
+    /// `speakerCoverage` rule cannot catch (coverage counts audio the filter could
+    /// not check, not audio the keyword threw away). The CLI door publishes the
+    /// rule in this same branch (`.agents/skills/mnema-data/SKILL.md`: "a question
+    /// with no keyword in it … is answerable only through `timeline --speaker`; do
+    /// not invent a keyword to force it through `search`"); this door offers the
+    /// same filter with no such instruction.
+    #[test]
+    fn preamble_routes_a_keywordless_person_question_to_timeline() {
+        let tools = build_ask_ai_tools(false, Vec::new());
+        let search = tools
+            .iter()
+            .find(|tool| tool.name == "search")
+            .expect("`search` must be offered");
+        // The premise: `search` cannot run without a keyword.
+        assert!(
+            search.parameters_schema["required"]
+                .as_array()
+                .expect("`search` declares its required params")
+                .iter()
+                .any(|value| value.as_str() == Some("query")),
+            "`search` requires `query`: {}",
+            search.parameters_schema
+        );
+        // …and the preamble really does aim a keyword-less question at `search`.
+        let preamble = build_ask_ai_preamble(&[]);
+        assert!(
+            preamble.contains("\"what did X say\""),
+            "the preamble routes \"what did X say\" through the speaker workflow: {preamble}"
+        );
+
+        let lowered = preamble.to_lowercase();
+        assert!(
+            lowered.contains("no keyword") || lowered.contains("without a keyword"),
+            "the preamble must route a question with no keyword in it to `timeline`, the only \
+tool that can answer it: {preamble}"
+        );
+        assert!(
+            lowered.contains("invent a keyword"),
+            "the preamble must forbid inventing a keyword to force a person question through \
+`search`: {preamble}"
+        );
+    }
+
     #[test]
     fn classify_ask_ai_tool_routes_in_precedence_order() {
         // App-control first (Workstream A).
@@ -2697,6 +2749,38 @@ mod tests {
             aligned_frame_id: None,
             turns: Vec::new(),
         }
+    }
+
+    /// Citing a timeline interval is only half the capability: the preamble now
+    /// promises `show_text` takes an id returned by `search` OR `timeline`, and
+    /// `reference_captures` says the same. The `show_text` TOOL description — the
+    /// text rig ships inside the tool schema, which is what the model reads when
+    /// it decides whether an id is eligible — still said `search` only. Two
+    /// contradictory contracts for the same tool, and the narrower one is the one
+    /// attached to the call site, so the model never reads the full recording
+    /// behind a timeline interval.
+    #[test]
+    fn show_text_tool_description_accepts_timeline_ids_like_the_preamble_promises() {
+        let preamble = build_ask_ai_preamble(&[]);
+        assert!(
+            preamble.contains(
+                "`show_text` returns the full redacted text for one opaque id returned by \
+`search` or `timeline`"
+            ),
+            "the preamble promises show_text takes a timeline id: {preamble}"
+        );
+
+        let tools = build_ask_ai_tools(false, Vec::new());
+        let show_text = tools
+            .iter()
+            .find(|tool| tool.name == "show_text")
+            .expect("`show_text` must be offered");
+        assert!(
+            show_text.description.contains("`timeline`"),
+            "`show_text`'s tool description must name `timeline` as an id source too, or the \
+model believes the narrower contract: {}",
+            show_text.description
+        );
     }
 
     #[test]
