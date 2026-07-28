@@ -10,13 +10,12 @@ use capture_types::{
     default_semantic_search_provider, default_speaker_analysis_model_id,
     default_speaker_analysis_settings, default_speaker_analysis_timeout_seconds,
     default_system_audio_activity_sensitivity, default_video_bitrate, AccessSettings,
-    AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector, AudioTranscriptionProvider,
-    AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider, OcrRecognitionMode, OcrSettings,
-    RecordingSettings, RetentionPolicy, ScreenResolution, ScreenResolutionPreset,
-    SemanticSearchSettings, SettingsOwnershipDomain, SpeakerAnalysisSettings,
-    UpdateAccessSettingsRequest,
-    UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
-    UpdateCaptureTimingSettingsRequest,
+    AiRuntimeSettings, AudioSpeechDetectionSettings, AudioSpeechDetector,
+    AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse, OcrProvider,
+    OcrRecognitionMode, OcrSettings, RecordingSettings, RetentionPolicy, ScreenResolution,
+    ScreenResolutionPreset, SemanticSearchSettings, SettingsOwnershipDomain,
+    SpeakerAnalysisSettings, UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
+    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
     UpdateDeveloperSettingsRequest, UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest,
     UpdateMetadataSettingsRequest, UpdateProcessingSettingsRequest, UpdateRecordingSettingsRequest,
     UpdateSemanticSearchSettingsRequest, UpdateStorageSettingsRequest,
@@ -299,11 +298,23 @@ pub(crate) fn validate_privacy_settings(
     } = value;
 
     let mut seen_app_bundle_ids = std::collections::BTreeSet::new();
+    let mut seen_pending_display_names = std::collections::BTreeSet::new();
     let excluded_apps = excluded_apps
         .into_iter()
         .filter_map(|mut app| {
             app.bundle_id = canonicalize_app_bundle_id(&app.bundle_id);
-            if app.bundle_id.is_empty() || !seen_app_bundle_ids.insert(app.bundle_id.clone()) {
+            // A rule for an app that is not installed yet has no bundle id, only
+            // a typed name. It is kept so the first sighting of that app can fill
+            // the id in place; until then `evaluate_privacy` skips it, so it
+            // reaches neither the screen filter nor the system-audio tap.
+            if app.bundle_id.is_empty() {
+                let display_name = canonicalize_app_display_name(&app.display_name);
+                if display_name.is_empty() || !seen_pending_display_names.insert(display_name) {
+                    return None;
+                }
+                return Some(app);
+            }
+            if !seen_app_bundle_ids.insert(app.bundle_id.clone()) {
                 return None;
             }
             Some(app)
@@ -318,6 +329,12 @@ pub(crate) fn validate_privacy_settings(
 
 pub(crate) fn canonicalize_app_bundle_id(bundle_id: &str) -> String {
     bundle_id.trim().to_string()
+}
+
+/// Match key for an app-exclusion rule that has no bundle id yet — the only
+/// identity a not-yet-installed app has.
+pub(crate) fn canonicalize_app_display_name(display_name: &str) -> String {
+    display_name.trim().to_lowercase()
 }
 
 /// The default `model_id` for a known speaker-analysis provider, or `None` if the
@@ -1995,7 +2012,10 @@ mod tests {
             transport: capture_types::McpTransport::Stdio,
             auth_mode: capture_types::McpAuthMode::Bearer,
             command: Some("npx".to_string()),
-            args: vec!["-y".to_string(), "@modelcontextprotocol/server-github".to_string()],
+            args: vec![
+                "-y".to_string(),
+                "@modelcontextprotocol/server-github".to_string(),
+            ],
             env: Vec::new(),
             url: None,
             secret_env_name: Some("GITHUB_TOKEN".to_string()),
@@ -2051,8 +2071,7 @@ mod tests {
 
         assert!(!updated.ai_runtime.enabled);
         assert_eq!(
-            updated.ai_runtime.mcp_servers,
-            base.ai_runtime.mcp_servers,
+            updated.ai_runtime.mcp_servers, base.ai_runtime.mcp_servers,
             "mcp_servers: None must leave the existing connector list unchanged"
         );
     }
@@ -2312,6 +2331,42 @@ mod tests {
         assert_eq!(normalized.excluded_apps[0].bundle_id, "com.apple.Safari");
         assert_eq!(normalized.excluded_apps[1].id, "app-c");
         assert_eq!(normalized.excluded_apps[1].bundle_id, "com.apple.safari");
+    }
+
+    // A rule for an app the user has not installed yet has no bundle id, only a
+    // typed name. Validation runs on every settings write and on load, so
+    // dropping it here would silently delete the rule the user just made.
+    #[test]
+    fn validate_privacy_settings_keeps_a_pending_rule_and_dedupes_it_by_display_name() {
+        let mut privacy = default_privacy_settings();
+        privacy.excluded_apps = vec![
+            capture_metadata::ExcludedAppEntry {
+                id: "app-pending".to_string(),
+                enabled: false,
+                bundle_id: "  ".to_string(),
+                display_name: " Figma ".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-pending-duplicate".to_string(),
+                enabled: true,
+                bundle_id: String::new(),
+                display_name: "figma".to_string(),
+            },
+            capture_metadata::ExcludedAppEntry {
+                id: "app-nameless".to_string(),
+                enabled: true,
+                bundle_id: String::new(),
+                display_name: "   ".to_string(),
+            },
+        ];
+
+        let normalized = validate_privacy_settings(privacy).expect("privacy should validate");
+
+        assert_eq!(normalized.excluded_apps.len(), 1);
+        assert_eq!(normalized.excluded_apps[0].id, "app-pending");
+        assert!(normalized.excluded_apps[0].bundle_id.is_empty());
+        assert_eq!(normalized.excluded_apps[0].display_name, " Figma ");
+        assert!(!normalized.excluded_apps[0].enabled);
     }
 
     #[test]
@@ -2820,7 +2875,10 @@ mod tests {
 
         let validated = validate_semantic_search_settings(settings);
 
-        assert_eq!(validated.provider, semantic_search::SEMANTIC_SEARCH_PROVIDER_ID);
+        assert_eq!(
+            validated.provider,
+            semantic_search::SEMANTIC_SEARCH_PROVIDER_ID
+        );
         assert_eq!(validated.model_id.as_deref(), Some(known_model.as_str()));
         assert!(validated.enabled, "the enabled flag is carried through");
     }

@@ -96,6 +96,52 @@ export function normalizedSearchValue(value: string): string {
   return value.trim().toLowerCase();
 }
 
+export function sameDisplayName(left: string, right: string): boolean {
+  return normalizedSearchValue(left) === normalizedSearchValue(right);
+}
+
+/**
+ * A rule the user typed before the app was installed: a display name and no
+ * bundle id yet. It is stored, but it excludes nothing until it resolves —
+ * `evaluate_privacy` skips an empty bundle id, so a pending rule reaches
+ * neither the screen content filter nor the system-audio tap's exclude list
+ * (both derive from `decision.excluded_bundle_ids`, `native_capture/privacy.rs`).
+ * Render it as pending, never as protecting.
+ */
+export function isPendingExclusion(entry: ExcludedAppEntry): boolean {
+  return !entry.bundleId.trim() && Boolean(entry.displayName.trim());
+}
+
+/**
+ * The bundle ids a rule set actually excludes — the frontend mirror of
+ * `evaluate_privacy`: enabled, resolved, deduped.
+ */
+export function activeExclusionBundleIds(excludedApps: ExcludedAppEntry[]): string[] {
+  return uniqueBundleIds(excludedApps.filter((app) => app.enabled).map((app) => app.bundleId));
+}
+
+/**
+ * First sighting of an installed app whose name matches a pending rule. Each
+ * result is the existing `add_privacy_excluded_app` command; the backend fills
+ * the bundle id into the pending row in place, keeping its id and enabled state.
+ */
+export function pendingExclusionResolutions(
+  excludedApps: ExcludedAppEntry[],
+  candidates: Array<{ bundleId: string; displayName: string }>,
+): Array<Extract<PrivacyRecommendationCommand, { kind: "add" }>> {
+  return excludedApps.filter(isPendingExclusion).flatMap((entry) => {
+    const sighting = candidates.find((candidate) => (
+      Boolean(candidate.bundleId.trim()) && sameDisplayName(candidate.displayName, entry.displayName)
+    ));
+    if (!sighting) return [];
+    return [{
+      kind: "add" as const,
+      command: "add_privacy_excluded_app" as const,
+      args: { bundleId: sighting.bundleId, displayName: entry.displayName },
+    }];
+  });
+}
+
 export function privacyAppCandidateSearchText(candidate: PrivacyAppCandidate): string {
   return normalizedSearchValue(`${candidate.displayName} ${candidate.bundleId}`);
 }
@@ -223,7 +269,15 @@ export function recommendationActionFor(
   app: AppPrivacyRecommendation,
   excludedApps: ExcludedAppEntry[],
 ): PrivacyRecommendationCommand {
-  const existing = excludedApps.find((entry) => sameBundleId(entry.bundleId, app.bundleId));
+  // A rule for an app that is not installed carries no bundle id, and every
+  // blank bundle id equals every other one — so identity for those rows is the
+  // display name. Without this, adding a second not-yet-installed app re-enables
+  // the FIRST pending row and the second app is silently never stored.
+  const existing = excludedApps.find((entry) => (
+    app.bundleId.trim()
+      ? sameBundleId(entry.bundleId, app.bundleId)
+      : isPendingExclusion(entry) && sameDisplayName(entry.displayName, app.displayName)
+  ));
   if (app.exclusionState === "enabled" || existing?.enabled) {
     return { kind: "none", command: null, args: null };
   }

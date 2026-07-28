@@ -11,6 +11,7 @@ import {
   iconPathForBundleId,
   makePrivacyAppCandidate,
   mergeIconResolutions,
+  pendingExclusionResolutions,
   pendingRecommendedApps,
   recommendationActionFor,
   recommendationActionLabel,
@@ -72,8 +73,25 @@ export function createAppPrivacyExclusionController(host: AppPrivacyExclusionHos
       state.candidates = candidates.map((candidate) => (
         makePrivacyAppCandidate(candidate, makeDraftId("app-candidate"))
       ));
+      await resolvePendingExclusions();
     } catch {
       state.candidates = [];
+    }
+  }
+
+  // A rule typed before the app was installed carries only a name. The app-list
+  // refresh (mount + window focus) is its first sighting: fill the bundle id in
+  // place so it starts excluding. Deliberately NOT routed through
+  // `runPrivacySettingsCommand` — this is background housekeeping, so it must not
+  // cancel the user's pending autosaves or raise an error banner. A failure just
+  // retries on the next refresh.
+  async function resolvePendingExclusions(): Promise<void> {
+    for (const { command, args } of pendingExclusionResolutions(host.getExcludedApps(), state.candidates)) {
+      try {
+        host.onSettingsUpdated(await invoke<RecordingSettingsDomainUpdateResponse>(command, args));
+      } catch {
+        return;
+      }
     }
   }
 
