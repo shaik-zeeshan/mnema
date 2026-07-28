@@ -1862,8 +1862,12 @@
     --app-accent-bg: #e6f4ec;
     --app-accent-border: #9bd3b4;
     --app-accent-glow: rgba(31, 122, 74, 0.16);
-    /* Dark ink on the bright accent fill — same as dark mode by design. */
-    --app-accent-contrast: #07120c;
+    /* Light ink, because the light theme's accent is DARK (#1f7a4a), not bright.
+       The dark theme's near-black works there because its accent (#3dffa0) is
+       bright; reusing it here painted #07120c on #1f7a4a at 3.58:1, under the
+       4.5:1 floor. White on #1f7a4a is 5.33:1. Matches the design of record
+       (`docs/onboarding/mockups/revision-2.html`, `.app.light`). */
+    --app-accent-contrast: #ffffff;
 
     --app-warn: #9a5a12;
     --app-warn-strong: #7f4300;
