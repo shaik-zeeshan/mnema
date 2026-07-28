@@ -525,11 +525,7 @@ pub(super) fn decode_speaker_handle(value: &str, secret: &[u8]) -> Option<Decode
         _ => return None,
     };
     let id = i64::from_str_radix(chars.as_str(), 16).ok()?;
-    Some(DecodedSpeakerHandle {
-        kind,
-        id,
-        grant_id,
-    })
+    Some(DecodedSpeakerHandle { kind, id, grant_id })
 }
 
 #[cfg(test)]
@@ -718,7 +714,13 @@ mod tests {
 
         let shape: Vec<_> = speakers
             .iter()
-            .map(|s| (s.name.as_deref(), s.attribution.as_str(), s.confidence.as_deref()))
+            .map(|s| {
+                (
+                    s.name.as_deref(),
+                    s.attribution.as_str(),
+                    s.confidence.as_deref(),
+                )
+            })
             .collect();
         assert_eq!(
             shape,
@@ -731,7 +733,10 @@ mod tests {
             ]
         );
         let json = serde_json::to_string(&speakers).expect("serializes");
-        assert!(!json.contains("Speaker "), "internal labels must not leak: {json}");
+        assert!(
+            !json.contains("Speaker "),
+            "internal labels must not leak: {json}"
+        );
     }
 
     /// The wire shape a second crate re-serializes: `crates/cli/src/main.rs`
