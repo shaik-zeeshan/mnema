@@ -1989,7 +1989,7 @@ async fn broker_timeline(
     // query yields both the matched recordings and what was said in them.
     let (speaker_matched, speaker_coverage) = match speaker.as_ref() {
         Some(speaker) => (
-            Some(speaker_matched_turns_in_range(infra, speaker, &range).await?),
+            Some(speaker_matched_turns_in_range(infra, speaker, &range, limit).await?),
             Some(speaker_coverage(infra, Some(&range)).await?),
         ),
         None => (None, None),

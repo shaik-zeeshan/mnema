@@ -56,9 +56,16 @@ pub(super) async fn broker_speakers(
                 SUM(CASE WHEN person.id IS NULL THEN 0 \
                          WHEN cluster.person_id IS NULL THEN 1 ELSE 0 END) AS recognized_turns \
          FROM speaker_turns turn \
-         JOIN recording_speaker_clusters cluster ON cluster.id = turn.cluster_id \
-         JOIN audio_segments segment ON segment.id = turn.audio_segment_id \
-         LEFT JOIN person_profiles person \
+         JOIN recording_speaker_clusters cluster ON cluster.id = turn.cluster_id ",
+    );
+    // Joined only when there is a range to apply. All Retained History has none,
+    // and the join then filters nothing while costing one `audio_segments` rowid
+    // lookup per turn in scope — every turn ever recorded, to answer `1 = 1`.
+    if range.is_some() {
+        query.push("JOIN audio_segments segment ON segment.id = turn.audio_segment_id ");
+    }
+    query.push(
+        "LEFT JOIN person_profiles person \
                 ON person.id = COALESCE(cluster.person_id, cluster.recognition_person_id) \
          WHERE 1 = 1",
     );
@@ -154,18 +161,30 @@ pub(super) fn broker_speaker_refinement(
 /// Other speakers' turns are deliberately absent: the agent asked what one person
 /// said, and re-expanding the payload with everyone else undoes the narrowing the
 /// filter just did.
-async fn speaker_matched_turns(
+///
+/// `audio_segment_ids` is ALWAYS a page the caller already capped, never a range:
+/// a range would make this read every turn the speaker ever spoke to publish one
+/// page of them.
+pub(super) async fn speaker_matched_turns_for_segments(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
-    restrict: impl FnOnce(&mut QueryBuilder<'_, Sqlite>),
+    audio_segment_ids: &[i64],
 ) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
+    if audio_segment_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT speaker_turns.audio_segment_id AS audio_segment_id, \
                 speaker_turns.start_ms AS start_ms, speaker_turns.end_ms AS end_ms, \
                 speaker_turns.transcript_text AS transcript_text",
     );
     speaker.push_matching_turns_source(&mut query);
-    restrict(&mut query);
+    query.push(" AND speaker_turns.audio_segment_id IN (");
+    let mut separated = query.separated(", ");
+    for id in audio_segment_ids {
+        separated.push_bind(*id);
+    }
+    query.push(")");
     query.push(" ORDER BY speaker_turns.audio_segment_id, speaker_turns.start_ms");
     let rows = query.build().fetch_all(infra.read_pool()).await?;
 
@@ -198,48 +217,44 @@ async fn speaker_matched_turns(
 /// timeline scans `audio_segments` rather than the search index, so it asks the
 /// same question with the same predicate — `search` cannot answer "when was Priya
 /// talking yesterday", which carries no query string at all.
+///
+/// TWO bounded reads, not one unbounded one: the page of recordings first, then
+/// only that page's turns. Read as a single range query it fetched every turn the
+/// speaker ever spoke inside the grant — on a months-wide grant, thousands of rows
+/// and megabytes of transcript materialized to publish `limit` of them.
 pub(super) async fn speaker_matched_turns_in_range(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
     range: &SearchDateRangeRefinement,
+    limit: u32,
 ) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
-    speaker_matched_turns(infra, speaker, |query| {
-        // Range predicate copied from `list_overlapping_range`, whose rows this
-        // set filters: a different overlap convention would silently drop a
-        // boundary segment the timeline had already listed.
-        query.push(
-            " AND speaker_turns.audio_segment_id IN \
-              (SELECT id FROM audio_segments WHERE started_at <= ",
-        );
-        query.push_bind(range.end_at.clone());
-        query.push(" AND ended_at >= ");
-        query.push_bind(range.start_at.clone());
-        query.push(")");
-    })
-    .await
+    let page = speaker_matched_segments_in_range(infra, speaker, range, limit).await?;
+    speaker_matched_turns_for_segments(infra, speaker, &page).await
 }
 
-/// The same turns for an already-decided page of recordings. `search` filters
-/// inside the search index, so by the time the broker sees the page it holds the
-/// segment ids — bounded by the page limit, so this stays ONE bounded query per
-/// request rather than one per result.
-pub(super) async fn speaker_matched_turns_for_segments(
+/// The first `limit` recordings in `range` this speaker was heard in.
+///
+/// Range predicate AND ordering copied from `list_overlapping_range`, whose rows
+/// the timeline filters against this set and then takes the first `limit` of: a
+/// different overlap convention would silently drop a boundary segment, and a
+/// different order would return a different page than the unbounded scan did.
+async fn speaker_matched_segments_in_range(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
-    audio_segment_ids: &[i64],
-) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
-    if audio_segment_ids.is_empty() {
-        return Ok(HashMap::new());
-    }
-    speaker_matched_turns(infra, speaker, |query| {
-        query.push(" AND speaker_turns.audio_segment_id IN (");
-        let mut separated = query.separated(", ");
-        for id in audio_segment_ids {
-            separated.push_bind(*id);
-        }
-        query.push(")");
-    })
-    .await
+    range: &SearchDateRangeRefinement,
+    limit: u32,
+) -> Result<Vec<i64>> {
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT id FROM audio_segments WHERE started_at <= ");
+    query.push_bind(range.end_at.clone());
+    query.push(" AND ended_at >= ");
+    query.push_bind(range.start_at.clone());
+    query.push(" AND ");
+    speaker.push_exists_predicate(&mut query, "audio_segments.id");
+    query.push(" ORDER BY started_at ASC, ended_at ASC, id ASC LIMIT ");
+    query.push_bind(i64::from(limit));
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
+    Ok(rows.iter().map(|row| row.get("id")).collect())
 }
 
 /// How much audio in `range` a speaker filter could not check at all. ONE query
@@ -548,6 +563,109 @@ mod tests {
 
     fn collapse(turns: Vec<SpeakerTurnView>, names: &HashMap<i64, String>) -> Vec<BrokerSpeaker> {
         broker_collapse_speakers(turns, names, Some("grant-1"), SECRET).0
+    }
+
+    /// A timeline page is `limit` recordings, so the read behind it must be
+    /// `limit` recordings of transcript — not every word the speaker ever spoke
+    /// inside the grant. Retention defaults to **never**, so "inside the grant" on
+    /// an All Retained History (or 30-day) timeline is months of continuous
+    /// capture: at the real shape (5-minute segments, tens of thousands of
+    /// `audio_segments` rows) an unbounded read materializes thousands of turns
+    /// and megabytes of transcript to publish twenty of them.
+    ///
+    /// Counts ROWS, not milliseconds: the defect is work proportional to history
+    /// where the page is the bound, and that is deterministic.
+    #[test]
+    fn a_timeline_page_reads_at_most_a_page_of_recordings() {
+        const SEGMENTS: i64 = 400;
+        const LIMIT: u32 = 20;
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+        runtime.block_on(async {
+            let save_dir = std::env::temp_dir().join(format!(
+                "mnema-speaker-page-bound-{}-{}",
+                std::process::id(),
+                now_unix_ms()
+            ));
+            let _ = fs::remove_dir_all(&save_dir);
+            let infra = AppInfra::initialize(&save_dir)
+                .await
+                .expect("infra should initialize");
+            let priya = infra
+                .create_person_profile("Priya", None)
+                .await
+                .expect("person profile should insert");
+
+            // One recording every 5 minutes (the capture cap), every one of them
+            // hers, each carrying a sentence of transcript.
+            sqlx::query(
+                "INSERT INTO audio_segments \
+                    (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
+                 WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < ?1) \
+                 SELECT n, 'microphone', 'sess-1', n, '/tmp/a' || n || '.m4a', \
+                        strftime('%Y-%m-%dT%H:%M:%SZ', julianday('2026-01-01T00:00:00Z') + n * 300.0 / 86400.0), \
+                        strftime('%Y-%m-%dT%H:%M:%SZ', julianday('2026-01-01T00:00:00Z') + (n * 300.0 + 300.0) / 86400.0) \
+                 FROM seq",
+            )
+            .bind(SEGMENTS)
+            .execute(infra.pool())
+            .await
+            .expect("segments should insert");
+            sqlx::query(
+                "INSERT INTO recording_speaker_clusters \
+                    (id, session_id, provider, provider_cluster_id, stable_label, person_id) \
+                 VALUES (1, 'sess-1', 'mock', 'speaker_00', 'Unknown 0', ?1)",
+            )
+            .bind(priya.id)
+            .execute(infra.pool())
+            .await
+            .expect("cluster should insert");
+            sqlx::query(
+                "INSERT INTO speaker_turns \
+                    (audio_segment_id, session_id, cluster_id, start_ms, end_ms, transcript_text) \
+                 SELECT id, 'sess-1', 1, 0, 25000, \
+                        'this is roughly what one diarized turn of speech looks like written out in full' \
+                 FROM audio_segments",
+            )
+            .execute(infra.pool())
+            .await
+            .expect("turns should insert");
+
+            let matched = speaker_matched_turns_in_range(
+                &infra,
+                &SearchSpeakerRefinement::Person(priya.id),
+                &SearchDateRangeRefinement {
+                    start_at: "2026-01-01T00:00:00Z".to_string(),
+                    end_at: "2027-01-01T00:00:00Z".to_string(),
+                    origin: None,
+                },
+                LIMIT,
+            )
+            .await
+            .expect("matched turns should read");
+
+            let transcript_bytes: usize = matched
+                .values()
+                .flatten()
+                .map(|turn| turn.text.len())
+                .sum();
+            assert!(
+                matched.len() <= LIMIT as usize,
+                "a {LIMIT}-interval page read {} of {SEGMENTS} recordings \
+                 ({transcript_bytes} bytes of transcript) to publish {LIMIT}",
+                matched.len()
+            );
+            // The page it did read is the page the timeline publishes: the first
+            // `limit` matches of `list_overlapping_range`'s own ordering.
+            let mut published: Vec<i64> = matched.keys().copied().collect();
+            published.sort_unstable();
+            assert_eq!(published, (1..=i64::from(LIMIT)).collect::<Vec<_>>());
+
+            let _ = fs::remove_dir_all(&save_dir);
+        });
     }
 
     /// The user assigned this cluster to a person we can no longer name (the
