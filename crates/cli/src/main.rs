@@ -256,6 +256,15 @@ struct SearchResultData {
     ended_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<SearchResultContextData>,
+    /// Where inside the recording the match actually falls, in ms from its
+    /// start. A segment runs up to five minutes, so `startedAt`/`endedAt` alone
+    /// place a hit no more precisely than "somewhere in here". Audio results
+    /// only — a frame has no sub-segment span. The broker's `alignedFrameId`
+    /// stays withheld: it is a raw database id, which this surface never emits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_start_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_end_ms: Option<i64>,
     /// What the `--speaker` said in this recording. Present only on a filtered
     /// search, and only that speaker's words. ABSENT IS NEVER SILENCE — see
     /// [`ShowTextData::turns`].
@@ -934,6 +943,8 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
                     window_title: context.window_title,
                     url: context.url,
                 }),
+                span_start_ms: result.span_start_ms,
+                span_end_ms: result.span_end_ms,
                 turns: result.turns,
             })
             .collect(),
@@ -1515,6 +1526,35 @@ mod tests {
         .expect("search data should serialize");
         assert!(unfiltered["results"][0].get("turns").is_none());
         assert!(unfiltered.get("speakerCoverage").is_none());
+    }
+
+    #[test]
+    fn search_mapping_carries_the_sub_segment_span_but_never_the_frame_id() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![
+                app_infra::brokered_access::BrokerSearchResult {
+                    kind: "audio_microphone".to_string(),
+                    span_start_ms: Some(192_000),
+                    span_end_ms: Some(198_000),
+                    aligned_frame_id: Some(4_242),
+                    ..search_result("a1.signature")
+                },
+                search_result("f1.signature"),
+            ],
+            limit: 2,
+            next_cursor: None,
+            speaker_coverage: None,
+        });
+
+        let json = serde_json::to_value(&data).expect("search data should serialize");
+        // Without the span an agent can only say "somewhere in this recording".
+        assert_eq!(json["results"][0]["spanStartMs"], 192_000);
+        assert_eq!(json["results"][0]["spanEndMs"], 198_000);
+        // A raw database id, which this surface never emits.
+        assert!(json["results"][0].get("alignedFrameId").is_none());
+        // A frame result has no sub-segment span; omitted, not null.
+        assert!(json["results"][1].get("spanStartMs").is_none());
+        assert!(json["results"][1].get("spanEndMs").is_none());
     }
 
     #[test]
