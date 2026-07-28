@@ -1155,9 +1155,11 @@ mod tests {
                 span_start_ms: None,
                 span_end_ms: None,
                 aligned_frame_id: None,
+                turns: Vec::new(),
             }],
             limit: 1,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let context = data.results[0]
@@ -1184,8 +1186,10 @@ mod tests {
                     window_title: Some("Roadmap".to_string()),
                     url: Some("linear.app/team/roadmap".to_string()),
                 }),
+                turns: Vec::new(),
             }],
             limit: 1,
+            speaker_coverage: None,
         });
 
         let context = data.intervals[0]
@@ -1207,6 +1211,7 @@ mod tests {
                 timeline_interval("audio_system", None),
             ],
             limit: 3,
+            speaker_coverage: None,
         });
 
         assert_eq!(
@@ -1240,6 +1245,7 @@ mod tests {
             ],
             limit: 3,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         assert_eq!(
@@ -1261,6 +1267,7 @@ mod tests {
             ended_at: Some("2026-05-17T10:00:30Z".to_string()),
             opaque_id: opaque_id.map(str::to_string),
             context: None,
+            turns: Vec::new(),
         }
     }
 
@@ -1280,6 +1287,7 @@ mod tests {
             results: vec![search_result("f1")],
             limit: 1,
             next_cursor: Some("v1:42:1:0".to_string()),
+            speaker_coverage: None,
         });
         assert_eq!(paged.next_cursor.as_deref(), Some("v1:42:1:0"));
 
@@ -1287,6 +1295,7 @@ mod tests {
             results: vec![search_result("f1")],
             limit: 20,
             next_cursor: None,
+            speaker_coverage: None,
         });
         assert!(last.next_cursor.is_none());
 
@@ -1295,6 +1304,7 @@ mod tests {
         let timeline = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
             intervals: Vec::new(),
             limit: 0,
+            speaker_coverage: None,
         });
         assert!(timeline.truncated, "limit 0 can never be complete");
     }
@@ -1310,6 +1320,7 @@ mod tests {
             span_start_ms: None,
             span_end_ms: None,
             aligned_frame_id: None,
+            turns: Vec::new(),
         }
     }
 

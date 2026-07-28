@@ -873,7 +873,7 @@ fn signed_opaque_capture_reference_requires_broker_signature() {
 fn broker_search_page_mixes_kinds_by_rank_before_applying_limit() {
     let secret = b"test broker opaque secret with enough bytes";
     let response = two_frame_one_audio_response();
-    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret, HashMap::new());
 
     assert_eq!(
         mapped
@@ -1023,7 +1023,7 @@ fn search_page_is_ranked_across_both_anchor_kinds_not_alternated() {
     response.frames[0].rank = -9.0;
     response.frames[1].rank = -8.0;
     response.audio[0].rank = -3.0;
-    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret, HashMap::new());
     assert_eq!(
         mapped
             .results
@@ -1040,7 +1040,7 @@ fn search_page_is_ranked_across_both_anchor_kinds_not_alternated() {
     response.frames[0].rank = -2.0;
     response.frames[1].rank = -1.0;
     response.audio[0].rank = -9.0;
-    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 2, None, Some("grant-1"), secret, HashMap::new());
     assert_eq!(
         mapped
             .results
@@ -1064,6 +1064,7 @@ fn zero_limit_search_page_hands_back_no_cursor_to_loop_on() {
         None,
         Some("grant-1"),
         &[7u8; 32],
+        HashMap::new(),
     );
     assert!(mapped.results.is_empty(), "limit 0 emits no rows");
     assert_eq!(
@@ -1085,6 +1086,7 @@ fn search_cursor_resumes_from_consumed_anchors_and_stops_at_the_end() {
         }),
         Some("grant-1"),
         secret,
+        HashMap::new(),
     );
     assert_eq!(
         exhausted.next_cursor, None,
@@ -1107,6 +1109,7 @@ fn search_cursor_resumes_from_consumed_anchors_and_stops_at_the_end() {
         }),
         Some("grant-1"),
         secret,
+        HashMap::new(),
     );
     assert_eq!(paged.next_cursor.as_deref(), Some("v1:9:5:2"));
 }
@@ -1209,7 +1212,7 @@ fn broker_search_frame_url_is_guarded_preserving_commit_sha() {
         Some("https://github.com/owner/repo/commit/9fceb02d8f1c3b4a5e6d7c8b9a0f1e2d3c4b5a6f"),
     );
 
-    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
 
     let context = mapped.results[0]
         .context
@@ -1229,7 +1232,7 @@ fn broker_search_frame_url_redacts_armed_token_segment() {
         Some("https://site.com/reset-password/AbC9xK2mP4qR7sT0"),
     );
 
-    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
 
     let url = mapped.results[0]
         .context
@@ -1251,7 +1254,7 @@ fn broker_search_frame_without_browser_url_has_context_but_no_url() {
     let secret = b"test broker opaque secret with enough bytes";
     let response = frame_search_response_with_browser_url(11, None);
 
-    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
 
     let context = mapped.results[0]
         .context
@@ -1303,7 +1306,7 @@ fn broker_search_audio_result_has_no_context_or_url() {
         parse_errors: Vec::new(),
     };
 
-    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+    let mapped = map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
 
     assert_eq!(mapped.results[0].kind, "audio_microphone");
     assert_eq!(mapped.results[0].context, None);
@@ -2252,6 +2255,7 @@ fn broker_timeline_omits_opaque_id_when_no_representative_frame() {
         ended_at: Some("2026-05-17T10:00:30Z".to_string()),
         opaque_id: None,
         context: None,
+        turns: Vec::new(),
     };
     let json = serde_json::to_string(&interval).expect("interval should serialize");
     assert!(
@@ -2342,7 +2346,8 @@ fn broker_search_splits_audio_kind_by_segment_source() {
         let mut response = two_frame_one_audio_response();
         response.frames.clear();
         response.audio[0].audio_segment.source_kind = source_kind;
-        let mapped = map_search_response(response, 5, None, Some("grant-1"), secret);
+        let mapped =
+            map_search_response(response, 5, None, Some("grant-1"), secret, HashMap::new());
         assert_eq!(mapped.results[0].kind, expected);
     }
 }
@@ -3451,7 +3456,7 @@ fn broker_show_text_attributes_turns_to_the_speakers_it_publishes() {
             .map(|turn| {
                 let speaker = response
                     .speakers
-                    .get(turn.speaker)
+                    .get(turn.speaker.expect("show-text always attributes to a speaker"))
                     .expect("every turn index must resolve into speakers[]");
                 (
                     speaker.name.as_deref(),
@@ -4826,4 +4831,395 @@ fn broker_speaker_filter_rejects_a_handle_this_broker_did_not_sign_or_no_longer_
         .expect("timeline should run");
         assert_eq!(timeline_rejection, Err(invalid_speaker_handle_error()));
     });
+}
+
+/// The filter already joined `speaker_turns` to decide this recording is hers, so
+/// the words it matched ride back on the result instead of costing a `show-text`
+/// per hit. ONLY her turns: the same recording holds another voice, and shipping
+/// that back would undo the narrowing the agent asked for. An UNFILTERED search
+/// over the same rows adds no join and returns no turns at all — that is what
+/// keeps this from being an N+1 on every ordinary search.
+#[test]
+fn broker_search_filtered_results_carry_only_the_matched_speakers_words() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-inline-turns");
+        let save_dir = temp_save_dir("speaker-inline-turns");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        let segment = seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "inline-session",
+            "2026-05-17T10:00:00Z",
+            "2026-05-17T10:05:00Z",
+            "roadmap review, two voices",
+            vec![
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                speaker_cluster("speaker_01", &[0.0, 1.0]),
+            ],
+            vec![
+                speaker_turn_saying("speaker_00", 0, 1_000, "ship the roadmap on Friday"),
+                speaker_turn_saying("speaker_01", 1_000, 2_000, "I disagree entirely"),
+                speaker_turn_saying("speaker_00", 2_000, 3_000, "noted, Friday it is"),
+            ],
+        )
+        .await;
+        assign_cluster(&infra, "inline-session", "speaker_00", priya.id).await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        let unfiltered = search_with_speaker(&config_dir, &infra, &[grant.clone()], "roadmap", None)
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
+        assert_eq!(matched_audio_segment_ids(&unfiltered), vec![segment]);
+        assert!(
+            unfiltered
+                .results
+                .iter()
+                .all(|result| result.turns.is_empty()),
+            "an unfiltered search asked about nobody, so it returns nobody's turns: {unfiltered:?}"
+        );
+
+        let filtered = search_with_speaker(&config_dir, &infra, &[grant], "roadmap", Some(&handle))
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
+
+        assert_eq!(matched_audio_segment_ids(&filtered), vec![segment]);
+        let result = &filtered.results[0];
+        assert_eq!(
+            result
+                .turns
+                .iter()
+                .map(|turn| (turn.start_ms, turn.end_ms, turn.text.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 1_000, "ship the roadmap on Friday"),
+                (2_000, 3_000, "noted, Friday it is"),
+            ],
+            "her words, in order, and nobody else's"
+        );
+        let json = serde_json::to_value(result).expect("result should serialize");
+        assert!(
+            json["turns"][0].get("speaker").is_none(),
+            "one speaker per filtered result means no speakers[] to index into: {json}"
+        );
+    });
+}
+
+/// "When was Priya talking yesterday" takes the same filter, so it gets the same
+/// words: the timeline is the only surface that can answer it, and an interval
+/// that says WHEN but not WHAT sends the agent back for a `show-text` the filter
+/// already paid for.
+#[test]
+fn broker_timeline_filtered_intervals_carry_the_speakers_words() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("timeline-inline-turns");
+        let save_dir = temp_save_dir("timeline-inline-turns");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "timeline-words-session",
+            "2026-05-17T10:00:00Z",
+            "2026-05-17T10:05:00Z",
+            "standup, two voices",
+            vec![
+                speaker_cluster("speaker_00", &[1.0, 0.0]),
+                speaker_cluster("speaker_01", &[0.0, 1.0]),
+            ],
+            vec![
+                speaker_turn_saying("speaker_00", 0, 1_000, "blocked on the migration"),
+                speaker_turn_saying("speaker_01", 1_000, 2_000, "I can take that"),
+            ],
+        )
+        .await;
+        assign_cluster(&infra, "timeline-words-session", "speaker_00", priya.id).await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        let unfiltered = broker_timeline_over_may_17(&config_dir, &infra, &grant, None).await;
+        assert!(
+            unfiltered
+                .intervals
+                .iter()
+                .all(|interval| interval.turns.is_empty()),
+            "no speaker was named, so no words are attributed: {unfiltered:?}"
+        );
+
+        let filtered =
+            broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle)).await;
+
+        assert_eq!(filtered.intervals.len(), 1, "{filtered:?}");
+        assert_eq!(
+            filtered.intervals[0]
+                .turns
+                .iter()
+                .map(|turn| turn.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["blocked on the migration"],
+            "the interval carries her words and only hers"
+        );
+    });
+}
+
+/// The two ways a speaker filter goes blind, counted apart because the remedies
+/// are different: an unnamed voice is a labeling job the user can do, a recording
+/// with no speaker data at all is a detection failure they cannot. One number for
+/// both would tell an agent something is missing and nothing about what to do —
+/// so each must also move on its own.
+#[test]
+fn broker_speaker_filter_counts_unnamed_voices_and_missing_speaker_data_apart() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-coverage-counts");
+        let save_dir = temp_save_dir("speaker-coverage-counts");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "hers-session",
+            "2026-05-17T10:00:00Z",
+            "2026-05-17T10:05:00Z",
+            "her recording",
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn_saying("speaker_00", 0, 1_000, "all done")],
+        )
+        .await;
+        assign_cluster(&infra, "hers-session", "speaker_00", priya.id).await;
+        // A voice nobody has named. It COULD be her; nothing here can tell.
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "unnamed-session",
+            "2026-05-17T11:00:00Z",
+            "2026-05-17T11:05:00Z",
+            "somebody talking",
+            vec![speaker_cluster("speaker_00", &[0.0, 1.0])],
+            vec![speaker_turn_saying("speaker_00", 0, 1_000, "who is this")],
+        )
+        .await;
+        // Transcribed fine, diarized into nothing — invisible to any filter.
+        seed_undiarized_audio_segment(
+            &save_dir,
+            &infra,
+            "no-speaker-data-session",
+            "2026-05-17T12:00:00Z",
+            "2026-05-17T12:05:00Z",
+        )
+        .await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        let unfiltered = broker_timeline_over_may_17(&config_dir, &infra, &grant, None).await;
+        assert_eq!(
+            unfiltered.speaker_coverage, None,
+            "nothing was filtered, so there is no blind spot to report — absent, not zeroed"
+        );
+
+        let filtered =
+            broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle.clone())).await;
+
+        assert_eq!(
+            filtered.speaker_coverage,
+            Some(BrokerSpeakerCoverage {
+                recordings_with_unnamed_voices: 1,
+                recordings_without_speaker_data: 1,
+            }),
+            "one of each, counted apart"
+        );
+
+        // A second recording speaker detection produced nothing for moves ONE
+        // count. A count that tracked the other would be reporting a total.
+        seed_undiarized_audio_segment(
+            &save_dir,
+            &infra,
+            "second-no-speaker-data-session",
+            "2026-05-17T13:00:00Z",
+            "2026-05-17T13:05:00Z",
+        )
+        .await;
+
+        let again = broker_timeline_over_may_17(&config_dir, &infra, &grant, Some(handle)).await;
+
+        assert_eq!(
+            again.speaker_coverage,
+            Some(BrokerSpeakerCoverage {
+                recordings_with_unnamed_voices: 1,
+                recordings_without_speaker_data: 2,
+            }),
+            "the detection-failure count moved on its own"
+        );
+    });
+}
+
+/// The workflow this whole slice exists for, end to end: `speakers` to learn the
+/// handle, ONE filtered `search` to read what she said. No `show-text` anywhere —
+/// if the words did not ride back on the results, answering this would cost one
+/// more request per recording.
+#[test]
+fn speakers_then_one_filtered_search_answers_what_a_person_said() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-two-call-workflow");
+        let save_dir = temp_save_dir("speaker-two-call-workflow");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        for (session, started_at, ended_at, said) in [
+            (
+                "monday-session",
+                "2026-05-17T10:00:00Z",
+                "2026-05-17T10:05:00Z",
+                "the launch slips to June",
+            ),
+            (
+                "tuesday-session",
+                "2026-05-17T14:00:00Z",
+                "2026-05-17T14:05:00Z",
+                "we should tell the launch list",
+            ),
+        ] {
+            seed_searchable_diarized_segment(
+                &save_dir,
+                &infra,
+                session,
+                started_at,
+                ended_at,
+                "launch chatter",
+                vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+                vec![speaker_turn_saying("speaker_00", 0, 1_000, said)],
+            )
+            .await;
+            assign_cluster(&infra, session, "speaker_00", priya.id).await;
+        }
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+
+        // Call 1: who is there, and how do I address her.
+        let roster = discover_speakers(&config_dir, &infra, &grant, Some("Priya"), None).await;
+        let handle = roster
+            .speakers
+            .first()
+            .expect("Priya should be discoverable")
+            .handle
+            .id
+            .clone();
+
+        // Call 2: what did she say. Nothing else.
+        let filtered = search_with_speaker(&config_dir, &infra, &[grant], "launch", Some(&handle))
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
+
+        let mut said: Vec<&str> = filtered
+            .results
+            .iter()
+            .flat_map(|result| result.turns.iter().map(|turn| turn.text.as_str()))
+            .collect();
+        said.sort_unstable();
+        assert_eq!(
+            said,
+            vec!["the launch slips to June", "we should tell the launch list"],
+            "both recordings answer with her words, with no show-text in between"
+        );
+        assert!(
+            filtered.speaker_coverage.is_some(),
+            "a filtered answer always says how much audio it could not check"
+        );
+    });
+}
+
+/// An audio segment the transcriber handled and speaker detection did not — the
+/// shape the `recordingsWithoutSpeakerData` count exists for.
+async fn seed_undiarized_audio_segment(
+    save_dir: &Path,
+    infra: &AppInfra,
+    session_id: &str,
+    started_at: &str,
+    ended_at: &str,
+) {
+    infra
+        .upsert_audio_segment(&NewAudioSegment::new(
+            AudioSegmentSourceKind::Microphone,
+            session_id,
+            1,
+            save_dir
+                .join(format!("{session_id}.m4a"))
+                .display()
+                .to_string(),
+            started_at,
+            ended_at,
+        ))
+        .await
+        .expect("segment should insert");
+}
+
+async fn broker_timeline_over_may_17(
+    config_dir: &Path,
+    infra: &AppInfra,
+    grant: &BrokerGrant,
+    speaker: Option<String>,
+) -> BrokerTimelineResponse {
+    broker_timeline(
+        config_dir,
+        infra,
+        std::slice::from_ref(grant),
+        BrokerTimelineRequest {
+            from: "2026-05-17T00:00:00Z".to_string(),
+            to: "2026-05-18T00:00:00Z".to_string(),
+            limit: Some(10),
+            app: None,
+            window_title: None,
+            url: None,
+            url_regex: None,
+            speaker,
+        },
+    )
+    .await
+    .expect("timeline should run")
+    .expect("timeline should be authorized")
 }

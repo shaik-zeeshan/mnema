@@ -6,9 +6,9 @@ use super::{
     broker_optional_filter, invalid_speaker_handle_error, load_or_create_opaque_secret,
     opaque_issuing_grant, opaque_signature, opaque_signature_matches, outside_scope_error,
     scoped_date_range, sqlite_contains_like_pattern, BrokerErrorResponse, BrokerGrant,
-    BrokerSpeaker, BrokerSpeakerHandle, BrokerSpeakerSummary, BrokerSpeakerTurn,
-    BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT,
-    OPAQUE_SIGNATURE_HEX_LEN,
+    BrokerSpeaker, BrokerSpeakerCoverage, BrokerSpeakerHandle, BrokerSpeakerSummary,
+    BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerSpeakersResponse, DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT, OPAQUE_SIGNATURE_HEX_LEN,
 };
 use crate::{AppInfra, Result, SearchDateRangeRefinement, SearchSpeakerRefinement};
 
@@ -146,27 +146,149 @@ pub(super) fn broker_speaker_refinement(
     })))
 }
 
-/// The audio segments in `range` this speaker was heard in. The timeline scans
-/// `audio_segments` rather than the search index, so it asks the same question
-/// with the same predicate — `search` cannot answer "when was Priya talking
-/// yesterday", which carries no query string at all.
-pub(super) async fn speaker_matched_audio_segment_ids(
+/// This speaker's own turns, keyed by the recording they were heard in — the
+/// matched set AND the words in one read. A recording with a matched turn is
+/// always a key here, even when that turn carries no text, so the key set is the
+/// filter and the values are only what can be quoted.
+///
+/// Other speakers' turns are deliberately absent: the agent asked what one person
+/// said, and re-expanding the payload with everyone else undoes the narrowing the
+/// filter just did.
+async fn speaker_matched_turns(
+    infra: &AppInfra,
+    speaker: &SearchSpeakerRefinement,
+    restrict: impl FnOnce(&mut QueryBuilder<'_, Sqlite>),
+) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT speaker_turns.audio_segment_id AS audio_segment_id, \
+                speaker_turns.start_ms AS start_ms, speaker_turns.end_ms AS end_ms, \
+                speaker_turns.transcript_text AS transcript_text",
+    );
+    speaker.push_matching_turns_source(&mut query);
+    restrict(&mut query);
+    query.push(" ORDER BY speaker_turns.audio_segment_id, speaker_turns.start_ms");
+    let rows = query.build().fetch_all(infra.read_pool()).await?;
+
+    let mut matched: HashMap<i64, Vec<BrokerSpeakerTurn>> = HashMap::new();
+    for row in rows {
+        let turns = matched.entry(row.get("audio_segment_id")).or_default();
+        // Same rule as `broker_collapse_speakers`: a turn with no words is not
+        // published as empty text, which an agent reads as "said nothing". The
+        // recording still counts as matched — the voice WAS heard there.
+        if let Some(text) = row
+            .get::<Option<String>, _>("transcript_text")
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+        {
+            turns.push(BrokerSpeakerTurn {
+                // One speaker per filtered response — the one that was asked for
+                // — so there is no `speakers[]` to index into here.
+                speaker: None,
+                start_ms: row.get::<i64, _>("start_ms").max(0) as u64,
+                end_ms: row.get::<i64, _>("end_ms").max(0) as u64,
+                text: text.to_string(),
+            });
+        }
+    }
+    Ok(matched)
+}
+
+/// The recordings in `range` this speaker was heard in, with their words. The
+/// timeline scans `audio_segments` rather than the search index, so it asks the
+/// same question with the same predicate — `search` cannot answer "when was Priya
+/// talking yesterday", which carries no query string at all.
+pub(super) async fn speaker_matched_turns_in_range(
     infra: &AppInfra,
     speaker: &SearchSpeakerRefinement,
     range: &SearchDateRangeRefinement,
-) -> Result<std::collections::HashSet<i64>> {
-    // Range predicate copied from `list_overlapping_range`, whose rows this set
-    // filters: a different overlap convention would silently drop a boundary
-    // segment the timeline had already listed.
-    let mut query =
-        QueryBuilder::<Sqlite>::new("SELECT id FROM audio_segments WHERE started_at <= ");
-    query.push_bind(range.end_at.clone());
-    query.push(" AND ended_at >= ");
-    query.push_bind(range.start_at.clone());
-    query.push(" AND ");
-    speaker.push_exists_predicate(&mut query, "audio_segments.id");
-    let rows = query.build().fetch_all(infra.read_pool()).await?;
-    Ok(rows.iter().map(|row| row.get::<i64, _>("id")).collect())
+) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
+    speaker_matched_turns(infra, speaker, |query| {
+        // Range predicate copied from `list_overlapping_range`, whose rows this
+        // set filters: a different overlap convention would silently drop a
+        // boundary segment the timeline had already listed.
+        query.push(
+            " AND speaker_turns.audio_segment_id IN \
+              (SELECT id FROM audio_segments WHERE started_at <= ",
+        );
+        query.push_bind(range.end_at.clone());
+        query.push(" AND ended_at >= ");
+        query.push_bind(range.start_at.clone());
+        query.push(")");
+    })
+    .await
+}
+
+/// The same turns for an already-decided page of recordings. `search` filters
+/// inside the search index, so by the time the broker sees the page it holds the
+/// segment ids — bounded by the page limit, so this stays ONE bounded query per
+/// request rather than one per result.
+pub(super) async fn speaker_matched_turns_for_segments(
+    infra: &AppInfra,
+    speaker: &SearchSpeakerRefinement,
+    audio_segment_ids: &[i64],
+) -> Result<HashMap<i64, Vec<BrokerSpeakerTurn>>> {
+    if audio_segment_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    speaker_matched_turns(infra, speaker, |query| {
+        query.push(" AND speaker_turns.audio_segment_id IN (");
+        let mut separated = query.separated(", ");
+        for id in audio_segment_ids {
+            separated.push_bind(*id);
+        }
+        query.push(")");
+    })
+    .await
+}
+
+/// How much audio in `range` a speaker filter could not check at all. ONE query
+/// for both counts, and only on a filtered request — the ceiling of this whole
+/// feature is diarization coverage, not the filter, so it is reported with every
+/// answer instead of arriving later as a bug report.
+///
+/// `range` is `None` only for an All Retained History grant that asked for no
+/// bounds, where "in range" means every retained recording.
+// ponytail: a full `audio_segments` sweep with two indexed EXISTS probes per row.
+// Bounded by the grant's own range on every path but All Retained History; if that
+// one ever drags, cache the counts per range rather than adding a second query.
+pub(super) async fn speaker_coverage(
+    infra: &AppInfra,
+    range: Option<&SearchDateRangeRefinement>,
+) -> Result<BrokerSpeakerCoverage> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT SUM(CASE WHEN EXISTS ( \
+                      SELECT 1 FROM speaker_turns \
+                        JOIN recording_speaker_clusters \
+                          ON recording_speaker_clusters.id = speaker_turns.cluster_id \
+                       WHERE speaker_turns.audio_segment_id = audio_segments.id \
+                         AND recording_speaker_clusters.person_id IS NULL \
+                         AND recording_speaker_clusters.recognition_person_id IS NULL \
+                    ) THEN 1 ELSE 0 END) AS unnamed_voices, \
+                SUM(CASE WHEN NOT EXISTS ( \
+                      SELECT 1 FROM speaker_turns \
+                       WHERE speaker_turns.audio_segment_id = audio_segments.id \
+                    ) THEN 1 ELSE 0 END) AS no_speaker_data \
+         FROM audio_segments WHERE 1 = 1",
+    );
+    if let Some(range) = range {
+        query.push(" AND started_at <= ");
+        query.push_bind(range.end_at.clone());
+        query.push(" AND ended_at >= ");
+        query.push_bind(range.start_at.clone());
+    }
+    let row = query.build().fetch_one(infra.read_pool()).await?;
+    Ok(BrokerSpeakerCoverage {
+        // `SUM` over no rows is NULL, not 0.
+        recordings_with_unnamed_voices: row
+            .get::<Option<i64>, _>("unnamed_voices")
+            .unwrap_or(0)
+            .max(0) as u32,
+        recordings_without_speaker_data: row
+            .get::<Option<i64>, _>("no_speaker_data")
+            .unwrap_or(0)
+            .max(0) as u32,
+    })
 }
 
 pub(super) async fn broker_speakers_for_audio(
@@ -296,7 +418,7 @@ pub(super) fn broker_collapse_speakers(
             .filter(|text| !text.is_empty())
         {
             attributed.push(BrokerSpeakerTurn {
-                speaker: index,
+                speaker: Some(index),
                 start_ms: turn.start_ms,
                 end_ms: turn.end_ms,
                 text: text.to_string(),

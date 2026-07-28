@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -33,8 +34,8 @@ pub use url_guard::{
 mod speakers;
 
 use speakers::{
-    broker_speaker_refinement, broker_speakers, broker_speakers_for_audio,
-    speaker_matched_audio_segment_ids,
+    broker_speaker_refinement, broker_speakers, broker_speakers_for_audio, speaker_coverage,
+    speaker_matched_turns_for_segments, speaker_matched_turns_in_range,
 };
 
 const BROKER_GRANTS_FILE_NAME: &str = "broker-grants.json";
@@ -267,6 +268,16 @@ pub struct BrokerSearchResult {
     pub span_end_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aligned_frame_id: Option<i64>,
+    /// What the FILTERED speaker said in this recording, in order — present only
+    /// when the request carried a `speaker` handle, and holding only that
+    /// speaker's turns, never everyone's. Reading them needs no `show-text`.
+    ///
+    /// Absent on an unfiltered result (nothing was asked about a person) and on a
+    /// filtered result whose matched turns carry no transcribed words. As on
+    /// `show-text`, absence NEVER means silence — `snippet`, and `show-text`
+    /// behind `opaqueId`, still hold the recording's words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -299,6 +310,33 @@ pub struct BrokerSearchResponse {
     /// query and filters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
+    /// Only on a request that carried a `speaker` handle: how much audio the
+    /// filter could not check. See [`BrokerSpeakerCoverage`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_coverage: Option<BrokerSpeakerCoverage>,
+}
+
+/// What a speaker filter could NOT see, counted in recordings over the same time
+/// range the request covered. A speaker filter can only match through detected
+/// speaker turns, so these two counts are the honest edge of every filtered
+/// answer: they are the audio the filter had no way to check, and a non-zero
+/// count means "this answer may be incomplete", never "they said nothing more".
+///
+/// TWO counts, because the remedies differ — collapsing them into one total
+/// destroys the only thing that makes them actionable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BrokerSpeakerCoverage {
+    /// Recordings holding at least one voice nobody has named — no assignment and
+    /// no recognition guess. Any of them could be the person that was asked
+    /// about, and nothing here can tell. FIXABLE BY THE USER: labeling that voice
+    /// in Mnema brings the recording into reach of this filter.
+    pub recordings_with_unnamed_voices: u32,
+    /// Recordings where speaker detection produced NOTHING at all — no turns, no
+    /// voices, nobody to match. Common, and NOT the same as silence: the
+    /// transcript is usually still there to read with `show-text`. NOT fixable by
+    /// the user; no speaker filter can ever reach this audio.
+    pub recordings_without_speaker_data: u32,
 }
 
 /// Decoded [`BrokerSearchRequest::cursor`]: the snapshot the walk is pinned to
@@ -423,8 +461,11 @@ pub struct BrokerSpeakerHandle {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerSpeakerTurn {
-    /// Index into the response's `speakers[]`.
-    pub speaker: usize,
+    /// Index into the response's `speakers[]`. ABSENT on a `search`/`timeline`
+    /// result filtered by speaker: every turn there belongs to the one speaker the
+    /// request named, so there is no `speakers[]` list and nothing to index into.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker: Option<usize>,
     /// Milliseconds from the start of the recording.
     pub start_ms: u64,
     pub end_ms: u64,
@@ -494,6 +535,10 @@ pub struct BrokerTimelineInterval {
     pub opaque_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<BrokerSearchResultContext>,
+    /// What the FILTERED speaker said in this recording — same rules as
+    /// [`BrokerSearchResult::turns`], including that absence is never silence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -501,6 +546,10 @@ pub struct BrokerTimelineInterval {
 pub struct BrokerTimelineResponse {
     pub intervals: Vec<BrokerTimelineInterval>,
     pub limit: u32,
+    /// Only on a request that carried a `speaker` handle: how much audio the
+    /// filter could not check. See [`BrokerSpeakerCoverage`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_coverage: Option<BrokerSpeakerCoverage>,
 }
 
 /// Who was heard **inside the grant's own time scope** — never the global people
@@ -1614,8 +1663,9 @@ async fn broker_search(
         request.window_title,
         request.url,
         request.url_regex,
-        speaker,
+        speaker.clone(),
     )?;
+    let range = refinements.date_range.clone();
     let response = infra
         .search_capture(SearchCaptureRequest {
             query: request.query,
@@ -1631,13 +1681,34 @@ async fn broker_search(
         })
         .await?;
     let opaque_secret = load_or_create_opaque_secret(config_dir)?;
-    Ok(Ok(map_search_response(
+    // Only a FILTERED request pays for turns: the filter already decided whose
+    // audio this is, so returning the matched rows saves an agent a `show-text`
+    // per result. Unfiltered, there is no speaker to return words for and no
+    // second query runs — which is why this is not an N+1 by another name.
+    let (matched_turns, speaker_coverage) = match speaker.as_ref() {
+        Some(speaker) => {
+            let audio_segment_ids: Vec<i64> = response
+                .audio
+                .iter()
+                .map(|result| result.audio_segment.id)
+                .collect();
+            (
+                speaker_matched_turns_for_segments(infra, speaker, &audio_segment_ids).await?,
+                Some(speaker_coverage(infra, range.as_ref()).await?),
+            )
+        }
+        None => (HashMap::new(), None),
+    };
+    let mut mapped = map_search_response(
         response,
         limit,
         cursor,
         opaque_issuing_grant(grants).map(|grant| grant.id.as_str()),
         &opaque_secret,
-    )))
+        matched_turns,
+    );
+    mapped.speaker_coverage = speaker_coverage;
+    Ok(Ok(mapped))
 }
 
 async fn broker_show_text(
@@ -1885,13 +1956,22 @@ async fn broker_timeline(
             &opaque_secret,
         )
         .await?;
-        return Ok(Ok(BrokerTimelineResponse { intervals, limit }));
+        return Ok(Ok(BrokerTimelineResponse {
+            intervals,
+            limit,
+            // Unreachable with a speaker filter: that combination errors above.
+            speaker_coverage: None,
+        }));
     }
     // The mirror of the context-filter branch above: a speaker filter narrows to
-    // audio, because a captured frame carries no voice to match against.
-    let speaker_matched = match speaker.as_ref() {
-        Some(speaker) => Some(speaker_matched_audio_segment_ids(infra, speaker, &range).await?),
-        None => None,
+    // audio, because a captured frame carries no voice to match against. The one
+    // query yields both the matched recordings and what was said in them.
+    let (speaker_matched, speaker_coverage) = match speaker.as_ref() {
+        Some(speaker) => (
+            Some(speaker_matched_turns_in_range(infra, speaker, &range).await?),
+            Some(speaker_coverage(infra, Some(&range)).await?),
+        ),
+        None => (None, None),
     };
     let mut intervals = if speaker.is_some() {
         Vec::new()
@@ -1918,7 +1998,7 @@ async fn broker_timeline(
         .filter(|audio| {
             speaker_matched
                 .as_ref()
-                .is_none_or(|matched| matched.contains(&audio.id))
+                .is_none_or(|matched| matched.contains_key(&audio.id))
         })
         .take(limit as usize)
     {
@@ -1933,6 +2013,11 @@ async fn broker_timeline(
                 &opaque_secret,
             )),
             context: None,
+            turns: speaker_matched
+                .as_ref()
+                .and_then(|matched| matched.get(&audio.id))
+                .cloned()
+                .unwrap_or_default(),
         });
     }
     intervals.sort_by(|left, right| {
@@ -1942,7 +2027,11 @@ async fn broker_timeline(
             .then_with(|| right.kind.cmp(&left.kind))
     });
     intervals.truncate(limit as usize);
-    Ok(Ok(BrokerTimelineResponse { intervals, limit }))
+    Ok(Ok(BrokerTimelineResponse {
+        intervals,
+        limit,
+        speaker_coverage,
+    }))
 }
 
 async fn broker_frame_timeline(
@@ -2027,6 +2116,9 @@ async fn broker_frame_timeline(
                 encode_signed_opaque_id("frame", frame_id, opaque_grant_id, opaque_secret)
             }),
             context: broker_search_result_context(app_bundle_id, app_name, window_title, url),
+            // A frame interval carries no voice — a speaker filter never reaches
+            // this branch (it errors on the context filters that do).
+            turns: Vec::new(),
         });
     }
     Ok(intervals)
@@ -2549,12 +2641,16 @@ fn open_external_url(url: &str) -> Result<()> {
     }
 }
 
+/// `matched_turns` is what the FILTERED speaker said, keyed by audio segment —
+/// empty for every unfiltered request, which is what keeps `turns` off results
+/// nobody asked about a person for.
 fn map_search_response(
     response: SearchCaptureResponse,
     limit: u32,
     cursor: Option<BrokerSearchCursor>,
     grant_id: Option<&str>,
     opaque_secret: &[u8],
+    mut matched_turns: HashMap<i64, Vec<BrokerSpeakerTurn>>,
 ) -> BrokerSearchResponse {
     // ONE ranked page across both anchor kinds. Search returns frames and audio
     // as two separately-ranked lists; merging them by score (rather than
@@ -2608,6 +2704,8 @@ fn map_search_response(
                 span_start_ms: None,
                 span_end_ms: None,
                 aligned_frame_id: None,
+                // A frame carries no voice, so a speaker filter never returns one.
+                turns: Vec::new(),
             });
             frames_taken += 1;
         } else {
@@ -2629,6 +2727,9 @@ fn map_search_response(
                 span_start_ms: Some(audio_result.span_start_ms as i64),
                 span_end_ms: Some(audio_result.span_end_ms as i64),
                 aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
+                turns: matched_turns
+                    .remove(&audio_result.audio_segment.id)
+                    .unwrap_or_default(),
             });
             audio_taken += 1;
         }
@@ -2664,6 +2765,9 @@ fn map_search_response(
         results,
         limit,
         next_cursor,
+        // Filled in by `broker_search`, which knows whether a speaker was filtered
+        // on; unfiltered responses carry no counts at all rather than zeroes.
+        speaker_coverage: None,
     }
 }
 

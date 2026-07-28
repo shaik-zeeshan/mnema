@@ -88,16 +88,29 @@ impl SearchSpeakerRefinement {
         query: &mut QueryBuilder<'_, Sqlite>,
         audio_segment_id_sql: &str,
     ) {
-        query.push("EXISTS (SELECT 1 FROM speaker_turns ");
+        query.push("EXISTS (SELECT 1");
+        self.push_matching_turns_source(query);
+        query.push(" AND speaker_turns.audio_segment_id = ");
+        query.push(audio_segment_id_sql);
+        query.push(")");
+    }
+
+    /// ` FROM speaker_turns [JOIN …] WHERE <this speaker>` — the half of
+    /// [`Self::push_exists_predicate`] that decides WHOSE turns these are, split out
+    /// so a caller can select the matched turn ROWS instead of merely testing for
+    /// them. Shared on purpose: two copies of this precedence would eventually
+    /// disagree, and a filter that returns one person's recordings with another
+    /// person's words in them is worse than no words at all. Callers append their
+    /// own ` AND …` restriction.
+    pub(crate) fn push_matching_turns_source(&self, query: &mut QueryBuilder<'_, Sqlite>) {
+        query.push(" FROM speaker_turns ");
         match self {
             Self::Person(person_id) => {
                 query.push(
                     "JOIN recording_speaker_clusters \
                             ON recording_speaker_clusters.id = speaker_turns.cluster_id \
-                     WHERE speaker_turns.audio_segment_id = ",
+                     WHERE (recording_speaker_clusters.person_id = ",
                 );
-                query.push(audio_segment_id_sql);
-                query.push(" AND (recording_speaker_clusters.person_id = ");
                 query.push_bind(*person_id);
                 query.push(
                     " OR (recording_speaker_clusters.person_id IS NULL \
@@ -107,13 +120,10 @@ impl SearchSpeakerRefinement {
                 query.push("))");
             }
             Self::Cluster(cluster_id) => {
-                query.push("WHERE speaker_turns.audio_segment_id = ");
-                query.push(audio_segment_id_sql);
-                query.push(" AND speaker_turns.cluster_id = ");
+                query.push("WHERE speaker_turns.cluster_id = ");
                 query.push_bind(*cluster_id);
             }
         }
-        query.push(")");
     }
 }
 

@@ -2524,6 +2524,7 @@ mod tests {
             span_start_ms: None,
             span_end_ms: None,
             aligned_frame_id: None,
+            turns: Vec::new(),
         }
     }
 
@@ -2928,6 +2929,7 @@ mod tests {
             results: vec![sample_result()],
             limit: 8,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
@@ -2948,6 +2950,7 @@ mod tests {
             results: vec![sample_result()],
             limit: 8,
             next_cursor: Some("v1:42:1:0".to_string()),
+            speaker_coverage: None,
         });
         let value = broker_response_to_tool_value(response).expect("search serializes");
         assert_eq!(value["nextCursor"], serde_json::json!("v1:42:1:0"));
@@ -2975,6 +2978,7 @@ mod tests {
             results: vec![audio],
             limit: 8,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
