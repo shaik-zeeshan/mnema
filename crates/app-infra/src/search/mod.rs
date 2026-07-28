@@ -79,6 +79,23 @@ use retrieval::{
     fetch_search_document_high_water_mark,
 };
 
+/// Does this raw query string carry a date operator (`date:`, `after:`, `before:`)?
+///
+/// A parsed date operator OVERWRITES the caller-supplied `date_range`
+/// (last-write-wins, [`merge_parsed_field_operators`]). That is the intended
+/// desktop behaviour — the operator the user typed beats the picker they left
+/// set — but it makes the caller's range a DEFAULT, never a ceiling. Any caller
+/// whose range is a security boundary rather than a preference (the broker's
+/// grant window) must ask this first and refuse, because it cannot otherwise
+/// stop the query string from re-opening the window it just closed.
+///
+/// Asked through the real parser, not a substring scan: quoting and escaping
+/// decide whether `before:` is an operator or ordinary text, and a second
+/// opinion on that would disagree with the one that actually builds the range.
+pub(crate) fn query_carries_date_operator(raw: &str) -> bool {
+    parse_search_query(raw).date_range.is_some()
+}
+
 #[derive(Clone)]
 pub struct SearchStore {
     db: CaptureDb,

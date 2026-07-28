@@ -4987,6 +4987,135 @@ fn broker_timeline_filtered_intervals_carry_the_speakers_words() {
     });
 }
 
+/// A grant is a TIME BOX and the broker is the only thing holding it: `from`/`to`
+/// are clamped to the grant, but the QUERY STRING carries its own date operators
+/// (`before:`/`after:`/`date:`) which `search_capture` merges over the caller's
+/// date range last-write-wins. The broker must not let an agent's own query
+/// re-open the window its grant closed — and with the speaker filter the payload
+/// is no longer a 12-token snippet but that person's VERBATIM turns, so a widened
+/// window hands back the whole transcript of audio this grant never covered.
+#[test]
+fn broker_search_query_date_operator_cannot_widen_the_grant_window() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-date-operator-escape");
+        let save_dir = temp_save_dir("speaker-date-operator-escape");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        let now = now_unix_ms();
+        seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "in-scope-session",
+            &format_unix_ms(now.saturating_sub(60 * 60 * 1000)),
+            &format_unix_ms(now),
+            "roadmap standup today",
+            vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+            vec![speaker_turn_saying(
+                "speaker_00",
+                0,
+                1_000,
+                "roadmap standup today",
+            )],
+        )
+        .await;
+        assign_cluster(&infra, "in-scope-session", "speaker_00", priya.id).await;
+        // Years outside a one-day grant.
+        let out_of_scope = seed_searchable_diarized_segment(
+            &save_dir,
+            &infra,
+            "old-session",
+            "2020-03-04T10:00:00Z",
+            "2020-03-04T10:05:00Z",
+            "roadmap acquisition price is forty million",
+            vec![speaker_cluster("speaker_01", &[0.0, 1.0])],
+            vec![speaker_turn_saying(
+                "speaker_01",
+                0,
+                1_000,
+                "roadmap acquisition price is forty million",
+            )],
+        )
+        .await;
+        assign_cluster(&infra, "old-session", "speaker_01", priya.id).await;
+
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        let escaped = search_with_speaker(
+            &config_dir,
+            &infra,
+            &[grant],
+            "before:2021-01-01 roadmap",
+            Some(&handle),
+        )
+        .await;
+
+        let leaked = match &escaped {
+            Ok(Ok(response)) => serde_json::to_string(response).expect("response serializes"),
+            _ => String::new(),
+        };
+        assert!(
+            !leaked.contains("forty million"),
+            "a query date operator must not hand a one-day grant the verbatim words \
+             of a 2020 recording: {escaped:?}"
+        );
+        if let Ok(Ok(response)) = &escaped {
+            assert!(
+                !matched_audio_segment_ids(response).contains(&out_of_scope),
+                "a query date operator must not widen the grant's time box: {response:?}"
+            );
+        }
+        // Refused out loud, never answered as an in-scope page: a silent narrowing
+        // would read to the agent as "she said nothing before 2021".
+        assert!(
+            matches!(&escaped, Err(AppInfraError::InvalidSearchRequest(_))),
+            "the broker must refuse a query that carries its own date window: {escaped:?}"
+        );
+
+        // The same window, asked the way the broker publishes it, still works and
+        // is still clamped to the grant.
+        let clamped = broker_search(
+            &config_dir,
+            &infra,
+            &[create_grant(
+                &config_dir,
+                "Local agent",
+                1,
+                BrokerGrantScope::RecentDays { days: 1 },
+            )
+            .expect("grant should create")],
+            BrokerSearchRequest {
+                query: "roadmap".to_string(),
+                from: Some("2020-01-01T00:00:00Z".to_string()),
+                to: Some("2021-01-01T00:00:00Z".to_string()),
+                limit: Some(20),
+                app: None,
+                window_title: None,
+                url: None,
+                url_regex: None,
+                speaker: None,
+                cursor: None,
+            },
+        )
+        .await;
+        assert!(
+            !format!("{clamped:?}").contains("forty million"),
+            "`from`/`to` stay clamped to the grant: {clamped:?}"
+        );
+    });
+}
+
 /// The two ways a speaker filter goes blind, counted apart because the remedies
 /// are different: an unnamed voice is a labeling job the user can do, a recording
 /// with no speaker data at all is a detection failure they cannot. One number for

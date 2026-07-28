@@ -1365,6 +1365,24 @@ fn broker_search_refinements(
     })
 }
 
+/// A grant is a TIME BOX, and `from`/`to` are clamped to it — but the QUERY
+/// STRING carries its own `date:`/`after:`/`before:` operators, and those
+/// OVERWRITE the range the broker derived from the grant (last-write-wins inside
+/// `search_capture`). `before:2021-01-01` on a one-day grant therefore reads
+/// audio from years the caller was never granted, snippet and — since the speaker
+/// filter — that person's verbatim turns with it.
+///
+/// Refused rather than clamped: the broker publishes `from`/`to` for exactly this
+/// question and clamps THOSE to the grant, so nothing is lost but the unclamped
+/// spelling of it.
+fn query_date_operator_conflict() -> AppInfraError {
+    AppInfraError::InvalidSearchRequest(
+        "date:, after:, and before: are not accepted inside a brokered query: the grant sets \
+         the time window — use the `from` and `to` parameters, which are clamped to it"
+            .to_string(),
+    )
+}
+
 /// "What did Priya say in Zoom" reads answerable and is not: the app, window
 /// title, and url live on captured FRAMES, the voice lives on AUDIO, and no row
 /// joins the two. Answering it with an empty page would be reported to the user as
@@ -1627,6 +1645,9 @@ async fn broker_search(
 ) -> Result<std::result::Result<BrokerSearchResponse, BrokerErrorResponse>> {
     if grants.is_empty() {
         return Ok(Err(BrokerErrorResponse::authorization_required()));
+    }
+    if crate::search::query_carries_date_operator(&request.query) {
+        return Err(query_date_operator_conflict());
     }
     // Clamped from BELOW too: a zero-sized page can never consume an anchor, so
     // the cursor would advance by nothing and `more` would be false — the walk
