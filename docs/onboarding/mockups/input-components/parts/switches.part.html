@@ -1,0 +1,650 @@
+<section class="cmp" id="cmp-switches">
+  <header class="cmp-head">
+    <span class="ob-m">Component</span>
+    <h2 class="ob-disp sm">Feature switches</h2>
+    <p class="ob-body">
+      Eight on/off rows that decide what Mnema records, what it understands, and what it
+      downloads before it can do either — drawn as the dependency graph they actually are,
+      so a cascade is visible <i>before</i> you commit it.
+    </p>
+  </header>
+
+  <div class="cmp-stage">
+    <div class="sw-frame">
+      <div class="sw-head">
+        <span class="ob-m">What Mnema will do</span>
+        <span class="ob-fine">Indented rows need the row above them.</span>
+      </div>
+      <div id="switches-body"></div>
+      <p class="sw-live ob-fine" id="switches-live" aria-live="polite"></p>
+    </div>
+  </div>
+
+  <div class="cmp-notes">
+    <span class="ob-m">Drive it</span>
+    <div class="sw-drivers">
+      <button class="ob-btn sm" type="button" data-drive="cut-mic">Flip Microphone off → 2 children go</button>
+      <button class="ob-btn sm" type="button" data-drive="cut-tr">Flip Transcription off → 1 child goes</button>
+      <button class="ob-btn sm" type="button" data-drive="grant">Grant Microphone permission</button>
+      <button class="ob-btn sm" type="button" data-drive="ai-on">Turn AI on with nothing behind it</button>
+      <button class="ob-btn sm" type="button" data-drive="peek">Preview the Microphone cut (no commit)</button>
+      <button class="ob-btn sm ghost" type="button" data-drive="reset">Reset</button>
+    </div>
+    <p class="ob-fine sw-fine">
+      Hover or keyboard-focus any row to see what flipping it would take with it: the branch
+      goes dashed, every row that would move is tagged <b>goes off</b>, and the same sentence
+      is announced on <code>aria-live</code>. Space/Enter commits. Nothing here is hardcoded —
+      the rows are rendered from the dependency model below.
+    </p>
+
+    <span class="ob-m">Implementation notes</span>
+    <ul class="ob-fine sw-notes">
+      <li>
+        <b>Replaces</b> the eight <code>&lt;Switch&gt;</code> rows in
+        <code>apps/desktop/src/routes/onboarding/screens/ChangeSettingsScreen.svelte</code>:
+        Screen capture <code>:236</code>, Microphone <code>:252</code>, System audio
+        <code>:271</code>, Read on-screen text <code>:295</code>, Transcription
+        <code>:330</code>, Who's speaking <code>:347</code>, Semantic Search
+        <code>:380</code>, AI features <code>:448</code>. The rows keep living in three
+        different <code>&lt;section class="sec"&gt;</code> blocks today (Capture sources /
+        Processing / AI features) — this component pulls the eight into one ordered chain so
+        a parent and its children are never in different scroll positions. Model pickers and
+        provider Segmenteds stay where they are; only the on/off column moves.
+      </li>
+      <li>
+        <b>Deletes</b> the two pre-emptive hint strings that are the only cascade copy in the
+        app today: "Turning this off also turns off transcription and who's speaking"
+        (<code>:249</code>) and "Needs transcription on." (<code>:343</code>). Both said the
+        rule; neither said what just happened. The chain shows the rule structurally and the
+        preview says what will happen, per flip.
+      </li>
+      <li>
+        <b>Needs two new exports</b> from
+        <code>apps/desktop/src/lib/onboarding/feature-rules.ts</code>. It exports
+        <code>normalizeFeatures</code>, <code>featureLockReason</code>,
+        <code>systemAudioNeedsRequest</code>, <code>featureToggleDisabled</code> and
+        <code>applyToggle</code> — and <b>not</b> <code>cascadeOf</code> or
+        <code>preview</code>. Both are pure additions over the existing
+        <code>applyToggle</code> (which already returns a new state and never mutates its
+        input): <code>cascadeOf(before, after, touched)</code> diffs the two states, and
+        <code>preview(state, id)</code> is <code>applyToggle</code> plus that diff. No
+        backend change, no Tauri command, no new state in the flow. The one flow change:
+        <code>onboarding-flow.svelte.ts:153 toggleFeature</code> must keep the pre-toggle
+        state so the undo chip has a snapshot.
+      </li>
+      <li>
+        <b>One new lock case.</b> Today <code>featureLockReason</code> only locks
+        <code>microphone</code> (permission) and <code>speakerSeparation</code> (needs
+        transcription). Turning Transcription <i>on</i> with no audio source is currently a
+        silent no-op — <code>applyToggle</code> sets it true and
+        <code>normalizeFeatures</code> immediately unsets it, so the switch bounces back with
+        no explanation. This component adds the missing case
+        (<code>"Needs an audio source on"</code>), which is one line and makes the
+        already-true rule speakable.
+      </li>
+      <li>
+        <b>Locked rows show the fix, not a dead switch.</b> Microphone renders
+        <i>Grant Microphone</i> where its switch was — the lock is a permission the user
+        cannot resolve from any visible row. Rows locked by a <i>parent</i> (Who's speaking,
+        Transcription) render a ghost button that flips that parent instead. Note the honest
+        asymmetry: turning Transcription back on does <b>not</b> restore Who's speaking
+        (<code>applyToggle</code> only re-forces both from an audio source, by design — the
+        user may have turned it off deliberately). The undo chip is the remedy for that, not
+        a second cascade.
+      </li>
+      <li>
+        <b>System audio never locks</b> (ADR 0052 — the grant is unqueryable, so a lock would
+        be a gate that can never open). If <code>systemAudioNeedsRequest</code> is true the
+        row carries the annotation, never a disabled control.
+      </li>
+      <li>
+        <b>Numbers.</b> Download bytes are the manifest figures
+        (Whisper base 147,951,465 · speakrs 419,482,724 · nomic ≈548,000,000 — any total
+        containing nomic reads "about"). Disk decomposes the one measured anchor: 270 MB/day
+        at a snapshot every 3 s, with both audio sources on and no embeddings. Semantic
+        Search sits <i>on top</i> of the 270 (one 768-dim f32 vector per frame-document),
+        because the measured machine shipped none. The <code>console.assert</code> block
+        reproduces the 270 exactly and fails loudly if any constant drifts.
+      </li>
+      <li>
+        <b>a11y.</b> Each switch is a real <code>role="switch"</code> button with
+        <code>aria-checked</code>, keyboard-operable with Space/Enter, and described by its
+        own row copy via <code>aria-describedby</code> — a screen reader is told which parent
+        a row hangs off in words, never by the indentation. The preview and every commit are
+        announced in the polite live region, so a cascade is never a purely visual event.
+        Focus rings are <code>var(--app-ring)</code>; <code>prefers-reduced-motion</code>
+        drops the transitions and keeps every state change.
+      </li>
+    </ul>
+  </div>
+
+  <style>
+    #cmp-switches .sw-frame { max-width: 100%; }
+    #cmp-switches .sw-head {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 16px; margin-bottom: 10px; flex-wrap: wrap;
+    }
+
+    /* ── rows ───────────────────────────────────────────────────────────── */
+    #cmp-switches .sw-row {
+      display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 12px; align-items: center; padding: 7px 0;
+    }
+    #cmp-switches .sw-t { font-size: var(--text-md); color: var(--app-text-strong); }
+    #cmp-switches .sw-d {
+      font-size: var(--text-sm); line-height: 1.5; color: var(--app-text-subtle);
+      margin-top: 2px; max-width: 46ch;
+    }
+    #cmp-switches .sw-row.dead .sw-t { color: var(--app-text-muted); }
+    #cmp-switches .sw-row.dead .sw-d { color: var(--app-text-faint); }
+    /* The lock reason is the one line on a dead row that must stay readable. */
+    #cmp-switches .sw-d.warn, #cmp-switches .sw-row.dead .sw-d.warn { color: var(--app-warn); }
+    #cmp-switches .sw-cost {
+      font-size: var(--text-sm); color: var(--app-text-muted);
+      font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap;
+    }
+    #cmp-switches .sw-cost .zero { color: var(--app-text-faint); }
+    #cmp-switches .sw-cost .dl { color: var(--app-info); }
+
+    /* ── the spine ──────────────────────────────────────────────────────── */
+    #cmp-switches .kid { padding-left: 26px; position: relative; }
+    #cmp-switches .kid::before {
+      content: ""; position: absolute; left: 9px; top: 0; bottom: 50%; width: 10px;
+      border-left: 1px solid var(--app-border-strong);
+      border-bottom: 1px solid var(--app-border-strong);
+      border-bottom-left-radius: 6px;
+      transition: border-color .2s ease;
+    }
+    #cmp-switches .kid.k2 { padding-left: 48px; }
+    #cmp-switches .kid.k2::before { left: 31px; }
+    #cmp-switches .kid.cut::before,
+    #cmp-switches .kid.warnpeek::before {
+      border-left-style: dashed; border-bottom-style: dashed;
+    }
+    #cmp-switches .kid.cut::before { border-color: var(--app-text-faint); }
+    #cmp-switches .kid.warnpeek::before { border-color: var(--app-warn); }
+    /* The audio pair is a BRACKET in the gutter, not an indent: indentation means
+       "child of the row above", and these two are roots that share one child. Two
+       relationships, two visual axes, so neither has to be decoded. */
+    #cmp-switches .grp {
+      border-left: 1px solid var(--app-border-strong);
+      margin: 2px 0 2px -12px; padding-left: 11px;
+      transition: border-color .2s ease;
+    }
+    #cmp-switches .grp.cut { border-left-color: var(--app-text-faint); border-left-style: dashed; }
+    #cmp-switches .grp.warnpeek { border-left-color: var(--app-warn); border-left-style: dashed; }
+
+    /* ── tags ───────────────────────────────────────────────────────────── */
+    #cmp-switches .carry {
+      font-size: var(--text-xs); letter-spacing: .06em; text-transform: uppercase;
+      color: var(--app-text-subtle); white-space: nowrap;
+    }
+    #cmp-switches .carry.pre {
+      color: var(--app-warn); border: 1px solid var(--app-warn-border);
+      background: var(--app-warn-bg); border-radius: 4px; padding: 0 5px;
+    }
+    #cmp-switches .sw-row.peek { background: var(--app-surface-hover); }
+    #cmp-switches .sw-row.willmove {
+      background: var(--app-warn-bg);
+      box-shadow: inset 2px 0 0 var(--app-warn);
+    }
+    #cmp-switches .sw-row.peek, #cmp-switches .sw-row.willmove {
+      border-radius: 6px; margin: 0 -8px; padding-left: 8px; padding-right: 8px;
+    }
+
+    /* ── the switch ─────────────────────────────────────────────────────── */
+    #cmp-switches .sw {
+      position: relative; display: inline-flex; align-items: center;
+      width: 36px; height: 20px; flex: none; padding: 0;
+      background: var(--app-surface); border: 1px solid var(--app-border-strong);
+      border-radius: 999px; cursor: pointer; outline: none;
+      transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+    }
+    #cmp-switches .sw i {
+      position: absolute; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+      background: var(--app-text-subtle);
+      transition: transform .18s ease, background .18s ease;
+    }
+    #cmp-switches .sw[aria-checked="true"] {
+      background: var(--app-accent-bg); border-color: var(--app-accent-border);
+    }
+    #cmp-switches .sw[aria-checked="true"] i {
+      transform: translateX(16px); background: var(--app-accent);
+    }
+    #cmp-switches .sw:hover { border-color: var(--app-border-hover); }
+    #cmp-switches .sw:focus-visible { border-color: var(--app-accent); box-shadow: var(--app-ring); }
+    #cmp-switches .sw-row.willmove .sw[aria-checked="true"] {
+      border-color: var(--app-warn-border); border-style: dashed;
+    }
+
+    /* ── gates, undo, totals ────────────────────────────────────────────── */
+    #cmp-switches .gate {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: var(--text-sm); color: var(--app-warn);
+      border: 1px solid var(--app-warn-border); background: var(--app-warn-bg);
+      border-radius: 6px; padding: 7px 10px; margin: 4px 0 6px;
+    }
+    #cmp-switches .gate .grow { margin-left: auto; }
+    #cmp-switches .undo {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+      font-size: var(--text-sm); color: var(--app-text-muted);
+      border: 1px dashed var(--app-border-strong); border-radius: 6px;
+      padding: 6px 10px; margin: 8px 0 0;
+    }
+    #cmp-switches .undo .grow { margin-left: auto; }
+    #cmp-switches .totals { margin-top: 12px; border-top: 1px solid var(--app-border); padding-top: 10px; }
+    #cmp-switches .kv {
+      display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+      font-size: var(--text-sm); color: var(--app-text-subtle);
+    }
+    #cmp-switches .kv b {
+      color: var(--app-text-strong); font-weight: 500; font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+    #cmp-switches .kv .delta { color: var(--app-warn); font-weight: 400; }
+    #cmp-switches .bar {
+      height: 6px; border-radius: 999px; background: var(--app-border);
+      overflow: hidden; display: flex; margin: 0 0 8px;
+    }
+    #cmp-switches .bar span { display: block; height: 100%; transition: width .22s ease; }
+    #cmp-switches .bar .seg-screen { background: var(--app-accent-strong); }
+    #cmp-switches .bar .seg-ocr { background: var(--app-accent); }
+    #cmp-switches .bar .seg-microphone,
+    #cmp-switches .bar .seg-systemAudio { background: var(--app-info); }
+    #cmp-switches .bar .seg-transcription { background: var(--app-text-subtle); }
+    #cmp-switches .bar .seg-semanticSearch { background: var(--app-warn); }
+    #cmp-switches .sw-live { min-height: 1.7em; margin: 8px 0 0; color: var(--app-text-muted); }
+
+    /* ── notes ──────────────────────────────────────────────────────────── */
+    #cmp-switches .sw-drivers { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 10px; }
+    #cmp-switches .sw-fine { margin: 0 0 18px; }
+    #cmp-switches .sw-notes { margin: 8px 0 0; padding-left: 18px; }
+    #cmp-switches .sw-notes li { margin-bottom: 8px; max-width: 76ch; }
+    #cmp-switches .sw-notes b { color: var(--app-text-muted); font-weight: 500; }
+    #cmp-switches code { font-size: var(--text-xs); color: var(--app-text-muted); }
+
+    /* No breakpoint: the name column is minmax(0,1fr), so the row absorbs a
+       narrower stage by wrapping the description. Cost and switch stay on the
+       line — stacking them made every row three lines tall for no gain. */
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-switches * { transition: none !important; animation: none !important; }
+    }
+  </style>
+
+  <script>
+    (() => {
+      "use strict";
+      const root = document.getElementById("cmp-switches");
+      const body = root.querySelector("#switches-body");
+      const live = root.querySelector("#switches-live");
+
+      /* ═══ dependency model ══════════════════════════════════════════════
+         Mirrors apps/desktop/src/lib/onboarding/feature-rules.ts.
+         `cascadeOf` + `preview` are the two NEW exports this design needs. */
+      const FEATURES = ["screen", "microphone", "systemAudio", "ocr",
+        "transcription", "speakerSeparation", "semanticSearch", "aiFeatures"];
+      const NAME = {
+        screen: "Screen capture", microphone: "Microphone", systemAudio: "System audio",
+        ocr: "Read on-screen text", transcription: "Transcription",
+        speakerSeparation: "Who's speaking", semanticSearch: "Semantic Search",
+        aiFeatures: "AI features",
+      };
+
+      const normalize = (s) => {
+        const audio = s.microphone || s.systemAudio;
+        const transcription = s.transcription && audio;
+        return { ...s, transcription, speakerSeparation: s.speakerSeparation && transcription };
+      };
+      const lockReason = (s, id) => {
+        if (id === "microphone") return s.permissions.microphone ? null : "Needs Microphone permission";
+        if (id === "speakerSeparation") return s.transcription ? null : "Needs Transcription on";
+        // NEW case — today this enable is a silent no-op (see notes).
+        if (id === "transcription") return (s.microphone || s.systemAudio) ? null : "Needs an audio source on";
+        return null;
+      };
+      const toggleDisabled = (s, id) => !s[id] && lockReason(s, id) !== null;
+      const applyToggle = (s, id) => {
+        const on = !s[id];
+        if (on && lockReason(s, id) !== null) return s;      // locked enable = no-op
+        const next = { ...s, [id]: on };
+        if (on && (id === "microphone" || id === "systemAudio")) {
+          next.transcription = true;
+          next.speakerSeparation = true;
+        }
+        return normalize(next);
+      };
+      /** NEW export: rows that moved for a reason other than the one you touched. */
+      const cascadeOf = (before, after, touched) =>
+        FEATURES.filter((f) => f !== touched && before[f] !== after[f]);
+      /** NEW export: what a flip WOULD do, without doing it. */
+      const preview = (s, id) => {
+        const after = applyToggle(s, id);
+        return {
+          after, noop: after === s,
+          cascade: cascadeOf(s, after, id),
+          dDisk: disk(after).total - disk(s).total,
+          dDl: download(after) - download(s),
+        };
+      };
+
+      /* ═══ cost model ════════════════════════════════════════════════════
+         Download bytes = the manifest figures the resolver uses. Disk/day
+         decomposes the ONE measured anchor: 270 MB/day at every 3 s, both
+         audio sources on, no embeddings. Semantic Search is computed and sits
+         ON TOP of the 270 (the measured machine shipped no vectors). */
+      const DL_BYTES = {
+        transcription: 147951465,      // Whisper base
+        speakerSeparation: 419482724,  // speakrs
+        semanticSearch: 548000000,     // nomic — approximate, so totals read "about"
+      };
+      const INTERVAL_S = 3, ACTIVE_H = 8;
+      const FRAMES_PER_DAY = (ACTIVE_H * 3600) / INTERVAL_S;        // 9,600
+      const VIDEO_MB = 168, OCR_MB = 47, AUDIO_MB = 23, TRANSCRIPT_MB = 4.5;
+      const VEC_MB = (FRAMES_PER_DAY * 768 * 4) / 1e6;              // ≈29.5
+
+      function disk(s) {
+        const sources = (s.microphone ? 1 : 0) + (s.systemAudio ? 1 : 0);
+        const by = {
+          screen: s.screen ? VIDEO_MB : 0,
+          ocr: (s.screen && s.ocr) ? OCR_MB : 0,
+          microphone: s.microphone ? AUDIO_MB : 0,
+          systemAudio: s.systemAudio ? AUDIO_MB : 0,
+          transcription: s.transcription ? TRANSCRIPT_MB * sources : 0,
+          speakerSeparation: 0,
+          semanticSearch: s.semanticSearch
+            ? ((s.screen && s.ocr) ? VEC_MB : 0) + (s.transcription ? 2 : 0) : 0,
+          aiFeatures: 0,
+        };
+        return { by, total: Object.values(by).reduce((a, b) => a + b, 0) };
+      }
+      const download = (s) =>
+        Object.keys(DL_BYTES).reduce((t, k) => t + (s[k] ? DL_BYTES[k] : 0), 0);
+
+      const fmtBytes = (b) => b <= 0 ? "nothing"
+        : b >= 1e9 ? (b / 1e9).toFixed(2) + " GB" : Math.round(b / 1e6) + " MB";
+      const fmtDay = (mb) => Math.round(mb) + " MB/day";
+      const approx = (s) => s.semanticSearch ? "about " : "";
+      const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+      /* ═══ state ═════════════════════════════════════════════════════════ */
+      const fresh = () => normalize({
+        permissions: { screen: true, microphone: false, systemAudio: true },
+        aiConfigured: false,
+        screen: true, microphone: false, systemAudio: true, ocr: true,
+        transcription: true, speakerSeparation: true, semanticSearch: true,
+        aiFeatures: false,
+      });
+      const grantMic = (s) => ({ ...s, permissions: { ...s.permissions, microphone: true } });
+      /** Mirrors ChangeSettingsScreen:190 — configuring a provider enables AI. */
+      const connectAi = (s) => ({ ...s, aiConfigured: true, aiFeatures: true });
+      const aiBlocked = (s) => s.aiFeatures && !s.aiConfigured;
+
+      const st = { s: fresh(), peek: null, undo: null };
+
+      /* ═══ copy ══════════════════════════════════════════════════════════ */
+      function describe(s, id) {
+        switch (id) {
+          case "screen": return s.permissions.screen
+            ? "Frames of your screen. Everything else is built on these."
+            : "Screen Recording is not granted — stays listed, records nothing.";
+          case "microphone": return s.permissions.microphone
+            ? "Your voice, from the built-in or a connected mic."
+            : "Microphone permission is the one thing missing.";
+          case "systemAudio":
+            return "What your Mac plays. Excludes Mnema itself and every privacy-listed app.";
+          case "ocr": return s.screen
+            ? "On-device. Apple Vision needs no download."
+            : "Nothing to read while screen capture is off.";
+          case "transcription": return s.transcription
+            ? "Runs locally on Whisper base."
+            : "Needs an audio source above it.";
+          case "speakerSeparation": return s.speakerSeparation
+            ? "Splits a conversation into voices, on-device."
+            : "A transcript is what it splits.";
+          case "semanticSearch":
+            return "Finds by meaning, not by word. The biggest single download.";
+          default: return s.aiConfigured ? "Ready — a default model is configured."
+            : s.aiFeatures ? "On, with nothing connected to answer with."
+              : "Never pre-ticked. Connecting a provider is what turns it on.";
+        }
+      }
+      /** Which row a lock hangs off. Microphone's lock is an OS grant, not a row. */
+      const LOCK_PARENT = { speakerSeparation: "transcription", transcription: "systemAudio" };
+      /**
+       * The fix for a lock, as an action — never a dead control. If the parent is
+       * itself locked we walk up to the first row that can actually be flipped, so
+       * the button is never a dead end (Who's speaking with no audio at all offers
+       * "Turn System audio on", not "Turn Transcription on" — which would no-op).
+       */
+      function lockFix(s, id) {
+        if (id === "microphone") return { act: "grant", id, label: "Grant Microphone" };
+        const parent = LOCK_PARENT[id];
+        if (!parent) return null;
+        if (toggleDisabled(s, parent)) return lockFix(s, parent);
+        return { act: "toggle", id: parent, label: "Turn " + NAME[parent] + " on" };
+      }
+      /** Why a row is off when the user did not turn it off. */
+      function cutBy(s, id) {
+        if (id === "ocr" && !s.screen) return "screen capture";
+        if (id === "transcription" && !s.microphone && !s.systemAudio) return "audio";
+        if (id === "speakerSeparation" && !s.transcription)
+          return (!s.microphone && !s.systemAudio) ? "audio" : "transcription";
+        return null;
+      }
+      function deltaWords(p) {
+        const bits = [];
+        if (Math.round(p.dDisk)) bits.push((p.dDisk > 0 ? "costs " : "frees ") + Math.abs(Math.round(p.dDisk)) + " MB/day");
+        if (p.dDl) bits.push((p.dDl > 0 ? "adds " : "saves ") + fmtBytes(Math.abs(p.dDl)) + " of download");
+        return bits.join(" · ");
+      }
+      function sentence(s, id, p, tense, withDelta = true) {
+        const verb = p.after[id] ? "on" : "off";
+        const head = `${NAME[id]} ${tense === "will" ? "goes" : "went"} ${verb}`;
+        const kids = p.cascade.map((f) => NAME[f].toLowerCase() +
+          (p.after[f] === p.after[id] ? "" : " " + (p.after[f] ? "on" : "off")));
+        const tail = kids.length
+          ? ` — and ${kids.join(" + ")} ${tense === "will" ? "go" : "went"} with it.`
+          : ".";
+        const d = withDelta ? deltaWords(p) : "";
+        return head + tail + (d ? " " + d[0].toUpperCase() + d.slice(1) + "." : "");
+      }
+
+      /* ═══ render ════════════════════════════════════════════════════════ */
+      function rowCost(s, id) {
+        const d = disk(s).by[id] || 0, bits = [];
+        if (d > 0) bits.push(`<span class="ob-num">${Math.round(d)} MB/day</span>`);
+        if (DL_BYTES[id]) bits.push(`<span class="dl ob-num">${s[id] ? fmtBytes(DL_BYTES[id]) + " once" : "—"}</span>`);
+        return bits.length ? bits.join(" · ") : '<span class="zero">—</span>';
+      }
+      function row(s, id, peeked) {
+        const locked = toggleDisabled(s, id);
+        const fix = locked ? lockFix(s, id) : null;
+        const cut = cutBy(s, id);
+        const willMove = peeked && peeked.id !== id && peeked.p.cascade.includes(id);
+        const isPeek = peeked && peeked.id === id;
+        const dId = "switches-d-" + id;
+        return `<div class="sw-row${locked ? " dead" : ""}${willMove ? " willmove" : ""}${isPeek ? " peek" : ""}">
+          <div>
+            <div class="sw-t">${NAME[id]}
+              ${willMove ? '<span class="carry pre">goes ' + (peeked.p.after[id] ? "on" : "off") + "</span>"
+            : cut ? '<span class="carry">off with ' + cut + "</span>" : ""}</div>
+            <div class="sw-d${locked && !cut ? " warn" : ""}" id="${dId}">${esc(describe(s, id))}</div>
+          </div>
+          <div class="sw-cost">${rowCost(s, id)}</div>
+          ${fix
+            ? `<button class="ob-btn sm" type="button" data-act="${fix.act}" data-id="${fix.id}"
+                 data-k="sw-${id}" data-peek="${id}">${fix.label}</button>`
+            : `<button class="sw" type="button" role="switch" aria-checked="${s[id] ? "true" : "false"}"
+                 aria-label="${esc(NAME[id])}" aria-describedby="${dId}"
+                 data-act="toggle" data-id="${id}" data-k="sw-${id}" data-peek="${id}"><i></i></button>`}
+        </div>`;
+      }
+
+      function render() {
+        const s = st.s;
+        const peeked = st.peek ? { id: st.peek, p: preview(s, st.peek) } : null;
+        const hot = (id) => peeked && (peeked.id === id || peeked.p.cascade.includes(id));
+        const noAudio = !s.microphone && !s.systemAudio;
+        const d = disk(s), dl = download(s);
+
+        const bar = ["screen", "ocr", "microphone", "systemAudio", "transcription", "semanticSearch"]
+          .map((f) => `<span class="seg-${f}" style="width:${(d.total ? (d.by[f] / d.total) * 100 : 0).toFixed(1)}%"></span>`)
+          .join("");
+
+        // Peeked deltas ride the totals, so the strip previews too.
+        const pDisk = peeked && Math.round(peeked.p.dDisk);
+        const pDl = peeked && peeked.p.dDl;
+
+        body.innerHTML =
+          row(s, "screen", peeked) +
+          `<div class="kid${!s.screen ? " cut" : ""}${hot("ocr") && !s.screen ? " warnpeek" : ""}">${row(s, "ocr", peeked)}</div>` +
+
+          `<div class="grp${noAudio ? " cut" : ""}${peeked && peeked.p.cascade.includes("transcription") ? " warnpeek" : ""}">` +
+            row(s, "microphone", peeked) + row(s, "systemAudio", peeked) +
+          `</div>` +
+          `<div class="kid${noAudio ? " cut" : ""}${peeked && peeked.p.cascade.includes("transcription") ? " warnpeek" : ""}">` +
+            row(s, "transcription", peeked) + `</div>` +
+          `<div class="kid k2${!s.transcription ? " cut" : ""}${peeked && peeked.p.cascade.includes("speakerSeparation") ? " warnpeek" : ""}">` +
+            row(s, "speakerSeparation", peeked) + `</div>` +
+
+          row(s, "semanticSearch", peeked) +
+          row(s, "aiFeatures", peeked) +
+
+          (aiBlocked(s)
+            ? `<div class="gate">AI features are on with nothing to run them.
+                 <span class="grow"></span>
+                 <button class="ob-btn sm" type="button" data-act="connect" data-k="connect">Connect a provider</button>
+                 <button class="ob-btn sm" type="button" data-act="toggle" data-id="aiFeatures" data-k="aioff">Turn it off</button>
+               </div>` : "") +
+
+          (st.undo
+            ? `<div class="undo">${esc(st.undo.msg)}<span class="grow"></span>
+                 <button class="ob-btn sm" type="button" data-act="undo" data-k="undo">Undo</button></div>` : "") +
+
+          `<div class="totals">
+             <div class="bar">${bar}</div>
+             <div class="kv"><span>disk, once it is running</span><b>${approx(s)}${fmtDay(d.total)}${
+               pDisk ? ` <span class="delta">→ ${approx(peeked.p.after)}${fmtDay(disk(peeked.p.after).total)}</span>` : ""}</b></div>
+             <div class="kv" style="margin-top:3px"><span>to download before it works</span><b>${
+               dl ? approx(s) + fmtBytes(dl) : "nothing"}${
+               pDl ? ` <span class="delta">→ ${approx(peeked.p.after)}${fmtBytes(download(peeked.p.after))}</span>` : ""}</b></div>
+           </div>`;
+      }
+
+      /** Repaint, restoring focus to the same logical control. */
+      function paint() {
+        const k = root.contains(document.activeElement)
+          ? document.activeElement.getAttribute("data-k") : null;
+        render();
+        if (k) { const back = body.querySelector(`[data-k="${k}"]`); if (back) back.focus(); }
+      }
+      function announce(msg) { live.textContent = msg; }
+
+      /* ═══ actions ═══════════════════════════════════════════════════════ */
+      function act(name, id) {
+        if (name === "toggle") {
+          const p = preview(st.s, id);
+          if (p.noop) { announce(`${NAME[id]} can't go on yet — ${lockReason(st.s, id).toLowerCase()}.`); return; }
+          // One undo chip, for the last flip that moved a row you did not touch.
+          // The chip carries the headline; the live line carries the arithmetic.
+          if (p.cascade.length) st.undo = { snap: st.s, msg: sentence(st.s, id, p, "did", false) };
+          announce(sentence(st.s, id, p, "did"));
+          st.s = p.after;
+        } else if (name === "grant") {
+          st.s = grantMic(st.s);
+          announce("Microphone permission granted. The row is live — nothing was turned on for you.");
+        } else if (name === "connect") {
+          st.s = connectAi(st.s);
+          announce("Provider connected. AI features are on.");
+        } else if (name === "undo") {
+          st.s = st.undo.snap; st.undo = null;
+          announce("Undone.");
+        }
+        // Restoring focus after the repaint re-fires `focusin`; without this the
+        // preview sentence would immediately overwrite what just happened.
+        st.peek = null;
+        st.silence = true;
+        paint();
+        st.silence = false;
+      }
+      function setPeek(id) {
+        if (st.silence || st.peek === id) return;
+        st.peek = id;
+        if (id) {
+          const p = preview(st.s, id);
+          announce(p.noop
+            ? `${NAME[id]} is locked — ${lockReason(st.s, id).toLowerCase()}.`
+            : sentence(st.s, id, p, "will"));
+        } else announce("");
+        paint();
+      }
+
+      root.addEventListener("click", (e) => {
+        const el = e.target.closest("[data-act]");
+        if (el && body.contains(el)) { act(el.getAttribute("data-act"), el.getAttribute("data-id")); return; }
+        const drive = e.target.closest("[data-drive]");
+        if (!drive) return;
+        const d = drive.getAttribute("data-drive");
+        // Mic as the ONLY audio source, so cutting it really does cut two rows.
+        const micOnly = () => applyToggle(applyToggle(grantMic(fresh()), "microphone"), "systemAudio");
+        if (d === "reset") { st.s = fresh(); st.undo = null; st.peek = null; announce(""); paint(); }
+        if (d === "cut-mic") { st.s = micOnly(); st.undo = null; act("toggle", "microphone"); }
+        if (d === "cut-tr") { st.s = fresh(); st.undo = null; act("toggle", "transcription"); }
+        if (d === "grant") { st.s = fresh(); st.undo = null; act("grant"); }
+        if (d === "ai-on") { st.s = fresh(); st.undo = null; act("toggle", "aiFeatures"); }
+        if (d === "peek") { st.s = micOnly(); st.undo = null; st.peek = null; setPeek("microphone"); }
+      });
+      root.addEventListener("keydown", (e) => {
+        const el = e.target.closest('[role="switch"]');
+        if (el && (e.key === " " || e.key === "Enter")) { e.preventDefault(); el.click(); }
+      });
+      // Preview follows both the pointer and the keyboard.
+      body.addEventListener("mouseover", (e) => {
+        const el = e.target.closest("[data-peek]");
+        setPeek(el ? el.getAttribute("data-peek") : null);
+      });
+      body.addEventListener("mouseleave", () => setPeek(null));
+      body.addEventListener("focusin", (e) => {
+        const el = e.target.closest("[data-peek]");
+        if (el) setPeek(el.getAttribute("data-peek"));
+      });
+
+      paint();
+
+      /* ═══ self-check ════════════════════════════════════════════════════
+         Fails loudly in the console if the dependency model or the arithmetic
+         drifts from feature-rules.ts / the measured anchor. */
+      (function selfCheck() {
+        const s = fresh();
+        console.assert(s.microphone === false && lockReason(s, "microphone") !== null, "mic starts locked");
+        console.assert(s.transcription === true, "system audio alone keeps transcription");
+
+        const noAudio = applyToggle(s, "systemAudio");
+        console.assert(!noAudio.transcription && !noAudio.speakerSeparation, "last audio source cascades both children off");
+        console.assert(cascadeOf(s, noAudio, "systemAudio").length === 2, "cascade reports two rows");
+        console.assert(preview(s, "systemAudio").cascade.length === 2, "preview sees the cascade before committing");
+        console.assert(s.transcription === true, "preview did not mutate the state it previewed");
+
+        const noSpk = applyToggle(s, "transcription");
+        console.assert(!noSpk.speakerSeparation, "transcription off drops who's speaking");
+        console.assert(cascadeOf(s, noSpk, "transcription").length === 1, "transcription cut moves exactly one row");
+
+        console.assert(applyToggle(noAudio, "microphone") === noAudio, "a locked enable is a no-op, referentially");
+        const back = applyToggle(grantMic(noAudio), "microphone");
+        console.assert(back.transcription && back.speakerSeparation, "a source coming back re-offers both");
+
+        console.assert(download(s) === 147951465 + 419482724 + 548000000, "all-on download total");
+        console.assert(Math.round(download(noAudio) / 1e6) === 548, "no audio ⇒ only the embed model is queued");
+
+        // The 270 MB/day anchor was measured with BOTH audio sources on, no embeddings.
+        const anchor = applyToggle(applyToggle(grantMic(s), "microphone"), "semanticSearch");
+        console.assert(Math.round(disk(anchor).total) === 270,
+          "measured anchor reproduced: got " + Math.round(disk(anchor).total));
+
+        console.assert(!fresh().aiFeatures && connectAi(fresh()).aiFeatures,
+          "AI is never pre-ticked, and configuring enables it");
+        console.log("switches: dependency + cost self-check passed");
+      })();
+    })();
+  </script>
+</section>

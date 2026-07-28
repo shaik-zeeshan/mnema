@@ -1,0 +1,28 @@
+<!-- === /PARTS === -->
+  </div>
+</div>
+
+<script>
+(() => {
+  const root = document.getElementById('root');
+  const btn = document.getElementById('theme');
+  btn.addEventListener('click', () => {
+    const light = root.classList.toggle('light');
+    btn.textContent = light ? 'Dark' : 'Light';
+  });
+
+  // Build the jump nav from whatever fragments were concatenated in.
+  const nav = document.getElementById('nav');
+  for (const section of document.querySelectorAll('section.cmp')) {
+    const title = section.querySelector('.cmp-head h2')?.textContent?.trim() || section.id;
+    const a = document.createElement('a');
+    a.href = '#' + section.id;
+    a.className = 'ob-btn sm ghost';
+    a.textContent = title;
+    a.style.textDecoration = 'none';
+    nav.appendChild(a);
+  }
+})();
+</script>
+</body>
+</html>

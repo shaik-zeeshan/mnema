@@ -1,0 +1,445 @@
+<section class="cmp" id="cmp-excluded">
+  <header class="cmp-head">
+    <span class="ob-m">Component</span>
+    <h2 class="ob-disp sm">Never recorded</h2>
+    <p class="ob-body">Which apps Mnema keeps its eyes off. The summary line <em>is</em> the
+      control — the names in it are buttons, and there is no editor to open.</p>
+  </header>
+
+  <div class="cmp-stage">
+    <!-- The neighbour it shares the screen with, drawn faint, so the height budget
+         below is honest rather than measured in an empty card. -->
+    <div class="ex-neighbour">
+      <span class="ex-k">Recording</span>
+      <span id="excluded-neighbour"></span>
+    </div>
+    <hr class="ob-rule ex-rule" />
+
+    <span class="ob-m">Never recorded</span>
+    <p class="ex-sentence" id="excluded-line"></p>
+    <p class="ex-note" id="excluded-note"></p>
+
+    <p class="ex-live" id="excluded-live" aria-live="polite"></p>
+    <datalist id="excluded-applist"></datalist>
+  </div>
+
+  <div class="cmp-notes">
+    <span class="ob-m">States you can drive</span>
+    <div class="ex-drivers" id="excluded-drivers">
+      <button class="ob-btn sm" type="button" data-state="seed">Seeded (at rest)</button>
+      <button class="ob-btn sm" type="button" data-state="empty">Empty — nothing excluded</button>
+      <button class="ob-btn sm" type="button" data-state="struck">One seeded app struck</button>
+      <button class="ob-btn sm" type="button" data-state="allstruck">All struck</button>
+      <button class="ob-btn sm" type="button" data-state="added">Added an installed app</button>
+      <button class="ob-btn sm" type="button" data-state="waiting">Added one you haven't installed</button>
+      <button class="ob-btn sm" type="button" data-state="long">Long list — 8 apps</button>
+    </div>
+
+    <span class="ob-m ex-m2">How the icon sits in a sentence</span>
+    <ul class="ob-fine ex-list">
+      <li><b>A glyph on the baseline, not a tile.</b> A bordered 20&nbsp;px square turns each name
+        into a chip and the sentence back into a list. The mark here is a stroke drawing masked to
+        <code>currentColor</code>, sized <code>1em</code> and dropped <code>-.16em</code> so its
+        optical centre lands on the cap-height centre of the words around it.</li>
+      <li><b>The line box never grows.</b> At <code>line-height: 2.05</code> the glyph's margin box
+        (1em) is smaller than the strut, so adding icons changes no line height and no wrap point —
+        the sentence occupies exactly the rows it did without them.</li>
+      <li><b>Glyph + name is one unbreakable word</b> (<code>white-space: nowrap</code>), so a break
+        can only ever land on a comma. “Keychain Access” never splits, and an icon is never orphaned
+        at the end of a line.</li>
+      <li><b>Punctuation still hugs.</b> The buttons carry vertical padding only; the commas and the
+        “or” are plain text between them, so nothing gaps before a comma.</li>
+      <li><b>The “this is clickable” underline stops at the word.</b> Drawn on the name span, not on
+        the button, so it never runs under the icon — at eight apps a full-width underline merges
+        into one ragged rule and the line starts reading as a table.</li>
+      <li><b>Colour carries the category, not a background.</b> Password apps read one tint,
+        messaging another — visible at a glance, invisible as decoration. Struck names take their
+        glyph down to <code>--app-text-faint</code> with the strike drawn through it.</li>
+      <li><b>The waiting state is the absent icon.</b> An app you haven't installed has no icon to
+        show, so it shows a dashed empty square — the “we don't have this yet” signal is the same
+        object that would carry the icon, not an extra badge.</li>
+      <li><b>Where it stops working — measured, not guessed.</b> Grown one app at a time through
+        the ＋ chip at both 640&nbsp;px and 560&nbsp;px: <b>3–8 apps is two lines</b> and still reads
+        as a sentence (icons act as the separators, so the eye finds each name without the commas
+        doing all the work). 9–11 is three lines and it has quietly become a list wearing sentence
+        punctuation. 12+ is four lines and should not be a sentence at all. Onboarding seeds three
+        and nobody adds five more on step 3, so the shipped range is inside the comfortable half —
+        but if the seeded catalog ever grows past eight, this control has to become the chip list,
+        not get a smaller font. Settings keeps the full editor for the power user's twenty either
+        way.</li>
+    </ul>
+
+    <span class="ob-m ex-m2">Implementation</span>
+    <ul class="ob-fine ex-list">
+      <li><b>Replaces</b> <code>apps/desktop/src/routes/onboarding/screens/CaptureStorageScreen.svelte:304&#8209;327</code>
+        — the <code>“{n} apps — Edit ▸”</code> summary row plus the <code>{#if editingExclusions}</code>
+        block that mounts <code>AppPrivacyExclusion</code> inline.</li>
+      <li><b>Deletes</b> <code>let editingExclusions = $state(false)</code> (same file, line&nbsp;172)
+        and its three reads, the <code>Edit ▸ / Done</code> button, the <code>.editor</code> wrapper
+        and its CSS, and the <code>comboboxListId="capture-storage-privacy-app-list"</code> prop.
+        <code>AppPrivacyExclusion.svelte</code> itself stays — Settings still needs the full editor.
+        <code>excludedSummary</code> (line&nbsp;189, “first three then …”) goes too: the sentence
+        prints every name.</li>
+      <li><b>Striking a name is not a new concept</b> — it is the existing
+        <code>set_privacy_excluded_app_enabled(sourceId, enabled)</code> command
+        (<code>app-privacy-exclusion.svelte.ts:178</code>). The entry stays in
+        <code>PrivacySettings.excluded_apps</code> with <code>enabled:false</code>, which is why a
+        struck name can stay in place and never reflow the sentence. Nothing is removed from
+        onboarding, so <code>remove_privacy_excluded_app</code> is not wired here at all.</li>
+      <li><b>Real icons, not these glyphs.</b> The app already resolves them:
+        <code>resolveAppIcons()</code> → <code>iconPathForBundleId()</code> →
+        <code>convertFileSrc()</code>, with <code>appIconFallback()</code>'s letter monogram when a
+        path is missing. The sentence reuses that pipeline at <code>1em</code>; the CSS masks below
+        exist only because this mockup may make no external request.</li>
+      <li><b>Backend change — “add an app you haven't installed yet.”</b> Today's combobox offers
+        installed apps only (<code>PrivacyAppCandidateDto</code>, enumerated from the running
+        system), and every consumer keys off <code>bundle_id</code>:
+        <code>uniqueBundleIds()</code> (<code>app-privacy-exclusion.ts:86</code>) silently drops an
+        entry whose bundle id is empty, so a name-only rule stored today protects nothing and says
+        nothing. <code>ExcludedAppEntry {id, enabled, bundle_id, display_name}</code> can already
+        hold it, so the change is (a) accept a rule with an empty <code>bundle_id</code> and a typed
+        <code>display_name</code>, (b) resolve it — on app-list refresh or first sighting — by
+        display name, filling the bundle id in place, and (c) keep the unresolved rows out of the
+        screen filter and the tap exclude list until they resolve. Until that lands, the dashed
+        “when you install it” state is a promise the backend does not keep.</li>
+      <li><b>The audio claim stays qualified.</b> An excluded app is cut from the screen recording
+        and from the system-audio tap <em>only while</em> Settings → Privacy → filter system audio
+        is on: <code>system_audio_privacy_excluded_bundle_ids()</code>
+        (<code>apps/desktop/src-tauri/src/native_capture/privacy.rs:89</code>) withholds the whole
+        privacy list when that toggle is off, leaving the tap excluding Mnema's own process and
+        nothing else. The note line never says “and system audio” without “while that filter is on”.</li>
+      <li><b>Known ceiling:</b> nothing can be deleted from the sentence, only struck — so a typo'd
+        “add” leaves a struck row behind until Settings removes it. Worth the trade: one rule, one
+        command, and what the app chose for you can never be made invisible.</li>
+    </ul>
+  </div>
+
+  <style>
+    /* ── the muted neighbour, for an honest height budget ─────────────────── */
+    #cmp-excluded .ex-neighbour {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 14px;
+      color: var(--app-text-faint); font-size: var(--text-sm);
+    }
+    #cmp-excluded .ex-k { letter-spacing: .16em; text-transform: uppercase; font-size: var(--text-xs); }
+    #cmp-excluded .ex-rule { margin: 10px 0 12px; }
+
+    /* ── the sentence ─────────────────────────────────────────────────────── */
+    /* line-height is fixed and generous: it is what keeps an inline 1em glyph
+       from ever inflating a line box, so icons cost zero vertical space. */
+    #cmp-excluded .ex-sentence {
+      font-size: var(--text-md); line-height: 2.05; color: var(--app-text-muted);
+      margin: 5px 0 0;
+    }
+
+    /* Vertical padding only — a horizontal pad would put a gap before every comma
+       and the line would stop reading as a sentence. */
+    #cmp-excluded .ex-nm {
+      font: inherit; padding: 1px 0; margin: 0; border: 0; background: none; cursor: pointer;
+      color: var(--app-text-strong); border-radius: 3px;
+      white-space: nowrap;              /* glyph + name is one unbreakable word */
+      transition: color .12s, background .12s;
+    }
+    /* The "these words are clickable" signifier underlines the NAME only. Run it
+       under the glyph as well and at eight apps the underlines merge into one
+       ragged rule that reads as a table, not a sentence. */
+    #cmp-excluded .ex-t {
+      text-decoration: underline dashed var(--app-border-hover);
+      text-underline-offset: 3px;
+      transition: text-decoration-color .12s;
+    }
+    #cmp-excluded .ex-nm:hover { background: var(--app-surface-hover); }
+    #cmp-excluded .ex-nm:hover .ex-t { text-decoration-color: var(--app-danger); }
+    #cmp-excluded .ex-nm:focus-visible { outline: none; box-shadow: var(--app-ring); }
+    /* Struck = this app is recorded like everything else. Click puts it back. */
+    #cmp-excluded .ex-nm[aria-pressed="false"] { color: var(--app-text-faint); text-decoration: line-through; }
+    #cmp-excluded .ex-nm[aria-pressed="false"] .ex-t { text-decoration: none; }
+    #cmp-excluded .ex-nm[aria-pressed="false"]:hover { color: var(--app-text-muted); }
+
+    /* ── the glyph ────────────────────────────────────────────────────────── */
+    /* A mark, not a tile: no border, no fill, no box. Sized to the type and
+       nudged so its centre sits on the cap-height centre of the words. */
+    #cmp-excluded .ex-gl {
+      display: inline-block; box-sizing: border-box;
+      width: 1em; height: 1em; vertical-align: -.16em; margin-right: .3em;
+      background: currentColor; color: var(--app-text-muted);
+      -webkit-mask: var(--m) center / contain no-repeat;
+              mask: var(--m) center / contain no-repeat;
+    }
+    #cmp-excluded .ex-gl[data-tone="pw"]    { color: var(--app-info); }
+    #cmp-excluded .ex-gl[data-tone="msg"]   { color: var(--app-accent); }
+    #cmp-excluded .ex-gl[data-tone="mail"]  { color: var(--app-danger); }
+    #cmp-excluded .ex-gl[data-tone="money"] { color: var(--app-warn); }
+    #cmp-excluded .ex-nm[aria-pressed="false"] .ex-gl[data-tone] { color: var(--app-text-faint); }
+
+    /* Not installed yet: there is no icon to draw, so the icon slot is the
+       "waiting" signal — same box, dashed and empty. */
+    #cmp-excluded .ex-nm[data-waiting="1"] .ex-gl {
+      -webkit-mask: none; mask: none; background: none;
+      border: 1px dashed currentColor; border-radius: 3px;
+    }
+    #cmp-excluded .ex-nm[data-waiting="1"] .ex-t { text-decoration-color: var(--app-warn); }
+    #cmp-excluded .ex-wait {
+      color: var(--app-text-subtle); font-size: var(--text-xs);
+      letter-spacing: .04em; white-space: nowrap;
+    }
+
+    #cmp-excluded .ex-gl[data-mark="key"]      { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8.5' cy='8.5' r='4.6'/%3E%3Cpath d='M11.8 11.8 20 20M16.9 16.9 19.1 14.7'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="lock"]     { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4' y='10' width='16' height='11' rx='2.4'/%3E%3Cpath d='M8 10V7a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="dots"]     { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'%3E%3Ccircle cx='5.5' cy='12' r='2.7'/%3E%3Ccircle cx='12' cy='12' r='2.7'/%3E%3Ccircle cx='18.5' cy='12' r='2.7'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="bubble"]   { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20.5 11.6c0 4-3.8 7.2-8.5 7.2-.9 0-1.8-.1-2.6-.3L4.5 20.5l1.4-3.6c-1.5-1.3-2.4-3.1-2.4-5.3 0-4 3.8-7.2 8.5-7.2s8.5 3.2 8.5 7.2Z'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="envelope"] { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.8' y='5' width='18.4' height='14' rx='2.4'/%3E%3Cpath d='m3.8 7 8.2 6.4L20.2 7'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="card"]     { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.8' y='5' width='18.4' height='14' rx='2.4'/%3E%3Cpath d='M2.8 10h18.4M6.5 15h4'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="note"]     { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.5' y='2.8' width='15' height='18.4' rx='2.4'/%3E%3Cpath d='M8.5 8h7M8.5 12h7M8.5 16h3.5'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="globe"]    { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18M3 12h18'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="terminal"] { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.8' y='4' width='18.4' height='16' rx='2.4'/%3E%3Cpath d='m7 10 2.8 2.4L7 14.8M13 15.4h4'/%3E%3C/svg%3E"); }
+    #cmp-excluded .ex-gl[data-mark="shapes"]   { --m: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='8' cy='8' r='4.6'/%3E%3Crect x='12.4' y='12.4' width='8.2' height='8.2' rx='2'/%3E%3C/svg%3E"); }
+
+    /* ── the add affordance (variant 2's chip, inline in the sentence) ────── */
+    #cmp-excluded .ex-add {
+      font: inherit; font-size: var(--text-sm); padding: 3px 10px; cursor: pointer;
+      color: var(--app-text-subtle); background: transparent;
+      border: 1px dashed var(--app-border-strong); border-radius: 999px;
+      white-space: nowrap; vertical-align: 1px;
+      transition: color .12s, border-color .12s;
+    }
+    #cmp-excluded .ex-add:hover { color: var(--app-text); border-color: var(--app-border-hover); }
+    #cmp-excluded .ex-add:focus-visible { outline: none; box-shadow: var(--app-ring); }
+    #cmp-excluded .ex-input {
+      width: 190px; padding: 3px 9px; font: inherit; font-size: var(--text-sm);
+      color: var(--app-text); background: var(--app-surface-raised);
+      border: 1px solid var(--app-accent); border-radius: 999px; outline: none;
+      box-shadow: var(--app-ring); vertical-align: 1px;
+    }
+    #cmp-excluded .ex-input::placeholder { color: var(--app-text-faint); }
+
+    #cmp-excluded .ex-note {
+      margin: 7px 0 0; font-size: var(--text-sm); line-height: 1.7;
+      color: var(--app-text-subtle);
+    }
+    #cmp-excluded .ex-note .ex-hint { color: var(--app-text-muted); font-style: normal; }
+    #cmp-excluded .ex-live {
+      position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
+
+    /* ── notes ────────────────────────────────────────────────────────────── */
+    #cmp-excluded .ex-drivers { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 8px; }
+    #cmp-excluded .ex-drivers .ob-btn[aria-pressed="true"] {
+      border-color: var(--app-accent-border); background: var(--app-accent-bg); color: var(--app-text-strong);
+    }
+    #cmp-excluded .ex-m2 { display: block; margin-top: 20px; }
+    #cmp-excluded .ex-list { margin: 8px 0 0; padding-left: 18px; max-width: 74ch; }
+    #cmp-excluded .ex-list li { margin-bottom: 7px; }
+    #cmp-excluded .ex-list b { color: var(--app-text-muted); font-weight: 700; }
+    #cmp-excluded .ex-list code {
+      font: inherit; font-size: var(--text-xs); color: var(--app-text-muted);
+      background: var(--app-surface-subtle); padding: 1px 4px; border-radius: 4px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-excluded * { transition: none !important; animation: none !important; }
+    }
+  </style>
+
+  <script>
+    (() => {
+      "use strict";
+      const root = document.getElementById("cmp-excluded");
+      const lineEl = root.querySelector("#excluded-line");
+      const noteEl = root.querySelector("#excluded-note");
+      const liveEl = root.querySelector("#excluded-live");
+      const nbrEl  = root.querySelector("#excluded-neighbour");
+      const listEl = root.querySelector("#excluded-applist");
+
+      /* ── numbers ────────────────────────────────────────────────────────
+         Anchor: 270 MB/day measured at one snapshot every 3 s. Storage is
+         linear in snapshot rate, so every other cadence is derived, never
+         pasted. The neighbour line is the only number this control renders —
+         the sentence itself is names, on purpose. */
+      const MB_PER_DAY_AT_3S = 270;
+      // The anchor is measured at 3 s; the shipped DEFAULT is 2 s
+      // (DEFAULT_CAPTURE_INTERVAL_S in lib/components/capture-rate.ts).
+      // Render the default, derive its cost from the anchor — otherwise this
+      // neighbour line contradicts the capture-rate sentence above it.
+      const INTERVAL_S = 2;
+      const mbPerDay = (seconds) => MB_PER_DAY_AT_3S * (3 / seconds);
+
+      /* ── the app model ──────────────────────────────────────────────────
+         `mark` picks a CSS-masked stroke drawing; in the real control this is
+         the macOS icon from resolveAppIcons(). Generic marks only — no
+         trademarked artwork. */
+      const APPS = [
+        { id: "onepw",    name: "1Password",       mark: "key",      tone: "pw",    installed: true,  seed: true },
+        { id: "applepw",  name: "Passwords",       mark: "dots",     tone: "pw",    installed: true,  seed: true },
+        { id: "keychain", name: "Keychain Access", mark: "lock",     tone: "pw",    installed: true,  seed: true },
+        { id: "bitw",     name: "Bitwarden",       mark: "key",      tone: "pw",    installed: false },
+        { id: "messages", name: "Messages",        mark: "bubble",   tone: "msg",   installed: true  },
+        { id: "signal",   name: "Signal",          mark: "bubble",   tone: "msg",   installed: true  },
+        { id: "mail",     name: "Mail",            mark: "envelope", tone: "mail",  installed: true  },
+        { id: "chase",    name: "Chase",           mark: "card",     tone: "money", installed: true  },
+        { id: "revolut",  name: "Revolut",         mark: "card",     tone: "money", installed: false },
+        { id: "notes",    name: "Notes",           mark: "note",     installed: true  },
+        { id: "safari",   name: "Safari",          mark: "globe",    installed: true  },
+        { id: "terminal", name: "Terminal",        mark: "terminal", installed: true  },
+        { id: "figma",    name: "Figma",           mark: "shapes",   installed: true  },
+      ];
+      const byId = Object.fromEntries(APPS.map((a) => [a.id, a]));
+      const SEED = APPS.filter((a) => a.seed).map((a) => a.id);
+
+      const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      /* "A" · "A or B" · "A, B, or C" — if this stops reading like English the
+         whole premise of the control is gone, so it is asserted below. */
+      const phrase = (parts) =>
+        parts.length <= 1 ? (parts[0] || "")
+        : parts.length === 2 ? parts[0] + " or " + parts[1]
+        : parts.slice(0, -1).join(", ") + ", or " + parts[parts.length - 1];
+
+      /* ── state ──────────────────────────────────────────────────────────
+         `shown` never shrinks by clicking: a struck name keeps its slot, so
+         nothing reflows and nothing the app chose for you can be hidden. */
+      let shown = SEED.slice();
+      let off = new Set();
+      let adding = false;
+
+      let adhoc = 0;
+      function resolveTyped(text) {
+        const needle = text.trim();
+        if (!needle) return null;
+        const hit = APPS.find((a) => a.name.toLowerCase() === needle.toLowerCase())
+                 || APPS.find((a) => a.name.toLowerCase().startsWith(needle.toLowerCase()));
+        if (hit) return hit;
+        // A name that matches nothing installed is still a real rule — held
+        // dashed until the app turns up. See the backend note.
+        const app = { id: "adhoc-" + ++adhoc, name: needle, mark: null, installed: false };
+        byId[app.id] = app;
+        return app;
+      }
+
+      const nameHtml = (id) => {
+        const a = byId[id], on = !off.has(id);
+        const waiting = !a.installed;
+        const gl = `<span class="ex-gl" data-mark="${a.mark || ""}" ${a.tone ? `data-tone="${a.tone}"` : ""} aria-hidden="true"></span>`;
+        return `<button class="ex-nm" type="button" data-id="${id}" aria-pressed="${on}" data-waiting="${waiting ? 1 : 0}"
+          aria-label="${esc(a.name)}${waiting ? ", not installed yet" : ""} — ${on ? "never recorded, activate to record it" : "recorded, activate to hide it again"}"
+        >${gl}<span class="ex-t">${esc(a.name)}</span></button>${waiting ? `<span class="ex-wait"> · when you install it</span>` : ""}`;
+      };
+
+      /* Pure so the self-check can run it without touching the DOM. */
+      function buildSentence(ids, offSet) {
+        const live = ids.filter((id) => !offSet.has(id));
+        const parts = ids.map(nameHtml);
+        if (!ids.length) return "Mnema records everything on your screen.";
+        if (live.length) return "Mnema never records " + phrase(parts) + ".";
+        return "Mnema records everything on your screen. " + phrase(parts) +
+               (ids.length === 1 ? " is" : " are") + " back on.";
+      }
+
+      /* The audio half is gated on Settings → Privacy → filter system audio
+         (native_capture/privacy.rs:89). Never claim parity without it. */
+      const AUDIO = "Nothing from them is recorded — not the screen, and not system audio while that filter is on.";
+
+      function render(focusId) {
+        const live = shown.filter((id) => !off.has(id));
+        const waiting = shown.filter((id) => !off.has(id) && !byId[id].installed).length;
+
+        nbrEl.textContent =
+          `a snapshot every ${INTERVAL_S} seconds · about ${Math.round(mbPerDay(INTERVAL_S))} MB a day · kept forever`;
+
+        lineEl.innerHTML = buildSentence(shown, off) + " " + (adding
+          ? `<input class="ex-input" id="excluded-add" list="excluded-applist" autocomplete="off"
+                    aria-label="Add an app Mnema should never record" placeholder="Type any app name" />`
+          : `<button class="ex-add" type="button" data-add>＋ Add an app</button>`);
+
+        noteEl.innerHTML = !shown.length
+          ? `Nothing is hidden. Everything on your screen is recorded. <em class="ex-hint">Add an app it should never see.</em>`
+          : live.length
+            ? `${AUDIO}${waiting ? ` ${waiting === 1 ? "One of them isn't" : waiting + " of them aren't"} installed yet — the rule waits.` : ""}
+               <em class="ex-hint">Click a name to record it after all.</em>`
+            : `<em class="ex-hint">Click a crossed-out name to hide it again.</em>`;
+
+        if (adding) root.querySelector("#excluded-add").focus();
+        else if (focusId) {
+          const b = root.querySelector(`.ex-nm[data-id="${focusId}"]`);
+          if (b) b.focus();
+        }
+      }
+
+      const say = (msg) => { liveEl.textContent = msg; };
+
+      root.addEventListener("click", (e) => {
+        if (!e.target.closest(".cmp-stage")) return;
+        const nm = e.target.closest(".ex-nm");
+        if (nm) {
+          const id = nm.dataset.id, a = byId[id];
+          if (off.has(id)) { off.delete(id); say(a.name + " is never recorded again."); }
+          else { off.add(id); say(a.name + " is recorded like everything else."); }
+          render(id);
+          return;
+        }
+        if (e.target.closest("[data-add]")) { adding = true; render(); }
+      });
+
+      root.addEventListener("keydown", (e) => {
+        if (e.target.id !== "excluded-add") return;
+        if (e.key === "Escape") { adding = false; render(); return; }
+        if (e.key !== "Enter") return;
+        // Without this the same Enter keystroke activates the button we are
+        // about to focus, and the app you just added is struck out instantly.
+        e.preventDefault();
+        const app = resolveTyped(e.target.value);
+        adding = false;
+        if (!app) { render(); return; }
+        if (!shown.includes(app.id)) shown.push(app.id);
+        off.delete(app.id);
+        say(app.name + (app.installed ? " is never recorded." : " will never be recorded once you install it."));
+        render(app.id);
+      });
+
+      /* ── state drivers ──────────────────────────────────────────────────── */
+      const STATES = {
+        seed:      () => [SEED.slice(), []],
+        empty:     () => [[], []],
+        struck:    () => [SEED.slice(), ["keychain"]],
+        allstruck: () => [SEED.slice(), SEED.slice()],
+        added:     () => [SEED.concat("messages"), []],
+        waiting:   () => [SEED.concat("bitw"), []],
+        long:      () => [["onepw", "applepw", "keychain", "messages", "signal", "mail", "notes", "chase"], []],
+      };
+      const drivers = root.querySelector("#excluded-drivers");
+      drivers.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-state]");
+        if (!b) return;
+        const [ids, offIds] = STATES[b.dataset.state]();
+        shown = ids; off = new Set(offIds); adding = false;
+        drivers.querySelectorAll("[data-state]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+        render();
+      });
+
+      listEl.innerHTML = APPS.map((a) => `<option value="${esc(a.name)}"></option>`).join("");
+      drivers.querySelector('[data-state="seed"]').setAttribute("aria-pressed", "true");
+      render();
+
+      /* ── self-check: fails loudly if the arithmetic or the grammar drifts ── */
+      console.assert(
+        Math.round(mbPerDay(3)) === 270 && Math.round(mbPerDay(1.5)) === 540 && Math.round(mbPerDay(6)) === 135,
+        "excluded: storage anchor drifted — 270 MB/day must be one snapshot every 3 s, scaled linearly",
+      );
+      console.assert(
+        phrase(["A"]) === "A" && phrase(["A", "B"]) === "A or B" && phrase(["A", "B", "C"]) === "A, B, or C",
+        "excluded: the sentence stopped reading like English",
+      );
+      console.assert(
+        (() => {
+          // A struck name must never leave the sentence: same names, same order,
+          // both ways round — that is what makes the control reflow-free.
+          const all = new Set(SEED);
+          const on = buildSentence(SEED, new Set());
+          const gone = buildSentence(SEED, all);
+          return SEED.every((id) => on.includes(byId[id].name) && gone.includes(byId[id].name));
+        })(),
+        "excluded: a struck app fell out of the sentence — the control would reflow",
+      );
+    })();
+  </script>
+</section>

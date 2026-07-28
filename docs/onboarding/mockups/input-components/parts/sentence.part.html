@@ -1,0 +1,882 @@
+<section class="cmp" id="cmp-sentence">
+  <header class="cmp-head">
+    <span class="ob-m">Component</span>
+    <h2 class="ob-disp sm">The sentence</h2>
+    <p class="ob-body">
+      How often Mnema takes a snapshot, how long it keeps one, and where it lives — one
+      statement whose words are the controls, with its own alternatives printed faintly
+      around each word.
+    </p>
+  </header>
+
+  <div class="cmp-stage">
+    <p class="sentence" id="sentence-line"></p>
+    <div class="outcome" id="sentence-outcome"></div>
+    <div class="repair" id="sentence-repair"></div>
+    <p class="hint">
+      click a word to step · click a faint word to jump · ← → step · Home / End ends ·
+      Enter on the folder opens the picker
+    </p>
+  </div>
+
+  <div class="cmp-notes">
+    <div class="drivers" id="sentence-drivers">
+      <span class="ob-m">States you can drive</span>
+      <div class="row">
+        <button class="ob-btn sm" data-act="path:~/.mnema">healthy (default)</button>
+        <button class="ob-btn sm" data-act="hold">probing (hold)</button>
+        <button class="ob-btn sm" data-act="path:/Users/you/Desktop/Gone/Mnema">folder missing</button>
+        <button class="ob-btn sm" data-act="path:/Volumes/Time Machine/Mnema">read-only</button>
+        <button class="ob-btn sm" data-act="path:/Volumes/Archive/Mnema">free space unknown</button>
+        <button class="ob-btn sm" data-act="path:/Volumes/SD Card/Mnema">downloads don't fit</button>
+        <button class="ob-btn sm" data-act="path:/Volumes/USB Stick/Mnema">a day doesn't fit</button>
+        <button class="ob-btn sm" data-act="disconnect">drive disconnected</button>
+        <button class="ob-btn sm" data-act="semantic">toggle Semantic Search</button>
+        <button class="ob-btn sm" data-act="keep:days_30">retention → 30 days</button>
+      </div>
+      <p class="ob-fine" id="sentence-driver-state"></p>
+    </div>
+
+    <div class="impl">
+      <span class="ob-m">Implementation</span>
+      <p class="ob-fine">
+        <b>Replaces three rows with one line.</b>
+        <code>apps/desktop/src/routes/onboarding/screens/CaptureStorageScreen.svelte</code> —
+        the rate slider (<code>~:243-263</code>, the <code>.lad-wrap</code> range + readout),
+        the storage field (<code>~:273</code>, path + <em>Change</em> + free-space note) and the
+        retention segmented group (<code>~:287-296</code>) all collapse into this sentence.
+        The screen's heading "Four things to settle." becomes one sentence plus the video-quality
+        row. It also deletes the duplicate surfaces on
+        <code>ChangeSettingsScreen.svelte</code> — <code>:401</code> <code>&lt;RetentionPicker&gt;</code>
+        and <code>:416</code> the capture-rate <code>&lt;Select&gt;</code> — because a user who has
+        already read the sentence should not meet the same two settings again in a different
+        control (the standing "same setting, different control" complaint).
+      </p>
+      <p class="ob-fine">
+        <b>Backend: nothing new.</b> <code>probe_storage_path</code>
+        (<code>src-tauri/src/managed_storage_layout.rs</code>) already returns
+        <code>exists</code> / <code>writable</code> / <code>free_bytes</code>, and null free space
+        already means "couldn't measure", not "zero". The folder token calls the existing
+        <code>@tauri-apps/plugin-dialog</code> <code>open({ directory: true })</code>; the
+        <code>&lt;dialog&gt;</code> here only simulates it for the mockup.
+      </p>
+      <p class="ob-fine">
+        <b>One gate change.</b> <code>apps/desktop/src/lib/onboarding/gates.ts:58</code> compares
+        <code>freeBytes &lt; requiredBytes</code> and stops there — the download work-list only.
+        Drive <em>"a day doesn't fit"</em> above: the downloads fit, so the shipped gate passes,
+        and the user is sent into a first session with no room for a single day of capture. The
+        gate needs a second term —
+        <code>freeBytes - requiredBytes - LOW_DISK_RESERVE &lt; dailyBytes(intervalS)</code> —
+        which means <code>gates.ts</code> has to take the capture interval it does not take today.
+        The same <code>dailyBytes()</code> feeds the sentence and the gate, so the blocking reason
+        and the printed consequence can never disagree.
+      </p>
+      <p class="ob-fine">
+        <b>The Semantic Search escape does not actually rescue that volume</b>, and the mockup
+        shows it honestly: dropping nomic (548 MB) clears today's gate on the SD card, and the
+        volume still has nowhere to record. That is the argument for the second gate term in one
+        click.
+      </p>
+      <p class="ob-fine">
+        <b>Ghost windows.</b> The number of faint neighbours is per token, because the ladders are
+        not the same length. Retention has four values, so it prints <em>all</em> of them — the
+        whole choice set is on screen and "keep everything" can never read as a statement instead
+        of one of four. Rate has eleven, so it prints a five-wide window centred on the chosen stop
+        and clamped at the ends, which keeps exactly four ghosts at every position (no ragged row
+        at <code>0.1 s</code> or <code>60 s</code>) and puts a ±2 jump one click away. The folder
+        has two states, so it prints one ghost — <code>~/.mnema</code> — and only while you are
+        away from it: undoing a folder change is clicking a word. That one rides at the very end
+        of the sentence rather than beside the token, so the full stop still lands on the folder
+        and a broken sentence gets to finish its clause before the undo appears.
+      </p>
+      <p class="ob-fine">
+        <b>Keyboard parity.</b> Ghosts are <code>aria-hidden</code> and out of the tab order — three
+        extra tab stops per token is the wrong trade — but every value a ghost can reach is reachable
+        from the token itself: Tab moves between tokens, ← → step, Page↑ / Page↓ jump ±2 (the outer
+        ghost), Home / End go to the ends of the ladder, Enter on the folder opens the picker. The
+        token is a <code>role="spinbutton"</code> carrying <code>aria-valuetext</code>, so a screen
+        reader hears the word, not the index. Clicking the word steps forward and wraps; arrows
+        clamp.
+      </p>
+      <p class="ob-fine">
+        <b>Retention vs the sentence.</b> Round 2 flagged that the sentence's best clause —
+        "12 GB held at any time" — is <em>absent</em> in the default case, because
+        <code>never</code> has no ceiling. Solved by never printing a ceiling at all: the plan line
+        always reads <em>rate · horizon</em>, and the horizon is a first-year projection while
+        retention is <code>never</code> ("about 148 GB in the first year, and it keeps going") and a
+        steady ceiling once it is not ("12 GB held, then it stops growing"). Both are one computed
+        number in the same position that moves when you move the rate, so the default is the
+        strongest reading rather than a hole, and retention's job becomes legible: it trades a
+        growing projection for a fixed ceiling. Hover or click a retention ghost to see the swap
+        before committing.
+      </p>
+    </div>
+  </div>
+
+  <!-- simulated native folder picker — the real one is plugin-dialog open({directory:true}) -->
+  <dialog class="picker" id="sentence-picker" aria-label="Choose where Mnema stores captures">
+    <div class="pk-head">
+      Choose where Mnema stores captures
+      <small>simulated · @tauri-apps/plugin-dialog open({directory:true})</small>
+    </div>
+    <div class="pk-crumb" id="sentence-pk-crumb"></div>
+    <div class="pk-body">
+      <div class="pk-side" id="sentence-pk-side"></div>
+      <div class="pk-list" id="sentence-pk-list"></div>
+    </div>
+    <div class="pk-foot">
+      <span class="sel" id="sentence-pk-sel"></span>
+      <button class="ob-btn sm" id="sentence-pk-cancel">Cancel</button>
+      <button class="ob-btn sm primary" id="sentence-pk-choose">Choose</button>
+    </div>
+  </dialog>
+
+  <style>
+    #cmp-sentence .sentence {
+      margin: 0;
+      font-size: var(--text-xl);
+      line-height: 2.1;
+      color: var(--app-text);
+      overflow-wrap: break-word;
+    }
+    #cmp-sentence .nb { white-space: nowrap; }
+    #cmp-sentence .brk { color: var(--app-danger); }
+    #cmp-sentence .brk .dash { color: var(--app-text-faint); }
+
+    /* every token is the same word-shaped thing, whatever it edits */
+    #cmp-sentence .tok {
+      font: inherit; font-size: inherit; line-height: inherit;
+      color: var(--app-text-strong); background: transparent;
+      border: 0; border-bottom: 1px solid var(--app-border-hover);
+      padding: 0 2px 1px; margin: 0; cursor: pointer; border-radius: 0;
+      -webkit-appearance: none; appearance: none;
+    }
+    #cmp-sentence .tok:hover { border-color: var(--app-accent); }
+    #cmp-sentence .tok:focus-visible {
+      outline: none; box-shadow: var(--app-ring); border-color: var(--app-accent);
+    }
+    #cmp-sentence .tok.bad { color: var(--app-danger); border-color: var(--app-danger-border); }
+    /* the folder mark keeps the place token from reading as a word-menu */
+    #cmp-sentence .tok.place::before {
+      content: "▸"; color: var(--app-text-faint); font-size: .62em;
+      vertical-align: .22em; margin-right: 6px;
+    }
+    #cmp-sentence .tok.place:hover::before,
+    #cmp-sentence .tok.place:focus-visible::before { color: var(--app-accent); }
+
+    /* ── the ghost dial ─────────────────────────────────────────────────── */
+    #cmp-sentence .dial {
+      display: inline-flex; flex-wrap: wrap; align-items: baseline;
+      gap: 5px; vertical-align: baseline;
+    }
+    #cmp-sentence .ghost {
+      font: inherit; font-size: var(--text-md); color: var(--app-text-faint);
+      background: transparent; border: 0; padding: 0 1px; cursor: pointer;
+      white-space: nowrap; border-radius: 4px;
+    }
+    #cmp-sentence .ghost:hover { color: var(--app-text-subtle); }
+    #cmp-sentence .ghost.near { color: var(--app-text-subtle); }
+    #cmp-sentence .ghost.near:hover { color: var(--app-text-muted); }
+    #cmp-sentence .ghost.undo { color: var(--app-text-subtle); margin-left: 10px; }
+    #cmp-sentence .ghost.undo::before { content: "↩ "; color: var(--app-text-faint); }
+
+    /* ── the consequence ────────────────────────────────────────────────── */
+    #cmp-sentence .outcome {
+      margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--app-border);
+      font-size: var(--text-md); line-height: 1.85; color: var(--app-text-muted);
+    }
+    #cmp-sentence .outcome .fig {
+      color: var(--app-text-strong); font-variant-numeric: tabular-nums;
+    }
+    #cmp-sentence .outcome .sep { color: var(--app-text-faint); margin: 0 8px; }
+    #cmp-sentence .outcome .verdict { color: var(--app-text-strong); }
+    #cmp-sentence .outcome.ok .verdict { color: var(--app-accent); }
+    #cmp-sentence .outcome.warn .verdict { color: var(--app-warn); }
+    #cmp-sentence .outcome.bad .verdict { color: var(--app-danger); }
+    #cmp-sentence .outcome .plan { display: block; }
+    #cmp-sentence .outcome.peek {
+      border-left: 2px solid var(--app-accent-border);
+      margin-left: -14px; padding-left: 12px;
+    }
+    #cmp-sentence .outcome.peek .plan { color: var(--app-text); }
+    #cmp-sentence .outcome.peek .peek-tag {
+      color: var(--app-accent); letter-spacing: .14em; text-transform: uppercase;
+      font-size: var(--text-xs); margin-right: 8px;
+    }
+    #cmp-sentence .repair {
+      margin-top: 14px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    #cmp-sentence .repair:empty { margin-top: 0; }
+    #cmp-sentence .hint {
+      margin: 14px 0 0; font-size: var(--text-xs); color: var(--app-text-faint);
+      letter-spacing: .06em;
+    }
+    #cmp-sentence .probing {
+      height: 2px; background: var(--app-border); border-radius: 2px;
+      overflow: hidden; max-width: 220px; margin-top: 10px;
+    }
+    #cmp-sentence .probing i {
+      display: block; height: 100%; width: 35%; background: var(--app-accent-strong);
+      border-radius: 2px; animation: cmp-sentence-slide 900ms linear infinite;
+    }
+    @keyframes cmp-sentence-slide {
+      from { transform: translateX(-110%); }
+      to { transform: translateX(320%); }
+    }
+
+    /* ── notes ──────────────────────────────────────────────────────────── */
+    #cmp-sentence .drivers .row {
+      display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 8px;
+    }
+    #cmp-sentence .drivers .row .ob-btn { border-style: dashed; }
+    #cmp-sentence .impl { margin-top: 22px; }
+    #cmp-sentence .impl .ob-fine { margin: 10px 0 0; max-width: 78ch; }
+    #cmp-sentence .impl b { color: var(--app-text-muted); font-weight: 400; }
+    #cmp-sentence code {
+      font: inherit; font-size: var(--text-xs); color: var(--app-text-muted);
+      background: var(--app-surface-subtle); border: 1px solid var(--app-border);
+      border-radius: 4px; padding: 0 4px;
+    }
+
+    /* ── the simulated picker ───────────────────────────────────────────── */
+    #cmp-sentence dialog.picker {
+      width: 560px; max-width: 92vw; padding: 0;
+      border: 1px solid var(--app-border-strong); border-radius: 12px;
+      background: var(--app-surface-raised); color: var(--app-text);
+      box-shadow: var(--app-shadow-popover);
+      font-family: inherit; font-size: var(--text-base);
+    }
+    #cmp-sentence dialog.picker::backdrop { background: rgba(0, 0, 0, .45); }
+    #cmp-sentence .pk-head {
+      padding: 14px 16px; border-bottom: 1px solid var(--app-border);
+      color: var(--app-text-strong); font-size: var(--text-md);
+    }
+    #cmp-sentence .pk-head small {
+      display: block; color: var(--app-text-faint); font-size: var(--text-xs);
+      margin-top: 4px; letter-spacing: .14em; text-transform: uppercase;
+    }
+    #cmp-sentence .pk-body { display: grid; grid-template-columns: 172px 1fr; height: 264px; }
+    #cmp-sentence .pk-side {
+      border-right: 1px solid var(--app-border); overflow: auto; padding: 8px;
+      background: var(--app-surface-subtle);
+    }
+    #cmp-sentence .pk-list { overflow: auto; padding: 8px; }
+    #cmp-sentence .pk-side button,
+    #cmp-sentence .pk-list button {
+      display: flex; width: 100%; align-items: center; justify-content: space-between;
+      gap: 10px; font: inherit; font-size: var(--text-base); color: var(--app-text-muted);
+      background: transparent; border: 0; border-radius: 6px; padding: 6px 8px;
+      cursor: pointer; text-align: left;
+    }
+    #cmp-sentence .pk-side button:hover,
+    #cmp-sentence .pk-list button:hover {
+      background: var(--app-surface-hover); color: var(--app-text-strong);
+    }
+    #cmp-sentence .pk-side button:focus-visible,
+    #cmp-sentence .pk-list button:focus-visible { outline: none; box-shadow: var(--app-ring); }
+    #cmp-sentence .pk-side button[aria-current="true"],
+    #cmp-sentence .pk-list button[aria-current="true"] {
+      color: var(--app-accent); background: var(--app-surface-active);
+    }
+    #cmp-sentence .pk-list button .chev { color: var(--app-text-faint); }
+    #cmp-sentence .pk-empty {
+      color: var(--app-text-faint); font-size: var(--text-sm); padding: 10px 8px;
+    }
+    #cmp-sentence .pk-crumb {
+      padding: 8px 12px; border-bottom: 1px solid var(--app-border);
+      font-size: var(--text-sm); color: var(--app-text-subtle);
+      display: flex; gap: 6px; align-items: center;
+    }
+    #cmp-sentence .pk-crumb button {
+      font: inherit; font-size: var(--text-sm); background: transparent; border: 0;
+      color: var(--app-text-muted); cursor: pointer; padding: 2px 6px; border-radius: 5px;
+    }
+    #cmp-sentence .pk-crumb button:hover {
+      background: var(--app-surface-hover); color: var(--app-text-strong);
+    }
+    #cmp-sentence .pk-crumb button:focus-visible { outline: none; box-shadow: var(--app-ring); }
+    #cmp-sentence .pk-crumb button:disabled { opacity: .4; cursor: not-allowed; }
+    #cmp-sentence .pk-foot {
+      display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+      border-top: 1px solid var(--app-border);
+    }
+    #cmp-sentence .pk-foot .sel {
+      flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+      white-space: nowrap; color: var(--app-text);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-sentence .probing i { animation: none; width: 100%; opacity: .5; }
+      #cmp-sentence * { transition: none !important; }
+    }
+  </style>
+
+  <script>
+    (() => {
+      "use strict";
+      const root = document.getElementById("cmp-sentence");
+      const el = (id) => root.querySelector("#sentence-" + id);
+
+      /* ══ 1. arithmetic — every number below is derived from these ═══════ */
+      const ANCHOR_MB_PER_DAY = 270, ANCHOR_INTERVAL_S = 3;   // measured
+      const SPEAKRS_BYTES = 419482724;                        // speakrs diarization
+      const WHISPER_BASE_BYTES = 147951465;                   // Whisper base
+      const NOMIC_BYTES = 548000000;                          // approximate by design
+      const RESERVE_BYTES = 1024 ** 3;                        // ADR 0040 low-disk floor
+
+      const LADDER = [0.1, 0.5, 1, 2, 3, 5, 10, 15, 30, 45, 60];
+      const DEFAULT_I = LADDER.indexOf(2);
+      const RATE_WINDOW = 5;   // stops printed for the rate token, chosen one included
+
+      /* `never` is first and is the default: Mnema never defaults to deleting. */
+      const KEEP = [
+        { id: "never",   word: "everything",       short: "everything", days: null },
+        { id: "days_30", word: "the last 30 days", short: "30 days",    days: 30 },
+        { id: "days_14", word: "the last 14 days", short: "14 days",    days: 14 },
+        { id: "days_7",  word: "the last 7 days",  short: "7 days",     days: 7 },
+      ];
+      const keepIndex = (id) => KEEP.findIndex((k) => k.id === id);
+
+      let semanticSearchOn = true;
+      const requiredBytes = () =>
+        SPEAKRS_BYTES + WHISPER_BASE_BYTES + (semanticSearchOn ? NOMIC_BYTES : 0);
+      const dailyBytes = (s) => (ANCHOR_MB_PER_DAY * ANCHOR_INTERVAL_S / s) * 1e6;
+
+      const phrase = (s) =>
+        s < 1 ? Math.round(1 / s) + " times a second"
+        : s === 1 ? "every second"
+        : s === 60 ? "once per minute"
+        : "every " + s + " seconds";
+      const shortRate = (s) => (s < 1 ? Math.round(1 / s) + "/s" : s + "s");
+
+      function si(b) {
+        if (b == null) return "—";
+        if (b >= 1e12) return (b / 1e12).toFixed(2).replace(/0$/, "") + " TB";
+        if (b >= 1e9) { const g = b / 1e9; return (g >= 100 ? Math.round(g) : g.toFixed(1)) + " GB"; }
+        if (b >= 1e6) return Math.round(b / 1e6) + " MB";
+        if (b >= 1e3) return Math.round(b / 1e3) + " KB";
+        return Math.round(Math.max(b, 0)) + " B";
+      }
+      function dur(days) {
+        if (!isFinite(days) || days <= 0) return "no time at all";
+        if (days < 1) return "less than a day";
+        if (days < 14) return Math.round(days) + " days";
+        if (days < 60) return Math.round(days / 7) + " weeks";
+        if (days < 365) return Math.round(days / 30) + " months";
+        return (days / 365).toFixed(1).replace(/\.0$/, "") + " years";
+      }
+
+      /* ══ 2. fake filesystem — mirrors probe_storage_path ════════════════ */
+      const HOME = "/Users/you";
+      const VOLUMES = [
+        { id: "hd",  name: "Macintosh HD", mount: "/",                     free: 214e9,   writable: true,  connected: true },
+        { id: "t7",  name: "Samsung T7",   mount: "/Volumes/Samsung T7",   free: 1.42e12, writable: true,  connected: true },
+        { id: "tm",  name: "Time Machine", mount: "/Volumes/Time Machine", free: 180e9,   writable: false, connected: true },
+        { id: "sd",  name: "SD Card",      mount: "/Volumes/SD Card",      free: 0.9e9,   writable: true,  connected: true },
+        { id: "usb", name: "USB Stick",    mount: "/Volumes/USB Stick",    free: 2.4e9,   writable: true,  connected: true },
+        { id: "nas", name: "Archive",      mount: "/Volumes/Archive",      free: null,    writable: true,  connected: true },
+      ];
+      const vol = (id) => VOLUMES.find((v) => v.id === id);
+
+      const EXISTING = new Set([
+        "/", "/Users", HOME, HOME + "/.mnema", HOME + "/Desktop", HOME + "/Documents",
+        HOME + "/Movies", "/Volumes",
+        "/Volumes/Samsung T7", "/Volumes/Time Machine", "/Volumes/SD Card",
+        "/Volumes/USB Stick", "/Volumes/Archive",
+        "/Volumes/Samsung T7/Mnema", "/Volumes/Time Machine/Mnema",
+        "/Volumes/SD Card/Mnema", "/Volumes/USB Stick/Mnema", "/Volumes/Archive/Mnema",
+      ]);
+
+      const expand = (p) => (p.startsWith("~") ? HOME + p.slice(1) : p).replace(/\/+$/, "") || "/";
+      const pretty = (p) => (p.startsWith(HOME) ? "~" + p.slice(HOME.length) : p);
+      const parentOf = (p) => p.slice(0, p.lastIndexOf("/")) || "/";
+
+      /** Sentence-safe path: keep the first and last segments, drop the middle. */
+      function elide(abs, max) {
+        const p = pretty(abs);
+        if (p.length <= max) return p;
+        const parts = p.split("/");
+        if (parts.length <= 2) return "…" + p.slice(-(max - 1));
+        const head = parts[0] === "" ? "" : parts[0];
+        let out = head + "/…/" + parts.slice(-2).join("/");
+        if (out.length > max) out = head + "/…/" + parts[parts.length - 1];
+        return out;
+      }
+      function volumeForPath(abs) {
+        for (const v of VOLUMES) {
+          if (!v.connected || v.mount === "/") continue;
+          if (abs === v.mount || abs.startsWith(v.mount + "/")) return v;
+        }
+        if (/^\/Volumes\/[^/]+/.test(abs)) return null;   // nothing connected claims it
+        return vol("hd");
+      }
+      const existsSomewhere = (abs) => {
+        let p = abs;
+        while (p && p !== "/") { if (EXISTING.has(p)) return true; p = parentOf(p); }
+        return true;
+      };
+      let holdProbing = false;
+      function probeStoragePath(path) {
+        const abs = expand(path || "");
+        const v = volumeForPath(abs);
+        const exists = EXISTING.has(abs);
+        return new Promise((resolve) => {
+          if (holdProbing) return;                      // driver: sit in the probing state
+          setTimeout(() => resolve({
+            path: abs, volume: v, disconnected: v === null, exists,
+            writable: exists && !!v && v.writable,
+            freeBytes: v && existsSomewhere(abs) ? v.free : null,
+          }), 430);
+        });
+      }
+
+      /* ══ 3. the plan line + the verdict ═════════════════════════════════
+         The plan line ALWAYS reads `rate · horizon`. With retention `never`
+         the horizon is a first-year projection, not a missing ceiling — so
+         the default case has a number that moves, in the same position, and
+         reads as a horizon rather than a gap.                              */
+      function planLine(st) {
+        const daily = dailyBytes(LADDER[st.i]);
+        const k = KEEP[keepIndex(st.keep)];
+        const horizon = k.days === null
+          ? 'about <span class="fig">' + si(daily * 365) +
+            "</span> in the first year, and it keeps going"
+          : '<span class="fig">' + si(daily * k.days) + "</span> held, then it stops growing";
+        return '<span class="fig">' + si(daily) + "</span> a day<span class=\"sep\">·</span>" + horizon;
+      }
+
+      function evaluate(st, probe) {
+        const daily = dailyBytes(LADDER[st.i]);
+        const k = KEEP[keepIndex(st.keep)];
+        const held = k.days === null ? null : daily * k.days;
+        const dl = requiredBytes();
+        const plan = planLine(st);
+        const R = (label, act, primary) => ({ label, act, primary: !!primary });
+
+        if (!probe) return { tone: "", clause: null, probing: true, plan, verdict: "", repairs: [] };
+
+        if (probe.disconnected) return {
+          tone: "bad", clause: "that drive isn't connected right now.", plan,
+          verdict: "Mnema won't record to a volume it can't see, and if it disappears mid-session " +
+                   "recording stops until it's back.",
+          repairs: [R("Use ~/.mnema instead", "default", true), R("Re-check", "recheck")],
+        };
+        if (!probe.exists) return {
+          tone: "bad", clause: "that folder isn't there yet.", plan,
+          verdict: (probe.freeBytes === null ? "Free space unknown" : si(probe.freeBytes) + " free") +
+                   " on " + probe.volume.name + " — only the folder is missing.",
+          repairs: [R("Create it", "create", true), R("Choose another folder…", "pick")],
+        };
+        if (!probe.writable) return {
+          tone: "bad", clause: probe.volume.name + " is read-only.", plan,
+          verdict: "The write probe failed there — proven, not guessed.",
+          repairs: [R("Choose another folder…", "pick", true), R("Use ~/.mnema instead", "default")],
+        };
+        if (probe.freeBytes === null) return {
+          // NOT a break: an inability to measure is not a shortfall (ADR 0040).
+          tone: "warn", clause: null, plan,
+          verdict: '<span class="verdict">Free space on ' + probe.volume.name +
+                   " couldn't be read.</span> That doesn't block anything — the plan above still " +
+                   "holds, it just can't be checked against the disk.",
+          repairs: [R("Re-check", "recheck")],
+        };
+
+        const free = probe.freeBytes;
+        const usable = free - dl - RESERVE_BYTES;
+
+        if (free < dl) return {
+          tone: "bad", clause: "there isn't room for the models yet.", plan,
+          verdict: '<span class="verdict">' + si(dl - free) + " short before recording even " +
+                   "starts.</span> The downloads are about <span class=\"fig\">" + si(dl) +
+                   "</span>; " + probe.volume.name + " has <span class=\"fig\">" + si(free) +
+                   "</span> free.",
+          repairs: (semanticSearchOn
+            ? [R("Turn Semantic Search off — " + si(NOMIC_BYTES), "nosemantic", true)] : [])
+            .concat([R("Choose another folder…", "pick")]),
+        };
+        if (usable <= daily) return {
+          // The shipped gate (gates.ts:58) stops at the branch above. This is what it lets through.
+          tone: "bad", clause: "there isn't room for a day of recording.", plan,
+          verdict: '<span class="verdict">The downloads fit; the capture does not.</span> After ' +
+                   "about <span class=\"fig\">" + si(dl + RESERVE_BYTES) +
+                   "</span> of models and safety reserve, " +
+                   (usable <= 0 ? "nothing is left" :
+                     "only <span class=\"fig\">" + si(usable) + "</span> is left") +
+                   " — and one day costs <span class=\"fig\">" + si(daily) + "</span>.",
+          repairs: [R("Choose another folder…", "pick", true), R("Record less often", "slower")],
+        };
+        if (held !== null && held > usable) return {
+          tone: "warn", clause: null, plan,
+          verdict: "Holding " + k.short + " takes about <span class=\"fig\">" + si(held) +
+                   "</span>, and <span class=\"fig\">" + si(usable) + "</span> is free on " +
+                   probe.volume.name + '. <span class="verdict">It fills up after about ' +
+                   dur(usable / daily) + ".</span>",
+          repairs: [R("Record less often", "slower", true), R("Keep less", "tighten")],
+        };
+        if (held === null) {
+          const runout = usable / daily;
+          return {
+            tone: runout >= 180 ? "ok" : "warn", clause: null, plan,
+            verdict: si(free) + " free on " + probe.volume.name +
+                     ' — <span class="verdict">room for about ' + dur(runout) +
+                     " at this rate</span>, and nothing is deleted to make more.",
+            repairs: runout >= 180 ? []
+              : [R("Keep the last 30 days", "keep:days_30", true), R("Record less often", "slower")],
+          };
+        }
+        return {
+          tone: "ok", clause: null, plan,
+          verdict: si(free) + " free on " + probe.volume.name +
+                   ' — <span class="verdict">fits, with ' + si(usable - held) + " to spare</span> " +
+                   "(and it stops growing after " + k.days + " days).",
+          repairs: [],
+        };
+      }
+
+      /* ══ 4. the simulated folder picker — one native <dialog> ═══════════ */
+      const picker = el("picker");
+      const pkSide = el("pk-side"), pkList = el("pk-list");
+      const pkCrumb = el("pk-crumb"), pkSel = el("pk-sel");
+      let pkResolve = null, pkDir = HOME, pkPick = HOME;
+
+      function childrenOf(dir) {
+        const out = [];
+        for (const p of EXISTING) {
+          if (p === "/" || parentOf(p) !== dir) continue;
+          if (volumeForPath(p) === null) continue;    // a disconnected drive shows nothing
+          out.push(p);
+        }
+        return out.sort();
+      }
+      function pkRender() {
+        pkSide.replaceChildren();
+        const places = [{ label: "Home", path: HOME }].concat(
+          VOLUMES.filter((v) => v.connected && v.mount !== "/")
+                 .map((v) => ({ label: v.name, path: v.mount })));
+        for (const pl of places) {
+          const b = document.createElement("button");
+          b.textContent = pl.label;
+          if (pkDir === pl.path || pkDir.startsWith(pl.path + "/")) b.setAttribute("aria-current", "true");
+          b.addEventListener("click", () => { pkDir = pl.path; pkPick = pl.path; pkRender(); });
+          pkSide.append(b);
+        }
+        pkCrumb.replaceChildren();
+        const up = document.createElement("button");
+        up.textContent = "↰ up";
+        up.disabled = pkDir === "/";
+        up.addEventListener("click", () => { pkDir = parentOf(pkDir); pkPick = pkDir; pkRender(); });
+        pkCrumb.append(up, document.createTextNode(pretty(pkDir)));
+
+        pkList.replaceChildren();
+        const kids = childrenOf(pkDir);
+        if (kids.length === 0) {
+          const e = document.createElement("div");
+          e.className = "pk-empty";
+          e.textContent = "No folders here — “Choose” selects this one.";
+          pkList.append(e);
+        }
+        for (const kid of kids) {
+          const b = document.createElement("button");
+          const name = document.createElement("span");
+          name.textContent = kid.slice(kid.lastIndexOf("/") + 1);
+          const chev = document.createElement("span");
+          chev.className = "chev"; chev.textContent = "›";
+          b.append(name, chev);
+          if (pkPick === kid) b.setAttribute("aria-current", "true");
+          b.addEventListener("click", () => { pkPick = kid; pkRender(); });
+          b.addEventListener("dblclick", () => { pkDir = kid; pkPick = kid; pkRender(); });
+          pkList.append(b);
+        }
+        pkSel.textContent = pretty(pkPick);
+        pkSel.title = pkPick;
+      }
+      function pkClose(value) {
+        const r = pkResolve; pkResolve = null;
+        picker.close();
+        if (r) r(value);
+      }
+      function openPicker(current) {
+        if (picker.open) pkClose(null);
+        const abs = expand(current);
+        pkDir = EXISTING.has(abs) ? parentOf(abs) : HOME;
+        pkPick = EXISTING.has(abs) ? abs : HOME;
+        pkRender();
+        picker.showModal();
+        return new Promise((resolve) => { pkResolve = resolve; });
+      }
+      el("pk-cancel").addEventListener("click", () => pkClose(null));
+      el("pk-choose").addEventListener("click", () => pkClose(pkPick));
+      picker.addEventListener("cancel", (e) => { e.preventDefault(); pkClose(null); });   // Esc
+
+      /* ══ 5. the ghost dial ══════════════════════════════════════════════
+         How many neighbours a token prints depends on how long its ladder is:
+           · retention (4 stops)  → the WHOLE set, so "everything" reads as
+                                    one of four rather than as a statement
+           · rate (11 stops)      → a 5-wide window centred on the choice and
+                                    clamped at the ends, so the row never goes
+                                    ragged and never prints ten ghosts
+           · place (2 states)     → one ghost, `~/.mnema`, and only when you
+                                    are away from it: undo is a word          */
+      function windowOf(index, count, width) {
+        const w = Math.min(width, count);
+        const start = Math.min(Math.max(index - ((w - 1) >> 1), 0), count - w);
+        return { start, end: start + w };
+      }
+
+      const st = { i: DEFAULT_I, keep: "never", place: "~/.mnema" };
+      let probe = null, seq = 0, peek = null, tail = null, punct = null;
+      const line = el("line"), outcome = el("outcome"), repair = el("repair");
+      const t = (s) => document.createTextNode(s);
+
+      function dial(kind, opts) {
+        const wrap = document.createElement("span");
+        wrap.className = "dial";
+
+        const ghost = (i) => {
+          const g = document.createElement("button");
+          g.type = "button";
+          g.className = "ghost" + (Math.abs(i - opts.index) === 1 ? " near" : "");
+          g.textContent = opts.textAt(i);
+          g.title = opts.titleAt ? opts.titleAt(i) : "";
+          // Decoration to a screen reader on purpose: every value here is also
+          // reachable from the token with ← → / Page↑ Page↓ / Home / End.
+          g.setAttribute("aria-hidden", "true");
+          g.tabIndex = -1;
+          g.addEventListener("click", (e) => { e.stopPropagation(); peek = null; opts.commit(i); });
+          // Hover preview: the consequence moves before you commit to it.
+          g.addEventListener("mouseenter", () => { peek = opts.peekAt(i); paintOutcome(); });
+          g.addEventListener("mouseleave", () => { peek = null; paintOutcome(); });
+          return g;
+        };
+
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "tok"; b.dataset.kind = kind;
+        b.textContent = opts.label;
+        b.setAttribute("role", "spinbutton");
+        b.setAttribute("aria-label", opts.aria);
+        b.setAttribute("aria-valuemin", "1");
+        b.setAttribute("aria-valuemax", String(opts.count));
+        b.setAttribute("aria-valuenow", String(opts.index + 1));
+        b.setAttribute("aria-valuetext", opts.label);
+        // Clicking the word steps forward and wraps, so a click is never dead.
+        b.addEventListener("click", () => opts.commit((opts.index + 1) % opts.count));
+        b.addEventListener("keydown", (e) => {
+          const last = opts.count - 1;
+          const clamp = (i) => Math.min(Math.max(i, 0), last);
+          const to =
+            e.key === "ArrowRight" || e.key === "ArrowUp" ? clamp(opts.index + 1) :
+            e.key === "ArrowLeft" || e.key === "ArrowDown" ? clamp(opts.index - 1) :
+            e.key === "PageUp" ? clamp(opts.index + 2) :
+            e.key === "PageDown" ? clamp(opts.index - 2) :
+            e.key === "Home" ? 0 :
+            e.key === "End" ? last : null;
+          if (to === null) return;
+          e.preventDefault();
+          opts.commit(to);
+        });
+
+        const win = windowOf(opts.index, opts.count, opts.width);
+        for (let i = win.start; i < win.end; i++) wrap.append(i === opts.index ? b : ghost(i));
+        return wrap;
+      }
+
+      function token(kind) {
+        if (kind === "rate") return dial("rate", {
+          label: phrase(LADDER[st.i]), aria: "How often to take a snapshot",
+          index: st.i, count: LADDER.length, width: RATE_WINDOW,
+          textAt: (i) => shortRate(LADDER[i]),
+          titleAt: (i) => phrase(LADDER[i]) + " — " + si(dailyBytes(LADDER[i])) + " a day",
+          peekAt: (i) => ({ i }),
+          commit: (i) => setState({ i }),
+        });
+        if (kind === "keep") {
+          const cur = keepIndex(st.keep);
+          return dial("keep", {
+            label: KEEP[cur].word, aria: "How long to keep it",
+            index: cur, count: KEEP.length, width: KEEP.length,
+            textAt: (i) => KEEP[i].short,
+            titleAt: (i) => "keep " + KEEP[i].word,
+            peekAt: (i) => ({ keep: KEEP[i].id }),
+            commit: (i) => setState({ keep: KEEP[i].id }),
+          });
+        }
+        const wrap = document.createElement("span");
+        wrap.className = "dial";
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "tok place"; b.dataset.kind = "place";
+        b.textContent = elide(expand(st.place), 26);
+        b.title = expand(st.place);
+        b.setAttribute("aria-label",
+          "Where it lives: " + expand(st.place) + ". Opens a folder picker.");
+        b.addEventListener("click", () => openPicker(st.place).then((p) => p && setPlace(p)));
+        wrap.append(b);
+        return wrap;
+      }
+
+      /** The place token's one ghost: the default you moved away from. It rides at
+       *  the END of the sentence, after the full stop or after the break clause —
+       *  it is an undo, not a ladder neighbour, and the sentence must be allowed to
+       *  finish before it appears.
+       *  ponytail: it commits instead of previewing — a preview would need a second
+       *  probe of a path you haven't chosen. */
+      function placeUndo() {
+        if (expand(st.place) === expand("~/.mnema")) return null;
+        const g = document.createElement("button");
+        g.type = "button"; g.className = "ghost undo"; g.textContent = "~/.mnema";
+        g.title = "Back to the default folder";
+        g.setAttribute("aria-hidden", "true");
+        g.tabIndex = -1;
+        g.addEventListener("click", () => setPlace("~/.mnema"));
+        return g;
+      }
+
+      /* ══ 6. paint ═══════════════════════════════════════════════════════ */
+      function paint() {
+        const focused = document.activeElement;
+        const owner = focused && line.contains(focused) ? focused.closest("[data-kind]") : null;
+        const hadFocus = owner ? owner.dataset.kind : null;
+
+        // Each token is glued to the punctuation after it, so a wrap never starts
+        // a line with an orphan comma; `tail` holds the break clause, free to wrap.
+        const glued = (node, p) => {
+          const nb = document.createElement("span");
+          nb.className = "nb";
+          nb.append(node, t(p));
+          return nb;
+        };
+        punct = document.createElement("span");
+        tail = document.createElement("span");
+        const placeNb = glued(token("place"), "");
+        placeNb.append(punct);
+        line.replaceChildren(
+          t("Take a snapshot "), glued(token("rate"), ","),
+          t(" keep "), glued(token("keep"), ","),
+          t(" in "), placeNb, tail,
+        );
+        const undo = placeUndo();
+        if (undo) line.append(undo);
+        if (hadFocus) {
+          const again = line.querySelector('[data-kind="' + hadFocus + '"]');
+          if (again) again.focus();
+        }
+        paintOutcome();
+      }
+
+      function paintOutcome() {
+        const view = peek ? Object.assign({}, st, peek) : st;
+        const res = evaluate(view, probe);
+
+        // The break: the sentence stops mid-clause instead of reaching its full stop.
+        tail.replaceChildren();
+        punct.replaceChildren();
+        punct.className = "";
+        const placeTok = line.querySelector('[data-kind="place"]');
+        if (placeTok) placeTok.classList.toggle("bad", !!res.clause);
+        if (res.probing) {
+          punct.append(t("…"));
+        } else if (res.clause) {
+          punct.className = "brk";
+          const dash = document.createElement("span");
+          dash.className = "dash"; dash.textContent = " —";
+          punct.append(dash);
+          const b = document.createElement("span");
+          b.className = "brk"; b.textContent = " " + res.clause;
+          tail.append(b);
+        } else {
+          punct.append(t("."));
+        }
+
+        outcome.className = "outcome " + (res.tone || "") + (peek ? " peek" : "");
+        const tag = peek ? '<span class="peek-tag">if</span>' : "";
+        outcome.innerHTML = '<span class="plan">' + tag + res.plan + "</span>" +
+          (res.probing ? '<div class="probing"><i></i></div>' : res.verdict);
+
+        repair.replaceChildren();
+        if (peek) return;                      // a preview offers no repairs
+        for (const r of res.repairs) {
+          const b = document.createElement("button");
+          b.className = "ob-btn sm" + (r.primary ? " primary" : "");
+          b.textContent = r.label;
+          b.addEventListener("click", () => act(r.act));
+          repair.append(b);
+        }
+      }
+
+      function setState(patch) { peek = null; Object.assign(st, patch); paint(); }
+      function setPlace(p) { peek = null; st.place = p; paint(); reprobe(); }
+      function reprobe() {
+        const ticket = ++seq;
+        probe = null;
+        paintOutcome();
+        probeStoragePath(st.place).then((p) => {
+          if (ticket === seq) { probe = p; paintOutcome(); }
+        });
+      }
+      function act(a) {
+        if (a === "default") return setPlace("~/.mnema");
+        if (a === "pick") return openPicker(st.place).then((p) => p && setPlace(p));
+        if (a === "create") { EXISTING.add(expand(st.place)); return reprobe(); }
+        if (a === "recheck") return reprobe();
+        if (a === "nosemantic") { semanticSearchOn = false; driverState(); return paintOutcome(); }
+        if (a === "slower") return setState({ i: Math.min(st.i + 2, LADDER.length - 1) });
+        if (a === "tighten")
+          return setState({ keep: KEEP[Math.min(keepIndex(st.keep) + 1, KEEP.length - 1)].id });
+        if (a.startsWith("keep:")) return setState({ keep: a.slice(5) });
+      }
+
+      /* ══ 7. state drivers ═══════════════════════════════════════════════ */
+      const driverLine = el("driver-state");
+      function driverState() {
+        driverLine.textContent =
+          "Semantic Search " + (semanticSearchOn ? "on" : "off") +
+          " · downloads " + si(requiredBytes()) +
+          " · Samsung T7 " + (vol("t7").connected ? "connected" : "unplugged") +
+          (holdProbing ? " · probe held" : "");
+      }
+      el("drivers").addEventListener("click", (e) => {
+        const btn = e.target.closest("button[data-act]");
+        if (!btn) return;
+        const a = btn.dataset.act;
+        if (a.startsWith("path:")) { holdProbing = false; setPlace(a.slice(5)); }
+        else if (a === "hold") { holdProbing = !holdProbing; reprobe(); }
+        else if (a === "semantic") { semanticSearchOn = !semanticSearchOn; paintOutcome(); }
+        else if (a.startsWith("keep:")) setState({ keep: a.slice(5) });
+        else if (a === "disconnect") {
+          const v = vol("t7");
+          if (v.connected) {
+            v.connected = false;
+            if (!expand(st.place).startsWith(v.mount)) st.place = v.mount + "/Mnema";
+          } else { v.connected = true; }
+          holdProbing = false;
+          paint(); reprobe();
+        }
+        driverState();
+      });
+
+      /* ══ 8. self-check — fails loudly if the arithmetic drifts ══════════ */
+      console.assert(LADDER[DEFAULT_I] === 2, "default capture interval must be 2 s");
+      console.assert(KEEP[0].id === "never", "`never` must be first and default");
+      console.assert(si(dailyBytes(2)) === "405 MB",
+        "405 MB/day at the 2 s default (270 MB/day @ 3 s anchor), got " + si(dailyBytes(2)));
+      console.assert(si(dailyBytes(3)) === "270 MB", "the anchor itself must round-trip");
+      console.assert(requiredBytes() === 1115434189,
+        "default work list must be 1,115,434,189 B, got " + requiredBytes());
+      console.assert(si(dailyBytes(2) * 30) === "12.2 GB",
+        "30-day ceiling at the default rate");
+      // ghost windows: rate always prints 5 stops incl. the choice, clamped at both ends
+      console.assert(JSON.stringify(windowOf(0, 11, 5)) === '{"start":0,"end":5}', "window at the low end");
+      console.assert(JSON.stringify(windowOf(10, 11, 5)) === '{"start":6,"end":11}', "window at the high end");
+      console.assert(JSON.stringify(windowOf(3, 11, 5)) === '{"start":1,"end":6}', "window centred");
+      console.assert(JSON.stringify(windowOf(0, 4, 4)) === '{"start":0,"end":4}', "retention prints all four");
+      // the SD-card case: the Semantic Search escape clears the shipped gate and
+      // still leaves nowhere to record — the reason gates.ts needs a second term.
+      console.assert(0.9e9 < requiredBytes(), "SD card must fail the download gate");
+      console.assert(0.9e9 - (SPEAKRS_BYTES + WHISPER_BASE_BYTES) - RESERVE_BYTES < dailyBytes(2),
+        "…and must still fail the capture headroom check without nomic");
+
+      driverState();
+      paint();
+      reprobe();
+    })();
+  </script>
+</section>

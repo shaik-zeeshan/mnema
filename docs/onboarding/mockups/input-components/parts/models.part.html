@@ -1,0 +1,581 @@
+<!--
+  FINAL · model pickers. Chosen design = round 2 variant 4's structure (family
+  group + a variant sub-group only where a family has more than one build),
+  variant 2's fixed detail strip (model · download · memory), variant 5's budget
+  bar demoted to a read-only section footer.
+
+  Every byte figure comes from the Rust manifest that owns it:
+    crates/audio-transcription/src/lib.rs:257-283   whisper tiny/base/small/medium
+    crates/audio-transcription/src/lib.rs:359-455   parakeet full + int8 (file sums)
+    crates/speaker-analysis/src/lib.rs:361          speakrs 419_482_724
+    crates/semantic-search/src/models.rs:326-468    approx_download_bytes
+  Semantic figures are approximate, so any total containing one reads "about".
+-->
+<section class="cmp" id="cmp-models">
+  <header class="cmp-head">
+    <span class="ob-m">COMPONENT</span>
+    <h2 class="ob-disp sm">Model pickers</h2>
+    <p class="ob-body">
+      The two choices that decide what actually gets downloaded — which transcription
+      engine, and whether Semantic Search runs at all.
+    </p>
+  </header>
+
+  <div class="cmp-stage">
+    <div class="mp">
+      <!-- ── Transcription ───────────────────────────────────────────── -->
+      <div class="mp-picker">
+        <span class="ob-m">Transcription</span>
+        <div class="grp" data-grp="t-fam"></div>
+        <div class="sub">
+          <div class="grp small" data-grp="t-var"></div>
+          <span class="sub-note" data-note="t"></span>
+        </div>
+        <div class="strip">
+          <div><span class="k">Model</span><span class="v" data-cell="t-name"></span></div>
+          <div><span class="k">Download</span><span class="v" data-cell="t-size"></span></div>
+          <div><span class="k">Memory</span><span class="v dim" data-cell="t-mem"></span></div>
+        </div>
+      </div>
+
+      <hr class="ob-rule" />
+
+      <!-- ── Semantic Search ─────────────────────────────────────────── -->
+      <div class="mp-picker">
+        <span class="ob-m">Semantic Search</span>
+        <div class="grp" data-grp="s-fam"></div>
+        <div class="sub">
+          <div class="grp small" data-grp="s-var"></div>
+          <span class="sub-note" data-note="s"></span>
+        </div>
+        <div class="strip">
+          <div><span class="k">Model</span><span class="v" data-cell="s-name"></span></div>
+          <div><span class="k">Download</span><span class="v" data-cell="s-size"></span></div>
+          <div><span class="k">Languages</span><span class="v dim" data-cell="s-langs"></span></div>
+        </div>
+      </div>
+
+      <!-- ── Read-only section footer: the whole download ─────────────── -->
+      <div class="foot">
+        <div class="budget" aria-hidden="true">
+          <div class="budget-track">
+            <i class="b-speaker" data-bar="speaker"></i>
+            <i class="b-transcription" data-bar="transcription"></i>
+            <i class="b-semantic" data-bar="semantic"></i>
+            <i class="b-rest"></i>
+            <div class="budget-hatch" data-hatch hidden></div>
+          </div>
+          <div class="disk-line"><i data-diskmark></i><span data-disklabel></span></div>
+        </div>
+
+        <div class="tot-line">
+          <span class="tot-hero" data-hero></span>
+          <span class="tot-cap">to download before any of this works</span>
+        </div>
+        <div class="tot-parts" data-parts></div>
+        <div data-escape></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="cmp-notes">
+    <span class="ob-m">States you can drive</span>
+    <div class="drivers">
+      <span class="dl">Free disk</span>
+      <div class="grp small" data-grp="disk"></div>
+      <span class="dl">Who&rsquo;s speaking</span>
+      <div class="grp small" data-grp="speaker"></div>
+      <button class="ob-btn sm" type="button" data-act="defaults">Back to defaults</button>
+    </div>
+    <p class="ob-fine">
+      620&nbsp;MB is the over-disk state: the default set does not fit, and the only
+      real escape is turning Semantic Search <em>off</em> — the total drops to
+      567&nbsp;MB and the &ldquo;about&rdquo; qualifier disappears with nomic, because
+      nothing approximate is left in the sum. Who&rsquo;s speaking has no picker
+      anywhere; the budget bar is the only place its 419&nbsp;MB is ever visible.
+    </p>
+
+    <hr class="ob-rule" />
+
+    <span class="ob-m">Implementation notes</span>
+    <ul class="ob-fine notes-list">
+      <li>
+        Replaces <code>ChangeSettingsScreen.svelte:322</code> (transcription model
+        <code>&lt;Select&gt;</code>) and <code>:370</code> (Semantic Search model
+        <code>&lt;Select&gt;</code>). The family group already ships at
+        <code>:317</code> (<code>transcriptionProviderOptions</code> over
+        <code>Segmented</code>), so this is <b>delete the <code>Select</code>, add a
+        second <code>Segmented</code></b> under it — the real
+        <code>lib/components/Segmented.svelte</code>, whose radiogroup roles, roving
+        tabindex and focus ring the markup here is a port of.
+      </li>
+      <li>
+        Semantic Search has no family group today: build it from
+        <code>c.semanticSearchModelOptions</code> grouped by language coverage
+        (English / Multilingual), with <b>Off</b> as the first segment — that segment
+        <em>is</em> the row&rsquo;s <code>Switch</code>
+        (<code>:380</code>), folded in, because Off is the only meaningful saving on
+        this row.
+      </li>
+      <li>
+        The variant sub-group renders only when a family has &gt;1 build, but its row
+        is height-reserved, so switching family never moves the strip or the footer.
+        Apple Speech and Off keep the row and fill it with the family&rsquo;s one-line
+        fact. Apple Speech carries <code>OS_MANAGED_OPTION_VALUE</code> and no byte
+        figure at all.
+      </li>
+      <li>
+        Sub-group selection is remembered per family, so switching Whisper&nbsp;→
+        Parakeet&nbsp;→ Whisper does not silently reset a deliberate Medium back to
+        Base.
+      </li>
+      <li>
+        The strip&rsquo;s third cell is per-picker (transcription = memory while
+        running, semantic = languages) because those are the facts each list actually
+        has. <b>Backend gap:</b> no manifest carries a memory figure — the transcription
+        column is editorial text keyed by family, and Parakeet int8 has no honest
+        number, so it prints &ldquo;below Parakeet full precision&rdquo; rather than
+        inventing one. If it should be data, it needs a field on the transcription
+        manifest.
+      </li>
+      <li>
+        The footer replaces the per-row <code>downloadNote(...)</code> sentences
+        (<code>:307</code>, <code>:344</code>, <code>:359</code>) and the
+        <code>semanticShare</code> percentage at <code>:363</code>. The bar is
+        <code>aria-hidden</code> decoration; the total line beneath it is the text of
+        record. Free disk needs a real figure (statvfs on the capture volume) — today
+        the screen has none.
+      </li>
+    </ul>
+  </div>
+
+  <style>
+    /* The host gives these classes their type only, not their layout — so the
+       row rhythm inside this component is set here, in this namespace. */
+    #cmp-models .ob-m { display: block; margin-bottom: 8px; }
+    #cmp-models .ob-rule { margin: 18px 0; }
+    #cmp-models .ob-fine { line-height: 1.7; }
+
+    /* ── the two groups: a port of lib/components/Segmented.svelte ────── */
+    #cmp-models .grp {
+      display: inline-flex; width: fit-content; max-width: 100%;
+      gap: 2px; padding: 2px;
+      border: 1px solid var(--app-border-strong); border-radius: 8px;
+      background: var(--app-surface); vertical-align: middle;
+    }
+    #cmp-models .grp[hidden] { display: none; }
+    #cmp-models .seg {
+      display: inline-flex; align-items: center; justify-content: center;
+      padding: 6px 12px; border: 0; border-radius: 6px;
+      background: transparent; color: var(--app-text-muted);
+      font: inherit; font-size: var(--text-base); font-weight: 540; line-height: 1.15;
+      cursor: pointer; user-select: none; outline: none; white-space: nowrap;
+      transition: background .15s, color .15s, box-shadow .15s;
+    }
+    #cmp-models .seg:hover:not(.seg--active) { color: var(--app-text); background: var(--app-surface-hover); }
+    #cmp-models .seg:not(.seg--active):active { background: var(--app-surface-active); }
+    #cmp-models .seg:focus-visible {
+      box-shadow: var(--app-ring); outline: 2px solid var(--app-accent); outline-offset: -2px;
+    }
+    #cmp-models .seg--active {
+      color: var(--app-accent); background: var(--app-accent-bg);
+      box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    }
+    #cmp-models .grp.small .seg { padding: 5px 10px; font-size: var(--text-sm); }
+
+    /* ── the variant row: always present, so nothing below it moves ─────
+       The reserved height is the small group's own height, spelled out from
+       its metrics (label 11px × 1.15 line + 5px×2 segment padding + 2px×2
+       group padding + 1px×2 border), so a family with one build leaves the
+       strip and the footer exactly where the multi-build families put them. */
+    #cmp-models .sub {
+      margin-top: 9px;
+      min-height: calc(var(--text-sm) * 1.15 + 16px);
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    #cmp-models .sub-note {
+      font-size: var(--text-sm); color: var(--app-text-subtle); line-height: 1.5;
+    }
+
+    /* ── the fixed detail strip: three cells, never changes height ────── */
+    #cmp-models .strip {
+      margin-top: 10px;
+      display: grid; grid-template-columns: 1.35fr 1fr 1.15fr; gap: 1px;
+      border: 1px solid var(--app-border); border-radius: 8px;
+      background: var(--app-border); overflow: hidden;
+    }
+    /* Two lines of value are reserved in every cell, so the longest string in the
+       manifest ("Snowflake Arctic Embed L v2", "below Parakeet full precision")
+       wraps instead of being clipped at the narrow end — and the block still
+       never changes height, because the room is always there. */
+    #cmp-models .strip > div {
+      box-sizing: border-box; /* the reserved height is the whole cell, padding included */
+      background: var(--app-surface-subtle); padding: 8px 11px; min-height: 64px; min-width: 0;
+    }
+    /* Both line-heights are pinned: the reservation above is only honest if the
+       host page's body line-height can't grow the label or the value. */
+    #cmp-models .strip .k {
+      display: block; font-size: var(--text-xs); line-height: 1.1; letter-spacing: .12em;
+      text-transform: uppercase; color: var(--app-text-faint); margin-bottom: 4px;
+    }
+    #cmp-models .strip .v {
+      display: block; font-size: var(--text-sm); line-height: 1.4;
+      color: var(--app-text-strong); font-variant-numeric: tabular-nums;
+      overflow-wrap: break-word;
+    }
+    #cmp-models .strip .v.dim { color: var(--app-text-muted); }
+
+    /* ── section footer: read-only budget bar + the total of record ──── */
+    #cmp-models .foot { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--app-border); }
+    #cmp-models .budget-track {
+      position: relative; display: flex; height: 22px; gap: 1px;
+      border-radius: 6px; overflow: hidden;
+      background: var(--app-surface-subtle); box-shadow: inset 0 0 0 1px var(--app-border);
+    }
+    #cmp-models .budget-track i { display: block; height: 100%; transition: width .22s cubic-bezier(.2,.8,.3,1); }
+    #cmp-models .b-speaker { background: var(--app-accent-strong); }
+    #cmp-models .b-transcription { background: var(--app-accent); }
+    #cmp-models .b-semantic { background: var(--app-info); }
+    #cmp-models .b-rest { background: transparent; flex: 1 1 auto; }
+    #cmp-models .budget-hatch {
+      position: absolute; top: 0; bottom: 0; right: 0;
+      background: repeating-linear-gradient(135deg, var(--app-danger-bg) 0 5px, transparent 5px 10px);
+      box-shadow: inset 1px 0 0 var(--app-danger-border); pointer-events: none;
+    }
+    #cmp-models .disk-line { position: relative; height: 14px; margin-top: 2px; font-size: var(--text-xs); color: var(--app-text-subtle); }
+    #cmp-models .disk-line i {
+      position: absolute; top: -26px; width: 2px; height: 30px;
+      background: var(--app-text-muted); border-radius: 1px;
+      transition: left .22s cubic-bezier(.2,.8,.3,1);
+    }
+    #cmp-models .disk-line span {
+      position: absolute; transform: translateX(-50%); white-space: nowrap;
+      font-variant-numeric: tabular-nums; transition: left .22s cubic-bezier(.2,.8,.3,1);
+    }
+    #cmp-models .tot-line { margin-top: 16px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    #cmp-models .tot-hero {
+      font-size: var(--text-xl); color: var(--app-text-strong);
+      font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+    }
+    #cmp-models .tot-hero.over { color: var(--app-danger); }
+    #cmp-models .tot-cap { font-size: var(--text-sm); color: var(--app-text-subtle); }
+    #cmp-models .tot-parts {
+      margin-top: 7px; display: flex; flex-wrap: wrap; gap: 4px 16px;
+      font-size: var(--text-sm); color: var(--app-text-subtle); font-variant-numeric: tabular-nums;
+    }
+    #cmp-models .tot-parts span { display: inline-flex; align-items: center; gap: 6px; }
+    #cmp-models .tot-parts em { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+    #cmp-models .tot-parts b { color: var(--app-text-muted); font-weight: 400; }
+
+    #cmp-models .escape {
+      margin-top: 12px; padding: 10px 12px;
+      border: 1px solid var(--app-danger-border); border-radius: 8px;
+      background: var(--app-danger-bg);
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    #cmp-models .escape .msg { font-size: var(--text-sm); color: var(--app-danger); line-height: 1.6; flex: 1 1 240px; }
+    #cmp-models .escape .ob-btn { border-color: var(--app-danger-border); color: var(--app-text); }
+
+    /* ── notes drivers ────────────────────────────────────────────────── */
+    #cmp-models .drivers {
+      display: flex; align-items: center; gap: 10px 12px; flex-wrap: wrap; margin-bottom: 12px;
+    }
+    #cmp-models .drivers .dl { font-size: var(--text-sm); color: var(--app-text-subtle); }
+    #cmp-models .notes-list { padding-left: 18px; max-width: 78ch; }
+    #cmp-models .notes-list li { margin-bottom: 8px; }
+    #cmp-models .notes-list b { color: var(--app-text); font-weight: 600; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-models .seg,
+      #cmp-models .budget-track i,
+      #cmp-models .disk-line i,
+      #cmp-models .disk-line span { transition: none; }
+    }
+  </style>
+
+  <script>
+  (() => {
+    "use strict";
+    const root = document.getElementById("cmp-models");
+    const $ = (sel) => root.querySelector(sel);
+    const grp = (key) => root.querySelector('[data-grp="' + key + '"]');
+
+    /* ── Catalog. Bytes are manifest figures, never rounded here. ────── */
+    const SPEAKRS_BYTES = 419482724;
+
+    const T = [
+      { id: "apple", fam: "apple", name: "Apple Speech (on-device)", short: "Apple Speech",
+        bytes: 0, os: true, mem: "macOS handles it" },
+      { id: "tiny",   fam: "whisper", name: "Whisper Tiny",   short: "Tiny",   bytes: 77691713,   mem: "about 1.4 GB while running" },
+      { id: "base",   fam: "whisper", name: "Whisper Base",   short: "Base",   bytes: 147951465,  mem: "about 1.4 GB while running" },
+      { id: "small",  fam: "whisper", name: "Whisper Small",  short: "Small",  bytes: 487601967,  mem: "about 1.4 GB while running" },
+      { id: "medium", fam: "whisper", name: "Whisper Medium", short: "Medium", bytes: 1533763059, mem: "about 1.4 GB while running" },
+      // No manifest carries a memory figure for int8 — only that it is lower.
+      { id: "parakeet-int8", fam: "parakeet", name: "Parakeet TDT v3 int8", short: "int8",
+        bytes: 670619803, mem: "below Parakeet full precision" },
+      { id: "parakeet-full", fam: "parakeet", name: "Parakeet TDT v3", short: "Full precision",
+        bytes: 2549945719, mem: "about 3 GB while running" },
+    ];
+
+    /* Every semantic size is `approx_download_bytes`, so `approx: true` — and any
+       total carrying one reads "about". `off` is the row's Switch, folded in. */
+    const S = [
+      { id: "off", fam: "off", name: "Off", short: "Off", bytes: 0, langs: "keyword search only" },
+      { id: "nomic-embed-text-v1.5", fam: "en", name: "Nomic Embed Text v1.5", short: "Nomic",
+        bytes: 548000000, approx: true, langs: "English" },
+      { id: "stella_en_400M_v5", fam: "en", name: "Stella 400M v5", short: "Stella",
+        bytes: 1750000000, approx: true, langs: "English" },
+      { id: "multilingual-e5-small", fam: "multi", name: "Multilingual E5 Small", short: "E5 Small",
+        bytes: 488000000, approx: true, langs: "100+ languages" },
+      { id: "bge-m3", fam: "multi", name: "BGE-M3", short: "BGE-M3",
+        bytes: 2289000000, approx: true, langs: "100+ languages" },
+      { id: "snowflake-arctic-embed-l-v2.0", fam: "multi", name: "Snowflake Arctic Embed L v2",
+        short: "Snowflake", bytes: 2289000000, approx: true, langs: "100+ languages" },
+    ];
+
+    const T_FAMS = [
+      { value: "apple", label: "Apple Speech" },
+      { value: "whisper", label: "Whisper" },
+      { value: "parakeet", label: "Parakeet" },
+    ];
+    const S_FAMS = [
+      { value: "off", label: "Off" },
+      { value: "en", label: "English" },
+      { value: "multi", label: "Multilingual" },
+    ];
+    /* The note that fills the reserved variant row. A family with one build still
+       owes the reader a sentence; that is what keeps the row from being empty. */
+    const FAM_NOTE = {
+      apple: "One OS model. Nothing to choose, nothing to download.",
+      whisper: "Larger is more accurate and slower.",
+      parakeet: "Multilingual, CC-BY. int8 trades accuracy for memory.",
+      off: "Keyword search still works. This is the only real saving on this row.",
+      en: "Bigger indexes retrieve better; none are cheap.",
+      multi: "Bigger indexes retrieve better; none are cheap.",
+    };
+
+    const byId = (list, id) => list.find((m) => m.id === id);
+    const T_DEFAULT = "base";
+    const S_DEFAULT = "nomic-embed-text-v1.5";
+
+    /* Remember the last pick inside a family, so leaving and coming back does not
+       silently reset a deliberate choice. */
+    const lastInFam = { whisper: T_DEFAULT, parakeet: "parakeet-int8", en: S_DEFAULT, multi: "multilingual-e5-small" };
+
+    const state = { t: T_DEFAULT, s: S_DEFAULT, speaker: true, free: 1400000000, anyway: false };
+
+    /* ── Formatting, matching ChangeSettingsScreen.svelte:126 formatSize ── */
+    const si = (b) => (!(b > 0) ? "0 MB"
+      : b >= 1e9 ? (b / 1e9).toFixed(1) + " GB" : Math.round(b / 1e6) + " MB");
+    /** "about" is not decoration: a total carrying approx_download_bytes IS approximate. */
+    const sizeLabel = (b, approx) => (!(b > 0) ? "Nothing to download" : (approx ? "about " : "") + si(b));
+
+    function totalOf(tid, sid) {
+      const t = byId(T, tid), s = byId(S, sid);
+      const speaker = state.speaker ? SPEAKRS_BYTES : 0;
+      const bytes = t.bytes + s.bytes + speaker;
+      return { bytes, approx: !!s.approx && s.bytes > 0, over: bytes > state.free, t, s, speaker };
+    }
+
+    /* ── The control: a port of lib/components/Segmented.svelte ─────────
+       radiogroup/radio, roving tabindex, arrow + Home/End nav, and focus
+       following selection (the WKWebView doesn't focus a button on click). */
+    function renderGroup(host, options, value, label, onPick) {
+      const hadFocus = host.contains(document.activeElement);
+      host.textContent = "";
+      host.setAttribute("role", "radiogroup");
+      host.setAttribute("aria-label", label);
+      let focusable = options.findIndex((o) => o.value === value);
+      if (focusable < 0) focusable = 0;
+
+      options.forEach((o, i) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "seg" + (o.value === value ? " seg--active" : "");
+        b.setAttribute("role", "radio");
+        b.setAttribute("aria-checked", String(o.value === value));
+        b.setAttribute("aria-label", o.ariaLabel || o.label);
+        b.tabIndex = i === focusable ? 0 : -1;
+        b.textContent = o.label;
+        b.addEventListener("click", () => { onPick(o.value); b.focus(); });
+        b.addEventListener("keydown", (e) => {
+          const dir = e.key === "ArrowLeft" || e.key === "ArrowUp" ? -1
+                    : e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : 0;
+          let next = null;
+          if (dir) next = (i + dir + options.length) % options.length;
+          else if (e.key === "Home") next = 0;
+          else if (e.key === "End") next = options.length - 1;
+          if (next === null) return;
+          e.preventDefault();
+          onPick(options[next].value);
+          const el = host.children[next];
+          if (el) el.focus();
+        });
+        host.appendChild(b);
+      });
+
+      if (hadFocus && !host.contains(document.activeElement)) {
+        const el = host.children[focusable];
+        if (el) el.focus();
+      }
+    }
+
+    /* ── One picker: family group, reserved variant row, fixed strip ──── */
+    function drawPicker(key, list, fams, current, famLabel, varLabel, onPick) {
+      const m = byId(list, current);
+      if (m.fam !== "apple" && m.fam !== "off") lastInFam[m.fam] = m.id;
+
+      renderGroup(grp(key + "-fam"), fams, m.fam, famLabel, (fam) => {
+        onPick(fam === "apple" ? "apple" : fam === "off" ? "off" : lastInFam[fam]);
+      });
+
+      const sibs = list.filter((x) => x.fam === m.fam);
+      const varGrp = grp(key + "-var");
+      varGrp.hidden = sibs.length < 2;
+      if (varGrp.hidden) {
+        // Emptied, not just hidden: a hidden group full of stale radios is a
+        // radiogroup that still exists to assistive tech.
+        varGrp.textContent = "";
+        varGrp.removeAttribute("role");
+      } else {
+        renderGroup(
+          varGrp,
+          sibs.map((x) => ({ value: x.id, label: x.short, ariaLabel: x.name })),
+          m.id, varLabel, onPick,
+        );
+      }
+      root.querySelector('[data-note="' + key + '"]').textContent = FAM_NOTE[m.fam];
+      return m;
+    }
+
+    function draw() {
+      const t = drawPicker("t", T, T_FAMS, state.t, "Transcription engine", "Transcription model",
+        (v) => { state.t = v; state.anyway = false; draw(); });
+      const s = drawPicker("s", S, S_FAMS, state.s, "Semantic Search languages", "Semantic Search model",
+        (v) => { state.s = v; state.anyway = false; draw(); });
+
+      const cell = (k, txt) => {
+        const el = root.querySelector('[data-cell="' + k + '"]');
+        el.textContent = txt;
+        el.title = txt;
+      };
+      cell("t-name", t.name);
+      cell("t-size", t.os ? "none — OS managed" : si(t.bytes));
+      cell("t-mem", t.mem);
+      cell("s-name", s.name);
+      cell("s-size", s.bytes ? "about " + si(s.bytes) : "none");
+      cell("s-langs", s.langs);
+
+      const tot = totalOf(state.t, state.s);
+      const over = tot.over && !state.anyway;
+
+      /* One axis for bytes AND free disk, so "it doesn't fit" is a picture.
+         6% headroom keeps the disk line off the right edge when it fits. */
+      const axis = Math.max(tot.bytes, state.free) * 1.06;
+      const pct = (b) => (b / axis) * 100;
+      const slice = { speaker: tot.speaker, transcription: t.bytes, semantic: s.bytes };
+      for (const k of ["speaker", "transcription", "semantic"]) {
+        const el = root.querySelector('[data-bar="' + k + '"]');
+        // A zero-byte slice leaves the track's 1px gap behind, which reads as a
+        // sliver of a model that isn't being downloaded.
+        el.style.display = slice[k] ? "block" : "none";
+        el.style.width = pct(slice[k]) + "%";
+      }
+      const diskPct = Math.min(100, pct(state.free));
+      $("[data-diskmark]").style.left = diskPct + "%";
+      const dl = $("[data-disklabel]");
+      dl.style.left = diskPct + "%";
+      dl.textContent = si(state.free) + " free";
+      const hatch = $("[data-hatch]");
+      hatch.hidden = !tot.over;
+      hatch.style.left = diskPct + "%";
+
+      const hero = $("[data-hero]");
+      hero.className = "tot-hero" + (over ? " over" : "");
+      hero.textContent = sizeLabel(tot.bytes, tot.approx);
+
+      $("[data-parts]").innerHTML =
+        '<span><em class="b-speaker"></em>Who&rsquo;s speaking <b>' +
+          (tot.speaker ? si(SPEAKRS_BYTES) + " · no picker" : "off") + "</b></span>" +
+        '<span><em class="b-transcription"></em>Transcription <b>' +
+          (t.bytes ? si(t.bytes) : "none") + "</b></span>" +
+        '<span><em class="b-semantic"></em>Semantic Search <b>' +
+          (s.bytes ? "about " + si(s.bytes) : "off") + "</b></span>";
+
+      const esc = $("[data-escape]");
+      esc.textContent = "";
+      if (!over) return;
+      const withoutSearch = totalOf(state.t, "off");
+      esc.innerHTML =
+        '<div class="escape"><span class="msg">Not enough room. ' + si(state.free) +
+          " free · " + sizeLabel(tot.bytes, tot.approx) + " needed." +
+          (s.bytes
+            ? " Turning Semantic Search off frees about " + si(s.bytes) +
+              (withoutSearch.bytes <= state.free ? "." : ", which is still not enough.")
+            : " Every remaining download is required by a feature you turned on.") +
+        "</span>" +
+        (s.bytes ? '<button class="ob-btn sm" type="button" data-act="off">Turn Semantic Search off</button>' : "") +
+        '<button class="ob-btn sm" type="button" data-act="anyway">Download anyway</button></div>';
+      const off = esc.querySelector('[data-act="off"]');
+      if (off) off.addEventListener("click", () => { state.s = "off"; draw(); });
+      esc.querySelector('[data-act="anyway"]')
+         .addEventListener("click", () => { state.anyway = true; draw(); });
+    }
+
+    /* ── Notes drivers ────────────────────────────────────────────────── */
+    const DISKS = [
+      { value: "62000000000", label: "62 GB" },
+      { value: "1400000000", label: "1.4 GB" },
+      { value: "620000000", label: "620 MB" },
+    ];
+    const SPK = [{ value: "on", label: "On" }, { value: "off", label: "Off" }];
+    function drawDrivers() {
+      renderGroup(grp("disk"), DISKS, String(state.free), "Free disk", (v) => {
+        state.free = Number(v);
+        // A new disk figure is a new decision — an earlier "download anyway"
+        // must not suppress a fresh shortfall.
+        state.anyway = false;
+        drawDrivers(); draw();
+      });
+      renderGroup(grp("speaker"), SPK, state.speaker ? "on" : "off", "Who's speaking", (v) => {
+        state.speaker = v === "on";
+        state.anyway = false;
+        drawDrivers(); draw();
+      });
+    }
+    $('[data-act="defaults"]').addEventListener("click", () => {
+      state.t = T_DEFAULT; state.s = S_DEFAULT; state.speaker = true;
+      state.free = 1400000000; state.anyway = false;
+      drawDrivers(); draw();
+    });
+
+    drawDrivers();
+    draw();
+
+    /* ── Self-check: the arithmetic is the only non-trivial logic here. ── */
+    (function selfCheck() {
+      const eq = (a, b, what) =>
+        console.assert(a === b, "cmp-models: " + what + " — got " + a + ", want " + b);
+      eq(byId(T, "base").bytes + byId(S, S_DEFAULT).bytes + SPEAKRS_BYTES, 1115434189, "default set total");
+      eq(si(1115434189), "1.1 GB", "SI formatting of the default set");
+      eq(sizeLabel(1115434189, true), "about 1.1 GB", "nomic makes a total approximate");
+      eq(byId(T, "parakeet-int8").bytes, 670619803, "parakeet int8 artifact sum");
+      eq(byId(T, "parakeet-full").bytes, 2549945719, "parakeet full artifact sum");
+      eq(byId(T, "apple").bytes, 0, "Apple Speech is OS-managed, no download");
+      eq(byId(T, "apple").mem, "macOS handles it", "Apple Speech memory is not invented");
+      eq(byId(T, "parakeet-int8").mem, "below Parakeet full precision", "int8 memory is not invented");
+      // Semantic Search has no cheap end: the smallest model saves 60 MB.
+      eq(byId(S, S_DEFAULT).bytes - byId(S, "multilingual-e5-small").bytes, 60000000,
+         "smallest semantic model saves only 60 MB");
+      // The escape has to actually escape, and lose the "about" with nomic.
+      const free620 = 620000000, saved = state.speaker;
+      state.speaker = true;
+      const before = totalOf("base", S_DEFAULT), after = totalOf("base", "off");
+      state.speaker = saved;
+      eq(before.bytes > free620, true, "default set overflows a 620 MB disk");
+      eq(after.bytes <= free620, true, "turning search off is a real escape");
+      eq(sizeLabel(after.bytes, after.approx), "567 MB", "no approximate part left, so no 'about'");
+    })();
+  })();
+  </script>
+</section>

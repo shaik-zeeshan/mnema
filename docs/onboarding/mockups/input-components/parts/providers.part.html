@@ -1,0 +1,443 @@
+<section class="cmp" id="cmp-providers">
+  <header class="cmp-head">
+    <span class="ob-m">COMPONENT</span>
+    <h2 class="ob-disp sm">Provider selection</h2>
+    <p class="ob-body">Which engine turns speech into text — and where the cloud option went.</p>
+  </header>
+
+  <div class="cmp-stage">
+    <p class="pv-claim">Your voice never leaves this Mac.</p>
+    <p class="pv-claim-sub">
+      All three engines below transcribe on this machine. Once an engine's model is on
+      disk, it keeps working with the network off.
+    </p>
+
+    <div class="pv-head">
+      <span class="t">Turning speech into text</span>
+      <span class="ob-fine">one is picked for you</span>
+    </div>
+
+    <div class="pv-cards" role="radiogroup" aria-label="Transcription engine"></div>
+
+    <div class="pv-delta">
+      <span class="dt"></span>
+      <button type="button" class="ob-btn sm pv-reset" hidden>Use recommended</button>
+    </div>
+
+    <div class="pv-axes">
+      <span class="ax"><span class="ml"><span>speed</span><span>not ranked</span></span><i class="trk"></i></span>
+      <span class="ax"><span class="ml"><span>accuracy</span><span>not ranked</span></span><i class="trk"></i></span>
+      <p class="axn">
+        <b>Not ranked.</b> These three have never been benchmarked against each other in
+        this build, so the two tracks stay empty instead of inventing a winner. The one
+        ordering the manifest does state is memory: Parakeet uses the most. Memory figures
+        are measured on a running app, not published in any manifest — they always read
+        “about”.
+      </p>
+    </div>
+
+    <details class="pv-cloud">
+      <summary>Where's the cloud option?</summary>
+      <p>
+        <b>Deepgram is real, and it is left out of setup on purpose.</b> Choosing it uploads
+        your microphone <i>and</i> system-audio recordings to your own Deepgram account — so
+        it is switched on in Settings → Transcription, behind a consent step, and never here.
+      </p>
+    </details>
+
+    <p class="pv-resolved">
+      <span class="rk">Reading on-screen text</span>
+      <span class="rv">Apple Vision, built into macOS · no download</span>
+      <span class="rn">Tesseract, the offline fallback, lives in Settings.</span>
+    </p>
+  </div>
+
+  <div class="cmp-notes">
+    <p class="ob-m">DRIVE THE STATES</p>
+    <div class="nb-row">
+      <button type="button" class="ob-btn sm" data-drive="apple_speech_on_device">Pick Apple Speech</button>
+      <button type="button" class="ob-btn sm" data-drive="local_whisper">Pick Whisper (the default)</button>
+      <button type="button" class="ob-btn sm" data-drive="parakeet">Pick Parakeet (shows the delta)</button>
+      <button type="button" class="ob-btn sm" data-drive="reset">Return to recommended</button>
+      <button type="button" class="ob-btn sm" data-drive="cloud">Toggle “where's the cloud option?”</button>
+    </div>
+
+    <p class="ob-m nb-h">IMPLEMENTATION</p>
+    <ul class="nb-list">
+      <li>
+        <b>Replaces</b> the transcription <code>Segmented</code> +
+        <code>Select</code> row at
+        <code>apps/desktop/src/routes/onboarding/screens/ChangeSettingsScreen.svelte:315</code>
+        (and the <code>.d</code> sentence above it). The model <code>Select</code> beside it
+        is the model-picker component's problem, not this one.
+      </li>
+      <li>
+        <b>Deletes</b> the OCR <code>Segmented</code> at
+        <code>ChangeSettingsScreen.svelte:289</code>, which makes
+        <code>ocrProviderOptions</code> (same file, ~:133) dead code. OCR becomes the
+        read-only resolved line above: Apple Vision has no download, no extra memory, and
+        no axis on which Tesseract wins in this build. The OCR feature <code>Switch</code>
+        in that same row stays — turning OCR <i>off</i> is still a real choice here.
+      </li>
+      <li>
+        <b>Keeps ADR 0047 exactly as it is.</b> The Deepgram filter at
+        <code>ChangeSettingsScreen.svelte:146</code> and the defensive refusal in
+        <code>chooseTranscriptionProvider</code>
+        (<code>onboarding.svelte.ts:379-382</code>) do not change. The disclosure above is
+        the missing UI half: named, explained, never offered.
+      </li>
+      <li>
+        <b>Not a consistency bug:</b> onboarding uses <code>Segmented</code> where Settings
+        uses <code>RadioGroup</code> for the same setting. That is an accepted exception.
+        This component replaces the onboarding side only; Settings keeps its RadioGroup and
+        keeps both OCR engines.
+      </li>
+      <li>
+        <b>Backend: nothing new.</b> Download bytes already arrive via
+        <code>transcriptionModelStatus</code> → <code>download.byteSize</code>. The memory
+        figures do not exist anywhere in the repo — they are measured, so they ship as one
+        commented frontend constant table, and any total containing them reads “about”.
+      </li>
+      <li>
+        <b>Real bug, worth a separate fix:</b>
+        <code>crates/ocr/src/lib.rs:998</code> hardcodes Tesseract
+        <code class="ob-num">byte_size: 23_143_206</code> while its two files sum to
+        <code class="ob-num">14,675,815</code> (<span class="ob-num">4,113,088</span> +
+        <span class="ob-num">10,562,727</span>). Onboarding stops printing it once the
+        selector is gone, but Settings still shows the wrong number.
+      </li>
+      <li>
+        <b>Parakeet's default is the int8 build</b>
+        (<code>models-format.ts:93</code>, <span class="ob-num">671 MB</span>) — not the
+        <span class="ob-num">2.5 GB</span> full-precision one. “Parakeet is huge” is only
+        true of a build this screen does not select, so the card prints both.
+      </li>
+      <li>
+        <b>Do not fill the empty tracks.</b> Speed and accuracy stay unfilled until someone
+        actually benchmarks the three engines. An invented ordering here would be the most
+        load-bearing lie on the screen.
+      </li>
+    </ul>
+  </div>
+
+  <style>
+    #cmp-providers .pv-claim {
+      margin: 0; font-size: var(--text-lg); line-height: 1.35;
+      color: var(--app-text-strong); letter-spacing: -0.01em;
+    }
+    #cmp-providers .pv-claim-sub {
+      margin: 6px 0 0; font-size: var(--text-sm); line-height: 1.6;
+      color: var(--app-text-muted); max-width: 56ch;
+    }
+
+    #cmp-providers .pv-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 16px;
+      margin: 18px 0 8px; padding-top: 14px; border-top: 1px solid var(--app-border);
+    }
+    #cmp-providers .pv-head .t { font-size: var(--text-md); color: var(--app-text-strong); }
+
+    #cmp-providers .pv-cards {
+      display: grid; gap: 8px;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    }
+    #cmp-providers .pv-card {
+      display: flex; flex-direction: column; gap: 7px;
+      text-align: left; font: inherit; cursor: pointer;
+      border: 1px solid var(--app-border-strong); border-radius: 10px;
+      background: var(--app-surface-subtle); padding: 10px 11px;
+      color: var(--app-text-muted);
+      transition: background .15s, border-color .15s;
+    }
+    #cmp-providers .pv-card:hover[aria-checked="false"] { background: var(--app-surface-hover); }
+    #cmp-providers .pv-card[aria-checked="true"] {
+      background: var(--app-accent-bg); border-color: var(--app-accent-border);
+    }
+    #cmp-providers .pv-card:focus-visible { outline: none; box-shadow: var(--app-ring); }
+    #cmp-providers .pv-card .cn {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+      font-size: var(--text-md); color: var(--app-text-strong);
+    }
+    #cmp-providers .pv-card[aria-checked="true"] .cn { color: var(--app-accent); }
+    #cmp-providers .pv-card .badge {
+      font-size: var(--text-xs); letter-spacing: .1em; text-transform: uppercase;
+      color: var(--app-accent); white-space: nowrap;
+    }
+    #cmp-providers .pv-card .cr {
+      font-size: var(--text-sm); line-height: 1.5; color: var(--app-text-subtle); flex: 1;
+    }
+    #cmp-providers .pv-card .cf {
+      font-size: var(--text-xs); line-height: 1.5; color: var(--app-text-subtle);
+    }
+
+    #cmp-providers .met { display: block; }
+    #cmp-providers .met + .met { margin-top: 5px; }
+    #cmp-providers .ml {
+      display: flex; justify-content: space-between; gap: 8px;
+      font-size: var(--text-xs); color: var(--app-text-subtle);
+      font-variant-numeric: tabular-nums;
+    }
+    #cmp-providers .pv-card[aria-checked="true"] .ml { color: var(--app-text-muted); }
+    #cmp-providers .pv-axes .ml { color: var(--app-text-faint); }
+    #cmp-providers .trk {
+      display: block; height: 4px; margin-top: 3px; border-radius: 999px;
+      background: var(--app-border); overflow: hidden;
+    }
+    #cmp-providers .trk b {
+      display: block; height: 100%; border-radius: 999px;
+      background: var(--app-accent-strong); transition: width .18s ease;
+    }
+    #cmp-providers .pv-card[aria-checked="true"] .trk b { background: var(--app-accent); }
+    /* An estimated figure never gets a solid bar; an unmeasured axis never gets a fill. */
+    #cmp-providers .trk.est { background: transparent; box-shadow: inset 0 0 0 1px var(--app-border); }
+    #cmp-providers .trk.est b {
+      background: repeating-linear-gradient(90deg, var(--app-accent-strong) 0 3px, transparent 3px 6px);
+    }
+    #cmp-providers .pv-card[aria-checked="true"] .trk.est b {
+      background: repeating-linear-gradient(90deg, var(--app-accent) 0 3px, transparent 3px 6px);
+    }
+
+    #cmp-providers .pv-delta {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-top: 10px; min-height: 26px;
+    }
+    #cmp-providers .pv-delta .dt {
+      font-size: var(--text-sm); color: var(--app-text-subtle);
+      font-variant-numeric: tabular-nums;
+    }
+    #cmp-providers .pv-delta .dt.up { color: var(--app-warn); }
+
+    #cmp-providers .pv-axes {
+      margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--app-border);
+      display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+    }
+    #cmp-providers .ax { display: block; }
+    /* Same row shape as a card metric — so an unmeasured axis reads as a track
+       nobody has filled, not as a divider or a broken bar. */
+    #cmp-providers .pv-axes .trk {
+      background: repeating-linear-gradient(
+        45deg, var(--app-border) 0 2px, transparent 2px 5px);
+      box-shadow: inset 0 0 0 1px var(--app-border);
+    }
+    #cmp-providers .axn {
+      grid-column: 1 / -1; margin: 4px 0 0;
+      font-size: var(--text-xs); line-height: 1.65; color: var(--app-text-subtle);
+    }
+    #cmp-providers .axn b { color: var(--app-text-muted); font-weight: 600; }
+
+    #cmp-providers .pv-cloud {
+      margin-top: 12px; border: 1px dashed var(--app-border-strong); border-radius: 8px;
+      background: var(--app-surface-subtle);
+    }
+    #cmp-providers .pv-cloud summary {
+      padding: 8px 11px; cursor: pointer; list-style: revert;
+      font-size: var(--text-sm); color: var(--app-text-muted);
+    }
+    #cmp-providers .pv-cloud summary:hover { color: var(--app-text); }
+    #cmp-providers .pv-cloud summary:focus-visible {
+      outline: none; box-shadow: var(--app-ring); border-radius: 8px;
+    }
+    #cmp-providers .pv-cloud p {
+      margin: 0; padding: 0 11px 10px; font-size: var(--text-sm); line-height: 1.6;
+      color: var(--app-text-subtle); max-width: 62ch;
+    }
+    #cmp-providers .pv-cloud b { color: var(--app-text); font-weight: 600; }
+
+    #cmp-providers .pv-resolved {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+      margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--app-border);
+    }
+    #cmp-providers .pv-resolved .rk { font-size: var(--text-sm); color: var(--app-text-muted); }
+    #cmp-providers .pv-resolved .rv { font-size: var(--text-sm); color: var(--app-text-strong); }
+    #cmp-providers .pv-resolved .rn {
+      flex-basis: 100%; font-size: var(--text-xs); color: var(--app-text-subtle);
+    }
+
+    #cmp-providers .nb-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    #cmp-providers .nb-h { margin-top: 18px; }
+    #cmp-providers .nb-list { margin: 8px 0 0; padding-left: 18px; }
+    #cmp-providers .nb-list li {
+      font-size: var(--text-sm); line-height: 1.7; color: var(--app-text-subtle);
+      margin-bottom: 6px;
+    }
+    #cmp-providers .nb-list b { color: var(--app-text-muted); font-weight: 600; }
+    #cmp-providers .nb-list code {
+      font: inherit; font-size: var(--text-xs); color: var(--app-text-muted);
+      background: var(--app-surface-subtle); border: 1px solid var(--app-border);
+      border-radius: 4px; padding: 0 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-providers .pv-card, #cmp-providers .trk b { transition: none; }
+    }
+  </style>
+
+  <script>
+    (() => {
+      "use strict";
+      const root = document.getElementById("cmp-providers");
+      if (!root) return;
+
+      /* ── Facts ────────────────────────────────────────────────────────────
+         Byte counts are the repo's own. Memory figures are NOT in any manifest
+         — they are measured on a running app, so every readout says "about". */
+      const WHISPER_BASE   = 147951465;   // audio-transcription/src/lib.rs:268
+      const PARAKEET_INT8  = 670619803;   // …:318 — the default parakeet build
+      const PARAKEET_FULL  = 2549945719;  // …:296 — full precision, model picker only
+      const TESS_DECLARED  = 23143206;    // ocr/src/lib.rs:998 (wrong — see notes)
+      const TESS_FILE_SUM  = 4113088 + 10562727;
+      const RAM_BASELINE   = 800;         // app RAM with no local speech model resident
+      const RAM_WHISPER    = 1400;
+      const RAM_PARAKEET   = 3000;
+
+      const DEFAULT_ID = "local_whisper"; // default_audio_transcription_provider()
+
+      const ENGINES = [
+        {
+          id: "apple_speech_on_device",
+          name: "Apple Speech",
+          bytes: 0,
+          ram: RAM_BASELINE,
+          ramEstimated: true, // inferred from the no-model-resident baseline, not measured
+          line: "Nothing to download and the app stays at its baseline — macOS does the " +
+                "work in its own process. It transcribes the languages macOS has installed.",
+        },
+        {
+          id: "local_whisper",
+          name: "Whisper",
+          bytes: WHISPER_BASE,
+          ram: RAM_WHISPER,
+          line: "Balanced speed, size and quality — the manifest's own reason for making " +
+                "Base the default.",
+        },
+        {
+          id: "parakeet",
+          name: "Parakeet",
+          bytes: PARAKEET_INT8,
+          ram: RAM_PARAKEET,
+          line: "The heaviest of the three: the manifest calls it the highest memory use.",
+          foot: () => "full-precision build " + fmtSize(PARAKEET_FULL) +
+                      " (+" + fmtSize(PARAKEET_FULL - PARAKEET_INT8) + ") — chosen in the " +
+                      "model picker, not here",
+        },
+      ];
+
+      const rec = ENGINES.find((e) => e.id === DEFAULT_ID);
+      const MAX_BYTES = Math.max(...ENGINES.map((e) => e.bytes));
+      const MAX_RAM = Math.max(...ENGINES.map((e) => e.ram));
+
+      /* ── Formatting + derivations ─────────────────────────────────────── */
+      function fmtSize(bytes) {
+        if (!(bytes > 0)) return "none";
+        return bytes >= 1e9 ? (bytes / 1e9).toFixed(1) + " GB" : Math.round(bytes / 1e6) + " MB";
+      }
+      function fmtRam(mb) {
+        return mb >= 1000 ? (mb / 1000).toFixed(1) + " GB" : mb + " MB";
+      }
+      /* Linear, deliberately. The capture-rate cost bar is log-scaled because it
+         spans orders of magnitude; these three span 4.5×, and log flattens 148 MB
+         against 671 MB until they look like the same download. */
+      const width = (v, max) => (max > 0 ? (v / max) * 100 : 0);
+      function deltaText(e) {
+        if (e.id === DEFAULT_ID) return { text: "This is what Mnema picked. Nothing to decide unless you want to.", up: false };
+        const dB = e.bytes - rec.bytes;
+        const dR = e.ram - rec.ram;
+        const sign = (n) => (n > 0 ? "+" : "−");
+        const parts = [];
+        if (dB) parts.push(sign(dB) + fmtSize(Math.abs(dB)) + " to download");
+        if (dR) parts.push("about " + sign(dR) + fmtRam(Math.abs(dR)) + " of memory");
+        return { text: parts.join(" · ") + " vs the recommended engine", up: dB > 0 || dR > 0 };
+      }
+
+      const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+
+      /* ── Build once; selecting only flips attributes, so focus never moves. */
+      const cards = root.querySelector(".pv-cards");
+      cards.innerHTML = ENGINES.map((e) => {
+        const on = e.id === DEFAULT_ID;
+        const met = (label, value, width, est) =>
+          '<span class="met"><span class="ml"><span>' + esc(label) + "</span><span>" +
+          esc(value) + '</span></span><i class="trk' + (est ? " est" : "") + '">' +
+          '<b style="width:' + width.toFixed(1) + '%"></b></i></span>';
+        return (
+          '<button type="button" class="pv-card" role="radio" data-v="' + e.id + '"' +
+          ' aria-checked="' + on + '" tabindex="' + (on ? 0 : -1) + '">' +
+          '<span class="cn">' + esc(e.name) +
+            (e.id === DEFAULT_ID ? '<span class="badge">recommended</span>' : "") + "</span>" +
+          '<span class="cr">' + esc(e.line) + "</span>" +
+          (e.foot ? '<span class="cf">' + esc(e.foot()) + "</span>" : "") +
+          met("download", fmtSize(e.bytes), width(e.bytes, MAX_BYTES), false) +
+          met("memory", "about " + fmtRam(e.ram), width(e.ram, MAX_RAM), !!e.ramEstimated) +
+          "</button>"
+        );
+      }).join("");
+
+      const dt = root.querySelector(".pv-delta .dt");
+      const reset = root.querySelector(".pv-reset");
+      const details = root.querySelector(".pv-cloud");
+      let current = DEFAULT_ID;
+
+      function select(id, focus) {
+        const e = ENGINES.find((x) => x.id === id);
+        if (!e) return;
+        current = id;
+        root.querySelectorAll(".pv-card").forEach((btn) => {
+          const on = btn.dataset.v === id;
+          btn.setAttribute("aria-checked", String(on));
+          btn.tabIndex = on ? 0 : -1;
+          if (on && focus) btn.focus();
+        });
+        const d = deltaText(e);
+        dt.textContent = d.text;
+        dt.classList.toggle("up", d.up);
+        reset.hidden = id === DEFAULT_ID;
+      }
+
+      cards.addEventListener("click", (ev) => {
+        const btn = ev.target.closest(".pv-card");
+        if (btn) select(btn.dataset.v, true);
+      });
+      cards.addEventListener("keydown", (ev) => {
+        const dir = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[ev.key];
+        if (!dir || !ev.target.closest(".pv-card")) return;
+        ev.preventDefault();
+        const at = ENGINES.findIndex((e) => e.id === current);
+        select(ENGINES[(at + dir + ENGINES.length) % ENGINES.length].id, true);
+      });
+      reset.addEventListener("click", () => select(DEFAULT_ID, true));
+
+      root.querySelector(".cmp-notes").addEventListener("click", (ev) => {
+        const btn = ev.target.closest("[data-drive]");
+        if (!btn) return;
+        const what = btn.dataset.drive;
+        if (what === "cloud") details.open = !details.open;
+        else select(what === "reset" ? DEFAULT_ID : what, false);
+      });
+
+      select(DEFAULT_ID, false);
+
+      /* ── Self-check: every printed number, recomputed. Fails loudly. ──── */
+      const parakeetDelta = deltaText(ENGINES[2]);
+      const appleDelta = deltaText(ENGINES[0]);
+      const checks = [
+        [fmtSize(WHISPER_BASE), "148 MB"],
+        [fmtSize(PARAKEET_INT8), "671 MB"],
+        [fmtSize(PARAKEET_FULL), "2.5 GB"],
+        [fmtSize(PARAKEET_FULL - PARAKEET_INT8), "1.9 GB"],
+        [fmtSize(PARAKEET_FULL - WHISPER_BASE), "2.4 GB"],  // the "+2.4 GB" figure, sourced
+        [fmtSize(0), "none"],
+        [fmtRam(RAM_WHISPER), "1.4 GB"],
+        [fmtRam(RAM_PARAKEET - RAM_WHISPER), "1.6 GB"],
+        [fmtRam(RAM_BASELINE), "800 MB"],
+        [parakeetDelta.text, "+523 MB to download · about +1.6 GB of memory vs the recommended engine"],
+        [parakeetDelta.up, true],
+        [appleDelta.text, "−148 MB to download · about −600 MB of memory vs the recommended engine"],
+        [appleDelta.up, false],
+        [TESS_FILE_SUM, 14675815],          // ocr/src/lib.rs declares 23_143_206 — the bug
+        [TESS_DECLARED !== TESS_FILE_SUM, true],
+        [ENGINES.filter((e) => e.id === DEFAULT_ID).length, 1],
+      ];
+      const bad = checks.filter(([a, b]) => a !== b);
+      console.assert(bad.length === 0, "providers self-check FAILED", bad);
+    })();
+  </script>
+</section>
