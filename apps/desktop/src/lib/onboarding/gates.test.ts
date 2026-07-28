@@ -2,15 +2,25 @@
 // svelte-check tsconfig, so skip static checking here.
 // Test 7 (gate predicates) and test 8 (re-entry) from PLAN.md.
 import { describe, expect, test } from "bun:test";
-import { captureStorageBlockReason, type CaptureStorageGateInput } from "./gates";
+import { readFileSync } from "node:fs";
+import {
+  captureStorageBlockReason,
+  storageNeedBytes,
+  RESERVE_FLOOR_BYTES,
+  type CaptureStorageGateInput,
+} from "./gates";
 import { resolveSetup, workListBytes } from "./resolve-setup";
 
 const GB = 1024 * 1024 * 1024;
+/** The default work-list (SPEC.md) and the default capture rate (2 s → 405 MB/day). */
+const WORK_LIST = 1_115_434_189;
+const INTERVAL_S = 2;
 
 function input(overrides: Partial<CaptureStorageGateInput> = {}): CaptureStorageGateInput {
   return {
     probe: { exists: true, writable: true, freeBytes: 100 * GB },
-    requiredBytes: 1_115_434_189,
+    requiredBytes: WORK_LIST,
+    captureIntervalSeconds: INTERVAL_S,
     customResolutionErrors: [],
     customBitrateErrors: [],
     ...overrides,
@@ -45,13 +55,53 @@ describe("test 7 — capture & storage gate predicates", () => {
     expect(reason).toContain("needed");
   });
 
-  test("free space exactly equal to the work-list passes", () => {
-    const requiredBytes = 1_000_000;
+  test("free space exactly equal to reserve + downloads + a day passes", () => {
+    const need = storageNeedBytes(WORK_LIST, INTERVAL_S);
     expect(
       captureStorageBlockReason(
-        input({ requiredBytes, probe: { exists: true, writable: true, freeBytes: requiredBytes } }),
+        input({ probe: { exists: true, writable: true, freeBytes: need } }),
       ),
     ).toBeNull();
+    expect(
+      captureStorageBlockReason(
+        input({ probe: { exists: true, writable: true, freeBytes: need - 1 } }),
+      ),
+    ).not.toBeNull();
+  });
+
+  test("a 1.3 GB volume blocks — the downloads alone do not clear the reserve", () => {
+    const reason = captureStorageBlockReason(
+      input({ probe: { exists: true, writable: true, freeBytes: 1.3e9 } }),
+    );
+    expect(reason).toContain("Not enough room for the downloads");
+  });
+
+  test("a volume that fits the models but not a day of capture blocks, with its own reason", () => {
+    // Reserve + work-list + 100 MB: every download lands, and then there is
+    // nowhere to record. 405 MB/day at the 2 s default does not fit.
+    const freeBytes = RESERVE_FLOOR_BYTES + WORK_LIST + 100e6;
+    const reason = captureStorageBlockReason(
+      input({ probe: { exists: true, writable: true, freeBytes } }),
+    );
+    expect(reason).toContain("Not enough room to record a day of capture");
+    expect(reason).not.toContain("for the downloads");
+
+    // A slower capture rate is a real escape; dropping Semantic Search is not —
+    // the same volume minus nomic's 548 MB still cannot hold a day.
+    expect(
+      captureStorageBlockReason(
+        input({ probe: { exists: true, writable: true, freeBytes }, captureIntervalSeconds: 60 }),
+      ),
+    ).toBeNull();
+  });
+
+  test("the reserve mirrors the backend's RESERVE_FLOOR_BYTES", () => {
+    const rust = readFileSync(
+      new URL("../../../src-tauri/src/native_capture/disk_space.rs", import.meta.url),
+      "utf8",
+    );
+    expect(rust).toContain(`RESERVE_FLOOR_BYTES: u64 = 1024 * 1024 * 1024`);
+    expect(RESERVE_FLOOR_BYTES).toBe(1024 * 1024 * 1024);
   });
 
   test("an unmeasured path or unreadable volume never blocks", () => {
@@ -72,10 +122,10 @@ describe("test 7 — capture & storage gate predicates", () => {
     ).toBe("Bitrate must be 1–40 Mbps.");
   });
 
-  test("nothing else gates — an empty work-list on a full disk still passes", () => {
+  test("nothing else gates — an empty work-list on a roomy disk still passes", () => {
     expect(
       captureStorageBlockReason(
-        input({ requiredBytes: 0, probe: { exists: true, writable: true, freeBytes: 0 } }),
+        input({ requiredBytes: 0, probe: { exists: true, writable: true, freeBytes: 100 * GB } }),
       ),
     ).toBeNull();
   });

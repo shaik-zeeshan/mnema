@@ -2,7 +2,8 @@
 //
 // The flow has EXACTLY TWO hard gates, both on *Capture & Storage*:
 //   1. the storage path exists and is writable
-//   2. the volume has room for the download work-list (`workListBytes`)
+//   2. the volume has room to actually run: the reserve the backend already
+//      enforces + the download work-list + one day of capture
 // plus the pre-existing custom resolution (16–8192 px) / bitrate (1–40 Mbps)
 // range validation, which blocks because those values serialize as `null` and
 // break the backend save.
@@ -15,6 +16,31 @@
 //
 // Pure: no Svelte, no `invoke`. `formatBytes` is the app's existing formatter.
 import { formatBytes } from "../settings/state/format";
+import { estimateDailyStorageMb } from "./disk-estimate";
+
+/**
+ * The reserve the capture pipeline already refuses to record below — mirrors
+ * `RESERVE_FLOOR_BYTES` in `src-tauri/src/native_capture/disk_space.rs` (1 GiB).
+ * Rust cannot be imported here; `gates.test.ts` reads that file and fails if the
+ * two ever drift apart.
+ */
+export const RESERVE_FLOOR_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * What the volume must actually hold before capture is possible: the backend's
+ * reserve, the model downloads, and one day of recording at the chosen rate.
+ * `estimateDailyStorageMb` is the same arithmetic the screen prints, in MB.
+ */
+export function storageNeedBytes(
+  downloadBytes: number,
+  captureIntervalSeconds: number,
+): number {
+  return (
+    RESERVE_FLOOR_BYTES +
+    downloadBytes +
+    estimateDailyStorageMb(captureIntervalSeconds) * 1e6
+  );
+}
 
 /**
  * What the *Capture & Storage* screen measured about the chosen save directory.
@@ -29,8 +55,10 @@ export interface StorageProbe {
 export interface CaptureStorageGateInput {
   /** `null` until the screen has probed. An unmeasured path never blocks. */
   probe: StorageProbe | null;
-  /** `workListBytes(resolved.workList)` — what the downloads will fetch. */
+  /** `flow.downloadBytes` — what the downloads will fetch. */
   requiredBytes: number;
+  /** Seconds between snapshots at the chosen capture rate (ladder stop). */
+  captureIntervalSeconds: number;
   /** From `onboarding-attention.ts`, unchanged. */
   customResolutionErrors: readonly string[];
   customBitrateErrors: readonly string[];
@@ -55,8 +83,18 @@ export function captureStorageBlockReason(
     if (!probe.writable) {
       return "That folder is not writable. Choose another folder.";
     }
-    if (probe.freeBytes !== null && probe.freeBytes < input.requiredBytes) {
-      return `Not enough room for the downloads. ${formatBytes(probe.freeBytes)} free · ${formatBytes(input.requiredBytes)} needed.`;
+    const need = storageNeedBytes(
+      input.requiredBytes,
+      input.captureIntervalSeconds,
+    );
+    if (probe.freeBytes !== null && probe.freeBytes < need) {
+      const figures = `${formatBytes(probe.freeBytes)} free · ${formatBytes(need)} needed.`;
+      // Both shortfalls quote the same total — the volume needs all of it either
+      // way. Only the leading clause differs, so the screen (and a user) can
+      // tell "the models don't fit" from "there is nowhere to record".
+      return probe.freeBytes < RESERVE_FLOOR_BYTES + input.requiredBytes
+        ? `Not enough room for the downloads. ${figures}`
+        : `Not enough room to record a day of capture. ${figures}`;
     }
   }
   return input.customResolutionErrors[0] ?? input.customBitrateErrors[0] ?? null;
