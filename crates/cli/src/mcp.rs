@@ -214,7 +214,7 @@ impl MnemaMcp {
     }
 
     #[tool(
-        description = "List who was heard in the user's audio, longest-speaking first, each with the opaque handle that search and timeline take as `speaker`. A `person` handle is one human, stable across recordings; a `voice` handle is one voice inside ONE recording, not a person — never store it or treat two of them as the same human. `truncated` means this is not everyone; narrow with `name`."
+        description = "List who was heard in the user's audio, longest-speaking first, each with the opaque handle that search and timeline take as `speaker`. A `person` handle is one human, stable across recordings; a `voice` handle is one voice inside ONE capture session, not a person — a session is a continuous sitting and recordings are capped at 5 minutes, so filtering on one `voice` handle returns every consecutive recording in that sitting, and the same human gets an unrelated handle in the next one. Never store a `voice` handle or treat two of them as the same human. `truncated` means this is not everyone; narrow with `name`."
     )]
     async fn speakers(
         &self,

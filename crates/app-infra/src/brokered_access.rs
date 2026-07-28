@@ -444,13 +444,19 @@ pub struct BrokerSpeakerHandle {
     /// `person` — a person the user has a profile for. Stable: it spans sessions
     /// and channels and survives a rename.
     ///
-    /// `voice` — ONE voice inside ONE recording, **not a person**. The same human
-    /// gets a different `voice` handle in every recording (and often several
-    /// within one), and the handle dies when that recording is re-analyzed. Never
-    /// persist it, never merge two of them, and never present it as an identity.
+    /// `voice` — ONE voice inside ONE capture SESSION, **not a person**. A session
+    /// is a continuous sitting, and recordings are capped at 5 minutes, so one
+    /// `voice` handle covers every consecutive recording in that sitting — filter
+    /// on it and several come back. Across two sittings the same human gets two
+    /// unrelated handles (and often several within one), and the handle dies when
+    /// that session is re-analyzed. Never persist it, never merge two of them, and
+    /// never present it as an identity.
     pub kind: String,
     /// `voice` only: the span this voice was heard over, in ms from the start of
-    /// the recording — the whole extent this handle means anything across.
+    /// the ONE recording this handle was published for — turn offsets are relative
+    /// to each recording's own start. It is NOT the handle's reach, which extends
+    /// to every recording in the session ([`Self::kind`]); `speakers` omits it
+    /// outright for exactly that reason.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]

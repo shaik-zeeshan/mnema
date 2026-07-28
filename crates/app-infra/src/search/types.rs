@@ -64,9 +64,13 @@ pub struct SearchCaptureRefinements {
 pub enum SearchSpeakerRefinement {
     /// `person_profiles.id` — the same human across sessions and channels.
     Person(i64),
-    /// `recording_speaker_clusters.id` — ONE voice inside ONE recording. The row
-    /// is `UNIQUE(session_id, provider, provider_cluster_id)`, so matching turns
-    /// on it can never reach another recording's audio.
+    /// `recording_speaker_clusters.id` — ONE voice inside ONE capture SESSION.
+    /// The row is `UNIQUE(session_id, provider, provider_cluster_id)`, so matching
+    /// turns on it can never reach another session's audio — but a session is not
+    /// a recording. Segments are capped at 5 minutes, so one sitting is several
+    /// consecutive `audio_segments`, and `resolve_stable_speaker_cluster`
+    /// deliberately reuses this row across all of them. Matching on it therefore
+    /// spans every recording in that sitting, by design.
     Cluster(i64),
 }
 

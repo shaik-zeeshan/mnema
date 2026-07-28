@@ -1260,8 +1260,11 @@ zero makes the answer PARTIAL rather than proof the person was silent."
                 "List who was heard in the user's audio, longest-speaking first, each with the \
 opaque `handle` that `search` and `timeline` take as `speaker` — a handle is the ONLY way to \
 address a person, so call this before filtering. A `person` handle is one human, stable across \
-recordings. A `voice` handle is ONE voice in ONE recording, NOT a person: the same human gets a \
-different one in every recording, so never merge two of them or present one as an identity. \
+recordings. A `voice` handle is ONE voice in ONE capture session, NOT a person: a session is a \
+continuous sitting and recordings are capped at 5 minutes, so filtering on one `voice` handle \
+returns every consecutive recording in that sitting, and the same human gets an unrelated handle \
+in the next sitting. Never merge two of them or present one as an identity. Its `startMs`/`endMs` \
+describe only the recording it came from, never how far the handle reaches. \
 `recognizedTurns` are voice-match guesses the user never confirmed; `truncated` means this is \
 not everyone — narrow with `name`."
                     .to_string(),

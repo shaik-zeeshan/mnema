@@ -14,9 +14,10 @@ use crate::{AppInfra, Result, SearchDateRangeRefinement, SearchSpeakerRefinement
 
 /// A person profile: stable across sessions, channels, and renames.
 pub(super) const SPEAKER_HANDLE_KIND_PERSON: &str = "person";
-/// One voice inside one recording: session-scoped, fragmenting, and dead on
-/// re-diarization. Marked apart from `person` on the wire because an agent that
-/// cannot tell them apart will treat a voice as a human being.
+/// One voice inside one capture SESSION — so it spans every consecutive recording
+/// in that sitting — fragmenting across sessions, and dead on re-diarization.
+/// Marked apart from `person` on the wire because an agent that cannot tell them
+/// apart will treat a voice as a human being.
 pub(super) const SPEAKER_HANDLE_KIND_VOICE: &str = "voice";
 
 /// Who was heard inside the grant's own time scope, ranked by how long they

@@ -4357,10 +4357,15 @@ fn broker_search_speaker_filter_matches_assigned_and_recognized_but_not_an_overr
 }
 
 /// `recording_speaker_clusters.id` is `UNIQUE(session_id, provider,
-/// provider_cluster_id)`, so a voice handle addresses ONE recording's voice. A
+/// provider_cluster_id)`, so a voice handle addresses ONE SESSION's voice. A
 /// filter that reached another session would present two strangers as one human.
+///
+/// SESSION, not recording: both fixtures below are separate sessions, which is
+/// the boundary this proves. Within one session the handle deliberately spans
+/// every consecutive recording (`resolve_stable_speaker_cluster` reuses the row),
+/// so this must not be read as proving a per-recording bound — there is none.
 #[test]
-fn broker_search_speaker_filter_by_voice_handle_stays_inside_its_own_recording() {
+fn broker_search_speaker_filter_by_voice_handle_stays_inside_its_own_session() {
     run_async_test(async {
         let config_dir = temp_config_dir("speaker-filter-voice");
         let save_dir = temp_save_dir("speaker-filter-voice");
@@ -4423,8 +4428,8 @@ fn broker_search_speaker_filter_by_voice_handle_stays_inside_its_own_recording()
         assert_eq!(
             matched_audio_segment_ids(&filtered),
             vec![first],
-            "an unnamed voice must not follow into a recording it was never heard in \
-             (second recording: {second})"
+            "an unnamed voice must not follow into another SESSION it was never heard in \
+             (second session's recording: {second})"
         );
     });
 }
