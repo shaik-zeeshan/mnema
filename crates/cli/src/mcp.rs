@@ -194,7 +194,7 @@ struct MnemaMcp {
 #[tool_router]
 impl MnemaMcp {
     #[tool(
-        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app."
+        description = "Search the user's captured screen text and audio transcripts. Returns snippets with opaque result ids; use show_text for the full text behind a result and open to reveal it in the Mnema app. Pass `speaker` (a handle from the speakers tool) to get only what one person said, their words included as `turns`. A speaker-filtered response also carries `speakerCoverage`: `recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this person, and labeling that voice in Mnema brings the recording into reach) and `recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you could attribute, and never report an empty or short filtered result as proof the person said nothing."
     )]
     async fn search(
         &self,
@@ -203,8 +203,10 @@ impl MnemaMcp {
         self.run("search", p.into_request()?).await
     }
 
+    /// The MCP door serves `speakerCoverage` too, and a chat client never reads
+    /// `SKILL.md` — these descriptions are its whole contract. See `search`.
     #[tool(
-        description = "List the user's capture activity intervals between two RFC3339 timestamps."
+        description = "List the user's capture activity intervals between two RFC3339 timestamps. Pass `speaker` (a handle from the speakers tool) for when one person was talking; that response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + `recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above zero makes the answer PARTIAL rather than proof the person was silent."
     )]
     async fn timeline(
         &self,
@@ -418,6 +420,34 @@ mod tests {
             names,
             ["open", "search", "show_text", "speakers", "timeline"]
         );
+    }
+
+    /// A speaker filter can only match through DETECTED speaker turns, so an empty
+    /// filtered result is routinely "this audio could not be checked", not "they
+    /// said nothing" — `speakerCoverage` is the only thing that tells the two
+    /// apart, and `map_search_data`/`map_timeline_data` now hand it to this door
+    /// too. An MCP client never reads `.agents/skills/mnema-data/SKILL.md` (that is
+    /// the CLI skill's contract); these tool descriptions are the whole contract it
+    /// gets. The Ask AI door asserts exactly this
+    /// (`ask_ai.rs::speaker_filtered_tools_tell_the_model_an_empty_result_is_not_silence`).
+    #[test]
+    fn mcp_speaker_filterable_tools_tell_the_client_an_empty_result_is_not_silence() {
+        let tools = MnemaMcp::tool_router().list_all();
+        for name in ["search", "timeline"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("`{name}` must be offered"));
+            let description = tool.description.clone().unwrap_or_default();
+            assert!(
+                description.contains("speakerCoverage"),
+                "`{name}` hands the client `speakerCoverage` but never names it: {description}"
+            );
+            assert!(
+                description.to_lowercase().contains("partial"),
+                "`{name}` must say a non-zero coverage count makes the answer partial: {description}"
+            );
+        }
     }
 
     /// The handle is the whole point of discovery: without `speaker` on these two
