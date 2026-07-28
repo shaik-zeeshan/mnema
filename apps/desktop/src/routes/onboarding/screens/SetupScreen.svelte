@@ -35,6 +35,7 @@
   import type { FeatureId } from "$lib/onboarding/feature-rules";
   import {
     applyProgressEvent,
+    reseedProgress,
     startProgress,
     type DownloadProgressEvent,
     type DownloadProgressState,
@@ -99,7 +100,7 @@
   /** The user chose to download anyway after a measured disk shortfall. */
   let diskOverride = $state(false);
 
-  const workList = $derived(flow.resolved?.workList ?? []);
+  const workList = $derived(flow.workList);
   /** Cancelling turns the dependent feature off, which drops its item out of
    *  the running total — the "total drops to …" behaviour from the mockup. */
   const active = $derived(workList.filter((item) => flow.features[item.feature]));
@@ -139,15 +140,16 @@
   const mayStart = $derived(shortfall === null || diskOverride);
 
   // ── Wiring ───────────────────────────────────────────────────────────────
-  // Seed the reducer once the resolver's work-list exists. Re-seeding on a later
-  // `resolve()` would wipe live progress, so it happens exactly once.
-  let seeded = false;
+  // The work-list is LIVE — the user can back out to *Change settings*, pick a
+  // different model, and return to a different agenda. `reseedProgress` carries
+  // the surviving items' progress across and is identity when nothing moved, so
+  // this never wipes a download in flight and never loops.
   $effect(() => {
-    const items = flow.resolved?.workList;
-    if (!items || seeded) return;
-    seeded = true;
+    const items = workList;
     untrack(() => {
-      progress = startProgress(items);
+      progress = reseedProgress(progress, items);
+      // An item that left and came back is a fresh attempt.
+      attempted = attempted.filter((id) => items.some((item) => item.id === id));
     });
   });
 
@@ -257,6 +259,9 @@
   }
 
   function itemPercent(item: DownloadWorkItem): number {
+    // A catalog model with no declared size carries 0 bytes — show it as pending
+    // until its terminal event lands rather than dividing by zero.
+    if (item.bytes <= 0) return 0;
     return Math.min(100, Math.round(((progress.received[item.id] ?? 0) / item.bytes) * 100));
   }
 </script>

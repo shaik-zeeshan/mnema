@@ -19,12 +19,19 @@ import {
   type PermissionIntents,
 } from "$lib/onboarding/feature-rules";
 import {
+  CAPTURE_INTERVAL_LADDER_S,
+  nearestLadderIndex,
+} from "$lib/components/capture-rate";
+import {
   captureStorageBlockReason,
+  storageNeedBytes,
   type StorageProbe,
 } from "$lib/onboarding/gates";
 import {
   resolveSetup,
   workListBytes,
+  type DownloadWorkItem,
+  type ModelInventory,
   type ModelSelections,
   type ResolvedSettings,
   type SavedChoices,
@@ -99,6 +106,13 @@ export class OnboardingFlow {
    *  difference between a genuine first run and a re-entry. */
   private everSaved = $state(false);
 
+  /** One-shot latch for `seedRecommendedExcludedApps` — see there. Plain, not
+   *  `$state`: nothing renders off it. */
+  private seededRecommendedApps = false;
+
+  /** One-shot latch for pushing the resolved model picks into the drafts. */
+  private seededModels = false;
+
   // ── Where we are ─────────────────────────────────────────────────────────
   get def(): StepDef {
     return stepDef(this.step);
@@ -107,13 +121,63 @@ export class OnboardingFlow {
   stepPosition = $derived(this.def.position);
   stepSuffix = $derived(this.def.suffix);
 
+  // ── The live model picture ───────────────────────────────────────────────
+  // `resolved.models` is a one-shot: the resolver fills gaps at load and then
+  // seeds the controller's drafts (see `resolve`). AFTER that the drafts are the
+  // truth — *Change settings* writes straight into them — so everything that
+  // prices or downloads a model reads THESE, never `resolved.models`. Reading
+  // the frozen copy is what made the Setup screen fetch the default models
+  // instead of the ones the user picked.
+  models = $derived<ModelSelections>({
+    ocrProvider: this.controller.draftOcrProvider,
+    ocrModelId: this.controller.draftOcrModelId,
+    transcriptionProvider: this.controller.draftTranscriptionProvider,
+    transcriptionModelId: this.controller.draftTranscriptionModelId,
+    speakerProvider: this.controller.draftSpeakerProvider,
+    speakerModelId: this.controller.draftSpeakerModelId,
+    semanticSearchModelId: this.controller.draftSemanticSearchModelId,
+  });
+
+  /** Live status for whichever model each subsystem currently has selected. */
+  modelFacts = $derived<ModelInventory>({
+    speakerAnalysis: facts(this.controller.selectedSpeakerModel, (m) => m.download?.byteSize),
+    audioTranscription: facts(
+      this.controller.selectedTranscriptionModel,
+      (m) => m.download?.byteSize,
+    ),
+    // Semantic Search declares an APPROXIMATE size and has no `download` block.
+    semanticSearch: facts(
+      this.controller.selectedSemanticSearchModel,
+      (m) => m.approxDownloadBytes,
+    ),
+  });
+
+  /** The download agenda, rebuilt live off the current features + model picks. */
+  workList = $derived<DownloadWorkItem[]>(
+    this.resolved === null
+      ? []
+      : resolveSetup(this.features.permissions, this.modelFacts, {
+          features: this.features,
+          models: this.models,
+          excludedApps: this.resolved.excludedApps,
+        }).workList,
+  );
+
   // ── The two hard gates (plus range validation), all on Capture & Storage ──
-  requiredBytes = $derived(workListBytes(this.resolved?.workList ?? []));
+  downloadBytes = $derived(workListBytes(this.workList));
+  captureIntervalSeconds = $derived(
+    CAPTURE_INTERVAL_LADDER_S[nearestLadderIndex(this.controller.draftFrameRate)]!,
+  );
+  /** Everything the volume must hold: reserve + downloads + a day of capture. */
+  requiredBytes = $derived(
+    storageNeedBytes(this.downloadBytes, this.captureIntervalSeconds),
+  );
   blockReason = $derived(
     this.step === "captureStorage"
       ? captureStorageBlockReason({
           probe: this.storageProbe,
-          requiredBytes: this.requiredBytes,
+          requiredBytes: this.downloadBytes,
+          captureIntervalSeconds: this.captureIntervalSeconds,
           customResolutionErrors: this.controller.customResolutionErrors,
           customBitrateErrors: this.controller.customBitrateErrors,
         })
@@ -150,8 +214,17 @@ export class OnboardingFlow {
     if (target) this.goTo(target);
   }
 
-  toggleFeature(id: FeatureId): void {
-    this.features = applyToggle(this.features, id);
+  /**
+   * Flip a feature and run the cascades. Returns the PRE-toggle state so a
+   * caller can offer undo (assign it back to `flow.features`), or null when the
+   * flip was refused — a locked enable. Existing callers ignore the value.
+   */
+  toggleFeature(id: FeatureId): FeatureState | null {
+    const before = this.features;
+    const after = applyToggle(before, id);
+    if (after === before) return null;
+    this.features = after;
+    return before;
   }
 
   // ── Load + resolve ───────────────────────────────────────────────────────
@@ -188,17 +261,17 @@ export class OnboardingFlow {
       systemAudio:
         c.sysAudioPromptRaised || c.permissions?.systemAudio === "assumed_working",
     };
-    const resolved = resolveSetup(
-      permissions,
-      {
-        speakerAnalysis: c.selectedSpeakerModel?.available ?? false,
-        whisperBase: c.selectedTranscriptionModel?.available ?? false,
-        semanticSearch: c.selectedSemanticSearchModel?.available ?? false,
-      },
-      this.savedChoices(),
-    );
+    const resolved = resolveSetup(permissions, this.modelFacts, this.savedChoices());
     this.resolved = resolved;
     this.features = resolved.features;
+    // Hand the resolved model picks to the drafts ONCE, then never again: from
+    // here on the drafts are the truth and re-resolving (a return trip through
+    // Permissions) must not undo a choice made on *Change settings*. Model
+    // selection does not depend on permissions, so there is nothing to redo.
+    if (!this.seededModels) {
+      this.seededModels = true;
+      applyModelsToDrafts(c, resolved.models);
+    }
   }
 
   /** `null` on a genuine first run — every field is a gap for the resolver. */
@@ -232,6 +305,29 @@ export class OnboardingFlow {
     };
   }
 
+  /**
+   * Turn the resolver's recommended privacy exclusions into REAL, strikeable
+   * rules. `applyRecommendedExcludedApps` is first-run-only data, so this is a
+   * ONE-SHOT for the whole run — *Capture & Storage* calls it on arrival (so
+   * "Never recorded" shows what the app decided rather than an empty line) and
+   * `finish()` calls it as the backstop.
+   *
+   * The latch is load-bearing, not defensive: `pendingRecommendedApps` filters
+   * on `exclusionState !== "enabled"`, so an app the user has just STRUCK reads
+   * as pending again. Without the latch, a second call would silently re-enable
+   * every recommendation the user turned off.
+   */
+  async seedRecommendedExcludedApps(): Promise<void> {
+    if (this.seededRecommendedApps) return;
+    if (!this.resolved?.applyRecommendedExcludedApps) return;
+    if (this.controller.appPrivacyExclusion.pendingRecommendedApps.length === 0) return;
+    this.seededRecommendedApps = true;
+    // ONLY through the privacy controller: its commands sync the privacy slice
+    // alone. A full `syncDrafts` would clobber in-progress toggles
+    // (`onboarding-privacy-sync.ts`).
+    await this.controller.appPrivacyExclusion.applyAllRecommendedPrivacyApps();
+  }
+
   // ── Atomic commit ────────────────────────────────────────────────────────
   /**
    * Commit everything in one shot and (optionally) start capture. Called from
@@ -241,13 +337,14 @@ export class OnboardingFlow {
    */
   async finish(startRecording = true): Promise<void> {
     const c = this.controller;
-    // Privacy first, and ONLY through the privacy controller: its commands sync
-    // the privacy slice alone. A full `syncDrafts` here would clobber the
-    // in-progress toggles we are about to write (`onboarding-privacy-sync.ts`).
-    if (this.resolved?.applyRecommendedExcludedApps) {
-      await c.appPrivacyExclusion.applyAllRecommendedPrivacyApps();
-    }
-    applyResolvedToDrafts(c, this.features, this.resolved?.models ?? null);
+    // Privacy first. Normally a no-op — *Capture & Storage* already seeded on
+    // arrival — and the latch is what keeps this backstop from re-enabling a
+    // recommendation the user struck there.
+    await this.seedRecommendedExcludedApps();
+    // Features only. The model drafts were seeded at `resolve()` and are the
+    // user's since — re-applying `resolved.models` here would silently revert a
+    // model chosen on *Change settings*.
+    applyResolvedToDrafts(c, this.features);
     // `controller.finish` → `finishOnboarding` (onboarding-lifecycle.ts): one
     // atomic `update_recording_settings`, then `complete_onboarding`, then
     // `start_native_capture`.
@@ -256,17 +353,29 @@ export class OnboardingFlow {
   }
 }
 
+/** Live facts for one subsystem's selected model, in the resolver's shape. The
+ *  four status shapes agree on id/name/available and disagree only on where the
+ *  size lives, so `size` is the one thing a caller supplies. */
+function facts<T extends { modelId: string | null; displayName: string; available: boolean }>(
+  model: T | null | undefined,
+  size: (model: T) => number | null | undefined,
+): ModelInventory["speakerAnalysis"] {
+  if (!model) return null;
+  return {
+    modelId: model.modelId,
+    displayName: model.displayName,
+    byteSize: size(model) ?? null,
+    installed: model.available,
+  };
+}
+
 /**
- * Fold the resolved feature set + model selections into the controller's draft
- * fields, which `buildSettingsRequestFrom` then serializes. The companion
- * `transcribe*` / `recognizeSavedPeople` flags are taken from `FeatureState`,
- * where they are derived — never set independently.
+ * Fold the resolved feature set into the controller's draft fields, which
+ * `buildSettingsRequestFrom` then serializes. The companion `transcribe*` /
+ * `recognizeSavedPeople` flags are taken from `FeatureState`, where they are
+ * derived — never set independently.
  */
-function applyResolvedToDrafts(
-  c: OnboardingController,
-  f: FeatureState,
-  models: ModelSelections | null,
-): void {
+function applyResolvedToDrafts(c: OnboardingController, f: FeatureState): void {
   c.draftCaptureScreen = f.screen;
   c.draftCaptureMicrophone = f.microphone;
   c.draftCaptureSystemAudio = f.systemAudio;
@@ -279,9 +388,15 @@ function applyResolvedToDrafts(
   c.draftSemanticSearchEnabled = f.semanticSearch;
   c.draftAskAiEnabled = f.aiFeatures;
   c.privacyEnabled = f.privacy;
-  if (!models) return;
+}
+
+/**
+ * Seed the model drafts from the resolver. Called ONCE per run, at the first
+ * `resolve()`; after that *Change settings* owns these fields.
+ */
+function applyModelsToDrafts(c: OnboardingController, models: ModelSelections): void {
   // The `choose*` setters carry the provider→default-model coupling; the
-  // explicit model id afterwards is the resolver's (or the user's) choice.
+  // explicit model id afterwards is the resolver's (or the saved) choice.
   c.chooseOcrProvider(models.ocrProvider);
   c.draftOcrModelId = models.ocrModelId;
   c.chooseTranscriptionProvider(models.transcriptionProvider);

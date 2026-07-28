@@ -13,7 +13,7 @@
 <script lang="ts">
   import { systemAudioNeedsRequest } from "$lib/onboarding/feature-rules";
   import { estimateDailyStorageMb } from "$lib/onboarding/disk-estimate";
-  import { resolveSetup, workListBytes } from "$lib/onboarding/resolve-setup";
+  import { workListBytes } from "$lib/onboarding/resolve-setup";
   import { retentionToDays } from "$lib/components/retention";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
 
@@ -79,25 +79,10 @@
   ]);
 
   // ── The one foot line: downloads · location · retention · daily figure ────
-  // The work-list RE-RESOLVES against the LIVE feature state, so returning from
-  // Change settings with the last audio source off drops Whisper and speakrs out
-  // of the total. `flow.resolved.workList` is only rebuilt on the Permissions
-  // exit, so reading it directly would show a stale figure here.
-  const workList = $derived(
-    resolveSetup(
-      f.permissions,
-      {
-        speakerAnalysis: flow.controller.selectedSpeakerModel?.available ?? false,
-        whisperBase: flow.controller.selectedTranscriptionModel?.available ?? false,
-        semanticSearch: flow.controller.selectedSemanticSearchModel?.available ?? false,
-      },
-      {
-        features: f,
-        models: flow.resolved?.models,
-        excludedApps: flow.resolved?.excludedApps ?? [],
-      },
-    ).workList,
-  );
+  // `flow.workList` is live: it tracks both the feature state (returning from
+  // Change settings with the last audio source off drops Whisper and speakrs)
+  // and the model picks made there.
+  const workList = $derived(flow.workList);
   // Any total containing nomic is approximate — its Rust figure is
   // `approx_download_bytes` (see `resolve-setup.ts`).
   const approximate = $derived(workList.some((item) => item.subsystem === "semanticSearch"));

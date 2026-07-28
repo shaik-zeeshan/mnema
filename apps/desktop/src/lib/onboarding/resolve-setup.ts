@@ -64,15 +64,34 @@ export const NOMIC_BYTES = 548_000_000;
 
 // ── Inputs ─────────────────────────────────────────────────────────────────
 
-/** Which default models are already on disk. Installed models are omitted from
- *  the work-list — that is what makes re-entry cheap. */
+/**
+ * Live facts about the model a subsystem currently has SELECTED, read off that
+ * subsystem's `get_*_model_status` response. The work-list is built from the
+ * user's actual pick, so these travel with it — a non-default model has no
+ * constant here to name or size it.
+ *
+ * `null` means the status has not loaded yet; the built-in defaults below then
+ * cover the default picks and any other pick is simply not queued (nothing can
+ * size it, and the free-disk preflight must never guess).
+ */
+export interface SelectedModelFacts {
+  /** Which model these facts describe. Facts for a model the selection has
+   *  already moved off are ignored — the status stores fall back to the first
+   *  model of a provider, which is not necessarily what is selected. */
+  modelId: string | null;
+  displayName: string;
+  /** Download size. `null` when the catalog declares none (custom embedding
+   *  models); such an item still downloads, it just contributes no bytes. */
+  byteSize: number | null;
+  installed: boolean;
+}
+
+/** Live facts per subsystem. An installed model is omitted from the work-list —
+ *  that is what makes re-entry cheap. */
 export interface ModelInventory {
-  /** speakrs `pyannote-community-1-wespeaker` diarization bundle. */
-  speakerAnalysis: boolean;
-  /** local Whisper `base`. */
-  whisperBase: boolean;
-  /** `nomic-embed-text-v1.5`. */
-  semanticSearch: boolean;
+  speakerAnalysis: SelectedModelFacts | null;
+  audioTranscription: SelectedModelFacts | null;
+  semanticSearch: SelectedModelFacts | null;
 }
 
 /** Provider/model selections. Every field is resolved (never undefined) on the
@@ -136,8 +155,9 @@ export interface ResolvedSettings {
    * so a returning user's list is never re-seeded over.
    */
   applyRecommendedExcludedApps: boolean;
-  /** Fixed order: speakrs → Whisper base → nomic. Speakrs is first because the
-   *  Voice step cannot run its embedder without it. */
+  /** Fixed order: diarization → transcription → embedding. Diarization is first
+   *  because the Voice step cannot run its embedder without it. Built from the
+   *  SELECTED models, so it tracks a pick made on *Change settings*. */
   workList: DownloadWorkItem[];
 }
 
@@ -176,15 +196,25 @@ export function resolveSetup(
   });
 
   const savedModels = saved?.models ?? {};
+  // A model id belongs to its provider, so the default id only fills a gap when
+  // the provider is the default too — a saved Deepgram or Parakeet choice must
+  // not inherit "base" and queue a Whisper download against it.
+  const transcriptionProvider =
+    savedModels.transcriptionProvider ?? DEFAULT_TRANSCRIPTION_PROVIDER;
+  const speakerProvider = savedModels.speakerProvider ?? DEFAULT_SPEAKER_PROVIDER;
   const models: ModelSelections = {
     ocrProvider: savedModels.ocrProvider ?? DEFAULT_OCR_PROVIDER,
     ocrModelId: savedModels.ocrModelId ?? null,
-    transcriptionProvider:
-      savedModels.transcriptionProvider ?? DEFAULT_TRANSCRIPTION_PROVIDER,
+    transcriptionProvider,
     transcriptionModelId:
-      savedModels.transcriptionModelId ?? DEFAULT_TRANSCRIPTION_MODEL_ID,
-    speakerProvider: savedModels.speakerProvider ?? DEFAULT_SPEAKER_PROVIDER,
-    speakerModelId: savedModels.speakerModelId ?? DEFAULT_SPEAKER_MODEL_ID,
+      savedModels.transcriptionModelId ??
+      (transcriptionProvider === DEFAULT_TRANSCRIPTION_PROVIDER
+        ? DEFAULT_TRANSCRIPTION_MODEL_ID
+        : null),
+    speakerProvider,
+    speakerModelId:
+      savedModels.speakerModelId ??
+      (speakerProvider === DEFAULT_SPEAKER_PROVIDER ? DEFAULT_SPEAKER_MODEL_ID : null),
     semanticSearchModelId:
       savedModels.semanticSearchModelId ?? DEFAULT_SEMANTIC_SEARCH_MODEL_ID,
   };
@@ -198,68 +228,94 @@ export function resolveSetup(
   };
 }
 
+/** Label + size for the DEFAULT picks only, so a work-list can be priced before
+ *  the model statuses land. Every other pick is priced from live facts. */
+const DEFAULT_FACTS = {
+  speakerAnalysis: {
+    modelId: DEFAULT_SPEAKER_MODEL_ID,
+    displayName: "pyannote community-1 + WeSpeaker (CoreML)",
+    byteSize: SPEAKRS_BYTES,
+  },
+  audioTranscription: {
+    modelId: DEFAULT_TRANSCRIPTION_MODEL_ID,
+    displayName: "Whisper Base",
+    byteSize: WHISPER_BASE_BYTES,
+  },
+  semanticSearch: {
+    modelId: DEFAULT_SEMANTIC_SEARCH_MODEL_ID,
+    displayName: "Nomic Embed Text v1.5",
+    byteSize: NOMIC_BYTES,
+  },
+} as const;
+
 /**
- * Only what is (a) needed by an enabled feature, (b) an app-managed default,
- * and (c) not already installed. Order is fixed, never sorted by size.
+ * Only what is (a) needed by an enabled feature, (b) the model the user actually
+ * has SELECTED — not the default — and (c) not already installed. Order is
+ * fixed, never sorted by size.
  */
 function buildWorkList(
   features: FeatureState,
   models: ModelSelections,
   installed: ModelInventory,
 ): DownloadWorkItem[] {
-  const items: DownloadWorkItem[] = [];
-
-  if (
-    features.speakerSeparation &&
-    !installed.speakerAnalysis &&
-    models.speakerProvider === DEFAULT_SPEAKER_PROVIDER &&
-    models.speakerModelId === DEFAULT_SPEAKER_MODEL_ID
-  ) {
-    items.push({
-      id: `speakerAnalysis:${DEFAULT_SPEAKER_PROVIDER}:${DEFAULT_SPEAKER_MODEL_ID}`,
+  return [
+    workItem({
+      enabled: features.speakerSeparation,
       subsystem: "speakerAnalysis",
-      provider: DEFAULT_SPEAKER_PROVIDER,
-      modelId: DEFAULT_SPEAKER_MODEL_ID,
-      label: "pyannote community-1 + WeSpeaker (CoreML)",
-      bytes: SPEAKRS_BYTES,
       feature: "speakerSeparation",
-    });
-  }
-
-  if (
-    features.transcription &&
-    !installed.whisperBase &&
-    models.transcriptionProvider === DEFAULT_TRANSCRIPTION_PROVIDER &&
-    models.transcriptionModelId === DEFAULT_TRANSCRIPTION_MODEL_ID
-  ) {
-    items.push({
-      id: `audioTranscription:${DEFAULT_TRANSCRIPTION_PROVIDER}:${DEFAULT_TRANSCRIPTION_MODEL_ID}`,
+      provider: models.speakerProvider,
+      modelId: models.speakerModelId,
+      facts: installed.speakerAnalysis,
+    }),
+    workItem({
+      enabled: features.transcription,
       subsystem: "audioTranscription",
-      provider: DEFAULT_TRANSCRIPTION_PROVIDER,
-      modelId: DEFAULT_TRANSCRIPTION_MODEL_ID,
-      label: "Whisper Base",
-      bytes: WHISPER_BASE_BYTES,
       feature: "transcription",
-    });
-  }
-
-  if (
-    features.semanticSearch &&
-    !installed.semanticSearch &&
-    models.semanticSearchModelId === DEFAULT_SEMANTIC_SEARCH_MODEL_ID
-  ) {
-    items.push({
-      id: `semanticSearch:${SEMANTIC_SEARCH_PROVIDER}:${DEFAULT_SEMANTIC_SEARCH_MODEL_ID}`,
+      provider: models.transcriptionProvider,
+      modelId: models.transcriptionModelId,
+      facts: installed.audioTranscription,
+    }),
+    workItem({
+      enabled: features.semanticSearch,
       subsystem: "semanticSearch",
-      provider: SEMANTIC_SEARCH_PROVIDER,
-      modelId: DEFAULT_SEMANTIC_SEARCH_MODEL_ID,
-      label: "Nomic Embed Text v1.5",
-      bytes: NOMIC_BYTES,
       feature: "semanticSearch",
-    });
-  }
+      provider: SEMANTIC_SEARCH_PROVIDER,
+      modelId: models.semanticSearchModelId,
+      facts: installed.semanticSearch,
+    }),
+  ].filter((item): item is DownloadWorkItem => item !== null);
+}
 
-  return items;
+function workItem(input: {
+  enabled: boolean;
+  subsystem: keyof typeof DEFAULT_FACTS;
+  feature: FeatureId;
+  provider: string;
+  modelId: string | null;
+  facts: SelectedModelFacts | null;
+}): DownloadWorkItem | null {
+  const { enabled, subsystem, feature, provider, modelId } = input;
+  // No model id = OS-managed (Apple Speech, Parakeet) or a cloud provider
+  // (Deepgram): nothing to fetch either way.
+  if (!enabled || !modelId) return null;
+  // Status stores fall back to a provider's first model when the selection is
+  // not in the list, so facts for a different id say nothing about this one.
+  const facts = input.facts?.modelId === modelId ? input.facts : null;
+  if (facts?.installed) return null;
+  const fallback = DEFAULT_FACTS[subsystem];
+  const named = facts ?? (fallback.modelId === modelId ? fallback : null);
+  // A non-default pick with no live status yet: nothing can name or size it, and
+  // the free-disk preflight must never guess. It re-enters the list on reload.
+  if (!named) return null;
+  return {
+    id: `${subsystem}:${provider}:${modelId}`,
+    subsystem,
+    provider,
+    modelId,
+    label: named.displayName,
+    bytes: named.byteSize ?? 0,
+    feature,
+  };
 }
 
 /**

@@ -3,9 +3,13 @@
 import { describe, expect, it } from "bun:test";
 import {
   applyToggle,
+  cascadeOf,
   featureLockReason,
+  featureNote,
   featureToggleDisabled,
+  lockFix,
   normalizeFeatures,
+  preview,
   systemAudioNeedsRequest,
 } from "./feature-rules";
 
@@ -176,9 +180,147 @@ describe("featureLockReason", () => {
     expect(featureLockReason(on, "speakerSeparation")).toBeNull();
   });
 
+  it("locks transcription until an audio source is on", () => {
+    // Was a SILENT no-op: applyToggle set it, normalizeFeatures unset it, and
+    // the switch bounced back with no explanation.
+    const noAudio = state();
+    expect(featureLockReason(noAudio, "transcription")).toBe("Needs an audio source on");
+    expect(featureToggleDisabled(noAudio, "transcription")).toBe(true);
+    expect(applyToggle(noAudio, "transcription")).toBe(noAudio);
+    const p = preview(noAudio, "transcription");
+    expect(p.noop).toBe(true);
+    expect(p.lockReason).toBe("Needs an audio source on");
+    // Either source clears it.
+    for (const source of ["microphone", "systemAudio"]) {
+      expect(featureLockReason(state({ [source]: true }), "transcription")).toBeNull();
+    }
+  });
+
   it("leaves every other feature unlocked", () => {
-    for (const id of ["screen", "systemAudio", "ocr", "transcription", "semanticSearch", "aiFeatures", "privacy"]) {
+    for (const id of ["screen", "systemAudio", "ocr", "semanticSearch", "aiFeatures", "privacy"]) {
       expect(featureLockReason(state({ permissions: { microphone: false, systemAudio: false } }), id)).toBeNull();
+    }
+  });
+});
+
+// ── The cascade, exposed (slice 4) ─────────────────────────────────────────
+
+describe("cascadeOf", () => {
+  it("reports both children when the LAST audio source goes off", () => {
+    const on = applyToggle(state(), "microphone");
+    const off = applyToggle(on, "microphone");
+    expect(cascadeOf(on, off, "microphone")).toEqual(["transcription", "speakerSeparation"]);
+  });
+
+  it("reports one child when transcription goes off", () => {
+    const on = applyToggle(state(), "microphone");
+    const off = applyToggle(on, "transcription");
+    expect(cascadeOf(on, off, "transcription")).toEqual(["speakerSeparation"]);
+  });
+
+  it("reports both children when an audio source comes on", () => {
+    const before = state();
+    const after = applyToggle(before, "systemAudio");
+    expect(cascadeOf(before, after, "systemAudio")).toEqual([
+      "transcription",
+      "speakerSeparation",
+    ]);
+  });
+
+  it("reports nothing when one of two sources goes off", () => {
+    const both = applyToggle(applyToggle(state(), "microphone"), "systemAudio");
+    expect(cascadeOf(both, applyToggle(both, "microphone"), "microphone")).toEqual([]);
+  });
+
+  it("reports nothing for a feature with no dependants", () => {
+    const before = state({ microphone: true });
+    for (const id of ["screen", "ocr", "semanticSearch", "aiFeatures", "privacy"]) {
+      expect(cascadeOf(before, applyToggle(before, id), id)).toEqual([]);
+    }
+  });
+});
+
+describe("preview", () => {
+  it("sees a cascade before committing it, and commits nothing", () => {
+    const before = applyToggle(state(), "microphone");
+    const p = preview(before, "microphone");
+    expect(p.next).toBe(false);
+    expect(p.noop).toBe(false);
+    expect(p.lockReason).toBeNull();
+    expect(p.cascade).toEqual(["transcription", "speakerSeparation"]);
+    // The row values the sentence needs come off `after`.
+    expect(p.after.transcription).toBe(false);
+    expect(p.after.speakerSeparation).toBe(false);
+    // Nothing moved on the previewed state.
+    expect(before.transcription).toBe(true);
+    expect(before.speakerSeparation).toBe(true);
+  });
+
+  it("matches applyToggle exactly", () => {
+    const before = state({ microphone: true });
+    for (const id of ["screen", "microphone", "systemAudio", "ocr", "transcription", "speakerSeparation", "semanticSearch", "aiFeatures", "privacy"]) {
+      expect(preview(before, id).after).toEqual(applyToggle(before, id));
+    }
+  });
+
+  it("reports a locked enable as a no-op carrying its reason", () => {
+    const blocked = state({ permissions: { microphone: false } });
+    const p = preview(blocked, "microphone");
+    expect(p.noop).toBe(true);
+    expect(p.after).toBe(blocked);
+    expect(p.next).toBe(false);
+    expect(p.lockReason).toBe("Needs Microphone permission");
+    expect(p.cascade).toEqual([]);
+  });
+});
+
+describe("lockFix", () => {
+  it("offers the OS grant for the microphone — no row can resolve it", () => {
+    const blocked = state({ permissions: { microphone: false } });
+    expect(lockFix(blocked, "microphone")).toEqual({
+      act: "grant",
+      id: "microphone",
+      label: "Grant Microphone",
+    });
+  });
+
+  it("offers the parent row when the parent is flippable", () => {
+    // Audio is on, transcription was turned off deliberately → who's speaking
+    // is locked on a row the user CAN flip.
+    const noTranscript = applyToggle(applyToggle(state(), "microphone"), "transcription");
+    expect(lockFix(noTranscript, "speakerSeparation")).toEqual({
+      act: "toggle",
+      id: "transcription",
+      label: "Turn Transcription on",
+    });
+  });
+
+  it("skips a locked ancestor to reach a flippable one", () => {
+    // No audio at all: who's speaking → transcription (itself locked) → system
+    // audio, the one source that can never lock (ADR 0052).
+    const noAudio = state();
+    expect(featureToggleDisabled(noAudio, "transcription")).toBe(true);
+    expect(lockFix(noAudio, "speakerSeparation")).toEqual({
+      act: "toggle",
+      id: "systemAudio",
+      label: "Turn System audio on",
+    });
+    // ...and the fix it offers is not itself a no-op.
+    expect(preview(noAudio, "systemAudio").noop).toBe(false);
+  });
+
+  it("offers system audio for a locked transcription row", () => {
+    expect(lockFix(state(), "transcription")).toEqual({
+      act: "toggle",
+      id: "systemAudio",
+      label: "Turn System audio on",
+    });
+  });
+
+  it("is null for a row that is not locked", () => {
+    const on = applyToggle(state(), "microphone");
+    for (const id of ["screen", "microphone", "systemAudio", "ocr", "transcription", "speakerSeparation", "semanticSearch", "aiFeatures", "privacy"]) {
+      expect(lockFix(on, id)).toBeNull();
     }
   });
 });
@@ -232,6 +374,86 @@ describe("systemAudioNeedsRequest", () => {
     expect(systemAudioNeedsRequest({ ...onNoIntent, permissions: { ...onNoIntent.permissions, systemAudio: true } })).toBe(false);
     // Off → nothing to annotate.
     expect(systemAudioNeedsRequest(state({ permissions: { systemAudio: false } }))).toBe(false);
+  });
+});
+
+// ── Row copy (the point of the screen: never state something false) ────────
+
+describe("featureNote", () => {
+  it("never calls the microphone lock 'the one thing missing' while it is ON", () => {
+    // `resolveSetup` leaves capture sources ON regardless of the grant, so this
+    // is the SHIPPING state: switch on, permission missing, recording nothing.
+    const onUngranted = normalizeFeatures({
+      ...state({ permissions: { microphone: false } }),
+      microphone: true,
+    });
+    expect(onUngranted.microphone).toBe(true);
+    expect(featureNote(onUngranted, "microphone")).toBe(
+      "Microphone permission is not granted — stays on, records nothing.",
+    );
+  });
+
+  it("tells an OFF ungranted microphone row what the grant buys", () => {
+    const offUngranted = state({ permissions: { microphone: false } });
+    expect(featureNote(offUngranted, "microphone")).toBe(
+      "Microphone permission is not granted — grant it to turn this on.",
+    );
+  });
+
+  it("describes a granted microphone as a source, not as a permission", () => {
+    const granted = state({ microphone: true });
+    expect(featureNote(granted, "microphone")).toBe(
+      "Your voice, from the built-in or a connected mic.",
+    );
+  });
+
+  it("only says transcription needs audio when it actually does", () => {
+    const noAudio = state();
+    expect(featureLockReason(noAudio, "transcription")).not.toBeNull();
+    expect(featureNote(noAudio, "transcription")).toBe("Needs an audio source above it.");
+
+    // Both sources on, transcription deliberately off — the old copy claimed the
+    // two rows above it did not exist.
+    const audioOn = applyToggle(
+      applyToggle(applyToggle(state(), "microphone"), "systemAudio"),
+      "transcription",
+    );
+    expect(audioOn.transcription).toBe(false);
+    expect(featureLockReason(audioOn, "transcription")).toBeNull();
+    expect(featureNote(audioOn, "transcription")).toBe(
+      "Off — the audio is still recorded, just never turned into text.",
+    );
+
+    expect(featureNote(applyToggle(state(), "microphone"), "transcription")).toBe(
+      "Runs locally on Whisper base.",
+    );
+  });
+
+  it("annotates system audio only while macOS cannot confirm the grant", () => {
+    const unconfirmed = normalizeFeatures({
+      ...state({ permissions: { systemAudio: false } }),
+      systemAudio: true,
+    });
+    expect(featureNote(unconfirmed, "systemAudio")).toContain("can't confirm this grant");
+    expect(featureNote(state({ systemAudio: true }), "systemAudio")).not.toContain(
+      "can't confirm",
+    );
+  });
+
+  it("reports the real AI state, including the store's own reason", () => {
+    const off = state();
+    expect(featureNote(off, "aiFeatures", { configured: false })).toContain("Never pre-ticked");
+    expect(featureNote(off, "aiFeatures", { configured: true })).toContain("Ready");
+    const on = applyToggle(off, "aiFeatures");
+    expect(featureNote(on, "aiFeatures", { configured: false, note: "Verify Ollama first." })).toBe(
+      "Verify Ollama first.",
+    );
+  });
+
+  it("gives every drawn row a sentence", () => {
+    for (const id of ["screen", "ocr", "microphone", "systemAudio", "transcription", "speakerSeparation", "semanticSearch", "aiFeatures"]) {
+      expect(featureNote(state(), id, { configured: false }).length).toBeGreaterThan(0);
+    }
   });
 });
 

@@ -5,6 +5,7 @@ import {
   applyProgressEvent,
   classifyReadiness,
   isSetupNoteworthy,
+  reseedProgress,
   startProgress,
 } from "./model-readiness";
 import { resolveSetup } from "./resolve-setup";
@@ -64,7 +65,7 @@ describe("isSetupNoteworthy", () => {
 
 const WORK = resolveSetup(
   { screen: true, microphone: true, systemAudio: true },
-  { speakerAnalysis: false, whisperBase: false, semanticSearch: false },
+  { speakerAnalysis: null, audioTranscription: null, semanticSearch: null },
   null,
 ).workList;
 
@@ -93,6 +94,42 @@ describe("startProgress", () => {
     expect(state.percent).toBe(100);
     expect(state.done).toBe(true);
     expect(state.currentLabel).toBeNull();
+  });
+});
+
+// The work-list is live: leaving Setup for *Change settings* and picking a
+// different model changes the agenda under the reducer.
+describe("reseedProgress", () => {
+  it("is identity when the work-list has not changed", () => {
+    const state = applyProgressEvent(startProgress(WORK), event(SPEAKRS, "downloading", 100));
+    expect(reseedProgress(state, WORK)).toBe(state);
+  });
+
+  it("carries surviving items' progress across and drops the rest", () => {
+    let state = startProgress(WORK);
+    state = applyProgressEvent(state, event(SPEAKRS, "completed", SPEAKRS.bytes));
+    state = applyProgressEvent(state, event(WHISPER, "downloading", 1_000));
+
+    const swapped = { ...WHISPER, id: "audioTranscription:local_whisper:small", modelId: "small" };
+    const next = reseedProgress(state, [SPEAKRS, swapped, NOMIC]);
+
+    expect(next.states[SPEAKRS.id]).toBe("ready");
+    expect(next.received[SPEAKRS.id]).toBe(SPEAKRS.bytes);
+    // The replaced model starts clean — its predecessor's bytes are not its own.
+    expect(next.states[swapped.id]).toBe("missing");
+    expect(next.received[swapped.id]).toBe(0);
+    expect(next.received[WHISPER.id]).toBeUndefined();
+  });
+
+  it("recomputes the percent against the new total instead of holding the old floor", () => {
+    let state = startProgress(WORK);
+    state = applyProgressEvent(state, event(NOMIC, "completed", NOMIC.bytes));
+    const before = state.percent;
+
+    // Dropping the finished item shrinks both the numerator and the total.
+    const next = reseedProgress(state, [SPEAKRS, WHISPER]);
+    expect(next.percent).toBe(0);
+    expect(before).toBeGreaterThan(0);
   });
 });
 

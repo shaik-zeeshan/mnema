@@ -18,15 +18,28 @@ const SCREEN_MIC = { screen: true, microphone: true, systemAudio: false };
 const SCREEN_SYSAUDIO = { screen: true, microphone: false, systemAudio: true };
 const ALL = { screen: true, microphone: true, systemAudio: true };
 
+// No live model status at all — the default picks still resolve from the
+// built-in fallbacks, which is what a cold first run looks like.
 const NOTHING_INSTALLED = {
-  speakerAnalysis: false,
-  whisperBase: false,
-  semanticSearch: false,
+  speakerAnalysis: null,
+  audioTranscription: null,
+  semanticSearch: null,
 };
+
+/** Live facts for a model, in the shape `resolveSetup` takes. */
+const factsFor = (modelId, installed, byteSize = 1) => ({
+  modelId,
+  displayName: `model ${modelId}`,
+  byteSize,
+  installed,
+});
+
+const installedDefault = (modelId) => factsFor(modelId, true);
+
 const ALL_INSTALLED = {
-  speakerAnalysis: true,
-  whisperBase: true,
-  semanticSearch: true,
+  speakerAnalysis: installedDefault(DEFAULT_SPEAKER_MODEL_ID),
+  audioTranscription: installedDefault(DEFAULT_TRANSCRIPTION_MODEL_ID),
+  semanticSearch: installedDefault(DEFAULT_SEMANTIC_SEARCH_MODEL_ID),
 };
 
 const ids = (result) => result.workList.map((item) => item.id);
@@ -120,7 +133,7 @@ describe("resolveSetup — work-list omits installed models", () => {
   it("drops only the installed ones and keeps the rest in order", () => {
     const result = resolveSetup(
       ALL,
-      { speakerAnalysis: true, whisperBase: false, semanticSearch: false },
+      { ...NOTHING_INSTALLED, speakerAnalysis: installedDefault(DEFAULT_SPEAKER_MODEL_ID) },
       null,
     );
     expect(ids(result)).toEqual([
@@ -133,7 +146,10 @@ describe("resolveSetup — work-list omits installed models", () => {
   it("keeps speakrs first when only Whisper is installed", () => {
     const result = resolveSetup(
       ALL,
-      { speakerAnalysis: false, whisperBase: true, semanticSearch: false },
+      {
+        ...NOTHING_INSTALLED,
+        audioTranscription: installedDefault(DEFAULT_TRANSCRIPTION_MODEL_ID),
+      },
       null,
     );
     expect(ids(result)).toEqual([
@@ -156,6 +172,102 @@ describe("resolveSetup — work-list omits installed models", () => {
       "transcription",
       "semanticSearch",
     ]);
+  });
+});
+
+// ── Regression: the work-list follows the USER'S pick, not the default ──────
+// Before this, `buildWorkList` only queued a model when the selection equalled
+// the hard-coded default, so choosing Whisper Small (or a custom embedding
+// model) downloaded nothing at all — the Setup screen checked and fetched the
+// defaults regardless.
+
+describe("resolveSetup — work-list follows the selected model", () => {
+  const SMALL_BYTES = 487_601_967;
+
+  it("queues a non-default transcription model with its live size and name", () => {
+    const result = resolveSetup(
+      ALL,
+      {
+        ...NOTHING_INSTALLED,
+        audioTranscription: {
+          modelId: "small",
+          displayName: "Whisper Small",
+          byteSize: SMALL_BYTES,
+          installed: false,
+        },
+      },
+      { models: { transcriptionModelId: "small" } },
+    );
+    const item = result.workList.find((entry) => entry.subsystem === "audioTranscription");
+    expect(item.modelId).toBe("small");
+    expect(item.id).toBe("audioTranscription:local_whisper:small");
+    expect(item.label).toBe("Whisper Small");
+    expect(item.bytes).toBe(SMALL_BYTES);
+    // ...and the default is NOT also queued.
+    expect(ids(result)).not.toContain(
+      `audioTranscription:local_whisper:${DEFAULT_TRANSCRIPTION_MODEL_ID}`,
+    );
+  });
+
+  it("skips a non-default model that is already installed", () => {
+    const result = resolveSetup(
+      ALL,
+      { ...NOTHING_INSTALLED, audioTranscription: factsFor("small", true) },
+      { models: { transcriptionModelId: "small" } },
+    );
+    expect(result.workList.some((item) => item.subsystem === "audioTranscription")).toBe(
+      false,
+    );
+  });
+
+  it("still queues the DEFAULT model when no live status has loaded", () => {
+    const result = resolveSetup(ALL, NOTHING_INSTALLED, null);
+    expect(workListBytes(result.workList)).toBe(
+      SPEAKRS_BYTES + WHISPER_BASE_BYTES + NOMIC_BYTES,
+    );
+  });
+
+  it("does not queue a non-default model it cannot size or name", () => {
+    // No live facts and not a default: guessing a size would corrupt the
+    // free-disk preflight, so the item waits for the status to load.
+    const result = resolveSetup(ALL, NOTHING_INSTALLED, {
+      models: { transcriptionModelId: "small" },
+    });
+    expect(result.workList.some((item) => item.subsystem === "audioTranscription")).toBe(
+      false,
+    );
+  });
+
+  it("ignores facts describing a model the selection has moved off", () => {
+    // The status stores fall back to a provider's FIRST model, so stale facts
+    // must never name or size the item.
+    const result = resolveSetup(
+      ALL,
+      { ...NOTHING_INSTALLED, audioTranscription: factsFor("medium", true) },
+      { models: { transcriptionModelId: "small" } },
+    );
+    expect(result.workList.some((item) => item.subsystem === "audioTranscription")).toBe(
+      false,
+    );
+  });
+
+  it("queues a custom embedding model with an unknown size as zero bytes", () => {
+    const result = resolveSetup(
+      ALL,
+      {
+        ...NOTHING_INSTALLED,
+        semanticSearch: {
+          modelId: "custom/e5-base",
+          displayName: "E5 Base",
+          byteSize: null,
+          installed: false,
+        },
+      },
+      { models: { semanticSearchModelId: "custom/e5-base" } },
+    );
+    const item = result.workList.find((entry) => entry.subsystem === "semanticSearch");
+    expect(item.id).toBe("semanticSearch:local:custom/e5-base");
+    expect(item.bytes).toBe(0);
   });
 });
 

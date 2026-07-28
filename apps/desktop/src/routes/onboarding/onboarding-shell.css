@@ -18,6 +18,12 @@
  */
 
 .ob-win {
+  /* Two control heights for the whole flow. A ROW control — field, select, or
+     any button standing beside one — is `--ob-ctl-h`; an INLINE control — a
+     status-row button, the add-app chip, a footer ghost — is the small one.
+     Both are whole pixels so nothing lands on a fractional height. */
+  --ob-ctl-h: 40px;
+  --ob-ctl-h-sm: 28px;
   position: absolute;
   inset: 0;
   display: flex;
@@ -199,6 +205,10 @@
 }
 
 /* ---- controls ---- */
+/* Height comes from the token, never from padding + line-height — that pair is
+   what produced 20.0 / 22.0 / 30.5 / 34.5 on one screen. `min-height` rather
+   than `height` so a deliberately tall control (the AI choice cards) still
+   grows. */
 .ob-btn {
   font: inherit;
   font-size: var(--text-md);
@@ -206,7 +216,12 @@
   background: transparent;
   border: 1px solid var(--app-border-strong);
   border-radius: 8px;
-  padding: 11px 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ob-ctl-h);
+  line-height: 1;
+  padding: 0 20px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -236,7 +251,8 @@
 }
 .ob-btn.sm {
   font-size: var(--text-sm);
-  padding: 7px 13px;
+  min-height: var(--ob-ctl-h-sm);
+  padding: 0 13px;
   border-radius: 6px;
 }
 .ob-btn:disabled {

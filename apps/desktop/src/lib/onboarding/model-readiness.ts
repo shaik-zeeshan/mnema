@@ -101,6 +101,37 @@ export function startProgress(
 }
 
 /**
+ * Re-seed for a CHANGED work-list, carrying over the progress of every item that
+ * survives. Needed because the work-list is live: the user can leave Setup, pick
+ * a different model on *Change settings*, and come back to a different agenda.
+ * Returns the state unchanged when the id set is identical, so a caller can run
+ * this from an effect without looping.
+ */
+export function reseedProgress(
+  state: DownloadProgressState,
+  items: readonly DownloadWorkItem[],
+): DownloadProgressState {
+  const same =
+    items.length === state.items.length &&
+    items.every((item, index) => state.items[index]?.id === item.id);
+  if (same) return state;
+
+  const received: Record<string, number> = {};
+  const states: Record<string, ReadinessState> = {};
+  const errors: Record<string, string> = {};
+  for (const item of items) {
+    received[item.id] = state.received[item.id] ?? 0;
+    states[item.id] = state.states[item.id] ?? "missing";
+    const error = state.errors[item.id];
+    if (error !== undefined) errors[item.id] = error;
+  }
+  // `percent: 0` — the aggregate is recomputed from the surviving bytes over the
+  // NEW total. Carrying the old monotonic floor forward would be a lie about a
+  // list the user just changed.
+  return finish({ items, received, states, errors, percent: 0 });
+}
+
+/**
  * Fold one event in. Events for models not on the work-list are ignored (the
  * user may start an unrelated download from Settings mid-flow).
  */
