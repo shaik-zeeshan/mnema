@@ -571,7 +571,7 @@ async fn execute_ask_ai_broker_request(
 
 /// Map an Ask AI tool name + camelCase params object onto a brokered request.
 ///
-/// Only the Ask AI data tools (`search`, `timeline`, `show_text`,
+/// Only the Ask AI data tools (`search`, `timeline`, `show_text`, `speakers`,
 /// `recall_context`) are accepted; `open`/`open_in_mnema`, the presentation-only
 /// `reference_captures`, and anything else fall into the unknown branch and are
 /// rejected, so they can never be issued as Ask AI data tools.
@@ -599,6 +599,12 @@ fn broker_request_from_tool(
                 .ok_or_else(|| "Ask AI show_text requires a non-empty opaqueId".to_string())?
                 .to_string();
             Ok(BrokeredCaptureRequest::ShowText { opaque_id })
+        }
+        "speakers" => {
+            let request: app_infra::brokered_access::BrokerSpeakersRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid Ask AI speakers params: {error}"))?;
+            Ok(BrokeredCaptureRequest::Speakers(request))
         }
         "recall_context" => {
             let request: BrokerRecallContextRequest = serde_json::from_value(params)
@@ -636,9 +642,10 @@ fn broker_response_to_tool_value(
             .map_err(|error| format!("failed to serialize Ask AI show_text result: {error}")),
         BrokeredCaptureResponse::RecallContext(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
+        BrokeredCaptureResponse::Speakers(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI speakers result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
         BrokeredCaptureResponse::AuthStatus(_)
-        | BrokeredCaptureResponse::Speakers(_)
         | BrokeredCaptureResponse::OpenInMnema(_)
         | BrokeredCaptureResponse::OpenCapturedUrl(_) => {
             Err("unexpected Ask AI broker response".to_string())
@@ -1057,6 +1064,7 @@ fn search_tool_schema() -> serde_json::Value {
             "limit": { "type": "number", "description": "Maximum number of snippets to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
             "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." },
+            "speaker": { "type": "string", "description": "An opaque speaker handle from `speakers`. Narrows to audio this person or voice was heard in and returns their words inline as `turns`. Cannot be combined with `app` or `windowTitle`." },
             "cursor": { "type": "string", "description": "The `nextCursor` from a previous search result, to fetch the next page. Re-send the identical query and filters alongside it; a result with no `nextCursor` is the end of the matches." }
         },
         "required": ["query"]
@@ -1073,9 +1081,23 @@ fn timeline_tool_schema() -> serde_json::Value {
             "to": { "type": "string", "description": "Inclusive window end, RFC3339 (required)." },
             "limit": { "type": "number", "description": "Maximum number of intervals to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
-            "windowTitle": { "type": "string", "description": "Restrict to intervals whose window title matches." }
+            "windowTitle": { "type": "string", "description": "Restrict to intervals whose window title matches." },
+            "speaker": { "type": "string", "description": "An opaque speaker handle from `speakers`. Narrows the window to audio this person or voice was heard in — this is how to answer \"when was X talking\". Cannot be combined with `app` or `windowTitle`." }
         },
         "required": ["from", "to"]
+    })
+}
+
+/// JSON Schema (object) for the `speakers` discovery-tool params.
+fn speakers_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string", "description": "Case-insensitive substring of a person's name; named people only. Use it to reach someone who ranks below the limit." },
+            "limit": { "type": "number", "description": "Maximum number of speakers to return (capped server-side)." }
+        },
+        "required": []
     })
 }
 
@@ -1144,7 +1166,9 @@ fn build_ask_ai_tools(
                 "Search the user's redacted on-device capture history (screen OCR + audio \
 transcripts). Returns snippets with opaque ids, kinds (frame | audio_microphone | audio_system; \
 audio_system is sound that played through the speakers, not the user speaking), \
-startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle)."
+startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle). Pass \
+`speaker` (a handle from `speakers`) to get only what one person said, their words included as \
+`turns`."
                     .to_string(),
             parameters_schema: search_tool_schema(),
         },
@@ -1153,9 +1177,22 @@ startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTi
             description:
                 "Return coarse activity intervals within a bounded time window. Without app/window \
 filters the result is audio-oriented; with an app or window title it returns matching screen \
-intervals instead."
+intervals instead. Pass `speaker` (a handle from `speakers`) for when one person was talking."
                     .to_string(),
             parameters_schema: timeline_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "speakers".to_string(),
+            description:
+                "List who was heard in the user's audio, longest-speaking first, each with the \
+opaque `handle` that `search` and `timeline` take as `speaker` — a handle is the ONLY way to \
+address a person, so call this before filtering. A `person` handle is one human, stable across \
+recordings. A `voice` handle is ONE voice in ONE recording, NOT a person: the same human gets a \
+different one in every recording, so never merge two of them or present one as an identity. \
+`recognizedTurns` are voice-match guesses the user never confirmed; `truncated` means this is \
+not everyone — narrow with `name`."
+                    .to_string(),
+            parameters_schema: speakers_tool_schema(),
         },
         ai_engine::AgentTool {
             name: "show_text".to_string(),
@@ -2443,6 +2480,66 @@ mod tests {
         assert!(tools.iter().any(|t| t.name == "mcp__github__create_issue"));
     }
 
+    /// Without discovery the model can only filter by a handle it has no way to
+    /// learn, so the whole speaker surface is unreachable from the app's own chat.
+    #[test]
+    fn speakers_tool_is_offered_and_its_response_is_handled() {
+        let tools = build_ask_ai_tools(false, Vec::new());
+        assert!(
+            tools.iter().any(|tool| tool.name == "speakers"),
+            "the speaker discovery tool must be offered"
+        );
+        for tool in tools
+            .iter()
+            .filter(|tool| tool.name == "search" || tool.name == "timeline")
+        {
+            assert!(
+                tool.parameters_schema["properties"]
+                    .get("speaker")
+                    .is_some(),
+                "`{}` must accept the speaker handle",
+                tool.name
+            );
+            assert!(
+                tool.description.contains("speaker"),
+                "`{}` must tell the model the filter exists",
+                tool.name
+            );
+        }
+
+        let request = broker_request_from_tool("speakers", serde_json::json!({ "name": "priya" }))
+            .expect("speakers params should map to a broker request");
+        let BrokeredCaptureRequest::Speakers(request) = request else {
+            panic!("speakers must map to a Speakers request");
+        };
+        assert_eq!(request.name.as_deref(), Some("priya"));
+
+        let response = BrokeredCaptureResponse::Speakers(
+            app_infra::brokered_access::BrokerSpeakersResponse {
+                speakers: vec![app_infra::brokered_access::BrokerSpeakerSummary {
+                    name: Some("Priya".to_string()),
+                    handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                        id: "p1.signature".to_string(),
+                        kind: "person".to_string(),
+                        start_ms: None,
+                        end_ms: None,
+                    },
+                    speaking_ms: 42_000,
+                    assigned_turns: 40,
+                    recognized_turns: 12,
+                }],
+                limit: 20,
+                truncated: true,
+            },
+        );
+        let value = broker_response_to_tool_value(response)
+            .expect("a speakers response is a handled path, not an unexpected one");
+        assert_eq!(value["speakers"][0]["handle"]["id"], "p1.signature");
+        assert_eq!(value["speakers"][0]["handle"]["kind"], "person");
+        assert_eq!(value["speakers"][0]["recognizedTurns"], 12);
+        assert_eq!(value["truncated"], true);
+    }
+
     #[test]
     fn classify_ask_ai_tool_routes_in_precedence_order() {
         // App-control first (Workstream A).
@@ -2475,6 +2572,7 @@ mod tests {
             "search",
             "timeline",
             "show_text",
+            "speakers",
             "recall_context",
             "mcp__",
             "mcp__nounderscore",

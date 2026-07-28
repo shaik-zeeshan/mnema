@@ -1,9 +1,10 @@
-//! Local MCP server over stdio: the same four brokered data commands the CLI
+//! Local MCP server over stdio: the same five brokered data commands the CLI
 //! exposes, as MCP tools for chat clients (Claude Desktop, Cursor, ...).
 //! Consent, redaction, and grant enforcement all stay in the app's broker.
 
 use app_infra::brokered_access::{
-    BrokerClientIdentity, BrokerSearchRequest, BrokerTimelineRequest, BrokeredCaptureRequest,
+    BrokerClientIdentity, BrokerSearchRequest, BrokerSpeakersRequest, BrokerTimelineRequest,
+    BrokeredCaptureRequest,
 };
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -36,6 +37,11 @@ struct SearchParams {
     /// Case-sensitive regular expression over the same sanitized host/path URL
     /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
     url_regex: Option<String>,
+    /// Opaque speaker handle from the speakers tool, narrowing to audio that
+    /// person or voice was heard in and returning their words inline. Matches
+    /// assigned voices AND recognition guesses. Cannot be combined with app,
+    /// window_title, url, or url_regex.
+    speaker: Option<String>,
     /// nextCursor from a previous search response, to fetch the next page of the
     /// same query. Re-send the identical query and filters alongside it.
     cursor: Option<String>,
@@ -59,6 +65,19 @@ struct TimelineParams {
     /// Case-sensitive regular expression over the same sanitized host/path URL
     /// (prefix with `(?i)` for case-insensitive matching); mutually exclusive with url.
     url_regex: Option<String>,
+    /// Opaque speaker handle from the speakers tool, narrowing the window to
+    /// audio that person or voice was heard in. Cannot be combined with app,
+    /// window_title, url, or url_regex.
+    speaker: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SpeakersParams {
+    /// Case-insensitive substring of a person's name; named people only. Use it
+    /// to find someone who ranks below the limit.
+    name: Option<String>,
+    /// Maximum number of speakers to return.
+    limit: Option<u32>,
 }
 
 /// `url` and `url_regex` are mutually exclusive. Clap enforces that on the CLI
@@ -91,7 +110,7 @@ impl SearchParams {
             url: self.url,
             url_regex: self.url_regex,
             cursor: self.cursor,
-            speaker: None,
+            speaker: self.speaker,
         }))
     }
 }
@@ -107,8 +126,17 @@ impl TimelineParams {
             window_title: self.window_title,
             url: self.url,
             url_regex: self.url_regex,
-            speaker: None,
+            speaker: self.speaker,
         }))
+    }
+}
+
+impl SpeakersParams {
+    fn into_request(self) -> BrokeredCaptureRequest {
+        BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
+            name: self.name,
+            limit: self.limit,
+        })
     }
 }
 
@@ -146,7 +174,17 @@ impl MnemaMcp {
     }
 
     #[tool(
-        description = "Fetch the full captured text behind a search result id. Audio results also list the speakers heard, each named only when the user assigned that voice to a person or it was recognized (with a confidence)."
+        description = "List who was heard in the user's audio, longest-speaking first, each with the opaque handle that search and timeline take as `speaker`. A `person` handle is one human, stable across recordings; a `voice` handle is one voice inside ONE recording, not a person — never store it or treat two of them as the same human. `truncated` means this is not everyone; narrow with `name`."
+    )]
+    async fn speakers(
+        &self,
+        Parameters(p): Parameters<SpeakersParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.run("speakers", p.into_request()).await
+    }
+
+    #[tool(
+        description = "Fetch the full captured text behind a search result id. Audio results also list the speakers heard, each named only when the user assigned that voice to a person or it was recognized (with a confidence), plus `turns` saying who said which words. Missing `turns` means the words could NOT be attributed — never that nobody spoke; the text is still there."
     )]
     async fn show_text(
         &self,
@@ -280,13 +318,55 @@ mod tests {
     }
 
     #[test]
-    fn mcp_router_exposes_exactly_the_four_data_tools() {
+    fn mcp_router_exposes_exactly_the_five_data_tools() {
         let mut names: Vec<String> = MnemaMcp::tool_router()
             .list_all()
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect();
         names.sort();
-        assert_eq!(names, ["open", "search", "show_text", "timeline"]);
+        assert_eq!(
+            names,
+            ["open", "search", "show_text", "speakers", "timeline"]
+        );
+    }
+
+    /// The handle is the whole point of discovery: without `speaker` on these two
+    /// params the MCP door can list people it has no way to filter by.
+    #[test]
+    fn mcp_forwards_the_speaker_handle() {
+        let search: SearchParams = serde_json::from_value(serde_json::json!({
+            "query": "standup",
+            "speaker": "p1.deadbeef"
+        }))
+        .expect("search params should deserialize");
+        let BrokeredCaptureRequest::Search(request) =
+            search.into_request().expect("speaker alone is allowed")
+        else {
+            panic!("search params must build a search request");
+        };
+        assert_eq!(request.speaker.as_deref(), Some("p1.deadbeef"));
+
+        let timeline: TimelineParams = serde_json::from_value(serde_json::json!({
+            "from": "2026-05-22T10:00:00Z",
+            "to": "2026-05-22T11:00:00Z",
+            "speaker": "p1.deadbeef"
+        }))
+        .expect("timeline params should deserialize");
+        let BrokeredCaptureRequest::Timeline(request) =
+            timeline.into_request().expect("speaker alone is allowed")
+        else {
+            panic!("timeline params must build a timeline request");
+        };
+        assert_eq!(request.speaker.as_deref(), Some("p1.deadbeef"));
+
+        let speakers: SpeakersParams =
+            serde_json::from_value(serde_json::json!({ "name": "priya", "limit": 5 }))
+                .expect("speakers params should deserialize");
+        let BrokeredCaptureRequest::Speakers(request) = speakers.into_request() else {
+            panic!("speakers params must build a speakers request");
+        };
+        assert_eq!(request.name.as_deref(), Some("priya"));
+        assert_eq!(request.limit, Some(5));
     }
 }
