@@ -2671,7 +2671,7 @@ fn map_search_response(
     cursor: Option<BrokerSearchCursor>,
     grant_id: Option<&str>,
     opaque_secret: &[u8],
-    mut matched_turns: HashMap<i64, Vec<BrokerSpeakerTurn>>,
+    matched_turns: HashMap<i64, Vec<BrokerSpeakerTurn>>,
 ) -> BrokerSearchResponse {
     // ONE ranked page across both anchor kinds. Search returns frames and audio
     // as two separately-ranked lists; merging them by score (rather than
@@ -2748,8 +2748,12 @@ fn map_search_response(
                 span_start_ms: Some(audio_result.span_start_ms as i64),
                 span_end_ms: Some(audio_result.span_end_ms as i64),
                 aligned_frame_id: audio_result.aligned_frame.as_ref().map(|frame| frame.id),
+                // Cloned, never removed: one recording can answer a query twice
+                // (two matched moments past the audio grouping gap), and taking
+                // the entry would leave the second result saying she was silent.
                 turns: matched_turns
-                    .remove(&audio_result.audio_segment.id)
+                    .get(&audio_result.audio_segment.id)
+                    .cloned()
                     .unwrap_or_default(),
             });
             audio_taken += 1;

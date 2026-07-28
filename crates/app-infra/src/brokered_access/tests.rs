@@ -4919,6 +4919,126 @@ fn broker_search_filtered_results_carry_only_the_matched_speakers_words() {
     });
 }
 
+/// One recording can answer a search TWICE: two matched moments further apart
+/// than the audio grouping gap are two anchors on the SAME audio segment. Both
+/// results are that recording, so both must carry her words — an empty `turns`
+/// on the second reads as "she said nothing here", the one thing this field must
+/// never mean.
+#[test]
+fn broker_search_two_results_from_one_recording_both_carry_the_speakers_words() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speaker-two-anchors");
+        let save_dir = temp_save_dir("speaker-two-anchors");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let priya = infra
+            .create_person_profile("Priya", None)
+            .await
+            .expect("person profile should insert");
+        let segment = infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "two-anchor-session",
+                1,
+                save_dir
+                    .join("two-anchor-session.m4a")
+                    .display()
+                    .to_string(),
+                "2026-05-17T10:00:00Z",
+                "2026-05-17T10:05:00Z",
+            ))
+            .await
+            .expect("segment should insert");
+        // Two transcript spans two minutes apart: past `AUDIO_GROUP_GAP_MS`, so
+        // search groups them as two separate anchors on the one recording.
+        let metadata = audio_transcription::TranscriptionMetadata {
+            provider: "test".to_string(),
+            model_id: None,
+            language: "en".to_string(),
+            segments: vec![
+                audio_transcription::TranscriptionSegment {
+                    start_ms: 0,
+                    end_ms: 1_000,
+                    text: "roadmap kickoff".to_string(),
+                    confidence: None,
+                },
+                audio_transcription::TranscriptionSegment {
+                    start_ms: 120_000,
+                    end_ms: 121_000,
+                    text: "roadmap wrapup".to_string(),
+                    confidence: None,
+                },
+            ],
+            words: Vec::new(),
+            provenance: Default::default(),
+        };
+        let job = infra
+            .enqueue_processing_job(&ProcessingJobDraft::for_audio_segment_transcription(
+                segment.id,
+            ))
+            .await
+            .expect("transcription job should enqueue");
+        let running = infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("transcription job should claim")
+            .expect("transcription job should exist");
+        infra
+            .complete_processing_job(
+                running.id,
+                &ProcessingResultDraft::new()
+                    .with_result_text("roadmap kickoff and roadmap wrapup")
+                    .with_structured_payload_json(
+                        serde_json::to_string(&metadata).expect("metadata should serialize"),
+                    ),
+            )
+            .await
+            .expect("transcription should complete");
+        complete_speaker_analysis(
+            &infra,
+            segment.id,
+            speaker_analysis_output(
+                "two-anchor-session",
+                segment.id,
+                vec![speaker_cluster("speaker_00", &[1.0, 0.0])],
+                vec![
+                    speaker_turn_saying("speaker_00", 0, 1_000, "roadmap kickoff"),
+                    speaker_turn_saying("speaker_00", 120_000, 121_000, "roadmap wrapup"),
+                ],
+            ),
+        )
+        .await;
+        assign_cluster(&infra, "two-anchor-session", "speaker_00", priya.id).await;
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::AllRetainedHistory,
+        )
+        .expect("grant should create");
+        let handle = discovered_person_handle(&config_dir, &infra, &grant, "Priya").await;
+
+        let filtered = search_with_speaker(&config_dir, &infra, &[grant], "roadmap", Some(&handle))
+            .await
+            .expect("search should run")
+            .expect("search should be authorized");
+
+        assert_eq!(
+            filtered.results.len(),
+            2,
+            "one recording, two matched moments: {filtered:?}"
+        );
+        assert!(
+            filtered
+                .results
+                .iter()
+                .all(|result| !result.turns.is_empty()),
+            "both results are the SAME recording, so both carry her words: {filtered:?}"
+        );
+    });
+}
+
 /// "When was Priya talking yesterday" takes the same filter, so it gets the same
 /// words: the timeline is the only surface that can answer it, and an interval
 /// that says WHEN but not WHAT sends the agent back for a `show-text` the filter
