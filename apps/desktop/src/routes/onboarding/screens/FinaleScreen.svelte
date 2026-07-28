@@ -239,39 +239,6 @@
       </p>
     {/if}
 
-    <div class="foot">
-      <hr class="ob-rule" />
-      {#if phase === "idle"}
-        <p class="ob-fine" style="margin-top:16px">Grant it later and capture starts on its own.</p>
-      {:else if c.selectedSemanticSearchDownloadRunning && c.selectedSemanticSearchDownloadPercent !== null}
-        <p class="ob-fine" style="margin-top:16px">
-          Preparing · Semantic Search
-          <span class="ob-num">{c.selectedSemanticSearchDownloadPercent}%</span> — turns itself on.
-        </p>
-      {:else if phase === "running"}
-        <p class="ob-fine" style="margin-top:16px">Everything else runs in the background from here.</p>
-      {/if}
-      <div class="ob-acts" style="margin-top:22px">
-        {#if phase === "idle"}
-          <button class="ob-btn primary" onclick={openSettings}>
-            Open System&nbsp;Settings&nbsp; ›
-          </button>
-          <button class="ob-btn" onclick={recheck} disabled={rechecking}>
-            {rechecking ? "Re-checking…" : "Re-check"}
-          </button>
-          <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
-          <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-        {:else if phase === "failed"}
-          <button class="ob-btn primary" onclick={relaunch}>Relaunch Mnema</button>
-          <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
-          <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-        {:else}
-          <button class="ob-btn primary" onclick={openMnema} disabled={phase === "starting"}>
-            Open Mnema&nbsp; →
-          </button>
-        {/if}
-      </div>
-    </div>
   </div>
 
   <div class="col evidence">
@@ -318,11 +285,50 @@
   </div>
 </div>
 
+<!-- The same footer every other screen has: state on the left, actions on the
+     right. It used to be pinned to the floor of the 360px column. -->
+<div class="ob-foot">
+  <hr class="ob-rule" />
+  <div class="ob-acts">
+    {#if phase === "idle"}
+      <span class="ob-fine spacer">Grant it later and capture starts on its own.</span>
+    {:else if c.selectedSemanticSearchDownloadRunning && c.selectedSemanticSearchDownloadPercent !== null}
+      <span class="ob-fine spacer">
+        Preparing · Semantic Search
+        <span class="ob-num">{c.selectedSemanticSearchDownloadPercent}%</span> — turns itself on.
+      </span>
+    {:else if phase === "running"}
+      <span class="ob-fine spacer">Everything else runs in the background from here.</span>
+    {/if}
+    {#if phase === "idle"}
+      <button class="ob-btn ghost" onclick={onBack}>← Back</button>
+      <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
+      <button class="ob-btn" onclick={recheck} disabled={rechecking}>
+        {rechecking ? "Re-checking…" : "Re-check"}
+      </button>
+      <button class="ob-btn primary" onclick={openSettings}>
+        Open System&nbsp;Settings&nbsp; ›
+      </button>
+    {:else if phase === "failed"}
+      <button class="ob-btn ghost" onclick={onBack}>← Back</button>
+      <button class="ob-btn" onclick={openMnema}>Open Mnema anyway</button>
+      <button class="ob-btn primary" onclick={relaunch}>Relaunch Mnema</button>
+    {:else}
+      <button class="ob-btn primary" onclick={openMnema} disabled={phase === "starting"}>
+        Open Mnema&nbsp; →
+      </button>
+    {/if}
+  </div>
+</div>
+
 <style>
   .split {
     display: grid;
     grid-template-columns: 360px 1fr;
     gap: 44px;
+    /* The two columns centre against each other; nothing is pinned to a
+       column's floor any more (the actions moved to `.ob-foot`). */
+    align-items: center;
     flex: 1;
     min-height: 0;
   }
@@ -332,11 +338,7 @@
     min-width: 0;
   }
   .evidence {
-    justify-content: center;
     gap: 18px;
-  }
-  .foot {
-    margin-top: auto;
   }
   .ob-disp.big {
     font-size: 42px;

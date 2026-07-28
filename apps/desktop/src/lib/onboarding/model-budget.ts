@@ -23,7 +23,8 @@ import type {
  *  duplicated here only so this module stays free of a `routes/` import. */
 export const OS_MANAGED_VALUE = "__os_managed__";
 
-/** The Semantic Search family that IS the row's off switch. */
+/** The family a disabled Semantic Search resolves to. No segment carries it —
+ *  that is how "off" reads as no active segment rather than as a wrong one. */
 export const SEMANTIC_OFF = "off";
 export const SEMANTIC_ENGLISH = "en";
 export const SEMANTIC_MULTILINGUAL = "multi";
@@ -88,8 +89,9 @@ export const FAMILY_NOTES: Record<string, string> = {
   [SEMANTIC_MULTILINGUAL]: "Bigger indexes retrieve better; none are cheap.",
 };
 
+/** Which language coverage — NOT on/off. On/off is the switch chain's, so with
+ *  the feature off `SEMANTIC_OFF` matches no option and no segment is active. */
 export const SEMANTIC_FAMILIES = [
-  { value: SEMANTIC_OFF, label: "Off" },
   { value: SEMANTIC_ENGLISH, label: "English" },
   { value: SEMANTIC_MULTILINGUAL, label: "Multilingual" },
 ];

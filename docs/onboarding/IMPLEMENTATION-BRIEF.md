@@ -11,6 +11,12 @@ direction, rendered as a design-brief document. Each screen is a `.win` element 
 `.note`, the state cards below each frame — those cards document *other states of the same
 screen* and must all be implemented, but as states, not as extra cards on the page).
 
+**Superseded for six screens by `docs/onboarding/mockups/revision-2.html`** — Capture &
+Storage (03), the four *Change settings* sections (05), Setup (06), Voice (07) and the
+Finale (08). Where the two disagree, revision 2 wins: its controls are the real input
+components, inlined live from `input-components/parts/`, and it draws the real window
+frame. Welcome, Permissions and Your settings still come from the file above.
+
 Line ranges in that file:
 
 | Screen | Frame lines |
@@ -91,6 +97,8 @@ UI work is verified by **rendering and looking at a screenshot**, never by grepp
 names. Grep-based verification has produced false "matches the mockup" verdicts on this repo
 before. Run the dev server, capture the screen you built, and compare it against the same frame
 rendered from the mockup HTML. Check for overflow too — several screens were built here that
-type-checked cleanly and still ran past the 1040×680 frame.
+type-checked cleanly and still ran past the frame. The onboarding window is **1120×800**,
+minimum **920×620** (`apps/desktop/src-tauri/src/windows.rs:200`); screenshot both sizes, in
+both themes.
 
 Typecheck: `bun --cwd=apps/desktop run check`.

@@ -14,7 +14,8 @@ are derived from this HTML, and each screen's exact line range is tabulated in
 > more (Setup, Voice, Finale), and *Change settings* is four section screens behind a tab
 > strip rather than one scroll behind a rail. Its controls are the **real** input
 > components, inlined live from `input-components/parts/`, and its frame is the real
-> window size (1120×800) rather than this file's 1040×680. Everything not listed there —
+> window size (1120×800, minimum 920×620) rather than this file's smaller one. Everything
+> not listed there —
 > Welcome, Permissions, Your settings — still comes from `chosen-cinematic-rewind.html`.
 
 | # | Screen |

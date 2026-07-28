@@ -9,9 +9,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
+  FAMILY_NOTES,
   OS_MANAGED_VALUE,
   SEMANTIC_ENGLISH,
+  SEMANTIC_FAMILIES,
   SEMANTIC_MULTILINGUAL,
+  SEMANTIC_OFF,
   diskVerdict,
   downloadBudget,
   pickBytes,
@@ -271,6 +274,20 @@ describe("slice 10 — every model is reachable", () => {
     expect(picks.find((m) => m.id === "bge-m3").family).toBe(SEMANTIC_MULTILINGUAL);
     // Every semantic size is approximate.
     expect(picks.every((m) => m.approx)).toBe(true);
+  });
+
+  test("the family group offers language coverage only, never Off", () => {
+    expect(SEMANTIC_FAMILIES.map((f) => f.value)).toEqual([
+      SEMANTIC_ENGLISH,
+      SEMANTIC_MULTILINGUAL,
+    ]);
+  });
+
+  test("a disabled feature resolves to a family no segment carries", () => {
+    // That is how "off" reads as NO active segment rather than a wrong one —
+    // and the height-reserved row still owes the reader its sentence.
+    expect(SEMANTIC_FAMILIES.find((f) => f.value === SEMANTIC_OFF)).toBeUndefined();
+    expect(FAMILY_NOTES[SEMANTIC_OFF]).toBeTruthy();
   });
 
   test("a catalog-only model still reaches a family", () => {

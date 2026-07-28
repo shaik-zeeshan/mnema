@@ -117,23 +117,27 @@
   }
 </script>
 
-<h1 class="ob-disp mid centred">Already answered.</h1>
+<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without this
+     the heading and the manifest sat at the top with ~200px of hole under them. -->
+<div class="scene">
+  <h1 class="ob-disp mid centred">Already answered.</h1>
 
-<div class="manifest">
-  {#each rows as row (row.name)}
-    <div class="row" class:off={!row.on} class:warned={row.warned}>
-      <span class="tick" aria-hidden="true">{row.on ? "✓" : "○"}</span>
-      <span class="nm">{row.name}</span>
-      <span class="val">
-        {row.value}
-        {#if row.grant}
-          <button class="grant" type="button" onclick={() => flow.goTo("permissions")}>
-            Grant ▸
-          </button>
-        {/if}
-      </span>
-    </div>
-  {/each}
+  <div class="manifest">
+    {#each rows as row (row.name)}
+      <div class="row" class:off={!row.on} class:warned={row.warned}>
+        <span class="tick" aria-hidden="true">{row.on ? "✓" : "○"}</span>
+        <span class="nm">{row.name}</span>
+        <span class="val">
+          {row.value}
+          {#if row.grant}
+            <button class="grant" type="button" onclick={() => flow.goTo("permissions")}>
+              Grant ▸
+            </button>
+          {/if}
+        </span>
+      </div>
+    {/each}
+  </div>
 </div>
 
 <div class="ob-foot">
@@ -152,6 +156,23 @@
 </div>
 
 <style>
+  /* Same idiom as ChangeSettingsScreen's `.scene` and SetupScreen's `.mid`:
+     `safe center` centres the heading and the manifest while they fit, and falls
+     back to top-aligned the moment they do not — so a manifest that outgrows the
+     stage scrolls from its first row instead of losing its head off the top. No
+     `gap`: `.manifest` already carries its own margin. */
+  .scene {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: safe center;
+    /* See `--ob-bleed`. */
+    padding-inline: var(--ob-bleed);
+    margin-inline: calc(-1 * var(--ob-bleed));
+  }
+
   .centred {
     text-align: center;
   }

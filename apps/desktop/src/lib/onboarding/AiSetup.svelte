@@ -713,6 +713,19 @@
     flex: 1 1 auto;
     min-width: 0;
   }
+  /* `Switch` is a Settings-row component: its wrapper is `width: 100%` because
+     there it owns the label and the description too. Used here as a BARE toggle
+     beside the row's own `.t`/`.d`, that 100% became the flex basis and ate the
+     row — `.grow` was squeezed to 211px (description wrapped to two lines) and
+     the 36px track was stranded a quarter of the way across, with 769px of
+     nothing to its right. The mockup draws the switch flush with the row's
+     right edge (`revision-2.html:3589`), which is what shrink-wrapping the cell
+     restores. Same shape as the chain's `auto` control column in
+     `FeatureSwitches`. */
+  .row > :global(.switch-wrapper) {
+    width: auto;
+    flex: none;
+  }
 
   /* fields */
   .fld {
@@ -773,7 +786,9 @@
   .loud {
     padding: 17px 16px;
     font-size: var(--text-md);
-    line-height: 1.4;
+    /* A whole-pixel line box, not a 1.4 ratio of a fractional font size —
+       that pair put these two cards on 54.19px. 17 + 20 + 17 = 54. */
+    line-height: 20px;
   }
   .loss {
     margin-top: 13px;

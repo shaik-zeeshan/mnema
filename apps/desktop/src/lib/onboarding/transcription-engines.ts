@@ -11,10 +11,7 @@
 // Pure: no Svelte, no `invoke`. `Providers.svelte` renders what this returns.
 
 import { formatBytes } from "../settings/state/format";
-import {
-  defaultOcrModelIdForProvider,
-  defaultTranscriptionModelIdForProvider,
-} from "../settings/state/models-format";
+import { defaultTranscriptionModelIdForProvider } from "../settings/state/models-format";
 
 /** `default_audio_transcription_provider()` — `capture-types/src/recording.rs:304`. */
 export const RECOMMENDED_ENGINE = "local_whisper";
@@ -210,61 +207,4 @@ export function engineDelta(engines: readonly Engine[], id: string): EngineDelta
 
 function delta(a: number | null, b: number | null): number | null {
   return a === null || b === null ? null : a - b;
-}
-
-// ── OCR: resolved, not chosen ───────────────────────────────────────────────
-// Apple Vision has no download, no extra memory, and no axis on which Tesseract
-// wins in this build, so onboarding stops asking. The line below states what is
-// running and where the other engine lives; the choice stays in Settings.
-// Explicitly NOT claimed: any speed or accuracy ordering between the two. The
-// one defensible difference is that this build ships Tesseract English-only
-// (`eng` + `osd` — `crates/ocr/src/lib.rs`).
-
-const OCR_NAMES: Record<string, string> = {
-  apple_vision: "Apple Vision",
-  tesseract: "Tesseract",
-};
-const OCR_ALTERNATIVES: Record<string, string> = {
-  apple_vision: "tesseract",
-  tesseract: "apple_vision",
-};
-
-function ocrCost(sources: readonly ProviderSource[], provider: string): string {
-  const source = sources.find((s) => s.provider === provider) ?? null;
-  const wanted = defaultOcrModelIdForProvider(provider);
-  const model =
-    source?.models.find((m) => m.modelId === wanted) ?? source?.models[0] ?? null;
-  if (model === null) return provider === "apple_vision" ? "no download" : "";
-  if (model.download === null) return "no download";
-  if (model.available) return "already on this Mac";
-  return `${formatBytes(model.download.byteSize)} to download`;
-}
-
-export interface OcrResolved {
-  /** "Apple Vision, built into macOS · no download" */
-  value: string;
-  /** Where the engine this screen does not offer lives, and what it is. */
-  note: string;
-}
-
-export function ocrResolvedLine(
-  sources: readonly ProviderSource[],
-  provider: string,
-): OcrResolved {
-  const name = OCR_NAMES[provider] ?? sources.find((s) => s.provider === provider)?.displayName ?? provider;
-  const cost = ocrCost(sources, provider);
-  const where = provider === "apple_vision" ? "built into macOS" : "on-device, nothing uploaded";
-  const other = OCR_ALTERNATIVES[provider] ?? null;
-
-  let note = "";
-  if (other === "tesseract") {
-    const otherCost = ocrCost(sources, "tesseract");
-    note =
-      "Tesseract, the offline fallback, lives in Settings — this build ships it English-only " +
-      `(eng + osd)${otherCost ? `, ${otherCost}` : ""}.`;
-  } else if (other === "apple_vision") {
-    note = "Apple Vision, built into macOS with no download, lives in Settings.";
-  }
-
-  return { value: cost ? `${name}, ${where} · ${cost}` : `${name}, ${where}`, note };
 }

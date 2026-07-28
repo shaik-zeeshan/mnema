@@ -11,16 +11,14 @@ import {
   downloadLabel,
   engineDelta,
   memoryLabel,
-  ocrResolvedLine,
   trackWidth,
 } from "./transcription-engines";
 
-// Manifest figures — `crates/audio-transcription/src/lib.rs` and `crates/ocr/src/lib.rs`.
+// Manifest figures — `crates/audio-transcription/src/lib.rs`.
 const WHISPER_TINY = 77_691_713;
 const WHISPER_BASE = 147_951_465;
 const PARAKEET_INT8 = 670_619_803;
 const PARAKEET_FULL = 2_549_945_719;
-const TESSERACT = 4_113_088 + 10_562_727; // Slice 1: summed from the file list, not typed
 
 const model = (modelId, byteSize, available = false) => ({
   modelId,
@@ -145,51 +143,5 @@ describe("engineDelta", () => {
     const delta = engineDelta(buildEngines([]), "parakeet");
     // Nothing downloaded is known yet, so only the measured memory delta speaks.
     expect(delta.text).toBe("about +1.6 GB of memory vs the recommended engine");
-  });
-});
-
-describe("ocrResolvedLine", () => {
-  const ocrStatus = [
-    { provider: "apple_vision", displayName: "Apple Vision", models: [model(null, null)] },
-    {
-      provider: "tesseract",
-      displayName: "Tesseract",
-      models: [model("tesseract-5.5.2", TESSERACT)],
-    },
-  ];
-
-  it("resolves Apple Vision as a line, not a choice", () => {
-    expect(ocrResolvedLine(ocrStatus, "apple_vision").value).toBe(
-      "Apple Vision, built into macOS · no download",
-    );
-  });
-
-  it("prints Tesseract's real, summed size — not the old 23,143,206", () => {
-    expect(TESSERACT).toBe(14_675_815);
-    expect(ocrResolvedLine(ocrStatus, "apple_vision").note).toBe(
-      "Tesseract, the offline fallback, lives in Settings — this build ships it English-only " +
-        "(eng + osd), 14.7 MB to download.",
-    );
-  });
-
-  it("points at the other engine when a returning user is on Tesseract", () => {
-    const line = ocrResolvedLine(ocrStatus, "tesseract");
-    expect(line.value).toBe("Tesseract, on-device, nothing uploaded · 14.7 MB to download");
-    expect(line.note).toBe("Apple Vision, built into macOS with no download, lives in Settings.");
-  });
-
-  it("claims no speed or accuracy ordering between the two OCR engines", () => {
-    // "Apple Vision fast / Tesseract slower" has no basis in the repo.
-    const line = ocrResolvedLine(ocrStatus, "apple_vision");
-    const text = `${line.value} ${line.note}`.toLowerCase();
-    for (const word of ["fast", "slow", "accurate", "better", "worse", "quality"]) {
-      expect(text).not.toContain(word);
-    }
-  });
-
-  it("survives a status that has not arrived yet", () => {
-    expect(ocrResolvedLine([], "apple_vision").value).toBe(
-      "Apple Vision, built into macOS · no download",
-    );
   });
 });

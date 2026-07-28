@@ -118,11 +118,15 @@
     position: relative;
   }
 
-  /* The band bleeds to the window edges and sits on the stage's bottom padding. */
+  /* The band bleeds to the window edges and sits on the stage's bottom padding.
+     Cancel that padding with the shell's own tokens, never a literal: the
+     hardcoded `0 -48px -40px` was tuned to a stage padding of `46px 48px 40px`,
+     and when the shell tightened to `28px 44px 20px` the band kept eating 40px
+     of a 20px gutter — 20px of stage overflow, at every window size. */
   .rw {
     position: relative;
     flex: none;
-    margin: 0 -48px -40px;
+    margin: 0 calc(-1 * var(--ob-pad-x)) calc(-1 * var(--ob-pad-b));
     padding-bottom: 20px;
   }
   .rw-band {
@@ -264,10 +268,12 @@
     clip-path: polygon(0 0, 100% 0, 50% 100%);
   }
 
+  /* The rail is inset back to the content column, so it must undo exactly what
+     `.rw` bled — same token, or the reel drifts off the playhead. */
   .rw-rail {
     position: relative;
     height: 34px;
-    margin: 0 48px;
+    margin: 0 var(--ob-pad-x);
   }
   .rw-rail::before {
     content: "";
@@ -284,7 +290,7 @@
   }
   .rw-tc {
     position: absolute;
-    left: calc(34% - 48px);
+    left: calc(34% - var(--ob-pad-x));
     top: 9px;
     transform: translateX(-50%);
     height: 16px;

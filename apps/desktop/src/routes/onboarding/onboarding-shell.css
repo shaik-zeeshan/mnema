@@ -7,7 +7,8 @@
  *     palette because it is a document showing screenshots of a dark app; the
  *     real app is theme-aware (`routes/+layout.svelte` defines the tokens for
  *     both themes), and a pasted `#3dffa0` breaks the light theme.
- *  2. `.ob-win` fills the window instead of the mockup's fixed 1040x680 frame.
+ *  2. `.ob-win` fills the window instead of the mockup's fixed frame. The real
+ *     onboarding window is 1120x800, minimum 920x620 (`src-tauri/src/windows.rs:200`).
  *
  * OWNERSHIP: this file belongs to the SHELL. Screens under `screens/` use
  * component-scoped <style> so parallel screen work cannot collide. The class
@@ -24,6 +25,27 @@
      Both are whole pixels so nothing lands on a fractional height. */
   --ob-ctl-h: 40px;
   --ob-ctl-h-sm: 28px;
+  /* Horizontal button padding, symmetric on every variant — the mockups' ghost
+     rule (`padding-left: 0`) predates the hover background and crops it. Named
+     so the one control that must sit on the content gutter (the footer's
+     leading ghost) can cancel it exactly instead of guessing a number. */
+  --ob-btn-pad-x: 20px;
+  --ob-btn-pad-x-sm: 13px;
+  /* The stage's own gutters, as tokens, because a screen that BLEEDS to the
+     window edge has to cancel them with a negative margin and there is no way
+     to read a parent's padding in CSS. Welcome hardcoded the previous
+     `48px`/`40px` and overflowed the stage by 20px the moment this changed. */
+  --ob-pad-x: 44px;
+  --ob-pad-b: 20px;
+  /* How far a control is allowed to BLEED past its pane's content box: the
+     audio bracket (-12px), a peeked chain row (-8px each side) and the capture
+     sentence's peek rule (-14px) all sit in the gutter on purpose. A scrolling
+     pane must reserve it, because `overflow-y: auto` computes `overflow-x` to
+     `auto` too: an 8px right bleed makes the pane horizontally scrollable, one
+     stray trackpad swipe parks it 8px right, and every line loses its first
+     character off the left edge. Largest bleed in the flow, so panes cancel it
+     with an equal negative margin and the gutter itself never moves. */
+  --ob-bleed: 14px;
   position: absolute;
   inset: 0;
   display: flex;
@@ -141,7 +163,10 @@
 .ob-stage {
   flex: 1;
   min-height: 0;
-  padding: 46px 48px 40px;
+  /* The mockup's frame padding (`revision-2.html`). 46/48/40 cost ~38px of
+     vertical room, and the switch chain needed every one of them to stop
+     scrolling at the 1120x800 DESIGN size. */
+  padding: 28px var(--ob-pad-x) var(--ob-pad-b);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -221,7 +246,7 @@
   justify-content: center;
   min-height: var(--ob-ctl-h);
   line-height: 1;
-  padding: 0 20px;
+  padding: 0 var(--ob-btn-pad-x);
   cursor: pointer;
   white-space: nowrap;
 }
@@ -232,7 +257,7 @@
    the flow that blocks, so this is the one place the state is ever reached. */
 .ob-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: 0.55;
 }
 .ob-btn.primary {
   background: var(--app-accent);
@@ -243,21 +268,32 @@
   background: var(--app-accent);
   box-shadow: var(--app-ring);
 }
+/* Ghost keeps the base padding — `revision-2.html` gives it no padding override
+   at all. The asymmetric `0 / 14px` came from `chosen-cinematic-rewind.html`,
+   which had no hover background anywhere; with one, a zero left pad crops the
+   hover box hard against the label while leaving 14px on the right. */
 .ob-btn.ghost {
   border-color: transparent;
   color: var(--app-text-muted);
-  padding-left: 0;
-  padding-right: 14px;
+}
+.ob-btn.ghost:hover:not(:disabled) {
+  color: var(--app-text-strong);
+}
+/* ...but a ghost that LEADS the footer is the only control whose label carries
+   the content gutter (every heading and rule above it starts at `--ob-pad-x`).
+   Pull the box, not the padding: the label stays on the gutter and the hover
+   box grows symmetrically into it. */
+.ob-foot .ob-acts > .ob-btn.ghost:first-child {
+  margin-left: calc(-1 * var(--ob-btn-pad-x));
 }
 .ob-btn.sm {
   font-size: var(--text-sm);
   min-height: var(--ob-ctl-h-sm);
-  padding: 0 13px;
+  padding: 0 var(--ob-btn-pad-x-sm);
   border-radius: 6px;
 }
-.ob-btn:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.ob-foot .ob-acts > .ob-btn.sm.ghost:first-child {
+  margin-left: calc(-1 * var(--ob-btn-pad-x-sm));
 }
 .ob-btn:focus-visible {
   outline: none;
@@ -283,6 +319,13 @@
 }
 .ob-foot .ob-acts .spacer {
   margin-right: auto;
+}
+/* A state LINE on the left of the footer wraps inside its own cell; without a
+   shrink basis it holds its measure and pushes the actions onto a second row at
+   the 920px minimum window. (A `.spacer` that is itself a button is unaffected.) */
+.ob-foot .ob-acts span.spacer {
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 /* The blocking reason for a held gate — Capture & Storage only. */

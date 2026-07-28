@@ -17,8 +17,9 @@
    · The budget bar is the ONLY place the 419 MB speaker model is ever visible —
      it has no picker anywhere and is spent silently today.
 
-  Semantic Search's `Off` segment IS the row's switch, folded in, because Off is
-  the only real saving on that row (every model is 488 MB or more).
+  Semantic Search's group answers only WHICH language coverage. On/off belongs to
+  the switch chain, so with the feature off no segment is active and the strip
+  reads the off state. `onSemanticEnabledChange` remains for the budget escape.
 
   Motion: none ambient. The bar's widths transition because the user just moved
   them; that is the only movement, and `prefers-reduced-motion` drops it.
@@ -75,11 +76,12 @@
     semanticCatalog: readonly SemanticSearchSupportedModel[];
     /** `draftSemanticSearchModelId`. */
     semanticModelId: string | null;
-    /** `features.semanticSearch` — drives the `Off` segment. */
+    /** `features.semanticSearch` — off means no active segment. */
     semanticEnabled: boolean;
     /** `chooseSemanticSearchModel`. */
     onSemanticModelChange: (value: string) => void;
-    /** Flip `features.semanticSearch` (via `flow.toggleFeature`) to `on`. */
+    /** Flip `features.semanticSearch` (via `flow.toggleFeature`) — on when a
+     *  family is picked while off, off from the budget escape. */
     onSemanticEnabledChange: (on: boolean) => void;
 
     // ── Who's speaking — no picker, footer only ──────────────────────────
@@ -156,10 +158,6 @@
   );
 
   function pickSemanticFamily(family: string): void {
-    if (family === SEMANTIC_OFF) {
-      onSemanticEnabledChange(false);
-      return;
-    }
     const next =
       lastInFamily[family] ?? sModels.find((m) => m.family === family)?.id ?? null;
     if (next && next !== semanticModelId) onSemanticModelChange(next);
@@ -398,11 +396,12 @@
 
   /* The variant row is ALWAYS this tall: a `Segmented`'s own height — 12px label
      at line-height 1 + 5px×2 segment padding + 2px×2 group padding + 1px×2
-     border. A family with one build leaves the strip and the footer exactly
-     where the multi-build families put them. */
+     border, which is exactly the shell's inline-control token. A family with one
+     build leaves the strip and the footer exactly where the multi-build families
+     put them. */
   .sub {
     margin-top: 9px;
-    min-height: 28px;
+    min-height: var(--ob-ctl-h-sm);
     display: flex;
     align-items: center;
     gap: 10px;

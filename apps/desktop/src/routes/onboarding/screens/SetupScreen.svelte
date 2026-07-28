@@ -268,8 +268,10 @@
 
 <h1 class="ob-sr-only">Setup</h1>
 
-<div class="split">
-  <div class="col">
+<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without
+     this the whole screen sat at the top with ~600px of hole under it. -->
+<div class="mid">
+  <div class="stmt">
     <div class="pct" aria-hidden="true">{percent}%</div>
 
     <!-- Deliberately NOT a live region: the byte figure changes on every chunk
@@ -306,89 +308,98 @@
         {/if}
       </div>
     {/if}
-
-    <div class="foot">
-      <hr class="ob-rule" />
-      <div class="ob-acts">
-        <button class="ob-btn ghost spacer" onclick={onBack}>← Back</button>
-        <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
-      </div>
-      <p class="ob-fine">
-        Live since you arrived, and it never disables. Downloads carry on behind you.
-      </p>
-    </div>
   </div>
 
-  <div class="col mid">
-    <div class="work">
-      {#each workList as item (item.id)}
-        {@const off = !flow.features[item.feature]}
-        {@const state = progress.states[item.id] ?? "missing"}
-        <div class="item">
-          <div class="head">
-            <span class="t" class:dim={off && state !== "ready"}>{FEATURE_NAME[item.feature]}</span>
-            {#if state === "ready"}
-              <!-- Ready wins over a switched-off feature: the bytes ARE on disk,
-                   and this screen reports downloads. Whether the feature is on
-                   is *Your settings*' business. -->
-              <span class="st ready">✓ Ready</span>
-            {:else if off}
-              <span class="st warn">
-                Turned off
-                <button class="ob-btn sm" onclick={() => restoreItem(item)}>
-                  Turn it back on
-                </button>
-              </span>
-            {:else if state === "downloading"}
-              <span class="st busy">
-                Downloading
-                <button class="ob-btn sm" onclick={() => void cancelItem(item)}>Cancel</button>
-              </span>
-            {:else if state === "failed"}
-              <span class="st fail">
-                {progress.errors[item.id] ?? "Download failed."}
-                <button class="ob-btn sm" onclick={() => retryItem(item)}>Retry</button>
-              </span>
-            {:else}
-              <span class="st wait">{mayStart ? "Queued" : "Held"}</span>
-            {/if}
-          </div>
-          {#if !off && (state === "downloading" || state === "failed")}
-            <div class="track">
-              <i
-                class:sheen={state === "downloading"}
-                style="width:{state === 'failed' ? 0 : itemPercent(item)}%"
-              ></i>
-            </div>
+  <hr class="ob-rule sep" />
+
+  <div class="work">
+    {#each workList as item (item.id)}
+      {@const off = !flow.features[item.feature]}
+      {@const state = progress.states[item.id] ?? "missing"}
+      <div class="item">
+        <div class="head">
+          <span class="t" class:dim={off && state !== "ready"}>{FEATURE_NAME[item.feature]}</span>
+          {#if state === "ready"}
+            <!-- Ready wins over a switched-off feature: the bytes ARE on disk,
+                 and this screen reports downloads. Whether the feature is on
+                 is *Your settings*' business. -->
+            <span class="st ready">✓ Ready</span>
+          {:else if off}
+            <span class="st warn">
+              Turned off
+              <button class="ob-btn sm" onclick={() => restoreItem(item)}>
+                Turn it back on
+              </button>
+            </span>
+          {:else if state === "downloading"}
+            <span class="st busy">
+              Downloading
+              <button class="ob-btn sm" onclick={() => void cancelItem(item)}>Cancel</button>
+            </span>
+          {:else if state === "failed"}
+            <span class="st fail">
+              {progress.errors[item.id] ?? "Download failed."}
+              <button class="ob-btn sm" onclick={() => retryItem(item)}>Retry</button>
+            </span>
+          {:else}
+            <span class="st wait">{mayStart ? "Queued" : "Held"}</span>
           {/if}
         </div>
-      {:else}
-        <p class="ob-fine">
-          Every model your settings need is already on this machine.
-        </p>
-      {/each}
-    </div>
+        {#if !off && (state === "downloading" || state === "failed")}
+          <div class="track">
+            <i
+              class:sheen={state === "downloading"}
+              style="width:{state === 'failed' ? 0 : itemPercent(item)}%"
+            ></i>
+          </div>
+        {/if}
+      </div>
+    {:else}
+      <p class="ob-fine">
+        Every model your settings need is already on this machine.
+      </p>
+    {/each}
+  </div>
+</div>
+
+<div class="ob-foot">
+  <hr class="ob-rule" />
+  <div class="ob-acts">
+    <span class="ob-fine spacer">
+      Live since you arrived, and it never disables. Downloads carry on behind you.
+    </span>
+    <button class="ob-btn ghost" onclick={onBack}>← Back</button>
+    <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
   </div>
 </div>
 
 <style>
-  /* Mockup frame 06 (`chosen-cinematic-rewind.html`): a large aggregate percent
-     plus one current-item line on the left, per-item rows on the right. Every
-     colour is an `--app-*` token — the mockup's hexes are dark-theme only. */
-  .split {
-    display: grid;
-    grid-template-columns: 360px 1fr;
-    gap: 44px;
+  /* Mockup frame 06 (`revision-2.html`): the 360px column is GONE. This screen
+     has one thing to say and a list of rows, so it says it at full width and the
+     actions live in the shell's `.ob-foot` like every other screen. Every colour
+     is an `--app-*` token — the mockup's hexes are dark-theme only. */
+  /* Same idiom as ChangeSettingsScreen's `.scene`: `safe center` centres the
+     statement + work-list while they fit, and falls back to top-aligned the
+     moment they do not, so a long work-list scrolls from its first row instead
+     of losing its head off the top of the stage. */
+  .mid {
     flex: 1;
     min-height: 0;
-  }
-  .col {
+    overflow-y: auto;
     display: flex;
     flex-direction: column;
-    min-width: 0;
+    justify-content: safe center;
+    /* See `--ob-bleed`. */
+    padding-inline: var(--ob-bleed);
+    margin-inline: calc(-1 * var(--ob-bleed));
   }
-  .col.mid {
-    justify-content: center;
+  .stmt {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .sep {
+    margin: 26px 0;
   }
 
   .pct {
@@ -399,14 +410,12 @@
     font-variant-numeric: tabular-nums;
   }
   .line {
-    margin: 14px 0 0;
+    margin: 10px 0 0;
     font-size: var(--text-md);
     line-height: 1.7;
     color: var(--app-text);
-    max-width: 40ch;
   }
-  /* The current-item line is one line, like the mockup's: it overflows the
-     360px column into the gutter rather than wrapping (density rule 1). */
+  /* The current-item line is one line, like the mockup's (density rule 1). */
   .line .nw {
     white-space: nowrap;
   }
@@ -417,17 +426,6 @@
     flex-direction: column;
     align-items: flex-start;
     gap: 10px;
-  }
-
-  .foot {
-    margin-top: auto;
-    padding-top: 24px;
-  }
-  .foot .ob-acts {
-    margin-top: 22px;
-  }
-  .foot .ob-fine {
-    margin-top: 16px;
   }
 
   /* ---- the work-list: name + state only. The bar carries the progress. ---- */
@@ -443,9 +441,11 @@
     border-top: 0;
     padding-top: 2px;
   }
+  /* Centred, not baseline: a row that mixes a label and a button hangs the
+     button box below the text when the two are baseline-aligned. */
   .head {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 16px;
   }
   .t {
@@ -459,7 +459,7 @@
     margin-left: auto;
     font-size: var(--text-sm);
     display: flex;
-    align-items: baseline;
+    align-items: center;
     gap: 12px;
     text-align: right;
   }

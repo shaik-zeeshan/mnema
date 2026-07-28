@@ -425,7 +425,10 @@
     line-height: 1.5;
     color: var(--app-text-subtle);
     margin-top: 2px;
-    max-width: 46ch;
+    /* 78ch, the mockup's frame measure (`revision-2.html:172`). At 46ch every
+       row wrapped to two lines and the chain overflowed its section at the
+       1120x800 DESIGN size, not just the 920x620 minimum. */
+    max-width: 78ch;
   }
   .row.dead .t {
     color: var(--app-text-muted);

@@ -14,23 +14,20 @@
    · Deepgram is named in a disclosure instead of shown as a disabled radio.
      ADR 0047 is unchanged: cloud transcription is Settings-only behind a
      consent gate, and it is still filtered out of the list this component gets.
-   · OCR is a resolved read-only line, not a choice. Apple Vision has no
-     download, no extra memory, and no axis on which Tesseract wins in this
-     build. The one defensible difference — Tesseract ships English-only — is
-     stated, and the choice itself stays in Settings.
+   · OCR is not here at all (revision 2 slice 5). This screen is only about
+     speech engines; the switch chain already states "Reading on-screen text",
+     Apple Vision stays the resolved default, and the choice lives in Settings.
 
   Motion: none ambient. Track widths transition only when the user picks.
 -->
 <script lang="ts">
   import { tick } from "svelte";
-  import { formatBytes } from "$lib/settings/state/format";
   import {
     RECOMMENDED_ENGINE,
     buildEngines,
     downloadLabel,
     engineDelta,
     memoryLabel,
-    ocrResolvedLine,
     trackWidth,
     type ProviderSource,
   } from "$lib/onboarding/transcription-engines";
@@ -39,25 +36,18 @@
     providers,
     value,
     onValueChange,
-    ocrProviders,
-    ocrProvider,
   }: {
     /** `transcriptionModelStatus?.providers ?? []` — Deepgram may be present; it is filtered out. */
     providers: readonly ProviderSource[];
     /** The draft transcription provider id. */
     value: string;
     onValueChange: (provider: string) => void;
-    /** `ocrModelStatus?.providers ?? []`. */
-    ocrProviders: readonly ProviderSource[];
-    /** The draft OCR provider id — read only, this component never changes it. */
-    ocrProvider: string;
   } = $props();
 
   const engines = $derived(buildEngines(providers));
   const maxBytes = $derived(Math.max(0, ...engines.map((e) => e.bytes ?? 0)));
   const maxRam = $derived(Math.max(0, ...engines.map((e) => e.ramBytes ?? 0)));
   const delta = $derived(engineDelta(engines, value));
-  const ocr = $derived(ocrResolvedLine(ocrProviders, ocrProvider));
 
   let cards = $state<HTMLDivElement | null>(null);
 
@@ -167,12 +157,6 @@
       switched on in Settings → Transcription, behind a consent step, and never here.
     </p>
   </details>
-
-  <p class="resolved">
-    <span class="rk">Reading on-screen text</span>
-    <span class="rv">{ocr.value}</span>
-    <span class="rn">{ocr.note}</span>
-  </p>
 </div>
 
 <style>
@@ -397,29 +381,6 @@
   .cloud b {
     color: var(--app-text);
     font-weight: 600;
-  }
-
-  .resolved {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 4px 10px;
-    margin: 14px 0 0;
-    padding-top: 12px;
-    border-top: 1px solid var(--app-border);
-  }
-  .resolved .rk {
-    font-size: var(--text-sm);
-    color: var(--app-text-muted);
-  }
-  .resolved .rv {
-    font-size: var(--text-sm);
-    color: var(--app-text-strong);
-  }
-  .resolved .rn {
-    flex-basis: 100%;
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
   }
 
   @media (prefers-reduced-motion: reduce) {

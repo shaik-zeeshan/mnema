@@ -260,9 +260,10 @@
         <p class="callout">{rejectionMessage(rejection)}</p>
       {/if}
 
+      <!-- The instrument's own buttons stay with the instrument; everything that
+           LEAVES this screen lives in the footer below. -->
       <div class="ob-acts acts">
         {#if phase === "enrolled"}
-          <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
           <button class="ob-btn" onclick={recordTake}>Record again</button>
         {:else}
           <button class="ob-btn primary" onclick={recordTake} disabled={busy}>
@@ -282,9 +283,6 @@
             ▸ Play take {takeNumber}
           </button>
         {/if}
-        <button class="ob-btn ghost wrap" onclick={onSkip}>
-          Skip — you can do this later in Settings
-        </button>
       </div>
     {:else}
       <p class="ob-lead">{notReadyReason}</p>
@@ -296,12 +294,6 @@
         {/if}
       {/if}
 
-      <div class="ob-acts acts">
-        <!-- Both land on the same step; the difference is what the user is told
-             will happen next, which is why the mockup keeps both. -->
-        <button class="ob-btn primary" onclick={onSkip}>Set this up later&nbsp; →</button>
-        <button class="ob-btn ghost" onclick={onSkip}>Skip voice entirely</button>
-      </div>
       {#if readiness === "downloading"}
         <p class="ob-fine after">A card will be waiting on your dashboard the moment it is ready.</p>
       {/if}
@@ -309,13 +301,25 @@
   </div>
 </div>
 
-<div class="foot">
+<div class="ob-foot">
   <hr class="ob-rule" />
-  <div class="honesty">
-    <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-    <p class="ob-fine">
+  <div class="ob-acts">
+    <span class="ob-fine spacer">
       The voiceprint never leaves this device, and recognition labels many turns — not every turn.
-    </p>
+    </span>
+    <button class="ob-btn ghost" onclick={onBack}>← Back</button>
+    {#if canEnroll}
+      {#if phase === "enrolled"}
+        <button class="ob-btn primary" onclick={onContinue}>Continue&nbsp; →</button>
+      {:else}
+        <button class="ob-btn" onclick={onSkip}>Skip — you can do this later in Settings</button>
+      {/if}
+    {:else}
+      <!-- Both land on the same step; the difference is what the user is told
+           will happen next, which is why the mockup keeps both. -->
+      <button class="ob-btn ghost" onclick={onSkip}>Skip voice entirely</button>
+      <button class="ob-btn primary" onclick={onSkip}>Set this up later&nbsp; →</button>
+    {/if}
   </div>
 </div>
 
@@ -327,6 +331,9 @@
     display: grid;
     grid-template-columns: 360px 1fr;
     gap: 44px;
+    /* Centred against each other: the statement is three lines, the instrument
+       is a dozen, and top-aligning them left a gap under the first. */
+    align-items: center;
     flex: 1;
     min-height: 0;
   }
@@ -334,9 +341,6 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
-  }
-  .col.mid {
-    justify-content: center;
   }
   .why {
     margin-top: 16px;
@@ -346,7 +350,7 @@
      three-sentence read (`ENROLLMENT_SENTENCE`) — the recorder captures a fixed
      15 s, so a shorter read would leave most of every clip as silence. At the
      mockup's size it wrapped to six lines and pushed the rejection callout past
-     the 1040x680 frame (`.split` clips, it does not scroll). 17px over a wider
+     the 920x620 minimum window (`.split` clips, it does not scroll). 17px over a wider
      measure lands it at five, which fits with any callout showing. */
   .quote {
     font-size: 17px;
@@ -421,11 +425,6 @@
   .acts {
     margin-top: 26px;
   }
-  /* The skip is long by design — let it take its own line rather than shrink. */
-  .acts .wrap {
-    flex-basis: 100%;
-    text-align: left;
-  }
 
   .track {
     height: 3px;
@@ -472,20 +471,9 @@
     margin-top: 16px;
   }
 
-  .foot {
-    margin-top: auto;
-    padding-top: 24px;
-    flex: none;
-  }
-  .honesty {
-    display: flex;
-    align-items: baseline;
-    gap: 18px;
-    margin-top: 14px;
-  }
-  .honesty .ob-fine {
-    max-width: none;
-  }
+  /* The footer is the shell's `.ob-foot`. The honesty line keeps `.ob-fine`'s
+     measure so it wraps INSIDE the row rather than pushing the buttons onto a
+     second line at the 920px minimum. */
 
   @media (prefers-reduced-motion: reduce) {
     .meter i,

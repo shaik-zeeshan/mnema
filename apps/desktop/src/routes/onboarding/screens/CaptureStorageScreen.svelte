@@ -135,28 +135,32 @@
   });
 </script>
 
-<h1 class="ob-disp sm">Four things to settle.</h1>
+<!-- Centred in the stage: the shell's `.ob-foot` owns the bottom, so without this
+     the heading and both surfaces sat at the top with ~200px of hole under them. -->
+<div class="scene">
+  <h1 class="ob-disp sm">Four things to settle.</h1>
 
-<div class="blocks">
-  <CaptureSentence
-    frameRate={c.draftFrameRate}
-    onFrameRateChange={(fps) => (c.draftFrameRate = fps)}
-    retention={c.draftRetentionPolicy}
-    onRetentionChange={(policy) => (c.draftRetentionPolicy = policy)}
-    saveDirectory={c.draftSaveDirectory}
-    onSaveDirectoryChange={(path) => (c.draftSaveDirectory = path)}
-    {probedPath}
-    probe={flow.storageProbe}
-    {probeState}
-    onRecheck={() => runProbe(c.draftSaveDirectory)}
-    requiredBytes={flow.downloadBytes}
-    semanticSearchOn={flow.features.semanticSearch}
-    onDisableSemanticSearch={() => flow.toggleFeature("semanticSearch")}
-    onError={(message) => (c.errorMessage = message)}
-  />
+  <div class="blocks">
+    <CaptureSentence
+      frameRate={c.draftFrameRate}
+      onFrameRateChange={(fps) => (c.draftFrameRate = fps)}
+      retention={c.draftRetentionPolicy}
+      onRetentionChange={(policy) => (c.draftRetentionPolicy = policy)}
+      saveDirectory={c.draftSaveDirectory}
+      onSaveDirectoryChange={(path) => (c.draftSaveDirectory = path)}
+      {probedPath}
+      probe={flow.storageProbe}
+      {probeState}
+      onRecheck={() => runProbe(c.draftSaveDirectory)}
+      requiredBytes={flow.downloadBytes}
+      semanticSearchOn={flow.features.semanticSearch}
+      onDisableSemanticSearch={() => flow.toggleFeature("semanticSearch")}
+      onError={(message) => (c.errorMessage = message)}
+    />
 
-  <div class="privacy">
-    <ExcludedApps privacy={c.appPrivacyExclusion} />
+    <div class="privacy">
+      <ExcludedApps privacy={c.appPrivacyExclusion} />
+    </div>
   </div>
 </div>
 
@@ -184,6 +188,23 @@
 </div>
 
 <style>
+  /* Same idiom as ChangeSettingsScreen's `.scene` and SetupScreen's `.mid`:
+     `safe center` centres the heading and both surfaces while they fit, and
+     falls back to top-aligned the moment they do not — so a long "Never
+     recorded" list scrolls from its first line instead of losing its head off
+     the top of the stage. No `gap`: `.blocks` already carries its own margin. */
+  .scene {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: safe center;
+    /* See `--ob-bleed`: the capture sentence's peek rule sits 14px into the
+       gutter, and a pane that does not reserve it scrolls sideways instead. */
+    padding-inline: var(--ob-bleed);
+    margin-inline: calc(-1 * var(--ob-bleed));
+  }
   .blocks {
     display: flex;
     flex-direction: column;
