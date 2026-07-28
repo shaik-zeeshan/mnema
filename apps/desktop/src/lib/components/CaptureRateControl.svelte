@@ -6,6 +6,7 @@
     intervalSToFps,
     nearestLadderIndex,
     relativeStorageLabel,
+    snapshotsPerMinute,
   } from "./capture-rate";
 
   interface Props {
@@ -22,13 +23,14 @@
   // index→fps→index round-trips exactly for ladder values.
   const idx = $derived(nearestLadderIndex(value));
   const intervalS = $derived(CAPTURE_INTERVAL_LADDER_S[idx]!);
-  const snapshotsPerMinute = $derived(Math.round(60 / intervalS));
+  const snapshotCount = $derived(snapshotsPerMinute(intervalS));
 
-  // "One minute of recording" strip: a tick per snapshot. Above 80 ticks
-  // individual marks blur together, so render a density band instead.
+  // "One minute of recording" strip: a tick per snapshot, at the second it is
+  // actually taken. Above 80 ticks individual marks blur together, so render a
+  // density band instead.
   const dotFractions = $derived(
-    snapshotsPerMinute <= 80
-      ? Array.from({ length: snapshotsPerMinute }, (_, i) => i / snapshotsPerMinute)
+    snapshotCount <= 80
+      ? Array.from({ length: snapshotCount }, (_, i) => (i * intervalS) / 60)
       : null,
   );
 
@@ -82,7 +84,7 @@
     <div class="capture-rate__strip-label">
       <span class="capture-rate__meta">one minute of recording</span>
       <span class="capture-rate__meta">
-        {snapshotsPerMinute} {snapshotsPerMinute === 1 ? "snapshot" : "snapshots"}
+        {snapshotCount} {snapshotCount === 1 ? "snapshot" : "snapshots"}
       </span>
     </div>
     <div class="capture-rate__strip">

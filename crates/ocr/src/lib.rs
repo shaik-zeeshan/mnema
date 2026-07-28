@@ -993,27 +993,32 @@ fn builtin_tesseract_artifact() -> Option<ModelArtifact> {
         "MNEMA_OCR_TESSERACT_BUNDLE_SHA256",
     )
     .or_else(|| {
+        // The download is the file list, so the declared size is its sum —
+        // never a separately typed constant (the old 23,143,206 overstated the
+        // real 14,675,815 by 57%). Same rule as `audio-transcription`.
+        let files = vec![
+            ModelArtifactFile {
+                relative_path: "tessdata/eng.traineddata".to_string(),
+                url: "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata"
+                    .to_string(),
+                byte_size: 4_113_088,
+                sha256: "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+                    .to_string(),
+            },
+            ModelArtifactFile {
+                relative_path: "tessdata/osd.traineddata".to_string(),
+                url: "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/osd.traineddata"
+                    .to_string(),
+                byte_size: 10_562_727,
+                sha256: "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+                    .to_string(),
+            },
+        ];
         Some(ModelArtifact {
             url: "https://github.com/tesseract-ocr/tessdata_fast".to_string(),
-            byte_size: 23_143_206,
-            sha256: "02a21f73272441ac9f07b5e140b5362f63be60ff87dd84ec3d965f204bea9016"
-                .to_string(),
-            shape: ModelArtifactShape::MultiFile {
-                files: vec![
-                    ModelArtifactFile {
-                        relative_path: "tessdata/eng.traineddata".to_string(),
-                        url: "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata".to_string(),
-                        byte_size: 4_113_088,
-                        sha256: "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2".to_string(),
-                    },
-                    ModelArtifactFile {
-                        relative_path: "tessdata/osd.traineddata".to_string(),
-                        url: "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/osd.traineddata".to_string(),
-                        byte_size: 10_562_727,
-                        sha256: "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff".to_string(),
-                    },
-                ],
-            },
+            byte_size: files.iter().map(|file| file.byte_size).sum(),
+            sha256: "02a21f73272441ac9f07b5e140b5362f63be60ff87dd84ec3d965f204bea9016".to_string(),
+            shape: ModelArtifactShape::MultiFile { files },
         })
     })
 }
@@ -1025,32 +1030,31 @@ fn builtin_paddle_ocr_artifact() -> Option<ModelArtifact> {
         "MNEMA_OCR_PADDLE_BUNDLE_SHA256",
     )
     .or_else(|| {
+        let files = vec![
+            ModelArtifactFile {
+                relative_path: "det/model.mnn".to_string(),
+                url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/PP-OCRv5_mobile_det.mnn".to_string(),
+                byte_size: 4_760_244,
+                sha256: "326f846bb5c903282e116ea089e8796b67921586726cca9457730436a79684c3".to_string(),
+            },
+            ModelArtifactFile {
+                relative_path: "rec/model.mnn".to_string(),
+                url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/en_PP-OCRv5_mobile_rec_infer.mnn".to_string(),
+                byte_size: 3_967_840,
+                sha256: "c5e747fb69275e9d99fbe54f97642c65681c3e4244383f825d1d7668e9aece81".to_string(),
+            },
+            ModelArtifactFile {
+                relative_path: "rec/charset.txt".to_string(),
+                url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/ppocr_keys_en.txt".to_string(),
+                byte_size: 1_416,
+                sha256: "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6".to_string(),
+            },
+        ];
         Some(ModelArtifact {
             url: "https://github.com/zibo-chen/rust-paddle-ocr".to_string(),
-            byte_size: 8_729_500,
+            byte_size: files.iter().map(|file| file.byte_size).sum(),
             sha256: "ae73b89b0dec9f8ea2e8e61f2794970ce1938679d89e0fe89eb4115509acc013".to_string(),
-            shape: ModelArtifactShape::MultiFile {
-                files: vec![
-                    ModelArtifactFile {
-                        relative_path: "det/model.mnn".to_string(),
-                        url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/PP-OCRv5_mobile_det.mnn".to_string(),
-                        byte_size: 4_760_244,
-                        sha256: "326f846bb5c903282e116ea089e8796b67921586726cca9457730436a79684c3".to_string(),
-                    },
-                    ModelArtifactFile {
-                        relative_path: "rec/model.mnn".to_string(),
-                        url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/en_PP-OCRv5_mobile_rec_infer.mnn".to_string(),
-                        byte_size: 3_967_840,
-                        sha256: "c5e747fb69275e9d99fbe54f97642c65681c3e4244383f825d1d7668e9aece81".to_string(),
-                    },
-                    ModelArtifactFile {
-                        relative_path: "rec/charset.txt".to_string(),
-                        url: "https://raw.githubusercontent.com/zibo-chen/rust-paddle-ocr/b7141e7d0289eff67d4a97e79a00d9db72345d89/models/ppocr_keys_en.txt".to_string(),
-                        byte_size: 1_416,
-                        sha256: "e025a66d31f327ba0c232e03f407ae8d105e1e709e7ccb3f408aa778c24e70d6".to_string(),
-                    },
-                ],
-            },
+            shape: ModelArtifactShape::MultiFile { files },
         })
     })
 }
@@ -1678,5 +1682,38 @@ mod tests {
         assert!((remapped.bounding_box.y - 0.6).abs() < f64::EPSILON);
         assert!((remapped.bounding_box.width - 0.25).abs() < f64::EPSILON);
         assert!((remapped.bounding_box.height - 0.1).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn multi_file_artifacts_declare_the_sum_of_their_files() {
+        let manifest = builtin_model_manifest();
+        let mut checked = 0;
+        for descriptor in &manifest.models {
+            let ModelManagement::AppManaged {
+                artifact: Some(artifact),
+                ..
+            } = &descriptor.management
+            else {
+                continue;
+            };
+            let ModelArtifactShape::MultiFile { files } = &artifact.shape else {
+                continue;
+            };
+            assert_eq!(
+                artifact.byte_size,
+                files.iter().map(|file| file.byte_size).sum::<u64>(),
+                "{} declares a download size its file list does not add up to",
+                descriptor.display_name
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "tesseract + paddle bundles are both multi-file");
+    }
+
+    #[test]
+    fn tesseract_bundle_declares_its_real_download_size() {
+        let artifact = builtin_tesseract_artifact().expect("builtin tesseract artifact");
+        // eng 4,113,088 + osd 10,562,727 — not the old 23,143,206.
+        assert_eq!(artifact.byte_size, 14_675_815);
     }
 }
