@@ -1435,6 +1435,38 @@ mod tests {
         .expect("timeline is the keyword-free door");
     }
 
+    /// The `speakers` response is serialized VERBATIM, so nothing in this crate
+    /// declares its wire shape — this is the only place the CLI's own contract
+    /// ("`name` absent for an unnamed voice", `speakingMs`, `recognizedTurns`,
+    /// `handle.startMs`) is asserted against what an agent actually receives.
+    #[test]
+    fn speakers_envelope_omits_the_name_of_an_unnamed_voice() {
+        let response = app_infra::brokered_access::BrokerSpeakersResponse {
+            speakers: vec![app_infra::brokered_access::BrokerSpeakerSummary {
+                name: None,
+                handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                    id: "v1.signature".to_string(),
+                    kind: "voice".to_string(),
+                    start_ms: Some(0),
+                    end_ms: Some(30_000),
+                },
+                speaking_ms: 12_000,
+                assigned_turns: 0,
+                recognized_turns: 0,
+            }],
+            limit: 20,
+            truncated: true,
+        };
+        let json = serde_json::to_value(&response).expect("speakers should serialize");
+        assert_eq!(json["speakers"][0]["speakingMs"], 12_000);
+        assert_eq!(json["speakers"][0]["recognizedTurns"], 0);
+        assert_eq!(json["speakers"][0]["handle"]["startMs"], 0);
+        assert!(
+            json["speakers"][0].get("name").is_none(),
+            "an unnamed voice omits `name`, never reports it as null: {json}"
+        );
+    }
+
     fn speaker_turn(text: &str) -> BrokerSpeakerTurn {
         BrokerSpeakerTurn {
             speaker: None,

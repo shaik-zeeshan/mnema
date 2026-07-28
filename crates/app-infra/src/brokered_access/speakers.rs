@@ -808,6 +808,54 @@ mod tests {
         assert!(legacy.turns.is_empty());
     }
 
+    /// The `speakers` wire shape as BOTH published agent contracts describe it:
+    /// `.agents/skills/mnema-data/SKILL.md` — "`data.speakers[]` contains `name`
+    /// (absent for an unnamed voice)" — and `crates/cli/CONTEXT.md` — "Each entry
+    /// returns `name` (absent for an unnamed voice)". The CLI serializes this
+    /// response verbatim, so what this type omits is what an agent sees.
+    #[test]
+    fn an_unnamed_voice_summary_omits_the_name_key() {
+        let unnamed = BrokerSpeakerSummary {
+            name: None,
+            handle: BrokerSpeakerHandle {
+                id: "sv3.sig".to_string(),
+                kind: SPEAKER_HANDLE_KIND_VOICE.to_string(),
+                start_ms: None,
+                end_ms: None,
+            },
+            speaking_ms: 4_000,
+            assigned_turns: 0,
+            recognized_turns: 0,
+        };
+        assert_eq!(
+            serde_json::to_value(&unnamed).expect("summary should serialize"),
+            serde_json::json!({
+                "handle": {"id": "sv3.sig", "kind": "voice"},
+                "speakingMs": 4_000,
+                "assignedTurns": 0,
+                "recognizedTurns": 0,
+            })
+        );
+        // A named person still reports the name it was found under.
+        let named = BrokerSpeakerSummary {
+            name: Some("Ada".to_string()),
+            ..unnamed.clone()
+        };
+        assert_eq!(
+            serde_json::to_value(&named).expect("summary should serialize")["name"],
+            serde_json::json!("Ada")
+        );
+        // And a payload without the key still decodes, so the omission is not a
+        // one-way door for anything that round-trips this response.
+        assert_eq!(
+            serde_json::from_value::<BrokerSpeakerSummary>(
+                serde_json::to_value(&unnamed).expect("summary should serialize")
+            )
+            .expect("a summary without a name should decode"),
+            unnamed
+        );
+    }
+
     /// A handle is only useful if the broker can read back the exact row it
     /// addressed — a person handle must not decode as a voice handle, and neither
     /// may lose the grant it was issued under.

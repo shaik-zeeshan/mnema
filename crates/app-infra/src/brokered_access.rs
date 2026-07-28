@@ -584,7 +584,10 @@ pub struct BrokerSpeakersResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct BrokerSpeakerSummary {
-    /// `None` for a `voice` handle — an unnamed voice has no name to report.
+    /// `None` for a `voice` handle — an unnamed voice has no name to report, so
+    /// the key is OMITTED rather than sent as `null`, which is what both published
+    /// agent contracts promise (`SKILL.md`, `crates/cli/CONTEXT.md`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub handle: BrokerSpeakerHandle,
     /// Total speaking time in scope, milliseconds. The ranking key.
