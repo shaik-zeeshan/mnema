@@ -16,8 +16,8 @@ holds only what was picked.
 | the sentence (capture rate + retention + storage) | **ghost dial** — alternatives printed faintly around each word |
 | excluded apps | **sentence-as-control** with inline app icons + `＋ Add` chip |
 | feature switches | **the chain** + running-total strip + undo chip |
-| providers | **recommended-with-a-reason**; OCR selector dropped from onboarding |
-| model pickers | **family group** + variant sub-group + detail strip + budget bar |
+| providers | **recommended-with-a-reason**; OCR dropped from onboarding entirely (2026-07-28: the read-only "Reading on-screen text" line went too — OCR is not a speech engine, and the switch chain already states it) |
+| model pickers | **family group** + variant sub-group + detail strip + budget bar. No `Off` segment on Semantic Search (2026-07-28) — on/off belongs to the switch chain, so this group answers only *which language coverage* |
 | AI setup | **later-loudly** wrapping **connect-and-verify**, scan for local, rack from 2nd |
 
 ## Build

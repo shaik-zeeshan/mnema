@@ -196,10 +196,14 @@
 
     /* ── the add affordance (variant 2's chip, inline in the sentence) ────── */
     #cmp-excluded .ex-add {
-      font: inherit; font-size: var(--text-sm); padding: 3px 10px; cursor: pointer;
+      /* rides in a line of sentence text, so it takes the small control height
+         rather than inflating the line box */
+      font: inherit; font-size: var(--text-sm); cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: var(--ob-ctl-h-sm); padding: 0 10px; line-height: 1;
       color: var(--app-text-subtle); background: transparent;
       border: 1px dashed var(--app-border-strong); border-radius: 999px;
-      white-space: nowrap; vertical-align: 1px;
+      white-space: nowrap; vertical-align: -2px;
       transition: color .12s, border-color .12s;
     }
     #cmp-excluded .ex-add:hover { color: var(--app-text); border-color: var(--app-border-hover); }

@@ -8,6 +8,15 @@ Open the file in a browser to see every screen. Screenshots are deliberately not
 are derived from this HTML, and each screen's exact line range is tabulated in
 [`../IMPLEMENTATION-BRIEF.md`](../IMPLEMENTATION-BRIEF.md).
 
+> **Superseded for six screens — see `revision-2.html`** (built by
+> `build-revision-2.py` from `revision-2.src.html`; run it after editing the source).
+> It answers two founder notes: no action is pinned to the bottom of a short column any
+> more (Setup, Voice, Finale), and *Change settings* is four section screens behind a tab
+> strip rather than one scroll behind a rail. Its controls are the **real** input
+> components, inlined live from `input-components/parts/`, and its frame is the real
+> window size (1120×800) rather than this file's 1040×680. Everything not listed there —
+> Welcome, Permissions, Your settings — still comes from `chosen-cinematic-rewind.html`.
+
 | # | Screen |
 |---|---|
 | — | Flow map — the two hard gates, all eight steps |

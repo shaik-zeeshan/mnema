@@ -45,11 +45,6 @@
       </p>
     </details>
 
-    <p class="pv-resolved">
-      <span class="rk">Reading on-screen text</span>
-      <span class="rv">Apple Vision, built into macOS · no download</span>
-      <span class="rn">Tesseract, the offline fallback, lives in Settings.</span>
-    </p>
   </div>
 
   <div class="cmp-notes">
@@ -72,12 +67,17 @@
         is the model-picker component's problem, not this one.
       </li>
       <li>
-        <b>Deletes</b> the OCR <code>Segmented</code> at
-        <code>ChangeSettingsScreen.svelte:289</code>, which makes
-        <code>ocrProviderOptions</code> (same file, ~:133) dead code. OCR becomes the
-        read-only resolved line above: Apple Vision has no download, no extra memory, and
-        no axis on which Tesseract wins in this build. The OCR feature <code>Switch</code>
-        in that same row stays — turning OCR <i>off</i> is still a real choice here.
+        <b>Deletes OCR from onboarding entirely</b> (decided 2026-07-28). The
+        <code>Segmented</code> at <code>ChangeSettingsScreen.svelte:289</code> goes, which
+        makes <code>ocrProviderOptions</code> (same file, ~:133) dead code — and so does the
+        read-only "Reading on-screen text" line this component used to carry, along with its
+        <code>ocrProviders</code> / <code>ocrProvider</code> props in
+        <code>Providers.svelte</code> (~:171). Reason: OCR is not a transcription engine, so
+        it read as a stray on a screen about speech, and the switch chain already says
+        everything onboarding needs — <i>Read on-screen text · On-device. Apple Vision needs
+        no download.</i> Apple Vision is the resolved default; Tesseract stays reachable in
+        Settings. The OCR feature <code>Switch</code> in the chain stays — turning OCR
+        <i>off</i> is still a real choice, just not this component's.
       </li>
       <li>
         <b>Keeps ADR 0047 exactly as it is.</b> The Deepgram filter at
@@ -241,16 +241,6 @@
       color: var(--app-text-subtle); max-width: 62ch;
     }
     #cmp-providers .pv-cloud b { color: var(--app-text); font-weight: 600; }
-
-    #cmp-providers .pv-resolved {
-      display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
-      margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--app-border);
-    }
-    #cmp-providers .pv-resolved .rk { font-size: var(--text-sm); color: var(--app-text-muted); }
-    #cmp-providers .pv-resolved .rv { font-size: var(--text-sm); color: var(--app-text-strong); }
-    #cmp-providers .pv-resolved .rn {
-      flex-basis: 100%; font-size: var(--text-xs); color: var(--app-text-subtle);
-    }
 
     #cmp-providers .nb-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     #cmp-providers .nb-h { margin-top: 18px; }

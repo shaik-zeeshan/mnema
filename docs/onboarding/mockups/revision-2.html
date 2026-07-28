@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mnema onboarding — final input components</title>
+<title>Mnema onboarding — revision 2</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; }
 
+  /* ---- the app's real tokens (mirrors +layout.svelte) ---- */
   .app {
     --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
     --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
@@ -44,11 +45,10 @@
   }
 
   body {
-    margin:0; padding:0;
+    margin:0;
     font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"SF Mono",Menlo,monospace;
-    background:var(--app-bg); color:var(--app-text);
-    font-size:var(--text-base); line-height:1.5;
-    -webkit-font-smoothing:antialiased;
+    background:var(--app-surface-subtle); color:var(--app-text);
+    font-size:var(--text-base); line-height:1.5; -webkit-font-smoothing:antialiased;
   }
 
   /* ---- host utility register (mirrors onboarding-shell.css) ---- */
@@ -74,60 +74,232 @@
   .ob-btn.ghost { background:transparent; border-color:transparent; color:var(--app-text-muted); }
   .ob-btn.ghost:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
   .ob-btn.sm { min-height:var(--ob-ctl-h-sm); padding:0 8px; font-size:var(--text-xs); }
-
-  /* ---- page chrome ---- */
-  .page-top {
-    position:sticky; top:0; z-index:50;
-    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
-    padding:14px 32px; border-bottom:1px solid var(--app-border);
-    background:var(--app-bg);
+  .ob-blocked {
+    font-size:var(--text-sm); color:var(--app-warn); border:1px solid var(--app-warn-border);
+    background:var(--app-warn-bg); border-radius:6px; padding:5px 10px;
   }
-  .page-top h1 { font-size:var(--text-md); color:var(--app-text-strong); font-weight:500; margin:0; }
-  .page-top .spacer { flex:1 1 auto; }
-  .page-nav { display:flex; gap:4px; flex-wrap:wrap; }
-  .page-wrap { max-width:1080px; margin:0 auto; padding:8px 32px 96px; }
-  .page-intro { padding:28px 0 8px; max-width:70ch; display:flex; flex-direction:column; gap:8px; }
 
-  /* ---- component frame (given to every fragment) ---- */
-  .cmp { padding:40px 0; border-bottom:1px solid var(--app-border); scroll-margin-top:72px; }
-  .cmp:last-of-type { border-bottom:0; }
-  .cmp-head { display:flex; flex-direction:column; gap:6px; margin-bottom:20px; max-width:70ch; }
-  .cmp-stage {
-    width:640px; max-width:100%;
-    padding:20px; border-radius:10px;
-    border:1px solid var(--app-border-strong); background:var(--app-surface);
+  /* ================= the document around the frames ================= */
+  .doc { max-width:1180px; margin:0 auto; padding:56px 32px 120px; }
+  .doc header { max-width:82ch; }
+  .doc h1 { font-size:28px; font-weight:400; letter-spacing:-.02em; margin:6px 0 14px; color:var(--app-text-strong); }
+  .doc .eyebrow { font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--app-accent); }
+  .doc h2 { font-size:15px; font-weight:400; margin:0; color:var(--app-text-strong); }
+  .frame { margin-top:72px; }
+  .cap { display:flex; align-items:baseline; gap:14px; margin-bottom:10px; }
+  .cap .no { font-size:11px; letter-spacing:.14em; color:var(--app-accent); }
+  .note { font-size:11.5px; color:var(--app-text-muted); max-width:86ch; margin:0 0 18px; }
+  .note b { color:var(--app-text-strong); font-weight:400; }
+  .win-scroll { overflow-x:auto; padding-bottom:6px; }
+  .topbar {
+    position:sticky; top:0; z-index:60; display:flex; gap:16px; align-items:center;
+    padding:12px 32px; background:var(--app-bg); border-bottom:1px solid var(--app-border);
   }
-  .cmp-notes { margin-top:18px; max-width:70ch; display:flex; flex-direction:column; gap:10px; font-size:var(--text-sm); color:var(--app-text-subtle); }
-  .cmp-notes h3 { font-size:var(--text-xs); letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle); margin:8px 0 0; font-weight:500; }
-  .cmp-notes code { color:var(--app-text-muted); }
+  .topbar .spacer { flex:1 1 auto; }
+  .topbar nav { display:flex; gap:4px; flex-wrap:wrap; }
+  .topbar a { text-decoration:none; }
+
+  /* ================= the app window ================= */
+  .win {
+    /* the real onboarding window: 1120x800 default, 920x620 minimum
+       (`src-tauri/src/windows.rs:200`). The old frame drew 1040x680,
+       which is neither. */
+    width:1120px; height:800px; flex:none;
+    background:var(--app-bg); color:var(--app-text);
+    border:1px solid var(--app-border-strong); border-radius:12px; overflow:hidden;
+    display:flex; flex-direction:column; box-shadow:0 18px 50px rgba(0,0,0,.28);
+    font-size:var(--text-base);
+  }
+  .winbar {
+    height:36px; flex:none; display:flex; align-items:center; gap:12px;
+    padding:0 14px; border-bottom:1px solid var(--app-border); background:var(--app-surface);
+  }
+  .dots { display:flex; gap:6px; }
+  .dots i { width:8px; height:8px; border-radius:50%; border:1px solid var(--app-border-hover); display:block; }
+  .winbar .name { font-size:var(--text-xs); letter-spacing:.22em; text-transform:uppercase; color:var(--app-text-subtle); }
+  .ph { margin-left:auto; display:flex; align-items:center; gap:12px; }
+  .ph-track { position:relative; width:144px; height:16px; flex:none; }
+  .ph-track::before { content:""; position:absolute; left:0; right:0; top:7px; height:1px; background:var(--app-border-hover); }
+  .ph-tick { position:absolute; top:4px; width:1px; height:7px; background:var(--app-border-hover); display:block; }
+  .ph-fill { position:absolute; left:0; top:7px; height:1px; background:var(--app-text-muted); display:block; }
+  .ph-head {
+    position:absolute; top:0; width:1px; height:16px; background:var(--app-accent);
+    box-shadow:0 0 8px 1px var(--app-accent-glow); display:block; font-style:normal;
+  }
+  .ph-head::before {
+    content:""; position:absolute; top:0; left:-2.5px; width:6px; height:4px;
+    background:var(--app-accent); clip-path:polygon(0 0,100% 0,50% 100%);
+  }
+  .ph-lbl { font-size:var(--text-xs); color:var(--app-text-subtle); letter-spacing:.14em; white-space:nowrap; }
+
+  /* ================= the stage, and the layout fix =================
+     REV 2 · every working screen is: content that fills, then ONE full-width
+     footer. Nothing is pinned to the bottom of a column any more, so a short
+     column no longer opens a hole between its last line and its button. */
+  .stage { flex:1; min-height:0; padding:28px 44px 20px; display:flex; flex-direction:column; }
+  /* `safe center` centres content that fits and falls back to top-aligned the
+     moment it doesn't — so a tall section scrolls from its first line instead
+     of having its head cut off. */
+  .scene { flex:1; min-height:0; display:flex; flex-direction:column; justify-content:safe center; gap:22px; overflow:auto; }
+  .scene::-webkit-scrollbar { width:6px; }
+  .scene::-webkit-scrollbar-thumb { background:var(--app-border-strong); border-radius:3px; }
+  .split { display:grid; grid-template-columns:360px 1fr; gap:44px; flex:1; min-height:0; align-items:center; }
+  .colL { display:flex; flex-direction:column; gap:14px; }
+  .ob-foot { flex:none; margin-top:14px; }
+  .ob-acts { display:flex; align-items:center; gap:10px; margin-top:14px; }
+  .spacer { margin-right:auto; }
+  .head-row { display:flex; align-items:baseline; justify-content:space-between; gap:24px; }
+
+  /* ---- section tabs: what used to be the Sections rail ---- */
+  .tabs { flex:none; display:flex; gap:2px; border-bottom:1px solid var(--app-border); margin-bottom:14px; }
+  .tabs a {
+    padding:8px 14px 9px; font-size:var(--text-sm); color:var(--app-text-subtle);
+    text-decoration:none; border-bottom:2px solid transparent; margin-bottom:-1px; white-space:nowrap;
+  }
+  .tabs a:hover { color:var(--app-text); }
+  .tabs a.on { color:var(--app-text-strong); border-bottom-color:var(--app-accent); }
+  .tabs .count { margin-left:auto; align-self:center; font-size:var(--text-xs); color:var(--app-text-faint); letter-spacing:.14em; }
+
+  /* ---- the components, dropped into a screen instead of a gallery ---- */
+  .stage .cmp { padding:0; border:0; }
+  .stage .cmp-head, .stage .cmp-notes { display:none; }
+  /* the gallery drew the neighbouring control faint to keep its height budget
+     honest — inside the real screen the neighbour is actually there. */
+  .stage .ex-neighbour, .stage .ex-rule { display:none !important; }
+  /* the gallery's 640px stage forced two-line descriptions; a whole screen is
+     944px wide, so each row gets its one line back (density rule 1) and the
+     chain's eighth row stops falling off the bottom. */
+  .stage .sw-d { max-width:78ch !important; }
+  /* ONE control per value: the engine is chosen on Engines, so the Models
+     screen does not draw the family row a second time. This is exactly what
+     the shipped screen does — `ChangeSettingsScreen.svelte:195` passes
+     `transcriptionFamilies={[]}` for the same reason; only the standalone
+     gallery part draws its own. */
+  .stage .mp [data-grp="t-fam"] { display:none !important; }
+  .ctx { margin:0; }
+  .ctx a { color:var(--app-accent); }
+  /* the running total is the point of the chain — it has to be on screen with
+     the eighth row, so the gallery's reserved live-region line collapses until
+     it has something to announce. */
+  .stage .totals { margin-top:6px !important; padding-top:8px !important; }
+  .stage .sw-live { min-height:0 !important; }
+  .stage .cmp-stage {
+    width:100%; max-width:none; padding:0; border:0; background:transparent; border-radius:0;
+  }
+
+  /* ---- setup ---- */
+  .pct { font-size:72px; line-height:1; letter-spacing:-.045em; color:var(--app-text-strong); font-variant-numeric:tabular-nums; }
+  .lead-line { margin:0; font-size:var(--text-md); line-height:1.7; color:var(--app-text); }
+  .work { display:flex; flex-direction:column; }
+  .item { padding:26px 0; border-top:1px solid var(--app-border); }
+  .item:first-child { border-top:0; padding-top:2px; }
+  .item .head { display:flex; align-items:center; gap:16px; min-height:var(--ob-ctl-h); }
+  .item .t { font-size:var(--text-md); color:var(--app-text-strong); }
+  /* a row that mixes a label and a button centres them; baseline hangs the
+     button box below the text it is beside. */
+  .item .st { margin-left:auto; font-size:var(--text-sm); display:flex; align-items:center; gap:12px; }
+  .st.ready { color:var(--app-accent); }
+  .st.busy { color:var(--app-text); }
+  .st.fail { color:var(--app-danger); }
+  .track { height:3px; background:var(--app-border-strong); margin-top:13px; position:relative; overflow:hidden; border-radius:2px; }
+  .track i { position:absolute; inset:0 auto 0 0; background:var(--app-text-strong); display:block; border-radius:2px; }
+
+  /* ---- voice ---- */
+  .quote { font-size:21px; line-height:1.55; color:var(--app-text-strong); letter-spacing:-.01em; max-width:38ch; margin:0; text-wrap:balance; }
+  .callout {
+    border-left:2px solid var(--app-warn); background:var(--app-warn-bg);
+    padding:12px 16px; font-size:var(--text-base); color:var(--app-text); line-height:1.65;
+  }
+  .callout b { font-weight:400; color:var(--app-warn); }
+  .meter { display:flex; align-items:flex-end; gap:2px; height:16px; }
+  .meter i { width:3px; background:var(--app-text-faint); display:block; }
+  .disp-lg { font-size:38px; line-height:1.1; letter-spacing:-.03em; color:var(--app-text-strong); font-weight:400; margin:0; }
+
+  /* ---- finale ---- */
+  .rec { display:flex; align-items:center; gap:8px; font-size:var(--text-xs); letter-spacing:.2em; text-transform:uppercase; color:var(--app-accent); }
+  .rec i { width:7px; height:7px; border-radius:50%; background:var(--app-accent); display:block; }
+  .shot { max-width:560px; border:1px solid var(--app-border); border-radius:8px; background:var(--app-surface-subtle); overflow:hidden; aspect-ratio:16/10; }
+  .shot .sbarr { height:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border); }
+  .shot .content { padding:14px 16px; display:flex; flex-direction:column; gap:9px; height:calc(100% - 16px); }
+  .shot .ln { height:6px; border-radius:2px; background:var(--app-border-strong); }
+  .shot .ln.hl { background:var(--app-accent-bg); box-shadow:0 0 0 1px var(--app-accent-border); }
+  .shot .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:6px; }
+  .shot .box { height:44px; border:1px solid var(--app-border); border-radius:4px; background:var(--app-surface); }
+  .ocr { border:1px solid var(--app-border); border-radius:8px; padding:14px 16px; background:var(--app-surface-subtle); font-size:var(--text-md); color:var(--app-text); }
+  .ocr .hit { color:var(--app-accent); }
 
   @media (prefers-reduced-motion: reduce) {
     * { transition-duration:.01ms !important; animation-duration:.01ms !important; }
   }
-  @media (max-width: 720px) {
-    .page-wrap, .page-top { padding-left:16px; padding-right:16px; }
-  }
 </style>
 </head>
-<body>
-<div class="app" id="root">
+<body class="app" id="root">
 
-  <div class="page-top">
-    <h1>Onboarding inputs — final</h1>
-    <nav class="page-nav" id="nav"></nav>
-    <span class="spacer"></span>
-    <button class="ob-btn sm" id="theme">Light</button>
-  </div>
+<div class="topbar">
+  <span class="ob-disp sm">Onboarding — revision 2</span>
+  <nav>
+    <a class="ob-btn sm" href="#s03">03 Capture</a>
+    <a class="ob-btn sm" href="#s05a">05a Do</a>
+    <a class="ob-btn sm" href="#s05b">05b Engines</a>
+    <a class="ob-btn sm" href="#s05c">05c Models</a>
+    <a class="ob-btn sm" href="#s05d">05d AI</a>
+    <a class="ob-btn sm" href="#s06">06 Setup</a>
+    <a class="ob-btn sm" href="#s07">07 Voice</a>
+    <a class="ob-btn sm" href="#s08">08 Finale</a>
+  </nav>
+  <span class="spacer"></span>
+  <button class="ob-btn sm" id="theme">Light</button>
+</div>
 
-  <div class="page-wrap">
-    <div class="page-intro">
-      <span class="ob-m">ROUND 3</span>
-      <p class="ob-lead">The chosen design for every input in onboarding.</p>
-      <p class="ob-body">One design per component, not variants. Each stage is live — drive it. Notes under each carry the states you can reach and what the component replaces in the real code.</p>
-    </div>
+<div class="doc">
+  <header>
+    <span class="eyebrow">Issue #195 · revision 2 · two founder notes</span>
+    <h1>Nothing floats at the bottom of a column, and Change settings is four screens.</h1>
+    <p class="ob-body">
+      Two changes to <em>chosen-cinematic-rewind.html</em>, plus the one refresh it was overdue:
+      every control below is the <b>real input component</b>, inlined live from
+      <code>input-components/parts/</code> — the same designs that shipped as
+      <code>CaptureSentence</code>, <code>ExcludedApps</code>, <code>FeatureSwitches</code>,
+      <code>Providers</code>, <code>ModelPickers</code> and <code>AiSetup</code>. Drive them.
+    </p>
+    <p class="ob-body" style="margin-top:14px">
+      <b>1 · The hole on the left.</b> Setup, Voice and the Finale pinned their action to the
+      bottom of a 360px column whose content ran out after two lines, so the screen showed a
+      column-height gap with a button parked under it. Every working screen now ends in one
+      full-width footer, and the two columns centre against each other. Nothing is pinned inside
+      a column any more.
+    </p>
+    <p class="ob-body" style="margin-top:14px">
+      <b>2 · One screen for four sections.</b> Change settings scrolled four sections past a
+      150px rail — which was both the densest screen in the flow and the other place a short
+      column left a void. It is now five screens, one section each, reached by the tab strip that
+      replaces the rail. Four sections, not the old four: <em>Engines</em> and <em>Models</em>
+      split (together they overran a screen), and <em>Storage</em> is gone — it repeated screen
+      03's sentence exactly, and one setting does not get asked twice. Capture rate, retention
+      and the folder are settled on Capture &amp; Storage, one Back away. The phase bar still counts it as step 4 of 8: it is one round
+      trip, not four new steps.
+    </p>
+  </header>
 
-<!-- === PARTS === -->
-<section class="cmp" id="cmp-sentence">
+  <!-- ================= 03 · CAPTURE & STORAGE ================= -->
+  <section class="frame" id="s03">
+    <div class="cap"><span class="no">03</span><h2>Capture &amp; Storage — the same screen, now with the shipped controls</h2></div>
+    <p class="note">
+      Unchanged in shape and still the only screen with hard gates. What changed is that the rate
+      slider, the folder field and the retention segmented group are one sentence
+      (<b>the ghost dial</b>), and “Never recorded” is the control rather than a row pointing at one.
+      Click the faint words.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Capture &amp; Storage</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:45px"></b><em class="ph-head" style="left:45px"></em></div><span class="ph-lbl">3 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="scene">
+          <h3 class="ob-disp sm">Four things to settle.</h3>
+          <section class="cmp" id="cmp-sentence">
   <header class="cmp-head">
     <span class="ob-m">Component</span>
     <h2 class="ob-disp sm">The sentence</h2>
@@ -1010,7 +1182,8 @@
   </script>
 </section>
 
-<section class="cmp" id="cmp-excluded">
+          <hr class="ob-rule">
+          <section class="cmp" id="cmp-excluded">
   <header class="cmp-head">
     <span class="ob-m">Component</span>
     <h2 class="ob-disp sm">Never recorded</h2>
@@ -1460,7 +1633,44 @@
   </script>
 </section>
 
-<section class="cmp" id="cmp-switches">
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Measured: 270 MB a day at one snapshot every 3 seconds, with pause-on-inactivity on.</span>
+            <button class="ob-btn ghost">← Back</button>
+            <button class="ob-btn primary">Your settings&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 05a · WHAT MNEMA WILL DO ================= -->
+  <section class="frame" id="s05a">
+    <div class="cap"><span class="no">05a</span><h2>Change settings · What Mnema will do</h2></div>
+    <p class="note">
+      Section one of four. The rail is now a tab strip along the top: it names every section, says
+      where you are, and costs no width — so the section itself gets the whole screen and no column
+      runs short. The footer keeps the linear read (<b>next section</b>) and the escape
+      (<b>back to your settings</b>) side by side, so nobody has to walk all four to leave.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Change settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8 · round trip</span></div>
+      </div>
+      <div class="stage">
+        <div class="tabs">
+          <a class="on" href="#s05a">What Mnema will do</a>
+          <a href="#s05b">Engines</a>
+          <a href="#s05c">Models</a>
+          <a href="#s05d">AI features</a>
+          <span class="count">1 / 4</span>
+        </div>
+        <div class="scene">
+          <section class="cmp" id="cmp-switches">
   <header class="cmp-head">
     <span class="ob-m">Component</span>
     <h2 class="ob-disp sm">Feature switches</h2>
@@ -2111,7 +2321,44 @@
   </script>
 </section>
 
-<section class="cmp" id="cmp-providers">
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Turn the last audio source off and transcription and who’s speaking switch off with it.</span>
+            <button class="ob-btn ghost">← Back to your settings</button>
+            <button class="ob-btn primary">Engines&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 05b · ENGINES ================= -->
+  <section class="frame" id="s05b">
+    <div class="cap"><span class="no">05b</span><h2>Change settings · Engines</h2></div>
+    <p class="note">
+      Which engine turns speech into text, with the reason one of them is already picked. Splitting
+      this from <em>Models</em> is what the founder note forces: engines and builds together ran to
+      about 1000px of content, which is how the old screen ended up scrolling four sections past a
+      rail.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Change settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8 · round trip</span></div>
+      </div>
+      <div class="stage">
+        <div class="tabs">
+          <a href="#s05a">What Mnema will do</a>
+          <a class="on" href="#s05b">Engines</a>
+          <a href="#s05c">Models</a>
+          <a href="#s05d">AI features</a>
+          <span class="count">2 / 4</span>
+        </div>
+        <div class="scene">
+          <section class="cmp" id="cmp-providers">
   <header class="cmp-head">
     <span class="ob-m">COMPONENT</span>
     <h2 class="ob-disp sm">Provider selection</h2>
@@ -2545,7 +2792,49 @@
   </script>
 </section>
 
-<!--
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Cloud transcription is not offered here — it lives in Settings behind its own consent gate.</span>
+            <button class="ob-btn ghost">← What Mnema will do</button>
+            <button class="ob-btn primary">Models&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 05c · MODELS ================= -->
+  <section class="frame" id="s05c">
+    <div class="cap"><span class="no">05c</span><h2>Change settings · Models</h2></div>
+    <p class="note">
+      Which build of the engine you just chose, which embedding model Semantic Search uses, and what
+      the two of them cost against the disk. The only screen in the flow carrying model identifiers
+      and byte sizes. <b>The engine row is not repeated here</b> — one setting never wears two faces,
+      so the engine is chosen once, on <em>Engines</em>, and named here as context. That is already
+      how the shipped screen wires it (<code>transcriptionFamilies={[]}</code>).
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Change settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8 · round trip</span></div>
+      </div>
+      <div class="stage">
+        <div class="tabs">
+          <a href="#s05a">What Mnema will do</a>
+          <a href="#s05b">Engines</a>
+          <a class="on" href="#s05c">Models</a>
+          <a href="#s05d">AI features</a>
+          <span class="count">3 / 4</span>
+        </div>
+        <div class="scene">
+          <p class="ob-fine ctx">
+            Engine: <span class="ob-strong">Whisper</span> — chosen on
+            <a href="#s05b">Engines</a>. This screen picks its build.
+          </p>
+          <!--
   FINAL · model pickers. Chosen design = round 2 variant 4's structure (family
   group + a variant sub-group only where a family has more than one build),
   variant 2's fixed detail strip (model · download · memory), variant 5's budget
@@ -3134,7 +3423,44 @@
   </script>
 </section>
 
-<section class="cmp" id="cmp-aisetup">
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Sizes come from the model manifests — nothing here is a pasted constant.</span>
+            <button class="ob-btn ghost">← Engines</button>
+            <button class="ob-btn primary">AI features&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 05d · AI FEATURES ================= -->
+  <section class="frame" id="s05d">
+    <div class="cap"><span class="no">05d</span><h2>Change settings · AI features</h2></div>
+    <p class="note">
+      The section that carries the flow's one rule — AI features may not be left on with nothing to
+      run them. That rule still takes over this footer when it fires (<span class="ob-blocked">Back
+      held · AI features are on, with nothing to run them</span>), and on its own screen the row it
+      is talking about is on screen, instead of somewhere in a scroll you cannot see.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Change settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8 · round trip</span></div>
+      </div>
+      <div class="stage">
+        <div class="tabs">
+          <a href="#s05a">What Mnema will do</a>
+          <a href="#s05b">Engines</a>
+          <a href="#s05c">Models</a>
+          <a class="on" href="#s05d">AI features</a>
+          <span class="count">4 / 4</span>
+        </div>
+        <div class="scene">
+          <section class="cmp" id="cmp-aisetup">
   <header class="cmp-head">
     <span class="ob-m">Component</span>
     <h2 class="ob-disp sm">AI provider setup</h2>
@@ -4019,31 +4345,188 @@
   </script>
 </section>
 
-<!-- === /PARTS === -->
-  </div>
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Nothing here is sent anywhere until you pick a provider.</span>
+            <button class="ob-btn ghost">← Models</button>
+            <button class="ob-btn primary">Back to your settings&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 06 · SETUP ================= -->
+  <section class="frame" id="s06">
+    <div class="cap"><span class="no">06</span><h2>Setup — the hole is gone</h2></div>
+    <p class="note">
+      <b>Before:</b> 17% and one line at the top of a 360px column, then roughly 340px of nothing,
+      then Continue pinned to the column's floor. <b>After:</b> the column is gone — this screen
+      has one thing to say and a list of three rows, so it says it at full width and the actions
+      moved to the screen's own footer, where every other screen already puts them. Nothing was
+      cut. The total also stops lying: about 1.1 GB, not the old 729 MB placeholder.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Setup</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:99px"></b><em class="ph-head" style="left:99px"></em></div><span class="ph-lbl">6 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="scene">
+          <div class="colL" style="gap:10px">
+            <div class="pct">17%</div>
+            <p class="lead-line">
+              Downloading <span class="ob-strong">Whisper base</span> ·
+              <span class="ob-num">123 MB of about 1.1 GB</span>
+            </p>
+          </div>
+          <hr class="ob-rule">
+          <div class="work">
+            <div class="item">
+              <div class="head">
+                <span class="t">Who’s speaking</span>
+                <span class="st ready">✓ Ready</span>
+              </div>
+            </div>
+            <div class="item">
+              <div class="head">
+                <span class="t">Transcription</span>
+                <span class="st busy">Downloading <button class="ob-btn sm">Cancel</button></span>
+              </div>
+              <div class="track"><i style="width:62%"></i></div>
+            </div>
+            <div class="item">
+              <div class="head">
+                <span class="t">Semantic Search</span>
+                <span class="st fail">Network timeout after 30s <button class="ob-btn sm">Retry</button></span>
+              </div>
+              <div class="track"><i style="width:0%"></i></div>
+            </div>
+          </div>
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Live since you arrived, and it never disables. Downloads carry on behind you.</span>
+            <button class="ob-btn ghost">← Back</button>
+            <button class="ob-btn primary">Continue&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 07 · VOICE ================= -->
+  <section class="frame" id="s07">
+    <div class="cap"><span class="no">07</span><h2>Voice — same fix, same reason</h2></div>
+    <p class="note">
+      The heading was top-aligned against a right column that starts a third of the way down, so
+      the screen read as two disconnected halves with a gap under the first. Centred, they read as
+      one sentence and one instrument.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Voice</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:117px"></b><em class="ph-head" style="left:117px"></em></div><span class="ph-lbl">7 / 8 · optional</span></div>
+      </div>
+      <div class="stage">
+        <div class="split">
+          <div class="colL">
+            <p class="disp-lg">Fifteen seconds<br>so Mnema can<br>use your name.</p>
+            <p class="ob-fine">Otherwise your side is filed as “Speaker 1”.</p>
+          </div>
+          <div class="colL" style="gap:20px">
+            <span class="ob-m">Read this out loud</span>
+            <p class="quote">“I keep my work on this machine, and I would like Mnema to know my voice.”</p>
+            <div style="display:flex; align-items:center; gap:16px">
+              <span class="meter"><i style="height:6px"></i><i style="height:11px"></i><i style="height:8px"></i><i style="height:14px"></i><i style="height:5px"></i><i style="height:9px"></i><i style="height:4px"></i><i style="height:3px"></i><i style="height:3px"></i><i style="height:2px"></i><i style="height:2px"></i><i style="height:2px"></i></span>
+              <span class="ob-fine">Take 2 · 0:14 · peaked at 18%</span>
+            </div>
+            <div class="callout"><b>Too quiet.</b> Move closer to the mic and read it once more.</div>
+            <div style="display:flex; gap:10px">
+              <button class="ob-btn primary">Record again</button>
+              <button class="ob-btn">▸ Play take 2</button>
+            </div>
+          </div>
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">The voiceprint never leaves this device, and recognition labels many turns — not every turn.</span>
+            <button class="ob-btn ghost">← Back</button>
+            <button class="ob-btn">Skip — do this later in Settings</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 08 · FINALE ================= -->
+  <section class="frame" id="s08">
+    <div class="cap"><span class="no">08</span><h2>Finale — the last column with a floor</h2></div>
+    <p class="note">
+      “Open Mnema” was pinned to the bottom-left with the download line above it and a gap above
+      that. Both moved into the footer, which is now the same footer as every other screen: state
+      on the left, the one action on the right.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="winbar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Mnema</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:135px"></b><em class="ph-head" style="left:135px"></em></div><span class="ph-lbl">8 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="split">
+          <div class="colL">
+            <span class="rec"><i></i>Recording</span>
+            <p class="disp-lg">It has<br>already<br>started.</p>
+            <p class="ob-fine">Capture began the moment you arrived here.</p>
+          </div>
+          <div class="colL" style="gap:12px">
+            <span class="ob-m">Your first frame</span>
+            <div class="shot">
+              <div class="sbarr"></div>
+              <div class="content">
+                <div class="ln hl" style="width:62%"></div>
+                <div class="ln" style="width:78%"></div>
+                <div class="ln" style="width:54%"></div>
+                <div class="grid2"><div class="box"></div><div class="box"></div></div>
+                <div class="ln" style="width:44%"></div>
+                <div class="ln" style="width:66%"></div>
+              </div>
+            </div>
+            <span class="ob-fine">Captured 10:42:07 · 2 seconds ago</span>
+            <span class="ob-m">First words read off it — already searchable</span>
+            <div class="ocr"><span class="hit">Quarterly review</span> — draft agenda</div>
+          </div>
+        </div>
+        <div class="ob-foot">
+          <hr class="ob-rule">
+          <div class="ob-acts">
+            <span class="ob-fine spacer">Preparing · Semantic Search 41% — turns itself on.</span>
+            <button class="ob-btn primary">Open Mnema&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
 </div>
 
 <script>
-(() => {
-  const root = document.getElementById('root');
-  const btn = document.getElementById('theme');
-  btn.addEventListener('click', () => {
-    const light = root.classList.toggle('light');
-    btn.textContent = light ? 'Dark' : 'Light';
-  });
-
-  // Build the jump nav from whatever fragments were concatenated in.
-  const nav = document.getElementById('nav');
-  for (const section of document.querySelectorAll('section.cmp')) {
-    const title = section.querySelector('.cmp-head h2')?.textContent?.trim() || section.id;
-    const a = document.createElement('a');
-    a.href = '#' + section.id;
-    a.className = 'ob-btn sm ghost';
-    a.textContent = title;
-    a.style.textDecoration = 'none';
-    nav.appendChild(a);
-  }
-})();
+  // ponytail: one toggle, no framework — both themes have to be looked at.
+  (function () {
+    var root = document.getElementById("root");
+    var btn = document.getElementById("theme");
+    btn.addEventListener("click", function () {
+      var light = root.classList.toggle("light");
+      document.querySelectorAll(".win").forEach(function (w) { w.classList.toggle("light", light); });
+      btn.textContent = light ? "Dark" : "Light";
+    });
+  })();
 </script>
 </body>
 </html>

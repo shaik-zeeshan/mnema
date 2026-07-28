@@ -21,6 +21,13 @@
     --app-shadow-popover:0 8px 24px rgba(0,0,0,.22);
     --app-ring:0 0 0 3px var(--app-accent-glow);
     --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px; --text-xl:20px;
+    /* ONE control height. Buttons used to take their height from padding plus a
+       1.5 line-height, which lands on 30.5px / 23px — fractional, and never the
+       same as the 20px switch beside them. Height now comes from the token and
+       the label is centred in it, so a button next to a switch, a field or
+       another button lines up. `min-height`, so the deliberately tall choice
+       cards keep their size. */
+    --ob-ctl-h:32px; --ob-ctl-h-sm:22px;
   }
   .app.light {
     --app-bg:#f6f6f4; --app-surface:#fff; --app-surface-subtle:#f0f0ec; --app-surface-raised:#fff;
@@ -56,7 +63,9 @@
   .ob-strong { color:var(--app-text-strong); }
   .ob-rule { height:1px; background:var(--app-border); border:0; margin:0; }
   .ob-btn {
-    font:inherit; font-size:var(--text-sm); padding:6px 12px; border-radius:6px; cursor:pointer;
+    font:inherit; font-size:var(--text-sm); border-radius:6px; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center;
+    min-height:var(--ob-ctl-h); padding:0 12px; line-height:1; white-space:nowrap;
     background:var(--app-surface-raised); color:var(--app-text); border:1px solid var(--app-border-strong);
   }
   .ob-btn:hover { background:var(--app-surface-hover); border-color:var(--app-border-hover); }
@@ -64,7 +73,7 @@
   .ob-btn.primary { background:var(--app-accent); color:var(--app-accent-contrast); border-color:var(--app-accent); font-weight:500; }
   .ob-btn.ghost { background:transparent; border-color:transparent; color:var(--app-text-muted); }
   .ob-btn.ghost:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
-  .ob-btn.sm { padding:3px 8px; font-size:var(--text-xs); }
+  .ob-btn.sm { min-height:var(--ob-ctl-h-sm); padding:0 8px; font-size:var(--text-xs); }
 
   /* ---- page chrome ---- */
   .page-top {

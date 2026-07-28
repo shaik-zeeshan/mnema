@@ -112,10 +112,12 @@
       <li>
         Semantic Search has no family group today: build it from
         <code>c.semanticSearchModelOptions</code> grouped by language coverage
-        (English / Multilingual), with <b>Off</b> as the first segment — that segment
-        <em>is</em> the row&rsquo;s <code>Switch</code>
-        (<code>:380</code>), folded in, because Off is the only meaningful saving on
-        this row.
+        (English / Multilingual). <b>No <code>Off</code> segment</b> — an earlier pass folded
+        the row&rsquo;s <code>Switch</code> (<code>:380</code>) in as a first segment; that put
+        one setting in two places once the switch chain existed, so on/off stays with the
+        chain and this group answers only <i>which language coverage</i>. With the feature
+        off, no segment is active. <code>onSemanticEnabledChange</code> is still needed —
+        the budget escape calls it.
       </li>
       <li>
         The variant sub-group renders only when a family has &gt;1 build, but its row
@@ -338,8 +340,13 @@
       { value: "whisper", label: "Whisper" },
       { value: "parakeet", label: "Parakeet" },
     ];
+    /* No `Off` segment (decided 2026-07-28). On/off for Semantic Search is the
+       switch chain's, and one setting never wears two faces. With the feature
+       off, no segment is active and the strip reads the off state — which is a
+       readout of a decision made elsewhere, not a second control for it. The
+       budget escape below ("Turn Semantic Search off") stays: that is a repair
+       for a disk shortfall, offered at the moment the shortfall is printed. */
     const S_FAMS = [
-      { value: "off", label: "Off" },
       { value: "en", label: "English" },
       { value: "multi", label: "Multilingual" },
     ];

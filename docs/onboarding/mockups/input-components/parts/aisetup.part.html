@@ -108,11 +108,15 @@
     /* fields */
     #cmp-aisetup .fld {
       font: inherit; font-size: var(--text-sm); color: var(--app-text); background: var(--app-surface-raised);
-      border: 1px solid var(--app-border-strong); border-radius: 7px; padding: 8px 10px; width: 100%; min-width: 0;
+      border: 1px solid var(--app-border-strong); border-radius: 7px; width: 100%; min-width: 0;
+      /* one control height, shared with every button that sits beside one */
+      height: var(--ob-ctl-h); padding: 0 10px;
     }
     #cmp-aisetup .fld::placeholder { color: var(--app-text-faint); }
     #cmp-aisetup select.fld { cursor: pointer; }
     #cmp-aisetup .line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    /* a button on a field's row is the field's height, not the inline height */
+    #cmp-aisetup .line > .ob-btn { min-height: var(--ob-ctl-h); }
     #cmp-aisetup .line > .fld { flex: 1 1 200px; }
     #cmp-aisetup .line > select.fld { flex: 0 1 200px; }
     #cmp-aisetup .fld:focus-visible, #cmp-aisetup summary:focus-visible,
@@ -212,7 +216,7 @@
     #cmp-aisetup .opt {
       display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px; text-align: left;
       font: inherit; font-size: var(--text-sm); color: var(--app-text); background: transparent; border: 0;
-      border-radius: 6px; padding: 7px 8px; cursor: pointer;
+      border-radius: 6px; min-height: var(--ob-ctl-h); padding: 0 8px; cursor: pointer;
     }
     #cmp-aisetup .opt:hover:not(:disabled) { background: var(--app-surface-hover); }
     #cmp-aisetup .opt:disabled { color: var(--app-text-faint); cursor: not-allowed; }
