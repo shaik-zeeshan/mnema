@@ -861,6 +861,8 @@ pub fn run() {
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
             native_capture::get_microphone_activity_level,
+            native_capture::start_system_audio_level_probe,
+            native_capture::get_system_audio_probe_level,
             native_capture::record_bounded_microphone_clip,
             native_capture::start_native_capture,
             native_capture::pause_native_capture,

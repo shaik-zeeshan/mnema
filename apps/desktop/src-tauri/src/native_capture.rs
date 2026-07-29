@@ -2743,6 +2743,43 @@ pub fn get_microphone_activity_level() -> Option<f32> {
     microphone_capture::microphone_activity_level()
 }
 
+/// Start listening for system audio so a level meter has something true to show.
+///
+/// The microphone's meter rides the recording session's own probe; system audio
+/// has no session to ride outside of capture, and its permission state is sticky
+/// evidence rather than a live reading (ADR 0052) — so proving "sound is
+/// arriving" needs a tap of its own. Building it raises the TCC prompt, the same
+/// way `request_capture_permission("systemAudio")` does. Self-stopping a few
+/// seconds after the last poll.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub async fn start_system_audio_level_probe() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(capture_system_audio::start_system_audio_level_probe)
+        .await
+        .map_err(|error| format!("system audio level probe failed to start: {error}"))?
+        .map_err(|error| format!("system audio level probe failed to start: {}", error.message))
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub async fn start_system_audio_level_probe() -> Result<(), String> {
+    Ok(())
+}
+
+/// Peak system-audio level (0.0–1.0) since the previous poll, or `None` when no
+/// probe is running. Polling is the probe's keepalive.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+pub fn get_system_audio_probe_level() -> Option<f32> {
+    capture_system_audio::take_system_audio_probe_level()
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+pub fn get_system_audio_probe_level() -> Option<f32> {
+    None
+}
+
 #[cfg(target_os = "macos")]
 fn microphone_device_id_for_bounded_clip(
     preferences: &MicrophoneControllerPreferencesState,

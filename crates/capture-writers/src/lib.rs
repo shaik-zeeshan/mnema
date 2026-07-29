@@ -636,8 +636,10 @@ pub fn derive_audio_activity_level_from_sample_buf(
     peak_audio_activity_level_from_audio_buffers(audio_buf_list.list.buffers(), sample_format)
 }
 
+/// Peak level (0.0–1.0) across raw Core Audio buffers, for callers that hold
+/// deliveries rather than a `cm::SampleBuf` — the system-audio tap's IOProc.
 #[cfg(target_os = "macos")]
-fn peak_audio_activity_level_from_audio_buffers(
+pub fn peak_audio_activity_level_from_audio_buffers(
     buffers: &[cidre::cat::AudioBuf],
     sample_format: AudioSampleFormat,
 ) -> Option<f32> {

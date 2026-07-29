@@ -24,12 +24,19 @@
       offer after granting Screen Recording. Accessibility (browser URLs) last,
       optional, and only when a Gecko browser is installed.
     must not
-      Gate anything — macOS never re-prompts after a denial, so a hard gate here
-      would trap the user with no in-app recovery. Never show system audio as
-      confirmed: its grant cannot be read (ADR 0052), so it gets Request /
-      Request again and a plain statement that macOS will not confirm it.
+      Gate the microphone, system audio or Accessibility — macOS never re-prompts
+      after a denial, so a hard gate on an OPTIONAL source would trap the user
+      with no in-app recovery. Never show system audio as confirmed: its grant
+      cannot be read (ADR 0052), so it gets Request / Request again and a plain
+      statement that macOS will not confirm it.
     gates
-      None. Continue is always live.
+      Screen Recording, and only it. Mnema records the screen — without that
+      grant there is nothing to record — so Continue stays blocked until macOS
+      reports it granted. The gate is passable without leaving onboarding:
+      Request → (on a denial) deep-link to the right pane → Re-check. A grant
+      made in THIS process is not enough: macOS hands ScreenCaptureKit the new
+      grant only to a fresh one, so Continue becomes Relaunch and the flow
+      resumes here (`RESUME_KEY` in onboarding-flow).
 
   SHAPE: the screen is a sequence of MOMENTS, not a list of rows. One question is
   asked at a time; every answered question shrinks to a single ledger line above.
@@ -50,9 +57,9 @@
 
   type MomentId = PermissionKey | "accessibility";
 
-  /** Bar silhouette for the level meter (mockup 02b). Shape only — see the
-   *  ponytail note in the markup for why it carries no live amplitude. */
-  const BAR_HEIGHTS = [12, 22, 15, 31, 19, 26, 36, 17, 28, 21, 33, 14, 24, 30, 16, 23, 11, 18, 27, 13];
+  /** One bar per poll, newest on the right — ~2.5 s of sound at a glance. */
+  const METER_BARS = 20;
+  const METER_POLL_MS = 120;
 
   const NAMES: Record<MomentId, string> = {
     screen: "Screen recording",
@@ -99,15 +106,53 @@
     current === null ? [] : order.slice(order.indexOf(current) + 1).filter((id) => !answered(id)),
   );
   const isLast = $derived(current === null || upcoming.length === 0);
-  const nothingGranted = $derived(c.grantedCount === 0 && !c.geckoTrusted);
 
-  const soundArriving = $derived(value("systemAudio") === "assumed_working");
+  // The one required grant. `screenNeedsRelaunch` blocks just as hard as a
+  // missing grant: the permission reads granted while ScreenCaptureKit in THIS
+  // process still cannot use it, so continuing would only reach the Finale to
+  // fail there.
+  const screenReady = $derived(isGranted(value("screen")) && !screenNeedsRelaunch);
+
+  // Live levels from the system-audio probe (`start_system_audio_level_probe`).
+  // The permission state cannot stand in for these: `assumed_working` is sticky
+  // cross-session evidence, so it claims sound on a silent Mac and stays quiet on
+  // a loud one until a real recording runs — both of the reported bugs.
+  let levels = $state<number[]>(Array(METER_BARS).fill(0));
+  let probing = $state(false);
+  const soundArriving = $derived(levels.some((level) => level > 0));
+  /** A previous session's tap heard sound. Evidence, not a live reading. */
+  const heardBefore = $derived(value("systemAudio") === "assumed_working");
+
+  // Listen only once the prompt has been raised (or a past session proved the
+  // grant): building the tap IS the macOS prompt, and it must stay behind the
+  // Request button. The probe self-stops seconds after polling ends, so leaving
+  // this screen — or closing the window — needs no teardown of its own.
+  $effect(() => {
+    if (current !== "systemAudio" || !(c.sysAudioPromptRaised || heardBefore)) return;
+    let live = true;
+    void invoke("start_system_audio_level_probe").catch(() => {});
+    const timer = setInterval(async () => {
+      const level = await invoke<number | null>("get_system_audio_probe_level").catch(() => null);
+      if (!live) return;
+      probing = level !== null;
+      levels = [...levels.slice(1), level ?? 0];
+    }, METER_POLL_MS);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      levels = Array(METER_BARS).fill(0);
+      probing = false;
+    };
+  });
 
   function ledgerValue(id: MomentId): string {
     if (id === "accessibility") return c.geckoTrusted ? "granted" : "skipped";
     const v = value(id);
     if (id === "systemAudio") {
       if (soundArriving) return "sound is arriving";
+      // Never "sound is arriving" for evidence: it is what a past session heard,
+      // and reading it as the present is exactly the lie this screen cannot tell.
+      if (heardBefore) return "sound heard earlier";
       return c.sysAudioPromptRaised ? "requested · unconfirmed" : "not requested";
     }
     if (isGranted(v)) {
@@ -131,12 +176,25 @@
     if (key === "screen" && !before && isGranted(value("screen"))) screenNeedsRelaunch = true;
   }
 
+  // A grant made in System Settings lands the same in-process staleness as an
+  // in-app one, so Re-check raises the same relaunch requirement.
+  async function recheck(): Promise<void> {
+    const before = isGranted(value("screen"));
+    await c.refreshPermissions();
+    if (!before && isGranted(value("screen"))) screenNeedsRelaunch = true;
+  }
+
   async function askAccessibility(): Promise<void> {
     accessibilityAsked = true;
     await c.requestGeckoAccess();
   }
 
   function advance(): void {
+    if (screenNeedsRelaunch) {
+      void invoke("request_app_relaunch");
+      return;
+    }
+    if (!screenReady) return;
     if (isLast) {
       onContinue();
       return;
@@ -145,15 +203,18 @@
   }
 
   const primaryLabel = $derived.by(() => {
-    if (isLast) return nothingGranted ? "Continue with nothing granted" : "Capture & Storage";
+    if (screenNeedsRelaunch) return "Relaunch to continue";
+    if (!screenReady) return "Screen recording required";
+    if (isLast) return "Capture & Storage";
+    // Screen can no longer reach this branch — it is the gate, not a choice.
     if (current !== null && current !== "accessibility" && isDenied(value(current))) {
-      return `Continue without ${current === "screen" ? "the screen" : "the microphone"}`;
+      return "Continue without the microphone";
     }
     return "Continue";
   });
 </script>
 
-<span class="ob-m">One at a time · none of them required</span>
+<span class="ob-m">One at a time · only the screen is required</span>
 
 {#if settled.length > 0}
   <div class="settled">
@@ -161,12 +222,10 @@
       <div class="s-row">
         <span class="tk" class:on={ledgerGranted(id)} aria-hidden="true">{ledgerGranted(id) ? "✓" : "○"}</span>
         <span class="k">{NAMES[id]}</span>
-        <span class="v">
-          {ledgerValue(id)}
-          {#if id === "screen" && screenNeedsRelaunch}
-            <button class="ob-btn sm" onclick={() => invoke("request_app_relaunch")}>Relaunch</button>
-          {/if}
-        </span>
+        <!-- The relaunch itself is the primary action below, not a second
+             button here: with Screen Recording required, nothing continues
+             until it happens. -->
+        <span class="v">{ledgerValue(id)}</span>
       </div>
     {/each}
   </div>
@@ -176,18 +235,24 @@
   {#if current === "screen"}
     {#if isDenied(value("screen"))}
       <h1 class="ob-disp mid">Screen recording</h1>
-      <p class="ob-lead">You said no. Mnema keeps working — but it will not record your screen.</p>
+      <p class="ob-lead">
+        You said no — and this is the one Mnema cannot run without. macOS will not ask again, so the
+        switch has to be flipped in System Settings.
+      </p>
       <div class="ob-acts">
         <button class="ob-btn" onclick={() => request("screen")}>Open System Settings&nbsp; ›</button>
-        <button class="ob-btn" disabled={c.refreshingPerms} onclick={() => c.refreshPermissions()}>
+        <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
           {c.refreshingPerms ? "Checking…" : "Re-check"}
         </button>
         <span class="ob-fine">Privacy &amp; Security → Screen Recording → Mnema</span>
       </div>
-      <p class="ob-fine tail">macOS never asks again on its own, which is why this screen never blocks.</p>
+      <p class="ob-fine tail">Flip it, come back, press Re-check — no need to quit Mnema yourself.</p>
     {:else}
       <h1 class="ob-disp mid">Your screen.</h1>
-      <p class="ob-lead">The one Mnema is built on — it records the screen so you can scrub back to it.</p>
+      <p class="ob-lead">
+        The one Mnema is built on — it records the screen so you can scrub back to it. This is the
+        only grant setup will not continue without.
+      </p>
       <div class="ob-acts">
         <button class="ob-btn" disabled={c.requestingPerm !== null} onclick={() => request("screen")}>
           {c.requestingPerm === "screen" ? "Requesting…" : "Request access"}
@@ -201,7 +266,7 @@
       <p class="ob-lead">You said no. Mnema keeps working — without transcripts or speaker names.</p>
       <div class="ob-acts">
         <button class="ob-btn" onclick={() => request("microphone")}>Open System Settings&nbsp; ›</button>
-        <button class="ob-btn" disabled={c.refreshingPerms} onclick={() => c.refreshPermissions()}>
+        <button class="ob-btn" disabled={c.refreshingPerms} onclick={recheck}>
           {c.refreshingPerms ? "Checking…" : "Re-check"}
         </button>
         <span class="ob-fine">Privacy &amp; Security → Microphone → Mnema</span>
@@ -221,22 +286,21 @@
     <h1 class="ob-disp mid">Play anything.</h1>
     <p class="ob-lead">macOS will not tell us whether you granted this — sound arriving is the only proof.</p>
     <div class="level">
-      <!-- ponytail: the bars resolve to arriving / not arriving, not to a live
-           level. `system_audio_activity_level()` exists in capture-system-audio
-           but is fed only by a RUNNING tap, and onboarding starts no capture —
-           the permission prompt's own tap is a 250 ms throwaway with a no-op
-           callback. Animating them here would be theatre, not evidence. Upgrade
-           path: a listening tap + a `get_system_audio_activity_level` command,
-           the sibling of `get_microphone_activity_level`. -->
-      <div class="meter" class:lit={soundArriving} aria-hidden="true">
-        {#each BAR_HEIGHTS as h, i (i)}
-          <i style="height:{soundArriving ? h : 6}px"></i>
+      <!-- Every bar is one poll of a real tap: the meter moves with what the tap
+           is delivering and flatlines the moment it stops. Square-rooted because
+           the level is a linear peak — untouched, ordinary playback barely lifts
+           off the floor. -->
+      <div class="meter" class:live={probing || soundArriving} class:lit={soundArriving} aria-hidden="true">
+        {#each levels as level, i (i)}
+          <i style="height:{6 + Math.round(Math.sqrt(level) * 30)}px"></i>
         {/each}
       </div>
       <div>
         <div class="ob-strong">
           {#if soundArriving}
             Sound is arriving.
+          {:else if probing}
+            Listening…
           {:else if c.sysAudioPromptRaised}
             Requested · unconfirmed
           {:else}
@@ -245,8 +309,8 @@
         </div>
         {#if !soundArriving}
           <p class="ob-fine">
-            {c.sysAudioPromptRaised ? "Nothing has arrived yet · " : ""}Silent is not denied — it
-            might just be a quiet Mac.
+            {probing ? "Play something — a video, a song. " : ""}Silent is not denied — it might just
+            be a quiet Mac.
           </p>
         {/if}
       </div>
@@ -292,7 +356,11 @@
   <div class="ob-acts">
     <div class="spacer trail">
       <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-      {#if upcoming.length > 0}
+      {#if screenNeedsRelaunch}
+        <span class="ob-fine">
+          macOS gives that grant to a fresh copy of Mnema. Setup resumes right here.
+        </span>
+      {:else if upcoming.length > 0}
         <span class="upcoming">
           {#each upcoming as id, i (id)}
             <span>
@@ -301,11 +369,15 @@
             </span>
           {/each}
         </span>
-      {:else if nothingGranted}
-        <span class="ob-fine">Mnema will run, but it will not record anything.</span>
       {/if}
     </div>
-    <button class="ob-btn primary" onclick={advance}>{primaryLabel}&nbsp; →</button>
+    <button
+      class="ob-btn primary"
+      disabled={!screenReady && !screenNeedsRelaunch}
+      onclick={advance}
+    >
+      {primaryLabel}&nbsp; →
+    </button>
   </div>
 </div>
 
@@ -363,7 +435,7 @@
     margin-top: 26px;
   }
 
-  /* level meter — functional feedback, the one motion-free proof this screen has */
+  /* level meter — the only proof this screen can offer, so it moves with the tap */
   .level {
     display: flex;
     align-items: center;
@@ -379,9 +451,9 @@
     gap: 3px;
     height: 44px;
   }
-  /* At rest the meter collapses to its own floor line — a 44px box holding 6px
-     bars reads as debris, not as a quiet meter. */
-  .meter:not(.lit) {
+  /* Before anything is listening the meter collapses to its own floor line — a
+     44px box holding 6px bars reads as debris, not as a quiet meter. */
+  .meter:not(.live) {
     height: 10px;
   }
   .meter i {
@@ -389,6 +461,7 @@
     display: block;
     border-radius: 1px;
     background: var(--app-border-hover);
+    transition: height 120ms linear;
   }
   .meter.lit i {
     background: var(--app-text-subtle);

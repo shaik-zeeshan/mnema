@@ -78,7 +78,7 @@
     { name: "AI features", value: f.aiFeatures ? "on" : "off — needs a provider", on: f.aiFeatures },
   ]);
 
-  // ── The one foot line: downloads · location · retention · daily figure ────
+  // ── The foot facts: downloads · location · retention · daily figure ───────
   // `flow.workList` is live: it tracks both the feature state (returning from
   // Change settings with the last audio source off drops Whisper and speakrs)
   // and the model picks made there.
@@ -88,14 +88,14 @@
   const approximate = $derived(workList.some((item) => item.subsystem === "semanticSearch"));
   const downloads = $derived(
     workList.length === 0
-      ? "Nothing to download"
-      : `Downloads ${approximate ? "about " : ""}${formatSize(workListBytes(workList))}`,
+      ? "Nothing"
+      : `${approximate ? "~" : ""}${formatSize(workListBytes(workList))}`,
   );
 
   const saveDirectory = $derived(homeRelative(flow.controller.draftSaveDirectory));
   const retention = $derived.by(() => {
     const days = retentionToDays(flow.controller.draftRetentionPolicy);
-    return days === null ? "keeps everything" : `keeps ${days} days`;
+    return days === null ? "Everything" : `${days} days`;
   });
   const daily = $derived.by(() => {
     const fps = flow.controller.draftFrameRate;
@@ -141,12 +141,24 @@
 </div>
 
 <div class="ob-foot">
-  <p class="context">
-    <span class="ob-num ob-strong">{downloads}</span>
-    · saves to <span class="ob-strong">{saveDirectory}</span>
-    · {retention}
-    · about <span class="ob-num ob-strong">{daily}</span> a day
-  </p>
+  <dl class="facts">
+    <div class="fact">
+      <dt>Download</dt>
+      <dd class="ob-num ob-strong">{downloads}</dd>
+    </div>
+    <div class="fact">
+      <dt>Saves to</dt>
+      <dd class="ob-strong path">{saveDirectory}</dd>
+    </div>
+    <div class="fact">
+      <dt>Keeps</dt>
+      <dd class="ob-num ob-strong">{retention}</dd>
+    </div>
+    <div class="fact">
+      <dt>Per day</dt>
+      <dd class="ob-num ob-strong">~{daily}</dd>
+    </div>
+  </dl>
   <hr class="ob-rule" />
   <div class="ob-acts">
     <button class="ob-btn ghost spacer" onclick={onBack}>← Back</button>
@@ -243,11 +255,41 @@
     box-shadow: var(--app-ring);
   }
 
-  .context {
-    font-size: var(--text-md);
-    line-height: 1.7;
-    color: var(--app-text);
+  /* Four facts, label over value, centred as one cluster under the centred
+     manifest. Flex, not a grid: each fact is only as wide as it needs, so the
+     group stays optically centred instead of sitting left in fixed columns. It
+     wraps to a second row at the 920px minimum window. */
+  .facts {
+    margin: 0 0 18px;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 14px 40px;
+  }
+  .fact {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
     text-align: center;
+  }
+  /* Lower case and dimmed: the label only has to name the number under it, so
+     it stays below the uppercase step labels in the window chrome. */
+  .fact dt {
+    font-size: var(--text-xs);
+    color: var(--app-text-subtle);
+    opacity: 0.7;
+  }
+  .fact dd {
+    font-size: var(--text-md);
+    line-height: 1.3;
     margin: 0;
+  }
+  /* A long save path is the one value that can outrun its share of the row. */
+  .fact dd.path {
+    max-width: 34ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>
