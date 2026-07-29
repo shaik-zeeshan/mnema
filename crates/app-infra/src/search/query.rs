@@ -40,6 +40,7 @@ pub(super) fn normalize_search_refinements(
 ) -> Result<NormalizationOutcome> {
     let refinements = refinements.unwrap_or_default();
     let screen_source = refinements.screen_source;
+    let speaker = refinements.speaker;
     let mut errors: Vec<SearchParseError> = Vec::new();
 
     if !refinements.apps.is_empty() && !refinements.audio_sources.is_empty() {
@@ -53,6 +54,25 @@ pub(super) fn normalize_search_refinements(
         errors.push(whole_query_parse_error(
             "screen_audio_source_conflict",
             "source:screen cannot be combined with source:mic or source:system: screen narrows captured frames while those narrow audio",
+        ));
+    }
+
+    // The speaker filter is the audio side of the same conflict `app_source_conflict`
+    // reports: it drops the frame pass, and every one of these drops the audio pass,
+    // so the pair can only ever answer with an empty page — read as "this person said
+    // nothing in that app". Checked HERE and not only at the caller because `app:` and
+    // `source:screen` have a QUERY-STRING spelling that is merged into these
+    // refinements after any caller-side check has already run.
+    if speaker.is_some()
+        && (!refinements.apps.is_empty()
+            || refinements.window_title.is_some()
+            || refinements.url.is_some()
+            || refinements.url_regex.is_some()
+            || screen_source)
+    {
+        errors.push(whole_query_parse_error(
+            "speaker_screen_filter_conflict",
+            "speaker cannot be combined with app, windowTitle, url, urlRegex, or source:screen: a speaker filter matches recorded audio, and audio carries no app, window title, or url to match against",
         ));
     }
 
@@ -157,6 +177,9 @@ pub(super) fn normalize_search_refinements(
         url_regex: url_regex.clone(),
         audio_sources: audio_sources.clone(),
         screen_source,
+        // Carried through untouched: the handle was already decoded (and its
+        // conflicts refused) at the broker boundary, the only thing that mints one.
+        speaker: speaker.clone(),
         applied: SearchCaptureRefinements {
             date_range: date_range.map(|(_, applied)| applied),
             apps: applied_apps,
@@ -165,6 +188,7 @@ pub(super) fn normalize_search_refinements(
             url_regex,
             audio_sources,
             screen_source,
+            speaker,
         },
     }))
 }
@@ -887,6 +911,7 @@ mod tests {
             url_regex: None,
             audio_sources: Vec::new(),
             screen_source: false,
+            speaker: None,
         }))
         .expect("refinements should not error")
         .expect("refinements should normalize");
@@ -1201,6 +1226,7 @@ mod tests {
             url_regex: None,
             audio_sources: vec![AudioSegmentSourceKind::Microphone],
             screen_source: false,
+            speaker: None,
         }))
         .expect("conflict should not throw")
         .expect_err("incompatible refinements should surface in-band parse errors");
@@ -1215,6 +1241,41 @@ mod tests {
     }
 
     #[test]
+    fn search_rejects_a_speaker_filter_combined_with_screen_only_refinements() {
+        // The broker refuses `speaker` beside its own `app`/`windowTitle`/`url`
+        // REQUEST FIELDS, but an `app:` OPERATOR inside the query string is merged
+        // into the refinements AFTER that guard, in `search_capture`. Nothing then
+        // refuses the pair: the frame pass is skipped (speaker narrows to audio)
+        // and the audio pass is skipped (apps narrows to frames), so the caller is
+        // handed a confident empty page — "Priya said nothing in Zoom" — instead of
+        // the in-band conflict its sibling `app_source_conflict` reports.
+        let merged = merge_parsed_field_operators(
+            Some(SearchCaptureRefinements {
+                speaker: Some(crate::search::SearchSpeakerRefinement::Person(7)),
+                ..Default::default()
+            }),
+            &parse_search_query("standup app:Zoom"),
+        );
+        assert!(
+            !merged.apps.is_empty(),
+            "the app: operator should merge into the caller's refinements"
+        );
+
+        let errors = normalize_search_refinements(Some(merged))
+            .expect("conflict should not throw")
+            .expect_err(
+                "a speaker filter beside a screen-only filter should surface in-band parse errors",
+            );
+
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.kind == "speaker_screen_filter_conflict"),
+            "expected a speaker_screen_filter_conflict parse error, got {errors:?}"
+        );
+    }
+
+    #[test]
     fn url_refinements_validate_before_reaching_sql() {
         let refinements = |url: Option<&str>, url_regex: Option<&str>| SearchCaptureRefinements {
             date_range: None,
@@ -1224,6 +1285,7 @@ mod tests {
             url_regex: url_regex.map(str::to_string),
             audio_sources: Vec::new(),
             screen_source: false,
+            speaker: None,
         };
 
         let normalized = normalize_search_refinements(Some(refinements(
@@ -1381,6 +1443,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1447,6 +1510,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1473,6 +1537,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: vec![AudioSegmentSourceKind::SystemAudio],
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1545,6 +1610,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })
@@ -1644,6 +1710,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     query_embedding: None,
                 })

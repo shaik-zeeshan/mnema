@@ -25,6 +25,8 @@ for arg in "$@"; do
 done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# cargo writes to CARGO_TARGET_DIR when set (shared target dir across worktrees).
+target_dir="${CARGO_TARGET_DIR:-$repo_root/target}"
 target_triple="${CARGO_BUILD_TARGET:-${TAURI_ENV_TARGET_TRIPLE:-${TARGET:-}}}"
 if [[ -z "$target_triple" ]]; then
   target_triple="$(rustc -vV | awk '/^host:/ { print $2 }')"
@@ -81,8 +83,8 @@ if [[ "$target_triple" == "universal-apple-darwin" ]]; then
   build_target "aarch64-apple-darwin"
   build_target "x86_64-apple-darwin"
 
-  arm_source_path="$repo_root/target/aarch64-apple-darwin/$profile/mnema-cli"
-  intel_source_path="$repo_root/target/x86_64-apple-darwin/$profile/mnema-cli"
+  arm_source_path="$target_dir/aarch64-apple-darwin/$profile/mnema-cli"
+  intel_source_path="$target_dir/x86_64-apple-darwin/$profile/mnema-cli"
   arm_output_path="$(sidecar_output_path "aarch64-apple-darwin")"
   intel_output_path="$(sidecar_output_path "x86_64-apple-darwin")"
 
@@ -93,7 +95,7 @@ if [[ "$target_triple" == "universal-apple-darwin" ]]; then
 else
   build_target "$target_triple"
 
-  source_path="$repo_root/target/$target_triple/$profile/mnema-cli$exe_suffix"
+  source_path="$target_dir/$target_triple/$profile/mnema-cli$exe_suffix"
   cp "$source_path" "$output_path"
 fi
 chmod 755 "$output_path"

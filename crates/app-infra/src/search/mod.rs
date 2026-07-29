@@ -40,7 +40,7 @@ mod types;
 pub use types::{
     AudioSearchResult, FrameSearchResult, SearchAppRefinement, SearchAppRefinementKind,
     SearchCaptureRefinements, SearchCaptureRequest, SearchCaptureResponse, SearchDateRangeOrigin,
-    SearchDateRangeRefinement, SearchParseError, SearchableApp,
+    SearchDateRangeRefinement, SearchParseError, SearchSpeakerRefinement, SearchableApp,
 };
 use types::{
     normalize_app_bundle_id_for_search, normalize_app_name_for_search, EquivalentReuseText,
@@ -78,6 +78,34 @@ use retrieval::{
     clamp_limit, fetch_grouped_audio_hits, fetch_grouped_frame_hits,
     fetch_search_document_high_water_mark,
 };
+
+/// Does this raw query string carry a date operator (`date:`, `after:`, `before:`)?
+///
+/// A parsed date operator OVERWRITES the caller-supplied `date_range`
+/// (last-write-wins, [`merge_parsed_field_operators`]). That is the intended
+/// desktop behaviour — the operator the user typed beats the picker they left
+/// set — but it makes the caller's range a DEFAULT, never a ceiling. Any caller
+/// whose range is a security boundary rather than a preference (the broker's
+/// grant window) must ask this first and refuse, because it cannot otherwise
+/// stop the query string from re-opening the window it just closed.
+///
+/// Asked through the real parser, not a substring scan: quoting and escaping
+/// decide whether `before:` is an operator or ordinary text, and a second
+/// opinion on that would disagree with the one that actually builds the range.
+pub(crate) fn query_carries_date_operator(raw: &str) -> bool {
+    parse_search_query(raw).date_range.is_some()
+}
+
+/// The same question for the SCREEN-side operators: `app:` and `source:screen`
+/// are merged into the caller's refinements the same way the date operators are,
+/// so a caller that refuses a screen filter beside a speaker filter must ask here
+/// too. Refused rather than answered: a speaker filter drops the frame pass and a
+/// screen filter drops the audio pass, so the combination returns a clean empty
+/// page that reads as "she said nothing there".
+pub(crate) fn query_carries_screen_filter(raw: &str) -> bool {
+    let parsed = parse_search_query(raw);
+    !parsed.apps.is_empty() || parsed.screen_source
+}
 
 #[derive(Clone)]
 pub struct SearchStore {
@@ -270,7 +298,12 @@ impl SearchStore {
 
         let frame_end = frame_offset.saturating_add(frame_limit as usize);
         let audio_end = audio_offset.saturating_add(audio_limit as usize);
-        let all_frame_groups = if frame_limit == 0 || !refinements.audio_sources.is_empty() {
+        // A speaker filter narrows to audio for the same reason `audio_sources`
+        // does: the voice is on the recording, and a captured frame carries none.
+        let all_frame_groups = if frame_limit == 0
+            || !refinements.audio_sources.is_empty()
+            || refinements.speaker.is_some()
+        {
             Vec::new()
         } else {
             fetch_grouped_frame_hits(

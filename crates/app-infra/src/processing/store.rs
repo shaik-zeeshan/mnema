@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use audio_transcription::{TranscriptionMetadata, TranscriptionSegment, TranscriptionWord};
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
-    PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisOutput,
+    PersonEnrollment, RecognitionConfidence, SpeakerAnalysisOutput,
 };
 use sqlx::{sqlite::SqliteRow, Executor, QueryBuilder, Row, Sqlite, Transaction};
 
@@ -11,6 +11,10 @@ use crate::db::CaptureDb;
 use crate::{AppInfraError, AudioSegment, AudioSegmentSourceKind, NewAudioSegment, Result};
 
 use super::secret_redaction_pipeline::SecretRedactionPipeline;
+use super::speaker_resolution::{
+    resolve_stable_speaker_cluster_from_candidates, SpeakerResolutionTuning,
+    StableSpeakerClusterCandidate, StableSpeakerClusterResolution,
+};
 use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
@@ -2356,6 +2360,36 @@ impl ProcessingStore {
             )
             .await?;
         }
+        // Assigning someone else also answers a *pending* guess with "no, it is this
+        // other person" — the one-click correction, with no "Not Jack" press. That is
+        // a veto too, and recording it is what makes it stick: without it the guess is
+        // merely masked by `person_id`, so a later unlink resurfaces the name the user
+        // took back (timeline, Ask AI, broker), recognition re-suggests that person on
+        // every later segment, and the confirmed-person conflict in
+        // `resolve_stable_speaker_cluster` splits the corrected voice into a fresh
+        // cluster each time.
+        if cluster
+            .recognition_person_id
+            .is_some_and(|existing| existing != person_id)
+        {
+            persist_speaker_recognition_rejection_for_cluster(
+                &mut transaction,
+                &cluster,
+                cluster_id,
+                cluster.recognition_person_id,
+            )
+            .await?;
+        }
+        // The user just said this cluster *is* that person, which contradicts any
+        // prior "not this person" rejection for the same pair.
+        sqlx::query(
+            "DELETE FROM speaker_recognition_rejections \
+             WHERE source_cluster_id = ?1 AND person_id = ?2",
+        )
+        .bind(cluster_id)
+        .bind(person_id)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query(
             "UPDATE recording_speaker_clusters \
              SET person_id = ?2, transcript_local_label = NULL, updated_at = CURRENT_TIMESTAMP \
@@ -2439,15 +2473,8 @@ impl ProcessingStore {
             cluster.recognition_person_id,
         )
         .await?;
-        sqlx::query(
-            "UPDATE recording_speaker_clusters \
-             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
-                 updated_at = CURRENT_TIMESTAMP \
-             WHERE id = ?1",
-        )
-        .bind(cluster_id)
-        .execute(&mut *transaction)
-        .await?;
+        // The clear lives in the rejection helper: every path that vetoes a person
+        // drops the matching guess, not just this one.
         transaction.commit().await?;
         self.get_required_speaker_cluster(cluster_id).await
     }
@@ -2485,6 +2512,42 @@ impl ProcessingStore {
              WHERE cluster_id = ?1",
         )
         .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
+        // The merge says both clusters are the same speaker, so the source's "not
+        // this person" applies to the target. Without this the source row is purged
+        // below, `ON DELETE SET NULL` orphans the rejection and retention GCs it —
+        // silently un-rejecting. `OR IGNORE` skips a rejection the target already
+        // has (that row dies with the source), and `IS NOT` is NULL-safe, so an
+        // unnamed target inherits all of them.
+        sqlx::query(
+            "UPDATE OR IGNORE speaker_recognition_rejections \
+             SET source_cluster_id = ?2 \
+             WHERE source_cluster_id = ?1 AND person_id IS NOT ?3",
+        )
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .bind(target.person_id)
+        .execute(&mut *transaction)
+        .await?;
+        // Inheriting a veto has to take the matching guess with it, like every other
+        // veto path: a target left publishing "is this Jack?" while carrying "not
+        // Jack" hands the timeline a Confirm button for the person the user just
+        // rejected on the voice being merged in, and republishes that name to Ask AI
+        // and the broker. The correlated `EXISTS` keeps the whole recognition triple
+        // coherent and is a no-op when there is no guess.
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1 \
+               AND EXISTS (\
+                    SELECT 1 FROM speaker_recognition_rejections \
+                    WHERE source_cluster_id = ?1 \
+                      AND person_id = recording_speaker_clusters.recognition_person_id\
+               )",
+        )
         .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
@@ -2550,31 +2613,22 @@ impl ProcessingStore {
             .collect()
     }
 
-    pub async fn list_person_recognition_rejections_for_speaker_model(
+    /// The people rejected **for this cluster** ("never suggest them for this
+    /// cluster"). Rejections are per-cluster booleans; rows orphaned to a NULL
+    /// `source_cluster_id` by `ON DELETE SET NULL` are ignored.
+    pub async fn list_rejected_person_ids_for_speaker_cluster(
         &self,
-        provider: &str,
-        model_id: Option<&str>,
-    ) -> Result<Vec<PersonRecognitionRejection>> {
-        let model_id = model_id.unwrap_or("");
-        let rows = sqlx::query(
-            "SELECT person_id, embedding, model_id AS embedding_model_id \
-             FROM speaker_recognition_rejections \
-             WHERE provider = ?1 AND model_id = ?2 \
-             ORDER BY person_id ASC, id ASC",
+        cluster_id: i64,
+    ) -> Result<Vec<i64>> {
+        let ids = sqlx::query_scalar(
+            "SELECT person_id FROM speaker_recognition_rejections \
+             WHERE source_cluster_id = ?1 \
+             ORDER BY person_id ASC",
         )
-        .bind(provider)
-        .bind(model_id)
+        .bind(cluster_id)
         .fetch_all(self.db.read())
         .await?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(PersonRecognitionRejection {
-                    person_id: row.get("person_id"),
-                    embedding: row.get("embedding"),
-                    embedding_model_id: row.get("embedding_model_id"),
-                })
-            })
-            .collect()
+        Ok(ids)
     }
 
     async fn get_required_frame(&self, frame_id: i64) -> Result<Frame> {
@@ -2684,8 +2738,12 @@ async fn persist_speaker_analysis_output(
     .await?;
 
     let mut cluster_ids = std::collections::HashMap::<String, (i64, i64)>::new();
+    // Every `provider_cluster_id` this run has already put a voice on. Two voices
+    // sharing one would fold them onto a single row through the `ON CONFLICT`
+    // upsert below — see the mint guard further down.
+    let mut claimed_provider_cluster_ids = BTreeSet::<String>::new();
     for cluster in &output.clusters {
-        let (suggested_person_id, recognition_confidence, recognition_score) = cluster
+        let (mut suggested_person_id, mut recognition_confidence, mut recognition_score) = cluster
             .suggestion
             .as_ref()
             .map(|suggestion| {
@@ -2706,12 +2764,76 @@ async fn persist_speaker_analysis_output(
             suggested_person_id,
         )
         .await?;
+        let own_provider_cluster_id = format!("{audio_segment_id}:{}", cluster.provider_cluster_id);
         let stable_provider_cluster_id =
             if let Some(target_cluster_id) = merge_candidate.auto_merge_target_cluster_id {
+                // An auto-merge makes the same claim `merge_speaker_clusters` does —
+                // one speaker — so the absorbed cluster's "not this person" has to
+                // travel with its turns. Without this the absorbed row ends the
+                // transaction turn-less and link-less, the second pass collects it,
+                // `ON DELETE SET NULL` orphans the veto, and the person the user
+                // rejected gets suggested again on the surviving cluster.
+                carry_speaker_rejections_to_auto_merge_target(
+                    transaction,
+                    &output.metadata.session_id,
+                    &output.metadata.provider,
+                    &own_provider_cluster_id,
+                    target_cluster_id,
+                )
+                .await?;
                 existing_speaker_cluster_provider_id(transaction, target_cluster_id).await?
             } else {
-                format!("{audio_segment_id}:{}", cluster.provider_cluster_id)
+                // A rejection-carrying cluster survives re-analysis still owning its
+                // old `{segment}:{label}` id, and diarizers renumber labels between
+                // runs — so an earlier cluster of THIS run can already have claimed
+                // the id this voice would mint (by auto-merging into that survivor).
+                // Sharing it collapses two speakers onto one row via `ON CONFLICT`:
+                // one speaker in the timeline instead of two, both voices' turns on
+                // one cluster, and the second voice overwriting the first's embedding.
+                let mut minted = own_provider_cluster_id;
+                let mut attempt = 2;
+                while claimed_provider_cluster_ids.contains(&minted) {
+                    minted = format!(
+                        "{audio_segment_id}:{}:{attempt}",
+                        cluster.provider_cluster_id
+                    );
+                    attempt += 1;
+                }
+                minted
             };
+        claimed_provider_cluster_ids.insert(stable_provider_cluster_id.clone());
+
+        // Per-cluster rejection veto: "never suggest P for *this* cluster". This is
+        // the first point where cluster identity exists (the provider runs before any
+        // cluster row does), and it covers the auto-merge case for free because the
+        // merge target is the cluster we resolve to. A brand-new cluster can carry no
+        // rejection, so a missing row simply means "nothing rejected".
+        if let Some(person_id) = suggested_person_id {
+            let existing_cluster_id: Option<i64> = sqlx::query_scalar(
+                "SELECT id FROM recording_speaker_clusters \
+                 WHERE session_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3",
+            )
+            .bind(&output.metadata.session_id)
+            .bind(&output.metadata.provider)
+            .bind(&stable_provider_cluster_id)
+            .fetch_optional(&mut **transaction)
+            .await?;
+            if let Some(existing_cluster_id) = existing_cluster_id {
+                let rejected: Option<i64> = sqlx::query_scalar(
+                    "SELECT 1 FROM speaker_recognition_rejections \
+                     WHERE source_cluster_id = ?1 AND person_id = ?2",
+                )
+                .bind(existing_cluster_id)
+                .bind(person_id)
+                .fetch_optional(&mut **transaction)
+                .await?;
+                if rejected.is_some() {
+                    suggested_person_id = None;
+                    recognition_confidence = None;
+                    recognition_score = None;
+                }
+            }
+        }
 
         sqlx::query(
             "INSERT INTO recording_speaker_clusters (\
@@ -2823,10 +2945,63 @@ async fn persist_speaker_analysis_output(
         .await?;
     }
 
+    purge_spared_rejected_speaker_clusters_without_turns(
+        transaction,
+        &output.metadata.session_id,
+        &output.metadata.provider,
+    )
+    .await?;
+
     Ok(())
 }
 
-async fn purge_orphaned_speaker_clusters_for_session_provider(
+/// Move an auto-merged-away cluster's rejections onto the cluster that absorbed
+/// its turns — the same transfer `merge_speaker_clusters` does, for the same
+/// reason. `OR IGNORE` skips a veto the target already carries, and `IS NOT` is
+/// NULL-safe so an unnamed target inherits all of them; a veto of the person the
+/// target *is* stays behind and dies with the absorbed row.
+async fn carry_speaker_rejections_to_auto_merge_target(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+    absorbed_provider_cluster_id: &str,
+    target_cluster_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE OR IGNORE speaker_recognition_rejections \
+         SET source_cluster_id = ?4 \
+         WHERE source_cluster_id = (\
+                SELECT id FROM recording_speaker_clusters \
+                WHERE session_id = ?1 AND provider = ?2 AND provider_cluster_id = ?3\
+           ) \
+           AND person_id IS NOT (\
+                SELECT person_id FROM recording_speaker_clusters WHERE id = ?4\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .bind(absorbed_provider_cluster_id)
+    .bind(target_cluster_id)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+/// Second pass, run once the turns are back. A rejection-carrying cluster is
+/// spared by the first pass only so re-analysis can reclaim its id; one that is
+/// genuinely obsolete has to go, or it leaves a turn-less ghost speaker in
+/// `list_speaker_clusters_for_session` (what the timeline renders) forever.
+///
+/// "Obsolete" is retention's own definition (`gc_orphan_speaker_rows`): no turns
+/// AND no segment-cluster link. Turns alone is not enough — a provider can
+/// re-emit a cluster with no turns at all, because speakrs derives clusters from
+/// per-chunk centroids and turns from the diarization segments, two independent
+/// arrays. Deleting on "no turns" alone destroys the user's veto for a voice this
+/// very run confirmed is still there, while the identical turn-less cluster
+/// *without* a veto survives — carrying user data cannot be what makes a row
+/// deletable. A cluster absorbed by an auto-merge has already handed its
+/// rejections to the merge target, so nothing is lost when this collects it.
+async fn purge_spared_rejected_speaker_clusters_without_turns(
     transaction: &mut Transaction<'_, Sqlite>,
     session_id: &str,
     provider: &str,
@@ -2837,6 +3012,45 @@ async fn purge_orphaned_speaker_clusters_for_session_provider(
            AND NOT EXISTS (\
                 SELECT 1 FROM speaker_turns \
                 WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_segment_clusters \
+                WHERE speaker_segment_clusters.stable_cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND EXISTS (\
+                SELECT 1 FROM speaker_recognition_rejections \
+                WHERE speaker_recognition_rejections.source_cluster_id = recording_speaker_clusters.id\
+           )",
+    )
+    .bind(session_id)
+    .bind(provider)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn purge_orphaned_speaker_clusters_for_session_provider(
+    transaction: &mut Transaction<'_, Sqlite>,
+    session_id: &str,
+    provider: &str,
+) -> Result<()> {
+    // A cluster carrying rejections must survive re-analysis: its turns are deleted
+    // moments before this runs, and dropping the row would null the rejections'
+    // `source_cluster_id` (`ON DELETE SET NULL`), silently un-rejecting the person.
+    // The row's id is then reused by the `ON CONFLICT` upsert below.
+    // ponytail: a rejected cluster whose provider_cluster_id stops appearing lingers
+    // with zero turns until the session is deleted. Fine — rows are tiny; revisit if
+    // empty clusters ever become user-visible.
+    sqlx::query(
+        "DELETE FROM recording_speaker_clusters \
+         WHERE session_id = ?1 AND provider = ?2 \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_turns \
+                WHERE speaker_turns.cluster_id = recording_speaker_clusters.id\
+           ) \
+           AND NOT EXISTS (\
+                SELECT 1 FROM speaker_recognition_rejections \
+                WHERE speaker_recognition_rejections.source_cluster_id = recording_speaker_clusters.id\
            )",
     )
     .bind(session_id)
@@ -2864,23 +3078,6 @@ async fn purge_orphaned_speaker_cluster(
     Ok(())
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct StableSpeakerClusterResolution {
-    auto_merge_target_cluster_id: Option<i64>,
-    suggested_merge_target_cluster_id: Option<i64>,
-    suggested_merge_score: Option<f32>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct StableSpeakerClusterCandidate {
-    id: i64,
-    score: f32,
-    person_id: Option<i64>,
-}
-
-const SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD: f32 = 0.82;
-const SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD: f32 = 0.68;
-const SPEAKER_CLUSTER_AMBIGUITY_MARGIN: f32 = 0.06;
 const TIMED_TEXT_NEARBY_TURN_FALLBACK_MS: u64 = 500;
 
 async fn resolve_stable_speaker_cluster(
@@ -2920,51 +3117,19 @@ async fn resolve_stable_speaker_cluster(
             })
         })
         .collect::<Vec<_>>();
+    // A veto on the top candidate ("not Jack — this is Jill") is the user
+    // arbitrating this exact pair, so the recognition claim keeps its full weight
+    // here: the confirmed-person conflict holds and the incoming voice gets a merge
+    // *suggestion* rather than being reused silently. Dropping the claim to unblock
+    // reuse is how "not Jack" turns into "filed as Jill" with no prompt — a speaker
+    // write with no undo path, on a cluster the user confirmed is someone else.
+    // The fragmentation this costs is self-limiting: linking the corrected cluster
+    // adds its voice to Jill's profile, so recognition stops naming Jack.
     Ok(resolve_stable_speaker_cluster_from_candidates(
         &mut candidates,
         recognition_person_id,
+        &SpeakerResolutionTuning::default(),
     ))
-}
-
-fn resolve_stable_speaker_cluster_from_candidates(
-    candidates: &mut [StableSpeakerClusterCandidate],
-    recognition_person_id: Option<i64>,
-) -> StableSpeakerClusterResolution {
-    candidates.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-
-    let Some(best) = candidates.first().copied() else {
-        return StableSpeakerClusterResolution::default();
-    };
-    let second_score = candidates.get(1).map(|candidate| candidate.score);
-    let ambiguous =
-        second_score.is_some_and(|score| best.score - score < SPEAKER_CLUSTER_AMBIGUITY_MARGIN);
-    let confirmed_person_conflict = recognition_person_id.zip(best.person_id).is_some_and(
-        |(incoming_person_id, existing_person_id)| incoming_person_id != existing_person_id,
-    );
-
-    if best.score >= SPEAKER_CLUSTER_AUTO_REUSE_THRESHOLD
-        && !ambiguous
-        && !confirmed_person_conflict
-    {
-        StableSpeakerClusterResolution {
-            auto_merge_target_cluster_id: Some(best.id),
-            ..Default::default()
-        }
-    } else if best.score >= SPEAKER_CLUSTER_SUGGEST_MERGE_THRESHOLD {
-        StableSpeakerClusterResolution {
-            suggested_merge_target_cluster_id: Some(best.id),
-            suggested_merge_score: Some(best.score),
-            ..Default::default()
-        }
-    } else {
-        StableSpeakerClusterResolution::default()
-    }
 }
 
 async fn existing_speaker_cluster_provider_id(
@@ -3230,14 +3395,6 @@ mod tests {
         }
     }
 
-    fn candidate(id: i64, score: f32, person_id: Option<i64>) -> StableSpeakerClusterCandidate {
-        StableSpeakerClusterCandidate {
-            id,
-            score,
-            person_id,
-        }
-    }
-
     #[test]
     fn timed_text_alignment_picks_greatest_overlap() {
         let turns = vec![turn(1, 0, 800), turn(2, 400, 1_400)];
@@ -3296,67 +3453,6 @@ mod tests {
             best_turn_for_timed_text_run(&turns, &run(1_600, 1_700)),
             None
         );
-    }
-
-    #[test]
-    fn stable_cluster_resolution_auto_reuses_unambiguous_high_similarity() {
-        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.70, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, Some(1));
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_suggests_for_ambiguous_high_similarity() {
-        let mut candidates = vec![candidate(1, 0.83, None), candidate(2, 0.78, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
-    }
-
-    #[test]
-    fn stable_cluster_resolution_suggests_for_medium_similarity() {
-        let mut candidates = vec![candidate(1, 0.70, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
-        assert_eq!(resolution.suggested_merge_score, Some(0.70));
-    }
-
-    #[test]
-    fn stable_cluster_resolution_creates_independent_for_low_similarity() {
-        let mut candidates = vec![candidate(1, 0.67, None)];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_has_no_match_when_provider_or_model_filter_removed_candidates() {
-        let mut candidates = vec![];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, None);
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, None);
-    }
-
-    #[test]
-    fn stable_cluster_resolution_confirmed_person_conflict_blocks_auto_reuse() {
-        let mut candidates = vec![candidate(1, 0.90, Some(10))];
-
-        let resolution = resolve_stable_speaker_cluster_from_candidates(&mut candidates, Some(20));
-
-        assert_eq!(resolution.auto_merge_target_cluster_id, None);
-        assert_eq!(resolution.suggested_merge_target_cluster_id, Some(1));
     }
 
     fn speaker_analysis_job_with_payload(payload_json: Option<String>) -> ProcessingJob {
@@ -4815,9 +4911,14 @@ async fn persist_speaker_recognition_rejection_for_cluster(
     cluster_id: i64,
     person_id: Option<i64>,
 ) -> Result<()> {
-    let (Some(person_id), Some(embedding)) = (person_id, cluster.embedding.as_ref()) else {
+    let Some(person_id) = person_id else {
         return Ok(());
     };
+    // The `embedding` column is vestigial (rejections are per-cluster booleans) but
+    // `NOT NULL`, so a cluster without one gets an empty blob. Bailing here instead
+    // would drop the user's "not this person" while the caller still clears the
+    // suggestion and reports success.
+    let embedding = cluster.embedding.clone().unwrap_or_default();
     sqlx::query(
         "INSERT OR IGNORE INTO speaker_recognition_rejections (\
             person_id, provider, model_id, embedding, source_session_id, source_cluster_id\
@@ -4831,6 +4932,22 @@ async fn persist_speaker_recognition_rejection_for_cluster(
     .bind(cluster_id)
     .execute(&mut **transaction)
     .await?;
+    // A veto of the person the cluster is *currently* guessing has to take the
+    // guess with it. Unlinking a confirmed person and reassigning to someone else
+    // both land here, and neither clears `recognition_person_id` on its own: the
+    // row would keep publishing a name the user just took back, to the timeline,
+    // Ask AI, and the broker alike.
+    if cluster.recognition_person_id == Some(person_id) {
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET recognition_person_id = NULL, recognition_confidence = NULL, recognition_score = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?1",
+        )
+        .bind(cluster_id)
+        .execute(&mut **transaction)
+        .await?;
+    }
     Ok(())
 }
 

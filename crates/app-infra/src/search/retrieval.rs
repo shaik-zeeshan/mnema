@@ -144,6 +144,14 @@ pub(super) fn push_search_refinement_predicates(
         query.push(" AND COALESCE(search_documents.url, '') REGEXP ");
         query.push_bind(url_regex.clone());
     }
+    if let Some(speaker) = &refinements.speaker {
+        // Narrows to AUDIO by construction: a frame anchor has no
+        // `audio_segment_id`, so this predicate is false for every one of them —
+        // the same one-way narrowing `audio_sources` already applies (the frame
+        // pass is skipped outright in `search_capture`, so this never runs there).
+        query.push(" AND ");
+        speaker.push_exists_predicate(query, "search_documents.audio_segment_id");
+    }
     if !refinements.audio_sources.is_empty() {
         query.push(" AND search_documents.source_kind IN (");
         for (index, source) in refinements.audio_sources.iter().enumerate() {
@@ -893,6 +901,7 @@ mod tests {
                     url_regex: url_regex.map(str::to_string),
                     audio_sources: Vec::new(),
                     screen_source: false,
+                    speaker: None,
                 };
                 async move {
                     infra
@@ -1948,6 +1957,7 @@ mod tests {
                         url_regex: None,
                         audio_sources: Vec::new(),
                         screen_source: false,
+                        speaker: None,
                     }),
                     // Query vector exactly on every out-of-scope anchor's vector, so
                     // a post-filter's top-`k` is all out-of-scope rows.

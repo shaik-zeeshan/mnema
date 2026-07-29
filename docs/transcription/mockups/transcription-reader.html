@@ -1,0 +1,1328 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema transcription UI — Reading Document</title>
+<style>
+/* ============================================================
+   MNEMA TRANSCRIPTION UI — "THE READING DOCUMENT"
+   (chosen direction; four alternates were explored and discarded)
+   ------------------------------------------------------------
+   THESIS. A transcript is prose a person READS, not a log they
+   scan. Every decision below buys comprehension of the words;
+   identity repair is present but demoted to a quiet gutter and
+   a slide-over, so it can never clutter the reading surface.
+
+   WHAT IT BORROWS
+   · P1  speaker-labelled prose blocks with a label gutter
+         (Otter/Rev/Descript) — but the gutter is de-emphasised,
+         not the header of the block.
+   · P3  karaoke word-highlight + click-any-word-to-seek
+         (Otter/Descript/Apple/MacWhisper). This is the load
+         bearing decision: once the highlight tracks playback,
+         a timestamp column stops earning its width.
+   · P4  timestamps as a density toggle, default OFF (YouTube's
+         `⋯ → Toggle timestamps`; Apple ships none at all).
+   · Diff. idea 5 — Google Recorder dual encoding: colour AND
+         shape per speaker, so it survives greyscale + CVD.
+   · Diff. idea 6 — Happy Scribe / Zoom: "unknown" rendered as
+         a legitimate state, because in always-on capture it is
+         the majority state.
+   · Descript's follow-mode fix: any manual scroll detaches
+         auto-scroll, with an explicit jump-to-playhead and Esc
+         to resume.
+
+   WHAT IT REJECTS ON PURPOSE
+   · Dense log formatting (time | speaker | text rows).
+   · Always-on timestamps.
+   · P7 confidence-as-texture in the default view.
+   · Analytics: talk-time bars, speaker pie charts, word counts.
+   · The 50vh ceiling — the drawer's peek state survives as an
+     entry point only; reading happens expanded.
+
+   HOUSE-STYLE BREAK (the one break taken, deliberately):
+   transcript body type is 15px / 1.72, measure ~58ch, not the
+   app's 12px. Justification is in annotation callout 2.
+
+   Data: every field shown maps to a real DTO — see annotation
+   section (c). Nothing new is required.
+   ============================================================ */
+
+:root {
+  --app-bg:#0c0c0e; --app-fg:#e2e2e8;
+  --app-surface:#0e0e16; --app-surface-subtle:#101018; --app-surface-raised:#13131a;
+  --app-surface-hover:#1a1a2a; --app-surface-active:#20203a;
+  --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+  --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+  --app-text-subtle:#7e7e98; --app-text-faint:#33334a; /* faint = decorative only, sub-AA */
+  --app-accent:#3dffa0; --app-accent-strong:#5affb4;
+  --app-accent-bg:rgba(61,255,160,.10); --app-accent-border:rgba(61,255,160,.35);
+  --app-accent-glow:rgba(61,255,160,.22); --app-accent-contrast:#07120c;
+  --app-warn:#d6a14a; --app-warn-strong:#e8b866;
+  --app-warn-bg:rgba(214,161,74,.10); --app-warn-border:rgba(214,161,74,.35);
+  --app-danger:#ff6b7a; --app-danger-strong:#ff8a96;
+  --app-danger-bg:rgba(255,107,122,.10); --app-danger-border:rgba(255,107,122,.35);
+  --app-info:#7aa2ff; --app-info-strong:#98b6ff;
+  --app-info-bg:rgba(122,162,255,.10); --app-info-border:rgba(122,162,255,.35);
+  --app-neutral-bg:rgba(150,150,174,.10); --app-neutral-border:rgba(150,150,174,.30);
+  --app-neutral-text:#9696ae;
+  --app-source-screen:#c0b0ff; --app-source-mic:#80d0a8; --app-source-sysaudio:#b0c080;
+  --app-overlay-bg:rgba(12,12,14,.72); --app-input-recess:rgba(0,0,0,.28);
+  --app-font-mono:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,monospace;
+  --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px;
+  --text-lg:16px; --text-xl:20px;
+  --app-ring:0 0 0 3px var(--app-accent-glow);
+  --app-shadow-popover:0 8px 24px rgba(0,0,0,.22);
+  --app-disabled-opacity:.4; --app-busy-opacity:.6;
+  /* AUDIT 14 — the repo ships no spacing scale, so this surface defines one and
+     every value below is drawn from it. Six steps, each halvable. */
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-6:24px; --s-8:32px;
+  /* AUDIT 13 — in dark, elevation is lightness, not shadow. Floating layers sit
+     two steps above the surface instead of relying on a shadow that cannot read. */
+  --app-surface-float:#20203a;
+}
+[data-theme="light"] {
+  --app-bg:#f6f6f4; --app-fg:#14141a;
+  --app-surface:#ffffff; --app-surface-subtle:#f0f0ee; --app-surface-raised:#ffffff;
+  --app-surface-hover:#ececeb; --app-surface-active:#e2e2e0;
+  --app-border:#dedede; --app-border-strong:#c8c8c6; --app-border-hover:#a8a8a6;
+  --app-text-strong:#14141a; --app-text:#2a2a32; --app-text-muted:#5a5a66;
+  --app-text-subtle:#5e5e6a; --app-text-faint:#b4b4b0;
+  --app-accent:#1f7a4a; --app-accent-strong:#166039;
+  --app-accent-bg:rgba(31,122,74,.10); --app-accent-border:rgba(31,122,74,.30);
+  --app-accent-glow:rgba(31,122,74,.20); --app-accent-contrast:#ffffff;
+  --app-warn:#8a6218; --app-warn-strong:#6d4c11;
+  --app-warn-bg:rgba(138,98,24,.10); --app-warn-border:rgba(138,98,24,.30);
+  --app-danger:#b3242f; --app-danger-strong:#8f1c25;
+  --app-danger-bg:rgba(179,36,47,.08); --app-danger-border:rgba(179,36,47,.28);
+  --app-info:#2b5bd7; --app-info-strong:#1f47ab;
+  --app-info-bg:rgba(43,91,215,.08); --app-info-border:rgba(43,91,215,.28);
+  --app-neutral-bg:rgba(90,90,102,.08); --app-neutral-border:rgba(90,90,102,.24);
+  --app-neutral-text:#5a5a66;
+  --app-source-screen:#6a4fd0; --app-source-mic:#2f7d59; --app-source-sysaudio:#6b7a2f;
+  --app-overlay-bg:rgba(255,255,255,.78); --app-input-recess:rgba(0,0,0,.06);
+  /* light mode keeps depth in the shadow, so float stays the raised white */
+  --app-surface-float:#ffffff;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--app-bg);color:var(--app-text);font-family:var(--app-font-mono);
+  font-size:var(--text-base);line-height:1.5;padding:56px 24px 96px}
+button,input,select{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+/* AUDIT 12 — the ring no longer forces a 4px radius, which used to re-corner
+   inputs and pills the moment they took focus. Each element keeps its own. */
+:focus-visible{outline:none;box-shadow:var(--app-ring)}
+.tnum{font-variant-numeric:tabular-nums}
+
+/* AUDIT 2 — busy / disabled are real, shared states and they use the tokens
+   the app already ships. Anything that writes to the DB gets both. */
+[aria-busy="true"]{opacity:var(--app-busy-opacity);cursor:progress;pointer-events:none}
+button:disabled{opacity:var(--app-disabled-opacity);cursor:not-allowed}
+.spinner{width:10px;height:10px;flex:none;border-radius:999px;display:inline-block;
+  border:1.5px solid var(--app-border-hover);border-top-color:var(--app-accent);
+  animation:spin 700ms linear infinite;vertical-align:-1px}
+@keyframes spin{to{transform:rotate(1turn)}}
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;
+    transition-duration:.01ms!important;scroll-behavior:auto!important}
+}
+
+/* ---------- mockup chrome (outside the design frame) ---------- */
+.chrome-toggle{position:fixed;top:12px;right:12px;z-index:99;padding:5px 10px;border-radius:999px;
+  border:1px solid var(--app-border-strong);background:var(--app-surface-raised);
+  font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--app-text-muted)}
+.chrome-toggle:hover{border-color:var(--app-border-hover);color:var(--app-text-strong)}
+.page-head{max-width:1080px;margin:0 auto 40px}
+.page-head h1{font-size:var(--text-xl);color:var(--app-text-strong);font-weight:600;letter-spacing:-.01em}
+.page-head p{margin-top:8px;color:var(--app-text-muted);font-size:var(--text-md);max-width:72ch}
+.frame{max-width:1080px;margin:0 auto 44px}
+.frame-label{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;
+  color:var(--app-text-subtle);margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:baseline}
+.frame-label b{color:var(--app-accent);font-weight:600}
+.frame-row{display:grid;grid-template-columns:1fr 1fr;gap:24px;max-width:1080px;margin:0 auto 44px}
+@media (max-width:900px){.frame-row{grid-template-columns:1fr}}
+
+/* ---------- the surface ---------- */
+.surface{background:var(--app-surface);border:1px solid var(--app-border);border-radius:8px;
+  overflow:hidden;display:flex;flex-direction:column;position:relative}
+.reading{height:620px}
+
+.rhead{display:flex;align-items:center;gap:10px;padding:9px 14px;
+  border-bottom:1px solid var(--app-border);background:var(--app-surface-subtle);
+  font-size:var(--text-sm);color:var(--app-text-muted);flex-wrap:wrap}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;
+  border:1px solid var(--app-neutral-border);background:var(--app-neutral-bg);
+  font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em}
+.pill .swatch{width:7px;height:7px;border-radius:999px;background:var(--app-source-mic)}
+.rhead .sep{color:var(--app-text-subtle)}
+.rhead .grow{flex:1}
+.ghost{padding:3px 9px;border-radius:5px;border:1px solid transparent;
+  font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--app-text-muted)}
+.ghost:hover{background:var(--app-surface-hover);border-color:var(--app-border-strong);color:var(--app-text-strong)}
+.ghost:active{background:var(--app-surface-active)}
+.ghost[aria-pressed="true"]{color:var(--app-accent);border-color:var(--app-accent-border);background:var(--app-accent-bg)}
+
+/* AUDIT 1 — the model label and the transcript status the old drawer carried,
+   restored. Status is a live region: it changes without the user acting. */
+.modl{font-size:var(--text-xs);color:var(--app-text-subtle);letter-spacing:.04em}
+.statuspill{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;
+  font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;
+  border:1px solid var(--app-neutral-border);background:var(--app-neutral-bg);color:var(--app-text-muted)}
+.statuspill .dot{width:5px;height:5px;border-radius:999px;background:currentColor;flex:none}
+.statuspill.ok{border-color:var(--app-accent-border);background:var(--app-accent-bg);color:var(--app-accent)}
+.statuspill.work{border-color:var(--app-info-border);background:var(--app-info-bg);color:var(--app-info-strong)}
+.statuspill.warn{border-color:var(--app-warn-border);background:var(--app-warn-bg);color:var(--app-warn-strong)}
+.statuspill.bad{border-color:var(--app-danger-border);background:var(--app-danger-bg);color:var(--app-danger-strong)}
+
+/* ---------- reading column ---------- */
+.rscroll{flex:1;overflow-y:auto;scroll-behavior:smooth;padding:var(--s-8) 0 var(--s-8)}
+.doc{max-width:60rem;margin:0 auto;padding:0 var(--s-6)}
+/* AUDIT 8 — 58ch, not 66ch. Monospace advance is ~0.6em, so 66ch of mono is a
+   physically longer line than the 60-75ch guidance (written for proportional
+   type) intends. The measure absorbs the typeface constraint. */
+.turn{display:grid;grid-template-columns:180px minmax(0,58ch);gap:var(--s-6);
+  margin-bottom:var(--s-6);align-items:start}
+@media (max-width:820px){.turn{grid-template-columns:1fr;gap:var(--s-1)}}
+
+/* --- quiet speaker gutter --- */
+.gutter{display:flex;flex-direction:column;align-items:flex-end;gap:5px;
+  text-align:right;padding-top:5px;position:relative}
+@media (max-width:820px){.gutter{align-items:flex-start;text-align:left}}
+.who{display:inline-flex;align-items:center;gap:7px;padding:2px 5px;border-radius:5px;
+  border:1px solid transparent;font-size:var(--text-sm);color:var(--app-text-muted);
+  letter-spacing:.01em;max-width:100%}
+.who:hover,.who:focus-visible{background:var(--app-surface-hover);border-color:var(--app-border-strong);
+  color:var(--app-text-strong)}
+.who .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who.unknown .nm{color:var(--app-text-subtle);font-style:normal}
+/* AUDIT 5 — the repair door is no longer hover-only. A cluster that still needs
+   the user (unnamed, or carrying an unconfirmed suggestion) shows its marker at
+   rest; a settled cluster reveals it on hover. The affordance doubles as the
+   "this one needs you" signal, which is the majority state in always-on capture. */
+.who .edit{opacity:0;font-size:var(--text-xs);color:var(--app-text-subtle);transition:opacity 120ms ease}
+.who:hover .edit,.who:focus-visible .edit{opacity:1}
+.who.needs .edit{opacity:.75}
+.who.needs:hover .edit,.who.needs:focus-visible .edit{opacity:1;color:var(--app-text)}
+
+/* dual encoding: colour (derived from clusterId) AND shape.
+   AUDIT 11 — 12px, not 9px: at 9px a triangle, a diamond and a square are the
+   same grey speck, which defeats the entire point of encoding shape. */
+.mark{width:12px;height:12px;flex:none;background:var(--sp);}
+.mark.s-circle{border-radius:999px}
+.mark.s-square{border-radius:1px}
+.mark.s-triangle{clip-path:polygon(50% 0,100% 100%,0 100%)}
+.mark.s-diamond{clip-path:polygon(50% 0,100% 50%,50% 100%,0 50%)}
+.mark.ghosted{background:transparent;border:2px dashed var(--app-text-subtle)}
+.mark.s-triangle.ghosted,.mark.s-diamond.ghosted{
+  background:repeating-linear-gradient(45deg,var(--app-text-subtle) 0 1px,transparent 1px 4px);border:none}
+
+.gnote{font-size:var(--text-xs);color:var(--app-text-subtle);letter-spacing:.04em;padding-right:5px}
+.gsuggest{display:inline-flex;align-items:center;gap:5px;font-size:var(--text-xs);
+  color:var(--app-text-muted);border:1px solid var(--app-border-strong);
+  background:var(--app-surface-subtle);border-radius:999px;padding:2px 4px 2px 8px}
+.gsuggest .yes,.gsuggest .no{padding:1px 5px;border-radius:999px;font-size:var(--text-xs)}
+.gsuggest .yes{color:var(--app-accent);border:1px solid var(--app-accent-border)}
+.gsuggest .yes:hover{background:var(--app-accent-bg)}
+.gsuggest .yes:active{background:var(--app-accent);color:var(--app-accent-contrast)}
+/* AUDIT 3 — this ✕ is a SOFT DISMISS and writes nothing. It hides a suggestion
+   the user does not want to answer right now. The destructive twin ("Not this
+   person", which persists a rejection embedding) lives in the slide-over with
+   danger styling and a stated consequence — it is far too permanent to sit here
+   as a 10px glyph the same weight as its neighbour. */
+.gsuggest .no{color:var(--app-text-subtle);border:1px solid var(--app-border-strong)}
+.gsuggest .no:hover{background:var(--app-surface-hover);color:var(--app-text)}
+.gsuggest[data-dismissed="1"]{opacity:var(--app-disabled-opacity)}
+
+/* timestamps: off by default, one toggle away */
+.ts{display:none;font-size:var(--text-xs);color:var(--app-text-subtle);letter-spacing:.06em}
+[data-ts="on"] .ts{display:block}
+
+/* --- the prose --- */
+.para{font-size:15px;line-height:1.72;color:var(--app-text);letter-spacing:.005em;
+  text-wrap:pretty}
+.turn.overlap .para{border-left:2px solid var(--app-warn-border);padding-left:14px;margin-left:-16px}
+.w{border-radius:3px;padding:0 .5px;cursor:pointer}
+.w:hover{background:var(--app-surface-hover);color:var(--app-text-strong)}
+.w.done{color:var(--app-text-muted)}
+.w.now{background:var(--app-accent-bg);color:var(--app-accent-strong);
+  box-shadow:inset 0 -1px 0 var(--app-accent-border)}
+/* AUDIT 7 — with no words[] the paragraph itself is the seek target, so
+   click-to-seek survives the degradation instead of quietly disappearing. */
+button.para{display:block;width:100%;text-align:left;cursor:pointer}
+button.para:hover{background:var(--app-surface-hover);border-radius:4px}
+.para.seg-now{background:var(--app-accent-bg);box-shadow:inset 2px 0 0 var(--app-accent);
+  padding-left:var(--s-3);margin-left:-14px;border-radius:0 4px 4px 0}
+
+/* jump-to-playhead, only when follow mode is detached.
+   AUDIT 4 — neutral chrome, not accent. The accent at full strength is reserved
+   for the playhead and the current word; when a pill, a CTA and the karaoke
+   highlight are all the same green, the load-bearing cue stops being privileged.
+   AUDIT 10 — it now genuinely fades, which display:none could never do. */
+.jump{position:absolute;left:50%;bottom:78px;z-index:5;
+  display:inline-flex;align-items:center;gap:var(--s-2);padding:5px var(--s-3);border-radius:999px;
+  border:1px solid var(--app-border-hover);background:var(--app-surface-float);
+  box-shadow:var(--app-shadow-popover);color:var(--app-text-strong);
+  font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;
+  opacity:0;visibility:hidden;transform:translate(-50%,6px);
+  transition:opacity 180ms ease,transform 180ms cubic-bezier(.2,.7,.2,1),visibility 180ms}
+.jump[data-show="1"]{opacity:1;visibility:visible;transform:translate(-50%,0)}
+.jump:hover{border-color:var(--app-border-hover);background:var(--app-surface-active)}
+.jump kbd{border:1px solid var(--app-border-strong);border-radius:3px;padding:0 4px;
+  color:var(--app-text-subtle);text-transform:none;letter-spacing:0}
+
+/* --- transport --- */
+.transport{display:flex;align-items:center;gap:12px;padding:10px 16px;
+  border-top:1px solid var(--app-border);background:var(--app-surface-subtle)}
+.playbtn{width:26px;height:26px;flex:none;border-radius:999px;border:1px solid var(--app-accent-border);
+  background:var(--app-accent-bg);color:var(--app-accent);display:grid;place-items:center;font-size:11px}
+.playbtn:hover{background:var(--app-accent);color:var(--app-accent-contrast)}
+.time{font-size:var(--text-sm);color:var(--app-text-muted);min-width:5ch}
+.scrub{flex:1;height:3px;border-radius:999px;background:var(--app-input-recess);position:relative}
+.scrub i{position:absolute;inset:0 auto 0 0;background:var(--app-accent);border-radius:999px;width:31%}
+.scrub b{position:absolute;top:50%;left:31%;width:9px;height:9px;margin:-4.5px 0 0 -4.5px;
+  border-radius:999px;background:var(--app-accent)}
+
+/* ---------- waveform scrubber ----------------------------------------------
+   The bars are REAL amplitude, computed once from the decoded audio the drawer
+   already loads for playback (see annotation h) — Mnema stores no peak data and
+   this does not invent any. Bar HUE is the speaker holding the floor at that
+   moment, from the turns' startMs/endMs, so the scrubber shows the shape of the
+   conversation and not just the shape of the sound.
+   The interactive element underneath is a real <input type="range">, so seeking
+   stays keyboard-operable; the bars are decoration layered on top of it. */
+.wave{flex:1;position:relative;height:30px;display:flex;align-items:center;
+  border-radius:4px;padding:0 1px}
+.wave-bars{position:absolute;inset:0;display:flex;align-items:center;gap:1px;
+  pointer-events:none;overflow:hidden;border-radius:4px}
+.wave-bars span{flex:1 1 0;min-width:0;border-radius:1px;background:var(--bar,var(--app-text-faint));
+  opacity:.42;transition:opacity 90ms linear}
+.wave-bars span.played{opacity:1}
+.wave-bars span.silent{opacity:.22}
+.wave-range{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;
+  cursor:pointer;-webkit-appearance:none;appearance:none;background:transparent}
+.wave-range::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:30px}
+.wave-range:focus-visible{opacity:1;background:transparent}
+.wave:has(.wave-range:focus-visible){box-shadow:var(--app-ring)}
+.wave-head{position:absolute;top:0;bottom:0;width:1px;background:var(--app-accent-strong);
+  pointer-events:none;box-shadow:0 0 0 1px var(--app-accent-glow)}
+.wave-head::after{content:"";position:absolute;top:-2px;left:-3px;width:7px;height:7px;
+  border-radius:999px;background:var(--app-accent-strong)}
+/* the peek drawer gets the same object at half height, no playhead dot */
+.peek .wave{height:18px}
+.peek .wave-head::after{display:none}
+
+/* ---------- peek state (the surviving drawer) ---------- */
+.peek{height:230px}
+.peek .doc{padding:0 20px}
+.peek .turn{grid-template-columns:120px minmax(0,52ch);gap:16px;margin-bottom:16px}
+.peek .para{font-size:13px;line-height:1.62}
+.peek .rscroll{padding:16px 0}
+/* AUDIT 4 — neutral, for the same reason as the jump pill. */
+.expand-cta{position:absolute;right:var(--s-3);bottom:56px;padding:var(--s-1) 10px;border-radius:999px;
+  border:1px solid var(--app-border-hover);background:var(--app-surface-float);
+  color:var(--app-text-strong);font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;
+  box-shadow:var(--app-shadow-popover)}
+.expand-cta:hover{background:var(--app-surface-active);border-color:var(--app-border-hover)}
+
+/* ---------- slide-over (identity repair) ---------- */
+.demo-stage{position:relative;height:520px;overflow:hidden}
+.slideover{position:absolute;top:0;right:0;bottom:0;width:330px;z-index:8;
+  background:var(--app-surface-raised);border-left:1px solid var(--app-border-strong);
+  box-shadow:var(--app-shadow-popover);display:flex;flex-direction:column;
+  transform:translateX(0);transition:transform 180ms cubic-bezier(.2,.7,.2,1)}
+.slideover[hidden]{display:flex;transform:translateX(100%)}
+.so-head{padding:11px 14px;border-bottom:1px solid var(--app-border);
+  display:flex;align-items:center;gap:8px}
+.so-head .t{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--app-text-subtle)}
+.so-body{padding:14px;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
+.lbl{font-size:var(--text-xs);text-transform:uppercase;letter-spacing:.08em;color:var(--app-text-subtle);
+  display:block;margin-bottom:5px}
+.inp{width:100%;padding:6px var(--s-2);border-radius:5px;border:1px solid var(--app-border-strong);
+  background:var(--app-input-recess);color:var(--app-text-strong);font-size:var(--text-md);cursor:text}
+.inp:focus-visible{border-color:var(--app-accent-border)}
+select.inp{cursor:pointer}
+/* AUDIT 9 — the name field can fail (empty, or still the default placeholder
+   label) and now says so, mirroring the app's existing FieldWarning component. */
+.inp.is-error{border-color:var(--app-danger-border);background:var(--app-danger-bg)}
+.fieldwarn{display:none;gap:6px;margin-top:5px;font-size:var(--text-xs);
+  color:var(--app-danger-strong);line-height:1.5}
+.fieldwarn[data-show="1"]{display:flex}
+
+.btn{padding:6px 10px;border-radius:5px;border:1px solid var(--app-border-strong);
+  background:var(--app-surface);font-size:var(--text-sm);color:var(--app-text);
+  display:inline-flex;align-items:center;gap:6px}
+.btn:hover{background:var(--app-surface-hover);color:var(--app-text-strong);border-color:var(--app-border-hover)}
+.btn:active{background:var(--app-surface-active)}
+.btn.primary{border-color:var(--app-accent-border);background:var(--app-accent-bg);color:var(--app-accent)}
+.btn.primary:hover{background:var(--app-accent);color:var(--app-accent-contrast)}
+.btn.primary:active{background:var(--app-accent-strong);color:var(--app-accent-contrast)}
+/* AUDIT 3 — the control that persists a rejection reads as destructive. */
+.btn.danger{border-color:var(--app-danger-border);background:var(--app-danger-bg);color:var(--app-danger-strong)}
+.btn.danger:hover{background:var(--app-danger);color:var(--app-accent-contrast);border-color:var(--app-danger)}
+[data-theme="light"] .btn.danger:hover{color:#fff}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card{border:1px solid var(--app-border);border-radius:6px;padding:10px;background:var(--app-surface-subtle)}
+.card .h{font-size:var(--text-sm);color:var(--app-text-strong);margin-bottom:4px}
+.card .d{font-size:var(--text-xs);color:var(--app-text-muted);line-height:1.55}
+.card.warnish{border-color:var(--app-warn-border);background:var(--app-warn-bg)}
+.scope{display:flex;border:1px solid var(--app-border-strong);border-radius:5px;overflow:hidden}
+.scope button{flex:1;padding:5px 4px;font-size:var(--text-xs);color:var(--app-text-muted);
+  border-right:1px solid var(--app-border-strong)}
+.scope button:last-child{border-right:none}
+.scope button[aria-pressed="true"]{background:var(--app-accent-bg);color:var(--app-accent)}
+/* AUDIT 10 — a confirmation that appears instantly does not confirm anything.
+   180ms rise, the same curve the drawer already uses. */
+.toast{position:absolute;left:14px;bottom:14px;z-index:9;padding:7px var(--s-3);border-radius:6px;
+  border:1px solid var(--app-border-strong);background:var(--app-surface-float);
+  box-shadow:var(--app-shadow-popover);font-size:var(--text-sm);color:var(--app-text);
+  display:flex;gap:var(--s-3);align-items:center;
+  animation:toast-rise 180ms cubic-bezier(.2,.7,.2,1)}
+@keyframes toast-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.toast u{color:var(--app-accent);text-decoration:none;cursor:pointer}
+.toast u:hover{text-decoration:underline}
+
+/* ---------- AUDIT 1: the states the happy path was hiding ---------- */
+.notice{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  gap:var(--s-2);padding:var(--s-6);text-align:center}
+.notice h3{font-size:var(--text-md);color:var(--app-text-strong);font-weight:600}
+.notice p{font-size:var(--text-sm);color:var(--app-text-muted);max-width:44ch;line-height:1.6}
+.notice .row{justify-content:center;margin-top:var(--s-1)}
+.notice .mono{font-size:var(--text-xs);color:var(--app-text-subtle);letter-spacing:.04em}
+.skel{display:grid;grid-template-columns:110px minmax(0,42ch);gap:var(--s-4);margin-bottom:var(--s-4)}
+.skel span{display:block;height:9px;border-radius:3px;background:var(--app-surface-hover);
+  animation:pulse 1.4s ease-in-out infinite}
+.skel .lines{display:flex;flex-direction:column;gap:7px}
+.skel .lines span:nth-child(2){width:92%;animation-delay:.1s}
+.skel .lines span:nth-child(3){width:64%;animation-delay:.2s}
+.skel .g{width:70%;justify-self:end}
+@keyframes pulse{0%,100%{opacity:.45}50%{opacity:.9}}
+
+/* ---------- annotation panel (mockup chrome) ---------- */
+.notes{max-width:1080px;margin:72px auto 0;border-top:2px dashed var(--app-border-strong);
+  padding-top:26px;font-size:var(--text-md);line-height:1.62;color:var(--app-text-muted)}
+.notes h2{font-size:var(--text-sm);text-transform:uppercase;letter-spacing:.1em;
+  color:var(--app-text-subtle);margin:26px 0 10px}
+.notes h2:first-child{margin-top:0}
+.notes p,.notes li{max-width:88ch}
+.notes ol,.notes ul{padding-left:22px;display:flex;flex-direction:column;gap:9px}
+.notes strong{color:var(--app-text-strong);font-weight:600}
+.notes code{background:var(--app-surface-subtle);border:1px solid var(--app-border);
+  border-radius:3px;padding:0 4px;font-size:var(--text-sm);color:var(--app-text)}
+.notes .reject{color:var(--app-danger-strong)}
+.notes table{border-collapse:collapse;width:100%;max-width:88ch;font-size:var(--text-sm)}
+.notes td,.notes th{border-bottom:1px solid var(--app-border);padding:5px 8px;text-align:left;vertical-align:top}
+.notes th{color:var(--app-text-subtle);text-transform:uppercase;font-size:var(--text-xs);letter-spacing:.08em}
+</style>
+</head>
+<body>
+
+<button class="chrome-toggle" id="themeToggle">light theme</button>
+
+<div class="page-head">
+  <h1>Mnema transcription UI · Reading Document</h1>
+  <p>The transcript is prose you read, not a log you scan. Identity repair is present,
+     quiet, and never in the way of a sentence.</p>
+</div>
+
+<!-- ============ PRIMARY: EXPANDED READING SURFACE ============ -->
+<section class="frame">
+  <div class="frame-label"><b>1 · primary</b> expanded reading surface — timestamps off, follow mode engaged, karaoke tracking playback</div>
+  <div class="surface reading" id="stage" data-ts="off">
+    <header class="rhead">
+      <span class="pill"><span class="swatch"></span>microphone</span>
+      <span class="tnum">#42</span>
+      <span class="sep">·</span>
+      <span class="tnum">14:06 → 14:10</span>
+      <span class="sep">·</span>
+      <span class="tnum">4m 02s</span>
+      <span class="sep">·</span>
+      <span class="modl">deepgram nova-3 · speakrs</span>
+      <span class="grow"></span>
+      <span class="statuspill ok" role="status" aria-live="polite"><span class="dot"></span>3 speakers</span>
+      <button class="ghost" id="rerunBtn">rerun</button>
+      <button class="ghost" id="tsToggle" aria-pressed="false">timestamps</button>
+      <button class="ghost" id="collapseBtn">collapse</button>
+      <button class="ghost" aria-label="Close transcript">✕</button>
+    </header>
+
+    <div class="rscroll" id="scroll">
+      <article class="doc" id="doc">
+
+        <div class="turn" data-start="4200" data-end="26800">
+          <div class="gutter">
+            <button class="who" data-cluster="3" style="--sp:var(--app-source-mic)">
+              <span class="mark s-circle"></span><span class="nm">Priya Raghunathan</span><span class="edit">⋯</span>
+            </button>
+            <span class="ts tnum">0:04</span>
+          </div>
+          <p class="para">Okay, so where did we actually land on segment length? Because the last
+            run I looked at, the three-minute segments needed something like seven times fewer
+            merge clicks than the sixty-second ones, and that was on the same eighteen clips.
+            I don't think that's noise anymore.</p>
+        </div>
+
+        <div class="turn" data-start="27100" data-end="51400">
+          <div class="gutter">
+            <button class="who unknown needs" data-cluster="7" style="--sp:var(--app-info)">
+              <span class="mark s-square ghosted"></span><span class="nm">Unknown speaker · 2</span><span class="edit">⋯</span>
+            </button>
+            <span class="gnote">name this voice</span>
+            <span class="ts tnum">0:27</span>
+          </div>
+          <p class="para">Right, but seven times fewer clicks on a clean benchmark clip is not the
+            same as seven times fewer on a kitchen table with a dishwasher running. I'd want to
+            see it on a real capture day before we move the default. What happens at four
+            minutes — does it still diarize the whole thing in one pass?</p>
+        </div>
+
+        <div class="turn" data-start="51900" data-end="74300">
+          <div class="gutter">
+            <button class="who needs" data-cluster="11" style="--sp:var(--app-warn)">
+              <span class="mark s-triangle"></span><span class="nm">Daniel Okafor</span><span class="edit">⋯</span>
+            </button>
+            <span class="gsuggest" id="sugg">maybe · 0.88
+              <button class="yes" id="confirmBtn" aria-label="Confirm Daniel Okafor — links this voice and saves an embedding">✓</button>
+              <button class="no" id="dismissBtn" aria-label="Dismiss this suggestion — changes nothing, ask me later"
+                title="Dismiss — writes nothing. &quot;Not this person&quot; lives in the repair panel.">✕</button>
+            </span>
+            <span class="ts tnum">0:51</span>
+          </div>
+          <p class="para">It doesn't. Three minutes is the largest window that still comes back as
+            one pass — past that it chunks, and then the stitch step is doing the work instead
+            of the model. Which is fine for accuracy, we measured that, but it means the number
+            you care about isn't segment length, it's whether the stitch threshold holds.</p>
+        </div>
+
+        <div class="turn overlap" data-start="74800" data-end="92200">
+          <div class="gutter">
+            <button class="who" data-cluster="3" style="--sp:var(--app-source-mic)">
+              <span class="mark s-circle"></span><span class="nm">Priya Raghunathan</span><span class="edit">⋯</span>
+            </button>
+            <span class="gnote">overlapping speech</span>
+            <span class="ts tnum">1:14</span>
+          </div>
+          <p class="para">Sorry — say that last part again? I think we talked over each other. The
+            stitch threshold, you mean the point where two chunks decide they're the same
+            person, or the point where the whole segment decides that?</p>
+        </div>
+
+        <div class="turn" data-start="92700" data-end="118500">
+          <div class="gutter">
+            <button class="who" data-cluster="11" style="--sp:var(--app-warn)">
+              <span class="mark s-triangle"></span><span class="nm">Daniel Okafor</span><span class="edit">⋯</span>
+            </button>
+            <span class="ts tnum">1:32</span>
+          </div>
+          <p class="para">The first one. Two chunks, one voice, and the question is whether the
+            centroids land close enough to merge. At zero point six they do, pretty reliably.
+            Below that you start gluing genuinely different people together, and that's a much
+            worse failure than splitting one person into two — because a split is one click to
+            fix and a bad merge is basically unrecoverable without redoing the whole segment.</p>
+        </div>
+
+        <div class="turn" data-start="119000" data-end="141600">
+          <div class="gutter">
+            <button class="who unknown needs" data-cluster="12" style="--sp:var(--app-info)">
+              <span class="mark s-diamond ghosted"></span><span class="nm">Unknown speaker · 3</span><span class="edit">⋯</span>
+            </button>
+            <span class="gnote">low match · 0.41</span>
+            <span class="ts tnum">1:59</span>
+          </div>
+          <p class="para">Can I push on the recoverability point? Because right now if I rename
+            somebody in one segment, that rename does absolutely nothing for yesterday's
+            recording of the same person. I have to do it again. And again. That's the thing
+            that makes it feel broken, more than any accuracy number.</p>
+        </div>
+
+        <div class="turn" data-start="142100" data-end="166900">
+          <div class="gutter">
+            <button class="who" data-cluster="3" style="--sp:var(--app-source-mic)">
+              <span class="mark s-circle"></span><span class="nm">Priya Raghunathan</span><span class="edit">⋯</span>
+            </button>
+            <span class="ts tnum">2:22</span>
+          </div>
+          <p class="para">Agreed, and we do store an embedding per turn, so a rename could in
+            principle walk backwards and re-attribute. Nobody ships that. Otter has a rematch
+            button and it only fills empty speaker slots, one conversation at a time. If we get
+            it right it's the whole feature.</p>
+        </div>
+
+        <div class="turn" data-start="167400" data-end="188200">
+          <div class="gutter">
+            <button class="who" data-cluster="11" style="--sp:var(--app-warn)">
+              <span class="mark s-triangle"></span><span class="nm">Daniel Okafor</span><span class="edit">⋯</span>
+            </button>
+            <span class="ts tnum">2:47</span>
+          </div>
+          <p class="para">Then let's scope it as: rename is cluster-wide by default, tell the user
+            how many turns it touched, and give them an undo. Retroactive across days is a
+            second step, and it needs to be a thing the user asks for, not something that
+            quietly rewrites last week.</p>
+        </div>
+
+      </article>
+    </div>
+
+    <div class="jump" id="jump" data-show="0">
+      <button id="jumpBtn">↓ jump to playhead</button>
+      <kbd>esc</kbd>
+    </div>
+
+    <footer class="transport">
+      <button class="playbtn" id="playBtn" aria-label="Play">▶</button>
+      <span class="time tnum" id="cur">1:14</span>
+      <div class="wave" id="wave">
+        <div class="wave-bars" id="waveBars" aria-hidden="true"></div>
+        <input type="range" class="wave-range" id="waveRange" min="4200" max="188200" step="100"
+               value="74800" aria-label="Seek within segment" aria-valuetext="1:14 of 4:02">
+        <div class="wave-head" id="waveHead" style="left:38%"></div>
+      </div>
+      <span class="time tnum">4:02</span>
+    </footer>
+  </div>
+</section>
+
+<!-- ============ STATE ROW: TIMESTAMPS ON / DEGRADED KARAOKE ============ -->
+<div class="frame-row">
+  <section>
+    <div class="frame-label"><b>2</b> timestamps ON — one toggle away (P4)</div>
+    <div class="surface" data-ts="on" style="height:250px">
+      <div class="rscroll" style="padding:18px 0">
+        <article class="doc" style="padding:0 20px">
+          <div class="turn" style="grid-template-columns:120px minmax(0,48ch);gap:16px">
+            <div class="gutter">
+              <button class="who" style="--sp:var(--app-source-mic)"><span class="mark s-circle"></span><span class="nm">Priya R.</span></button>
+              <span class="ts tnum">2:22</span>
+            </div>
+            <p class="para" style="font-size:13px">Agreed, and we do store an embedding per turn, so a
+              rename could in principle walk backwards and re-attribute.</p>
+          </div>
+          <div class="turn" style="grid-template-columns:120px minmax(0,48ch);gap:16px">
+            <div class="gutter">
+              <button class="who" style="--sp:var(--app-warn)"><span class="mark s-triangle"></span><span class="nm">Daniel O.</span></button>
+              <span class="ts tnum">2:47</span>
+            </div>
+            <p class="para" style="font-size:13px">Then let's scope it as: rename is cluster-wide by
+              default, tell the user how many turns it touched, and give them an undo.</p>
+          </div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="frame-label"><b>3</b> degradation — no <code style="font-size:10px">words[]</code>: segment-level highlight (P3 fallback)</div>
+    <div class="surface" style="height:250px">
+      <div class="rscroll" style="padding:18px 0">
+        <article class="doc" style="padding:0 20px">
+          <div class="turn" style="grid-template-columns:120px minmax(0,48ch);gap:16px">
+            <div class="gutter">
+              <button class="who" style="--sp:var(--app-source-mic)"><span class="mark s-circle"></span><span class="nm">Priya R.</span></button>
+            </div>
+            <button class="para seg-now" style="font-size:13px" title="Jump to 2:22–2:41">Agreed, and we do store an embedding per turn,
+              so a rename could in principle walk backwards and re-attribute.</button>
+          </div>
+          <div class="turn" style="grid-template-columns:120px minmax(0,48ch);gap:16px">
+            <div class="gutter">
+              <button class="who" style="--sp:var(--app-warn)"><span class="mark s-triangle"></span><span class="nm">Daniel O.</span></button>
+            </div>
+            <button class="para" style="font-size:13px" title="Jump to 2:47–3:08">Then let's scope it as: rename is cluster-wide by
+              default, tell the user how many turns it touched, and give them an undo.</button>
+          </div>
+        </article>
+      </div>
+      <div class="transport"><span class="time tnum" style="min-width:0">whisper · no word timings — the paragraph is the seek unit</span></div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ PEEK STATE ============ -->
+<section class="frame" style="max-width:640px">
+  <div class="frame-label"><b>4</b> peek state — the surviving 50vh drawer, an entry point only</div>
+  <div class="surface peek" data-ts="off">
+    <header class="rhead">
+      <span class="pill"><span class="swatch"></span>microphone</span>
+      <span class="tnum">#42</span><span class="sep">·</span><span class="tnum">4m 02s</span>
+      <span class="grow"></span><span style="font-size:var(--text-xs);letter-spacing:.08em">3 speakers</span>
+    </header>
+    <div class="rscroll">
+      <article class="doc">
+        <div class="turn">
+          <div class="gutter"><button class="who" style="--sp:var(--app-source-mic)"><span class="mark s-circle"></span><span class="nm">Priya R.</span></button></div>
+          <p class="para">Okay, so where did we actually land on segment length? Because the last run
+            I looked at, the three-minute segments needed something like seven times fewer merge clicks…</p>
+        </div>
+        <div class="turn">
+          <div class="gutter"><button class="who unknown" style="--sp:var(--app-info)"><span class="mark s-square ghosted"></span><span class="nm">Unknown · 2</span></button></div>
+          <p class="para">Right, but seven times fewer clicks on a clean benchmark clip is not the same
+            as seven times fewer on a kitchen table with a dishwasher running.</p>
+        </div>
+      </article>
+    </div>
+    <button class="expand-cta" id="expandCta">open reader ⤢</button>
+    <footer class="transport">
+      <button class="playbtn" aria-label="Play">▶</button>
+      <span class="time tnum">0:00</span>
+      <div class="wave">
+        <div class="wave-bars" id="peekBars" aria-hidden="true"></div>
+        <input type="range" class="wave-range" min="4200" max="188200" step="100" value="4200"
+               aria-label="Seek within segment">
+        <div class="wave-head" style="left:0"></div>
+      </div>
+      <span class="time tnum">4:02</span>
+    </footer>
+  </div>
+</section>
+
+<!-- ============ SLIDE-OVER: IDENTITY REPAIR ============ -->
+<section class="frame">
+  <div class="frame-label"><b>5</b> identity repair — a slide-over, never a modal; reading continues underneath</div>
+  <div class="surface demo-stage">
+    <div class="rscroll" style="padding:26px 0">
+      <article class="doc" style="max-width:none;padding:0 28px">
+        <div class="turn" style="grid-template-columns:184px minmax(0,52ch)">
+          <div class="gutter"><button class="who unknown" style="--sp:var(--app-info)"><span class="mark s-square ghosted"></span><span class="nm">Unknown speaker · 2</span><span class="edit">⋯</span></button></div>
+          <p class="para">Right, but seven times fewer clicks on a clean benchmark clip is not the
+            same as seven times fewer on a kitchen table with a dishwasher running. I'd want to
+            see it on a real capture day before we move the default.</p>
+        </div>
+        <div class="turn" style="grid-template-columns:184px minmax(0,52ch)">
+          <div class="gutter"><button class="who" style="--sp:var(--app-warn)"><span class="mark s-triangle"></span><span class="nm">Daniel Okafor</span></button></div>
+          <p class="para">It doesn't. Three minutes is the largest window that still comes back as
+            one pass — past that it chunks, and the stitch step is doing the work.</p>
+        </div>
+      </article>
+    </div>
+
+    <aside class="slideover" aria-label="Speaker repair">
+      <div class="so-head">
+        <span class="mark s-square ghosted" style="--sp:var(--app-info)"></span>
+        <span class="t">cluster 7 · 11 turns · 1m 48s</span>
+        <span style="flex:1"></span>
+        <button class="ghost" id="soClose" aria-label="Close">✕</button>
+      </div>
+      <div class="so-body">
+        <div>
+          <label class="lbl" for="nameIn">name this voice</label>
+          <input class="inp is-error" id="nameIn" value="Unknown speaker · 2"
+                 aria-describedby="nameWarn scopeHint" aria-invalid="true">
+          <p class="fieldwarn" id="nameWarn" data-show="1">
+            <span aria-hidden="true">▲</span>
+            <span>Still the placeholder label. Give it a real name, or link to a saved
+              person below.</span>
+          </p>
+        </div>
+        <div>
+          <span class="lbl">apply to</span>
+          <div class="scope" role="group" aria-label="Rename scope">
+            <button aria-pressed="true">this speaker</button>
+            <button aria-pressed="false">this line only</button>
+          </div>
+          <p id="scopeHint" style="font-size:var(--text-xs);color:var(--app-text-muted);margin-top:5px">
+            Default is cluster-wide. The undo toast names the blast radius.</p>
+        </div>
+        <div>
+          <label class="lbl" for="linkIn">or link to a saved person</label>
+          <select class="inp" id="linkIn">
+            <option>— none —</option>
+            <option>Priya Raghunathan · 34 samples</option>
+            <option>Daniel Okafor · 12 samples</option>
+            <option>Mira Sundaram · 5 samples</option>
+          </select>
+        </div>
+        <div class="card warnish">
+          <div class="h">Possibly the same voice as Unknown speaker · 3</div>
+          <div class="d">Centroid similarity 0.71. Over-segmentation is the common failure — one
+            person split in two.</div>
+          <div class="row" style="margin-top:var(--s-2)">
+            <button class="btn primary" id="mergeBtn">Merge them</button>
+            <button class="btn">Play 8s of each</button>
+          </div>
+        </div>
+
+        <!-- AUDIT 2 + 6 — a real commit, with a busy state, and a step that
+             chains to the next thing the user needs instead of dead-ending. -->
+        <div class="row" style="border-top:1px solid var(--app-border);padding-top:var(--s-3)">
+          <button class="btn primary" id="applyBtn" disabled>Name &amp; apply</button>
+          <span class="mono" style="font-size:var(--text-xs);color:var(--app-text-subtle)">2 more unnamed in this segment</span>
+        </div>
+
+        <!-- AUDIT 3 — the destructive twin of the inline ✕, and it says so. -->
+        <div class="row">
+          <button class="btn danger">Not this person</button>
+          <button class="btn">Move just this line…</button>
+        </div>
+        <p style="font-size:var(--text-xs);color:var(--app-text-muted);line-height:1.55;margin-top:-6px">
+          <strong style="color:var(--app-danger-strong)">Not this person</strong> is permanent — it
+          teaches the recogniser that this voice is <em>not</em> them, everywhere, from now on.
+          The <code style="font-size:10px">✕</code> in the transcript only hides the suggestion.
+        </p>
+      </div>
+    </aside>
+
+    <!-- AUDIT 6 — the toast confirms, names the blast radius, AND carries the flow
+         forward. Naming one voice in a segment with three unknowns used to end
+         with the user hunting for the next one. -->
+    <div class="toast">
+      <span>renamed 11 turns · Priya Raghunathan</span>
+      <u>Undo</u>
+      <span class="sep" style="color:var(--app-text-faint)">|</span>
+      <u>Next unnamed voice · 2 left →</u>
+    </div>
+  </div>
+</section>
+
+<!-- ============ THE STATES THE HAPPY PATH WAS HIDING (AUDIT 1) ============ -->
+<div class="frame-label" style="max-width:1080px;margin:0 auto 8px"><b>6 · states</b>
+  every non-happy path the old drawer could reach — none of which the first five frames covered</div>
+
+<div class="frame-row">
+  <section>
+    <div class="frame-label">6a · loading — the transcript is being read</div>
+    <div class="surface" style="height:230px">
+      <header class="rhead">
+        <span class="pill"><span class="swatch"></span>microphone</span>
+        <span class="tnum">#42</span><span class="sep">·</span><span class="tnum">4m 02s</span>
+        <span class="grow"></span>
+        <span class="statuspill work" role="status" aria-live="polite"><span class="spinner"></span>loading</span>
+      </header>
+      <div class="rscroll" style="padding:var(--s-4) var(--s-6)" aria-busy="true" aria-label="Loading transcript">
+        <div class="skel"><span class="g"></span><div class="lines"><span></span><span></span><span></span></div></div>
+        <div class="skel"><span class="g"></span><div class="lines"><span></span><span></span></div></div>
+        <div class="skel"><span class="g"></span><div class="lines"><span></span><span></span><span></span></div></div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="frame-label">6b · processing — queued behind the worker</div>
+    <div class="surface" style="height:230px">
+      <header class="rhead">
+        <span class="pill"><span class="swatch"></span>microphone</span>
+        <span class="tnum">#43</span><span class="sep">·</span><span class="tnum">2m 18s</span>
+        <span class="grow"></span>
+        <span class="statuspill work" role="status" aria-live="polite"><span class="spinner"></span>detecting speech</span>
+      </header>
+      <div class="notice">
+        <h3>Still working on this one</h3>
+        <p>Speech detection runs first, then transcription, then speaker analysis.
+          The text appears as each stage lands — you don't have to wait here.</p>
+        <span class="mono">stage 1 of 3 · queued 40s ago</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="frame-row">
+  <section>
+    <div class="frame-label">6c · no speech — a real outcome, not a failure</div>
+    <div class="surface" style="height:230px">
+      <header class="rhead">
+        <span class="pill"><span class="swatch"></span>microphone</span>
+        <span class="tnum">#44</span><span class="sep">·</span><span class="tnum">4m 02s</span>
+        <span class="grow"></span>
+        <span class="statuspill" role="status"><span class="dot"></span>no speech</span>
+      </header>
+      <div class="notice">
+        <h3>No speech in this segment</h3>
+        <p>Four minutes of room tone. Nothing was transcribed because there was
+          nothing to transcribe.</p>
+        <div class="row"><button class="btn">Play it anyway</button>
+          <button class="btn">Rerun analysis</button></div>
+        <span class="mono">skipReason: silent · audioPeak 0.004</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="frame-label">6d · failed — say what broke and what to do</div>
+    <div class="surface" style="height:230px">
+      <header class="rhead">
+        <span class="pill"><span class="swatch"></span>microphone</span>
+        <span class="tnum">#45</span><span class="sep">·</span><span class="tnum">3m 41s</span>
+        <span class="grow"></span>
+        <span class="statuspill bad" role="status" aria-live="polite"><span class="dot"></span>speaker analysis failed</span>
+      </header>
+      <div class="notice">
+        <h3>The words are here. The speakers aren't.</h3>
+        <p>Transcription finished; speaker analysis ran out of memory partway through
+          and stopped. You can read the transcript now and retry the speaker pass.</p>
+        <div class="row"><button class="btn primary">Read without speakers</button>
+          <button class="btn" id="retryBtn">Retry speaker analysis</button></div>
+        <span class="mono">chunkingMode safe_chunked · failed at chunk 3 of 5</span>
+      </div>
+    </div>
+  </section>
+</div>
+
+<section class="frame" style="max-width:640px">
+  <div class="frame-label">6e · not run — recognition is off, and the way out is one click</div>
+  <div class="surface" style="height:210px">
+    <header class="rhead">
+      <span class="pill"><span class="swatch"></span>microphone</span>
+      <span class="tnum">#46</span><span class="sep">·</span><span class="tnum">1m 09s</span>
+      <span class="grow"></span>
+      <span class="statuspill warn" role="status"><span class="dot"></span>not run</span>
+    </header>
+    <div class="notice">
+      <h3>Speaker analysis hasn't run for this segment</h3>
+      <p>It was captured before you turned speaker recognition on. Running it now
+        costs about ten seconds and changes nothing else.</p>
+      <div class="row"><button class="btn primary">Run speaker analysis</button></div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ANNOTATION ============ -->
+<div class="notes">
+  <h2>(a) Thesis</h2>
+  <p>A transcript is a document a person <strong>reads</strong>, not a log they scan. This direction
+     optimises ruthlessly for comprehension of the words: a generous measure, real paragraph rhythm,
+     larger body type, no columns of metadata competing with the sentence. Identity repair still
+     exists — it has to, because unknown and wrong are the common states — but it lives in a quiet
+     left gutter and a slide-over, and it is never allowed to interrupt reading.</p>
+
+  <h2>(b) Callouts</h2>
+  <ol>
+    <li><strong>Escape the 50vh drawer.</strong> The peek state (frame 4) survives as an entry point
+      from the timeline — it answers "what is this segment" in two paragraphs. Reading happens in the
+      expanded surface (frame 1), which is where <em>every</em> other decision below becomes affordable.
+      Fifty vertical percent of a fixed drawer cannot host a 4-minute conversation and a generous measure
+      at the same time; something had to give and it was the drawer.</li>
+
+    <li><strong>15px / 1.72 / ~58ch — the one house-style break, taken deliberately.</strong> Mnema's
+      12px monospace norm is tuned for dense control surfaces: settings rows, meta strips, timeline
+      chrome. Long-form prose is a different job. At 12px with a 100ch measure the eye loses its place
+      on line return; at 15px with a 58ch measure it doesn't. The typeface stays monospace and every
+      other surface keeps 12px — the break is scoped to <code>.para</code> only, and the gutter, header
+      and transport all remain at 10–11px house scale, which is what makes the prose read as the
+      figure and everything else as ground.</li>
+
+    <li><strong>P3 karaoke, and it is load-bearing.</strong> The current word is highlighted as playback
+      advances; clicking any word seeks there (press play in frame 1). This is the strongest available
+      cue that a transcript is media rather than a text file — and it is what <em>pays for</em> callout 4,
+      because once the highlight tracks the audio, a timestamp column has nothing left to do.
+      Degradation (frame 3): when a provider emits no <code>words[]</code>, the highlight snaps to the
+      whole paragraph. Same mechanic, coarser unit, no dead feature and no empty column.</li>
+
+    <li><strong>P4 timestamps default OFF, one toggle away.</strong> YouTube's move. With them off the
+      transcript is clean, copyable prose — select-all gives you something you can paste into a doc
+      without stripping <code>[00:01:14]</code> out of every line. The toggle sits in the header and
+      persists; frame 2 shows the on state, where the time takes a second line in the gutter rather than
+      a third column, so turning it on never reflows the measure.</li>
+
+    <li><strong>Speaker identity as a quiet right-aligned gutter, dual-encoded.</strong> Name plus a
+      12px marker that carries <em>both</em> a colour and a shape (circle / square / triangle / diamond) —
+      Google Recorder's trick, and the reason the transcript still parses in greyscale, at low contrast,
+      or with any form of colour blindness. Colour is <em>derived</em> from <code>clusterId</code>; there
+      is no speaker-colour field in the schema and this mockup does not pretend otherwise. The gutter is
+      right-aligned so the ragged names sit flush against the prose block and form a clean edge instead
+      of a second ragged column.</li>
+
+    <li><strong>Unknown is a state, not an error.</strong> "Unknown speaker · 2" is set in normal weight
+      and normal muted colour with a hollow dashed marker — visibly <em>not yet named</em>, never red,
+      never a warning, never an exclamation mark. Only two shipped products (Happy Scribe, Zoom) treat
+      unknown as legitimate; in always-on capture it is the majority state, so treating it as a failure
+      would mean a permanently alarming UI. The one affordance is a whispered "name this voice" under
+      the name on hover.</li>
+
+    <li><strong>Follow mode done right.</strong> Auto-scroll keeps the current word centred. Any manual
+      scroll immediately detaches it — no fighting, no snapping back — and a "↓ jump to playhead" pill
+      fades in above the transport. Click it or press <kbd>Esc</kbd> to re-attach. Descript's fix for the
+      Premiere / MS Stream failure mode. (Scroll frame 1 while it is playing to see the detach.)</li>
+
+    <li><strong>Repair: hover → whisper → slide-over.</strong> Hovering a speaker name reveals a single
+      <code>⋯</code>. It opens a slide-over (frame 5) pinned to the right edge — <em>never</em> a modal,
+      never a centred popover over the text, because the whole point of a repair surface is that you can
+      keep reading the lines you are trying to attribute. Inside: name, an explicit scope segmented
+      control defaulting to cluster-wide (P5 — Descript's silent global relabel is its single
+      most-complained-about behaviour; the fix is not a different default, it is a <em>visible</em> one),
+      link-to-person, and the suggested merge (P6) with a "play 8s of each" button, which is Buzz's
+      audio-first identification — you should identify a voice by hearing it, not by reading a
+      transcript of it. Every commit fires an undo toast naming the blast radius: "renamed 11 turns · Undo".</li>
+
+    <li><strong>Every non-happy path is drawn (frame 6).</strong> The five frames above are the
+      transcript working. Frame 6 is the other eleven status values the drawer can reach: loading
+      (a skeleton in the shape of the content, not a spinner), processing with the stage it is on,
+      no-speech as a legitimate outcome rather than an error, a partial failure that says which half
+      survived and offers the half that works, and never-run with the one-click way out. Each carries
+      a status pill in the header that is a <code>role="status" aria-live="polite"</code> region,
+      because these change without the user doing anything.</li>
+
+    <li><strong>Dismiss and reject are different actions and now look it.</strong> The inline
+      <code>✕</code> on a suggestion is a <em>soft dismiss</em>: it hides the row and writes nothing.
+      The destructive twin — "Not this person", which persists a rejection embedding that suppresses
+      that person for every future recording — lives in the slide-over, styled danger, with its
+      permanence spelled out underneath. These were previously the same 10px glyph.</li>
+  </ol>
+
+  <h2>(c) Data provenance — every field shown maps to a real DTO</h2>
+  <table>
+    <tr><th>Shown</th><th>Backed by</th></tr>
+    <tr><td>source pill <code>microphone</code> + swatch</td><td><code>AudioSegmentDto.sourceKind</code> → <code>--app-source-mic</code></td></tr>
+    <tr><td><code>#42</code>, <code>14:06 → 14:10</code>, <code>4m 02s</code></td><td><code>segmentIndex</code>, <code>startedAt</code>/<code>endedAt</code></td></tr>
+    <tr><td>paragraph text</td><td><code>SpeakerTurnDto.transcriptText</code>, grouped by <code>clusterId</code></td></tr>
+    <tr><td><code>m:ss</code> gutter times (toggle)</td><td><code>SpeakerTurnDto.startMs</code>, relative to segment start</td></tr>
+    <tr><td>word highlight + click-to-seek</td><td><code>TranscriptionStructuredPayload.words[]</code> — <em>exists in the payload for Deepgram, not currently plumbed to the drawer</em></td></tr>
+    <tr><td>segment-level fallback highlight</td><td><code>TranscriptionStructuredPayload.segments[]</code></td></tr>
+    <tr><td>speaker name</td><td><code>PersonProfileDto.displayName</code> via <code>personId</code>, else <code>speakerLabel</code></td></tr>
+    <tr><td>marker colour</td><td><em>derived</em> from <code>clusterId</code> — no colour field exists</td></tr>
+    <tr><td>marker shape</td><td><em>derived</em> from <code>clusterId</code> (4-shape cycle)</td></tr>
+    <tr><td>"maybe · 0.88" ✓ / ✕</td><td><code>suggestedPersonId</code> + <code>recognitionScore</code> → <code>ConfirmSpeakerSuggestionRequest</code> / <code>SpeakerClusterRequest</code></td></tr>
+    <tr><td>"low match · 0.41"</td><td><code>recognitionConfidence:"low"</code> + <code>recognitionScore</code></td></tr>
+    <tr><td>"overlapping speech" + warn rule</td><td><code>SpeakerTurnDto.overlaps</code></td></tr>
+    <tr><td>"11 turns · 1m 48s"</td><td><em>derived</em> by summing <code>endMs − startMs</code> over the cluster's turns</td></tr>
+    <tr><td>merge card + score 0.71</td><td><code>SpeakerClusterDto.suggestedMergeTargetClusterId</code> / <code>suggestedMergeScore</code> → <code>MergeSpeakerClustersRequest</code></td></tr>
+    <tr><td>"Priya Raghunathan · 34 samples"</td><td><code>PersonProfileDto.displayName</code> + <code>embeddingCount</code> → <code>LinkSpeakerClusterRequest</code></td></tr>
+    <tr><td>"Move just this line…"</td><td><code>MoveSpeakerTurnRequest</code></td></tr>
+    <tr><td>"3 speakers" in peek</td><td><em>derived</em> — distinct <code>clusterId</code> count</td></tr>
+    <tr><td>model label <code>deepgram nova-3 · speakrs</code></td><td><code>TranscriptionStructuredPayload.provider</code>/<code>modelId</code> + <code>SpeakerClusterDto.provider</code></td></tr>
+    <tr><td>status pill (all of frame 6)</td><td>the drawer's existing transcript-status vocabulary; <code>rerun</code> → <code>ReprocessAudioSegmentSpeakerAnalysisRequest</code></td></tr>
+    <tr><td>"skipReason: silent · audioPeak 0.004"</td><td><code>SpeakerAnalysisProvenance.skipReason</code> / <code>audioPeak</code></td></tr>
+    <tr><td>"chunkingMode safe_chunked · chunk 3 of 5"</td><td><code>SpeakerAnalysisProvenance.chunkingMode</code> / <code>chunkCount</code></td></tr>
+    <tr><td>"2 more unnamed in this segment"</td><td><em>derived</em> — clusters with <code>personId === null</code></td></tr>
+    <tr><td>waveform bar heights</td><td><em>computed in Rust</em> from the existing AVFoundation decoder — Mnema stores no peaks; see (h)</td></tr>
+    <tr><td>waveform bar colours</td><td><code>SpeakerTurnDto.startMs</code>/<code>endMs</code> → the same <em>derived</em> per-<code>clusterId</code> hue as the gutter</td></tr>
+  </table>
+
+  <h2>(d) New data required</h2>
+  <p><strong>None.</strong> This direction adds no fields. Two things it uses are not consumed by the
+     drawer today but require no schema change: <code>TranscriptionStructuredPayload.words[]</code>,
+     which already exists in the payload, and the waveform peaks, which are <em>computed in Rust from
+     the audio itself</em> using a decoder this repo already ships — see (h). Nothing is drawn that the
+     schema cannot supply: no avatars, no per-turn ASR confidence in the default view, no summaries.</p>
+
+  <h2>(e) Explicitly rejected</h2>
+  <ul>
+    <li class="reject"><strong>Dense log formatting.</strong> No <code>time | speaker | text</code> rows,
+      no zebra striping, no fixed-width timestamp column. That layout optimises for locating a moment;
+      this surface optimises for understanding a conversation, and you cannot have both as the default.</li>
+    <li class="reject"><strong>Always-on timestamps.</strong> They are metadata rendered at the same
+      visual priority as speech, they poison copy-paste, and karaoke already answers "where am I".</li>
+    <li class="reject"><strong>P7 confidence-as-texture in the default view.</strong> Sonix's opacity
+      heatmap is genuinely good in a review pass and genuinely corrosive as a default: a page of
+      half-faded words reads as "this transcript is unreliable" before you have read a sentence of it.
+      It belongs behind a "review low-confidence words" mode, which this direction does not draw.</li>
+    <li class="reject"><strong>Analytics.</strong> No talk-time bars, no speaker pie chart, no
+      words-per-minute. Derivable, cheap, and completely orthogonal to reading what was said.</li>
+    <li class="reject"><strong>P8 summary-first.</strong> Deliberately dropped despite being near-universal
+      for always-on capture. A summary above the transcript makes the transcript the appendix; this
+      direction's entire wager is the opposite.</li>
+    <li class="reject"><strong>P11 filter-as-highlight / P12 chapter rail.</strong> Both are real gaps —
+      see the tradeoff below — but both add a second navigation layer competing with the prose. If one
+      returns, it should be find-in-page (P11), not a rail.</li>
+  </ul>
+
+  <h2>(f) The honest tradeoff — what this is worse at than today's drawer</h2>
+  <ul>
+    <li><strong>Skimming for a moment is slower.</strong> Timestamps off by default plus generous
+      leading means "find the bit around 3 minutes" is a scroll-and-scan, not a glance down a column.
+      One toggle fixes it, but the default costs you.</li>
+    <li><strong>Vertical throughput drops hard.</strong> 15px/1.72 with 24px between turns shows
+      maybe a third of the turns per screen that the current 12px drawer does. A rapid four-way
+      back-and-forth becomes a lot of scrolling — the classic P1 failure, and this direction leans
+      further into it than most.</li>
+    <li><strong>It gives up the timeline.</strong> The current drawer is non-modal
+      (<code>aria-modal="false"</code>) and you can click another bar behind it to swap segments. An
+      expanded reader covers that. The peek state is the mitigation, but the expanded state genuinely
+      loses a real capability, and someone triaging a whole afternoon will feel it.</li>
+    <li><strong>Bulk repair is slower than it could be.</strong> One speaker at a time through a
+      slide-over. There is no roster view, no MacWhisper-style hover-and-press-<kbd>1</kbd> reassignment
+      (that interaction is arguably the highest-leverage one in the entire competitive set, and it is
+      incompatible with a surface whose hover state is reserved for reading). Fixing ten mislabelled
+      clusters is ten trips.</li>
+    <li><strong>Still no search and no coarse navigation.</strong> Neither exists today either, so
+      it is not a regression — but a reading surface makes the absence of find-in-page more conspicuous,
+      not less.</li>
+  </ul>
+
+  <h2>(g) UI/UX audit — what changed after review</h2>
+  <p>This file was reviewed against the repo's UI/UX pattern guide. Fourteen findings, all applied;
+     the numbered <code>AUDIT n</code> comments in the source mark each one at its site.</p>
+  <table>
+    <tr><th>#</th><th>Finding</th><th>Fix</th></tr>
+    <tr><td>1</td><td>Only the happy path was designed; the status pill, model label and rerun action had silently vanished from the header</td><td>Frame 6 (five state frames) + header restored, status as a live region</td></tr>
+    <tr><td>2</td><td>Every DB write rendered as permanently idle; <code>--app-busy-opacity</code> and <code>--app-disabled-opacity</code> were declared and never used</td><td>Shared <code>busy()</code> helper, spinner, pressed and disabled states on all commits</td></tr>
+    <tr><td>3</td><td>The suggestion <code>✕</code> looked like a dismiss but persisted a permanent rejection</td><td>Split: inline ✕ writes nothing; the destructive "Not this person" is danger-styled in the slide-over with its permanence stated</td></tr>
+    <tr><td>4</td><td>The accent did nine jobs, so the "load-bearing" karaoke highlight was not privileged</td><td>Full-strength accent reserved for playhead and current word; jump pill and expand CTA demoted to neutral</td></tr>
+    <tr><td>5</td><td>The only repair door was hover-only, on a surface where unknown is the majority state</td><td><code>.who.needs</code> — unresolved clusters show the marker at rest</td></tr>
+    <tr><td>6</td><td>Renaming dead-ended with two unknowns still on screen</td><td>"Next unnamed voice · 2 left" in the toast and a live count in the slide-over</td></tr>
+    <tr><td>7</td><td>With no <code>words[]</code>, nothing was clickable — click-to-seek disappeared entirely</td><td>The paragraph becomes the seek target in the degraded case</td></tr>
+    <tr><td>8</td><td>66ch of monospace is ~20% physically longer than the guidance intends</td><td>Measure narrowed to 58ch</td></tr>
+    <tr><td>9</td><td>The name input had no error state despite three reachable failures</td><td><code>.is-error</code> + a FieldWarning-shaped message, live validation, apply disabled while invalid</td></tr>
+    <tr><td>10</td><td>The jump pill used <code>display:none</code> and so could not fade, though the annotation claimed it did; the toast appeared instantly</td><td>Both animate at 180ms, with a <code>prefers-reduced-motion</code> escape</td></tr>
+    <tr><td>11</td><td>9px shape markers were indistinguishable, defeating the dual encoding</td><td>12px, with a hatch fill for ghosted triangles and diamonds</td></tr>
+    <tr><td>12</td><td>The global focus ring forced a 4px radius, re-cornering inputs on focus</td><td>Ring no longer sets a radius</td></tr>
+    <tr><td>13</td><td>Floating layers leaned on a shadow that barely reads in dark, over a 5-value surface lift</td><td><code>--app-surface-float</code> — lightness carries elevation in dark, shadow still does in light</td></tr>
+    <tr><td>14</td><td>Spacing was entirely one-off values</td><td>A six-step scale (<code>--s-1</code>…<code>--s-8</code>), which the repo otherwise lacks</td></tr>
+  </table>
+  <p>Not treated as findings, because they are deliberate: monospace instead of a sans, the 15px prose
+     break, no confidence texture, no analytics, and the right-aligned gutter.</p>
+
+  <h2>(h) The waveform — real peaks, computed, never stored</h2>
+  <p>Mnema stores <strong>no waveform data</strong>. <code>AudioWaveform.svelte</code> is a decorative
+     static 9-bar SVG with a <code>widthPercent</code> prop, and
+     <code>SpeakerAnalysisProvenance.audioPeak</code> is a single scalar for an entire segment. A
+     scrubber that drew either of those would be an illustration of a waveform, not a waveform — and a
+     fake one is worse than none, because users navigate by its shape.</p>
+  <p>So the peaks are computed in <strong>Rust</strong>, from a decoder this repo already ships, and
+     handed to the drawer as a <code>Vec&lt;f32&gt;</code>. No new crate, no new dependency, no schema
+     change. This was checked against how Cap (cap.so) does it — see the note at the end.</p>
+  <table>
+    <tr><th>Step</th><th>Detail</th></tr>
+    <tr><td>Decode</td><td>Reuse <code>macos_audio_decode.rs</code> — it already exists <em>twice</em>, in <code>crates/speaker-analysis</code> and <code>crates/audio-transcription</code>, as near-duplicates. <code>av::AudioFile::open_read_common_format(&amp;url, av::AudioCommonFormat::PcmF32, false)</code> via <code>cidre</code>, with an <code>AVAssetReader</code> → temp-WAV fallback. AVFoundation is hardware-accelerated, handles the AAC-LC that <code>capture-writers</code> writes, and adds no C toolchain. Promoting one copy to a shared home is a prerequisite worth doing anyway.</td></tr>
+    <tr><td>Reduce</td><td><code>max(|s|)</code> per bucket, accumulated <em>while</em> the decoder's buffers stream past — 150 buckets over a 5-minute segment is one per ~2 s (~96k samples at 48 kHz). About fifteen lines.</td></tr>
+    <tr><td>Never hold the PCM</td><td>The whole point of folding the reduction into the decode loop: peak RSS is one buffer, not the file. A 5-minute segment fully resident at 48 kHz mono f32 is ~57 MB; the surviving output is <strong>150 floats — 600 bytes</strong>. This repo has been burned by audio-path memory before, so this is the load-bearing constraint, not an optimisation.</td></tr>
+    <tr><td>Deliver</td><td>A <code>#[tauri::command]</code> returning <code>Vec&lt;f32&gt;</code>. No sidecar file, no disk cache, no event stream. If the decode ever feels slow, cache the 150 floats as a column on the <code>audio_segments</code> row that already exists — never as a <code>.dat</code> on disk.</td></tr>
+    <tr><td>Degrade</td><td>Decode failure returns an empty vec and the scrubber falls back to the plain progress bar the drawer has today. No error state, no empty box — playback surfaces the real problem.</td></tr>
+  </table>
+  <p><strong>What Cap does, and where this deliberately differs.</strong> Cap computes peaks in Rust too
+     (<code>apps/desktop/src-tauri/src/audio.rs</code>, 30 lines) and ships them over a Tauri command as
+     <code>Vec&lt;Vec&lt;f32&gt;&gt;</code> — same shape as above. Two differences, both deliberate:</p>
+  <ul>
+    <li>Cap decodes with <strong><code>ffmpeg-next</code></strong> (their own fork, pinned by git rev),
+      which means a C FFmpeg link, <code>pkg-config</code> at build time, and LGPL obligations for a
+      distributed binary. Mnema does not need it: the input codec is AAC-LC that Mnema itself wrote,
+      and AVFoundation decodes it natively. <em>(If this ever has to leave macOS, the answer is
+      <code>symphonia 0.6</code> with <code>features = ["aac", "isomp4"]</code> — pure Rust, MPL-2.0,
+      no C toolchain. Not <code>ffmpeg-next</code>.)</em></li>
+    <li>Cap keeps the <strong>entire decoded track resident</strong> in an <code>Arc&lt;AudioData&gt;</code>
+      for the editor session, so peaks are a free by-product of audio it needs anyway for playback and
+      export. Mnema has no such need, so it must not copy that part — hence reducing inside the decode
+      loop and dropping the buffer.</li>
+    <li>Cap buckets at a fixed <strong>10 values per second</strong> and uses <em>mean of |sample|</em>,
+      converted to dBFS with silence floored at −60. Mean-abs over 100 ms visually flattens speech
+      transients; for a 150-bar scrubber, <code>max(|s|)</code> per bucket costs the same and looks
+      better. Skip the dBFS conversion unless the bars read as too spiky.</li>
+  </ul>
+  <p>There is <strong>no usable off-the-shelf peaks crate</strong>. <code>waveform</code> (2017) is
+     abandoned on gtk 0.1; <code>audio-waveform</code> has double-digit downloads and is days old; BBC's
+     <code>audiowaveform</code> is a GPLv3 C++ CLI with no Rust bindings and is disqualified for a
+     distributed app regardless. The algorithm is fifteen lines — write it.</p>
+  <p><strong>Bar height is amplitude; bar colour is the speaker.</strong> The hue comes from whichever
+     turn's <code>startMs</code>/<code>endMs</code> covers that moment — the same derived-from-<code>clusterId</code>
+     colours as the gutter markers — and the gaps between turns render short and dimmed. That second
+     layer is the part worth having: amplitude alone tells you where the sound is, which you can hear
+     anyway, while the colour tells you who held the floor and where the conversation changed hands.
+     It is also the one piece of coarse navigation (P12) this direction allows itself, because it costs
+     no vertical space and lives in chrome that already existed.</p>
+  <p>Colour is never the only encoding here: the bars are backed by a real
+     <code>&lt;input type="range"&gt;</code> with an <code>aria-valuetext</code> of
+     <code>"1:14 of 4:02"</code>, so the scrubber is fully keyboard-operable and announces position
+     without reference to hue. The speaker identity it encodes is also always available as text in the
+     gutter beside the prose.</p>
+  <p class="reject"><strong>What this is not:</strong> not a per-word marker track, not a spectrogram,
+     not a talk-time chart, and not a second timeline you can annotate. It is the existing scrub bar,
+     told the truth about what is inside it.</p>
+
+</div>
+
+<script>
+// ---- theme toggle (mockup chrome) ----
+const html = document.documentElement, tt = document.getElementById('themeToggle');
+tt.onclick = () => {
+  const light = html.dataset.theme === 'light';
+  html.dataset.theme = light ? 'dark' : 'light';
+  tt.textContent = light ? 'light theme' : 'dark theme';
+};
+
+// ---- timestamps toggle (P4) ----
+const stage = document.getElementById('stage'), tsBtn = document.getElementById('tsToggle');
+tsBtn.onclick = () => {
+  const on = stage.dataset.ts === 'on';
+  stage.dataset.ts = on ? 'off' : 'on';
+  tsBtn.setAttribute('aria-pressed', String(!on));
+};
+
+// ---- karaoke (P3) -----------------------------------------------------
+// In production each <span class="w"> carries a real start/end from
+// TranscriptionStructuredPayload.words[]. This mockup interpolates timings
+// evenly across each turn's startMs/endMs purely so the demo can move.
+const words = [];
+document.querySelectorAll('#doc .para').forEach(p => {
+  const turn = p.closest('.turn');
+  const s = +turn.dataset.start, e = +turn.dataset.end;
+  const toks = p.textContent.trim().split(/\s+/);
+  const step = (e - s) / toks.length;
+  p.textContent = '';
+  toks.forEach((t, i) => {
+    const el = document.createElement('span');
+    el.className = 'w'; el.textContent = t; el.tabIndex = -1;
+    el.dataset.t = Math.round(s + i * step);
+    p.append(el, ' ');
+    words.push(el);
+  });
+});
+
+let t = 74800, playing = false, follow = true, timer = null;
+const cur = document.getElementById('cur'), scroll = document.getElementById('scroll'),
+      jump = document.getElementById('jump'), playBtn = document.getElementById('playBtn');
+const mss = ms => Math.floor(ms / 60000) + ':' + String(Math.floor(ms / 1000) % 60).padStart(2, '0');
+
+// ---- waveform scrubber -----------------------------------------------------
+// PRODUCTION: peaks are computed in RUST and arrive as a Vec<f32> from a Tauri
+// command — not decoded in the webview. Reuse the AVFoundation decoder this repo
+// already ships twice (crates/{speaker-analysis,audio-transcription}/src/
+// macos_audio_decode.rs), and accumulate max(|s|) per bucket INSIDE the decode
+// loop so the full PCM is never resident (~57 MB for a 5-min segment; the output
+// is 150 floats). No new crate, no schema change. See annotation (h), which also
+// covers what Cap does differently and why.
+// MOCKUP: a deterministic hash stands in for real samples so the bars are
+// stable across renders, shaped by the same turn ranges the transcript uses.
+const BARS = 150, T0 = 4200, T1 = 188200;
+const turns = [...document.querySelectorAll('#doc .turn')].map(el => ({
+  s: +el.dataset.start, e: +el.dataset.end,
+  colour: el.querySelector('.who').style.getPropertyValue('--sp').trim()
+}));
+const hash = i => { const x = Math.sin(i * 12.9898) * 43758.5453; return x - Math.floor(x); };
+const speakerAt = ms => turns.find(x => ms >= x.s && ms <= x.e);
+
+function buildBars(host) {
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < BARS; i++) {
+    const ms = T0 + (T1 - T0) * (i / BARS);
+    const who = speakerAt(ms);
+    // envelope: speech is loud and jagged, the gaps between turns are room tone
+    const amp = who
+      ? 0.30 + 0.70 * (0.45 * hash(i) + 0.35 * hash(i * 3.7) + 0.20 * hash(i * 0.31))
+      : 0.05 + 0.07 * hash(i * 7.1);
+    const b = document.createElement('span');
+    b.style.height = Math.round(amp * 100) + '%';
+    b.style.setProperty('--bar', who ? who.colour : 'var(--app-text-subtle)');
+    if (!who) b.className = 'silent';
+    b.dataset.ms = Math.round(ms);
+    frag.append(b);
+  }
+  host.append(frag);
+  return [...host.children];
+}
+const waveBars = buildBars(document.getElementById('waveBars'));
+buildBars(document.getElementById('peekBars'));
+const waveHead = document.getElementById('waveHead'),
+      waveRange = document.getElementById('waveRange');
+
+function paintWave() {
+  const pct = (t - T0) / (T1 - T0);
+  for (const b of waveBars) b.classList.toggle('played', +b.dataset.ms <= t);
+  waveHead.style.left = (pct * 100).toFixed(2) + '%';
+  waveRange.value = t;
+  waveRange.setAttribute('aria-valuetext', mss(t) + ' of 4:02');
+}
+
+function paint() {
+  let now = null;
+  for (const w of words) {
+    const wt = +w.dataset.t;
+    w.classList.toggle('done', wt < t);
+    w.classList.remove('now');
+    if (wt <= t) now = w;
+  }
+  if (now) {
+    now.classList.add('now'); now.classList.remove('done');
+    if (follow) now.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  cur.textContent = mss(t);
+  paintWave();
+}
+paint();
+
+// dragging or arrow-keying the range seeks, and re-attaches follow mode
+waveRange.oninput = () => { t = +waveRange.value; follow = true; jump.dataset.show = '0'; paint(); };
+
+playBtn.onclick = () => {
+  playing = !playing;
+  playBtn.textContent = playing ? '❚❚' : '▶';
+  playBtn.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+  clearInterval(timer);
+  if (playing) timer = setInterval(() => { t += 260; if (t > 188000) t = 4200; paint(); }, 150);
+};
+
+// click any word to seek
+document.getElementById('doc').addEventListener('click', ev => {
+  const w = ev.target.closest('.w');
+  if (w) { t = +w.dataset.t; follow = true; jump.dataset.show = '0'; paint(); }
+});
+
+// ---- follow mode: manual scroll detaches, Esc / pill re-attaches ----
+// ponytail: wheel/touch = "manual" — a plain scroll listener can't tell the
+// user's scroll from scrollIntoView's; upgrade to scrollend + position diffing
+// if trackpad momentum turns out to fight it.
+let programmatic = 0;
+function detach() {
+  if (!follow || Date.now() - programmatic < 400) return;
+  follow = false; jump.dataset.show = '1';
+}
+scroll.addEventListener('wheel', detach, { passive: true });
+scroll.addEventListener('touchmove', detach, { passive: true });
+function reattach() { follow = true; jump.dataset.show = '0'; programmatic = Date.now(); paint(); }
+document.getElementById('jumpBtn').onclick = reattach;
+addEventListener('keydown', e => { if (e.key === 'Escape') reattach(); });
+
+// ---- gutter ⋯ opens the slide-over demo (frame 5) ----
+document.querySelectorAll('#doc .who').forEach(b => {
+  b.onclick = e => {
+    e.stopPropagation();
+    document.querySelector('.slideover').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+});
+document.getElementById('soClose').onclick = function () {
+  const so = this.closest('.slideover');
+  so.hidden = !so.hidden;
+};
+document.getElementById('expandCta').onclick = () =>
+  document.getElementById('stage').scrollIntoView({ behavior: 'smooth', block: 'center' });
+document.getElementById('collapseBtn').onclick = () =>
+  document.querySelector('.peek').scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+// ---- AUDIT 2: every write shows pressed → busy → settled -------------------
+// One helper, because "it wrote to the DB and said nothing" was true of every
+// commit on this page. Real code awaits the invoke; this fakes the latency.
+function busy(btn, label, done) {
+  const original = btn.innerHTML;
+  btn.setAttribute('aria-busy', 'true');
+  btn.innerHTML = '<span class="spinner"></span>' + label;
+  setTimeout(() => {
+    btn.removeAttribute('aria-busy');
+    btn.innerHTML = done || original;
+  }, 1100);
+}
+const wire = (id, label, done) => {
+  const el = document.getElementById(id);
+  if (el) el.onclick = () => busy(el, label, done);
+};
+wire('confirmBtn', '', '✓');
+wire('mergeBtn', 'Merging…', 'Merged');
+wire('rerunBtn', 'Rerunning…');
+wire('retryBtn', 'Retrying…');
+wire('applyBtn', 'Applying…', 'Name &amp; apply');
+
+// ---- AUDIT 3: the inline ✕ is a soft dismiss and writes nothing ------------
+const sugg = document.getElementById('sugg');
+document.getElementById('dismissBtn').onclick = e => {
+  e.stopPropagation();
+  sugg.dataset.dismissed = '1';
+  sugg.firstChild.textContent = 'suggestion hidden · nothing saved ';
+  document.getElementById('dismissBtn').remove();
+};
+
+// ---- AUDIT 9: the name field validates as you type -------------------------
+const nameIn = document.getElementById('nameIn'),
+      nameWarn = document.getElementById('nameWarn'),
+      applyBtn = document.getElementById('applyBtn');
+function validateName() {
+  const v = nameIn.value.trim();
+  const bad = !v || /^unknown speaker/i.test(v);
+  nameIn.classList.toggle('is-error', bad);
+  nameIn.setAttribute('aria-invalid', String(bad));
+  nameWarn.dataset.show = bad ? '1' : '0';
+  nameWarn.lastElementChild.textContent = !v
+    ? 'A voice needs a name before it can become a saved person.'
+    : 'Still the placeholder label. Give it a real name, or link to a saved person below.';
+  applyBtn.disabled = bad;
+}
+nameIn.oninput = validateName;
+validateName();
+</script>
+</body>
+</html>

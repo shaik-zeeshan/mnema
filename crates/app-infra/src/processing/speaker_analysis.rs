@@ -203,12 +203,6 @@ impl super::ProcessorBackend for SpeakerAnalysisProcessorBackend {
                     request.model_id.as_deref(),
                 )
                 .await?;
-            request.rejected_people = store
-                .list_person_recognition_rejections_for_speaker_model(
-                    &request.provider,
-                    request.model_id.as_deref(),
-                )
-                .await?;
         }
 
         let output = map_provider_result(provider.analyze(request).await)?;

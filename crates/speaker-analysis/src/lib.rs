@@ -10,7 +10,7 @@ mod macos_audio_decode;
 pub mod providers;
 
 pub use core::{
-    PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisError,
+    PersonEnrollment, RecognitionConfidence, SpeakerAnalysisError,
     SpeakerAnalysisMetadata, SpeakerAnalysisOutput, SpeakerAnalysisProvider,
     SpeakerAnalysisRequest, SpeakerAnalysisResult, SpeakerCluster, SpeakerRecognitionSuggestion,
     SpeakerTurn,

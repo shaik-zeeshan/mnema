@@ -13,6 +13,7 @@ pub use core::{
     TranscriptionError, TranscriptionMetadata, TranscriptionOutput, TranscriptionProvider,
     TranscriptionRequest, TranscriptionResult, TranscriptionSegment, TranscriptionWord,
 };
+pub use macos_audio_decode::{audio_waveform_peaks, MAX_WAVEFORM_BUCKETS};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

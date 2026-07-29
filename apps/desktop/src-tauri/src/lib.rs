@@ -774,6 +774,7 @@ pub fn run() {
             app_infra::list_audio_segments,
             app_infra::get_audio_segment,
             app_infra::get_audio_segment_media,
+            app_infra::get_audio_segment_waveform_peaks,
             app_infra::get_frame,
             app_infra::open_captured_url,
             app_infra::get_earliest_earlier_equivalent_frame,
