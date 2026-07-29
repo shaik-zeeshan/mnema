@@ -285,12 +285,6 @@ impl BackgroundWorkersControl {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FrameIndexSidecarConversionResult {
-    converted_count: u64,
-    skipped_count: u64,
-}
-
 #[derive(Debug, Clone)]
 struct ResolvedAppInfraBaseDir {
     save_directory: String,
@@ -1901,7 +1895,6 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // not have completed.
     let post_maintenance = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_generated_frame_preview_cache_startup_pass(app_handle);
-        run_frame_index_sidecar_conversion_startup_pass(&base_dir);
         run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
         if let Ok(settings) = app_handle
             .state::<crate::native_capture::RecordingSettingsState>()
@@ -2542,28 +2535,6 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     }
 }
 
-fn run_frame_index_sidecar_conversion_startup_pass(base_dir: &Path) {
-    let recordings_root =
-        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
-            .recordings_root();
-    let recordings_root_display = recordings_root.display().to_string();
-
-    match convert_frame_index_sidecars_once(&recordings_root) {
-        Ok(result) => {
-            crate::native_capture::debug_log::log_info(format!(
-                "startup frame index sidecar conversion completed (recordings_root='{}', converted={}, skipped={})",
-                recordings_root_display, result.converted_count, result.skipped_count
-            ));
-        }
-        Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
-                "startup frame index sidecar conversion failed (recordings_root='{}'): {error}",
-                recordings_root_display
-            ));
-        }
-    }
-}
-
 fn spawn_processing_worker(
     infra: AppInfraState,
     base_dir: PathBuf,
@@ -2989,93 +2960,6 @@ fn duration_until_next_retention_daily_run() -> Duration {
     }
     let seconds = (target - now).whole_seconds().max(60) as u64;
     Duration::from_secs(seconds)
-}
-
-fn convert_frame_index_sidecars_once(
-    recordings_root: &Path,
-) -> Result<FrameIndexSidecarConversionResult, String> {
-    if !recordings_root.exists() {
-        return Ok(FrameIndexSidecarConversionResult {
-            converted_count: 0,
-            skipped_count: 0,
-        });
-    }
-
-    let mut converted_count = 0_u64;
-    let mut skipped_count = 0_u64;
-    let mut stack = vec![recordings_root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let entries = fs::read_dir(&dir)
-            .map_err(|error| format!("failed to read {}: {error}", dir.display()))?;
-        for entry in entries {
-            let entry = entry.map_err(|error| {
-                format!(
-                    "failed to read directory entry under {}: {error}",
-                    dir.display()
-                )
-            })?;
-            let path = entry.path();
-            let file_type = entry.file_type().map_err(|error| {
-                format!("failed to read file type for {}: {error}", path.display())
-            })?;
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !file_type.is_file() {
-                continue;
-            }
-            if !path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(".frame-index.json"))
-            {
-                continue;
-            }
-
-            let binary_path = capture_screen::screen_segment_frame_index_path(
-                &path.with_file_name(
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .expect("json sidecar file name should be valid utf-8")
-                        .replace(".frame-index.json", ".mov"),
-                ),
-            );
-            if binary_path.exists() {
-                skipped_count = skipped_count.saturating_add(1);
-                continue;
-            }
-
-            let bytes = fs::read(&path)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-            let legacy: frame_preview::LegacyScreenSegmentFrameIndex =
-                serde_json::from_slice(&bytes).map_err(|error| {
-                    format!("failed to parse legacy sidecar {}: {error}", path.display())
-                })?;
-            let binary = capture_screen::encode_screen_segment_frame_index(
-                &capture_screen::ScreenSegmentFrameIndex {
-                    version: legacy.version,
-                    entries: legacy
-                        .entries
-                        .into_iter()
-                        .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
-                            captured_at_unix_ms: entry.captured_at_unix_ms,
-                            frame_index: entry.frame_index,
-                            video_offset_ms: entry.video_offset_ms,
-                        })
-                        .collect(),
-                },
-            );
-            fs::write(&binary_path, binary)
-                .map_err(|error| format!("failed to write {}: {error}", binary_path.display()))?;
-            converted_count = converted_count.saturating_add(1);
-        }
-    }
-
-    Ok(FrameIndexSidecarConversionResult {
-        converted_count,
-        skipped_count,
-    })
 }
 
 async fn repair_hidden_segment_workspaces_once(
@@ -6779,49 +6663,6 @@ mod tests {
         let offset = indexed_frame_preview_offset(&frame, &video_path)
             .expect("index lookup should succeed")
             .expect("index entry should exist");
-
-        assert_eq!(offset.video_offset_ms, 875);
-        assert!(offset.exact_match);
-    }
-
-    #[test]
-    fn indexed_frame_preview_offset_reads_legacy_json_sidecar() {
-        let dir = TestDir::new("frame-preview-indexed-legacy-json");
-        let video_path = dir.path().join("session-preview-segment-0001.mov");
-        fs::write(&video_path, b"fake mov").expect("video fixture should exist");
-        let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(&video_path);
-        fs::write(
-            &legacy_path,
-            br#"{"version":1,"entries":[{"captured_at_unix_ms":1744459201500,"frame_index":42,"artifact_file_name":"frame-1744459201500-000042.jpg","video_offset_ms":875}]}"#,
-        )
-        .expect("legacy json sidecar should be written");
-
-        let frame = ::app_infra::Frame {
-            id: 2,
-            session_id: "session-preview".to_string(),
-            file_path: dir
-                .path()
-                .join(".session-preview-segment-0001/frames/frame-1744459201500-000042.jpg")
-                .to_string_lossy()
-                .to_string(),
-            captured_at: "2025-04-12T10:00:01.500Z".to_string(),
-            width: None,
-            height: None,
-            equivalence: ::app_infra::FrameEquivalence {
-                hint: None,
-                proof: None,
-                version: None,
-                status: None,
-                error: None,
-            },
-            created_at: String::new(),
-            updated_at: String::new(),
-            metadata_snapshot: None,
-        };
-
-        let offset = indexed_frame_preview_offset(&frame, &video_path)
-            .expect("legacy lookup should succeed")
-            .expect("legacy index entry should exist");
 
         assert_eq!(offset.video_offset_ms, 875);
         assert!(offset.exact_match);

@@ -277,16 +277,6 @@ pub fn screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
     parent.join(format!("{stem}.frame-index.bin"))
 }
 
-pub fn legacy_screen_segment_frame_index_path(video_path: &Path) -> PathBuf {
-    let parent = video_path.parent().unwrap_or_else(|| Path::new(""));
-    let stem = video_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("segment");
-    parent.join(format!("{stem}.frame-index.json"))
-}
-
 pub fn encode_screen_segment_frame_index(index: &ScreenSegmentFrameIndex) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
         SCREEN_SEGMENT_FRAME_INDEX_HEADER_LEN

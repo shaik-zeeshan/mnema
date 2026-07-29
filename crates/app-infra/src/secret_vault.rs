@@ -18,10 +18,6 @@ const MASTER_KEY_LEN: usize = 32;
 
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "day.mnema.vault";
-/// Pre-rename service (installs before the day.mnema bundle-id change): read
-/// once, migrated to the new service, then deleted.
-#[cfg(target_os = "macos")]
-const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.vault";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "master-key";
 // errSecItemNotFound: the keychain has no entry for this service/account.
@@ -69,19 +65,9 @@ fn read_master_key_item(service: &str) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
 #[cfg(target_os = "macos")]
 impl MasterKeySource for KeychainMasterKeySource {
     fn load(&self) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
-        // A read failure on either item (e.g. a denied prompt) propagates as
-        // Err so unlock maps it to Denied and never mints a replacement key.
-        crate::keychain_service_migration::read_with_legacy_migration(
-            || read_master_key_item(KEYCHAIN_SERVICE),
-            || read_master_key_item(LEGACY_KEYCHAIN_SERVICE),
-            |key| self.store(key),
-            || {
-                let _ = security_framework::passwords::delete_generic_password(
-                    LEGACY_KEYCHAIN_SERVICE,
-                    KEYCHAIN_ACCOUNT,
-                );
-            },
-        )
+        // A read failure (e.g. a denied prompt) propagates as Err so unlock
+        // maps it to Denied and never mints a replacement key.
+        read_master_key_item(KEYCHAIN_SERVICE)
     }
 
     fn store(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<()> {

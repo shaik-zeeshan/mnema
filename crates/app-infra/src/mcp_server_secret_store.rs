@@ -8,21 +8,14 @@
 //! settings/config values. (An MCP server is a *tool connector*, never an
 //! inference "provider" — that word is reserved for ADR 0034/0035.)
 //!
-//! Accounts preserve the legacy keychain naming (service
-//! `com.shaikzeeshan.mnema.mcp-connectors`, account = server instance id) as
-//! `mcp-connectors/<id>` so legacy items map 1:1 during migration. A denied
-//! vault unlock surfaces as [`AppInfraError::SecretVaultDenied`] — distinct
-//! from "no secret stored" (`Ok(None)`).
+//! Accounts are `mcp-connectors/<server instance id>`. A denied vault unlock
+//! surfaces as [`AppInfraError::SecretVaultDenied`] — distinct from "no secret
+//! stored" (`Ok(None)`).
 
 use crate::error::{AppInfraError, Result};
 use crate::secret_vault_handle::{process_secret_vault, SecretVaultHandle};
 
-/// The legacy per-secret keychain service, consumed by the legacy-item
-/// migration in [`crate::secret_vault_migration`].
-pub(crate) const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.mcp-connectors";
-
-/// Vault account for a server instance id — the 1:1 image of the legacy
-/// keychain `(service, account)` pair.
+/// Vault account for a server instance id.
 pub fn mcp_server_vault_account(id: &str) -> String {
     format!("mcp-connectors/{id}")
 }

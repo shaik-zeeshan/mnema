@@ -4,11 +4,6 @@ use std::path::PathBuf;
 use crate::error::{AppInfraError, Result};
 
 const KEYCHAIN_SERVICE: &str = "day.mnema.licensing";
-// Pre-rename service (installs before the day.mnema bundle-id change): each
-// account is read once, migrated to the new service, then deleted — preserving
-// the anti-reset stamps (first-seen, trial-issuance) across the rename.
-#[cfg(target_os = "macos")]
-const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.licensing";
 
 // licensegate-era accounts (2026-07-16 migration). Old accounts (`license_key`,
 // `trial_record`, `activation_receipt`, `activation_state`) held old-format
@@ -210,17 +205,7 @@ fn read_service_token(service: &str, account: &str) -> Result<Option<String>> {
 
 #[cfg(target_os = "macos")]
 fn load_platform_token(account: &str) -> Result<Option<String>> {
-    crate::keychain_service_migration::read_with_legacy_migration(
-        || read_service_token(KEYCHAIN_SERVICE, account),
-        || read_service_token(LEGACY_KEYCHAIN_SERVICE, account),
-        |token| store_platform_token(account, token),
-        || {
-            let _ = security_framework::passwords::delete_generic_password(
-                LEGACY_KEYCHAIN_SERVICE,
-                account,
-            );
-        },
-    )
+    read_service_token(KEYCHAIN_SERVICE, account)
 }
 
 #[cfg(target_os = "macos")]

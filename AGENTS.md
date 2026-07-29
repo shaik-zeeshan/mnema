@@ -4,6 +4,7 @@
 - Two roots of truth: Bun/Turbo workspace (`package.json`) and Rust Cargo workspace (`Cargo.toml`).
 - `apps/desktop` is the only JS app. Shared native/backend code lives in `crates/*`.
 - Platform support status lives in `SUPPORTS.md`; update it when adding or changing macOS, Windows, or Linux behavior.
+- **No installed users.** `v0.1.x` tags and DMGs exist, but nothing is in the field — so back-compat shims for old on-disk formats or pre-rename identities are dead code, not safety. All of them were deleted on 2026-07-29 (legacy `.frame-index.json` sidecar conversion; the `com.shaikzeeshan.mnema` → `day.mnema` config-dir move, `LEGACY_KEYCHAIN_SERVICE` read-fallbacks, and legacy-keychain→vault migration). Don't reintroduce one "for old installs", and don't flag a missing fallback as a bug. **DB migrations are the exception**: `sqlx::migrate!` is compile-time-embedded and `Database::initialize` has no recovery path, so deleting or squashing an applied migration bricks startup on every dev machine — never do it. A startup pass that heals *crash/interrupt* state (orphaned-job reconcile, stale model locks, batch reconcile, workspace repair, aggregate-device reap) or backfills on a *later* setting change (audio transcription) is permanent, not legacy.
 
 ## Commands
 - Run all repo commands from the repo root.
