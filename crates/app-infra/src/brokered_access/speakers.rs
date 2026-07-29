@@ -600,6 +600,7 @@ mod tests {
             provider_cluster_id: "0".to_string(),
             speaker_label: format!("Speaker {cluster_id}"),
             person_id,
+            person_link_auto: false,
             suggested_person_id: suggested,
             recognition_confidence: suggested.map(|_| "high".to_string()),
             recognition_score: None,
