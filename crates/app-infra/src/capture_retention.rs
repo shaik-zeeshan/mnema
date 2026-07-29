@@ -1490,9 +1490,10 @@ async fn gc_orphan_speaker_rows(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Resul
     .execute(&mut **tx)
     .await?;
     sqlx::query(
+        // Also collects rows orphaned to a NULL `source_cluster_id` by the
+        // `ON DELETE SET NULL`: per-cluster rejections without a cluster mean nothing.
         "DELETE FROM speaker_recognition_rejections
-         WHERE source_cluster_id IS NOT NULL
-           AND NOT EXISTS (SELECT 1 FROM recording_speaker_clusters WHERE recording_speaker_clusters.id = speaker_recognition_rejections.source_cluster_id)",
+         WHERE NOT EXISTS (SELECT 1 FROM recording_speaker_clusters WHERE recording_speaker_clusters.id = speaker_recognition_rejections.source_cluster_id)",
     )
     .execute(&mut **tx)
     .await?;
@@ -1758,9 +1759,16 @@ mod tests {
                 source_cluster_id INTEGER,
                 is_deliberate INTEGER NOT NULL DEFAULT 0
             )",
+            // The FK is load-bearing, not decoration: `ON DELETE SET NULL` is what
+            // orphans a rejection when its cluster goes, and the pool runs with
+            // `foreign_keys` on. Declared bare, this harness lets tests seed states
+            // production cannot reach — and stops the sweep tests from seeing the
+            // orphaning they exist to cover. `person_voice_embeddings` below has no
+            // FK in migration 0010, so it stays bare on purpose.
             "CREATE TABLE speaker_recognition_rejections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                source_cluster_id INTEGER
+                person_id INTEGER,
+                source_cluster_id INTEGER REFERENCES recording_speaker_clusters(id) ON DELETE SET NULL
             )",
             "CREATE TABLE retention_cleanup_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2268,6 +2276,93 @@ mod tests {
                 surviving,
                 vec![1],
                 "only the deliberately created voiceprint should survive the sweep"
+            );
+        });
+    }
+
+    /// The orphan-rejection GC dropped its `AND source_cluster_id IS NOT NULL`
+    /// guard so it also collects rows the `ON DELETE SET NULL` orphaned. That
+    /// predicate then runs over the WHOLE table on every sweep that deletes
+    /// anything, so it must spare a rejection whose cluster is still alive —
+    /// widening it any further silently un-rejects every "not this person" the
+    /// user ever made, on the next scheduled cleanup.
+    #[test]
+    fn cleanup_collects_cluster_less_rejections_and_spares_live_ones() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            // Expired — this is what gives the sweep work to do (the speaker GC
+            // is skipped entirely on a sweep that deletes nothing).
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id)
+                 VALUES (1, 'microphone', 'mic-source-1', 1, '/tmp/mnema-expired-audio.m4a', '2026-05-10T15:00:00Z', '2026-05-10T15:01:00Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("expired audio segment should insert");
+            // Well inside the retention window: this segment, its turn and the
+            // cluster behind it all survive the sweep.
+            sqlx::query(
+                "INSERT INTO audio_segments (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at, capture_segment_id)
+                 VALUES (2, 'microphone', 'mic-source-1', 2, '/tmp/mnema-retained-audio.m4a', '2026-05-17T14:00:00Z', '2026-05-17T14:01:00Z', NULL)",
+            )
+            .execute(&pool)
+            .await
+            .expect("retained audio segment should insert");
+            sqlx::query("INSERT INTO recording_speaker_clusters (id) VALUES (1)")
+                .execute(&pool)
+                .await
+                .expect("cluster should insert");
+            sqlx::query("INSERT INTO speaker_turns (audio_segment_id, cluster_id) VALUES (2, 1)")
+                .execute(&pool)
+                .await
+                .expect("speaker turn should insert");
+            // No "dangling cluster 99" row: the FK makes that unreachable in
+            // production, so seeding it would test a state that cannot happen.
+            // NULL is the orphan the sweep actually meets.
+            for (person_id, source_cluster_id) in [
+                (1_i64, Some(1_i64)), // live: cluster 1 is still there
+                (3, None),            // legacy: orphaned to NULL by ON DELETE SET NULL
+            ] {
+                sqlx::query(
+                    "INSERT INTO speaker_recognition_rejections (person_id, source_cluster_id) VALUES (?1, ?2)",
+                )
+                .bind(person_id)
+                .bind(source_cluster_id)
+                .execute(&pool)
+                .await
+                .expect("rejection should insert");
+            }
+
+            let summary = CaptureRetentionStore::new(CaptureDb::single(pool.clone()))
+                .run_cleanup(
+                    RetentionPolicy::Days7,
+                    rfc3339("2026-05-17T15:10:00Z"),
+                    &RetentionCleanupContext::default(),
+                )
+                .await
+                .expect("cleanup should succeed");
+
+            assert_eq!(summary.deleted_audio_segments, 1);
+            let survivors: Vec<i64> = sqlx::query_scalar(
+                "SELECT person_id FROM speaker_recognition_rejections ORDER BY person_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("rejections should query");
+            assert_eq!(
+                survivors,
+                vec![1],
+                "the sweep must collect cluster-less rejections and keep the live one"
             );
         });
     }

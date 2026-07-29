@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use sqlx::{QueryBuilder, Sqlite};
 
 use crate::processing::Frame;
 use crate::{AudioSegment, AudioSegmentSourceKind};
@@ -48,6 +49,86 @@ pub struct SearchCaptureRefinements {
     /// combined with them.
     #[serde(default)]
     pub screen_source: bool,
+    /// One speaker's audio. Like `audio_sources` it narrows to AUDIO — a captured
+    /// frame carries no voice — so it cannot be combined with the app / window
+    /// title / url filters, which exist only on frames.
+    #[serde(default)]
+    pub speaker: Option<SearchSpeakerRefinement>,
+}
+
+/// Which speaker to narrow to, as the DECODED row it addresses. The opaque
+/// handle an agent holds is decoded at the broker boundary; search only ever
+/// sees the row id, so there is one place that can misread a handle.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSpeakerRefinement {
+    /// `person_profiles.id` — the same human across sessions and channels.
+    Person(i64),
+    /// `recording_speaker_clusters.id` — ONE voice inside ONE capture SESSION.
+    /// The row is `UNIQUE(session_id, provider, provider_cluster_id)`, so matching
+    /// turns on it can never reach another session's audio — but a session is not
+    /// a recording. Segments are capped at 5 minutes, so one sitting is several
+    /// consecutive `audio_segments`, and `resolve_stable_speaker_cluster`
+    /// deliberately reuses this row across all of them. Matching on it therefore
+    /// spans every recording in that sitting, by design.
+    Cluster(i64),
+}
+
+impl SearchSpeakerRefinement {
+    /// `EXISTS` over one audio segment's speaker turns.
+    ///
+    /// The person arm reuses `broker_collapse_speakers`'s precedence VERBATIM: a
+    /// user assignment wins, and a recognition guess counts only where the
+    /// cluster carries no assignment. Excluding recognition would make the filter
+    /// contradict `show-text` about the same audio (and, since nothing in this app
+    /// ever auto-links, return close to nothing); including it means results carry
+    /// voice matches the user never confirmed. That is the accepted trade.
+    ///
+    /// `audio_segment_id_sql` is the caller's own column expression — a literal at
+    /// every call site, never caller input — so the one predicate serves both the
+    /// search index and the timeline's `audio_segments` scan.
+    pub(crate) fn push_exists_predicate(
+        &self,
+        query: &mut QueryBuilder<'_, Sqlite>,
+        audio_segment_id_sql: &str,
+    ) {
+        query.push("EXISTS (SELECT 1");
+        self.push_matching_turns_source(query);
+        query.push(" AND speaker_turns.audio_segment_id = ");
+        query.push(audio_segment_id_sql);
+        query.push(")");
+    }
+
+    /// ` FROM speaker_turns [JOIN …] WHERE <this speaker>` — the half of
+    /// [`Self::push_exists_predicate`] that decides WHOSE turns these are, split out
+    /// so a caller can select the matched turn ROWS instead of merely testing for
+    /// them. Shared on purpose: two copies of this precedence would eventually
+    /// disagree, and a filter that returns one person's recordings with another
+    /// person's words in them is worse than no words at all. Callers append their
+    /// own ` AND …` restriction.
+    pub(crate) fn push_matching_turns_source(&self, query: &mut QueryBuilder<'_, Sqlite>) {
+        query.push(" FROM speaker_turns ");
+        match self {
+            Self::Person(person_id) => {
+                query.push(
+                    "JOIN recording_speaker_clusters \
+                            ON recording_speaker_clusters.id = speaker_turns.cluster_id \
+                     WHERE (recording_speaker_clusters.person_id = ",
+                );
+                query.push_bind(*person_id);
+                query.push(
+                    " OR (recording_speaker_clusters.person_id IS NULL \
+                          AND recording_speaker_clusters.recognition_person_id = ",
+                );
+                query.push_bind(*person_id);
+                query.push("))");
+            }
+            Self::Cluster(cluster_id) => {
+                query.push("WHERE speaker_turns.cluster_id = ");
+                query.push_bind(*cluster_id);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -204,6 +285,7 @@ pub(super) struct NormalizedSearchRefinements {
     pub(super) url_regex: Option<String>,
     pub(super) audio_sources: Vec<AudioSegmentSourceKind>,
     pub(super) screen_source: bool,
+    pub(super) speaker: Option<SearchSpeakerRefinement>,
     pub(super) applied: SearchCaptureRefinements,
 }
 

@@ -7,6 +7,7 @@ mod result;
 mod runtime;
 mod secret_redaction_pipeline;
 mod speaker_analysis;
+pub mod speaker_resolution;
 mod store;
 mod system_audio_speech_activity;
 

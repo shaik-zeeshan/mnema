@@ -169,6 +169,15 @@ pub(crate) fn format_tool_activity(
             app: read_string_param(params, "app"),
             app_icon_path: None,
         },
+        // Speaker discovery. Unknown kinds bucket into the frontend's generic
+        // "steps" count, so this only has to read well as a line of its own —
+        // without it the fallback says "Running speakers".
+        "speakers" => ToolActivityEntry {
+            kind: "speakers".to_string(),
+            label: "Finding who was speaking".to_string(),
+            app: None,
+            app_icon_path: None,
+        },
         "show_text" => ToolActivityEntry {
             kind: "show_text".to_string(),
             label: "Reading a capture".to_string(),

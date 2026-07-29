@@ -63,6 +63,7 @@ struct Args {
     model_id: String,
     uri: String,
     out: Option<PathBuf>,
+    dump_clusters: Option<PathBuf>,
 }
 
 const USAGE: &str = "diarize_to_rttm_speakrs — emit hypothesis RTTM for one audio file (speakrs provider)
@@ -76,6 +77,9 @@ OPTIONS:
   --models-dir <path>         Speaker-analysis model store (default: app store).
   --model-id <id>             Preset id (default: pyannote-community-1-wespeaker).
   --out <path>                Write RTTM here instead of stdout.
+  --dump-clusters <path>      Also write cluster centroids + turns as JSON here
+                              (input for the segment-identity harness — see
+                              scripts/diarization_bench/segment_identity_bench.py).
   -h, --help                  Print this help.
 
 NOTE: For drop-in parity with run_der.py's shared --binary args, the
@@ -99,6 +103,7 @@ fn parse_args() -> Result<Args, String> {
     let mut model_id = SPEAKRS_DEFAULT_MODEL_ID.to_string();
     let mut uri: Option<String> = None;
     let mut out: Option<PathBuf> = None;
+    let mut dump_clusters: Option<PathBuf> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -116,6 +121,7 @@ fn parse_args() -> Result<Args, String> {
             "--model-id" => model_id = value()?,
             "--uri" => uri = Some(value()?),
             "--out" => out = Some(PathBuf::from(value()?)),
+            "--dump-clusters" => dump_clusters = Some(PathBuf::from(value()?)),
             // Accept-and-ignore the sherpa-only tuning flags so the shared
             // `run_der.py --binary` arg list (which is engine-agnostic) does not
             // break the speakrs path. These have no speakrs equivalent.
@@ -150,6 +156,59 @@ fn parse_args() -> Result<Args, String> {
         model_id,
         uri,
         out,
+        dump_clusters,
+    })
+}
+
+/// Serialize cluster centroids + turns for the segment-identity harness.
+///
+/// The centroid is stored as raw little-endian f32 bytes on the wire
+/// ([`speaker_analysis::SpeakerCluster::embedding`]); decode it here so the
+/// harness consumes plain JSON numbers and never has to know the byte layout.
+/// `speechMs` is the cluster's total speech time in this segment — the weight a
+/// duration-weighted centroid re-average would use.
+fn output_to_cluster_dump(output: &SpeakerAnalysisOutput, uri: &str) -> serde_json::Value {
+    let clusters = output
+        .clusters
+        .iter()
+        .map(|cluster| {
+            let embedding: Vec<f32> = cluster
+                .embedding
+                .chunks_exact(4)
+                .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+                .collect();
+            let speech_ms: u64 = output
+                .turns
+                .iter()
+                .filter(|turn| turn.provider_cluster_id == cluster.provider_cluster_id)
+                .map(|turn| turn.end_ms.saturating_sub(turn.start_ms))
+                .sum();
+            serde_json::json!({
+                "providerClusterId": cluster.provider_cluster_id,
+                "embedding": embedding,
+                "speechMs": speech_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let turns = output
+        .turns
+        .iter()
+        .map(|turn| {
+            serde_json::json!({
+                "providerClusterId": turn.provider_cluster_id,
+                "startMs": turn.start_ms,
+                "endMs": turn.end_ms,
+                "overlaps": turn.overlaps,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "uri": uri,
+        "clusters": clusters,
+        "turns": turns,
+        "provenance": output.metadata.provenance,
     })
 }
 
@@ -203,6 +262,13 @@ fn run(args: &Args) -> Result<(), String> {
         output.turns.len(),
         args.model_id,
     );
+
+    if let Some(path) = &args.dump_clusters {
+        let dump = serde_json::to_string(&output_to_cluster_dump(&output, &args.uri))
+            .map_err(|e| format!("failed to serialize cluster dump: {e}"))?;
+        fs::write(path, dump)
+            .map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    }
 
     let rttm = output_to_rttm(&output, &args.uri);
     match &args.out {

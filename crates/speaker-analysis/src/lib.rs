@@ -17,7 +17,7 @@ pub mod providers;
 pub use enrollment::{embed_enrollment_clip, EnrollmentOutcome, MIN_ENROLLMENT_AUDIO_MS};
 
 pub use core::{
-    PersonEnrollment, PersonRecognitionRejection, RecognitionConfidence, SpeakerAnalysisError,
+    PersonEnrollment, RecognitionConfidence, SpeakerAnalysisError,
     SpeakerAnalysisMetadata, SpeakerAnalysisOutput, SpeakerAnalysisProvider,
     SpeakerAnalysisRequest, SpeakerAnalysisResult, SpeakerCluster, SpeakerRecognitionSuggestion,
     SpeakerTurn,

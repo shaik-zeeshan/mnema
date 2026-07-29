@@ -299,6 +299,14 @@ export interface GetAudioSegmentRequest {
 	audioSegmentId: number;
 }
 
+/** Amplitude peaks for the transcription reader's waveform scrubber. The command
+ *  returns an EMPTY array on any failure — that means "plain scrub bar", not an
+ *  error state. */
+export interface GetAudioSegmentWaveformPeaksRequest {
+	audioSegmentId: number;
+	bucketCount: number;
+}
+
 export interface AudioSegmentMediaDto {
 	mimeType: string;
 	dataBase64: string;

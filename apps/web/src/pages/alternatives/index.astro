@@ -1,0 +1,193 @@
+---
+// Hub for the /alternatives/* comparison pages. Exists because Google
+// path-truncates discovered URLs and was hitting a 404 on the bare directory —
+// and because the four comparisons were only reachable from the footer.
+import Base from "../../layouts/Base.astro";
+import TopBar from "../../components/TopBar.astro";
+import Footer from "../../components/Footer.astro";
+
+const pageTitle = "Mnema vs Rewind, Recall, Limitless, and Screenpipe";
+const pageDescription =
+  "How Mnema compares to Rewind AI, Microsoft Recall, Limitless, and Screenpipe — private, on-device screen and audio memory for Mac, one-time purchase, fully open source.";
+
+const comparisons = [
+  {
+    label: "Rewind AI alternative",
+    detail:
+      "Rewind AI shut down in December 2025. Mnema keeps capture, transcription, and search on your Mac, so no acquisition can switch your history off.",
+    href: "/alternatives/rewind-ai/",
+  },
+  {
+    label: "Microsoft Recall for Mac",
+    detail:
+      "Recall is a Windows 11 Copilot+ feature and doesn't exist for macOS. Mnema brings the same idea — continuous capture, searchable screen history, ask-AI — to your Mac.",
+    href: "/alternatives/microsoft-recall-mac/",
+  },
+  {
+    label: "Limitless alternative",
+    detail:
+      "Meta acquired Limitless and Pendant sales stopped. Mnema needs no wearable: your Mac already sees the meetings, calls, and documents worth remembering.",
+    href: "/alternatives/limitless/",
+  },
+  {
+    label: "Screenpipe alternative",
+    detail:
+      "Screenpipe is plumbing you wire agents into. Mnema ships the recall product itself — timeline, search, and ask-AI — fully open source, one-time purchase.",
+    href: "/alternatives/screenpipe/",
+  },
+];
+---
+
+<Base title={pageTitle} description={pageDescription}>
+  <TopBar />
+  <main class="docs">
+    <article class="docs-col">
+      <header class="docs-hero">
+        <p class="kicker">// comparisons</p>
+        <h1 class="docs-title">How Mnema compares</h1>
+        <p class="docs-sub">
+          Screen memory has had a rough couple of years — one shutdown, one
+          acquisition, one feature that never came to the Mac. Here's how Mnema
+          lines up against each of them.
+        </p>
+        <p class="docs-meta">// on-device · open source · one-time purchase</p>
+      </header>
+
+      <section class="docs-section" aria-labelledby="comparisons">
+        <p class="kicker">// pick a comparison</p>
+        <h2 class="section-heading" id="comparisons">
+          Coming from something else?
+        </h2>
+        <div class="channel-list">
+          {
+            comparisons.map((c) => (
+              <div class="channel-item">
+                <div class="channel-text">
+                  <span class="channel-label">{c.label}</span>
+                  <span class="channel-detail">{c.detail}</span>
+                </div>
+                <a class="channel-cta" href={c.href}>
+                  Read the comparison →
+                </a>
+              </div>
+            ))
+          }
+        </div>
+      </section>
+    </article>
+  </main>
+  <Footer />
+</Base>
+
+<style>
+  /* ---- Docs layout shell (matches support.astro) ---- */
+  .docs {
+    padding: calc(var(--space-2xl) + 3rem) var(--space-lg) var(--space-2xl);
+  }
+
+  .docs-col {
+    max-width: 44rem;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  .kicker {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    letter-spacing: 0.04em;
+    margin-bottom: var(--space-xs);
+  }
+
+  .docs-hero {
+    padding-bottom: var(--space-xl);
+    border-bottom: 1px solid var(--border);
+    margin-bottom: var(--space-xl);
+  }
+
+  .docs-title {
+    font-family: var(--font-sans);
+    font-size: var(--text-3xl);
+    margin-bottom: var(--space-sm);
+    max-width: 22ch;
+  }
+
+  .docs-sub {
+    font-family: var(--font-sans);
+    color: var(--fg-muted);
+    font-size: var(--text-base);
+    line-height: 1.7;
+    max-width: 60ch;
+    margin-bottom: var(--space-md);
+  }
+
+  .docs-meta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    letter-spacing: 0.02em;
+  }
+
+  .docs-section {
+    margin-bottom: var(--space-2xl);
+  }
+
+  .section-heading {
+    font-family: var(--font-sans);
+    font-size: var(--text-2xl);
+    margin-bottom: var(--space-sm);
+    max-width: 26ch;
+  }
+
+  /* ---- Comparison list ---- */
+  .channel-list {
+    display: grid;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+
+  .channel-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-md);
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    padding: var(--space-md) var(--space-lg);
+  }
+
+  .channel-text {
+    display: grid;
+    gap: 0.25rem;
+    min-width: 16rem;
+    flex: 1 1 16rem;
+  }
+
+  .channel-label {
+    font-weight: 600;
+    color: var(--fg);
+  }
+
+  .channel-detail {
+    color: var(--fg-muted);
+    font-size: var(--text-sm);
+    line-height: 1.6;
+  }
+
+  .channel-cta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--fg-muted);
+    text-decoration: none;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+    transition: color 0.2s var(--ease-out-quart);
+  }
+
+  .channel-cta:hover {
+    color: var(--accent);
+    text-decoration: none;
+  }
+</style>

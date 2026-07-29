@@ -4,7 +4,8 @@ use std::{env, io::IsTerminal, path::PathBuf, process::ExitCode};
 
 use app_infra::brokered_access::{
     BrokerAuthStatus, BrokerAuthStatusKind, BrokerClientIdentity, BrokerClientIdentitySource,
-    BrokerErrorResponse, BrokerSearchRequest, BrokerTimelineRequest, BrokeredCaptureAccess,
+    BrokerErrorResponse, BrokerSearchRequest, BrokerSpeaker, BrokerSpeakerCoverage,
+    BrokerSpeakerTurn, BrokerSpeakersRequest, BrokerTimelineRequest, BrokeredCaptureAccess,
     BrokeredCaptureRequest, BrokeredCaptureResponse,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -57,6 +58,9 @@ struct Cli {
 enum CommandKind {
     Search(SearchArgs),
     Timeline(TimelineArgs),
+    /// List the people and voices heard inside the active grant's time scope,
+    /// longest-speaking first, each with the handle `--speaker` takes.
+    Speakers(SpeakersArgs),
     ShowText {
         opaque_result_id: String,
     },
@@ -116,6 +120,11 @@ struct SearchArgs {
     /// (prefix with `(?i)` for case-insensitive matching).
     #[arg(long, conflicts_with = "url")]
     url_regex: Option<String>,
+    /// Opaque speaker handle from `mnema speakers` (or from any `show-text`
+    /// speaker), narrowing results to audio that person or voice was heard in.
+    /// Matches voices the user assigned AND voices recognition only guessed at.
+    #[arg(long, conflicts_with_all = ["app", "window_title", "url", "url_regex"])]
+    speaker: Option<String>,
     /// `nextCursor` from a previous search response, to fetch the next page.
     /// Re-send the identical query and filters alongside it.
     #[arg(long)]
@@ -142,6 +151,22 @@ struct TimelineArgs {
     /// (prefix with `(?i)` for case-insensitive matching).
     #[arg(long, conflicts_with = "url")]
     url_regex: Option<String>,
+    /// Opaque speaker handle from `mnema speakers` (or from any `show-text`
+    /// speaker), narrowing the window to audio that person or voice was heard in.
+    /// Matches voices the user assigned AND voices recognition only guessed at.
+    #[arg(long, conflicts_with_all = ["app", "window_title", "url", "url_regex"])]
+    speaker: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct SpeakersArgs {
+    /// Case-insensitive substring of a person's name. Named people only — it is
+    /// how a quiet person who ranks below the limit is still findable.
+    #[arg(long)]
+    name: Option<String>,
+    /// Maximum number of speakers to return.
+    #[arg(long)]
+    limit: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -216,6 +241,9 @@ struct SearchData {
     /// Pass it back as `--cursor` with the same query and filters.
     #[serde(skip_serializing_if = "Option::is_none")]
     next_cursor: Option<String>,
+    /// Only on a `--speaker` search: how much audio the filter could NOT check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker_coverage: Option<BrokerSpeakerCoverage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -228,6 +256,20 @@ struct SearchResultData {
     ended_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<SearchResultContextData>,
+    /// Where inside the recording the match actually falls, in ms from its
+    /// start. A segment runs up to five minutes, so `startedAt`/`endedAt` alone
+    /// place a hit no more precisely than "somewhere in here". Audio results
+    /// only — a frame has no sub-segment span. The broker's `alignedFrameId`
+    /// stays withheld: it is a raw database id, which this surface never emits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_start_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    span_end_ms: Option<i64>,
+    /// What the `--speaker` said in this recording. Present only on a filtered
+    /// search, and only that speaker's words. ABSENT IS NEVER SILENCE — see
+    /// [`ShowTextData::turns`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -251,6 +293,9 @@ struct TimelineData {
     limit: u32,
     /// True when the intervals filled the effective limit — see [`SearchData`].
     truncated: bool,
+    /// Only on a `--speaker` timeline: how much audio the filter could NOT check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker_coverage: Option<BrokerSpeakerCoverage>,
 }
 
 #[derive(Debug, Serialize)]
@@ -259,9 +304,16 @@ struct TimelineIntervalData {
     kind: String,
     started_at: String,
     ended_at: String,
-    summary: Option<String>,
+    /// Followable capture id — pass it to `show-text`. Absent when the interval has
+    /// no representative capture to point at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    opaque_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<SearchResultContextData>,
+    /// What the `--speaker` said in this interval — same rules as
+    /// [`SearchResultData::turns`], including that absence is never silence.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -270,6 +322,12 @@ struct ShowTextData {
     id: String,
     kind: String,
     text: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    speakers: Vec<BrokerSpeaker>,
+    /// Who said which words, each turn indexing into `speakers`. ABSENT MEANS
+    /// "COULD NOT ATTRIBUTE", never "nobody spoke" — `text` still has the words.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    turns: Vec<BrokerSpeakerTurn>,
 }
 
 #[derive(Debug, Serialize)]
@@ -356,6 +414,7 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 url: args.url,
                 url_regex: args.url_regex,
                 cursor: args.cursor,
+                speaker: args.speaker,
             });
             run_data_command("search", &identity, request, cli.format, cli.no_prompt).await
         }
@@ -368,8 +427,16 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 window_title: args.window_title,
                 url: args.url,
                 url_regex: args.url_regex,
+                speaker: args.speaker,
             });
             run_data_command("timeline", &identity, request, cli.format, cli.no_prompt).await
+        }
+        CommandKind::Speakers(args) => {
+            let request = BrokeredCaptureRequest::Speakers(BrokerSpeakersRequest {
+                name: args.name,
+                limit: args.limit,
+            });
+            run_data_command("speakers", &identity, request, cli.format, cli.no_prompt).await
         }
         CommandKind::ShowText { opaque_result_id } => {
             run_data_command(
@@ -466,11 +533,19 @@ async fn execute_data_request(
         BrokeredCaptureResponse::Timeline(response) if command == "timeline" => {
             serde_json::to_value(map_timeline_data(response))
         }
+        // Serialized verbatim: the broker response is already the CLI shape
+        // (speakers/limit/truncated), and re-declaring it here is how a handle or
+        // a turn count would silently go missing.
+        BrokeredCaptureResponse::Speakers(response) if command == "speakers" => {
+            serde_json::to_value(response)
+        }
         BrokeredCaptureResponse::ShowText(response) if command == "show-text" => {
             serde_json::to_value(ShowTextData {
                 id: response.opaque_id,
-                kind: map_kind(&response.kind),
+                kind: response.kind,
                 text: response.text,
+                speakers: response.speakers,
+                turns: response.turns,
             })
         }
         BrokeredCaptureResponse::OpenInMnema(response) if command == "open" => {
@@ -851,13 +926,14 @@ fn print_serialized<T: Serialize>(value: &T, format: OutputFormat) -> Result<(),
 
 fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -> SearchData {
     let next_cursor = response.next_cursor.clone();
+    let speaker_coverage = response.speaker_coverage.clone();
     SearchData {
         results: response
             .results
             .into_iter()
             .map(|result| SearchResultData {
                 id: result.opaque_id,
-                kind: map_kind(&result.kind),
+                kind: result.kind,
                 snippet: result.snippet,
                 started_at: result.started_at,
                 ended_at: result.ended_at,
@@ -867,48 +943,44 @@ fn map_search_data(response: app_infra::brokered_access::BrokerSearchResponse) -
                     window_title: context.window_title,
                     url: context.url,
                 }),
+                span_start_ms: result.span_start_ms,
+                span_end_ms: result.span_end_ms,
+                turns: result.turns,
             })
             .collect(),
         limit: response.limit,
         next_cursor,
+        speaker_coverage,
     }
 }
 
 fn map_timeline_data(response: app_infra::brokered_access::BrokerTimelineResponse) -> TimelineData {
     let truncated = response.intervals.len() as u32 >= response.limit;
+    let speaker_coverage = response.speaker_coverage.clone();
     TimelineData {
         intervals: response
             .intervals
             .into_iter()
             .map(|interval| TimelineIntervalData {
-                kind: if interval.kind.starts_with("audio") {
-                    "audio".to_string()
-                } else {
-                    "screen".to_string()
-                },
+                // Broker kinds pass through verbatim: renaming them here would hide
+                // mic-vs-system audio from every agent reading this output.
+                kind: interval.kind,
                 started_at: interval.started_at,
                 ended_at: interval.ended_at.unwrap_or_default(),
-                summary: None,
+                opaque_id: interval.opaque_id,
                 context: interval.context.map(|context| SearchResultContextData {
                     app_bundle_id: context.app_bundle_id,
                     app_name: context.app_name,
                     window_title: context.window_title,
                     url: context.url,
                 }),
+                turns: interval.turns,
             })
             .collect(),
         limit: response.limit,
         truncated,
+        speaker_coverage,
     }
-}
-
-fn map_kind(kind: &str) -> String {
-    match kind {
-        "frame" => "screenText",
-        "audio" => "audioTranscript",
-        other => other,
-    }
-    .to_string()
 }
 
 fn client_envelope(identity: &BrokerClientIdentity) -> ClientEnvelope {
@@ -1153,9 +1225,11 @@ mod tests {
                 span_start_ms: None,
                 span_end_ms: None,
                 aligned_frame_id: None,
+                turns: Vec::new(),
             }],
             limit: 1,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let context = data.results[0]
@@ -1172,18 +1246,20 @@ mod tests {
     fn timeline_mapping_preserves_allowlisted_context() {
         let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
             intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
-                kind: "screen".to_string(),
+                kind: "frame".to_string(),
                 started_at: "2026-05-17T10:00:00Z".to_string(),
                 ended_at: Some("2026-05-17T10:00:00Z".to_string()),
-                reason: None,
+                opaque_id: None,
                 context: Some(app_infra::brokered_access::BrokerSearchResultContext {
                     app_bundle_id: Some("com.example.Linear".to_string()),
                     app_name: Some("Linear".to_string()),
                     window_title: Some("Roadmap".to_string()),
                     url: Some("linear.app/team/roadmap".to_string()),
                 }),
+                turns: Vec::new(),
             }],
             limit: 1,
+            speaker_coverage: None,
         });
 
         let context = data.intervals[0]
@@ -1197,11 +1273,91 @@ mod tests {
     }
 
     #[test]
+    fn timeline_mapping_passes_broker_kinds_and_opaque_ids_through() {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
+            intervals: vec![
+                timeline_interval("frame", Some("f1.signature")),
+                timeline_interval("audio_microphone", Some("a1.signature")),
+                timeline_interval("audio_system", None),
+            ],
+            limit: 3,
+            speaker_coverage: None,
+        });
+
+        assert_eq!(
+            data.intervals
+                .iter()
+                .map(|interval| interval.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio_microphone", "audio_system"],
+            "broker kinds must reach the agent unrenamed"
+        );
+        assert_eq!(data.intervals[1].opaque_id.as_deref(), Some("a1.signature"));
+
+        let json = serde_json::to_string(&data.intervals[2]).expect("interval should serialize");
+        assert!(
+            !json.contains("opaqueId"),
+            "an interval with nothing to follow omits the field: {json}"
+        );
+        assert!(
+            !json.contains("summary"),
+            "the phantom summary field is gone: {json}"
+        );
+    }
+
+    #[test]
+    fn search_mapping_passes_broker_kinds_through() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![
+                search_result_with_kind("f1", "frame"),
+                search_result_with_kind("a1", "audio_microphone"),
+                search_result_with_kind("a2", "audio_system"),
+            ],
+            limit: 3,
+            next_cursor: None,
+            speaker_coverage: None,
+        });
+
+        assert_eq!(
+            data.results
+                .iter()
+                .map(|result| result.kind.as_str())
+                .collect::<Vec<_>>(),
+            vec!["frame", "audio_microphone", "audio_system"]
+        );
+    }
+
+    fn timeline_interval(
+        kind: &str,
+        opaque_id: Option<&str>,
+    ) -> app_infra::brokered_access::BrokerTimelineInterval {
+        app_infra::brokered_access::BrokerTimelineInterval {
+            kind: kind.to_string(),
+            started_at: "2026-05-17T10:00:00Z".to_string(),
+            ended_at: Some("2026-05-17T10:00:30Z".to_string()),
+            opaque_id: opaque_id.map(str::to_string),
+            context: None,
+            turns: Vec::new(),
+        }
+    }
+
+    fn search_result_with_kind(
+        id: &str,
+        kind: &str,
+    ) -> app_infra::brokered_access::BrokerSearchResult {
+        app_infra::brokered_access::BrokerSearchResult {
+            kind: kind.to_string(),
+            ..search_result(id)
+        }
+    }
+
+    #[test]
     fn search_cursor_and_timeline_truncation_reach_the_envelope() {
         let paged = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
             results: vec![search_result("f1")],
             limit: 1,
             next_cursor: Some("v1:42:1:0".to_string()),
+            speaker_coverage: None,
         });
         assert_eq!(paged.next_cursor.as_deref(), Some("v1:42:1:0"));
 
@@ -1209,6 +1365,7 @@ mod tests {
             results: vec![search_result("f1")],
             limit: 20,
             next_cursor: None,
+            speaker_coverage: None,
         });
         assert!(last.next_cursor.is_none());
 
@@ -1217,8 +1374,281 @@ mod tests {
         let timeline = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
             intervals: Vec::new(),
             limit: 0,
+            speaker_coverage: None,
         });
         assert!(timeline.truncated, "limit 0 can never be complete");
+    }
+
+    #[test]
+    fn cli_accepts_the_speaker_surface() {
+        Cli::try_parse_from(["mnema", "speakers"]).unwrap();
+        Cli::try_parse_from(["mnema", "speakers", "--name", "priya", "--limit", "5"]).unwrap();
+        Cli::try_parse_from(["mnema", "search", "--query", "standup", "--speaker", "p1.sig"])
+            .unwrap();
+        Cli::try_parse_from([
+            "mnema",
+            "timeline",
+            "--from",
+            "2026-05-22T10:00:00Z",
+            "--to",
+            "2026-05-22T11:00:00Z",
+            "--speaker",
+            "p1.sig",
+        ])
+        .unwrap();
+    }
+
+    /// The broker rejects speaker + screen filters outright (the app lives on
+    /// frames, the voice on audio, nothing joins them). The CLI door says so
+    /// before the round trip, the same way it does for the two url filters.
+    #[test]
+    fn cli_rejects_a_speaker_filter_beside_a_screen_filter() {
+        assert!(Cli::try_parse_from([
+            "mnema", "search", "--query", "standup", "--speaker", "p1.sig", "--app", "Zoom",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "mnema",
+            "timeline",
+            "--from",
+            "2026-05-22T10:00:00Z",
+            "--to",
+            "2026-05-22T11:00:00Z",
+            "--speaker",
+            "p1.sig",
+            "--url",
+            "zoom.us",
+        ])
+        .is_err());
+    }
+
+    /// SKILL.md step 9 offers `mnema search --speaker <handle>` and
+    /// `mnema timeline --speaker <handle>` as interchangeable answers to "what did
+    /// *someone* say". They are not: `search` still requires `--query`, so the
+    /// keyword-free question the speaker filter exists for ("what did Priya say
+    /// yesterday") parses only through `timeline`.
+    #[test]
+    fn a_keyword_free_speaker_question_only_parses_through_timeline() {
+        assert!(
+            Cli::try_parse_from(["mnema", "search", "--speaker", "p1.sig"]).is_err(),
+            "search still requires --query"
+        );
+        Cli::try_parse_from([
+            "mnema",
+            "timeline",
+            "--from",
+            "2026-05-22T00:00:00Z",
+            "--to",
+            "2026-05-22T23:59:59Z",
+            "--speaker",
+            "p1.sig",
+        ])
+        .expect("timeline is the keyword-free door");
+    }
+
+    /// The `speakers` response is serialized VERBATIM, so nothing in this crate
+    /// declares its wire shape — this is the only place the CLI's own contract
+    /// ("`name` absent for an unnamed voice", `speakingMs`, `recognizedTurns`,
+    /// `handle.startMs`) is asserted against what an agent actually receives.
+    #[test]
+    fn speakers_envelope_omits_the_name_of_an_unnamed_voice() {
+        let response = app_infra::brokered_access::BrokerSpeakersResponse {
+            speakers: vec![app_infra::brokered_access::BrokerSpeakerSummary {
+                name: None,
+                handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                    id: "v1.signature".to_string(),
+                    kind: "voice".to_string(),
+                    start_ms: Some(0),
+                    end_ms: Some(30_000),
+                },
+                speaking_ms: 12_000,
+                assigned_turns: 0,
+                recognized_turns: 0,
+            }],
+            limit: 20,
+            truncated: true,
+        };
+        let json = serde_json::to_value(&response).expect("speakers should serialize");
+        assert_eq!(json["speakers"][0]["speakingMs"], 12_000);
+        assert_eq!(json["speakers"][0]["recognizedTurns"], 0);
+        assert_eq!(json["speakers"][0]["handle"]["startMs"], 0);
+        assert!(
+            json["speakers"][0].get("name").is_none(),
+            "an unnamed voice omits `name`, never reports it as null: {json}"
+        );
+    }
+
+    fn speaker_turn(text: &str) -> BrokerSpeakerTurn {
+        BrokerSpeakerTurn {
+            speaker: None,
+            start_ms: 1_000,
+            end_ms: 4_000,
+            text: text.to_string(),
+        }
+    }
+
+    fn speaker_coverage() -> BrokerSpeakerCoverage {
+        BrokerSpeakerCoverage {
+            recordings_with_unnamed_voices: 3,
+            recordings_without_speaker_data: 7,
+        }
+    }
+
+    /// Asserted on the SERIALIZED envelope, not the struct: a field the
+    /// presentation layer forgot to carry does not exist as far as an agent is
+    /// concerned, and a struct-level assert is exactly what misses it.
+    #[test]
+    fn search_mapping_carries_speaker_turns_and_coverage() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![app_infra::brokered_access::BrokerSearchResult {
+                turns: vec![speaker_turn("we ship on Friday")],
+                ..search_result("a1.signature")
+            }],
+            limit: 1,
+            next_cursor: None,
+            speaker_coverage: Some(speaker_coverage()),
+        });
+
+        let json = serde_json::to_value(&data).expect("search data should serialize");
+        assert_eq!(json["results"][0]["turns"][0]["text"], "we ship on Friday");
+        assert_eq!(json["results"][0]["turns"][0]["startMs"], 1_000);
+        assert_eq!(json["speakerCoverage"]["recordingsWithUnnamedVoices"], 3);
+        assert_eq!(json["speakerCoverage"]["recordingsWithoutSpeakerData"], 7);
+
+        let unfiltered = serde_json::to_value(map_search_data(
+            app_infra::brokered_access::BrokerSearchResponse {
+                results: vec![search_result("f1.signature")],
+                limit: 1,
+                next_cursor: None,
+                speaker_coverage: None,
+            },
+        ))
+        .expect("search data should serialize");
+        assert!(unfiltered["results"][0].get("turns").is_none());
+        assert!(unfiltered.get("speakerCoverage").is_none());
+    }
+
+    #[test]
+    fn search_mapping_carries_the_sub_segment_span_but_never_the_frame_id() {
+        let data = map_search_data(app_infra::brokered_access::BrokerSearchResponse {
+            results: vec![
+                app_infra::brokered_access::BrokerSearchResult {
+                    kind: "audio_microphone".to_string(),
+                    span_start_ms: Some(192_000),
+                    span_end_ms: Some(198_000),
+                    aligned_frame_id: Some(4_242),
+                    ..search_result("a1.signature")
+                },
+                search_result("f1.signature"),
+            ],
+            limit: 2,
+            next_cursor: None,
+            speaker_coverage: None,
+        });
+
+        let json = serde_json::to_value(&data).expect("search data should serialize");
+        // Without the span an agent can only say "somewhere in this recording".
+        assert_eq!(json["results"][0]["spanStartMs"], 192_000);
+        assert_eq!(json["results"][0]["spanEndMs"], 198_000);
+        // A raw database id, which this surface never emits.
+        assert!(json["results"][0].get("alignedFrameId").is_none());
+        // A frame result has no sub-segment span; omitted, not null.
+        assert!(json["results"][1].get("spanStartMs").is_none());
+        assert!(json["results"][1].get("spanEndMs").is_none());
+    }
+
+    #[test]
+    fn timeline_mapping_carries_speaker_turns_and_coverage() {
+        let data = map_timeline_data(app_infra::brokered_access::BrokerTimelineResponse {
+            intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+                turns: vec![speaker_turn("we ship on Friday")],
+                ..timeline_interval("audio_microphone", Some("a1.signature"))
+            }],
+            limit: 1,
+            speaker_coverage: Some(speaker_coverage()),
+        });
+
+        let json = serde_json::to_value(&data).expect("timeline data should serialize");
+        assert_eq!(json["intervals"][0]["turns"][0]["text"], "we ship on Friday");
+        assert_eq!(json["speakerCoverage"]["recordingsWithUnnamedVoices"], 3);
+        assert_eq!(json["speakerCoverage"]["recordingsWithoutSpeakerData"], 7);
+
+        let unfiltered = serde_json::to_value(map_timeline_data(
+            app_infra::brokered_access::BrokerTimelineResponse {
+                intervals: vec![timeline_interval("audio_microphone", Some("a1.signature"))],
+                limit: 1,
+                speaker_coverage: None,
+            },
+        ))
+        .expect("timeline data should serialize");
+        assert!(unfiltered["intervals"][0].get("turns").is_none());
+        assert!(unfiltered.get("speakerCoverage").is_none());
+    }
+
+    /// `show-text` speakers are re-serialized by the CLI, so the handle an agent
+    /// needs to filter by has to survive that hop.
+    #[test]
+    fn show_text_mapping_carries_speaker_handles_and_turns() {
+        let data = ShowTextData {
+            id: "a1.signature".to_string(),
+            kind: "audio_microphone".to_string(),
+            text: "we ship on Friday".to_string(),
+            speakers: vec![BrokerSpeaker {
+                name: Some("Priya".to_string()),
+                attribution: "assigned".to_string(),
+                confidence: None,
+                handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                    id: "p1.signature".to_string(),
+                    kind: "person".to_string(),
+                    start_ms: None,
+                    end_ms: None,
+                },
+            }],
+            turns: vec![BrokerSpeakerTurn {
+                speaker: Some(0),
+                ..speaker_turn("we ship on Friday")
+            }],
+        };
+
+        let json = serde_json::to_value(&data).expect("show-text data should serialize");
+        assert_eq!(json["speakers"][0]["handle"]["id"], "p1.signature");
+        assert_eq!(json["speakers"][0]["handle"]["kind"], "person");
+        assert_eq!(json["turns"][0]["speaker"], 0);
+        assert_eq!(json["turns"][0]["text"], "we ship on Friday");
+    }
+
+    /// ONE rule for a nameless voice across both commands, because both are
+    /// published in the same sentence of `.agents/skills/mnema-data/SKILL.md`:
+    /// `speakers` entries carry "`name` (absent for an unnamed voice)" and
+    /// `show-text` speakers carry "an optional `name` (absent for `unknown`)".
+    /// `speakers` omits the key (asserted above); `show-text` must too, or an
+    /// agent testing presence reads the same voice as named on one command and
+    /// unnamed on the other.
+    #[test]
+    fn show_text_omits_the_name_of_an_unknown_speaker() {
+        let data = ShowTextData {
+            id: "a1.signature".to_string(),
+            kind: "audio_microphone".to_string(),
+            text: "we ship on Friday".to_string(),
+            speakers: vec![BrokerSpeaker {
+                name: None,
+                attribution: "unknown".to_string(),
+                confidence: None,
+                handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                    id: "v1.signature".to_string(),
+                    kind: "voice".to_string(),
+                    start_ms: Some(0),
+                    end_ms: Some(30_000),
+                },
+            }],
+            turns: Vec::new(),
+        };
+
+        let json = serde_json::to_value(&data).expect("show-text data should serialize");
+        assert!(
+            json["speakers"][0].get("name").is_none(),
+            "an unknown speaker omits `name`, never reports it as null: {json}"
+        );
     }
 
     fn search_result(id: &str) -> app_infra::brokered_access::BrokerSearchResult {
@@ -1232,6 +1662,7 @@ mod tests {
             span_start_ms: None,
             span_end_ms: None,
             aligned_frame_id: None,
+            turns: Vec::new(),
         }
     }
 

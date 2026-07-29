@@ -42,4 +42,13 @@ compile(
   [],
 );
 
+// Waveform peaks: per-segment fetch effect + the identity-vs-value dependency
+// regression (waveform-peaks.test.ts). Its "$lib/types/app-infra" import is
+// type-only and erased by the TS transpile.
+compile(
+  resolve(appRoot, "src/lib/timeline/waveform-peaks.svelte.ts"),
+  resolve(here, "gen/waveform-peaks.js"),
+  [],
+);
+
 console.log("compiled");

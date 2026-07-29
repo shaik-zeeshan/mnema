@@ -67,7 +67,9 @@ if [[ "${debug}" == true ]]; then
 else
   profile_dir="release"
 fi
-dmg_dir="${repo_root}/target/${profile_dir}/bundle/dmg"
+# cargo writes to CARGO_TARGET_DIR when set (shared target dir across worktrees).
+target_dir="${CARGO_TARGET_DIR:-${repo_root}/target}"
+dmg_dir="${target_dir}/${profile_dir}/bundle/dmg"
 
 # speakrs links OpenBLAS via the `openblas-static` feature, built from source:
 # put the gcc lib dir on the linker search path (shared helper), and — because
@@ -93,7 +95,7 @@ CI=true APPLE_SIGNING_IDENTITY="${identity}" bun run tauri -- "${tauri_args[@]}"
 # Tauri does not entitle sidecars (ADR 0057): re-sign the bundled mnema-cli
 # with its own entitlements, then re-sign the app so the outer signature seals
 # the new nested code — sidecar first, or the app signature breaks.
-app_path="${repo_root}/target/${profile_dir}/bundle/macos/mnema.app"
+app_path="${target_dir}/${profile_dir}/bundle/macos/mnema.app"
 tauri_dir="${repo_root}/apps/desktop/src-tauri"
 # The app-groups entitlement is validation-required: without a provisioning
 # profile authorising the group, secd clears the entitlements-validated flag

@@ -571,7 +571,7 @@ async fn execute_ask_ai_broker_request(
 
 /// Map an Ask AI tool name + camelCase params object onto a brokered request.
 ///
-/// Only the Ask AI data tools (`search`, `timeline`, `show_text`,
+/// Only the Ask AI data tools (`search`, `timeline`, `show_text`, `speakers`,
 /// `recall_context`) are accepted; `open`/`open_in_mnema`, the presentation-only
 /// `reference_captures`, and anything else fall into the unknown branch and are
 /// rejected, so they can never be issued as Ask AI data tools.
@@ -599,6 +599,12 @@ fn broker_request_from_tool(
                 .ok_or_else(|| "Ask AI show_text requires a non-empty opaqueId".to_string())?
                 .to_string();
             Ok(BrokeredCaptureRequest::ShowText { opaque_id })
+        }
+        "speakers" => {
+            let request: app_infra::brokered_access::BrokerSpeakersRequest =
+                serde_json::from_value(params)
+                    .map_err(|error| format!("invalid Ask AI speakers params: {error}"))?;
+            Ok(BrokeredCaptureRequest::Speakers(request))
         }
         "recall_context" => {
             let request: BrokerRecallContextRequest = serde_json::from_value(params)
@@ -636,12 +642,71 @@ fn broker_response_to_tool_value(
             .map_err(|error| format!("failed to serialize Ask AI show_text result: {error}")),
         BrokeredCaptureResponse::RecallContext(response) => serde_json::to_value(response)
             .map_err(|error| format!("failed to serialize Ask AI recall_context result: {error}")),
+        BrokeredCaptureResponse::Speakers(response) => serde_json::to_value(response)
+            .map_err(|error| format!("failed to serialize Ask AI speakers result: {error}")),
         BrokeredCaptureResponse::Error(error) => Err(error.message),
         BrokeredCaptureResponse::AuthStatus(_)
         | BrokeredCaptureResponse::OpenInMnema(_)
         | BrokeredCaptureResponse::OpenCapturedUrl(_) => {
             Err("unexpected Ask AI broker response".to_string())
         }
+    }
+}
+
+/// Retain the opaque-id → metadata entries a brokered response handed the model,
+/// so a later `reference_captures` can both prove the model only cites ids it
+/// actually received AND attach the metadata the source cards render.
+///
+/// `search` results are AUTHORITATIVE (they alone carry the Audio Search Result
+/// Anchor) and overwrite; a `timeline` interval only fills a gap, so a
+/// search-then-timeline turn never loses the anchor that lands the dashboard on
+/// the cited moment.
+fn retain_source_metadata(
+    response: &BrokeredCaptureResponse,
+    metadata: &mut HashMap<String, BrokerSearchResult>,
+) {
+    match response {
+        BrokeredCaptureResponse::Search(response) => {
+            for result in &response.results {
+                metadata.insert(result.opaque_id.clone(), result.clone());
+            }
+        }
+        BrokeredCaptureResponse::Timeline(response) => {
+            for interval in &response.intervals {
+                // An interval with no representative capture points at nothing;
+                // there is no id for the model to cite.
+                let Some(opaque_id) = interval.opaque_id.clone() else {
+                    continue;
+                };
+                metadata
+                    .entry(opaque_id.clone())
+                    .or_insert_with(|| BrokerSearchResult {
+                        opaque_id,
+                        // Carried verbatim: `audio_microphone`/`audio_system`/
+                        // `frame`, which is what colors the card's mic-vs-system
+                        // badge (see `ask_ai_source_kind`).
+                        kind: interval.kind.clone(),
+                        // Timeline is coarse activity, not a text match — the
+                        // source card never renders a snippet.
+                        snippet: String::new(),
+                        started_at: interval.started_at.clone(),
+                        // An open interval has no end yet; the card needs a
+                        // non-empty timestamp, and start is the honest one.
+                        ended_at: interval
+                            .ended_at
+                            .clone()
+                            .unwrap_or_else(|| interval.started_at.clone()),
+                        context: interval.context.clone(),
+                        // No sub-segment anchor on a timeline interval: the card
+                        // opens at the segment start, as it always has.
+                        span_start_ms: None,
+                        span_end_ms: None,
+                        aligned_frame_id: None,
+                        turns: Vec::new(),
+                    });
+            }
+        }
+        _ => {}
     }
 }
 
@@ -664,6 +729,21 @@ struct ResolvedAskAiSource {
     // segment start. Always `None` for frame sources.
     span_start_ms: Option<i64>,
     aligned_frame_id: Option<i64>,
+    /// Microphone-vs-system distinction for audio sources, read off the broker
+    /// search result's kind. `None` for frames (and for any unknown kind).
+    source_kind: Option<&'static str>,
+}
+
+/// Map a broker search-result kind onto the `sourceKind` vocabulary the source
+/// cards render (`AnswerSourceCard.svelte`). The broker already splits audio by
+/// channel on the wire, so this needs no database round-trip. Frames (and any
+/// unknown kind) carry no source kind.
+fn ask_ai_source_kind(result_kind: &str) -> Option<&'static str> {
+    match result_kind {
+        "audio_microphone" => Some("microphone"),
+        "audio_system" => Some("system"),
+        _ => None,
+    }
 }
 
 /// Build the capped, de-duped, ordered Answer Source list from nominated opaque
@@ -728,10 +808,9 @@ where
             // unchanged.
             "spanStartMs": source.span_start_ms,
             "alignedFrameId": source.aligned_frame_id,
-            // Microphone/system distinction for audio sources. The pure builder
-            // never sets it; a best-effort async post-pass in
-            // `handle_reference_captures` fills audio sources from the DB.
-            "sourceKind": serde_json::Value::Null,
+            // Microphone/system distinction for audio sources, carried on the
+            // broker search result the model received (frame sources: null).
+            "sourceKind": source.source_kind,
         }));
     }
 
@@ -770,7 +849,7 @@ async fn handle_reference_captures(
         .map(|guard| guard.clone())
         .unwrap_or_default();
 
-    let (mut sources, accepted, dropped) = build_ask_ai_sources(&opaque_ids, |id| {
+    let (sources, accepted, dropped) = build_ask_ai_sources(&opaque_ids, |id| {
         // Authoritative frame/audio identity via the signed reference. A failed
         // HMAC validation or unparseable id yields `None` (dropped).
         let reference =
@@ -801,58 +880,9 @@ async fn handle_reference_captures(
             // leaves these `None` for frames.
             span_start_ms: result.span_start_ms,
             aligned_frame_id: result.aligned_frame_id,
+            source_kind: ask_ai_source_kind(&result.kind),
         })
     });
-
-    // Best-effort enrichment: color each audio source by its real microphone vs
-    // system-audio kind from the DB. The pure builder cannot do this (no async DB
-    // access), so we patch `sourceKind` here. Capped naturally at the audio cap
-    // (≤4 lookups); a missing AppInfra or a single failed lookup just leaves that
-    // source's `sourceKind` null and never aborts the emit.
-    //
-    // The lookups are issued concurrently rather than sequentially: the audio cap
-    // bounds them at ≤4, but a per-source await chain serializes them needlessly.
-    // We first collect `(index, audio_segment_id)` from an immutable read of
-    // `sources`, drive the cloned-`Arc` lookups through `join_all`, then apply the
-    // resolved kinds back by index (the only mutable borrow of `sources`).
-    if let Some(infra) = app_handle.try_state::<AppInfraState>() {
-        // Own a cloned `Arc<AppInfra>` so each concurrent lookup future can hold it
-        // for the life of its `await` without borrowing the Tauri `State` guard.
-        let infra = Arc::clone(&*infra);
-        let audio_lookups: Vec<(usize, i64)> = sources
-            .iter()
-            .enumerate()
-            .filter_map(|(index, source)| {
-                if source.get("kind").and_then(|kind| kind.as_str()) != Some("audio") {
-                    return None;
-                }
-                let audio_segment_id = source
-                    .get("audioSegmentId")
-                    .and_then(|value| value.as_i64())?;
-                Some((index, audio_segment_id))
-            })
-            .collect();
-
-        let segments = futures_util::future::join_all(audio_lookups.into_iter().map(
-            |(index, audio_segment_id)| {
-                let infra = Arc::clone(&infra);
-                async move { (index, infra.get_audio_segment(audio_segment_id).await) }
-            },
-        ))
-        .await;
-
-        for (index, lookup) in segments {
-            let Ok(Some(segment)) = lookup else {
-                continue;
-            };
-            let source_kind = match segment.source_kind.as_str() {
-                "system_audio" => "system",
-                // `microphone` (and any unexpected value) colors as microphone.
-                _ => "microphone",
-            };
-            sources[index]["sourceKind"] = serde_json::json!(source_kind);
-        }
-    }
 
     Ok((
         serde_json::json!({ "accepted": accepted, "dropped": dropped }),
@@ -926,7 +956,7 @@ pub struct AskAiAvailability {
     reason: Option<String>,
 }
 
-/// The agent **preamble** (system instruction): documents the four data tools +
+/// The agent **preamble** (system instruction): documents the five data tools +
 /// the presentation `reference_captures` tool and the optional graphical-answer
 /// affordance. This is the engine-agnostic system text; the per-turn temporal
 /// grounding + the bare question live in the prompt (see [`build_ask_ai_prompt`]).
@@ -944,7 +974,16 @@ them: `search` \
 finds redacted snippets plus opaque ids across the user's screen OCR and audio transcript \
 history (optionally narrowed by a `from`/`to` RFC3339 time range and `app`/`windowTitle` \
 filters); `timeline` returns coarse activity intervals for a bounded `from`/`to` window; \
-`show_text` returns the full redacted text for one opaque id returned by `search`; \
+`speakers` lists who was heard in the user's audio, each with the opaque `handle` that `search` \
+and `timeline` take as `speaker` — a handle is the ONLY way to address a person, so for \"what \
+did X say\" or \"when was X talking\" call `speakers` FIRST and then ONE filtered `search` or \
+`timeline`, whose results already carry that person's words as `turns` (a `voice` handle is one \
+voice in ONE capture session, not a person — it covers every consecutive recording in that \
+sitting: never merge two of them or present one as an identity); `search` still REQUIRES a \
+`query`, so a question with no keyword in it (\"what did X say yesterday\") is answerable only \
+through `timeline` — never invent a keyword to force it through `search`, because the invented \
+word silently drops every recording that does not contain it; \
+`show_text` returns the full redacted text for one opaque id returned by `search` or `timeline`; \
 `recall_context` returns ONLY the User-Context conclusions (distilled beliefs about the user) \
 and recent activities relevant to the question — redacted, capped, never the whole dossier, and \
 never sensitive-category conclusions — and is the best first tool for questions about the user's \
@@ -1005,8 +1044,9 @@ markdown. Use at most one timeline block.\n",
     // and does not count against the tool-call budget.
     preamble.push_str(
         "You also have a presentation signal, `reference_captures`, which takes `opaqueIds` (the \
-opaque ids you received from `search` results, most-relevant-first) and nominates the captures \
-(screen frames / audio) behind your answer so the app can show them to the user as source cards. \
+opaque ids you received from `search` OR `timeline` results, most-relevant-first) and nominates \
+the captures (screen frames / audio) behind your answer so the app can show them to the user as \
+source cards. \
 It returns NO capture data — only an acknowledgement of how many ids were accepted/dropped. Call \
 it once near the end of your answer (a repeat call replaces the prior set); it does NOT count \
 against the tool-call budget.\n",
@@ -1091,6 +1131,7 @@ fn search_tool_schema() -> serde_json::Value {
             "limit": { "type": "number", "description": "Maximum number of snippets to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
             "windowTitle": { "type": "string", "description": "Restrict to snippets whose window title matches." },
+            "speaker": { "type": "string", "description": "An opaque speaker handle from `speakers`. Narrows to audio this person or voice was heard in and returns their words inline as `turns`. Cannot be combined with `app` or `windowTitle`." },
             "cursor": { "type": "string", "description": "The `nextCursor` from a previous search result, to fetch the next page. Re-send the identical query and filters alongside it; a result with no `nextCursor` is the end of the matches." }
         },
         "required": ["query"]
@@ -1107,9 +1148,23 @@ fn timeline_tool_schema() -> serde_json::Value {
             "to": { "type": "string", "description": "Inclusive window end, RFC3339 (required)." },
             "limit": { "type": "number", "description": "Maximum number of intervals to return." },
             "app": { "type": "string", "description": "Restrict to a single app by name or bundle id." },
-            "windowTitle": { "type": "string", "description": "Restrict to intervals whose window title matches." }
+            "windowTitle": { "type": "string", "description": "Restrict to intervals whose window title matches." },
+            "speaker": { "type": "string", "description": "An opaque speaker handle from `speakers`. Narrows the window to audio this person or voice was heard in — this is how to answer \"when was X talking\". Cannot be combined with `app` or `windowTitle`." }
         },
         "required": ["from", "to"]
+    })
+}
+
+/// JSON Schema (object) for the `speakers` discovery-tool params.
+fn speakers_tool_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+            "name": { "type": "string", "description": "Case-insensitive substring of a person's name; named people only. Use it to reach someone who ranks below the limit." },
+            "limit": { "type": "number", "description": "Maximum number of speakers to return (capped server-side)." }
+        },
+        "required": []
     })
 }
 
@@ -1119,7 +1174,7 @@ fn show_text_tool_schema() -> serde_json::Value {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-            "opaqueId": { "type": "string", "description": "An opaque id from a prior `search` result (required)." }
+            "opaqueId": { "type": "string", "description": "An opaque id from a prior `search` or `timeline` result (required)." }
         },
         "required": ["opaqueId"]
     })
@@ -1151,7 +1206,7 @@ fn reference_captures_tool_schema() -> serde_json::Value {
         "properties": {
             "opaqueIds": {
                 "type": "array",
-                "items": { "type": "string", "description": "An opaque id from a prior search result." },
+                "items": { "type": "string", "description": "An opaque id from a prior `search` or `timeline` result." },
                 "description": "Opaque ids of the captures behind the answer, most-relevant-first."
             }
         },
@@ -1176,8 +1231,17 @@ fn build_ask_ai_tools(
             name: "search".to_string(),
             description:
                 "Search the user's redacted on-device capture history (screen OCR + audio \
-transcripts). Returns snippets with opaque ids, kinds (screenText/audioTranscript), \
-startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle)."
+transcripts). Returns snippets with opaque ids, kinds (frame | audio_microphone | audio_system; \
+audio_system is sound that played through the speakers, not the user speaking), \
+startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTitle). Pass \
+`speaker` (a handle from `speakers`) to get only what one person said, their words included as \
+`turns`. A speaker-filtered response also carries `speakerCoverage`: \
+`recordingsWithUnnamedVoices` (recordings holding a voice nobody has named — any could be this \
+person, and labeling that voice in Mnema brings the recording into reach) and \
+`recordingsWithoutSpeakerData` (recordings where speaker detection found nothing at all, which no \
+speaker filter can ever reach). Either count above zero makes the answer PARTIAL: say what you \
+could attribute, and never report an empty or short filtered result as proof the person said \
+nothing."
                     .to_string(),
             parameters_schema: search_tool_schema(),
         },
@@ -1186,15 +1250,34 @@ startedAt/endedAt timestamps, and optional context (appName/appBundleId/windowTi
             description:
                 "Return coarse activity intervals within a bounded time window. Without app/window \
 filters the result is audio-oriented; with an app or window title it returns matching screen \
-intervals instead."
+intervals instead. Pass `speaker` (a handle from `speakers`) for when one person was talking; \
+that response also carries `speakerCoverage` (`recordingsWithUnnamedVoices` + \
+`recordingsWithoutSpeakerData`) counting audio the filter could not check, so either count above \
+zero makes the answer PARTIAL rather than proof the person was silent."
                     .to_string(),
             parameters_schema: timeline_tool_schema(),
+        },
+        ai_engine::AgentTool {
+            name: "speakers".to_string(),
+            description:
+                "List who was heard in the user's audio, longest-speaking first, each with the \
+opaque `handle` that `search` and `timeline` take as `speaker` — a handle is the ONLY way to \
+address a person, so call this before filtering. A `person` handle is one human, stable across \
+recordings. A `voice` handle is ONE voice in ONE capture session, NOT a person: a session is a \
+continuous sitting and recordings are capped at 5 minutes, so filtering on one `voice` handle \
+returns every consecutive recording in that sitting, and the same human gets an unrelated handle \
+in the next sitting. Never merge two of them or present one as an identity. Its `startMs`/`endMs` \
+describe only the recording it came from, never how far the handle reaches. \
+`recognizedTurns` are voice-match guesses the user never confirmed; `truncated` means this is \
+not everyone — narrow with `name`."
+                    .to_string(),
+            parameters_schema: speakers_tool_schema(),
         },
         ai_engine::AgentTool {
             name: "show_text".to_string(),
             description:
                 "Return the broker-visible derived text for ONE opaque id previously returned by \
-`search`. Use sparingly, only when a snippet is insufficient to answer."
+`search` or `timeline`. Use sparingly, only when a snippet is insufficient to answer."
                     .to_string(),
             parameters_schema: show_text_tool_schema(),
         },
@@ -1214,8 +1297,9 @@ user's habits, interests, projects, or what you know about them, instead of raw 
                 "Presentation signal that nominates the captures (screen frames / audio) behind \
 your answer so the app can show them to the user as source cards. Returns NO capture data — only \
 an acknowledgement of how many were accepted/dropped. Pass the opaque ids you received from \
-`search` results, ordered most-relevant-first, and call this once near the end of your answer (a \
-repeat call replaces the prior set). This does NOT count against the tool-call budget."
+`search` OR `timeline` results, ordered most-relevant-first, and call this once near the end of \
+your answer (a repeat call replaces the prior set). This does NOT count against the tool-call \
+budget."
                     .to_string(),
             parameters_schema: reference_captures_tool_schema(),
         },
@@ -1784,12 +1868,8 @@ async fn run_ask_ai_turn(
                 }
                 let request = broker_request_from_tool(&tool, params)?;
                 let response = execute_ask_ai_broker_request(app_handle, request).await?;
-                if let BrokeredCaptureResponse::Search(ref response) = response {
-                    if let Ok(mut map) = search_metadata.lock() {
-                        for result in &response.results {
-                            map.insert(result.opaque_id.clone(), result.clone());
-                        }
-                    }
+                if let Ok(mut map) = search_metadata.lock() {
+                    retain_source_metadata(&response, &mut map);
                 }
                 let mut value = broker_response_to_tool_value(response)?;
                 if let Some(offset) = utc_offset_minutes {
@@ -2476,6 +2556,115 @@ mod tests {
         assert!(tools.iter().any(|t| t.name == "mcp__github__create_issue"));
     }
 
+    /// Without discovery the model can only filter by a handle it has no way to
+    /// learn, so the whole speaker surface is unreachable from the app's own chat.
+    #[test]
+    fn speakers_tool_is_offered_and_its_response_is_handled() {
+        let tools = build_ask_ai_tools(false, Vec::new());
+        assert!(
+            tools.iter().any(|tool| tool.name == "speakers"),
+            "the speaker discovery tool must be offered"
+        );
+        for tool in tools
+            .iter()
+            .filter(|tool| tool.name == "search" || tool.name == "timeline")
+        {
+            assert!(
+                tool.parameters_schema["properties"]
+                    .get("speaker")
+                    .is_some(),
+                "`{}` must accept the speaker handle",
+                tool.name
+            );
+            assert!(
+                tool.description.contains("speaker"),
+                "`{}` must tell the model the filter exists",
+                tool.name
+            );
+        }
+
+        let request = broker_request_from_tool("speakers", serde_json::json!({ "name": "priya" }))
+            .expect("speakers params should map to a broker request");
+        let BrokeredCaptureRequest::Speakers(request) = request else {
+            panic!("speakers must map to a Speakers request");
+        };
+        assert_eq!(request.name.as_deref(), Some("priya"));
+
+        let response = BrokeredCaptureResponse::Speakers(
+            app_infra::brokered_access::BrokerSpeakersResponse {
+                speakers: vec![app_infra::brokered_access::BrokerSpeakerSummary {
+                    name: Some("Priya".to_string()),
+                    handle: app_infra::brokered_access::BrokerSpeakerHandle {
+                        id: "p1.signature".to_string(),
+                        kind: "person".to_string(),
+                        start_ms: None,
+                        end_ms: None,
+                    },
+                    speaking_ms: 42_000,
+                    assigned_turns: 40,
+                    recognized_turns: 12,
+                }],
+                limit: 20,
+                truncated: true,
+            },
+        );
+        let value = broker_response_to_tool_value(response)
+            .expect("a speakers response is a handled path, not an unexpected one");
+        assert_eq!(value["speakers"][0]["handle"]["id"], "p1.signature");
+        assert_eq!(value["speakers"][0]["handle"]["kind"], "person");
+        assert_eq!(value["speakers"][0]["recognizedTurns"], 12);
+        assert_eq!(value["truncated"], true);
+    }
+
+    /// The preamble sends BOTH "what did X say" and "when was X talking" to "ONE
+    /// filtered `search` or `timeline`" — but `search` REQUIRES a `query`, and
+    /// neither of those questions carries a keyword. A model obeying that
+    /// instruction has to invent one, and an invented keyword silently narrows a
+    /// person's words down to the recordings that happen to match it; the answer
+    /// then reports that slice as everything they said, which the new
+    /// `speakerCoverage` rule cannot catch (coverage counts audio the filter could
+    /// not check, not audio the keyword threw away). The CLI door publishes the
+    /// rule in this same branch (`.agents/skills/mnema-data/SKILL.md`: "a question
+    /// with no keyword in it … is answerable only through `timeline --speaker`; do
+    /// not invent a keyword to force it through `search`"); this door offers the
+    /// same filter with no such instruction.
+    #[test]
+    fn preamble_routes_a_keywordless_person_question_to_timeline() {
+        let tools = build_ask_ai_tools(false, Vec::new());
+        let search = tools
+            .iter()
+            .find(|tool| tool.name == "search")
+            .expect("`search` must be offered");
+        // The premise: `search` cannot run without a keyword.
+        assert!(
+            search.parameters_schema["required"]
+                .as_array()
+                .expect("`search` declares its required params")
+                .iter()
+                .any(|value| value.as_str() == Some("query")),
+            "`search` requires `query`: {}",
+            search.parameters_schema
+        );
+        // …and the preamble really does aim a keyword-less question at `search`.
+        let preamble = build_ask_ai_preamble(&[]);
+        assert!(
+            preamble.contains("\"what did X say\""),
+            "the preamble routes \"what did X say\" through the speaker workflow: {preamble}"
+        );
+
+        let lowered = preamble.to_lowercase();
+        assert!(
+            lowered.contains("no keyword") || lowered.contains("without a keyword"),
+            "the preamble must route a question with no keyword in it to `timeline`, the only \
+tool that can answer it: {preamble}"
+        );
+        assert!(
+            lowered.contains("invent a keyword"),
+            "the preamble must forbid inventing a keyword to force a person question through \
+`search`: {preamble}"
+        );
+    }
+
     #[test]
     fn classify_ask_ai_tool_routes_in_precedence_order() {
         // App-control first (Workstream A).
@@ -2508,6 +2697,7 @@ mod tests {
             "search",
             "timeline",
             "show_text",
+            "speakers",
             "recall_context",
             "mcp__",
             "mcp__nounderscore",
@@ -2557,13 +2747,60 @@ mod tests {
             span_start_ms: None,
             span_end_ms: None,
             aligned_frame_id: None,
+            turns: Vec::new(),
         }
+    }
+
+    /// Citing a timeline interval is only half the capability: the preamble now
+    /// promises `show_text` takes an id returned by `search` OR `timeline`, and
+    /// `reference_captures` says the same. The `show_text` TOOL description — the
+    /// text rig ships inside the tool schema, which is what the model reads when
+    /// it decides whether an id is eligible — still said `search` only. Two
+    /// contradictory contracts for the same tool, and the narrower one is the one
+    /// attached to the call site, so the model never reads the full recording
+    /// behind a timeline interval.
+    #[test]
+    fn show_text_tool_description_accepts_timeline_ids_like_the_preamble_promises() {
+        let preamble = build_ask_ai_preamble(&[]);
+        assert!(
+            preamble.contains(
+                "`show_text` returns the full redacted text for one opaque id returned by \
+`search` or `timeline`"
+            ),
+            "the preamble promises show_text takes a timeline id: {preamble}"
+        );
+
+        let tools = build_ask_ai_tools(false, Vec::new());
+        let show_text = tools
+            .iter()
+            .find(|tool| tool.name == "show_text")
+            .expect("`show_text` must be offered");
+        assert!(
+            show_text.description.contains("`timeline`"),
+            "`show_text`'s tool description must name `timeline` as an id source too, or the \
+model believes the narrower contract: {}",
+            show_text.description
+        );
     }
 
     #[test]
     fn preamble_documents_the_tools_and_graphical_affordance() {
         let preamble = build_ask_ai_preamble(&[]);
-        // The four data tools + the presentation tool are all described.
+        // The five data tools + the presentation tool are all described. The
+        // preamble is the only place that tells the model HOW the tools combine;
+        // a tool offered in `build_ask_ai_tools` but missing here is a surface the
+        // model has no instruction to reach for.
+        for tool in build_ask_ai_tools(false, Vec::new()).iter().filter(|tool| {
+            // Every offered tool that `broker_request_from_tool` accepts as a
+            // brokered data tool.
+            broker_request_from_tool(&tool.name, serde_json::json!({ "query": "x", "from": "2026-05-22T10:00:00Z", "to": "2026-05-22T11:00:00Z", "opaqueId": "x" })).is_ok()
+        }) {
+            assert!(
+                preamble.contains(&format!("`{}`", tool.name)),
+                "the preamble must document the offered `{}` tool",
+                tool.name
+            );
+        }
         assert!(preamble.contains("`search`"));
         assert!(preamble.contains("`timeline`"));
         assert!(preamble.contains("`show_text`"));
@@ -2816,6 +3053,7 @@ mod tests {
             ended_at: ended_at.to_string(),
             span_start_ms: None,
             aligned_frame_id: None,
+            source_kind: None,
         }
     }
 
@@ -2831,7 +3069,130 @@ mod tests {
             ended_at: ended_at.to_string(),
             span_start_ms: Some(3_000),
             aligned_frame_id: Some(99),
+            source_kind: Some("microphone"),
         }
+    }
+
+    #[test]
+    fn ask_ai_source_kind_splits_microphone_from_system_audio() {
+        // A system-audio citation is playback, not the user speaking — swapping
+        // these two would have the answer card attribute a podcast to the user.
+        assert_eq!(ask_ai_source_kind("audio_microphone"), Some("microphone"));
+        assert_eq!(ask_ai_source_kind("audio_system"), Some("system"));
+        assert_eq!(ask_ai_source_kind("frame"), None);
+    }
+
+    /// "When was Priya talking" is answerable from `timeline` and nowhere else —
+    /// the tool description now says exactly that — and timeline intervals carry
+    /// followable opaque ids. Retaining ONLY `search` results leaves every id from
+    /// that answer unciteable, so the turn renders with no source cards at all.
+    #[test]
+    fn timeline_intervals_are_retained_so_the_model_can_cite_them() {
+        let response =
+            BrokeredCaptureResponse::Timeline(app_infra::brokered_access::BrokerTimelineResponse {
+                intervals: vec![
+                    app_infra::brokered_access::BrokerTimelineInterval {
+                        kind: "audio_microphone".to_string(),
+                        started_at: "2026-06-12T09:00:00Z".to_string(),
+                        ended_at: Some("2026-06-12T09:05:00Z".to_string()),
+                        opaque_id: Some("a2a:gask-ai.deadbeef".to_string()),
+                        context: None,
+                        turns: Vec::new(),
+                    },
+                    // No representative capture to point at: nothing to cite, so
+                    // nothing may be retained under an empty key either.
+                    app_infra::brokered_access::BrokerTimelineInterval {
+                        kind: "frame".to_string(),
+                        started_at: "2026-06-12T10:00:00Z".to_string(),
+                        ended_at: Some("2026-06-12T10:05:00Z".to_string()),
+                        opaque_id: None,
+                        context: None,
+                        turns: Vec::new(),
+                    },
+                ],
+                limit: 8,
+                speaker_coverage: None,
+            });
+
+        let mut metadata: HashMap<String, BrokerSearchResult> = HashMap::new();
+        retain_source_metadata(&response, &mut metadata);
+
+        let retained = metadata
+            .get("a2a:gask-ai.deadbeef")
+            .expect("a timeline interval the model can follow must be citable");
+        assert_eq!(retained.kind, "audio_microphone");
+        assert_eq!(retained.started_at, "2026-06-12T09:00:00Z");
+        assert_eq!(retained.ended_at, "2026-06-12T09:05:00Z");
+        assert_eq!(
+            metadata.len(),
+            1,
+            "an interval with no opaque id is not citable"
+        );
+
+        // …and the card it produces is still honest about mic-vs-system.
+        let (sources, accepted, dropped) =
+            build_ask_ai_sources(&["a2a:gask-ai.deadbeef".to_string()], |id| {
+                let result = metadata.get(id)?;
+                Some(ResolvedAskAiSource {
+                    kind: "audio".to_string(),
+                    frame_id: None,
+                    audio_segment_id: Some(42),
+                    app_name: None,
+                    window_title: None,
+                    url: None,
+                    started_at: result.started_at.clone(),
+                    ended_at: result.ended_at.clone(),
+                    span_start_ms: result.span_start_ms,
+                    aligned_frame_id: result.aligned_frame_id,
+                    source_kind: ask_ai_source_kind(&result.kind),
+                })
+            });
+        assert_eq!((accepted, dropped), (1, 0));
+        assert_eq!(sources[0]["sourceKind"], serde_json::json!("microphone"));
+    }
+
+    /// A `search` result is authoritative: it alone carries the Audio Search
+    /// Result Anchor, so a later timeline interval for the same recording must not
+    /// flatten it back to the segment start.
+    #[test]
+    fn a_timeline_interval_never_overwrites_a_search_result_anchor() {
+        let mut result = sample_result();
+        result.opaque_id = "a2a:gask-ai.deadbeef".to_string();
+        result.kind = "audio_microphone".to_string();
+        result.span_start_ms = Some(3_000);
+        result.aligned_frame_id = Some(99);
+
+        let mut metadata: HashMap<String, BrokerSearchResult> = HashMap::new();
+        retain_source_metadata(
+            &BrokeredCaptureResponse::Search(app_infra::brokered_access::BrokerSearchResponse {
+                results: vec![result],
+                limit: 8,
+                next_cursor: None,
+                speaker_coverage: None,
+            }),
+            &mut metadata,
+        );
+        retain_source_metadata(
+            &BrokeredCaptureResponse::Timeline(
+                app_infra::brokered_access::BrokerTimelineResponse {
+                    intervals: vec![app_infra::brokered_access::BrokerTimelineInterval {
+                        kind: "audio_microphone".to_string(),
+                        started_at: "2026-06-12T09:00:00Z".to_string(),
+                        ended_at: Some("2026-06-12T09:05:00Z".to_string()),
+                        opaque_id: Some("a2a:gask-ai.deadbeef".to_string()),
+                        context: None,
+                        turns: Vec::new(),
+                    }],
+                    limit: 8,
+                    speaker_coverage: None,
+                },
+            ),
+            &mut metadata,
+        );
+
+        let retained = metadata.get("a2a:gask-ai.deadbeef").expect("retained");
+        assert_eq!(retained.span_start_ms, Some(3_000));
+        assert_eq!(retained.aligned_frame_id, Some(99));
     }
 
     #[test]
@@ -2938,8 +3299,8 @@ mod tests {
         assert_eq!(audio["audioSegmentId"], serde_json::json!(7));
         assert_eq!(audio["windowTitle"], serde_json::Value::Null);
         assert_eq!(audio["url"], serde_json::Value::Null);
-        assert!(audio.as_object().unwrap().contains_key("sourceKind"));
-        assert_eq!(audio["sourceKind"], serde_json::Value::Null);
+        // Mic-vs-system now rides the search result's kind, not a DB post-pass.
+        assert_eq!(audio["sourceKind"], serde_json::json!("microphone"));
         assert_eq!(audio["spanStartMs"], serde_json::json!(3_000));
         assert_eq!(audio["alignedFrameId"], serde_json::json!(99));
     }
@@ -2950,6 +3311,7 @@ mod tests {
             results: vec![sample_result()],
             limit: 8,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
@@ -2970,6 +3332,7 @@ mod tests {
             results: vec![sample_result()],
             limit: 8,
             next_cursor: Some("v1:42:1:0".to_string()),
+            speaker_coverage: None,
         });
         let value = broker_response_to_tool_value(response).expect("search serializes");
         assert_eq!(value["nextCursor"], serde_json::json!("v1:42:1:0"));
@@ -2980,6 +3343,56 @@ mod tests {
             schema["properties"].get("cursor").is_some(),
             "search tool schema must expose `cursor` so the model can page: {schema}"
         );
+    }
+
+    /// A speaker filter can only match through DETECTED speaker turns, so an empty
+    /// filtered result is routinely "this audio could not be checked", not "they
+    /// said nothing". `speakerCoverage` is the only thing that tells the two apart,
+    /// and the whole response is serialized straight to the model — so the moment
+    /// the Ask AI door started offering `speaker`, it started handing the model two
+    /// bare counts with nothing anywhere that says what they mean. The CLI door
+    /// publishes the rule (`.agents/skills/mnema-data/SKILL.md`: "Either count being
+    /// non-zero makes the answer partial"); this door did not, and the answer the
+    /// user reads is the one that states silence as fact.
+    #[test]
+    fn speaker_filtered_tools_tell_the_model_an_empty_result_is_not_silence() {
+        // The model really is handed the counts, with zero rows beside them.
+        let response = BrokeredCaptureResponse::Search(BrokerSearchResponse {
+            results: Vec::new(),
+            limit: 8,
+            next_cursor: None,
+            speaker_coverage: Some(app_infra::brokered_access::BrokerSpeakerCoverage {
+                recordings_with_unnamed_voices: 12,
+                recordings_without_speaker_data: 30,
+            }),
+        });
+        let value = broker_response_to_tool_value(response).expect("search serializes");
+        assert_eq!(
+            value["speakerCoverage"]["recordingsWithUnnamedVoices"],
+            serde_json::json!(12)
+        );
+        assert_eq!(
+            value["speakerCoverage"]["recordingsWithoutSpeakerData"],
+            serde_json::json!(30)
+        );
+
+        let tools = build_ask_ai_tools(false, Vec::new());
+        for name in ["search", "timeline"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("`{name}` must be offered"));
+            assert!(
+                tool.description.contains("speakerCoverage"),
+                "`{name}` hands the model `speakerCoverage` but never names it: {}",
+                tool.description
+            );
+            assert!(
+                tool.description.to_lowercase().contains("partial"),
+                "`{name}` must say a non-zero coverage count makes the answer partial: {}",
+                tool.description
+            );
+        }
     }
 
     #[test]
@@ -2997,6 +3410,7 @@ mod tests {
             results: vec![audio],
             limit: 8,
             next_cursor: None,
+            speaker_coverage: None,
         });
 
         let value = broker_response_to_tool_value(response).expect("search serializes");
@@ -3019,6 +3433,8 @@ mod tests {
             opaque_id: "op-1".to_string(),
             kind: "frame".to_string(),
             text: "full redacted text".to_string(),
+            speakers: Vec::new(),
+            turns: Vec::new(),
         });
 
         let value = broker_response_to_tool_value(response).expect("show_text serializes");

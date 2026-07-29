@@ -26,10 +26,16 @@
     type AudioDrawerDismissAction,
     type AudioDrawerDismissContext,
   } from "$lib/audio-drawer-dismiss";
+  import AudioDrawer from "$lib/timeline/AudioDrawer.svelte";
   import {
-    placeSpeakerActionsPopover,
-    type SpeakerPopoverPosition,
-  } from "$lib/speaker-popover-position";
+    parseSpeakerAnalysisProvenance,
+    type DrawerShortcut,
+    type AudioSegmentRecord,
+    type AudioSegmentSource,
+    type AudioTranscriptStatus,
+    type SpeakerInlineAction,
+    type SpeakerTranscriptGroup,
+  } from "$lib/timeline/audio-drawer-view";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     loadOcrForFrame,
@@ -55,7 +61,6 @@
     getFocusableElements,
     isShortcutSuppressedTarget,
     matchShortcut,
-    trapTabKey,
     type KeyboardPlatform,
     type ShortcutDefinition,
   } from "$lib/keyboard";
@@ -96,6 +101,7 @@
     ReprocessAudioSegmentTranscriptionRequest,
     ReprocessCapturedFrameOcrRequest,
     PersonProfileDto,
+    SpeakerAnalysisProvenance,
     SpeakerAnalysisSkipReason,
     ScrubPreviewAvailabilityDto,
     ScrubPreviewAvailabilityIntervalDto,
@@ -438,32 +444,12 @@
     );
   }
 
-  type AudioSegmentSource = "microphone" | "systemAudio";
   type TrimmedTimelineFrames = {
     frames: FrameDto[];
     activeIndex: number;
     trimmedHead: boolean;
     trimmedTail: boolean;
   };
-  type AudioSegmentRecord = {
-    id: number;
-    source: AudioSegmentSource;
-    sessionId: string;
-    segmentIndex: number;
-    fileName: string;
-    filePath: string;
-    startUnixMs: number;
-    endUnixMs: number;
-    durationSeconds: number;
-  };
-  type AudioTranscriptStatus =
-    | "idle"
-    | "loading"
-    | "success"
-    | "empty"
-    | "missing"
-    | "running"
-    | "error";
   type TimelineDataChangedPayload = {
     reason: "retention" | string;
     deletedBefore: string | null;
@@ -950,6 +936,9 @@
   let selectedAudioTranscriptStatus = $state<AudioTranscriptStatus>("idle");
   let selectedAudioTranscriptText = $state<string | null>(null);
   let selectedAudioTranscriptSegments = $state<TranscriptionSegment[]>([]);
+  // Word timings from the transcription payload. Parsed for years and thrown
+  // away; the reader's karaoke highlight is what finally consumes them.
+  let selectedAudioTranscriptWords = $state<TranscriptionWord[]>([]);
   let selectedAudioSpeakerTurns = $state<SpeakerTurnDto[]>([]);
   let selectedAudioSpeakerTurnsError = $state<string | null>(null);
   let selectedAudioSpeakerTurnsNotice = $state<string | null>(null);
@@ -964,10 +953,13 @@
     clusterId: number;
     action: SpeakerInlineAction;
   } | null>(null);
-  let speakerNameDrafts = $state<Record<number, string>>({});
-  let speakerActionsOpenIndex = $state<number | null>(null);
-  let speakerActionsPopoverEl = $state<HTMLDivElement | null>(null);
-  let speakerActionsReturnFocusEl: HTMLElement | null = null;
+  // Which reader turn the identity-repair slide-over is pointed at. Bound to the
+  // drawer, so page-level dismissal (Escape, outside click) can collapse it
+  // before it closes the whole drawer.
+  let audioDrawerRepairIndex = $state<number | null>(null);
+  // Provenance + the in-flight job behind the frame-6 state panels.
+  let selectedAudioSpeakerProvenance = $state<SpeakerAnalysisProvenance | null>(null);
+  let selectedAudioPendingJob = $state<{ processor: string; queuedAt: string } | null>(null);
   let selectedAudioTranscriptModelLabel = $state<string | null>(null);
   let selectedAudioTranscriptError = $state<string | null>(null);
   let selectedAudioTranscriptRerunLoading = $state(false);
@@ -1033,14 +1025,16 @@
     clearSelectedAudioTranscriptPoll();
     selectedAudioTranscriptText = null;
     selectedAudioTranscriptSegments = [];
+    selectedAudioTranscriptWords = [];
     selectedAudioSpeakerTurns = [];
     selectedAudioSpeakerClusters = [];
     selectedAudioSpeakerAnalysisRunning = false;
     selectedAudioSpeakerAnalysisFailedJobId = null;
     selectedAudioSpeakerAnalysisRetryLoading = false;
+    selectedAudioSpeakerProvenance = null;
+    selectedAudioPendingJob = null;
     speakerInlineBusyAction = null;
-    speakerNameDrafts = {};
-    speakerActionsOpenIndex = null;
+    audioDrawerRepairIndex = null;
     speakerCorrectionError = null;
     selectedAudioSpeakerTurnsError = null;
     selectedAudioSpeakerTurnsNotice = null;
@@ -1066,241 +1060,9 @@
     return gen === selectedAudioTranscriptGeneration && selectedAudioSegmentId === id;
   }
 
-  function overlapDurationMs(
-    startA: number,
-    endA: number,
-    startB: number,
-    endB: number,
-  ): number {
-    return Math.max(0, Math.min(endA, endB) - Math.max(startA, startB));
-  }
-
-  function segmentMidpointDistanceMs(
-    turn: Pick<SpeakerTurnDto, "startMs" | "endMs">,
-    segment: Pick<TranscriptionSegment, "startMs" | "endMs">,
-  ): number {
-    const turnMidpoint = (turn.startMs + turn.endMs) / 2;
-    const segmentMidpoint = (segment.startMs + segment.endMs) / 2;
-    return Math.abs(turnMidpoint - segmentMidpoint);
-  }
-
-  function transcriptTextsBySpeakerTurn(turns: SpeakerTurnDto[]): Map<number, string> {
-    const textByTurnId = new Map<number, string>();
-
-    for (const turn of turns) {
-      const direct = turn.transcriptText?.trim();
-      if (direct) {
-        textByTurnId.set(turn.id, direct);
-      }
-    }
-
-    return textByTurnId;
-  }
-
-  type SpeakerTranscriptGroup = {
-    clusterId: number;
-    speakerLabel: string;
-    personId: number | null;
-    personLinkAuto: boolean;
-    suggestedPersonId: number | null;
-    recognitionConfidence: SpeakerTurnDto["recognitionConfidence"];
-    recognitionScore: number | null;
-    suggestedMergeTargetClusterId: number | null;
-    suggestedMergeScore: number | null;
-    startMs: number;
-    endMs: number;
-    text: string;
-    overlaps: boolean;
-    turnIds: number[];
-  };
-  type SpeakerInlineAction = "confirm" | "reject" | "merge";
   type SpeakerTurnsLoadOptions = {
     refreshPersonProfiles?: boolean;
   };
-
-  const selectedAudioSpeakerGroups = $derived.by<SpeakerTranscriptGroup[]>(() => {
-    const transcriptByTurnId = transcriptTextsBySpeakerTurn(selectedAudioSpeakerTurns);
-    const groups: SpeakerTranscriptGroup[] = [];
-    for (const turn of selectedAudioSpeakerTurns) {
-      const text = transcriptByTurnId.get(turn.id) ?? "";
-      if (!text) continue;
-      const previous = groups.at(-1);
-      if (previous && previous.clusterId === turn.clusterId) {
-        previous.endMs = Math.max(previous.endMs, turn.endMs);
-        previous.text = `${previous.text} ${text}`.trim();
-        previous.overlaps = previous.overlaps || turn.overlaps;
-        previous.turnIds.push(turn.id);
-        continue;
-      }
-      groups.push({
-        clusterId: turn.clusterId,
-        speakerLabel: turn.speakerLabel,
-        personId: turn.personId,
-        personLinkAuto: turn.personLinkAuto,
-        suggestedPersonId: turn.suggestedPersonId,
-        recognitionConfidence: turn.recognitionConfidence,
-        recognitionScore: turn.recognitionScore,
-        suggestedMergeTargetClusterId:
-          selectedAudioSpeakerClusters.find((cluster) => cluster.id === turn.clusterId)
-            ?.suggestedMergeTargetClusterId ?? null,
-        suggestedMergeScore:
-          selectedAudioSpeakerClusters.find((cluster) => cluster.id === turn.clusterId)
-            ?.suggestedMergeScore ?? null,
-        startMs: turn.startMs,
-        endMs: turn.endMs,
-        text,
-        overlaps: turn.overlaps,
-        turnIds: [turn.id],
-      });
-    }
-    return groups;
-  });
-
-  function speakerDisplayLabel(group: SpeakerTranscriptGroup): string {
-    if (group.personId != null) return speakerProfileName(group.personId) ?? group.speakerLabel;
-    if (group.suggestedPersonId != null) {
-      return `Maybe ${speakerProfileName(group.suggestedPersonId) ?? speakerCleanLabel(group.speakerLabel)}`;
-    }
-    return group.speakerLabel;
-  }
-
-  function speakerCleanLabel(label: string): string {
-    return label.replace(/^Maybe\s+/i, "").trim();
-  }
-
-  function isDefaultSpeakerLabel(label: string): boolean {
-    return /^unknown speaker\s+\d+$/i.test(speakerCleanLabel(label));
-  }
-
-  function speakerProfileName(personId: number | null): string | null {
-    if (personId == null) return null;
-    return personProfiles.find((profile) => profile.id === personId)?.displayName ?? null;
-  }
-
-  function speakerPersistedName(group: SpeakerTranscriptGroup): string {
-    return speakerCleanLabel(speakerDisplayLabel(group));
-  }
-
-  function speakerNameDraft(group: SpeakerTranscriptGroup): string {
-    return speakerNameDrafts[group.clusterId] ?? speakerPersistedName(group);
-  }
-
-  function canRememberSpeakerProfile(group: SpeakerTranscriptGroup): boolean {
-    const name = speakerNameDraft(group).trim();
-    return name.length > 0 && !isDefaultSpeakerLabel(name);
-  }
-
-  function selectablePersonProfiles(group: SpeakerTranscriptGroup): PersonProfileDto[] {
-    return personProfiles.filter((profile) =>
-      profile.id !== group.personId && !isDefaultSpeakerLabel(profile.displayName)
-    );
-  }
-
-  function speakerClusterOptionLabel(cluster: SpeakerClusterDto): string {
-    if (cluster.personId != null) return speakerProfileName(cluster.personId) ?? cluster.speakerLabel;
-    if (cluster.suggestedPersonId != null) {
-      return speakerProfileName(cluster.suggestedPersonId) ?? `Maybe ${speakerCleanLabel(cluster.speakerLabel)}`;
-    }
-    return speakerCleanLabel(cluster.speakerLabel);
-  }
-
-  function speakerConfidenceLabel(group: SpeakerTranscriptGroup): string | null {
-    if (group.recognitionScore == null && group.recognitionConfidence == null) return null;
-    const score = group.recognitionScore == null
-      ? null
-      : group.recognitionScore <= 1
-        ? `${Math.round(group.recognitionScore * 100)}%`
-        : group.recognitionScore.toFixed(2);
-    if (group.recognitionConfidence && score) return `${group.recognitionConfidence} · ${score}`;
-    return group.recognitionConfidence ?? (score ? `score ${score}` : null);
-  }
-
-  function suggestedMergeTargetLabel(group: SpeakerTranscriptGroup): string | null {
-    const targetId = group.suggestedMergeTargetClusterId;
-    if (targetId == null) return null;
-    const target = selectedAudioSpeakerClusters.find((cluster) => cluster.id === targetId);
-    return target ? speakerClusterOptionLabel(target) : null;
-  }
-
-  function isFirstVisibleSpeakerClusterOccurrence(
-    group: SpeakerTranscriptGroup,
-    index: number,
-  ): boolean {
-    return selectedAudioSpeakerGroups.findIndex(
-      (candidate) => candidate.clusterId === group.clusterId,
-    ) === index;
-  }
-
-  function speakerSuggestedPersonName(group: SpeakerTranscriptGroup): string {
-    return speakerProfileName(group.suggestedPersonId) ?? speakerCleanLabel(group.speakerLabel);
-  }
-
-  function shouldShowPersonSuggestionRow(
-    group: SpeakerTranscriptGroup,
-    index: number,
-  ): boolean {
-    return group.suggestedPersonId != null &&
-      group.personId == null &&
-      isFirstVisibleSpeakerClusterOccurrence(group, index);
-  }
-
-  function shouldShowMergeSuggestionRow(
-    group: SpeakerTranscriptGroup,
-    index: number,
-  ): boolean {
-    return group.suggestedMergeTargetClusterId != null &&
-      suggestedMergeTargetLabel(group) != null &&
-      isFirstVisibleSpeakerClusterOccurrence(group, index);
-  }
-
-  function formatSpeakerActionScore(score: number | null): string | null {
-    if (score == null || !Number.isFinite(score)) return null;
-    const percentage = score <= 1 ? score * 100 : score;
-    return `${Math.round(Math.max(0, Math.min(100, percentage)))}%`;
-  }
-
-  function speakerActionConfidenceLabel(group: SpeakerTranscriptGroup): string | null {
-    const confidence = group.recognitionConfidence?.toLowerCase() ?? null;
-    const confidenceLabel = confidence === "high"
-      ? "High confidence"
-      : confidence === "medium"
-        ? "Medium confidence"
-        : null;
-    const scoreLabel = developerOptions.value
-      ? formatSpeakerActionScore(group.recognitionScore)
-      : null;
-    if (confidenceLabel && scoreLabel) return `${confidenceLabel} · ${scoreLabel}`;
-    return confidenceLabel ?? scoreLabel;
-  }
-
-  function speakerActionScoreLabel(group: SpeakerTranscriptGroup): string | null {
-    if (!developerOptions.value) return null;
-    const scoreLabel = formatSpeakerActionScore(group.suggestedMergeScore);
-    return scoreLabel ? `merge score ${scoreLabel}` : null;
-  }
-
-  function speakerActionBusyLabel(action: SpeakerInlineAction): string {
-    switch (action) {
-      case "confirm":
-        return "Confirming...";
-      case "reject":
-        return "Rejecting...";
-      case "merge":
-        return "Merging...";
-    }
-  }
-
-  function speakerInlineActionIsBusy(
-    group: SpeakerTranscriptGroup,
-    action: SpeakerInlineAction,
-  ): boolean {
-    return speakerInlineBusyAction?.clusterId === group.clusterId &&
-      speakerInlineBusyAction.action === action;
-  }
-
-  function speakerInlineActionDisabled(group: SpeakerTranscriptGroup): boolean {
-    return speakerCorrectionBusyClusterId === group.clusterId;
-  }
 
   async function runSpeakerInlineAction(
     clusterId: number,
@@ -1326,31 +1088,6 @@
       "confirm",
       () => confirmSpeakerSuggestion(group.clusterId),
     );
-  }
-
-  async function rejectInlineSpeakerSuggestion(group: SpeakerTranscriptGroup): Promise<void> {
-    await runSpeakerInlineAction(
-      group.clusterId,
-      "reject",
-      () => rejectSpeakerSuggestion(group.clusterId),
-    );
-  }
-
-  async function mergeInlineSpeakerSuggestion(group: SpeakerTranscriptGroup): Promise<void> {
-    await runSpeakerInlineAction(
-      group.clusterId,
-      "merge",
-      () => mergeSpeakerClusterById(group.clusterId, group.suggestedMergeTargetClusterId),
-    );
-  }
-
-  function updateSpeakerNameDraft(clusterId: number, event: Event): void {
-    const input = event.currentTarget as HTMLInputElement;
-    speakerNameDrafts = { ...speakerNameDrafts, [clusterId]: input.value };
-  }
-
-  function resetSpeakerNameDraft(group: SpeakerTranscriptGroup): void {
-    speakerNameDrafts = { ...speakerNameDrafts, [group.clusterId]: speakerPersistedName(group) };
   }
 
   async function loadSelectedAudioSpeakerTurns(
@@ -1381,12 +1118,19 @@
             request: { sessionId },
           })
         : [];
-      if (
-        turns.length === 0 &&
-        speakerJobId != null &&
-        selectedAudioTranscriptStatus === "success"
-      ) {
-        selectedAudioSpeakerTurnsNotice = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+      if (turns.length === 0 && speakerJobId != null) {
+        // Always read the result (it carries the provenance the frame-6 no-speech
+        // panel footnotes with); only word it as a notice when the transcript
+        // itself succeeded, since otherwise the panel already says what happened.
+        const empty = await loadSpeakerAnalysisEmptyNotice(speakerJobId);
+        // The drawer is non-modal, so the user can click another audio bar during
+        // that round trip. Neither the provenance footnote (`skipReason silent ·
+        // audioPeak 0.004`) nor the notice may land on the segment open NOW.
+        if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
+        selectedAudioSpeakerProvenance = empty.provenance;
+        if (selectedAudioTranscriptStatus === "success") {
+          selectedAudioSpeakerTurnsNotice = empty.notice;
+        }
       }
     } catch (err) {
       if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
@@ -1415,18 +1159,25 @@
     }
   }
 
-  async function loadSpeakerAnalysisEmptyNotice(jobId: number): Promise<string> {
+  async function loadSpeakerAnalysisEmptyNotice(
+    jobId: number,
+  ): Promise<{ notice: string; provenance: SpeakerAnalysisProvenance | null }> {
     const result = await invoke<ProcessingResultDto | null>("get_processing_result", {
       request: { jobId } satisfies GetProcessingResultRequest,
     });
+    // Same fetch feeds the frame-6 panels' provenance footnote (skipReason,
+    // audioPeak, chunkingMode) — no extra round trip. RETURNED, not written from
+    // here: this runs after an await, so only the caller still holds the (id, gen)
+    // pair that says whether the drawer is still on this segment.
+    const provenance = parseSpeakerAnalysisProvenance(result?.structuredPayloadJson ?? null);
     const skipReason = parseSpeakerAnalysisSkipReason(result?.structuredPayloadJson ?? null);
-    if (skipReason === "too_short") {
-      return "Speaker analysis skipped: audio segment is too short.";
-    }
-    if (skipReason === "silent") {
-      return "Speaker analysis skipped: no speech-level audio detected.";
-    }
-    return "No speaker turns found.";
+    const notice =
+      skipReason === "too_short"
+        ? "Speaker analysis skipped: audio segment is too short."
+        : skipReason === "silent"
+          ? "Speaker analysis skipped: no speech-level audio detected."
+          : "No speaker turns found.";
+    return { notice, provenance };
   }
 
   function parseSpeakerAnalysisSkipReason(
@@ -1471,16 +1222,21 @@
     return job?.status === "queued" || job?.status === "running";
   }
 
-  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
-    const trimmedLabel = label.trim();
-    if (trimmedLabel.length === 0) return;
+  // One speaker write at a time, and every one of them routed through here.
+  // `speakerCorrectionBusyClusterId` is a single shared id: with two clusters
+  // written concurrently, the first `finally` clears it while the second write is
+  // still in flight, so every chip re-enables mid-write and a second click lands
+  // on a row the first write is still changing. Speaker writes have no backend
+  // inverse, so that is not something the user can undo.
+  async function runSpeakerCorrection(
+    clusterId: number,
+    write: () => Promise<void>,
+  ): Promise<void> {
+    if (speakerCorrectionBusyClusterId !== null) return;
     speakerCorrectionBusyClusterId = clusterId;
     speakerCorrectionError = null;
     try {
-      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
-      const { [clusterId]: _removed, ...remainingDrafts } = speakerNameDrafts;
-      speakerNameDrafts = remainingDrafts;
-      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
+      await write();
     } catch (err) {
       speakerCorrectionError = humanizeError(err);
     } finally {
@@ -1488,95 +1244,19 @@
     }
   }
 
-  async function saveSpeakerNameIfChanged(group: SpeakerTranscriptGroup): Promise<void> {
-    const label = speakerNameDraft(group).trim();
-    if (label.length === 0) {
-      resetSpeakerNameDraft(group);
-      return;
-    }
-    if (label === speakerPersistedName(group)) return;
-    await saveSpeakerClusterName(group.clusterId, label);
-  }
-
-  function handleSpeakerNameKeydown(event: KeyboardEvent, group: SpeakerTranscriptGroup): void {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      void saveSpeakerNameIfChanged(group);
-      return;
-    }
-    if (event.key === "Escape") {
-      event.preventDefault();
-      resetSpeakerNameDraft(group);
-      (event.currentTarget as HTMLInputElement).blur();
-    }
-  }
-
-  // Viewport-anchored placement for the speaker-actions popover. The popover
-  // renders in the top layer (`popover="manual"`), so neither the transcript's
-  // scroll container nor the drawer's `overflow: hidden` can clip it; anchor
-  // it just above the clicked chip and clamp it on-screen (the pure clamp
-  // math and its tests live in lib/speaker-popover-position.ts).
-  let speakerActionsPopoverPos = $state<SpeakerPopoverPosition | null>(null);
-
-  function toggleSpeakerActions(index: number, event: MouseEvent): void {
-    event.preventDefault();
-    event.stopPropagation();
-    const chip = event.currentTarget as HTMLElement;
-    speakerActionsReturnFocusEl = chip;
-    if (speakerActionsOpenIndex === index) {
-      speakerActionsOpenIndex = null;
-      return;
-    }
-    const rem =
-      Number.parseFloat(getComputedStyle(document.documentElement).fontSize) ||
-      16;
-    speakerActionsPopoverPos = placeSpeakerActionsPopover(
-      chip.getBoundingClientRect(),
-      window.innerWidth,
-      window.innerHeight,
-      rem,
-    );
-    speakerActionsOpenIndex = index;
-  }
-
-  function closeSpeakerActions(): void {
-    speakerActionsOpenIndex = null;
-  }
-
-  $effect(() => {
-    if (speakerActionsOpenIndex == null) return;
-    let cancelled = false;
-    void tick().then(() => {
-      if (cancelled || speakerActionsOpenIndex == null) return;
-      // Promote the freshly-rendered popover into the top layer before
-      // focusing it (a `[popover]` element is display:none until shown).
-      speakerActionsPopoverEl?.showPopover?.();
-      const first = getFocusableElements(speakerActionsPopoverEl)[0] ?? speakerActionsPopoverEl;
-      first?.focus({ preventScroll: true });
+  async function saveSpeakerClusterName(clusterId: number, label: string): Promise<void> {
+    const trimmedLabel = label.trim();
+    if (trimmedLabel.length === 0) return;
+    await runSpeakerCorrection(clusterId, async () => {
+      await invoke("name_speaker_cluster", { request: { clusterId, label: trimmedLabel } });
+      await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
     });
-    return () => {
-      cancelled = true;
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        active &&
-        speakerActionsPopoverEl?.contains(active)
-      ) {
-        speakerActionsReturnFocusEl?.focus({ preventScroll: true });
-      }
-    };
-  });
-
-  function onSpeakerLineClick(group: SpeakerTranscriptGroup): void {
-    closeSpeakerActions();
-    seekAudioToTimeMs(group.startMs);
   }
 
   async function createAndLinkSpeakerProfile(clusterId: number, displayName: string): Promise<void> {
     const trimmedDisplayName = displayName.trim();
     if (trimmedDisplayName.length === 0) return;
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       const profile = await invoke<PersonProfileDto>("create_person_profile", {
         request: { displayName: trimmedDisplayName, notes: null },
       });
@@ -1584,68 +1264,40 @@
         request: { clusterId, personId: profile.id, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function linkSpeakerCluster(clusterId: number, personId: number): Promise<void> {
     if (!Number.isFinite(personId) || personId <= 0) return;
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("link_speaker_cluster_to_person", {
         request: { clusterId, personId, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function confirmSpeakerSuggestion(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("confirm_speaker_recognition_suggestion", {
         request: { clusterId, addEmbedding: true },
       });
       await refreshCurrentSpeakerTurns();
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function rejectSpeakerSuggestion(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("reject_speaker_recognition_suggestion", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function unlinkSpeakerProfile(clusterId: number): Promise<void> {
-    speakerCorrectionBusyClusterId = clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(clusterId, async () => {
       await invoke("unlink_speaker_cluster_from_person", { request: { clusterId } });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function mergeSpeakerClusterById(
@@ -1653,18 +1305,12 @@
     targetClusterId: number | null,
   ): Promise<void> {
     if (targetClusterId == null || !Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    speakerCorrectionBusyClusterId = sourceClusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(sourceClusterId, async () => {
       await invoke("merge_speaker_clusters", {
         request: { sourceClusterId, targetClusterId },
       });
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   async function moveSpeakerBlockTurns(
@@ -1672,23 +1318,18 @@
     targetClusterId: number,
   ): Promise<void> {
     if (!Number.isFinite(targetClusterId) || targetClusterId <= 0) return;
-    speakerCorrectionBusyClusterId = group.clusterId;
-    speakerCorrectionError = null;
-    try {
+    await runSpeakerCorrection(group.clusterId, async () => {
       for (const turnId of group.turnIds) {
         await invoke("move_speaker_turn_to_cluster", {
           request: { turnId, targetClusterId },
         });
       }
       await refreshCurrentSpeakerTurns({ refreshPersonProfiles: false });
-    } catch (err) {
-      speakerCorrectionError = humanizeError(err);
-    } finally {
-      speakerCorrectionBusyClusterId = null;
-    }
+    });
   }
 
   function clearSelectedAudioTranscriptPoll(): void {
+    selectedAudioPendingJob = null;
     if (selectedAudioTranscriptPollTimer) {
       clearTimeout(selectedAudioTranscriptPollTimer);
       selectedAudioTranscriptPollTimer = null;
@@ -1696,10 +1337,21 @@
     selectedAudioTranscriptPollJobId = null;
   }
 
-  function scheduleSelectedAudioTranscriptPoll(id: number, jobId: number, gen: number): void {
+  function scheduleSelectedAudioTranscriptPoll(
+    id: number,
+    jobId: number,
+    gen: number,
+    job?: ProcessingJobDto,
+  ): void {
     if (!selectedAudioTranscriptIsCurrent(id, gen)) return;
-    if (selectedAudioTranscriptPollTimer && selectedAudioTranscriptPollJobId === jobId) return;
+    if (selectedAudioTranscriptPollTimer && selectedAudioTranscriptPollJobId === jobId) {
+      if (job) selectedAudioPendingJob = { processor: job.processor, queuedAt: job.queuedAt };
+      return;
+    }
     clearSelectedAudioTranscriptPoll();
+    // AFTER the clear: clearSelectedAudioTranscriptPoll() nulls the marker, so
+    // setting it first would silently drop the "still working" panel's stage line.
+    if (job) selectedAudioPendingJob = { processor: job.processor, queuedAt: job.queuedAt };
     selectedAudioTranscriptPollJobId = jobId;
     selectedAudioTranscriptPollTimer = setTimeout(() => {
       selectedAudioTranscriptPollTimer = null;
@@ -1879,7 +1531,7 @@
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsError = null;
       selectedAudioSpeakerTurnsNotice = null;
-      scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
+      scheduleSelectedAudioTranscriptPoll(id, job.id, gen, job);
       return;
     }
 
@@ -1938,7 +1590,7 @@
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
-      scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
+      scheduleSelectedAudioTranscriptPoll(id, job.id, gen, job);
       return false;
     }
 
@@ -2000,7 +1652,7 @@
       selectedAudioSpeakerAnalysisFailedJobId = null;
       selectedAudioSpeakerTurnsNotice = null;
       selectedAudioTranscriptError = null;
-      scheduleSelectedAudioTranscriptPoll(id, job.id, gen);
+      scheduleSelectedAudioTranscriptPoll(id, job.id, gen, job);
       return;
     }
 
@@ -2036,6 +1688,9 @@
     }
 
     const segments = parseTranscriptionSegments(result.structuredPayloadJson);
+    selectedAudioTranscriptWords = normalizeTranscriptionTimedRuns(
+      parseTranscriptionStructuredPayload(result.structuredPayloadJson)?.words ?? [],
+    );
     const transcript = result.resultText?.trim().length
       ? result.resultText
       : segments.map((segment) => segment.text).join(" ");
@@ -2256,216 +1911,40 @@
       "Failed to play audio. The media bytes were loaded, but the browser could not decode this segment.";
   }
 
-  // ─── Custom audio player state ───────────────────────────────────────────
-  // The visible drawer renders a bespoke transport instead of `<audio
-  // controls>`, but a hidden `<audio>` element under the hood still owns
-  // decoding/playback. UI state mirrors the element via `timeupdate`,
-  // `loadedmetadata`, `play`, `pause`, and `ended` events. Scrubbing writes
-  // back to `audio.currentTime`. State resets whenever the selected segment
-  // changes (see `$effect` further down) so a new segment always begins
-  // paused at 0 with a fresh duration readout.
-  let audioEl = $state<HTMLAudioElement | null>(null);
-  let audioIsPlaying = $state(false);
-  let audioCurrentTime = $state(0);
-  let audioDuration = $state(0);
+  // The reader's scroll container, bound out of the drawer so
+  // `refreshCurrentSpeakerTurns` can preserve its position across a refresh.
   let selectedAudioTranscriptContainerEl = $state<HTMLDivElement | null>(null);
-  // While the user drags the scrub thumb we hold UI updates from `timeupdate`
-  // events so the indicator doesn't fight the drag. Commit on release.
-  let audioScrubbing = $state(false);
-  // Whether the user has explicitly seeked (clicked a transcript segment, used
-  // the scrubber, etc.) within the current segment. The active-segment
-  // highlight is normally suppressed at the paused-at-zero start so a fresh
-  // segment doesn't auto-highlight its first line; but once the user seeks —
-  // even to the very first segment at 0ms while paused — that highlight should
-  // resolve from the seek target. Reset whenever the selected segment changes.
-  let audioHasSeeked = $state(false);
-
-  function findActiveTranscriptSegmentIndex(
-    segments: TranscriptionSegment[],
-    currentTimeSeconds: number,
-  ): number | null {
-    if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) return null;
-    const currentMs = Math.round(currentTimeSeconds * 1000);
-    for (let index = segments.length - 1; index >= 0; index -= 1) {
-      if (currentMs >= segments[index].startMs) return index;
-    }
-    return null;
-  }
-
-  const selectedAudioTranscriptActiveSegmentIndex = $derived(
-    selectedAudioTranscriptSegments.length === 0 ||
-      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
-      ? null
-      : findActiveTranscriptSegmentIndex(selectedAudioTranscriptSegments, audioCurrentTime),
-  );
-
-  function findActiveSpeakerGroupIndex(
-    groups: SpeakerTranscriptGroup[],
-    currentTimeSeconds: number,
-  ): number | null {
-    if (!Number.isFinite(currentTimeSeconds) || currentTimeSeconds < 0) return null;
-    const currentMs = Math.round(currentTimeSeconds * 1000);
-    for (let index = groups.length - 1; index >= 0; index -= 1) {
-      if (currentMs >= groups[index].startMs) return index;
-    }
-    return null;
-  }
-
-  const selectedAudioSpeakerActiveGroupIndex = $derived(
-    selectedAudioSpeakerGroups.length === 0 ||
-      (!audioIsPlaying && audioCurrentTime <= 0 && !audioHasSeeked)
-      ? null
-      : findActiveSpeakerGroupIndex(selectedAudioSpeakerGroups, audioCurrentTime),
-  );
-
-  $effect(() => {
-    const activeIndex = selectedAudioSpeakerGroups.length > 0
-      ? selectedAudioSpeakerActiveGroupIndex
-      : selectedAudioTranscriptActiveSegmentIndex;
-    const container = selectedAudioTranscriptContainerEl;
-    if (activeIndex == null || !container) return;
-    void tick().then(() => {
-      const activeSegmentSelector = selectedAudioSpeakerGroups.length > 0
-        ? `[data-speaker-group-index="${activeIndex}"]`
-        : `[data-transcript-segment-index="${activeIndex}"]`;
-      const activeSegment = container.querySelector<HTMLElement>(
-        activeSegmentSelector,
-      );
-      activeSegment?.scrollIntoView({ block: "nearest", inline: "nearest" });
-    });
-  });
-
-  $effect(() => {
-    // Reset transport readouts whenever the selection (and therefore the
-    // underlying media) changes, so the prior segment's progress doesn't
-    // briefly appear before the new metadata loads.
-    void selectedAudioSegmentId;
-    audioIsPlaying = false;
-    audioCurrentTime = 0;
-    audioDuration = 0;
-    audioScrubbing = false;
-    audioHasSeeked = false;
-  });
-
-  function togglePlayPause() {
-    const el = audioEl;
-    if (!el) return;
-    if (el.paused) {
-      void el.play().catch(() => {
-        // Surface decode/play failures through the existing error path.
-        onSelectedAudioError();
-      });
-    } else {
-      el.pause();
-    }
-  }
-
-  function onAudioTimeUpdate() {
-    if (!audioEl || audioScrubbing) return;
-    audioCurrentTime = audioEl.currentTime;
-  }
-  function onAudioLoadedMetadata() {
-    if (!audioEl) return;
-    audioDuration = Number.isFinite(audioEl.duration) ? audioEl.duration : 0;
-  }
-  function onAudioPlay() {
-    audioIsPlaying = true;
-  }
-  function onAudioPause() {
-    audioIsPlaying = false;
-  }
-  function onAudioEnded() {
-    audioIsPlaying = false;
-    audioCurrentTime = audioEl?.duration ?? audioCurrentTime;
-  }
-  function onScrubInput(e: Event) {
-    const t = Number((e.currentTarget as HTMLInputElement).value);
-    audioScrubbing = true;
-    audioCurrentTime = t;
-  }
-  function onScrubChange(e: Event) {
-    const t = Number((e.currentTarget as HTMLInputElement).value);
-    audioScrubbing = false;
-    if (audioEl && Number.isFinite(t)) {
-      audioEl.currentTime = t;
-      audioCurrentTime = t;
-    }
-  }
-
-  function seekAudioToTimeMs(startMs: number): void {
-    const el = audioEl;
-    if (!el) return;
-    const nextTime = Math.max(
-      0,
-      Math.min(Number.isFinite(audioDuration) && audioDuration > 0 ? audioDuration : Infinity, startMs / 1000),
-    );
-    if (!Number.isFinite(nextTime)) return;
-    el.currentTime = nextTime;
-    audioCurrentTime = nextTime;
-    // Mark an explicit seek so the active-segment highlight resolves even when
-    // the target is the first segment at 0ms while paused.
-    audioHasSeeked = true;
-  }
-
-  $effect(() => {
-    const seekMs = pendingAudioSeekMs;
-    const el = audioEl;
-    if (seekMs == null || !el || selectedAudioSrc == null) return;
-    const applySeek = () => {
-      seekAudioToTimeMs(seekMs);
-      pendingAudioSeekMs = null;
-    };
-    if (el.readyState >= 1) {
-      applySeek();
-      return;
-    }
-    el.addEventListener("loadedmetadata", applySeek, { once: true });
-    return () => el.removeEventListener("loadedmetadata", applySeek);
-  });
-
-  /** `M:SS` for the player transport. Distinct from the segment-duration
-   *  helper above because the transport ticks per second and a leading dash
-   *  while metadata is still loading reads better as `0:00`. */
-  function formatPlayerTime(seconds: number): string {
-    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-    const total = Math.floor(seconds);
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  }
-
-  function formatTranscriptSegmentTitle(segment: TranscriptionSegment): string {
-    const start = formatPlayerTime(segment.startMs / 1000);
-    if (segment.endMs <= segment.startMs) return start;
-    return `${start}–${formatPlayerTime(segment.endMs / 1000)}`;
-  }
 
   // ─── Outside-click & wheel dismissal ─────────────────────────────────────
   // While the drawer is open, a pointerdown or wheel outside it dismisses it
-  // (an open speaker-actions popover collapses first, so dismissal is
-  // layered — see audioDrawerPointerDownAction/audioDrawerWheelAction in
+  // (an open repair slide-over collapses first, so dismissal is layered — see
+  // audioDrawerPointerDownAction/audioDrawerWheelAction in
   // lib/audio-drawer-dismiss.ts for the policy and its tests). Clicking an
   // audio bar is the one non-dismissal: a SWITCH (the bar's own click handler
   // reselects). We listen for `wheel` rather than `scroll` because the rail
   // is also scrolled programmatically (scrub conversion, jump-to-frame,
   // resize re-anchoring, search-result lane moves) and those must not read
   // as a user's intent to dismiss.
+  //
+  // The repair panel is pinned to the DRAWER's right edge, not to viewport
+  // coordinates like the old popover was, so it must survive a wheel over the
+  // transcript underneath it: `insidePopover` is therefore "inside the drawer at
+  // all", which is exactly the ignore condition the policy wants.
   function audioDrawerDismissContext(target: Node): AudioDrawerDismissContext {
+    const insideDrawer = audioDrawerEl?.contains(target) === true;
     return {
       drawerOpen: selectedAudioSegmentId != null,
-      insideDrawer: audioDrawerEl?.contains(target) === true,
-      insidePopover:
-        target instanceof Element &&
-        target.closest(".audio-drawer__speaker-popover") != null,
+      insideDrawer,
+      insidePopover: insideDrawer,
       onAudioBar:
         target instanceof Element &&
         target.closest(".timeline-rail__audio-bar") != null,
-      popoverOpen: speakerActionsOpenIndex != null,
+      popoverOpen: audioDrawerRepairIndex != null,
     };
   }
 
   function runAudioDrawerDismissAction(action: AudioDrawerDismissAction): void {
-    if (action === "collapse-popover") closeSpeakerActions();
+    if (action === "collapse-popover") audioDrawerRepairIndex = null;
     else if (action === "close-drawer") closeAudioDrawer();
   }
 
@@ -2528,39 +2007,17 @@
     }
   });
 
-  // ─── Audio player drawer a11y ────────────────────────────────────────────
-  // The audio player is rendered as a non-modal `role="dialog"` bottom sheet
-  // that slides in only when an audio segment is selected. The timeline lane
-  // remains interactive while the drawer is open so users can swap selection
-  // by clicking another bar; the drawer reacts to selection changes by
-  // refreshing its metadata + media. We wire up Escape-to-close, a Tab focus
-  // trap while open, and focus restoration to the previously-selected audio
-  // bar (if still present) when the drawer closes.
+  // ─── Audio player drawer wiring ──────────────────────────────────────────
+  // The drawer itself lives in lib/timeline/AudioDrawer.svelte and owns its own
+  // view state (transport, expanded/peek, timestamps, follow mode, the repair
+  // slide-over). This page keeps `selectedAudioSegmentId` as the open/closed
+  // signal, the data loading, and every DB write.
   let audioDrawerEl = $state<HTMLDivElement | null>(null);
-  let audioDrawerCloseEl = $state<HTMLButtonElement | null>(null);
-  // Capture the element that had focus immediately before the drawer opened
-  // so we can return focus there on close. Recomputed on each open transition.
-  let audioDrawerReturnFocusEl: HTMLElement | null = null;
 
   function closeAudioDrawer() {
     pendingAudioSeekMs = null;
     selectedAudioSegmentPinned = null;
     selectedAudioSegmentId = null;
-  }
-
-  function seekAudioBySeconds(deltaSeconds: number): void {
-    const el = audioEl;
-    if (!el) return;
-    const duration = Number.isFinite(audioDuration) && audioDuration > 0
-      ? audioDuration
-      : Number.isFinite(el.duration) && el.duration > 0
-        ? el.duration
-        : Infinity;
-    const nextTime = Math.max(0, Math.min(duration, el.currentTime + deltaSeconds));
-    if (!Number.isFinite(nextTime)) return;
-    el.currentTime = nextTime;
-    audioCurrentTime = nextTime;
-    audioHasSeeked = true;
   }
 
   function isAudioDrawerShortcutSuppressedTarget(target: EventTarget | null): boolean {
@@ -2572,79 +2029,46 @@
     );
   }
 
-  function onAudioDrawerKeydown(e: KeyboardEvent) {
-    if (selectedAudioSegmentId == null) return;
-    if (e.key === "Escape") {
-      e.preventDefault();
-      e.stopPropagation();
-      if (speakerActionsOpenIndex != null) {
-        closeSpeakerActions();
-        return;
+  /** Resolve a keydown to a drawer transport action. Fast seeks are checked
+   *  before their slow twins so a modifier-carrying binding wins. */
+  function audioDrawerShortcutFor(event: KeyboardEvent): DrawerShortcut | null {
+    if (isAudioDrawerShortcutSuppressedTarget(event.target)) return null;
+    const order: DrawerShortcut[] = [
+      "playPause",
+      "seekBackFast",
+      "seekForwardFast",
+      "seekBack",
+      "seekForward",
+    ];
+    for (const action of order) {
+      if (
+        matchShortcut(event, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS[action]), windowPlatform)
+      ) {
+        return action;
       }
-      closeAudioDrawer();
-      return;
     }
-
-    if (
-      matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.playPause), windowPlatform) &&
-      !isAudioDrawerShortcutSuppressedTarget(e.target)
-    ) {
-      e.preventDefault();
-      togglePlayPause();
-      return;
-    }
-
-    if (
-      !isAudioDrawerShortcutSuppressedTarget(e.target) &&
-      (
-        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform) ||
-        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform) ||
-        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForward), windowPlatform) ||
-        matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)
-      )
-    ) {
-      e.preventDefault();
-      if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBackFast), windowPlatform)) {
-        seekAudioBySeconds(-30);
-      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekForwardFast), windowPlatform)) {
-        seekAudioBySeconds(30);
-      } else if (matchShortcut(e, effectiveShortcut(AUDIO_DRAWER_SHORTCUTS.seekBack), windowPlatform)) {
-        seekAudioBySeconds(-5);
-      } else {
-        seekAudioBySeconds(5);
-      }
-      return;
-    }
-
-    trapTabKey(e, audioDrawerEl);
+    return null;
   }
 
-  // Track the open/close transition: capture return-focus target on open,
-  // move focus into the drawer's close button after mount, and restore focus
-  // on close.
-  $effect(() => {
-    const open = selectedAudioSegmentId != null;
-    if (!open) return;
-    audioDrawerReturnFocusEl = document.activeElement as HTMLElement | null;
-    let cancelled = false;
-    void tick().then(() => {
-      if (cancelled || selectedAudioSegmentId == null) return;
-      (audioDrawerCloseEl ?? audioDrawerEl)?.focus();
-    });
-    return () => {
-      cancelled = true;
-      // Restore focus to the originating element only if focus has not moved
-      // somewhere unrelated (e.g. user clicked into another control already).
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        !active ||
-        active === document.body ||
-        audioDrawerEl?.contains(active)
-      ) {
-        audioDrawerReturnFocusEl?.focus({ preventScroll: true });
-      }
-    };
-  });
+  // ─── Speaker writes the drawer delegates back here ───────────────────────
+
+  /** "Name & apply". An unlinked cluster becomes a saved person (that is what
+   *  makes recognition stick); an already-linked one just gets relabelled. */
+  async function applySpeakerName(
+    group: SpeakerTranscriptGroup,
+    name: string,
+  ): Promise<void> {
+    if (group.personId == null) await createAndLinkSpeakerProfile(group.clusterId, name);
+    else await saveSpeakerClusterName(group.clusterId, name);
+  }
+
+  /** The mockup collapses two distinct writes into one button, so fire whichever
+   *  matches the cluster's current state: a pending suggestion is REJECTED, a
+   *  confirmed person is UNLINKED. Both are per-cluster, never global. */
+  async function notThisSpeakerPerson(group: SpeakerTranscriptGroup): Promise<void> {
+    if (group.personId != null) await unlinkSpeakerProfile(group.clusterId);
+    else if (group.suggestedPersonId != null) await rejectSpeakerSuggestion(group.clusterId);
+  }
 
   // ─── Audio overlay alignment ─────────────────────────────────────────────
   // The frame rail is *frame-indexed*: each frame occupies a fixed 8px slot
@@ -5347,7 +4771,6 @@
       ".timeline__picker",
       ".timeline__stage-action-menu",
       ".audio-drawer",
-      ".audio-drawer__speaker-popover",
     ]);
   }
 
@@ -5356,8 +4779,8 @@
   // keep their own keyboard behavior (calendar navigation, buttons, audio
   // scrubbing, text selection, etc.).
   function closeDashboardTopSurface(): boolean {
-    if (speakerActionsOpenIndex != null) {
-      closeSpeakerActions();
+    if (audioDrawerRepairIndex != null) {
+      audioDrawerRepairIndex = null;
       return true;
     }
     if (selectedAudioSegmentId != null) {
@@ -5397,7 +4820,7 @@
   }
 
   function closeDashboardSurfacesForShortcutHelp(): void {
-    if (speakerActionsOpenIndex != null) closeSpeakerActions();
+    if (audioDrawerRepairIndex != null) audioDrawerRepairIndex = null;
     if (selectedAudioSegmentId != null) closeAudioDrawer();
     if (pickerOpen) pickerOpen = false;
     if (stageActionsMenuOpen) closeFrameActions();
@@ -6614,17 +6037,7 @@
 
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
 <svelte:window
-  onpointerdown={(event) => {
-    onFrameActionsPointerDownOutside(event);
-    const target = event.target;
-    if (
-      !(target instanceof Element) ||
-      (!target.closest(".audio-drawer__speaker-popover") &&
-        !target.closest(".audio-drawer__speaker-chip"))
-    ) {
-      closeSpeakerActions();
-    }
-  }}
+  onpointerdown={onFrameActionsPointerDownOutside}
   onkeydown={onDashboardWindowKeyDown}
 />
 <section class="timeline" onwheel={onTimelineWheel}>
@@ -7351,516 +6764,64 @@
 </section>
 
 <!-- Audio player drawer. Lives outside the timeline section so its fixed
-     positioning is not affected by the section's `overflow: hidden`. The
-     drawer is non-modal: the timeline rail/lane stay interactive, so the
-     user can swap segments by clicking another bar without dismissing first.
-     `selectedAudioSegmentId` is the open/closed signal — clearing it (close
-     button, Escape, or `audioSegments` losing the row) collapses the drawer
-     and the surrounding effects clear/refresh media bytes accordingly. -->
+     positioning is not affected by the section's `overflow: hidden`. The peek
+     state is non-modal: the timeline rail/lane stay interactive, so the user can
+     swap segments by clicking another bar without dismissing first. The expanded
+     reader covers the timeline — accepted tradeoff, see the component header.
+     `selectedAudioSegmentId` is the open/closed signal. -->
 {#if selectedAudioSegment}
-  <div
-    class="audio-drawer"
-    role="dialog"
-    aria-modal="false"
-    aria-label={`Audio segment player — ${audioSourceLabel(selectedAudioSegment.source)} #${selectedAudioSegment.segmentIndex}`}
-    tabindex="-1"
-    bind:this={audioDrawerEl}
-    onkeydown={onAudioDrawerKeydown}
-  >
-    <div class="audio-drawer__handle" aria-hidden="true"></div>
-    <div class="audio-drawer__meta">
-      <span
-        class="audio-drawer__source audio-drawer__source--{selectedAudioSegment.source}"
-        aria-label={`Source: ${audioSourceLabel(selectedAudioSegment.source)}`}
-      >
-        <span class="audio-drawer__swatch" aria-hidden="true"></span>
-        {audioSourceLabel(selectedAudioSegment.source)}
-      </span>
-      <span class="audio-drawer__index" aria-label="Segment index">
-        #{selectedAudioSegment.segmentIndex}
-      </span>
-      <span
-        class="audio-drawer__time"
-        use:tip={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
-      >
-        {formatTimeOfDay(selectedAudioSegment.startUnixMs)}
-        <span class="audio-drawer__time-sep" aria-hidden="true">→</span>
-        {formatTimeOfDay(selectedAudioSegment.endUnixMs)}
-        <span class="audio-drawer__duration"
-          >· {formatDurationSeconds(selectedAudioSegment.durationSeconds)}</span
-        >
-      </span>
-      <span class="audio-drawer__file" use:tip={selectedAudioSegment.filePath}
-        >{selectedAudioSegment.fileName}</span
-      >
-      <button
-        type="button"
-        class="audio-drawer__close"
-        onclick={closeAudioDrawer}
-        bind:this={audioDrawerCloseEl}
-        aria-label="Close audio player"
-      >
-        <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
-          <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
-        </svg>
-      </button>
-    </div>
-    {#if selectedAudioMediaLoading}
-      <div class="audio-drawer__status" role="status" aria-live="polite" aria-busy="true">
-        <span class="audio-drawer__spinner" aria-hidden="true"></span>
-        <span>loading audio segment…</span>
-      </div>
-    {:else if selectedAudioMediaError}
-      <div class="audio-drawer__error" role="alert">
-        <span class="audio-drawer__error-label">playback unavailable</span>
-        <span class="audio-drawer__error-msg">{selectedAudioMediaError}</span>
-      </div>
-    {:else if selectedAudioSrc}
-      <!-- `src` is reactive: switching segments swaps the audio element's
-           source via Svelte's binding. Using a keyed block forces a fresh
-           <audio> element per segment so the browser doesn't keep playing
-           the previous file while the new metadata loads. The native
-           `<audio>` element below stays hidden — it owns decoding/playback
-           — and the visible UI is a bespoke transport (play/pause, scrub,
-           current/duration) so the player matches the surrounding deck. -->
-      {#key selectedAudioSegment.id}
-        <audio
-          class="audio-drawer__audio-native"
-          preload="metadata"
-          src={selectedAudioSrc}
-          bind:this={audioEl}
-          onerror={onSelectedAudioError}
-          ontimeupdate={onAudioTimeUpdate}
-          onloadedmetadata={onAudioLoadedMetadata}
-          ondurationchange={onAudioLoadedMetadata}
-          onplay={onAudioPlay}
-          onpause={onAudioPause}
-          onended={onAudioEnded}
-          aria-hidden="true"
-        ></audio>
-      {/key}
-      <div class="audio-drawer__player" role="group" aria-label="Audio playback controls">
-        <button
-          type="button"
-          class="audio-drawer__play"
-          onclick={togglePlayPause}
-          aria-label={audioIsPlaying ? "Pause" : "Play"}
-          aria-pressed={audioIsPlaying}
-        >
-          {#if audioIsPlaying}
-            <svg
-              viewBox="0 0 16 16"
-              width="14"
-              height="14"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <rect x="3.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor" />
-              <rect x="9.5" y="2.5" width="3" height="11" rx="0.5" fill="currentColor" />
-            </svg>
-          {:else}
-            <svg
-              viewBox="0 0 16 16"
-              width="14"
-              height="14"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path d="M4.5 2.5 L13 8 L4.5 13.5 Z" fill="currentColor" />
-            </svg>
-          {/if}
-        </button>
-        <span class="audio-drawer__time-readout audio-drawer__time-readout--current"
-          >{formatPlayerTime(audioCurrentTime)}</span
-        >
-        <input
-          type="range"
-          class="audio-drawer__scrub"
-          min="0"
-          max={audioDuration > 0 ? audioDuration : 0}
-          step="0.05"
-          value={audioCurrentTime}
-          disabled={!(audioDuration > 0)}
-          oninput={onScrubInput}
-          onchange={onScrubChange}
-          aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={audioDuration > 0 ? audioDuration : 0}
-          aria-valuenow={audioCurrentTime}
-          aria-valuetext={`${formatPlayerTime(audioCurrentTime)} of ${formatPlayerTime(audioDuration)}`}
-          style:--audio-progress={audioDuration > 0
-            ? `${Math.min(100, (audioCurrentTime / audioDuration) * 100)}%`
-            : "0%"}
-        />
-        <span class="audio-drawer__time-readout audio-drawer__time-readout--duration"
-          >{formatPlayerTime(audioDuration)}</span
-        >
-      </div>
-    {/if}
-    {#if selectedAudioLoadError}
-      <div class="audio-drawer__error" role="alert">
-        <span class="audio-drawer__error-label">playback error</span>
-        <span class="audio-drawer__error-msg">{selectedAudioLoadError}</span>
-      </div>
-    {/if}
-    <section class="audio-drawer__transcript" aria-label="Audio transcription">
-      <div class="audio-drawer__transcript-header">
-        <div class="audio-drawer__transcript-heading">
-          <span class="audio-drawer__transcript-title">Transcript</span>
-          {#if selectedAudioTranscriptModelLabel}
-            <span class="audio-drawer__transcript-model" use:tip={selectedAudioTranscriptModelLabel}>
-              · {selectedAudioTranscriptModelLabel}
-            </span>
-          {/if}
-          {#if selectedAudioSpeakerGroups.length > 0}
-            <span class="audio-drawer__transcript-hint">Click a line to jump · click a speaker to edit</span>
-          {/if}
-        </div>
-        <div class="audio-drawer__transcript-actions">
-          <button
-            type="button"
-            class="audio-drawer__transcript-action"
-            onclick={reprocessSelectedAudioSegmentTranscript}
-            disabled={selectedAudioTranscriptActionDisabled}
-            use:tip={selectedAudioTranscriptActionTitle}
-          >
-            {selectedAudioTranscriptRerunLoading
-              ? "Starting…"
-              : selectedAudioTranscriptActionLabel}
-          </button>
-          <span
-            class="audio-drawer__transcript-state audio-drawer__transcript-state--{selectedAudioTranscriptStatus}"
-            role="status"
-            aria-live="polite"
-            aria-busy={selectedAudioSpeakerAnalysisRunning ||
-              selectedAudioTranscriptStatus === "running" ||
-              selectedAudioTranscriptStatus === "loading"}
-          >
-            {#if selectedAudioSpeakerAnalysisRunning || selectedAudioTranscriptStatus === "running" || selectedAudioTranscriptStatus === "loading"}
-              <span class="audio-drawer__spinner audio-drawer__spinner--pill" aria-hidden="true"></span>
-            {/if}
-            {#if selectedAudioSpeakerAnalysisRunning}
-              speakers
-            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "running"}
-              detecting speech
-            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "empty"}
-              no speech detected
-            {:else if selectedAudioSegment.source === "systemAudio" && selectedAudioTranscriptStatus === "error"}
-              speech detection failed
-            {:else if selectedAudioTranscriptStatus === "loading"}
-              loading
-            {:else if selectedAudioTranscriptStatus === "running"}
-              processing
-            {:else if selectedAudioTranscriptStatus === "success"}
-              completed
-            {:else if selectedAudioTranscriptStatus === "empty"}
-              no speech
-            {:else if selectedAudioTranscriptStatus === "error"}
-              error
-            {:else if selectedAudioTranscriptStatus === "missing"}
-              not run
-            {:else}
-              unavailable
-            {/if}
-          </span>
-        </div>
-      </div>
-      {#if selectedAudioTranscriptRerunError}
-        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptRerunError}</p>
-      {/if}
-      {#if selectedAudioTranscriptStatus === "success"}
-        {#if selectedAudioSpeakerGroups.length > 0}
-          <div
-            class="audio-drawer__speaker-transcript"
-            role="list"
-            bind:this={selectedAudioTranscriptContainerEl}
-          >
-            {#each selectedAudioSpeakerGroups as group, index}
-              {@const showPersonInlineAction = shouldShowPersonSuggestionRow(group, index)}
-              {@const showMergeInlineAction = shouldShowMergeSuggestionRow(group, index)}
-              <section
-                class="audio-drawer__speaker-block"
-                class:audio-drawer__speaker-block--actions-open={speakerActionsOpenIndex === index}
-                class:audio-drawer__speaker-block--active={selectedAudioSpeakerActiveGroupIndex === index}
-                data-speaker-group-index={index}
-                role="listitem"
-              >
-                {#if speakerActionsOpenIndex === index}
-                  <div
-                    id={`speaker-actions-${group.clusterId}`}
-                    class="audio-drawer__speaker-popover"
-                    role="dialog"
-                    popover="manual"
-                    tabindex="-1"
-                    aria-label={`Speaker actions for ${speakerDisplayLabel(group)}`}
-                    bind:this={speakerActionsPopoverEl}
-                    style:left={`${speakerActionsPopoverPos?.left ?? 12}px`}
-                    style:bottom={`${speakerActionsPopoverPos?.bottom ?? 12}px`}
-                    onpointerdown={(event) => event.stopPropagation()}
-                  >
-                    <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--name">
-                      <label class="audio-drawer__speaker-label" for={`speaker-name-${group.clusterId}`}>
-                        <span class="audio-drawer__speaker-toolset-label">Name</span>
-                        <input
-                          id={`speaker-name-${group.clusterId}`}
-                          class="audio-drawer__speaker-label-input"
-                          value={speakerNameDraft(group)}
-                          aria-label={`Edit speaker name for ${formatTranscriptSegmentTitle(group)}`}
-                          disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                          oninput={(event) => updateSpeakerNameDraft(group.clusterId, event)}
-                          onblur={() => saveSpeakerNameIfChanged(group)}
-                          onkeydown={(event) => handleSpeakerNameKeydown(event, group)}
-                        />
-                      </label>
-                      <span class="audio-drawer__speaker-time">{formatTranscriptSegmentTitle(group)}</span>
-                      {#if developerOptions.value && speakerConfidenceLabel(group)}
-                        <span class="audio-drawer__speaker-confidence">
-                          confidence {speakerConfidenceLabel(group)}
-                        </span>
-                      {/if}
-                    </div>
-                    {#if group.overlaps}
-                      <div class="audio-drawer__speaker-overlap-note">Overlapping speech</div>
-                    {/if}
-                    <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--primary">
-                      <button
-                        type="button"
-                        class="audio-drawer__speaker-tool audio-drawer__speaker-tool--primary"
-                        disabled={speakerCorrectionBusyClusterId === group.clusterId || !canRememberSpeakerProfile(group)}
-                        onclick={() => createAndLinkSpeakerProfile(group.clusterId, speakerNameDraft(group))}
-                      >
-                        Remember as profile
-                      </button>
-                      {#if group.personId != null}
-                        <span class="audio-drawer__speaker-profile">
-                          {group.personLinkAuto ? "Labelled automatically as" : "Linked to"}
-                          {speakerProfileName(group.personId) ?? speakerCleanLabel(group.speakerLabel)}
-                        </span>
-                      {/if}
-                      {#if selectablePersonProfiles(group).length > 0}
-                        <ActionSelect
-                          compact
-                          placeholder="Use saved person…"
-                          ariaLabel="Use an existing saved person for this speaker"
-                          disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                          options={selectablePersonProfiles(group).map((profile) => ({
-                            value: String(profile.id),
-                            label: profile.displayName,
-                          }))}
-                          onpick={(value) => linkSpeakerCluster(group.clusterId, Number(value))}
-                        />
-                      {/if}
-                    </div>
-                    <details class="audio-drawer__speaker-more">
-                      <summary>More fixes</summary>
-                      <div class="audio-drawer__speaker-popover-row audio-drawer__speaker-popover-row--secondary">
-                        {#if group.personId != null}
-                          {@const profileName = speakerProfileName(group.personId) ?? speakerCleanLabel(group.speakerLabel)}
-                          <button
-                            type="button"
-                            class="audio-drawer__speaker-tool audio-drawer__speaker-tool--reject"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            onclick={() => unlinkSpeakerProfile(group.clusterId)}
-                          >
-                            Not {profileName}
-                          </button>
-                        {/if}
-                        {#if selectedAudioSpeakerClusters.length > 1}
-                          {@const mergeTargets = selectedAudioSpeakerClusters
-                            .filter((cluster) => cluster.id !== group.clusterId)
-                            .map((cluster) => ({
-                              value: String(cluster.id),
-                              label: speakerClusterOptionLabel(cluster),
-                            }))}
-                          <ActionSelect
-                            compact
-                            placeholder="Same speaker as…"
-                            ariaLabel="Merge this speaker cluster"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            options={mergeTargets}
-                            onpick={(value) => mergeSpeakerClusterById(group.clusterId, Number(value))}
-                          />
-                          <ActionSelect
-                            compact
-                            placeholder="Move this line to…"
-                            ariaLabel="Move this visible speaker block"
-                            disabled={speakerCorrectionBusyClusterId === group.clusterId}
-                            options={mergeTargets}
-                            onpick={(value) => moveSpeakerBlockTurns(group, Number(value))}
-                          />
-                        {/if}
-                      </div>
-                    </details>
-                  </div>
-                {/if}
-                <div class="audio-drawer__speaker-label-stack">
-                  <button
-                    type="button"
-                    class="audio-drawer__speaker-chip"
-                    class:audio-drawer__speaker-chip--open={speakerActionsOpenIndex === index}
-                    aria-haspopup="dialog"
-                    aria-expanded={speakerActionsOpenIndex === index}
-                    aria-controls={`speaker-actions-${group.clusterId}`}
-                    use:tip={"Edit speaker"}
-                    onclick={(event) => toggleSpeakerActions(index, event)}
-                  >
-                    {speakerPersistedName(group)}
-                  </button>
-                  {#if group.overlaps}
-                    <span class="audio-drawer__speaker-overlap-note">Overlapping speech</span>
-                  {/if}
-                </div>
-                <div class="audio-drawer__speaker-content">
-                  {#if showPersonInlineAction || showMergeInlineAction}
-                    <div
-                      class="audio-drawer__speaker-actions"
-                      role="group"
-                      aria-label={`Speaker suggestions for ${speakerPersistedName(group)}`}
-                    >
-                      {#if showPersonInlineAction}
-                        {@const suggestionName = speakerSuggestedPersonName(group)}
-                        {@const confidenceLabel = speakerActionConfidenceLabel(group)}
-                        <div class="audio-drawer__speaker-action-row">
-                          <div class="audio-drawer__speaker-action-copy">
-                            <span class="audio-drawer__speaker-action-title">Maybe {suggestionName}</span>
-                            {#if confidenceLabel}
-                              <span class="audio-drawer__speaker-action-meta">{confidenceLabel}</span>
-                            {/if}
-                          </div>
-                          <div class="audio-drawer__speaker-action-buttons">
-                            <button
-                              type="button"
-                              class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--confirm"
-                              disabled={speakerInlineActionDisabled(group)}
-                              aria-label={`Confirm ${suggestionName} for this speaker`}
-                              onclick={() => confirmInlineSpeakerSuggestion(group)}
-                            >
-                              {speakerInlineActionIsBusy(group, "confirm")
-                                ? speakerActionBusyLabel("confirm")
-                                : "Confirm"}
-                            </button>
-                            <button
-                              type="button"
-                              class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--reject"
-                              disabled={speakerInlineActionDisabled(group)}
-                              aria-label={`Reject ${suggestionName} for this speaker`}
-                              onclick={() => rejectInlineSpeakerSuggestion(group)}
-                            >
-                              {speakerInlineActionIsBusy(group, "reject")
-                                ? speakerActionBusyLabel("reject")
-                                : "Reject"}
-                            </button>
-                          </div>
-                        </div>
-                      {/if}
-                      {#if showMergeInlineAction}
-                        {@const mergeTargetLabel = suggestedMergeTargetLabel(group)}
-                        {@const mergeScoreLabel = speakerActionScoreLabel(group)}
-                        {#if mergeTargetLabel}
-                          <div class="audio-drawer__speaker-action-row">
-                            <div class="audio-drawer__speaker-action-copy">
-                              <span class="audio-drawer__speaker-action-title">
-                                Same speaker as {mergeTargetLabel}?
-                              </span>
-                              {#if mergeScoreLabel}
-                                <span class="audio-drawer__speaker-action-meta">{mergeScoreLabel}</span>
-                              {/if}
-                            </div>
-                            <div class="audio-drawer__speaker-action-buttons">
-                              <button
-                                type="button"
-                                class="audio-drawer__speaker-action-button audio-drawer__speaker-action-button--confirm"
-                                disabled={speakerInlineActionDisabled(group)}
-                                aria-label={`Merge this speaker with ${mergeTargetLabel}`}
-                                onclick={() => mergeInlineSpeakerSuggestion(group)}
-                              >
-                                {speakerInlineActionIsBusy(group, "merge")
-                                  ? speakerActionBusyLabel("merge")
-                                  : "Merge"}
-                              </button>
-                            </div>
-                          </div>
-                        {/if}
-                      {/if}
-                    </div>
-                  {/if}
-                  <button
-                    type="button"
-                    class="audio-drawer__speaker-text"
-                    class:audio-drawer__speaker-text--active={selectedAudioSpeakerActiveGroupIndex === index}
-                    use:tip={`Jump to ${formatTranscriptSegmentTitle(group)}`}
-                    onclick={() => onSpeakerLineClick(group)}
-                  >
-                    {group.text}
-                  </button>
-                </div>
-              </section>
-            {/each}
-          </div>
-          {#if speakerCorrectionError}
-            <p class="audio-drawer__transcript-error" role="alert">{speakerCorrectionError}</p>
-          {/if}
-        {:else if selectedAudioTranscriptSegments.length > 0}
-          <div
-            class="audio-drawer__transcript-text audio-drawer__transcript-text--segmented"
-            bind:this={selectedAudioTranscriptContainerEl}
-          >
-            {#each selectedAudioTranscriptSegments as segment, index}
-              <button
-                type="button"
-                class="audio-drawer__transcript-segment"
-                class:audio-drawer__transcript-segment--active={selectedAudioTranscriptActiveSegmentIndex === index}
-                data-transcript-segment-index={index}
-                use:tip={`Jump to ${formatTranscriptSegmentTitle(segment)}`}
-                aria-label={`Jump to transcript segment at ${formatTranscriptSegmentTitle(segment)}`}
-                onclick={() => seekAudioToTimeMs(segment.startMs)}
-              >
-                {segment.text}
-              </button>
-            {/each}
-          </div>
-        {:else}
-          <p class="audio-drawer__transcript-text">{selectedAudioTranscriptText}</p>
-        {/if}
-        {#if selectedAudioSpeakerTurnsError}
-          <div class="audio-drawer__transcript-error-row" role="alert">
-            <p class="audio-drawer__transcript-error">{selectedAudioSpeakerTurnsError}</p>
-            {#if selectedAudioSpeakerRetryVisible}
-              <button
-                type="button"
-                class="audio-drawer__transcript-action audio-drawer__transcript-action--retry"
-                disabled={selectedAudioSpeakerRetryDisabled}
-                onclick={reprocessSelectedAudioSegmentSpeakerAnalysis}
-              >
-                {selectedAudioSpeakerAnalysisRetryLoading
-                  ? "Retrying..."
-                  : "Retry speaker analysis"}
-              </button>
-            {/if}
-          </div>
-        {/if}
-        {#if selectedAudioSpeakerTurnsNotice && !selectedAudioSpeakerTurnsError}
-          <p class="audio-drawer__transcript-empty">{selectedAudioSpeakerTurnsNotice}</p>
-        {/if}
-      {:else if selectedAudioTranscriptStatus === "empty"}
-        <p class="audio-drawer__transcript-empty">No speech detected in this segment.</p>
-      {:else if selectedAudioTranscriptStatus === "loading"}
-        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
-          <span class="audio-drawer__spinner" aria-hidden="true"></span>
-          Loading transcript…
-        </p>
-      {:else if selectedAudioTranscriptStatus === "running"}
-        <p class="audio-drawer__transcript-empty audio-drawer__transcript-empty--loading" role="status" aria-live="polite" aria-busy="true">
-          <span class="audio-drawer__spinner" aria-hidden="true"></span>
-          Transcription is queued or still processing.
-        </p>
-      {:else if selectedAudioTranscriptStatus === "error"}
-        <p class="audio-drawer__transcript-error" role="alert">{selectedAudioTranscriptError}</p>
-      {:else}
-        <p class="audio-drawer__transcript-empty">No transcript has been recorded for this segment.</p>
-      {/if}
-    </section>
-  </div>
+  <AudioDrawer
+      bind:drawerEl={audioDrawerEl}
+      segment={selectedAudioSegment}
+      sourceLabel={audioSourceLabel(selectedAudioSegment.source)}
+      timeRangeLabel={`${formatTimeOfDay(selectedAudioSegment.startUnixMs)} → ${formatTimeOfDay(selectedAudioSegment.endUnixMs)}`}
+      timeRangeTip={`${formatUnixMs(selectedAudioSegment.startUnixMs)} – ${formatUnixMs(selectedAudioSegment.endUnixMs)}`}
+      durationLabel={formatDurationSeconds(selectedAudioSegment.durationSeconds)}
+      audioSrc={selectedAudioSrc}
+      mediaLoading={selectedAudioMediaLoading}
+      mediaError={selectedAudioMediaError}
+      loadError={selectedAudioLoadError}
+      onMediaError={onSelectedAudioError}
+      transcriptStatus={selectedAudioTranscriptStatus}
+      transcriptText={selectedAudioTranscriptText}
+      transcriptSegments={selectedAudioTranscriptSegments}
+      transcriptWords={selectedAudioTranscriptWords}
+      transcriptModelLabel={selectedAudioTranscriptModelLabel}
+      transcriptError={selectedAudioTranscriptError}
+      transcriptRerunLoading={selectedAudioTranscriptRerunLoading}
+      transcriptRerunError={selectedAudioTranscriptRerunError}
+      transcriptActionLabel={selectedAudioTranscriptActionLabel}
+      transcriptActionDisabled={selectedAudioTranscriptActionDisabled}
+      transcriptActionTitle={selectedAudioTranscriptActionTitle}
+      onRerunTranscript={reprocessSelectedAudioSegmentTranscript}
+      turns={selectedAudioSpeakerTurns}
+      clusters={selectedAudioSpeakerClusters}
+      profiles={personProfiles}
+      speakerTurnsError={selectedAudioSpeakerTurnsError}
+      speakerTurnsNotice={selectedAudioSpeakerTurnsNotice}
+      speakerAnalysisRunning={selectedAudioSpeakerAnalysisRunning}
+      speakerAnalysisFailed={selectedAudioSpeakerAnalysisFailedJobId != null}
+      speakerRetryDisabled={selectedAudioSpeakerRetryDisabled}
+      speakerRetryLoading={selectedAudioSpeakerAnalysisRetryLoading}
+      speakerProvenance={selectedAudioSpeakerProvenance}
+      pendingJob={selectedAudioPendingJob}
+      onRetrySpeakerAnalysis={reprocessSelectedAudioSegmentSpeakerAnalysis}
+      correctionError={speakerCorrectionError}
+      busyClusterId={speakerCorrectionBusyClusterId}
+      inlineBusy={speakerInlineBusyAction}
+      developerMode={developerOptions.value}
+      onClose={closeAudioDrawer}
+      onApplyName={(group, name) => void applySpeakerName(group, name)}
+      onLinkPerson={(clusterId, personId) => void linkSpeakerCluster(clusterId, personId)}
+      onConfirmSuggestion={(group) => void confirmInlineSpeakerSuggestion(group)}
+      onNotThisPerson={(group) => void notThisSpeakerPerson(group)}
+      onMergeClusters={(source, target) => void mergeSpeakerClusterById(source, target)}
+      onMoveGroup={(group, target) => void moveSpeakerBlockTurns(group, target)}
+      shortcutFor={audioDrawerShortcutFor}
+      bind:pendingSeekMs={pendingAudioSeekMs}
+      bind:repairIndex={audioDrawerRepairIndex}
+      bind:transcriptContainerEl={selectedAudioTranscriptContainerEl}
+  />
 {/if}
 
 <style>
@@ -7922,1118 +6883,17 @@
      (see `routes/+layout.svelte`); the previous `.timeline__capture*`
      styles moved alongside as `.titlebar__status*` / `.titlebar__record*`. */
 
-  /* ── Audio segment player drawer ──────────────────────────────
-     Bottom-anchored sheet that slides in only when an audio segment is
-     selected. Non-modal: timeline rail and audio lane bars stay
-     interactive so users can swap segments without dismissing. The
-     drawer's industrial vibe matches the rail (matte black surface,
-     hairline border, red accent on the active segment) and lifts off
-     the page with a soft shadow + blurred top edge so it's clearly
-     a transient overlay rather than part of the timeline column. */
-  .audio-drawer {
-    position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
-    z-index: 30;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    max-height: 50vh;
-    padding: 8px 12px 10px;
-    /* The drawer itself no longer scrolls — the meta row and transport stay
-       pinned while only the transcript body scrolls (see
-       `.audio-drawer__transcript`). Auto-scroll-to-active therefore moves the
-       transcript, never the controls. */
-    overflow: hidden;
-    scrollbar-width: none;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    /* Slide-in motion: the drawer transforms from below and fades in.
-       Keeps the entrance grounded to the bottom edge so it reads as a
-       rising sheet rather than a pop-up. */
-    animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
-    outline: none;
-  }
-
-  .audio-drawer::-webkit-scrollbar {
-    display: none;
-  }
-
-  .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  @keyframes audio-drawer-rise {
-    from {
-      transform: translateY(12px);
-      opacity: 0;
-    }
-    to {
-      transform: translateY(0);
-      opacity: 1;
-    }
-  }
-
-  /* Honor the OS reduced-motion preference for every CSS animation defined in
-     this surface: the drawer's slide-in entrance, the OCR-running glyph pulse,
-     and the OCR spinner. Spinners/pulses degrade to a static state; the drawer
-     simply appears without the rising transform. */
+  /* The drawer itself is styled inside lib/timeline/AudioDrawer.svelte and its
+     children; only the reduced-motion rules for the timeline's own animations
+     stay here. */
   @media (prefers-reduced-motion: reduce) {
-    .audio-drawer {
-      animation: none;
-    }
-
     .timeline__ocr-btn--running .timeline__ocr-glyph {
       animation: none;
     }
 
     .timeline__ocr-spinner,
-    .timeline__preview-pending-spinner,
-    .audio-drawer__spinner {
+    .timeline__preview-pending-spinner {
       animation: none;
-    }
-  }
-
-  /* Centered grab-handle pill. Purely decorative — signals the drawer
-     nature of the surface without claiming it's draggable. */
-  .audio-drawer__handle {
-    align-self: center;
-    width: 36px;
-    height: 3px;
-    border-radius: 2px;
-    background: var(--app-border-strong);
-    margin-bottom: 2px;
-  }
-
-  .audio-drawer__meta {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 11px;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text);
-    font-variant-numeric: tabular-nums;
-    min-width: 0;
-  }
-
-  .audio-drawer__source {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
-    color: var(--app-text-strong);
-    font-weight: 700;
-  }
-
-  .audio-drawer__swatch {
-    width: 10px;
-    height: 3px;
-    border-radius: 1.5px;
-  }
-
-  .audio-drawer__source--microphone .audio-drawer__swatch {
-    background: linear-gradient(
-      90deg,
-      var(--app-source-mic),
-      var(--app-source-mic-strong)
-    );
-  }
-
-  .audio-drawer__source--systemAudio .audio-drawer__swatch {
-    background: linear-gradient(
-      90deg,
-      var(--app-source-sysaudio),
-      var(--app-source-sysaudio-strong)
-    );
-  }
-
-  .audio-drawer__index {
-    color: var(--app-danger);
-    font-weight: 700;
-  }
-
-  .audio-drawer__time {
-    color: var(--app-text-muted);
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .audio-drawer__time-sep {
-    color: var(--app-text-subtle);
-  }
-
-  .audio-drawer__duration {
-    color: var(--app-text-muted);
-  }
-
-  .audio-drawer__file {
-    flex: 1 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--app-text-muted);
-    text-transform: none;
-    letter-spacing: 0;
-    font-family: var(--app-font-mono);
-    font-size: 11px;
-    text-align: right;
-  }
-
-  .audio-drawer__close {
-    appearance: none;
-    background: transparent;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    width: 24px;
-    height: 24px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--app-text-muted);
-    line-height: 1;
-    cursor: pointer;
-    transition:
-      color 0.12s,
-      border-color 0.12s,
-      background 0.12s;
-  }
-
-  .audio-drawer__close:hover,
-  .audio-drawer__close:focus-visible {
-    color: var(--app-danger);
-    border-color: var(--app-danger-strong);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
-    outline: none;
-  }
-
-  /* A distinct ring on keyboard focus so the close affordance no longer reads
-     identically to its hover state. */
-  .audio-drawer__close:focus-visible {
-    box-shadow: var(--app-ring);
-  }
-
-  .audio-drawer__audio-native {
-    display: none;
-  }
-
-  /* Custom transport: a play/pause button, a thin scrub bar that fills
-     to a brand-red as it advances, and tabular-numeric time readouts on
-     either side. Built to read as part of the deck — no native chrome. */
-  .audio-drawer__player {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 2px 2px;
-  }
-
-  .audio-drawer__play {
-    appearance: none;
-    flex: 0 0 auto;
-    width: 28px;
-    height: 28px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: color-mix(in srgb, var(--app-record-glyph-start) 10%, transparent);
-    border: 1px solid var(--app-status-running-border);
-    border-radius: 50%;
-    color: var(--app-status-running-fg);
-    cursor: pointer;
-    transition:
-      background 0.12s,
-      border-color 0.12s,
-      color 0.12s,
-      transform 0.08s;
-  }
-
-  .audio-drawer__play:hover {
-    background: color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
-    border-color: var(--app-record-glyph-start);
-  }
-
-  .audio-drawer__play:focus-visible {
-    outline: none;
-    border-color: var(--app-record-glyph-start);
-    box-shadow: var(--app-ring-danger);
-  }
-
-  .audio-drawer__play:active {
-    transform: scale(0.96);
-  }
-
-  .audio-drawer__time-readout {
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    font-variant-numeric: tabular-nums;
-    color: var(--app-text-muted);
-    min-width: 36px;
-  }
-
-  .audio-drawer__time-readout--current {
-    color: var(--app-text-strong);
-    text-align: right;
-  }
-
-  /* Scrub: a thin track that fills to brand-red up to the current time,
-     with a small thumb that grows on hover/focus. Track and thumb are
-     restyled across WebKit/Firefox so the bar reads identically with no
-     native chrome. The fill ratio comes from `--audio-progress` set
-     inline so the change is purely declarative. */
-  .audio-drawer__scrub {
-    flex: 1 1 auto;
-    appearance: none;
-    -webkit-appearance: none;
-    height: 18px;
-    margin: 0;
-    background: transparent;
-    cursor: pointer;
-    color: var(--app-status-running-fg);
-  }
-
-  .audio-drawer__scrub:disabled {
-    cursor: not-allowed;
-    opacity: var(--app-disabled-opacity);
-  }
-
-  .audio-drawer__scrub::-webkit-slider-runnable-track {
-    height: 4px;
-    border-radius: 2px;
-    background: linear-gradient(
-      to right,
-      var(--app-record-glyph-start) 0%,
-      var(--app-record-glyph-start) var(--audio-progress, 0%),
-      var(--app-surface-hover) var(--audio-progress, 0%),
-      var(--app-surface-hover) 100%
-    );
-  }
-
-  .audio-drawer__scrub::-moz-range-track {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--app-surface-hover);
-  }
-
-  .audio-drawer__scrub::-moz-range-progress {
-    height: 4px;
-    border-radius: 2px;
-    background: var(--app-record-glyph-start);
-  }
-
-  .audio-drawer__scrub::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    appearance: none;
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--app-status-running-fg);
-    border: 2px solid var(--app-surface-raised);
-    margin-top: -3px;
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
-    transition:
-      transform 0.12s,
-      box-shadow 0.12s;
-  }
-
-  .audio-drawer__scrub::-moz-range-thumb {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--app-status-running-fg);
-    border: 2px solid var(--app-surface-raised);
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-record-glyph-start) 0%, transparent);
-    transition:
-      transform 0.12s,
-      box-shadow 0.12s;
-  }
-
-  .audio-drawer__scrub:hover::-webkit-slider-thumb,
-  .audio-drawer__scrub:focus-visible::-webkit-slider-thumb {
-    transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
-  }
-
-  .audio-drawer__scrub:hover::-moz-range-thumb,
-  .audio-drawer__scrub:focus-visible::-moz-range-thumb {
-    transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
-  }
-
-  .audio-drawer__scrub:focus-visible {
-    outline: none;
-  }
-
-  .audio-drawer__status {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 4px 2px;
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .audio-drawer__status-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 50%;
-    color: var(--app-danger);
-    font-size: 9px;
-  }
-
-  /* Indeterminate motion for in-flight audio/transcript states so a long
-     poll or media load reads as active rather than stuck. Reuses the shared
-     `timeline-ocr-spin` keyframe; degrades to a static ring under
-     reduced-motion (see the media query below). */
-  .audio-drawer__spinner {
-    flex: 0 0 auto;
-    display: inline-block;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 30%, transparent);
-    border-top-color: var(--app-text-muted);
-    animation: timeline-ocr-spin 0.9s linear infinite;
-  }
-
-  .audio-drawer__spinner--pill {
-    width: 9px;
-    height: 9px;
-    border-width: 1.25px;
-    vertical-align: middle;
-    margin-right: 4px;
-  }
-
-  .audio-drawer__transcript-empty--loading {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .audio-drawer__error {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-    padding: 8px 10px;
-    background: var(--app-danger-bg-soft);
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
-    font-size: 11px;
-    color: var(--app-danger-text);
-  }
-
-  .audio-drawer__error-label {
-    flex: 0 0 auto;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-danger);
-    padding-top: 1px;
-  }
-
-  .audio-drawer__error-msg {
-    flex: 1 1 auto;
-    font-family: var(--app-font-mono);
-    word-break: break-word;
-    line-height: 1.4;
-  }
-
-  .audio-drawer__transcript {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    margin-top: 2px;
-    padding: 8px 10px;
-    /* Take the drawer's remaining height and allow shrinking so the body
-       below can own the scroll instead of the whole drawer. */
-    flex: 1 1 auto;
-    min-height: 0;
-    background: color-mix(in srgb, var(--app-surface-hover) 58%, transparent);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-  }
-
-  /* Scrollable transcript bodies: each becomes its own scroll region (so the
-     transport stays pinned) with a thin, always-styled scrollbar as the scroll
-     signifier and contained overscroll so a transcript scroll never chains out
-     to dismiss the drawer or scroll the page. */
-  .audio-drawer__speaker-transcript,
-  .audio-drawer__transcript-text--segmented,
-  .audio-drawer__transcript-text {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-width: thin;
-    scrollbar-color: var(--app-border-strong) transparent;
-  }
-
-  .audio-drawer__speaker-transcript::-webkit-scrollbar,
-  .audio-drawer__transcript-text--segmented::-webkit-scrollbar,
-  .audio-drawer__transcript-text::-webkit-scrollbar {
-    width: 8px;
-  }
-
-  .audio-drawer__speaker-transcript::-webkit-scrollbar-thumb,
-  .audio-drawer__transcript-text--segmented::-webkit-scrollbar-thumb,
-  .audio-drawer__transcript-text::-webkit-scrollbar-thumb {
-    background: var(--app-border-strong);
-    border-radius: 4px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
-  }
-
-  .audio-drawer__transcript-header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
-  }
-
-  .audio-drawer__transcript-heading {
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-    min-width: 0;
-    flex-wrap: wrap;
-  }
-
-  .audio-drawer__transcript-title,
-  .audio-drawer__transcript-state {
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__transcript-title {
-    color: var(--app-text-muted);
-  }
-
-  .audio-drawer__transcript-model {
-    color: var(--app-text);
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1.35;
-    letter-spacing: 0.02em;
-    word-break: break-word;
-    opacity: 0.9;
-  }
-
-  .audio-drawer__transcript-hint {
-    color: var(--app-text-muted);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__transcript-actions {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-
-  .audio-drawer__transcript-action {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 52px;
-    padding: 4px 8px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      border-color 0.12s,
-      color 0.12s,
-      background 0.12s,
-      opacity 0.12s;
-  }
-
-  .audio-drawer__transcript-action:hover:not(:disabled),
-  .audio-drawer__transcript-action:focus-visible:not(:disabled) {
-    border-color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface-raised));
-    color: var(--app-text);
-    outline: none;
-  }
-
-  .audio-drawer__transcript-action:focus-visible:not(:disabled) {
-    box-shadow: var(--app-ring);
-  }
-
-  .audio-drawer__transcript-action:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .audio-drawer__transcript-state {
-    color: var(--app-text-faint);
-  }
-
-  .audio-drawer__transcript-state--success,
-  .audio-drawer__transcript-state--empty {
-    color: var(--app-accent);
-  }
-
-  .audio-drawer__transcript-state--running,
-  .audio-drawer__transcript-state--loading {
-    color: var(--app-warn);
-  }
-
-  .audio-drawer__transcript-state--error {
-    color: var(--app-danger);
-  }
-
-  .audio-drawer__transcript-text,
-  .audio-drawer__transcript-empty,
-  .audio-drawer__transcript-error {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.5;
-  }
-
-  .audio-drawer__transcript-text {
-    color: var(--app-text);
-    white-space: pre-wrap;
-  }
-
-  .audio-drawer__transcript-text--segmented {
-    white-space: normal;
-  }
-
-  .audio-drawer__speaker-transcript {
-    display: grid;
-    gap: 2px;
-  }
-
-  .audio-drawer__speaker-block {
-    position: relative;
-    display: grid;
-    grid-template-columns: max-content minmax(0, 1fr);
-    gap: 8px;
-    align-items: baseline;
-    padding: 3px 0 3px 8px;
-    border-left: 2px solid transparent;
-    background: transparent;
-  }
-
-  .audio-drawer__speaker-block--active {
-    border-left-color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 6%, transparent);
-  }
-
-  .audio-drawer__speaker-block--actions-open {
-    border-left-color: var(--app-accent);
-  }
-
-  .audio-drawer__speaker-label-stack {
-    display: grid;
-    gap: 1px;
-    align-self: start;
-  }
-
-  .audio-drawer__speaker-content {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    align-self: start;
-  }
-
-  .audio-drawer__speaker-popover {
-    /* Top-layer popover (`popover="manual"`): escapes the transcript's
-       scroll clip and the drawer's `overflow: hidden`. The inline
-       `left`/`bottom` (viewport coords, computed from the clicked chip)
-       win over `inset: auto`; the margin/overflow resets undo the UA
-       `[popover]` defaults so nested dropdowns aren't clipped. */
-    position: fixed;
-    inset: auto;
-    /* The UA sheet also sets `height: fit-content`, which WebKit resolves to
-       the full space between the viewport top and the inline `bottom` —
-       stretching the popover into a giant panel. Reset it to content height. */
-    height: auto;
-    margin: 0;
-    overflow: visible;
-    display: grid;
-    gap: 7px;
-    width: min(42rem, calc(100vw - 64px));
-    padding: 9px 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
-    /* The UA `[popover]` style sets `color: CanvasText`; restore the app
-       palette the popover used to inherit from the drawer. */
-    color: var(--app-text);
-    box-shadow: var(--app-shadow-popover);
-  }
-
-  .audio-drawer__speaker-chip {
-    display: inline-flex;
-    gap: 5px;
-    align-items: baseline;
-    max-width: 10rem;
-    padding: 2px 0;
-    border: 0;
-    background: transparent;
-    color: var(--app-accent);
-    font: inherit;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-align: left;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-
-  .audio-drawer__speaker-chip::after {
-    content: "⋯";
-    color: var(--app-text-faint);
-    opacity: 0;
-    transition: opacity 0.12s;
-  }
-
-  .audio-drawer__speaker-chip:hover,
-  .audio-drawer__speaker-chip:focus-visible,
-  .audio-drawer__speaker-chip--open {
-    color: var(--app-text);
-    outline: none;
-  }
-
-  /* Keyboard focus gets a ring so it's distinguishable from the hover tint. */
-  .audio-drawer__speaker-chip:focus-visible {
-    border-radius: 3px;
-    box-shadow: var(--app-ring);
-  }
-
-  .audio-drawer__speaker-chip:hover::after,
-  .audio-drawer__speaker-chip:focus-visible::after,
-  .audio-drawer__speaker-chip--open::after {
-    opacity: 1;
-  }
-
-  .audio-drawer__speaker-popover-row {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
-    min-width: 0;
-  }
-
-  .audio-drawer__speaker-popover-row--name {
-    gap: 10px;
-  }
-
-  .audio-drawer__speaker-popover-row--primary {
-    padding-top: 2px;
-  }
-
-  .audio-drawer__speaker-popover-row--secondary {
-    padding-top: 7px;
-  }
-
-  .audio-drawer__speaker-more {
-    margin-top: 1px;
-    border-top: 1px solid color-mix(in srgb, var(--app-border) 72%, transparent);
-    color: var(--app-text);
-  }
-
-  .audio-drawer__speaker-more > summary {
-    width: fit-content;
-    padding-top: 7px;
-    color: var(--app-text-muted);
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-
-  .audio-drawer__speaker-more > summary:hover,
-  .audio-drawer__speaker-more > summary:focus-visible {
-    color: var(--app-text);
-    outline: none;
-  }
-
-  .audio-drawer__speaker-label {
-    display: inline-flex;
-    gap: 7px;
-    align-items: center;
-    min-width: 0;
-    max-width: 100%;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--app-text);
-    font: inherit;
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: text;
-  }
-
-  .audio-drawer__speaker-label-input {
-    width: min(100%, 10rem);
-    min-width: 4.5rem;
-    padding: 3px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    letter-spacing: inherit;
-    text-transform: inherit;
-  }
-
-  .audio-drawer__speaker-label-input:focus {
-    border-color: var(--app-accent);
-    outline: none;
-  }
-
-  .audio-drawer__speaker-label-input:disabled {
-    cursor: not-allowed;
-    opacity: var(--app-disabled-opacity);
-  }
-
-  .audio-drawer__speaker-time {
-    justify-self: start;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    color: var(--app-text);
-    font: inherit;
-    /* Bumped from 9px: the uppercase secondary metadata was borderline-legible. */
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-
-  .audio-drawer__speaker-time:hover,
-  .audio-drawer__speaker-time:focus-visible {
-    color: var(--app-text);
-    text-decoration: underline;
-    text-underline-offset: 3px;
-    outline: none;
-  }
-
-  .audio-drawer__speaker-toolset-label {
-    color: var(--app-text-muted);
-    font-size: var(--text-xs);
-    font-weight: 900;
-    letter-spacing: 0.13em;
-    line-height: 1;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__speaker-tool {
-    min-height: 24px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__speaker-tool {
-    padding: 3px 8px;
-    cursor: pointer;
-  }
-
-  .audio-drawer__speaker-tool--primary {
-    border-color: color-mix(in srgb, var(--app-accent) 58%, var(--app-border));
-    background: color-mix(in srgb, var(--app-accent) 14%, var(--app-surface));
-    color: var(--app-accent);
-  }
-
-  .audio-drawer__speaker-tool--confirm {
-    color: color-mix(in srgb, var(--app-accent) 78%, var(--app-text));
-  }
-
-  .audio-drawer__speaker-tool--reject {
-    color: var(--app-warn);
-  }
-
-  .audio-drawer__speaker-profile {
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    line-height: 1.2;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__speaker-tool:hover:not(:disabled),
-  .audio-drawer__speaker-tool:focus-visible:not(:disabled) {
-    border-color: var(--app-accent);
-    color: var(--app-text);
-    outline: none;
-  }
-
-  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
-     rather than adopting the accent-green confirm treatment. */
-  .audio-drawer__speaker-tool--reject:hover:not(:disabled),
-  .audio-drawer__speaker-tool--reject:focus-visible:not(:disabled) {
-    border-color: var(--app-warn-border);
-    color: var(--app-warn);
-  }
-
-  .audio-drawer__speaker-tool:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .audio-drawer__speaker-label:hover,
-  .audio-drawer__speaker-label:focus-within {
-    color: var(--app-text);
-    outline: none;
-  }
-
-  .audio-drawer__speaker-overlap-note {
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 700;
-    line-height: 1.2;
-  }
-
-  .audio-drawer__speaker-confidence {
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .audio-drawer__speaker-actions {
-    display: grid;
-    gap: 3px;
-    min-width: 0;
-    margin: 1px 0 2px;
-  }
-
-  .audio-drawer__speaker-action-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 5px 10px;
-    min-width: 0;
-    padding: 4px 6px;
-    border-left: 1px solid color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
-    background: color-mix(in srgb, var(--app-accent) 5%, transparent);
-  }
-
-  .audio-drawer__speaker-action-copy {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: 5px 8px;
-    min-width: 0;
-    line-height: 1.25;
-  }
-
-  .audio-drawer__speaker-action-title {
-    color: var(--app-text);
-    font-size: 10px;
-    font-weight: 800;
-  }
-
-  .audio-drawer__speaker-action-meta {
-    color: var(--app-text-muted);
-    font-size: 10px;
-    font-weight: 700;
-  }
-
-  .audio-drawer__speaker-action-buttons {
-    display: inline-flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 5px;
-    flex: 0 0 auto;
-  }
-
-  .audio-drawer__speaker-action-button {
-    min-height: 22px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 9px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition:
-      border-color 0.12s,
-      color 0.12s,
-      background 0.12s,
-      opacity 0.12s;
-  }
-
-  .audio-drawer__speaker-action-button--confirm {
-    color: color-mix(in srgb, var(--app-accent) 82%, var(--app-text));
-  }
-
-  .audio-drawer__speaker-action-button--reject {
-    color: var(--app-warn);
-  }
-
-  .audio-drawer__speaker-action-button:hover:not(:disabled),
-  .audio-drawer__speaker-action-button:focus-visible:not(:disabled) {
-    border-color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface-raised));
-    color: var(--app-text);
-    outline: none;
-  }
-
-  /* Reject is a benign-decline, not an affirmative — keep its hover warn-tinted
-     rather than adopting the confirm action's accent-green. */
-  .audio-drawer__speaker-action-button--reject:hover:not(:disabled),
-  .audio-drawer__speaker-action-button--reject:focus-visible:not(:disabled) {
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 12%, var(--app-surface-raised));
-    color: var(--app-warn);
-  }
-
-  .audio-drawer__speaker-action-button:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .audio-drawer__speaker-text {
-    width: 100%;
-    min-width: 0;
-    margin: 0;
-    padding: 2px 6px;
-    border: 0;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text);
-    font: inherit;
-    font-size: 13px;
-    line-height: 1.55;
-    text-align: left;
-    cursor: pointer;
-  }
-
-  .audio-drawer__speaker-text:hover,
-  .audio-drawer__speaker-text:focus-visible,
-  .audio-drawer__speaker-text--active {
-    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-    outline: none;
-  }
-
-  /* Distinct keyboard-focus ring so a focused line isn't mistaken for a hover. */
-  .audio-drawer__speaker-text:focus-visible {
-    box-shadow: var(--app-ring);
-  }
-
-  .audio-drawer__transcript-segment {
-    display: inline;
-    margin-right: 0.28em;
-    padding: 1px 3px;
-    border: 0;
-    border-radius: 4px;
-    color: inherit;
-    background: transparent;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-    box-decoration-break: clone;
-    -webkit-box-decoration-break: clone;
-    scroll-margin-block: 10px;
-    transition:
-      background 0.12s,
-      color 0.12s;
-  }
-
-  .audio-drawer__transcript-segment:hover,
-  .audio-drawer__transcript-segment:focus-visible {
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    color: var(--app-text);
-    outline: none;
-  }
-
-  .audio-drawer__transcript-segment:focus-visible {
-    box-shadow: var(--app-ring);
-  }
-
-  .audio-drawer__transcript-segment--active {
-    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
-    color: var(--app-text);
-  }
-
-  .audio-drawer__transcript-empty {
-    color: var(--app-text-muted);
-    font-style: italic;
-  }
-
-  .audio-drawer__transcript-error-row {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 8px 10px;
-  }
-
-  .audio-drawer__transcript-action--retry {
-    flex: 0 0 auto;
-  }
-
-  .audio-drawer__transcript-error {
-    color: var(--app-danger-text);
-    font-family: var(--app-font-mono);
-    word-break: break-word;
-  }
-
-  @media (max-width: 640px) {
-    .audio-drawer__speaker-block {
-      grid-template-columns: minmax(0, 1fr);
-      gap: 3px;
-    }
-
-    .audio-drawer__speaker-action-row {
-      align-items: flex-start;
-    }
-
-    .audio-drawer__speaker-action-buttons {
-      flex: 1 1 100%;
     }
   }
 
@@ -10552,53 +8412,6 @@
      here through the semantic-token cascade in `+layout.svelte`. */
   :global([data-theme="light"]) .timeline {
     background: var(--app-bg);
-  }
-
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-  :global([data-theme="light"]) .audio-drawer__handle {
-    background: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .audio-drawer__source {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .audio-drawer__index,
-  :global([data-theme="light"]) .audio-drawer__time,
-  :global([data-theme="light"]) .audio-drawer__duration,
-  :global([data-theme="light"]) .audio-drawer__file {
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .audio-drawer__time-sep {
-    color: var(--app-text-faint);
-  }
-  :global([data-theme="light"]) .audio-drawer__close {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .audio-drawer__close:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-  }
-  :global([data-theme="light"]) .audio-drawer__player,
-  :global([data-theme="light"]) .audio-drawer__scrub {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .audio-drawer__time-readout {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .audio-drawer__time-readout--current {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .audio-drawer__status {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .audio-drawer__error-msg {
-    color: var(--app-danger);
   }
 
   :global([data-theme="light"]) .btn {
