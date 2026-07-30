@@ -15,6 +15,20 @@ jobs:
     name: Full repo type check
     runs-on: macos-15
 
+    env:
+      # Make a test that reaches the developer's REAL `day.mnema.vault` keychain
+      # item fail loudly instead of prompting. Two `ask_ai/mcp/manager.rs` tests
+      # did exactly that: they built their own `McpServerConfig` without pinning
+      # a scratch vault, so dialing the fixture server read the connector secret
+      # straight through to the production vault — and because the process vault
+      # slot is first-writer-wins, that left the whole test binary pointed at it.
+      # Locally it just prompts (repeatedly: an ad-hoc-signed test binary changes
+      # signature every rebuild), which is easy to dismiss and never fix.
+      #
+      # Set it on TEST jobs only — never on a job that runs the real app, where
+      # unlocking the keychain is correct behaviour and this would panic it.
+      MNEMA_TRIPWIRE_NO_KEYCHAIN: "1"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4

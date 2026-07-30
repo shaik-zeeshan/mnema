@@ -323,6 +323,22 @@ pub fn unlock_secret_vault(save_dir: &Path) -> Result<SecretVaultUnlock> {
         return unlock_secret_vault_with_source(save_dir, &FileMasterKeySource::new(path));
     }
 
+    // Tripwire for test runs. A test that reaches this line is about to unlock the
+    // developer's REAL `day.mnema.vault` keychain item: it prompts (repeatedly,
+    // because an ad-hoc-signed test binary changes signature on every rebuild) and,
+    // since the process vault slot is first-writer-wins, it leaves the whole test
+    // binary pointed at the production vault. Tests are supposed to pin a scratch
+    // vault first — `install_shared_test_secret_vault` in the desktop crate,
+    // `install_shared_test_process_vault` here. Set MNEMA_TRIPWIRE_NO_KEYCHAIN=1 to
+    // turn "silently prompts the developer" into "fails loudly and names itself".
+    // Not `cfg(test)`: the leak happens in the DESKTOP crate's tests, where this
+    // crate is a dependency and `cfg(test)` is false.
+    if std::env::var_os("MNEMA_TRIPWIRE_NO_KEYCHAIN").is_some() {
+        panic!(
+            "a test reached the real keychain (day.mnema.vault) via unlock_secret_vault; \
+             pin a scratch vault first (install_shared_test_secret_vault)"
+        );
+    }
     unlock_secret_vault_with_source(save_dir, &KeychainMasterKeySource)
 }
 
