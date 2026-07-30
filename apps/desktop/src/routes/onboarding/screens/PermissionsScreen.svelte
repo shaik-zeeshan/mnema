@@ -48,6 +48,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { OnboardingFlow } from "../onboarding-flow.svelte";
   import type { PermissionKey, PermissionValue } from "../onboarding-attention";
+  import { isDenied, isGranted, screenGate } from "$lib/onboarding/permissions-gate";
 
   let {
     flow,
@@ -70,15 +71,12 @@
 
   const c = $derived(flow.controller);
   const value = (key: PermissionKey): PermissionValue | undefined => c.permissions?.[key];
-  const isGranted = (v: PermissionValue | undefined): boolean =>
-    v === "granted" || v === "assumed_working" || v === "unsupported";
-  const isDenied = (v: PermissionValue | undefined): boolean =>
-    v === "denied" || v === "restricted";
+
 
   /** Moments the user has continued past. A denial can never be un-denied here. */
   let passed = $state<MomentId[]>([]);
   /** Screen Recording granted *in this process* — macOS only honours it after a relaunch. */
-  let screenNeedsRelaunch = $state(false);
+
   /** The Accessibility prompt has been raised, so the recovery pair replaces Request. */
   let accessibilityAsked = $state(false);
 
@@ -107,11 +105,11 @@
   );
   const isLast = $derived(current === null || upcoming.length === 0);
 
-  // The one required grant. `screenNeedsRelaunch` blocks just as hard as a
+  // The one required grant. `flow.screenNeedsRelaunch` blocks just as hard as a
   // missing grant: the permission reads granted while ScreenCaptureKit in THIS
   // process still cannot use it, so continuing would only reach the Finale to
   // fail there.
-  const screenReady = $derived(isGranted(value("screen")) && !screenNeedsRelaunch);
+  const screenReady = $derived(screenGate(value("screen"), flow.screenNeedsRelaunch).ready);
 
   // Live levels from the system-audio probe (`start_system_audio_level_probe`).
   // The permission state cannot stand in for these: `assumed_working` is sticky
@@ -156,7 +154,7 @@
       return c.sysAudioPromptRaised ? "requested · unconfirmed" : "not requested";
     }
     if (isGranted(v)) {
-      return id === "screen" && screenNeedsRelaunch ? "granted · needs one relaunch" : "granted";
+      return id === "screen" && flow.screenNeedsRelaunch ? "granted · needs one relaunch" : "granted";
     }
     if (isDenied(v)) return "denied";
     return "not requested";
@@ -173,7 +171,7 @@
     // macOS hands ScreenCaptureKit the new grant only to a fresh process, and
     // there is no backend signal for that — a grant that appeared during this
     // session IS the signal.
-    if (key === "screen" && !before && isGranted(value("screen"))) screenNeedsRelaunch = true;
+    if (key === "screen" && !before && isGranted(value("screen"))) flow.screenNeedsRelaunch = true;
   }
 
   // A grant made in System Settings lands the same in-process staleness as an
@@ -181,7 +179,7 @@
   async function recheck(): Promise<void> {
     const before = isGranted(value("screen"));
     await c.refreshPermissions();
-    if (!before && isGranted(value("screen"))) screenNeedsRelaunch = true;
+    if (!before && isGranted(value("screen"))) flow.screenNeedsRelaunch = true;
   }
 
   async function askAccessibility(): Promise<void> {
@@ -190,7 +188,7 @@
   }
 
   function advance(): void {
-    if (screenNeedsRelaunch) {
+    if (flow.screenNeedsRelaunch) {
       void invoke("request_app_relaunch");
       return;
     }
@@ -203,7 +201,7 @@
   }
 
   const primaryLabel = $derived.by(() => {
-    if (screenNeedsRelaunch) return "Relaunch to continue";
+    if (flow.screenNeedsRelaunch) return "Relaunch to continue";
     if (!screenReady) return "Screen recording required";
     if (isLast) return "Capture & Storage";
     // Screen can no longer reach this branch — it is the gate, not a choice.
@@ -356,7 +354,7 @@
   <div class="ob-acts">
     <div class="spacer trail">
       <button class="ob-btn ghost" onclick={onBack}>← Back</button>
-      {#if screenNeedsRelaunch}
+      {#if flow.screenNeedsRelaunch}
         <span class="ob-fine">
           macOS gives that grant to a fresh copy of Mnema. Setup resumes right here.
         </span>
@@ -373,7 +371,7 @@
     </div>
     <button
       class="ob-btn primary"
-      disabled={!screenReady && !screenNeedsRelaunch}
+      disabled={!screenReady && !flow.screenNeedsRelaunch}
       onclick={advance}
     >
       {primaryLabel}&nbsp; →

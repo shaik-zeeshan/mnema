@@ -29,6 +29,7 @@ import {
 } from "$lib/onboarding/gates";
 import {
   resolveSetup,
+  savedChoicesFor,
   workListBytes,
   type DownloadWorkItem,
   type ModelInventory,
@@ -101,6 +102,15 @@ export class OnboardingFlow {
   features = $state<FeatureState>(emptyFeatures());
   /** Measured by the Capture & Storage screen. `null` = not measured (never blocks). */
   storageProbe = $state<StorageProbe | null>(null);
+
+  /** Screen Recording was granted *in this process*, so macOS will not honour it
+   *  until Mnema relaunches. Lives on the flow, not on `PermissionsScreen`,
+   *  because `+page.svelte` swaps screens with `{#if}` — a component-local latch
+   *  is destroyed by *Back to Welcome → Begin setup*, and the user then walks
+   *  past the one gate that exists to stop them reaching the Finale in a state
+   *  where `start_native_capture` fails on a stale stream. A real relaunch
+   *  resets this by restarting the process. */
+  screenNeedsRelaunch = $state(false);
 
   /** True once the user has explicitly saved recording settings before — the
    *  difference between a genuine first run and a re-entry. */
@@ -291,14 +301,11 @@ export class OnboardingFlow {
   private savedChoices(): SavedChoices | null {
     const touched: Partial<Record<FeatureId, boolean>> = {};
     for (const id of this.touchedFeatures) touched[id] = this.features[id];
-    if (!this.everSaved) {
-      // `excludedApps` stays absent, so the recommended privacy list is still
-      // applied on a first run.
-      return this.touchedFeatures.size === 0 ? null : { features: touched };
-    }
     const c = this.controller;
-    return {
-      features: {
+    return savedChoicesFor({
+      everSaved: this.everSaved,
+      touched,
+      drafts: {
         screen: c.draftCaptureScreen,
         microphone: c.draftCaptureMicrophone,
         systemAudio: c.draftCaptureSystemAudio,
@@ -308,9 +315,6 @@ export class OnboardingFlow {
         semanticSearch: c.draftSemanticSearchEnabled,
         aiFeatures: c.draftAskAiEnabled,
         privacy: c.privacyEnabled,
-        // The drafts are only written at `finish()`, so a row flipped on
-        // *Change settings* is live here and nowhere else — it wins.
-        ...touched,
       },
       models: {
         ocrProvider: c.draftOcrProvider,
@@ -321,10 +325,8 @@ export class OnboardingFlow {
         speakerModelId: c.draftSpeakerModelId,
         semanticSearchModelId: c.draftSemanticSearchModelId,
       },
-      // Present (even empty) means the user has been here — the recommended
-      // list is NOT re-applied over it.
-      excludedApps: c.draftExcludedApps.map((app) => app.bundleId),
-    };
+      excludedAppIds: c.draftExcludedApps.map((app) => app.bundleId),
+    });
   }
 
   /**

@@ -23,6 +23,7 @@
   progress, and it is dropped under prefers-reduced-motion.
 -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import Switch from "$lib/components/Switch.svelte";
   import {
     AI_LOCAL_DEFAULT_ENDPOINTS,
@@ -81,7 +82,11 @@
 
   // ── Local state (presentation only; every durable value lives in the store) ─
   type Mode = null | "later" | "now";
-  let mode = $state<Mode>(null);
+  // The fork is a QUESTION, and a connected engine has already answered it. This
+  // component remounts on every *Your settings* ⇄ *Change settings* round trip
+  // while the store keeps the providers, so starting at `null` unconditionally
+  // hides an engine the user connected a moment ago behind "set it up later".
+  let mode = $state<Mode>(untrack(() => ai.draftAiProviders.length) > 0 ? "now" : null);
   let kind = $state<AiProviderKind>("ollama");
   let compatUrl = $state("");
   let manualUrl = $state("");

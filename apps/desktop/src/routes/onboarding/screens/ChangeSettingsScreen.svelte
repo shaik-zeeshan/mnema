@@ -30,6 +30,7 @@
   there — one Back away — and this screen no longer runs a second storage probe.
 -->
 <script lang="ts">
+  import { untrack } from "svelte";
   import AiSetup from "$lib/onboarding/AiSetup.svelte";
   import FeatureSwitches from "$lib/onboarding/FeatureSwitches.svelte";
   import ModelPickers from "$lib/onboarding/ModelPickers.svelte";
@@ -92,7 +93,13 @@
   // key and nothing uses it. Fires only on the false→true transition (and
   // `aiConfigReady` is now verification-gated), so turning the row off
   // afterwards with a working config is not undone. THE ONLY auto-enable site.
-  let wasReady = false;
+  //
+  // SEEDED from the live readiness, never from `false`: this screen remounts on
+  // every round trip through *Your settings*, while the AI store lives on the
+  // controller and outlives it. A latch that started false would read an
+  // already-ready engine as a fresh edge and silently switch AI features back on
+  // for a user who had just turned the row off.
+  let wasReady = untrack(() => flow.controller.ai.aiConfigReady);
   $effect(() => {
     const ready = ai.aiConfigReady;
     if (ready && !wasReady && !flow.features.aiFeatures) flow.toggleFeature("aiFeatures");
