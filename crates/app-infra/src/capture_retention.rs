@@ -1481,6 +1481,19 @@ async fn gc_orphan_speaker_rows(tx: &mut sqlx::Transaction<'_, Sqlite>) -> Resul
     )
     .execute(&mut **tx)
     .await?;
+    // NOTE on `is_deliberate = 0`: migration 0052 describes this as sparing the user's
+    // named voiceprints while "everything derived keeps the default 0 and is still
+    // collected". The second half no longer describes anything real — BOTH production
+    // writers of this table set `is_deliberate = 1` (`upsert_account_owner_voiceprint`
+    // and the audio-drawer link path, which only writes an embedding when the user asked
+    // for one), so in the field this DELETE matches no rows at all. That is the intended
+    // outcome — a voiceprint exists only because a person deliberately created it, and
+    // recognition needs it to outlive the recording it came from — but it does mean this
+    // statement is a guard against a future cluster-derived writer, not live collection.
+    // The migration file itself cannot be corrected: `sqlx::migrate!` checksums applied
+    // migrations, so editing it would trip VersionMismatch on every existing database.
+    // A privacy delete still removes these rows unconditionally (Delete Recent Capture),
+    // which is what keeps the biometric erasable.
     sqlx::query(
         "DELETE FROM person_voice_embeddings
          WHERE source_cluster_id IS NOT NULL

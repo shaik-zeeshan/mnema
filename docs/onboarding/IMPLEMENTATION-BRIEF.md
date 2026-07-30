@@ -1,6 +1,7 @@
 # Onboarding rework #195 — shared implementation brief
 
-Read alongside repo-root `PLAN.md` (plan of record) and `docs/onboarding/mockups/README.md`.
+Read alongside `docs/onboarding/mockups/README.md`. Issue #195 is the plan of record —
+the repo-root working plan this brief was drafted against is deliberately not checked in.
 This file is the shared contract between the slices so screens do not drift from each other.
 
 ## Design source of truth
