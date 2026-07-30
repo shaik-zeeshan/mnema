@@ -1231,6 +1231,16 @@ impl ProcessingStore {
     /// [`MODEL_LOCK_REASON_CLEANUP`], [`MODEL_LOCK_REASON_DOWNLOADING`] or
     /// [`MODEL_LOCK_REASON_ABSENT`] — the claim predicate does not read it, it is only there so
     /// each writer can release its own rows without stepping on another's.
+    ///
+    /// The upsert takes a row over in exactly two cases: from the unowned `absent` lane (nobody
+    /// releases those, they are recomputed), and from a same-reason `downloading` row, which is
+    /// the orphan a session that died mid-download left behind — `release_model_locks` deletes by
+    /// `lock_token`, so a retry that bounced off the orphan could never release it.
+    /// `cleanup` stays a strict mutex: two model-deletion commands racing the same key must not
+    /// both believe they own it, or the one that finishes first unlocks the model while the other
+    /// is still deleting its files, and the model's jobs run against a half-deleted directory. A
+    /// cleanup row orphaned by a crash is cleared by [`Self::clear_stale_model_locks`] at startup,
+    /// which is what that threshold is for.
     pub async fn acquire_model_locks(
         &self,
         processor: &str,
@@ -1249,13 +1259,16 @@ impl ProcessingStore {
                  ON CONFLICT (processor, model_key) DO UPDATE SET \
                     lock_token = excluded.lock_token, reason = excluded.reason, \
                     created_at = CURRENT_TIMESTAMP \
-                 WHERE processing_model_locks.reason IN (excluded.reason, ?5)",
+                 WHERE processing_model_locks.reason = ?5 \
+                    OR (processing_model_locks.reason = excluded.reason \
+                        AND processing_model_locks.reason <> ?6)",
             )
             .bind(processor)
             .bind(model_key)
             .bind(lock_token)
             .bind(reason)
             .bind(MODEL_LOCK_REASON_ABSENT)
+            .bind(MODEL_LOCK_REASON_CLEANUP)
             .execute(&mut *transaction)
             .await?;
 
@@ -4666,6 +4679,72 @@ mod tests {
                 )),
                 "the absent lock is gone once the model is installed"
             );
+        });
+    }
+
+    /// The cleanup lane is a MUTEX, not a takeover. The old `INSERT OR IGNORE` made a second,
+    /// concurrent model-deletion command acquire nothing, so it treated every key it did not own
+    /// as protected and deleted none of them. The upsert added here for the crashed-download
+    /// retry also lets one `cleanup` acquisition steal another LIVE one's row — and
+    /// `release_model_locks` deletes by `lock_token`, so the deleter that finishes first unlocks
+    /// the model while the other is still removing its files. Its queued jobs are then claimed
+    /// against a half-deleted model and spend their failure attempts on it: exactly the loss
+    /// claim-time gating exists to prevent.
+    #[test]
+    fn a_second_cleanup_acquisition_cannot_steal_a_live_cleanup_lock() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+
+            let first = store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([locked_model_key()]),
+                    "first-delete-token",
+                    MODEL_LOCK_REASON_CLEANUP,
+                )
+                .await
+                .expect("the first cleanup lock should acquire");
+            assert!(
+                first.acquired_model_keys.contains(&locked_model_key()),
+                "the first deleter owns the row for this test to mean anything"
+            );
+
+            let second = store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([locked_model_key()]),
+                    "second-delete-token",
+                    MODEL_LOCK_REASON_CLEANUP,
+                )
+                .await
+                .expect("the second cleanup acquisition should not error");
+            assert!(
+                second.acquired_model_keys.is_empty(),
+                "a live cleanup lock is not a second deleter's to take"
+            );
+
+            // The second command finishes and releases what it believes it holds.
+            store
+                .release_model_locks(&second)
+                .await
+                .expect("the second cleanup lock should release");
+
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error while locked")
+                    .is_none(),
+                "the first deleter still holds the lock, so its model's jobs stay parked"
+            );
+            let parked = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(parked.failure_count, 0, "parking must not count as a failure");
+            assert_eq!(parked.attempt_count, 0, "a parked job is never attempted");
         });
     }
 
