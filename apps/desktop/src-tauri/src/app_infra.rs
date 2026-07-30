@@ -5861,10 +5861,28 @@ mod tests {
             .execute(pool)
             .await
             .expect("speaker turn should insert");
+            // Both production writers of this table set `is_deliberate = 1`
+            // (`upsert_account_owner_voiceprint` and the audio-drawer link path), so a row
+            // defaulted to 0 is a shape the field never contains. Retention's orphan sweep
+            // now SPARES `is_deliberate = 1`; a privacy delete must not. Insert both shapes
+            // so this test fails if that carve-out is ever copied into the delete path —
+            // which is the promise migration 0052 makes in writing.
             sqlx::query(
                 "INSERT INTO person_voice_embeddings (
-                    person_id, provider, model_id, embedding, source_session_id, source_cluster_id
-                 ) VALUES (?1, 'test-provider', 'test-model', X'010203', 'mic-delete-recent', ?2)",
+                    person_id, provider, model_id, embedding, source_session_id, source_cluster_id,
+                    is_deliberate
+                 ) VALUES (?1, 'test-provider', 'test-model', X'010203', 'mic-delete-recent', ?2, 1)",
+            )
+            .bind(person_id)
+            .bind(cluster_id)
+            .execute(pool)
+            .await
+            .expect("deliberate voice embedding should insert");
+            sqlx::query(
+                "INSERT INTO person_voice_embeddings (
+                    person_id, provider, model_id, embedding, source_session_id, source_cluster_id,
+                    is_deliberate
+                 ) VALUES (?1, 'test-provider', 'test-model', X'040506', 'mic-delete-recent', ?2, 0)",
             )
             .bind(person_id)
             .bind(cluster_id)

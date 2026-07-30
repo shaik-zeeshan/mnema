@@ -6058,6 +6058,32 @@ mod tests {
                 "a cluster with no person cannot still claim an automatic link"
             );
 
+            // Deleting the profile is the ONLY route by which the enrolled voiceprint can
+            // ever leave the machine: it carries `source_cluster_id IS NULL` and
+            // `is_deliberate = 1`, so the retention orphan sweep deliberately spares it
+            // forever. Asserting only that the CLUSTER forgot the person is a proxy — it
+            // would still pass with the biometric row sitting in the database. The doc on
+            // `delete_person_profile` claims the cascade takes the voiceprints with it;
+            // that cascade only fires if the pool really runs `PRAGMA foreign_keys = ON`.
+            let voiceprints: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM person_voice_embeddings WHERE person_id = ?1",
+            )
+            .bind(owner.id)
+            .fetch_one(infra.pool())
+            .await
+            .expect("voiceprint rows should count");
+            assert_eq!(
+                voiceprints, 0,
+                "the enrolled voiceprint must not survive the profile it belongs to"
+            );
+            assert_eq!(
+                infra
+                    .account_owner_person_id()
+                    .await
+                    .expect("owner id should read"),
+                None,
+                "with the profile gone there is no account owner left to auto-link to"
+            );
         });
     }
 

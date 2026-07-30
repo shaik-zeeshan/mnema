@@ -4768,6 +4768,68 @@ mod tests {
         });
     }
 
+    /// `speaker_analysis_auto_label_owner`'s doc states the safety property outright: "an
+    /// unparseable or legacy payload reads as off, because auto-linking is the one
+    /// recognition step nobody confirms." Every other test drives it through a well-formed
+    /// payload with the field set, so the fail-safe branches — no payload at all, malformed
+    /// JSON, and a valid payload written before this field existed — were unexercised. The
+    /// third is the shape EVERY job enqueued before this PR carries, and reading it as `true`
+    /// would auto-link on a backlog the user never opted into.
+    #[test]
+    fn a_legacy_or_unreadable_speaker_payload_never_auto_labels() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            let job_with = |payload_json: Option<String>| {
+                let mut draft = ProcessingJobDraft::for_audio_segment_speaker_analysis(1);
+                if let Some(payload_json) = payload_json {
+                    draft = draft.with_payload_json(payload_json);
+                }
+                draft
+            };
+
+            // A payload from before `autoLabelOwner` existed: valid, complete, and silent
+            // about the field.
+            let legacy = store
+                .enqueue_job(&job_with(Some(
+                    r#"{"provider":"speakrs","modelId":"pyannote-community-1-wespeaker","recognizePeople":true}"#
+                        .to_string(),
+                )))
+                .await
+                .expect("legacy job should enqueue");
+            assert!(
+                !speaker_analysis_auto_label_owner(&legacy),
+                "a payload written before the field existed must not auto-link"
+            );
+
+            let payloadless = store
+                .enqueue_job(&job_with(None))
+                .await
+                .expect("payloadless job should enqueue");
+            assert!(!speaker_analysis_auto_label_owner(&payloadless));
+
+            let malformed = store
+                .enqueue_job(&job_with(Some("not json".to_string())))
+                .await
+                .expect("malformed job should enqueue");
+            assert!(!speaker_analysis_auto_label_owner(&malformed));
+
+            // And the positive control, so this cannot pass by always returning false.
+            let mut payload = SpeakerAnalysisJobPayload::new(
+                "speakrs".to_string(),
+                Some("pyannote-community-1-wespeaker".to_string()),
+            );
+            payload.auto_label_owner = true;
+            let opted_in = store
+                .enqueue_job(&job_with(Some(
+                    serde_json::to_string(&payload).expect("payload should serialize"),
+                )))
+                .await
+                .expect("opted-in job should enqueue");
+            assert!(speaker_analysis_auto_label_owner(&opted_in));
+        });
+    }
+
     /// The "Preparing" read-out. `processing_job_model_is_locked` swallows an unparseable payload
     /// as `false` on purpose — an Apple Vision job or a malformed payload must never render as
     /// parked — and nothing checked any of its four branches.
