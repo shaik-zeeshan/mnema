@@ -33,6 +33,21 @@ import { estimateDailyStorageMb } from "./disk-estimate";
 export const RESERVE_FLOOR_BYTES = 1024 * 1024 * 1024;
 
 /**
+ * A byte figure that was MEASURED, as opposed to one that was computed.
+ *
+ * `formatBytes` renders every non-positive value as "unknown size" — its
+ * can't-determine sentinel, which is right for a figure nobody could read. A
+ * measured zero is the opposite: the most determined reading there is, a full
+ * volume. Passing it straight through made a full disk say the same words as an
+ * unreadable one, on the one screen whose whole job is to tell those two apart
+ * (ADR 0040: an inability to measure never acts; a measured shortfall always
+ * does). Every free-space figure the flow prints goes through here.
+ */
+export function formatMeasuredBytes(bytes: number): string {
+  return bytes > 0 ? formatBytes(bytes) : "0 B";
+}
+
+/**
  * What the volume must actually hold before capture is possible: the backend's
  * reserve, the model downloads, and one day of recording at the chosen rate.
  * `estimateDailyStorageMb` is the same arithmetic the screen prints, in MB.
@@ -94,7 +109,7 @@ export function captureStorageBlockReason(
       input.captureIntervalSeconds,
     );
     if (probe.freeBytes !== null && probe.freeBytes < need) {
-      const figures = `${formatBytes(probe.freeBytes)} free · ${formatBytes(need)} needed.`;
+      const figures = `${formatMeasuredBytes(probe.freeBytes)} free · ${formatBytes(need)} needed.`;
       // Both shortfalls quote the same total — the volume needs all of it either
       // way. Only the leading clause differs, so the screen (and a user) can
       // tell "the models don't fit" from "there is nowhere to record".

@@ -10,7 +10,7 @@
 // drift. The one exception is the speaker model's fallback, which already lives
 // in `resolve-setup.ts` as `SPEAKRS_BYTES`.
 import { formatBytes } from "../settings/state/format";
-import { RESERVE_FLOOR_BYTES, storageNeedBytes } from "./gates";
+import { RESERVE_FLOOR_BYTES, formatMeasuredBytes, storageNeedBytes } from "./gates";
 import { estimateDailyStorageMb } from "./disk-estimate";
 import type {
   AudioTranscriptionModelStatus,
@@ -287,7 +287,7 @@ export function diskVerdict(input: {
     needBytes,
     roomForDownloadsBytes,
     message:
-      `Not enough room. ${formatBytes(freeBytes)} free · ${formatBytes(needBytes)} needed —` +
+      `Not enough room. ${formatMeasuredBytes(freeBytes)} free · ${formatBytes(needBytes)} needed —` +
       ` that includes a day of recording (${formatBytes(dayBytes)}) and the ${formatBytes(RESERVE_FLOOR_BYTES)} kept free.` +
       tail,
     escapeSavingBytes: clears ? budget.semanticBytes : null,

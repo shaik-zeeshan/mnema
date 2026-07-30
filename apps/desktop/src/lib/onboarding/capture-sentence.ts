@@ -14,6 +14,7 @@ import { plural } from "./ai-readiness";
 import { estimateDailyStorageMb } from "./disk-estimate";
 import {
   RESERVE_FLOOR_BYTES,
+  formatMeasuredBytes,
   storageNeedBytes,
   type StorageProbe,
 } from "./gates";
@@ -274,7 +275,7 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
         t(
           probe.freeBytes === null
             ? "Free space unknown"
-            : `${formatBytes(probe.freeBytes)} free`,
+            : `${formatMeasuredBytes(probe.freeBytes)} free`,
         ),
         t(` on ${volume} — only the folder is missing.`),
       ],
@@ -336,7 +337,7 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
           t(` The downloads are ${about}`),
           fig(formatBytes(downloads)),
           t(`; ${volume} has `),
-          fig(formatBytes(free)),
+          fig(formatMeasuredBytes(free)),
           t(" free."),
         ],
         repairs: [

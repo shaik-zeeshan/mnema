@@ -215,6 +215,21 @@ describe("regression — the gate's non-probe branches", () => {
     ).toBe("Bitrate must be 1–40 Mbps.");
   });
 
+  // A MEASURED zero is the most determined free-space reading there is (the
+  // volume is full), but `formatBytes` renders every non-positive value with its
+  // can't-determine sentinel — so the gate that fires on a full disk quoted
+  // "unknown size free", the exact words the UNMEASURABLE case uses. The whole
+  // discipline here (ADR 0040) is that measuring and failing to measure are
+  // different things; the blocking copy has to say which one happened.
+  test("a full volume states zero free space, not the can't-determine sentinel", () => {
+    const reason = captureStorageBlockReason(
+      input({ probe: { exists: true, writable: true, freeBytes: 0 } }),
+    );
+    expect(reason).not.toBeNull();
+    expect(reason).not.toContain("unknown size");
+    expect(reason).toContain("0 B free");
+  });
+
   // Re-entry with every model already installed: `requiredBytes` is 0, so
   // `free < RESERVE_FLOOR_BYTES + 0` degenerates to "below the safety reserve".
   // Blaming downloads that do not exist names a term worth zero bytes.

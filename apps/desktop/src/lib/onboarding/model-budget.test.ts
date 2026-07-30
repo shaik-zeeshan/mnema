@@ -393,6 +393,17 @@ describe("slice 10 — the over-disk state", () => {
     ).toBe(0);
   });
 
+  // A MEASURED zero is the most determined free-space reading there is, but
+  // `formatBytes` renders it with its can't-determine sentinel — so the picker's
+  // shortfall on a full volume read "unknown size free", which `diskVerdict`
+  // returns `null` for when the space genuinely could not be measured.
+  test("a full volume states zero free space, not the can't-determine sentinel", () => {
+    const verdict = diskVerdict({ budget, freeBytes: 0, captureIntervalSeconds: INTERVAL_S });
+    expect(verdict).not.toBeNull();
+    expect(verdict.message).not.toContain("unknown size");
+    expect(verdict.message).toContain("0 B free");
+  });
+
   test("the escape is offered ONLY when turning Semantic Search off clears it", () => {
     // Since the gate grew its capture term, dropping nomic usually does not
     // clear the check — so the copy states the fact instead of offering a

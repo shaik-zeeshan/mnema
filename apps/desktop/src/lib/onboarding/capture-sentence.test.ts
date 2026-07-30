@@ -206,6 +206,29 @@ describe("every failure state the sentence must render", () => {
     expect(v.repairs.map((r) => r.act)).toEqual(["nosemantic", "pick"]);
   });
 
+  // A MEASURED zero is the most determined free-space reading there is, but
+  // `formatBytes` renders every non-positive value as "unknown size" — its
+  // can't-determine sentinel. So a genuinely full volume said the same words as
+  // the volume nobody could read, and the missing-folder branch went further and
+  // told the user "only the folder is missing" while quoting an unknown size.
+  test("a full volume states zero free space, not the can't-determine sentinel", () => {
+    const v = sentenceVerdict(
+      input({ probe: { exists: true, writable: true, freeBytes: 0 } }),
+    );
+    expect(v.blocking).toBe(true);
+    expect(text(v.verdict)).not.toContain("unknown size");
+    expect(text(v.verdict)).toContain("0 B free");
+  });
+
+  test("a missing folder on a full volume still states zero, not unknown", () => {
+    const v = sentenceVerdict(
+      input({ probe: { exists: false, writable: false, freeBytes: 0 } }),
+    );
+    expect(v.clause).toBe("that folder isn't there yet.");
+    expect(text(v.verdict)).not.toContain("unknown size");
+    expect(text(v.verdict)).toContain("0 B free");
+  });
+
   test("the downloads fit but a day of capture does not", () => {
     const free = 2.4e9;
     const v = sentenceVerdict(
