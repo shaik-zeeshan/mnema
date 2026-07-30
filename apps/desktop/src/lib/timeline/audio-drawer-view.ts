@@ -157,7 +157,13 @@ export function speakerClusterOptionLabel(
   profiles: PersonProfileDto[],
 ): string {
   if (cluster.personId != null) {
-    return speakerProfileName(profiles, cluster.personId) ?? cluster.speakerLabel;
+    const name = speakerProfileName(profiles, cluster.personId) ?? cluster.speakerLabel;
+    // Owner-only auto-linking applies a name without anyone confirming it, so the
+    // one thing the user must be able to do is tell those apart from the names
+    // they set themselves — that is what `person_link_auto` is recorded FOR
+    // (migration 0053), and Settings promises it in as many words: "Automatic
+    // labels are marked as automatic and can be undone."
+    return cluster.personLinkAuto ? `${name} (auto)` : name;
   }
   if (cluster.suggestedPersonId != null) {
     return (
