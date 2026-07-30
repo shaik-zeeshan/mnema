@@ -1,0 +1,360 @@
+/* Onboarding shell chrome + shared screen primitives (issue #195, slice 5).
+ *
+ * Ported from `docs/onboarding/mockups/chosen-cinematic-rewind.html` lines
+ * 3-563 (the global <style> block). Two deliberate differences from the mockup:
+ *
+ *  1. Every colour is a `var(--app-*)` token. The mockup hardcodes the dark
+ *     palette because it is a document showing screenshots of a dark app; the
+ *     real app is theme-aware (`routes/+layout.svelte` defines the tokens for
+ *     both themes), and a pasted `#3dffa0` breaks the light theme.
+ *  2. `.ob-win` fills the window instead of the mockup's fixed frame. The real
+ *     onboarding window is 1120x800, minimum 920x620 (`src-tauri/src/windows.rs:200`).
+ *
+ * OWNERSHIP: this file belongs to the SHELL. Screens under `screens/` use
+ * component-scoped <style> so parallel screen work cannot collide. The class
+ * names below are the shared vocabulary screens may reuse (`.ob-stage`,
+ * `.ob-disp`, `.ob-btn`, `.ob-acts`, `.ob-rule`, `.ob-m`, `.ob-lead`,
+ * `.ob-body`, `.ob-fine`); they are global on purpose so a screen's scoped
+ * styles can extend them.
+ */
+
+.ob-win {
+  /* Two control heights for the whole flow. A ROW control — field, select, or
+     any button standing beside one — is `--ob-ctl-h`; an INLINE control — a
+     status-row button, the add-app chip, a footer ghost — is the small one.
+     Both are whole pixels so nothing lands on a fractional height. */
+  --ob-ctl-h: 40px;
+  --ob-ctl-h-sm: 28px;
+  /* Horizontal button padding, symmetric on every variant — the mockups' ghost
+     rule (`padding-left: 0`) predates the hover background and crops it. Named
+     so the one control that must sit on the content gutter (the footer's
+     leading ghost) can cancel it exactly instead of guessing a number. */
+  --ob-btn-pad-x: 20px;
+  --ob-btn-pad-x-sm: 13px;
+  /* The stage's own gutters, as tokens, because a screen that BLEEDS to the
+     window edge has to cancel them with a negative margin and there is no way
+     to read a parent's padding in CSS. Welcome hardcoded the previous
+     `48px`/`40px` and overflowed the stage by 20px the moment this changed. */
+  --ob-pad-x: 44px;
+  --ob-pad-b: 20px;
+  /* How far a control is allowed to BLEED past its pane's content box: the
+     audio bracket (-12px), a peeked chain row (-8px each side) and the capture
+     sentence's peek rule (-14px) all sit in the gutter on purpose. A scrolling
+     pane must reserve it, because `overflow-y: auto` computes `overflow-x` to
+     `auto` too: an 8px right bleed makes the pane horizontally scrollable, one
+     stray trackpad swipe parks it 8px right, and every line loses its first
+     character off the left edge. Largest bleed in the flow, so panes cancel it
+     with an equal negative margin and the gutter itself never moves. */
+  --ob-bleed: 14px;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-bg);
+  color: var(--app-text);
+  font-size: var(--text-base);
+  overflow: hidden;
+}
+
+/* ---- window chrome: dots · step label · playhead ---- */
+.ob-bar {
+  height: 36px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--app-border);
+  background: var(--app-surface);
+  /* The onboarding route renders without the app titlebar, so the bar doubles
+     as the window drag handle. */
+  -webkit-app-region: drag;
+}
+.ob-bar button {
+  -webkit-app-region: no-drag;
+}
+.ob-dots {
+  display: flex;
+  gap: 6px;
+}
+.ob-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--app-border-hover);
+  display: block;
+}
+.ob-bar .ob-name {
+  font-size: var(--text-xs);
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+}
+
+/* The step indicator is a timeline, not dots: eight ticks, a filled track
+   behind the head, and the head itself at the current step. */
+.ob-ph {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ob-ph-track {
+  position: relative;
+  width: 144px;
+  height: 16px;
+  flex: none;
+}
+.ob-ph-track::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 7px;
+  height: 1px;
+  background: var(--app-border-hover);
+}
+.ob-ph-tick {
+  position: absolute;
+  top: 4px;
+  width: 1px;
+  height: 7px;
+  background: var(--app-border-hover);
+  display: block;
+}
+.ob-ph-fill {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  height: 1px;
+  background: var(--app-text-muted);
+  display: block;
+  transition: width 260ms cubic-bezier(0.3, 0.9, 0.35, 1);
+}
+.ob-ph-head {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  height: 16px;
+  background: var(--app-accent);
+  box-shadow: 0 0 8px 1px var(--app-accent-glow);
+  display: block;
+  transition: left 260ms cubic-bezier(0.3, 0.9, 0.35, 1);
+}
+.ob-ph-head::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -2.5px;
+  width: 6px;
+  height: 4px;
+  background: var(--app-accent);
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+.ob-ph-lbl {
+  font-size: var(--text-xs);
+  color: var(--app-text-subtle);
+  letter-spacing: 0.14em;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- stage: the screen's own canvas ---- */
+.ob-stage {
+  flex: 1;
+  min-height: 0;
+  /* The mockup's frame padding (`revision-2.html`). 46/48/40 cost ~38px of
+     vertical room, and the switch chain needed every one of them to stop
+     scrolling at the 1120x800 DESIGN size. */
+  padding: 28px var(--ob-pad-x) var(--ob-pad-b);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* ---- type registers ---- */
+.ob-m {
+  font-size: var(--text-xs);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--app-text-subtle);
+  display: block;
+}
+.ob-disp {
+  font-size: 52px;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--app-text-strong);
+  font-weight: 400;
+  margin: 0;
+  text-wrap: balance;
+}
+.ob-disp.mid {
+  font-size: 38px;
+}
+.ob-disp.sm {
+  font-size: 27px;
+  letter-spacing: -0.02em;
+}
+.ob-lead {
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--app-text);
+  margin: 0;
+  max-width: 52ch;
+}
+.ob-body {
+  font-size: var(--text-md);
+  line-height: 1.7;
+  color: var(--app-text-muted);
+  margin: 0;
+  max-width: 60ch;
+}
+.ob-fine {
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  color: var(--app-text-subtle);
+  margin: 0;
+  max-width: 64ch;
+}
+.ob-num {
+  font-variant-numeric: tabular-nums;
+}
+.ob-strong {
+  color: var(--app-text-strong);
+}
+.ob-rule {
+  border: 0;
+  border-top: 1px solid var(--app-border);
+  margin: 0;
+}
+
+/* ---- controls ---- */
+/* Height comes from the token, never from padding + line-height — that pair is
+   what produced 20.0 / 22.0 / 30.5 / 34.5 on one screen. `min-height` rather
+   than `height` so a deliberately tall control (the AI choice cards) still
+   grows. */
+.ob-btn {
+  font: inherit;
+  font-size: var(--text-md);
+  color: var(--app-text);
+  background: transparent;
+  border: 1px solid var(--app-border-strong);
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--ob-ctl-h);
+  line-height: 1;
+  padding: 0 var(--ob-btn-pad-x);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ob-btn:hover:not(:disabled) {
+  background: var(--app-surface-hover);
+}
+/* A held button must not read as live. Capture & Storage is the only screen in
+   the flow that blocks, so this is the one place the state is ever reached. */
+.ob-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+.ob-btn.primary {
+  background: var(--app-accent);
+  border-color: var(--app-accent);
+  color: var(--app-accent-contrast);
+}
+.ob-btn.primary:hover:not(:disabled) {
+  background: var(--app-accent);
+  box-shadow: var(--app-ring);
+}
+/* Ghost keeps the base padding — `revision-2.html` gives it no padding override
+   at all. The asymmetric `0 / 14px` came from `chosen-cinematic-rewind.html`,
+   which had no hover background anywhere; with one, a zero left pad crops the
+   hover box hard against the label while leaving 14px on the right. */
+.ob-btn.ghost {
+  border-color: transparent;
+  color: var(--app-text-muted);
+}
+.ob-btn.ghost:hover:not(:disabled) {
+  color: var(--app-text-strong);
+}
+/* ...but a ghost that LEADS the footer is the only control whose label carries
+   the content gutter (every heading and rule above it starts at `--ob-pad-x`).
+   Pull the box, not the padding: the label stays on the gutter and the hover
+   box grows symmetrically into it. */
+.ob-foot .ob-acts > .ob-btn.ghost:first-child {
+  margin-left: calc(-1 * var(--ob-btn-pad-x));
+}
+.ob-btn.sm {
+  font-size: var(--text-sm);
+  min-height: var(--ob-ctl-h-sm);
+  padding: 0 var(--ob-btn-pad-x-sm);
+  border-radius: 6px;
+}
+.ob-foot .ob-acts > .ob-btn.sm.ghost:first-child {
+  margin-left: calc(-1 * var(--ob-btn-pad-x-sm));
+}
+.ob-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--app-ring);
+}
+.ob-acts {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* The action row every screen ends with: pinned to the bottom of the stage,
+   above a rule. Shell-owned so all eight screens agree on it. */
+.ob-foot {
+  margin-top: auto;
+  padding-top: 24px;
+  flex: none;
+}
+.ob-foot .ob-acts {
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+.ob-foot .ob-acts .spacer {
+  margin-right: auto;
+}
+/* A state LINE on the left of the footer wraps inside its own cell; without a
+   shrink basis it holds its measure and pushes the actions onto a second row at
+   the 920px minimum window. (A `.spacer` that is itself a button is unaffected.) */
+.ob-foot .ob-acts span.spacer {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+/* The blocking reason for a held gate — Capture & Storage only. */
+.ob-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-sm);
+  color: var(--app-warn);
+  border: 1px solid var(--app-warn-border);
+  background: var(--app-warn-bg);
+  border-radius: 6px;
+  padding: 7px 11px;
+}
+.ob-error {
+  color: var(--app-danger);
+  border-color: var(--app-danger-border);
+  background: var(--app-danger-bg);
+}
+
+/* Visually-hidden live region (step announcements). */
+.ob-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

@@ -32,6 +32,7 @@ mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
 mod user_context;
+mod voice_enrollment;
 mod webview_cache;
 mod windows;
 
@@ -559,37 +560,6 @@ fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
 
-/// One-time move of the pre-rename config root (settings, models, caches) so
-/// installs from before the `com.shaikzeeshan.mnema` → `day.mnema` identifier
-/// change keep their data. Runs before anything reads the config dir; a no-op
-/// once the new dir exists.
-#[cfg(target_os = "macos")]
-fn migrate_legacy_app_config_dir(app_handle: &tauri::AppHandle) {
-    use tauri::Manager;
-    let Ok(new_dir) = app_handle.path().app_config_dir() else {
-        return;
-    };
-    if new_dir.exists() {
-        return;
-    }
-    let Some(name) = new_dir.file_name().and_then(|name| name.to_str()) else {
-        return;
-    };
-    let Some(parent) = new_dir.parent() else {
-        return;
-    };
-    let legacy_dir = parent.join(name.replacen("day.mnema", "com.shaikzeeshan.mnema", 1));
-    if legacy_dir != new_dir && legacy_dir.is_dir() {
-        if let Err(error) = std::fs::rename(&legacy_dir, &new_dir) {
-            tauri_plugin_log::log::warn!(
-                "failed to migrate legacy config dir {} -> {}: {error}",
-                legacy_dir.display(),
-                new_dir.display()
-            );
-        }
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -797,6 +767,8 @@ pub fn run() {
             app_infra::list_person_profiles,
             app_infra::create_person_profile,
             app_infra::delete_person_profile,
+            voice_enrollment::enroll_account_owner_voice,
+            voice_enrollment::get_account_owner_person_id,
             app_infra::list_speaker_clusters,
             app_infra::name_speaker_cluster,
             app_infra::link_speaker_cluster_to_person,
@@ -852,6 +824,7 @@ pub fn run() {
             ai_runtime::get_ai_runtime_status,
             ai_runtime::ai_runtime_test_connection,
             ai_runtime::ai_runtime_list_models,
+            ai_runtime::verify_ai_provider,
             user_context::commands::get_user_context_status,
             user_context::commands::list_user_context_activities,
             user_context::commands::list_user_context_conclusions,
@@ -887,6 +860,10 @@ pub fn run() {
             native_capture::delete_native_capture_debug_log,
             native_capture::get_microphone_controller_state,
             native_capture::update_microphone_controller,
+            native_capture::get_microphone_activity_level,
+            native_capture::start_system_audio_level_probe,
+            native_capture::get_system_audio_probe_level,
+            native_capture::record_bounded_microphone_clip,
             native_capture::start_native_capture,
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
@@ -902,6 +879,7 @@ pub fn run() {
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,
+            managed_storage_layout::probe_storage_path,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
@@ -912,8 +890,6 @@ pub fn run() {
             open_conversation_in_chat,
         ])
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            migrate_legacy_app_config_dir(app.handle());
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {

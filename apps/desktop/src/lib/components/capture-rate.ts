@@ -34,6 +34,14 @@ export function nearestLadderIndex(fps: number): number {
 	return best;
 }
 
+// Snapshots inside one minute of recording. The first one lands at t=0, so a
+// 45s interval fits TWO (0s and 45s) — `60 / intervalS` counts intervals, not
+// snapshots, and understates every stop that does not divide 60. The epsilon
+// keeps the closing edge exclusive: 60s yields 1, not 2.
+export function snapshotsPerMinute(intervalS: number): number {
+	return Math.floor((60 - 1e-9) / intervalS) + 1;
+}
+
 // Readout phrase for the control header: "every 2 seconds", "once per minute".
 export function captureIntervalPhrase(intervalS: number): string {
 	if (intervalS < 1) return `${Math.round(1 / intervalS)} times a second`;

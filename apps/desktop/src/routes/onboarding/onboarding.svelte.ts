@@ -1,15 +1,17 @@
-// Onboarding flow controller (Slice 3).
+// Onboarding draft/model/permission state.
 //
-// Owns ALL onboarding state + logic, relocated from the legacy 2,674-line
-// `routes/onboarding/+page.svelte`. The accordion shell (`+page.svelte`) is a
-// thin wiring layer over this; the per-feature body components (Slice 4) read
+// Owns the draft settings, the four model subsystems, the permission store and
+// the AI store. `OnboardingFlow` (`onboarding-flow.svelte.ts`) owns navigation,
+// gates and the atomic commit, and the eight screens under `screens/` read
 // `controller.<field>` / call `controller.<method>()` exclusively.
 //
-// Behavior parity is mandatory. To keep every file under the size budget the
-// pure/cohesive chunks are factored into siblings and delegated below so this
-// stays one flat public surface: the model subsystems (`onboarding-models`), the
-// settings round-trip (`onboarding-settings-sync`, VERBATIM from the legacy page),
-// the attention/validation predicates (`onboarding-attention`), and the
+// The accordion, the per-feature toggle switch and the whole "attention item"
+// concept were removed in issue #195 slice 17 — model readiness is classified by
+// `$lib/onboarding/model-readiness` and never gates anything. To keep every file
+// under the size budget the pure/cohesive chunks are factored into siblings and
+// delegated below so this stays one flat public surface: the model subsystems
+// (`onboarding-models`), the settings round-trip (`onboarding-settings-sync`),
+// the permission-display/validation helpers (`onboarding-attention`), and the
 // download-progress event wiring (`onboarding-listeners`).
 import { invoke } from "@tauri-apps/api/core";
 import { createAppPrivacyExclusionController } from "$lib/app-privacy-exclusion.svelte";
@@ -34,8 +36,6 @@ import type {
   VideoBitrateMode,
   VideoBitratePreset,
 } from "$lib/types";
-import type { FeatureId, FeatureLockContext } from "./feature-model";
-import { FEATURES, featureLockReason as lockReasonFor } from "./feature-model";
 import {
   createOcrModelStore,
   createSemanticSearchModelStore,
@@ -56,7 +56,6 @@ import {
 } from "./onboarding-mapping";
 import {
   buildSettingsRequestFrom,
-  finaleBlockReasonFor,
   syncDraftsInto,
 } from "./onboarding-settings-sync";
 import { syncPrivacyDraftInto } from "./onboarding-privacy-sync";
@@ -66,11 +65,6 @@ import {
   customResolutionErrors as buildCustomResolutionErrors,
 } from "./onboarding-attention";
 import type { PermissionKey, PermissionValue } from "./onboarding-attention";
-import {
-  featureAttentionFor,
-  featureDownloadFor,
-  isFeatureEnabled,
-} from "./onboarding-feature-state";
 import {
   finishOnboarding,
   loadOnboarding,
@@ -137,6 +131,8 @@ export class OnboardingController {
   draftTranscriptionSystemAudioEnabled = $state(false);
   draftSpeakerSeparateSpeakers = $state(false);
   draftSpeakerRecognizeSavedPeople = $state(false);
+  // Default on: inert until a voiceprint exists, and enrolling is what makes it real.
+  draftSpeakerAutoLabelOwner = $state(true);
   draftSpeakerProvider = $state(DEFAULT_SPEAKER_PROVIDER);
   draftSpeakerModelId = $state<string | null>(DEFAULT_SPEAKER_MODEL_ID);
   draftSpeakerTimeoutMinutes = $state(10);
@@ -197,54 +193,6 @@ export class OnboardingController {
   starting = $state(false);
   errorMessage = $state<string | null>(null);
 
-  // ── Accordion ────────────────────────────────────────────────────────────
-  // `null` = every row collapsed. Nothing is open at start; opening a row sets
-  // its id, and clicking the already-open row toggles back to `null`.
-  openId = $state<FeatureId | null>(null);
-
-  // ── Phase machine: welcome (first screen) → configure (accordion) → done (finale)
-  phase = $state<"welcome" | "configure" | "done">("welcome");
-  applyingRecommended = $state(false);
-
-  beginSetup(): void { this.phase = "configure"; }
-  backToWelcome(): void { this.phase = "welcome"; }
-  reviewAndFinish(): void { this.phase = "done"; }
-  backToConfigure(): void { this.phase = "configure"; }
-
-  // One-tap recommended defaults. The capture/processing defaults are DRAFT-ONLY
-  // (the redesign's invariant is "save only on finish" — do NOT call any
-  // recording-settings save command here). The recommended privacy exclusions
-  // are the one exception: like the legacy welcome "Use recommended setup", they
-  // commit eagerly through the privacy controller (the existing pattern — privacy
-  // is never deferred to the finish-only draft). Applied first; each privacy
-  // command's `onSettingsUpdated` now syncs ONLY the privacy slice, so the smart
-  // defaults set below are no longer at risk of being clobbered. Safe no-op when
-  // nothing is pending.
-  async applyRecommendedSetup(): Promise<void> {
-    // Always start from a clean banner so a retry isn't shadowed by a stale
-    // error — independent of whether the privacy command below actually runs.
-    this.errorMessage = null;
-    this.applyingRecommended = true;
-    try {
-      await this.appPrivacyExclusion.applyAllRecommendedPrivacyApps();
-    } finally {
-      this.applyingRecommended = false;
-    }
-    this.draftCaptureScreen = true;
-    this.draftOcrEnabled = true;
-    this.chooseOcrProvider("apple_vision");
-    this.draftTranscriptionEnabled = true;
-    // Mirror `toggleFeature("transcribe")`'s ON-branch: bind the master to the
-    // currently-enabled audio sources, so a source enabled BEFORE this runs
-    // (configure → enable mic → "← Back" → "Use recommended setup") is actually
-    // transcribed rather than silently captured-but-not-transcribed.
-    this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
-    this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
-    this.chooseTranscriptionProvider("local_whisper");
-    this.draftTranscriptionModelId = "base";
-    this.phase = "configure";
-    this.openId = "permissions";
-  }
 
   // ── Subsystems (delegated; surfaced flat below) ──────────────────────────
   private readonly ocrStore = createOcrModelStore({
@@ -443,19 +391,6 @@ export class OnboardingController {
     this.draftTranscriptionModelId = value === OS_MANAGED_OPTION_VALUE ? null : value;
   }
 
-  // Mic VAD adapter is a closed union (silero/webrtc/off) surfaced as a
-  // Segmented in MicBody, so the cast from the control's string value is safe.
-  chooseMicrophoneVadAdapter(value: string): void {
-    this.draftMicrophoneVadAdapter = value as MicrophoneVadAdapter;
-  }
-
-  // ── Accordion + per-feature enable/attention ─────────────────────────────
-  // Toggle behavior: clicking a collapsed row opens it (and collapses whatever
-  // was open — one-open-at-a-time); clicking the already-open row collapses it.
-  setOpen(id: FeatureId): void {
-    this.openId = this.openId === id ? null : id;
-  }
-
   // Force every OPTIONAL feature OFF — applied ONLY for a GENUINE first run (no
   // persisted recording-settings.json; see `loadOnboarding`). Called after the
   // initial `syncDrafts` (a verbatim settings round-trip that would otherwise
@@ -476,244 +411,6 @@ export class OnboardingController {
     this.draftSemanticSearchEnabled = false;
   }
 
-  isEnabled(id: FeatureId): boolean {
-    return isFeatureEnabled(this, id);
-  }
-
-  toggleFeature(id: FeatureId): void {
-    switch (id) {
-      case "permissions":
-      case "screen":
-      case "storage":
-      case "licensing":
-        return; // required — no-op
-      case "mic":
-        // Recording the mic needs Microphone permission — gate the enable only.
-        if (!this.draftCaptureMicrophone && this.featureLockReason("mic")) return;
-        this.draftCaptureMicrophone = !this.draftCaptureMicrophone;
-        // Keep transcription symmetric with the master toggle: if Audio
-        // transcription is already on, a newly-enabled source should be
-        // transcribed (else it'd be silently captured-but-not-transcribed); a
-        // disabled source carries no transcript request.
-        if (this.draftTranscriptionEnabled) {
-          this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
-        }
-        return;
-      case "sysaudio":
-        // Capturing system audio needs System audio permission — gate the
-        // enable only. (Screen capture is required-on in this flow.)
-        if (!this.draftCaptureSystemAudio && this.featureLockReason("sysaudio")) return;
-        this.draftCaptureSystemAudio = !this.draftCaptureSystemAudio;
-        if (this.draftTranscriptionEnabled) {
-          this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
-        }
-        return;
-      case "ocr":
-        this.draftOcrEnabled = !this.draftOcrEnabled;
-        return;
-      case "transcribe":
-        this.draftTranscriptionEnabled = !this.draftTranscriptionEnabled;
-        if (this.draftTranscriptionEnabled) {
-          // Turning the master ON: transcribe whatever audio sources are
-          // currently enabled, so the feature isn't a no-op. (Sources default to
-          // per-source-transcribe OFF; this binds them to the master at enable.)
-          this.draftTranscriptionMicrophoneEnabled = this.draftCaptureMicrophone;
-          this.draftTranscriptionSystemAudioEnabled = this.draftCaptureSystemAudio;
-        } else {
-          // Turning the master OFF: clear the per-source transcribe requests too,
-          // else a lingering "transcribe this source" flag keeps the transcribe
-          // row stuck on attention (`transcriptionRequestedWhileOff`) after the
-          // user fully turned transcription off.
-          this.draftTranscriptionMicrophoneEnabled = false;
-          this.draftTranscriptionSystemAudioEnabled = false;
-          // Speaker separation needs a transcript to split — cascade off.
-          this.draftSpeakerSeparateSpeakers = false;
-          this.draftSpeakerRecognizeSavedPeople = false;
-        }
-        return;
-      case "speakers":
-        // Separating speakers needs Audio transcription on — gate the enable.
-        if (!this.draftSpeakerSeparateSpeakers && this.featureLockReason("speakers")) return;
-        this.draftSpeakerSeparateSpeakers = !this.draftSpeakerSeparateSpeakers;
-        if (!this.draftSpeakerSeparateSpeakers) this.draftSpeakerRecognizeSavedPeople = false;
-        return;
-      case "privacy":
-        this.privacyEnabled = !this.privacyEnabled;
-        return;
-      case "askai":
-        this.draftAskAiEnabled = !this.draftAskAiEnabled;
-        return;
-      case "semanticSearch":
-        this.draftSemanticSearchEnabled = !this.draftSemanticSearchEnabled;
-        return;
-    }
-  }
-
-  // Per-feature "model not ready" predicates delegate to the pure helpers in
-  // `onboarding-attention` (which read only `available` + an in-flight flag), so
-  // the attention/finish gates and the body callouts share one source of truth.
-  // (The OCR/transcription/speaker/semantic predicates are composed in
-  // `featureAttentionFor` — see `onboarding-feature-state`; whereas
-  // `transcriptionRequestedWhileOff` stays a derived here because
-  // TranscriptionBody renders it directly.)
-  //
-  // An audio source is actively set to be transcribed (source on + its per-source
-  // "transcribe" toggle on) while the master Audio transcription feature is OFF —
-  // the request silently never runs, so the transcribe row needs attention.
-  // Public so TranscriptionBody can explain WHY in its callout; this is the single
-  // source for both the attention flag and the body copy.
-  transcriptionRequestedWhileOff = $derived.by(() => {
-    if (this.draftTranscriptionEnabled) return false;
-    const micWants = this.draftCaptureMicrophone && this.draftTranscriptionMicrophoneEnabled;
-    const sysWants = this.draftCaptureSystemAudio && this.draftTranscriptionSystemAudioEnabled;
-    return micWants || sysWants;
-  });
-
-  // Single-owner attention so the footer count never double-counts an issue.
-  featureAttention(id: FeatureId): boolean {
-    return featureAttentionFor(this, id);
-  }
-
-  // ── Feature dependency relations ─────────────────────────────────────────
-  private lockContext(): FeatureLockContext {
-    return {
-      micGranted: this.permissions?.microphone === "granted",
-      transcriptionEnabled: this.draftTranscriptionEnabled,
-    };
-  }
-  // Why feature `id` can't be enabled yet, or null. Drives the row lock hint +
-  // the disabled toggle + the in-body inline action.
-  featureLockReason(id: FeatureId): string | null {
-    return lockReasonFor(id, this.lockContext());
-  }
-  // The toggle is disabled only when the feature is OFF and its prerequisite is
-  // unmet — turning a feature OFF is always allowed.
-  featureToggleDisabled(id: FeatureId): boolean {
-    return !this.isEnabled(id) && this.featureLockReason(id) !== null;
-  }
-
-  // Live model-download status for a feature's COLLAPSED row, so a download
-  // started on one feature stays visible after navigating to another (the
-  // progress bar only renders inside the OPEN body). Reuses the existing
-  // selected*DownloadRunning/Percent getters (which already exclude terminal
-  // statuses, so the badge auto-clears). Returns null for features without a
-  // model download and when no download is running. Percent may be null when
-  // totalBytes is unknown — callers render `{percent ?? 0}%`.
-  featureDownload(id: FeatureId): { running: boolean; percent: number | null } | null {
-    return featureDownloadFor(this, id);
-  }
-
-  // ── Footer / CTA deriveds ────────────────────────────────────────────────
-  onCount = $derived(FEATURES.filter((feature) => this.isEnabled(feature.id)).length);
-  attentionCount = $derived(FEATURES.filter((feature) => this.featureAttention(feature.id)).length);
-
-  // The configure→finale CTA ("Review & finish"): block leaving configure while
-  // anything needs attention OR a selected custom resolution/bitrate is invalid
-  // (those serialize as null and break the backend save). Mirrors the legacy
-  // `canProceedFromActiveStep`/armed-video gate.
-  canProceedToFinale = $derived(
-    this.attentionCount === 0
-      && this.customResolutionErrors.length === 0
-      && this.customBitrateErrors.length === 0,
-  );
-
-  // The first FEATURE row currently needing attention (in FEATURES order), or
-  // null. Drives the footer count chip's "jump to the blocker" affordance so the
-  // disabled "Review & finish" CTA points at what to fix instead of leaving the
-  // user to hunt for it. Mirrors `attentionCount`'s single-owner predicate.
-  firstAttentionFeatureId = $derived(
-    FEATURES.find((feature) => this.featureAttention(feature.id))?.id ?? null,
-  );
-
-  // True when a selected custom resolution/bitrate is invalid. These serialize as
-  // null and break the backend save, so they block the configure→finale step just
-  // like an attention item — but they live in the `screen` row's body, not the
-  // attention tally, so they need their own footer reason + jump target.
-  customValueInvalid = $derived(
-    this.customResolutionErrors.length > 0 || this.customBitrateErrors.length > 0,
-  );
-
-  // The first row blocking the configure→finale step (attention rows first, then
-  // the custom resolution/bitrate which lives in the `screen` row), or null. This
-  // is what the footer's "jump to the blocker" affordance targets so EVERY reason
-  // the CTA is disabled points at the row to fix — including the custom-value case.
-  firstConfigureBlockerId = $derived(
-    this.firstAttentionFeatureId ?? (this.customValueInvalid ? ("screen" as FeatureId) : null),
-  );
-
-  // Names what is blocking the configure→finale step, or null when nothing blocks.
-  // Mirrors the finale's `finaleBlockReason` copy idiom so the footer can say WHAT
-  // is blocking instead of only a terse "N need attention" count. Covers both the
-  // attention rows AND an invalid custom resolution/bitrate (which would otherwise
-  // disable the CTA with no stated reason).
-  configureBlockReason = $derived.by(() => {
-    const names = FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name);
-    if (names.length > 0) {
-      return `Needs attention before you can finish: ${names.join(", ")}.`;
-    }
-    if (this.customValueInvalid) {
-      return "Fix the custom recording resolution or bitrate before you can finish.";
-    }
-    return null;
-  });
-
-  // Open + scroll to the first row blocking the step (attention OR the custom
-  // resolution/bitrate) so the footer reason is an actionable jump target (not
-  // just text). Opening is the controller's job; the scroll is a best-effort DOM
-  // nudge (the row mounts its body on open), guarded for the no-blocker case.
-  jumpToFirstAttention(): void {
-    const id = this.firstConfigureBlockerId;
-    if (!id) return;
-    this.openId = id;
-    // Defer the scroll until the row has re-rendered open.
-    requestAnimationFrame(() => {
-      const head = document.querySelector<HTMLElement>(
-        `[data-feature-row][data-feature-id="${id}"] [data-feature-head]`,
-      );
-      head?.scrollIntoView({ behavior: "smooth", block: "center" });
-      head?.focus();
-    });
-  }
-
-  // The legacy completion gate (`processingReady`): finishing is blocked only
-  // when a selected, enabled model isn't ready. Permissions never block finish.
-  canFinish = $derived(
-    (!this.draftOcrEnabled
-      || (!!this.selectedOcrModel && this.selectedOcrModel.available && !this.selectedOcrDownloadRunning))
-    && (!this.draftTranscriptionEnabled
-      || (!!this.selectedTranscriptionModel
-        && this.selectedTranscriptionModel.available
-        && !this.selectedTranscriptionDownloadRunning))
-    && (!this.draftSpeakerSeparateSpeakers
-      || (!!this.selectedSpeakerModel
-        && this.selectedSpeakerModel.available
-        && !this.selectedSpeakerDownloadRunning))
-    && (!this.draftSemanticSearchEnabled
-      || (!!this.selectedSemanticSearchModel
-        && this.selectedSemanticSearchModel.available
-        && !this.selectedSemanticSearchDownloadRunning)),
-  );
-
-  // Finishing requires model readiness, zero outstanding attention items
-  // (permissions, undownloaded models, etc.), AND a valid custom
-  // resolution/bitrate when those modes are selected — an invalid custom value
-  // serializes as null and breaks the backend save (ScreenResolution::Custom /
-  // the custom bitrate need non-null u32). This is what blocks the finale CTA.
-  canComplete = $derived(
-    this.canFinish
-      && this.attentionCount === 0
-      && this.customResolutionErrors.length === 0
-      && this.customBitrateErrors.length === 0,
-  );
-
-  // ── Finale summary helpers ───────────────────────────────────────────────
-  selectedSourceCount = $derived(
-    Number(this.draftCaptureScreen) + Number(this.draftCaptureMicrophone) + Number(this.draftCaptureSystemAudio),
-  );
-
-  ctaLabel = $derived("Start recording");
-  ctaDisabled = $derived(this.loading || this.saving || this.completing || !this.canComplete);
-
   // The finale escape hatch ("Just open the dashboard") must NOT share the
   // model-readiness gate that "Start recording" uses — opening the dashboard
   // while a model still downloads (or with an attention item outstanding) is
@@ -724,12 +421,6 @@ export class OnboardingController {
   canSkipToDashboard = $derived(
     this.customResolutionErrors.length === 0 && this.customBitrateErrors.length === 0,
   );
-  skipDisabled = $derived(this.loading || this.saving || this.completing || !this.canSkipToDashboard);
-
-  // Surfaced reason the finale CTAs are dead for an attention regression (not an in-flight op). Helper owns gate + copy.
-  finaleBlockReason = $derived(finaleBlockReasonFor(this.phase === "done" && !this.loading && !this.saving && !this.completing,
-    FEATURES.filter((f) => this.featureAttention(f.id)).map((f) => f.name)));
-
   // ── Settings round-trip (VERBATIM from the legacy page) ──────────────────
   // The two transforms are factored into `onboarding-settings-sync` (operating
   // on this controller's draft fields) to keep this file under the size budget;

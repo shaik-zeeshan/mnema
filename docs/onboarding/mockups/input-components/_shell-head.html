@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mnema onboarding — final input components</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  .app {
+    --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
+    --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+    --app-text-subtle:#7e7e98; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+    --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,.18); --app-accent-contrast:#07120c;
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+    --app-shadow-popover:0 8px 24px rgba(0,0,0,.22);
+    --app-ring:0 0 0 3px var(--app-accent-glow);
+    --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px; --text-xl:20px;
+    /* ONE control height. Buttons used to take their height from padding plus a
+       1.5 line-height, which lands on 30.5px / 23px — fractional, and never the
+       same as the 20px switch beside them. Height now comes from the token and
+       the label is centred in it, so a button next to a switch, a field or
+       another button lines up. `min-height`, so the deliberately tall choice
+       cards keep their size. */
+    --ob-ctl-h:32px; --ob-ctl-h-sm:22px;
+  }
+  .app.light {
+    --app-bg:#f6f6f4; --app-surface:#fff; --app-surface-subtle:#f0f0ec; --app-surface-raised:#fff;
+    --app-surface-hover:#eaeae4; --app-surface-active:#e4e4de;
+    --app-border:#d8d8d4; --app-border-strong:#c4c4be; --app-border-hover:#a8a8a2;
+    --app-text-strong:#14141a; --app-text:#3a3a44; --app-text-muted:#63636e;
+    --app-text-subtle:#7a7a86; --app-text-faint:#c0c0bc;
+    --app-accent:#1f7a4a; --app-accent-strong:#186038; --app-accent-bg:#e6f4ec;
+    --app-accent-border:#b8ddc8; --app-accent-glow:rgba(31,122,74,.16); --app-accent-contrast:#fff;
+    --app-warn:#9a5a12; --app-warn-bg:#fbf1e0; --app-warn-border:#e0c090;
+    --app-danger:#c43a48; --app-danger-bg:#fbe8ea; --app-danger-border:#e8b8be;
+    --app-info:#1c5fa8; --app-info-bg:#e6eef8; --app-info-border:#b8cfe8;
+    --app-shadow-popover:0 8px 24px rgba(0,0,0,.10);
+  }
+
+  body {
+    margin:0; padding:0;
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"SF Mono",Menlo,monospace;
+    background:var(--app-bg); color:var(--app-text);
+    font-size:var(--text-base); line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ---- host utility register (mirrors onboarding-shell.css) ---- */
+  .ob-m { font-size:var(--text-xs); letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle); }
+  .ob-disp { font-size:var(--text-xl); color:var(--app-text-strong); font-weight:500; margin:0; letter-spacing:-.01em; }
+  .ob-disp.mid { font-size:var(--text-lg); }
+  .ob-disp.sm { font-size:var(--text-md); }
+  .ob-lead { font-size:var(--text-lg); color:var(--app-text); margin:0; }
+  .ob-body { font-size:var(--text-md); color:var(--app-text-muted); margin:0; }
+  .ob-fine { font-size:var(--text-sm); color:var(--app-text-subtle); margin:0; }
+  .ob-num { font-variant-numeric:tabular-nums; }
+  .ob-strong { color:var(--app-text-strong); }
+  .ob-rule { height:1px; background:var(--app-border); border:0; margin:0; }
+  .ob-btn {
+    font:inherit; font-size:var(--text-sm); border-radius:6px; cursor:pointer;
+    display:inline-flex; align-items:center; justify-content:center;
+    min-height:var(--ob-ctl-h); padding:0 12px; line-height:1; white-space:nowrap;
+    background:var(--app-surface-raised); color:var(--app-text); border:1px solid var(--app-border-strong);
+  }
+  .ob-btn:hover { background:var(--app-surface-hover); border-color:var(--app-border-hover); }
+  .ob-btn:focus-visible { outline:2px solid var(--app-accent); outline-offset:1px; box-shadow:var(--app-ring); }
+  .ob-btn.primary { background:var(--app-accent); color:var(--app-accent-contrast); border-color:var(--app-accent); font-weight:500; }
+  .ob-btn.ghost { background:transparent; border-color:transparent; color:var(--app-text-muted); }
+  .ob-btn.ghost:hover { color:var(--app-text-strong); background:var(--app-surface-hover); }
+  .ob-btn.sm { min-height:var(--ob-ctl-h-sm); padding:0 8px; font-size:var(--text-xs); }
+
+  /* ---- page chrome ---- */
+  .page-top {
+    position:sticky; top:0; z-index:50;
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+    padding:14px 32px; border-bottom:1px solid var(--app-border);
+    background:var(--app-bg);
+  }
+  .page-top h1 { font-size:var(--text-md); color:var(--app-text-strong); font-weight:500; margin:0; }
+  .page-top .spacer { flex:1 1 auto; }
+  .page-nav { display:flex; gap:4px; flex-wrap:wrap; }
+  .page-wrap { max-width:1080px; margin:0 auto; padding:8px 32px 96px; }
+  .page-intro { padding:28px 0 8px; max-width:70ch; display:flex; flex-direction:column; gap:8px; }
+
+  /* ---- component frame (given to every fragment) ---- */
+  .cmp { padding:40px 0; border-bottom:1px solid var(--app-border); scroll-margin-top:72px; }
+  .cmp:last-of-type { border-bottom:0; }
+  .cmp-head { display:flex; flex-direction:column; gap:6px; margin-bottom:20px; max-width:70ch; }
+  .cmp-stage {
+    width:640px; max-width:100%;
+    padding:20px; border-radius:10px;
+    border:1px solid var(--app-border-strong); background:var(--app-surface);
+  }
+  .cmp-notes { margin-top:18px; max-width:70ch; display:flex; flex-direction:column; gap:10px; font-size:var(--text-sm); color:var(--app-text-subtle); }
+  .cmp-notes h3 { font-size:var(--text-xs); letter-spacing:.14em; text-transform:uppercase; color:var(--app-text-subtle); margin:8px 0 0; font-weight:500; }
+  .cmp-notes code { color:var(--app-text-muted); }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition-duration:.01ms !important; animation-duration:.01ms !important; }
+  }
+  @media (max-width: 720px) {
+    .page-wrap, .page-top { padding-left:16px; padding-right:16px; }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="root">
+
+  <div class="page-top">
+    <h1>Onboarding inputs — final</h1>
+    <nav class="page-nav" id="nav"></nav>
+    <span class="spacer"></span>
+    <button class="ob-btn sm" id="theme">Light</button>
+  </div>
+
+  <div class="page-wrap">
+    <div class="page-intro">
+      <span class="ob-m">ROUND 3</span>
+      <p class="ob-lead">The chosen design for every input in onboarding.</p>
+      <p class="ob-body">One design per component, not variants. Each stage is live — drive it. Notes under each carry the states you can reach and what the component replaces in the real code.</p>
+    </div>
+
+<!-- === PARTS === -->

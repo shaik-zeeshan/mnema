@@ -127,7 +127,6 @@ impl HandleInner {
         if !matches!(self.state, VaultState::Locked) {
             return;
         }
-        let default_source = self.source.is_none();
         let unlock = match &self.source {
             Some(source) => unlock_secret_vault_with_source(&self.save_dir, source.as_ref()),
             None => unlock_secret_vault(&self.save_dir),
@@ -143,16 +142,6 @@ impl HandleInner {
             // call, never conflate with 'no key stored'" surface slice 5 renders.
             Err(error) => VaultState::Denied(error.to_string()),
         };
-        // Legacy keychain → vault migration runs exactly once per process, on
-        // ANY unlock path (eager `unlock_now` or lazy first access), because
-        // this Locked→Ready transition happens exactly once. Only handles on
-        // the default source migrate: injected-source handles (tests, dev
-        // harnesses) must never touch the real keychain.
-        if default_source {
-            if let VaultState::Ready(vault) = &mut self.state {
-                crate::secret_vault_migration::run_default_migration(vault);
-            }
-        }
     }
 }
 

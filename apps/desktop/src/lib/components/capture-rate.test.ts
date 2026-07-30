@@ -9,6 +9,7 @@ import {
 	intervalSToFps,
 	nearestLadderIndex,
 	relativeStorageLabel,
+	snapshotsPerMinute,
 	timelineGapMs,
 } from "./capture-rate";
 
@@ -87,6 +88,56 @@ describe("relativeStorageLabel", () => {
 		expect(relativeStorageLabel(1)).toBe("2×");
 		expect(relativeStorageLabel(0.1)).toBe("20×");
 		expect(relativeStorageLabel(60)).toBe("1/30×");
+	});
+});
+
+// The value ChangeSettingsScreen hands its capture-rate `Select`, and the
+// option values it picks from. Through the ladder, never a raw 1/fps.
+const optionValues = CAPTURE_INTERVAL_LADDER_S.map((s) => String(s));
+const selectValue = (fps: number) => String(CAPTURE_INTERVAL_LADDER_S[nearestLadderIndex(fps)]);
+
+describe("capture rate Select value", () => {
+	it("resolves a legacy off-ladder rate to an option that exists", () => {
+		// 1/7.5 = 0.1333s matched no option, so the picker rendered blank.
+		expect(optionValues).not.toContain(String(fpsToIntervalS(7.5)));
+		expect(selectValue(7.5)).toBe("0.1");
+		expect(optionValues).toContain(selectValue(7.5));
+	});
+	it("never lands outside the option list, for any stored rate", () => {
+		for (const fps of [0, -1, NaN, 0.001, 1 / 45.5, 0.3, 0.9, 7.5, 9.9, 60, 1e12]) {
+			expect(optionValues).toContain(selectValue(fps));
+		}
+	});
+	it("round-trips every ladder stop unchanged", () => {
+		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
+			expect(selectValue(intervalSToFps(intervalS))).toBe(String(intervalS));
+		}
+	});
+});
+
+describe("snapshotsPerMinute", () => {
+	it("counts the snapshot at t=0, so the 45s stop holds two", () => {
+		expect(snapshotsPerMinute(45)).toBe(2);
+	});
+	it("keeps the closing edge exclusive at one a minute", () => {
+		expect(snapshotsPerMinute(60)).toBe(1);
+	});
+	it("matches a hand count across the whole ladder", () => {
+		expect(CAPTURE_INTERVAL_LADDER_S.map(snapshotsPerMinute)).toEqual([
+			600, 120, 60, 30, 20, 12, 6, 4, 2, 2, 1,
+		]);
+	});
+	it("agrees with simulating one minute of capture", () => {
+		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
+			let taken = 0;
+			for (let t = 0; t < 60 - 1e-9; t += intervalS) taken += 1;
+			expect(snapshotsPerMinute(intervalS)).toBe(taken);
+		}
+	});
+	it("never undercounts the old Math.round(60 / s) reading", () => {
+		for (const intervalS of CAPTURE_INTERVAL_LADDER_S) {
+			expect(snapshotsPerMinute(intervalS)).toBeGreaterThanOrEqual(Math.round(60 / intervalS));
+		}
 	});
 });
 

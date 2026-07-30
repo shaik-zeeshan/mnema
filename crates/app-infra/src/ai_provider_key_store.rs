@@ -6,20 +6,13 @@
 //! surfaces as [`AppInfraError::SecretVaultDenied`] — programmatically distinct
 //! from "no key stored" (`Ok(None)`).
 //!
-//! Accounts preserve the legacy keychain naming (service
-//! `com.shaikzeeshan.mnema.ai-runtime`, account = provider instance id — incl.
-//! `transcription.deepgram`) as `ai-runtime/<provider>` so legacy items map 1:1
-//! during migration.
+//! Accounts are `ai-runtime/<provider instance id>` — including
+//! `transcription.deepgram`.
 
 use crate::error::{AppInfraError, Result};
 use crate::secret_vault_handle::{process_secret_vault, SecretVaultHandle};
 
-/// The legacy per-key keychain service, consumed by the legacy-item migration
-/// in [`crate::secret_vault_migration`].
-pub(crate) const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.ai-runtime";
-
-/// Vault account for a provider instance id — the 1:1 image of the legacy
-/// keychain `(service, account)` pair.
+/// Vault account for a provider instance id.
 pub fn ai_provider_vault_account(provider: &str) -> String {
     format!("ai-runtime/{provider}")
 }

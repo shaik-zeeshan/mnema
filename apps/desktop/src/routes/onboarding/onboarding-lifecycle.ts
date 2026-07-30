@@ -47,7 +47,6 @@ export interface OnboardingLifecycleTarget {
   draftCaptureScreen: boolean;
   draftCaptureMicrophone: boolean;
   draftCaptureSystemAudio: boolean;
-  readonly canComplete: boolean;
   readonly canSkipToDashboard: boolean;
   readonly ai: OnboardingAiStore;
   readonly appPrivacyExclusion: PrivacyExclusionLoaders;
@@ -99,6 +98,30 @@ export async function loadOnboarding(target: OnboardingLifecycleTarget): Promise
   }
 }
 
+/**
+ * Enrolling a voiceprint on the Voice screen turns `recognize_saved_people` ON
+ * backend-side (`enroll_account_owner_voice`) — without it the voiceprint is
+ * loaded by nothing. This save is authoritative and is rebuilt from drafts that
+ * were seeded BEFORE the enrollment, so it would write the stale `false` straight
+ * back over the flip.
+ *
+ * Read here rather than mirrored into a draft on the Voice screen because
+ * `finish()` re-derives the speaker drafts from `flow.features` anyway, and this
+ * is the one funnel every onboarding save goes through — the Settings page's
+ * enrollment door mirrors into its own draft for the same reason.
+ */
+async function withEnrolledVoiceRecognition(
+  request: RecordingSettings,
+): Promise<RecordingSettings> {
+  if (request.speakerAnalysis?.recognizeSavedPeople !== false) return request;
+  const enrolled = await invoke<number | null>("get_account_owner_person_id").catch(() => null);
+  if (enrolled === null || enrolled === undefined) return request;
+  return {
+    ...request,
+    speakerAnalysis: { ...request.speakerAnalysis, recognizeSavedPeople: true },
+  };
+}
+
 async function saveSettings(target: OnboardingLifecycleTarget): Promise<void> {
   target.saving = true;
   target.errorMessage = null;
@@ -109,7 +132,7 @@ async function saveSettings(target: OnboardingLifecycleTarget): Promise<void> {
     // command so a late validation failure can't leave a partially-persisted
     // configuration behind.
     const updated = await invoke<RecordingSettings>("update_recording_settings", {
-      request: target.buildSettingsRequest(),
+      request: await withEnrolledVoiceRecognition(target.buildSettingsRequest()),
     });
     target.settings = updated;
     target.syncDrafts(updated);
@@ -125,14 +148,14 @@ export async function finishOnboarding(
   target: OnboardingLifecycleTarget,
   startRecording: boolean,
 ): Promise<void> {
-  // "Start recording" requires full model readiness (`canComplete`); the
-  // "Just open the dashboard" escape hatch only requires a serializable config
-  // (`canSkipToDashboard`) so a mid-download / un-ready model never traps the
-  // user in onboarding. The skip still commits the settings (with that feature
-  // enabled — its download simply continues in the background) and marks
-  // onboarding complete, it just doesn't start capture.
-  const ready = startRecording ? target.canComplete : target.canSkipToDashboard;
-  if (target.settings === null || !ready) return;
+  // MODEL READINESS NEVER GATES FINISHING (issue #195). A download in flight is
+  // progress, not a problem: the settings commit, onboarding completes, capture
+  // starts, and the download continues in the background. The only remaining
+  // guard is that the config actually serializes — an invalid custom
+  // resolution/bitrate becomes `null` and breaks the backend save, which is
+  // exactly what `canSkipToDashboard` covers (and what the Capture & Storage
+  // gate refuses to leave in place in the first place).
+  if (target.settings === null || !target.canSkipToDashboard) return;
   target.completing = true;
   target.starting = startRecording;
   target.errorMessage = null;
@@ -151,9 +174,18 @@ export async function finishOnboarding(
         request: buildStartCaptureRequest(target),
       });
     }
-    await goto("/");
+    // NAVIGATION IS THE CALLER'S. Capture starts on ARRIVAL at the Finale, and
+    // the Finale then proves it with the real first frame and the first OCR hit
+    // (issue #195, slice 10) — a goto here would unmount that evidence before
+    // it could exist. `FinaleScreen` navigates on "Open Mnema".
   } catch (err) {
     target.errorMessage = serializeError(err);
+  } finally {
+    // Because navigation is the caller's, NOTHING unmounts this state on the
+    // success path any more — so the in-flight flags have to be released here,
+    // on every path. `OnboardingFlow.busy` derives from `completing`, and a
+    // stuck `true` leaves Welcome's "Begin setup" disabled for a user who walks
+    // back from the Finale.
     target.completing = false;
     target.starting = false;
   }

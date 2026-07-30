@@ -1,0 +1,12 @@
+-- Marks a voiceprint the user deliberately created (naming a speaker cluster as
+-- a person in the audio drawer) as opposed to cluster-derived transient data.
+--
+-- The retention sweep's orphan GC deletes `person_voice_embeddings` whose
+-- `source_cluster_id` no longer resolves. That is correct for cluster-derived
+-- rows, but the audio-drawer "remember as profile" flow writes an embedding that
+-- carries the originating `source_cluster_id` too — so the user's deliberately
+-- named voiceprint was deleted when that recording aged out, silently breaking
+-- recognition one retention window later. The sweep now skips
+-- `is_deliberate = 1` rows; everything derived keeps the default 0 and is still
+-- collected. Delete Recent Capture (a privacy delete) still removes them.
+ALTER TABLE person_voice_embeddings ADD COLUMN is_deliberate INTEGER NOT NULL DEFAULT 0;

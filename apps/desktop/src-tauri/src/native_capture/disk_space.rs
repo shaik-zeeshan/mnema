@@ -22,7 +22,7 @@
 //! panicking. Measurement is best-effort — an inability to *measure* never blocks
 //! capture; only a measured shortfall acts.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 /// The reserve floor that protects the app's own storage (SQLite DB, OCR output,
 /// previews) and the OS. 1 GiB.
@@ -163,18 +163,45 @@ pub(crate) fn default_free_space_probe(path: &Path) -> std::io::Result<u64> {
     fs2::available_space(path)
 }
 
+/// The floor of the ancestor walk in [`measure_free_space`]: for a path on a
+/// mounted volume (`/Volumes/<name>/…`) that volume's root, else `None`.
+///
+/// ponytail: macOS mount points only — the one place a path can cross a volume
+/// boundary on the way up. Add other prefixes if Windows/Linux ever measure.
+/// Ceiling: a *stale* `/Volumes/<name>` directory left behind by an unclean
+/// unmount still measures the boot disk; macOS removes the mount point on
+/// unmount, so comparing device ids to prove it is a real mount isn't worth it.
+fn volume_root(path: &Path) -> Option<PathBuf> {
+    let mut components = path.components();
+    match (components.next(), components.next(), components.next()) {
+        (
+            Some(Component::RootDir),
+            Some(Component::Normal(volumes)),
+            Some(Component::Normal(name)),
+        ) if volumes == "Volumes" => Some(Path::new("/Volumes").join(name)),
+        _ => None,
+    }
+}
+
 /// Best-effort free-space measurement for the recordings root.
 ///
 /// The recordings `save_directory` may not exist yet (first run, freshly
 /// reconfigured path), so this probes the nearest existing ancestor of `root` —
 /// mirroring the model-download disk preflight in `semantic_search_models.rs`.
+/// The walk never leaves the path's own volume: for `/Volumes/X/Mnema` it stops
+/// at `/Volumes/X`, so a disconnected volume reports unknown rather than the boot
+/// disk's bytes.
 ///
 /// Best-effort semantics: an inability to *measure* returns `None` and must never
-/// block capture. That covers both "no existing ancestor to stat" and "the probe
-/// returned `Err`". Only a `Some(free)` reading that a threshold then finds short
-/// is allowed to act.
+/// block capture. That covers "no existing ancestor to stat", "the volume is
+/// gone", and "the probe returned `Err`". Only a `Some(free)` reading that a
+/// threshold then finds short is allowed to act.
 pub(crate) fn measure_free_space(root: &Path, probe: FreeSpaceProbe) -> Option<u64> {
-    let probe_path = root.ancestors().find(|ancestor| ancestor.exists())?;
+    let floor = volume_root(root);
+    let probe_path = root
+        .ancestors()
+        .take_while(|ancestor| floor.as_deref().is_none_or(|f| ancestor.starts_with(f)))
+        .find(|ancestor| ancestor.exists())?;
     probe(probe_path).ok()
 }
 
@@ -400,5 +427,42 @@ mod tests {
         }
         let root = Path::new("this-relative-path/almost-certainly/does-not-exist-xyz");
         assert_eq!(measure_free_space(root, never_called_probe), None);
+    }
+
+    #[test]
+    fn measure_never_reports_another_volumes_bytes_when_the_volume_is_gone() {
+        // `/Volumes` and `/` are the BOOT disk. A save directory on a volume that
+        // is no longer mounted must report unknown (ADR 0040: unmeasurable is a
+        // transient liveness condition), never the boot disk's free bytes.
+        fn never_called_probe(path: &Path) -> std::io::Result<u64> {
+            panic!("walked off the volume and measured {}", path.display());
+        }
+        let gone = Path::new("/Volumes/mnema-not-mounted-xyz/Mnema/recordings");
+        assert!(!gone.exists());
+        assert_eq!(measure_free_space(gone, never_called_probe), None);
+        // The volume root itself, not just a child of it.
+        assert_eq!(
+            measure_free_space(
+                Path::new("/Volumes/mnema-not-mounted-xyz"),
+                never_called_probe
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn volume_root_floors_the_walk_at_the_mount_point() {
+        assert_eq!(
+            volume_root(Path::new("/Volumes/Data/Mnema/recordings")),
+            Some(PathBuf::from("/Volumes/Data"))
+        );
+        assert_eq!(
+            volume_root(Path::new("/Volumes/Data")),
+            Some(PathBuf::from("/Volumes/Data"))
+        );
+        // Anything not on a mount point keeps the unrestricted ancestor walk.
+        assert_eq!(volume_root(Path::new("/Users/someone/.mnema")), None);
+        assert_eq!(volume_root(Path::new("/Volumes")), None);
+        assert_eq!(volume_root(Path::new("relative/path")), None);
     }
 }

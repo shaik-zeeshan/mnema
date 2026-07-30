@@ -1063,6 +1063,76 @@ pub async fn ai_runtime_list_models(
     Ok(AiRuntimeModelsResult { models, failures })
 }
 
+/// Which provider instance to verify, against which list.
+///
+/// `providers` is the same in-progress draft `ai_runtime_list_models` accepts:
+/// onboarding verifies a provider the user is still typing, long before any of
+/// it is persisted. When absent, the persisted list is used. The API key is
+/// NEVER on this request — it is loaded from the app vault by instance id
+/// (ADR 0035), so the frontend neither sends nor receives it.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeVerifyRequest {
+    provider: String,
+    #[serde(default)]
+    providers: Option<Vec<AiProviderConfig>>,
+}
+
+/// Proof that one provider instance answered just now: the chat-capable model
+/// ids it listed, and how long the round trip took.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRuntimeVerifyResult {
+    provider: String,
+    models: Vec<String>,
+    latency_ms: u64,
+}
+
+/// Verify ONE connected provider instance by listing its models with the key
+/// the vault already holds. This is the receipt onboarding's readiness rule is
+/// built on: a provider counts as configured only when this returned live and
+/// the chosen model id is in `models`. Every kind goes through the one
+/// [`list_models_for_provider`] path, so cloud (Anthropic/OpenAI/compatible)
+/// and local (Ollama/Llamafile) verify identically — and the local case fails
+/// cleanly on [`MODELS_REQUEST_TIMEOUT`] instead of hanging.
+///
+/// `Err` is the same short reason [`classify_listing_failure`] puts on a picker
+/// row (`unreachable`, `authentication failed`, `missing API key`, …).
+#[tauri::command]
+pub async fn verify_ai_provider(
+    state: tauri::State<'_, RecordingSettingsState>,
+    request: AiRuntimeVerifyRequest,
+) -> Result<AiRuntimeVerifyResult, String> {
+    let provider_id = request.provider.trim().to_string();
+    if provider_id.is_empty() {
+        return Err("a provider id is required".to_string());
+    }
+    let providers = request
+        .providers
+        .unwrap_or_else(|| read_recording_settings(state.inner()).ai_runtime.providers);
+    let provider = providers
+        .iter()
+        .find(|candidate| candidate.id == provider_id)
+        .ok_or_else(|| format!("provider_not_connected:{provider_id}"))?;
+
+    let started = std::time::Instant::now();
+    let discovered = list_models_for_provider(&reqwest::Client::new(), provider)
+        .await
+        .map_err(|error| {
+            tauri_plugin_log::log::warn!("provider {provider_id} failed verification: {error}");
+            classify_listing_failure(&error)
+        })?;
+    Ok(AiRuntimeVerifyResult {
+        provider: provider_id,
+        models: discovered
+            .into_iter()
+            .map(|model| model.id)
+            .filter(|id| is_chat_capable_model(id))
+            .collect(),
+        latency_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1481,5 +1551,63 @@ mod tests {
         }))
         .expect_err("blank id must be rejected");
         assert_eq!(err, "a server id is required");
+    }
+
+    /// A one-shot HTTP server that answers the first request with `body` and
+    /// exits. Enough to stand in for a local Ollama's `/v1/models`.
+    fn one_shot_models_server(body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut scratch = [0_u8; 1024];
+                let _ = stream.read(&mut scratch);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    /// The local-scan path both ways: an endpoint that answers yields its model
+    /// ids, and one with nothing listening fails cleanly (an `Err`, promptly —
+    /// the caller renders "no answer" instead of hanging).
+    #[test]
+    fn local_endpoint_lists_models_and_fails_cleanly_when_nothing_answers() {
+        let endpoint = one_shot_models_server(
+            r#"{"data":[{"id":"llama3.1:8b"},{"id":"qwen2.5:14b"},{"id":"nomic-embed-text"}]}"#,
+        );
+        let live = AiProviderConfig {
+            id: "scan-live".to_string(),
+            kind: AiProviderKind::Ollama,
+            label: String::new(),
+            base_url: endpoint,
+        };
+        let client = reqwest::Client::new();
+        let discovered =
+            tauri::async_runtime::block_on(list_models_for_provider(&client, &live)).expect("live");
+        let ids: Vec<String> = discovered
+            .into_iter()
+            .map(|model| model.id)
+            .filter(|id| is_chat_capable_model(id))
+            .collect();
+        // The embedding model is filtered out of the picker pool.
+        assert_eq!(ids, vec!["llama3.1:8b", "qwen2.5:14b"]);
+
+        // Nothing listening: a refused connection, classified as `unreachable`.
+        let dead = AiProviderConfig {
+            id: "scan-dead".to_string(),
+            kind: AiProviderKind::Ollama,
+            label: String::new(),
+            // Port 1 is reserved and never has a listener on macOS.
+            base_url: "http://127.0.0.1:1".to_string(),
+        };
+        let error = tauri::async_runtime::block_on(list_models_for_provider(&client, &dead))
+            .expect_err("a closed port must fail");
+        assert_eq!(classify_listing_failure(&error), "unreachable");
     }
 }

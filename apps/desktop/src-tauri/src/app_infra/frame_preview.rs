@@ -133,22 +133,6 @@ pub(super) struct IndexedFramePreviewOffset {
     pub(super) exact_match: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct LegacyScreenSegmentFrameIndexEntry {
-    pub(super) captured_at_unix_ms: u64,
-    pub(super) frame_index: u64,
-    #[allow(dead_code)]
-    #[serde(default)]
-    pub(super) artifact_file_name: Option<String>,
-    pub(super) video_offset_ms: u64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub(super) struct LegacyScreenSegmentFrameIndex {
-    pub(super) version: u32,
-    pub(super) entries: Vec<LegacyScreenSegmentFrameIndexEntry>,
-}
-
 #[derive(Debug, Default)]
 pub struct FramePreviewState {
     cache: FramePreviewCache,
@@ -1227,48 +1211,21 @@ fn load_screen_segment_frame_index(
     video_path: &Path,
 ) -> std::io::Result<Option<capture_screen::ScreenSegmentFrameIndex>> {
     let index_path = capture_screen::screen_segment_frame_index_path(video_path);
-    if index_path.is_file() {
-        let bytes = fs::read(&index_path)?;
-        return capture_screen::decode_screen_segment_frame_index(&bytes)
-            .map(Some)
-            .map_err(|error| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "failed to parse screen segment frame index {}: {error}",
-                        index_path.display()
-                    ),
-                )
-            });
-    }
-
-    let legacy_path = capture_screen::legacy_screen_segment_frame_index_path(video_path);
-    if !legacy_path.is_file() {
+    if !index_path.is_file() {
         return Ok(None);
     }
-    let bytes = fs::read(&legacy_path)?;
-    let legacy: LegacyScreenSegmentFrameIndex =
-        serde_json::from_slice(&bytes).map_err(|error| {
+    let bytes = fs::read(&index_path)?;
+    capture_screen::decode_screen_segment_frame_index(&bytes)
+        .map(Some)
+        .map_err(|error| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "failed to parse legacy screen segment frame index {}: {error}",
-                    legacy_path.display()
+                    "failed to parse screen segment frame index {}: {error}",
+                    index_path.display()
                 ),
             )
-        })?;
-    Ok(Some(capture_screen::ScreenSegmentFrameIndex {
-        version: legacy.version,
-        entries: legacy
-            .entries
-            .into_iter()
-            .map(|entry| capture_screen::ScreenSegmentFrameIndexEntry {
-                captured_at_unix_ms: entry.captured_at_unix_ms,
-                frame_index: entry.frame_index,
-                video_offset_ms: entry.video_offset_ms,
-            })
-            .collect(),
-    }))
+        })
 }
 
 fn find_indexed_frame_preview_offset(
@@ -2503,14 +2460,7 @@ struct ScrubPreviewSegmentMetadata {
 
 fn screen_frame_index_existing_path(video_path: &Path) -> Option<PathBuf> {
     let binary = capture_screen::screen_segment_frame_index_path(video_path);
-    if binary.is_file() {
-        return Some(binary);
-    }
-    let legacy = capture_screen::legacy_screen_segment_frame_index_path(video_path);
-    if legacy.is_file() {
-        return Some(legacy);
-    }
-    None
+    binary.is_file().then_some(binary)
 }
 
 fn segment_cache_key(video_path: &Path, frame_index_path: Option<&Path>) -> String {

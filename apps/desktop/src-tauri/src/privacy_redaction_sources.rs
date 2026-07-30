@@ -74,6 +74,66 @@ mod tests {
         assert_eq!(id, test_app_source_id("same-tick", 1));
     }
 
+    // Excluding an app before installing it: the rule is stored under its name
+    // alone, and the first sighting of the installed app fills the bundle id
+    // into that same row — same source id, same enabled state, no second row.
+    #[test]
+    fn pending_rule_resolves_in_place_on_first_sighting_of_a_matching_name() {
+        let mut settings = crate::native_capture::settings::default_recording_settings();
+
+        upsert_privacy_excluded_app(&mut settings, "", " Figma ", false)
+            .expect("a name-only rule is allowed");
+        assert_eq!(settings.privacy.excluded_apps.len(), 1);
+        assert!(settings.privacy.excluded_apps[0].bundle_id.is_empty());
+        assert_eq!(settings.privacy.excluded_apps[0].display_name, "Figma");
+        let pending_id = settings.privacy.excluded_apps[0].id.clone();
+
+        // The user strikes the pending rule before the app ever appears.
+        settings.privacy.excluded_apps[0].enabled = false;
+
+        // Same name typed again while still pending must not add a second row.
+        upsert_privacy_excluded_app(&mut settings, "", "figma", false)
+            .expect("a duplicate name-only rule is a no-op");
+        assert_eq!(settings.privacy.excluded_apps.len(), 1);
+
+        upsert_privacy_excluded_app(&mut settings, "com.figma.Desktop", "Figma", false)
+            .expect("first sighting resolves the rule");
+
+        assert_eq!(settings.privacy.excluded_apps.len(), 1);
+        assert_eq!(settings.privacy.excluded_apps[0].id, pending_id);
+        assert_eq!(
+            settings.privacy.excluded_apps[0].bundle_id,
+            "com.figma.Desktop"
+        );
+        assert!(
+            !settings.privacy.excluded_apps[0].enabled,
+            "resolution must not silently re-enable a struck rule"
+        );
+    }
+
+    #[test]
+    fn pending_rule_requires_a_display_name() {
+        let mut settings = crate::native_capture::settings::default_recording_settings();
+
+        let error = upsert_privacy_excluded_app(&mut settings, "", "  ", false)
+            .expect_err("a rule with neither a bundle id nor a name is not a rule");
+
+        assert_eq!(error.code, "invalid_privacy_rule");
+        assert!(settings.privacy.excluded_apps.is_empty());
+    }
+
+    #[test]
+    fn resolved_rules_still_match_on_bundle_id_not_display_name() {
+        let mut settings = crate::native_capture::settings::default_recording_settings();
+
+        upsert_privacy_excluded_app(&mut settings, "com.example.One", "Notes", false)
+            .expect("first rule");
+        upsert_privacy_excluded_app(&mut settings, "com.example.Two", "Notes", false)
+            .expect("a different app that happens to share a name is its own rule");
+
+        assert_eq!(settings.privacy.excluded_apps.len(), 2);
+    }
+
     #[test]
     fn generated_app_source_ids_are_unique_across_rapid_calls() {
         let mut apps = Vec::new();
@@ -98,6 +158,63 @@ fn with_app_exclusion_mutation(
     )
 }
 
+/// Adds an app-exclusion rule, or updates the one that already covers the app.
+///
+/// An empty `bundle_id` is a rule for an app that is not installed yet: it is
+/// stored under its typed display name and excludes nothing until it resolves
+/// (`evaluate_privacy` skips an empty bundle id, so it reaches neither the
+/// screen filter nor the system-audio tap). The first sighting of an installed
+/// app with a matching display name — an add from the app list, or the frontend's
+/// app-list refresh — fills the bundle id into that same row, keeping its source
+/// id and its enabled state.
+fn upsert_privacy_excluded_app(
+    settings: &mut RecordingSettings,
+    bundle_id: &str,
+    display_name: &str,
+    enable_existing: bool,
+) -> Result<(), CaptureErrorResponse> {
+    let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(bundle_id);
+    let display_name = display_name.trim().to_string();
+    if display_name.is_empty() {
+        return Err(err("invalid_privacy_rule", "App display name is required"));
+    }
+    let same_name = |app: &capture_metadata::ExcludedAppEntry| {
+        crate::native_capture::settings::canonicalize_app_display_name(&app.display_name)
+            == crate::native_capture::settings::canonicalize_app_display_name(&display_name)
+    };
+
+    // A name-only rule matches on the name; a real bundle id matches on the id
+    // first, then resolves a pending rule carrying the same name.
+    let existing = settings.privacy.excluded_apps.iter_mut().find(|app| {
+        if bundle_id.is_empty() {
+            same_name(app)
+        } else {
+            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
+                || (app.bundle_id.trim().is_empty() && same_name(app))
+        }
+    });
+    if let Some(existing) = existing {
+        if existing.bundle_id.trim().is_empty() && !bundle_id.is_empty() {
+            existing.bundle_id = bundle_id;
+        }
+        if enable_existing {
+            existing.enabled = true;
+        }
+        return Ok(());
+    }
+
+    settings
+        .privacy
+        .excluded_apps
+        .push(capture_metadata::ExcludedAppEntry {
+            id: new_app_source_id(&settings.privacy.excluded_apps),
+            enabled: true,
+            bundle_id,
+            display_name,
+        });
+    Ok(())
+}
+
 #[tauri::command]
 pub fn add_privacy_excluded_app(
     bundle_id: String,
@@ -105,29 +222,7 @@ pub fn add_privacy_excluded_app(
     app_handle: tauri::AppHandle,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
-        let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
-        let display_name = display_name.trim().to_string();
-        if bundle_id.is_empty() || display_name.is_empty() {
-            return Err(err(
-                "invalid_privacy_rule",
-                "App bundle and display name are required",
-            ));
-        }
-        if settings.privacy.excluded_apps.iter().any(|app| {
-            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
-        }) {
-            return Ok(());
-        }
-        settings
-            .privacy
-            .excluded_apps
-            .push(capture_metadata::ExcludedAppEntry {
-                id: new_app_source_id(&settings.privacy.excluded_apps),
-                enabled: true,
-                bundle_id,
-                display_name,
-            });
-        Ok(())
+        upsert_privacy_excluded_app(settings, &bundle_id, &display_name, false)
     })
 }
 
@@ -137,30 +232,7 @@ pub(crate) fn add_or_enable_privacy_excluded_app_from_app_handle(
     display_name: String,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     with_app_exclusion_mutation(app_handle, |settings| {
-        let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(&bundle_id);
-        let display_name = display_name.trim().to_string();
-        if bundle_id.is_empty() || display_name.is_empty() {
-            return Err(err(
-                "invalid_privacy_rule",
-                "App bundle and display name are required",
-            ));
-        }
-        if let Some(existing) = settings.privacy.excluded_apps.iter_mut().find(|app| {
-            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
-        }) {
-            existing.enabled = true;
-            return Ok(());
-        }
-        settings
-            .privacy
-            .excluded_apps
-            .push(capture_metadata::ExcludedAppEntry {
-                id: new_app_source_id(&settings.privacy.excluded_apps),
-                enabled: true,
-                bundle_id,
-                display_name,
-            });
-        Ok(())
+        upsert_privacy_excluded_app(settings, &bundle_id, &display_name, true)
     })
 }
 

@@ -1,0 +1,2216 @@
+<title>Mnema onboarding — Cinematic</title>
+
+<style>
+  /* ================================================================
+     PAGE CHROME TOKENS (theme-aware — this is the page around the app)
+     ================================================================ */
+  :root{
+    --page-bg:#eceee9; --page-ink:#14181a; --page-muted:#5c655f; --page-faint:#5f665f;
+    --page-rule:#d3d8d1; --page-card:#f6f7f4; --page-accent:#1c6b45;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --page-bg:#08090a; --page-ink:#dbdfd9; --page-muted:#9aa39b; --page-faint:#7d857f;
+      --page-rule:#1b1e1c; --page-card:#0d0f0e; --page-accent:#3dffa0;
+    }
+  }
+  :root[data-theme="dark"]{
+    --page-bg:#08090a; --page-ink:#dbdfd9; --page-muted:#9aa39b; --page-faint:#7d857f;
+    --page-rule:#1b1e1c; --page-card:#0d0f0e; --page-accent:#3dffa0;
+  }
+  :root[data-theme="light"]{
+    --page-bg:#eceee9; --page-ink:#14181a; --page-muted:#5c655f; --page-faint:#5f665f;
+    --page-rule:#d3d8d1; --page-card:#f6f7f4; --page-accent:#1c6b45;
+  }
+
+  /* ================================================================
+     MNEMA APP TOKENS (constant — these are screenshots of a dark app)
+     ================================================================ */
+  .app{
+    --app-bg:#0c0c0e; --app-surface:#0e0e16; --app-surface-subtle:#101018;
+    --app-surface-raised:#13131a; --app-surface-hover:#1a1a2a; --app-surface-active:#131320;
+    --app-border:#1e1e2e; --app-border-strong:#2a2a3a; --app-border-hover:#3a3a5a;
+    --app-text-strong:#e2e2e8; --app-text:#c0c0d0; --app-text-muted:#9696ae;
+    --app-text-subtle:#7e7e98; --app-text-faint:#33334a;
+    --app-accent:#3dffa0; --app-accent-strong:#2a8a60; --app-accent-bg:#0d1f15;
+    --app-accent-border:#1a4a30; --app-accent-glow:rgba(61,255,160,.18); --app-accent-contrast:#07120c;
+    --app-warn:#d6a14a; --app-warn-bg:#1a1208; --app-warn-border:#7a4a18;
+    --app-danger:#ff6b7a; --app-danger-bg:#2e0f14; --app-danger-border:#4a1a20;
+    --app-info:#60b0ff; --app-info-bg:#0c1a2e; --app-info-border:#1a3050;
+    --app-shadow-popover:0 8px 24px rgba(0,0,0,.22);
+    --app-ring:0 0 0 3px var(--app-accent-glow);
+    --tick:#3a9e6f;
+    --text-xs:10px; --text-sm:11px; --text-base:12px; --text-md:13px; --text-lg:16px; --text-xl:20px;
+  }
+
+  *{box-sizing:border-box}
+  .pg{
+    background:var(--page-bg); color:var(--page-ink);
+    font-family:"Berkeley Mono","TX-02","Monaspace Neon",ui-monospace,"SF Mono",Menlo,monospace;
+    font-size:13px; line-height:1.6; padding:64px 32px 120px; overflow-x:hidden;
+  }
+  .wrap{max-width:1120px; margin:0 auto}
+
+  /* ---- masthead ---- */
+  .eyebrow{font-size:10px; letter-spacing:.2em; text-transform:uppercase; color:var(--page-faint)}
+  .pg h1{
+    font-size:clamp(30px,5vw,52px); line-height:1.04; letter-spacing:-.03em;
+    font-weight:400; margin:14px 0 0; text-wrap:balance; max-width:22ch;
+  }
+  .pg h1 em{font-style:normal; color:var(--page-accent)}
+  .deck{max-width:64ch; color:var(--page-muted); margin:22px 0 0; font-size:13px}
+  .masthead{border-bottom:1px solid var(--page-rule); padding-bottom:44px; margin-bottom:12px}
+  .legend{display:flex; flex-direction:column; gap:6px; margin-top:26px; font-size:11px; color:var(--page-faint)}
+  .legend > span::before{content:"— "; opacity:.6}
+
+  /* ---- per-frame caption ---- */
+  .frame{margin-top:80px}
+  .cap{display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin-bottom:12px}
+  .cap .no{font-size:11px; color:var(--page-accent); letter-spacing:.14em}
+  .pg h2{font-size:17px; font-weight:400; letter-spacing:-.01em; margin:0; color:var(--page-ink)}
+  .pg h3{font-weight:400; margin:0}
+  .note{font-size:11.5px; color:var(--page-muted); max-width:82ch; margin:0 0 18px}
+
+  .win-scroll{overflow-x:auto; padding-bottom:6px}
+  .win{
+    width:1040px; height:680px; flex:none;
+    background:var(--app-bg); color:var(--app-text);
+    border:1px solid var(--app-border-strong); border-radius:12px; overflow:hidden;
+    display:flex; flex-direction:column; box-shadow:0 18px 50px rgba(0,0,0,.28);
+    font-size:var(--text-base);
+  }
+
+  /* ---- window chrome ---- */
+  .bar{
+    height:36px; flex:none; display:flex; align-items:center; gap:12px;
+    padding:0 14px; border-bottom:1px solid var(--app-border); background:var(--app-surface);
+  }
+  .dots{display:flex; gap:6px}
+  .dots i{width:8px; height:8px; border-radius:50%; border:1px solid var(--app-border-hover); display:block}
+  .bar .name{font-size:var(--text-xs); letter-spacing:.22em; text-transform:uppercase; color:var(--app-text-subtle)}
+
+  /* ================================================================
+     MOTION 2 — THE PLAYHEAD (step indicator = a timeline, not dots)
+     ================================================================ */
+  .ph{margin-left:auto; display:flex; align-items:center; gap:12px}
+  .ph-track{position:relative; width:144px; height:16px; flex:none}
+  .ph-track::before{
+    content:""; position:absolute; left:0; right:0; top:7px; height:1px;
+    background:var(--app-border-hover);
+  }
+  .ph-tick{position:absolute; top:4px; width:1px; height:7px; background:var(--app-border-hover); display:block}
+  .ph-fill{position:absolute; left:0; top:7px; height:1px; background:var(--app-text-muted); display:block}
+  .ph-head{
+    position:absolute; top:0; width:1px; height:16px; background:var(--app-accent);
+    box-shadow:0 0 8px 1px var(--app-accent-glow); display:block; font-style:normal;
+  }
+  .ph-head::before{
+    content:""; position:absolute; top:0; left:-2.5px; width:6px; height:4px;
+    background:var(--app-accent); clip-path:polygon(0 0,100% 0,50% 100%);
+  }
+  .ph-lbl{font-size:var(--text-xs); color:var(--app-text-subtle); letter-spacing:.14em; white-space:nowrap}
+
+  /* travelling playhead (used in the flow map + motion demo, never in a frame screenshot) */
+  .ph.travel .ph-head{animation:ph-travel 9s cubic-bezier(.3,.9,.35,1) infinite}
+  .ph.travel .ph-fill{animation:ph-fill 9s cubic-bezier(.3,.9,.35,1) infinite}
+  @keyframes ph-travel{
+    0%,7%{transform:translateX(0)}      10%,18%{transform:translateX(18px)}
+    21%,29%{transform:translateX(36px)} 32%,40%{transform:translateX(54px)}
+    43%,51%{transform:translateX(72px)} 54%,62%{transform:translateX(90px)}
+    65%,73%{transform:translateX(108px)}76%,96%{transform:translateX(126px)}
+    100%{transform:translateX(0)}
+  }
+  @keyframes ph-fill{
+    0%,7%{width:9px}      10%,18%{width:27px}
+    21%,29%{width:45px}   32%,40%{width:63px}
+    43%,51%{width:81px}   54%,62%{width:99px}
+    65%,73%{width:117px}  76%,96%{width:135px}
+    100%{width:9px}
+  }
+
+  /* ================================================================
+     BOOKEND MOTION 1 — THE REWIND (Welcome only, and nowhere else)
+
+     One 10-second cycle drives everything on the Welcome frame: the
+     filmstrip creeps backwards through captured frames, snaps back three
+     frames at 62%, and settles. The timecode, the echo smear on the title
+     and the OCR read-out are all keyed to the same cycle, so the whole
+     frame is one gesture rather than four loops that happen to coexist.
+     Geometry: tile 128px + 10px gap = 138px pitch; the strip is three
+     identical 8-tile groups and travels exactly one group (1104px) per
+     cycle, so the loop is seamless.
+     ================================================================ */
+  .rw{position:relative; flex:none; margin:0 -48px; padding-bottom:20px}
+  .rw-band{
+    position:relative; height:96px; overflow:hidden;
+    -webkit-mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);
+    mask-image:linear-gradient(90deg,transparent,#000 12%,#000 88%,transparent);
+  }
+  .rw-band::after{
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:2;
+    background:linear-gradient(to bottom,var(--app-bg),rgba(12,12,14,0) 42%);
+  }
+  .rw-strip{
+    position:absolute; top:6px; left:-1104px; display:flex; gap:10px;
+    animation:rw-scrub 10s linear infinite; will-change:transform;
+  }
+  .rw-strip.e1{opacity:0; --gop:.62; animation:rw-scrub 10s linear infinite,rw-ghost 10s linear infinite; animation-delay:.10s}
+  .rw-strip.e2{opacity:0; --gop:.34; animation:rw-scrub 10s linear infinite,rw-ghost 10s linear infinite; animation-delay:.20s}
+  /* the trail has to be brighter than the live strip or it vanishes into a near-black tile */
+  .rw-strip.e1 .fr,.rw-strip.e2 .fr{background:var(--app-surface-hover); border-color:var(--app-border-hover)}
+  .rw-strip.e1 .fbody i,.rw-strip.e2 .fbody i{background:#3a3a5a}
+  @keyframes rw-scrub{
+    0%{transform:translateX(0)}
+    62%{transform:translateX(138px)}      /* creep — one frame in 6.2s */
+    70%{transform:translateX(966px)}      /* the snap — six frames back */
+    100%{transform:translateX(1104px)}    /* settle — one more frame */
+  }
+  @keyframes rw-ghost{
+    0%,60%{opacity:0} 63%{opacity:var(--gop,.3)} 69%{opacity:var(--gop,.3)} 72%,100%{opacity:0}
+  }
+  .fr{
+    width:128px; height:84px; flex:none; overflow:hidden; border-radius:4px;
+    border:1px solid var(--app-border); background:var(--app-surface);
+  }
+  .fr.hit{border-color:var(--app-accent-border)}
+  .fbar{display:block; height:9px; background:var(--app-surface-raised); border-bottom:1px solid var(--app-border)}
+  .fbody{padding:9px 10px; display:flex; flex-direction:column; gap:6px}
+  .fbody i{display:block; height:4px; border-radius:1px; background:#22223a}
+  .fbody i.hl{background:#2c3f36; box-shadow:0 0 0 1px var(--app-accent-border)}
+  .rw-head{
+    position:absolute; left:34%; top:0; bottom:0; width:1px; z-index:3; background:var(--app-accent);
+    box-shadow:0 0 12px 2px var(--app-accent-glow);
+  }
+  .rw-head::before{
+    content:""; position:absolute; top:0; left:-3px; width:7px; height:5px;
+    background:var(--app-accent); clip-path:polygon(0 0,100% 0,50% 100%);
+  }
+  .rw-rail{position:relative; height:34px; margin:0 48px}
+  .rw-rail::before{
+    content:""; position:absolute; left:0; right:0; top:0; height:1px;
+    background:repeating-linear-gradient(90deg,var(--app-border-hover) 0 1px,transparent 1px 23px);
+  }
+  .rw-tc{
+    position:absolute; left:calc(34% - 48px); top:9px; transform:translateX(-50%);
+    height:16px; overflow:hidden; font-size:var(--text-sm); color:var(--app-text-strong);
+    font-variant-numeric:tabular-nums; letter-spacing:.04em;
+  }
+  .rw-reel{display:flex; flex-direction:column; animation:rw-reel 10s steps(1,end) infinite}
+  .rw-reel span{height:16px; line-height:16px; flex:none}
+  @keyframes rw-reel{
+    0%,49.9%{transform:translateY(0)}
+    50%,61.9%{transform:translateY(-16px)}
+    62%,87.9%{transform:translateY(-32px)}
+    88%,100%{transform:translateY(-48px)}
+  }
+  .rw-tag{
+    position:absolute; left:0; top:11px; font-size:var(--text-xs); letter-spacing:.2em;
+    text-transform:uppercase; color:var(--app-accent); opacity:0;
+    animation:rw-tag 10s linear infinite;
+  }
+  @keyframes rw-tag{0%,60%{opacity:0} 63%,69%{opacity:1} 73%,100%{opacity:0}}
+  .rw-read{
+    position:absolute; right:0; top:11px; font-size:var(--text-sm); color:var(--app-text-muted);
+    opacity:0; animation:rw-read 10s ease infinite; white-space:nowrap;
+  }
+  .rw-read b{font-weight:400; color:var(--app-accent)}
+  @keyframes rw-read{0%,72%{opacity:0} 76%,90%{opacity:1} 94%,100%{opacity:0}}
+
+  /* the hero title smears backwards on the snap, then settles */
+  .wl-t{position:relative}
+  .wl-echo{
+    position:absolute; inset:0; pointer-events:none; opacity:0;
+    color:var(--app-text-strong); animation:wl-echo 10s cubic-bezier(.2,.8,.3,1) infinite;
+  }
+  .wl-echo.b{animation-delay:.07s}
+  @keyframes wl-echo{
+    0%,61%{opacity:0; transform:translateX(0)}
+    63.5%{opacity:.26; transform:translateX(-34px)}
+    67%{opacity:.11; transform:translateX(-70px)}
+    70.5%,100%{opacity:0; transform:translateX(0)}
+  }
+
+  /* ================================================================
+     MOTION 3 — DEVELOP (glyphs resolving, the way OCR resolves them)
+     ================================================================ */
+  .gl{position:relative; display:inline-block; white-space:pre}
+  .gl i{position:absolute; inset:0; font-style:normal; color:var(--app-text-subtle)}
+  .gl b{font-weight:400; display:inline-block}
+  .dev.once .gl i{animation:gl-out 2.6s steps(1,end) both}
+  .dev.once .gl b{animation:gl-in 2.6s steps(1,end) both}
+  .dev.loop .gl i{animation:gl-out-l 7s ease both infinite}
+  .dev.loop .gl b{animation:gl-in-l 7s ease both infinite}
+  @keyframes gl-out{
+    0%{opacity:1}  4%{opacity:.35}  8%{opacity:1}  12%{opacity:.5}
+    14%{opacity:1} 15%,100%{opacity:0}
+  }
+  @keyframes gl-in{0%,14%{opacity:0} 15%,100%{opacity:1}}
+  @keyframes gl-out-l{
+    0%{opacity:1}  1.5%{opacity:.35}  3%{opacity:1}  4.5%{opacity:.5}
+    5.5%{opacity:1} 6%,88%{opacity:0} 90%,100%{opacity:1}
+  }
+  @keyframes gl-in-l{0%,5.5%{opacity:0} 6%,88%{opacity:1} 90%,100%{opacity:0}}
+
+  /* ================================================================
+     MOTION 4 — ONE HEARTBEAT (Finale only — the app coming alive)
+     ================================================================ */
+  .rec{display:inline-flex; align-items:center; gap:11px}
+  .rec .dot{
+    position:relative; width:9px; height:9px; border-radius:50%; flex:none;
+    background:var(--app-accent); animation:hb 2.8s ease-in-out infinite;
+  }
+  .rec .dot::after{
+    content:""; position:absolute; inset:-5px; border-radius:50%;
+    border:1px solid var(--app-accent); animation:hb-ring 2.8s ease-out infinite;
+  }
+  @keyframes hb{
+    0%,100%{opacity:.42; transform:scale(.78)}
+    12%{opacity:1; transform:scale(1)}
+    46%{opacity:.6; transform:scale(.88)}
+  }
+  @keyframes hb-ring{0%{opacity:.55; transform:scale(.5)} 55%,100%{opacity:0; transform:scale(1.7)}}
+
+  /* ---- stage ---- */
+  .stage{flex:1; min-height:0; padding:46px 48px 40px; display:flex; flex-direction:column}
+  .stage.tight{padding:32px 44px 28px}
+  .split{display:grid; grid-template-columns:340px 1fr; gap:44px; flex:1; min-height:0}
+  .split.wide{grid-template-columns:360px 1fr}
+
+  /* ---- type registers ---- */
+  .m{font-size:var(--text-xs); letter-spacing:.2em; text-transform:uppercase; color:var(--app-text-subtle); display:block}
+  .disp{
+    font-size:52px; line-height:1.05; letter-spacing:-.03em; color:var(--app-text-strong);
+    font-weight:400; margin:0; text-wrap:balance;
+  }
+  .disp.mid{font-size:38px}
+  .disp.sm{font-size:27px; letter-spacing:-.02em}
+  .lead{font-size:var(--text-lg); line-height:1.6; color:var(--app-text); margin:0; max-width:52ch}
+  .body{font-size:var(--text-md); line-height:1.7; color:var(--app-text-muted); margin:0; max-width:60ch}
+  .fine{font-size:var(--text-sm); line-height:1.7; color:var(--app-text-subtle); margin:0; max-width:64ch}
+  .faint{color:var(--app-text-subtle)}
+  .strong{color:var(--app-text-strong)}
+  .num{font-variant-numeric:tabular-nums}
+  hr.rule{border:0; border-top:1px solid var(--app-border); margin:0}
+
+  /* ---- controls ---- */
+  .btn{
+    font:inherit; font-size:var(--text-md); color:var(--app-text);
+    background:transparent; border:1px solid var(--app-border-strong);
+    border-radius:8px; padding:11px 20px; cursor:pointer; white-space:nowrap;
+  }
+  .btn.primary{background:var(--app-accent); border-color:var(--app-accent); color:var(--app-accent-contrast)}
+  .btn.ghost{border-color:transparent; color:var(--app-text-muted); padding-left:0; padding-right:14px}
+  .btn.sm{font-size:var(--text-sm); padding:7px 13px; border-radius:6px}
+  .btn.xs{font-size:var(--text-xs); padding:5px 10px; border-radius:5px}
+  .btn.ring{box-shadow:var(--app-ring)}
+  .btn.stop{border-color:var(--app-border); color:var(--app-text-subtle); cursor:not-allowed}
+  .acts{display:flex; align-items:center; gap:14px; flex-wrap:wrap}
+
+  .seg{display:inline-flex; border:1px solid var(--app-border-strong); border-radius:8px; overflow:hidden}
+  .seg b{
+    font-weight:400; font-size:var(--text-base); color:var(--app-text-muted);
+    padding:9px 16px; border-right:1px solid var(--app-border);
+  }
+  .seg b:last-child{border-right:0}
+  .seg b.on{background:var(--app-surface-hover); color:var(--app-text-strong)}
+  .seg.sm b{font-size:var(--text-sm); padding:6px 11px}
+
+  .field{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    border:1px solid var(--app-border); border-radius:8px; padding:9px 12px;
+    background:var(--app-surface-subtle); color:var(--app-text); font-size:var(--text-base);
+  }
+  .field.bad{border-color:var(--app-danger-border); background:var(--app-danger-bg)}
+  .field .caret{color:var(--app-text-subtle)}
+
+  .sw{width:34px; height:19px; border-radius:11px; border:1px solid var(--app-border-strong); position:relative; flex:none; background:var(--app-surface-subtle)}
+  .sw::after{content:""; position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:var(--app-text-subtle)}
+  .sw.on{background:var(--app-accent-bg); border-color:var(--app-accent-border)}
+  .sw.on::after{left:auto; right:2px; background:var(--app-text-strong)}
+
+  .tk{color:var(--tick)}
+  .ring-glyph{
+    width:9px; height:9px; border-radius:50%; border:1px solid var(--app-text-subtle);
+    display:inline-block; vertical-align:middle;
+  }
+
+  /* ================================================================
+     STATE-VARIANT TILES (states rendered, not implied)
+     ================================================================ */
+  .tiles-cap{
+    display:flex; align-items:baseline; gap:12px; margin:22px 0 10px;
+    font-size:11px; color:var(--page-faint); letter-spacing:.14em; text-transform:uppercase;
+  }
+  .tiles-cap::after{content:""; flex:1; border-top:1px solid var(--page-rule)}
+  .tiles{display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:14px}
+  .tile{
+    background:var(--app-surface); border:1px solid var(--app-border); border-radius:10px;
+    padding:15px 16px 16px; font-size:var(--text-sm); color:var(--app-text);
+    display:flex; flex-direction:column; gap:9px;
+  }
+  .tile .tl{
+    font-size:var(--text-xs); letter-spacing:.16em; text-transform:uppercase;
+    color:var(--app-text-subtle); display:flex; align-items:center; gap:7px;
+  }
+  .tile .tl .pip{width:6px; height:6px; border-radius:50%; background:var(--app-text-subtle); flex:none}
+  .tile.ok .tl .pip{background:var(--tick)} .tile.ok .tl{color:var(--tick)}
+  .tile.warn .tl .pip{background:var(--app-warn)} .tile.warn .tl{color:var(--app-warn)}
+  .tile.bad .tl .pip{background:var(--app-danger)} .tile.bad .tl{color:var(--app-danger)}
+  .tile.info .tl .pip{background:var(--app-info)} .tile.info .tl{color:var(--app-info)}
+  .tile .hd{font-size:var(--text-md); color:var(--app-text-strong); line-height:1.45}
+  .tile p{margin:0; color:var(--app-text-muted); line-height:1.65}
+  .tile .foot{margin-top:auto; padding-top:4px; display:flex; gap:8px; align-items:center; flex-wrap:wrap}
+  .tile .blocked{
+    display:inline-flex; align-items:center; gap:6px; font-size:var(--text-xs);
+    letter-spacing:.14em; text-transform:uppercase; color:var(--app-warn);
+    border:1px solid var(--app-warn-border); background:var(--app-warn-bg);
+    border-radius:4px; padding:3px 8px;
+  }
+
+  /* ================================================================
+     THE FLOW MAP
+     ================================================================ */
+  .bleed{margin-left:calc(50% - 50vw); margin-right:calc(50% - 50vw); padding:0 32px}
+  .map-scroll{overflow-x:auto; padding-bottom:10px}
+  .map{
+    width:1400px; min-width:1400px; margin:0 auto; position:relative;
+    background:var(--app-bg); border:1px solid var(--app-border-strong); border-radius:14px;
+    padding:30px 34px 34px; color:var(--app-text);
+  }
+  .map-top{display:flex; align-items:flex-start; justify-content:space-between; gap:40px; margin-bottom:8px}
+  .map-branch{position:relative; height:214px; margin-top:14px}
+  .branch-card{
+    position:absolute; left:43.46%; transform:translateX(-50%); top:0; width:300px;
+    border:1px dashed var(--app-info-border); background:var(--app-info-bg); border-radius:9px;
+    padding:12px 15px 13px;
+  }
+  .branch-card .bn{font-size:var(--text-xs); letter-spacing:.18em; text-transform:uppercase; color:var(--app-info)}
+  .branch-card .bt{font-size:var(--text-md); color:var(--app-text-strong); margin-top:5px}
+  .branch-card p{margin:7px 0 0; font-size:var(--text-sm); line-height:1.6; color:var(--app-text-muted)}
+  .branch-stem{
+    position:absolute; left:43.46%; top:176px; bottom:0; width:1px;
+    background:repeating-linear-gradient(to bottom,var(--app-info-border) 0 4px,transparent 4px 8px);
+  }
+  .branch-loop{
+    position:absolute; left:calc(43.46% + 14px); top:180px; font-size:var(--text-xs);
+    color:var(--app-info); letter-spacing:.1em; white-space:nowrap;
+  }
+
+  .map-track{position:relative; height:34px}
+  .map-line{position:absolute; left:0; width:87.5%; top:16px; height:2px; background:var(--app-border-hover)}
+  .map-node{
+    position:absolute; top:10px; width:14px; height:14px; margin-left:-7px; border-radius:50%;
+    background:var(--app-bg); border:1px solid var(--app-text-subtle);
+  }
+  .map-node.start{border-color:var(--app-text-muted)}
+  .map-head{
+    position:absolute; top:2px; width:2px; height:30px; margin-left:-1px;
+    background:var(--app-accent); box-shadow:0 0 10px 1px var(--app-accent-glow);
+    animation:map-travel 11s cubic-bezier(.3,.9,.35,1) infinite;
+  }
+  .map-head::before{
+    content:""; position:absolute; top:-4px; left:-4px; width:10px; height:6px;
+    background:var(--app-accent); clip-path:polygon(0 0,100% 0,50% 100%);
+  }
+  @keyframes map-travel{
+    0%,7%{transform:translateX(0)}
+    11%,20%{transform:translateX(190.3px)}
+    24%,33%{transform:translateX(380.6px)}
+    37%,46%{transform:translateX(570.9px)}
+    50%,59%{transform:translateX(761.1px)}
+    63%,72%{transform:translateX(951.4px)}
+    76%,96%{transform:translateX(1141.7px)}
+    100%{transform:translateX(0)}
+  }
+  .map-bar{
+    position:absolute; top:0; width:3px; height:34px; margin-left:-1.5px;
+    background:var(--app-warn); box-shadow:0 0 12px rgba(214,161,74,.4);
+  }
+  .map-bar::after{
+    content:""; position:absolute; left:-3px; right:-3px; top:-5px; height:4px;
+    background:var(--app-warn); opacity:.5;
+  }
+  .map-notch{
+    position:absolute; top:5px; width:2px; height:24px; margin-left:-1px;
+    background:var(--app-info);
+  }
+  .map-ghost{
+    position:absolute; top:4px; width:3px; height:26px; margin-left:-1.5px;
+    background:var(--app-text-subtle); opacity:.7;
+  }
+  .map-ghost::after{
+    content:""; position:absolute; left:-11px; right:-11px; top:12px; height:1px;
+    background:var(--app-danger);
+  }
+
+  .map-events{position:relative; height:104px; margin-top:2px}
+  .map-flag{position:absolute; top:0; transform:translateX(-50%); text-align:center; width:250px}
+  .map-flag .stem{width:1px; height:14px; background:var(--app-text-subtle); margin:0 auto}
+  .map-flag .lb{
+    font-size:var(--text-xs); letter-spacing:.16em; text-transform:uppercase;
+    color:var(--app-accent); margin-top:6px;
+  }
+  .map-flag .sb{font-size:var(--text-sm); color:var(--app-text-muted); margin-top:3px; line-height:1.5}
+
+  .map-cols{display:grid; grid-template-columns:repeat(7,1fr); gap:0; margin-top:6px}
+  .mc{padding:0 16px 0 0}
+  .mc .n{font-size:var(--text-xs); color:var(--app-text-subtle); letter-spacing:.16em}
+  .mc .t{font-size:var(--text-md); color:var(--app-text-strong); margin-top:5px; line-height:1.35}
+  .chip{
+    display:inline-block; margin-top:10px; font-size:var(--text-xs); letter-spacing:.14em;
+    text-transform:uppercase; border-radius:4px; padding:4px 9px; white-space:nowrap;
+  }
+  .chip.open{color:var(--app-text-subtle); border:1px dashed var(--app-border-hover)}
+  .chip.hard{color:var(--app-warn); border:1px solid var(--app-warn-border); background:var(--app-warn-bg)}
+  .chip.rule{color:var(--app-info); border:1px solid var(--app-info-border); background:var(--app-info-bg)}
+  .chip.never{color:var(--app-text-strong); border:1px solid var(--app-border-hover)}
+  .mc p{margin:11px 0 0; font-size:var(--text-sm); line-height:1.65; color:var(--app-text-muted)}
+  .mc p.sub{color:var(--app-text-subtle); margin-top:8px}
+
+  .map-foot{
+    display:flex; gap:30px; align-items:flex-start; margin-top:30px; padding-top:22px;
+    border-top:1px solid var(--app-border);
+  }
+  .map-verdict{
+    font-size:22px; line-height:1.35; letter-spacing:-.02em; color:var(--app-text-strong);
+    margin:0; max-width:22ch; flex:none;
+  }
+  .map-verdict em{font-style:normal; color:var(--app-warn)}
+  .map-removed{
+    border-left:2px solid var(--app-danger); background:var(--app-danger-bg);
+    padding:12px 16px; font-size:var(--text-sm); line-height:1.65; color:var(--app-text);
+    max-width:62ch;
+  }
+  .map-removed b{font-weight:400; color:var(--app-danger); letter-spacing:.1em; font-size:var(--text-xs); text-transform:uppercase; display:block; margin-bottom:5px}
+  .map-key{display:flex; flex-direction:column; gap:9px; font-size:var(--text-sm); color:var(--app-text-muted); margin-left:auto}
+  .map-key div{display:flex; align-items:center; gap:10px; white-space:nowrap}
+  .map-key .sm-bar{width:3px; height:14px; background:var(--app-warn); flex:none}
+  .map-key .sm-notch{width:2px; height:14px; background:var(--app-info); flex:none}
+  .map-key .sm-ghost{width:3px; height:14px; background:var(--app-text-subtle); opacity:.7; flex:none; position:relative}
+  .map-key .sm-ghost::after{content:""; position:absolute; left:-4px; right:-4px; top:6px; height:1px; background:var(--app-danger)}
+  .map-key .sm-head{width:2px; height:14px; background:var(--app-accent); flex:none}
+
+  /* ================================================================
+     FRAME-SPECIFIC
+     ================================================================ */
+  /* welcome */
+  .hero{flex:1; display:flex; flex-direction:column; justify-content:center; position:relative}
+
+  /* ---- the capture-rate ladder (log-spaced slider, 11 stops) ---- */
+  .lad{position:relative; height:30px; width:396px}
+  .lad-track{position:absolute; left:0; right:0; top:14px; height:2px; background:var(--app-border-strong); border-radius:2px}
+  .lad-fill{position:absolute; left:0; top:14px; height:2px; background:var(--app-text-muted); border-radius:2px}
+  .lad-stop{position:absolute; top:9px; width:1px; height:12px; margin-left:-.5px; background:var(--app-border-hover)}
+  .lad-knob{
+    position:absolute; top:5px; width:12px; height:20px; margin-left:-6px; border-radius:3px;
+    background:var(--app-accent); box-shadow:var(--app-ring);
+  }
+  .lad-ends{
+    position:absolute; left:0; right:0; top:26px; display:flex; justify-content:space-between;
+    font-size:var(--text-xs); color:var(--app-text-subtle);
+  }
+  /* retention is four labels and ONE consequence line — the segmented control
+     already in this file does the job, so there is no retention component. */
+
+  /* permissions */
+  .settled{display:flex; flex-direction:column}
+  .s-row{
+    display:grid; grid-template-columns:14px 1fr auto; gap:14px; align-items:center;
+    padding:11px 0; border-bottom:1px solid var(--app-border); font-size:var(--text-base);
+  }
+  .s-row:first-child{border-top:1px solid var(--app-border)}
+  .s-row .k{color:var(--app-text-muted)}
+  .s-row .v{color:var(--app-text-subtle); font-size:var(--text-sm)}
+  .upcoming{display:flex; gap:26px; color:var(--app-text-subtle); font-size:var(--text-sm)}
+
+  /* live level meter (system audio proves itself) */
+  .meter{display:flex; align-items:flex-end; gap:3px; height:44px}
+  .meter i{width:3px; background:var(--app-border-hover); display:block; border-radius:1px; height:4px}
+  .meter i.lit{background:var(--app-text-subtle)}
+  .meter.live i{animation:lvl 1.5s ease-in-out infinite; transform-origin:bottom}
+  .meter.live i:nth-child(3n){animation-duration:1.15s}
+  .meter.live i:nth-child(4n){animation-duration:1.85s}
+  .meter.live i:nth-child(5n){animation-duration:.9s}
+  @keyframes lvl{0%,100%{transform:scaleY(.35)} 50%{transform:scaleY(1)}}
+
+  /* capture & storage */
+  .blocks{display:flex; flex-direction:column; flex:1; min-height:0}
+  .blk{padding:9px 0; border-top:1px solid var(--app-border); display:grid; grid-template-columns:196px 1fr; gap:32px; align-items:center}
+  .blk:first-child{border-top:0; padding-top:2px}
+  .blk .seg{justify-self:start}
+  /* the one consequence line a block is allowed, hung under the value column */
+  .blk-note{margin:12px 0 0 228px; font-size:var(--text-md); color:var(--app-text)}
+
+  @media (prefers-reduced-motion: reduce){
+    /* nothing is simply switched off — every meaning survives, only movement goes */
+    .rw-strip{animation:none; transform:translateX(1000px)}
+    .rw-strip.e1,.rw-strip.e2{display:none}
+    .wl-echo{display:none}
+    .rw-reel{animation:none; transform:translateY(-32px)}
+    .rw-tag{animation:none; opacity:.45}
+    .rw-read{animation:none; opacity:1}
+    .ph.travel .ph-head,.ph.travel .ph-fill,.map-head{animation:none}
+    .dev .gl i{display:none}
+    .dev .gl b{animation:none; opacity:1}
+    .rec .dot{animation:none; opacity:1; transform:none}
+    .rec .dot::after{animation:none; opacity:.25; transform:none}
+    .meter.live i{animation:none}
+    .track i.sheen::after{animation:none}
+  }
+
+  a{color:inherit}
+  .btn:focus-visible,a:focus-visible{outline:none; box-shadow:var(--app-ring)}
+</style>
+
+<div class="pg">
+<div class="wrap">
+
+  <!-- ================= masthead ================= -->
+  <header class="masthead">
+    <div class="eyebrow">Mnema onboarding rework · issue #195 · direction 3, fourth pass</div>
+    <h1>One line per row. <em>One sentence per screen.</em></h1>
+    <p class="deck">
+      Same eight frames, same gates, same states — a fraction of the words. Every screen below is
+      readable in about three seconds, because the explaining moved to
+      <em>Change settings</em>, which is the one screen allowed to be dense. Onboarding's job is to
+      let you say yes, not to teach you the system. The bookends still move; the six working
+      screens still don't.
+    </p>
+    <div class="legend">
+      <span>Green means live: where you are, what you chose, what happens next — and on the Finale, that capture is running.</span>
+      <span>Monospace only. No sans face exists in this product.</span>
+      <span>Motion on two screens only, Welcome and the Finale. All of it degrades under <code>prefers-reduced-motion</code>.</span>
+      <span>Numbers are real: ~400 MB a day at the default rate, 729 MB of downloads.</span>
+    </div>
+    <p class="deck" style="border-left:3px solid var(--page-accent); padding-left:14px; margin-top:26px">
+      <strong>Correction, added when this shipped (2026-07-28):</strong> every download figure below
+      is a stale placeholder and was <em>not</em> built. Speakrs is <strong>419 MB</strong>, not the
+      31 MB shown — verified against <code>crates/speaker-analysis/src/lib.rs</code>, which asserts
+      it in a test. So the real default set is <strong>about 1.1 GB</strong>, not 729 MB, and
+      dropping Semantic Search leaves ~567 MB, not 179 MB. The ~400 MB/day storage figure is
+      unaffected and is real. The shipped screens compute every total from the model manifests via
+      <code>workListBytes()</code>; nothing pastes a constant. Treat this file as the source of
+      truth for <em>layout, copy and structure only</em> — never for bytes.
+    </p>
+  </header>
+
+  <!-- ================= FLOW MAP ================= -->
+  <section class="frame" style="margin-top:60px">
+    <div class="cap"><span class="no">MAP</span><h2>The whole flow, and what can stop you</h2></div>
+    <p class="note">
+      Seven screens in a line, one round trip off the fourth. The amber bars are the only places
+      this flow can refuse to move — two of them, both on one screen, both about the disk.
+    </p>
+  </section>
+</div>
+
+<div class="bleed">
+  <div class="map-scroll">
+    <div class="map app">
+
+      <div class="map-top">
+        <div>
+          <span class="m">Gating · authoritative</span>
+          <h3 class="disp sm" style="margin-top:10px">Two hard gates in eight steps.</h3>
+        </div>
+        <div class="ph travel" style="margin:6px 0 0">
+          <div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:9px"></b><em class="ph-head" style="left:9px"></em></div>
+          <span class="ph-lbl">the playhead, travelling</span>
+        </div>
+      </div>
+
+      <!-- the round trip, hanging off step 04 -->
+      <div class="map-branch">
+        <div class="branch-card">
+          <span class="bn">05 · round trip</span>
+          <div class="bt">Change settings</div>
+          <p>
+            <span style="color:var(--app-info)">One rule:</span> AI features cannot be left on with
+            no credentials — enabled-but-unconfigured is a silent failure, so it is the one thing
+            this screen will not let you leave behind. Everything else here is free.
+          </p>
+        </div>
+        <div class="branch-stem"></div>
+        <div class="branch-loop">⇄ returns · totals re-resolve</div>
+      </div>
+
+      <div class="map-track">
+        <div class="map-line"></div>
+        <span class="map-node start" style="left:0.60%"></span>
+        <span class="map-node" style="left:14.89%"></span>
+        <span class="map-node" style="left:29.17%"></span>
+        <span class="map-node" style="left:43.46%"></span>
+        <span class="map-node" style="left:57.74%"></span>
+        <span class="map-node" style="left:72.03%"></span>
+        <span class="map-node" style="left:86.31%"></span>
+        <span class="map-bar" style="left:31.6%"></span>
+        <span class="map-bar" style="left:33.6%"></span>
+        <span class="map-notch" style="left:43.46%"></span>
+        <span class="map-ghost" style="left:60.2%"></span>
+        <em class="map-head" style="left:0.60%"></em>
+      </div>
+
+      <div class="map-events">
+        <div class="map-flag" style="left:50.60%">
+          <div class="stem"></div>
+          <div class="lb">Downloads start</div>
+          <div class="sb">On pressing <span class="strong">Start</span>, from Your&nbsp;settings.<br>729&nbsp;MB, in a fixed order.</div>
+        </div>
+        <div class="map-flag" style="left:86.31%">
+          <div class="stem"></div>
+          <div class="lb">Capture starts</div>
+          <div class="sb">On arriving at the Finale — not before,<br>because Voice needs the microphone.</div>
+        </div>
+      </div>
+
+      <div class="map-cols">
+        <div class="mc">
+          <div class="n">01</div>
+          <div class="t">Welcome</div>
+          <span class="chip open">No gate</span>
+          <p>Nothing to satisfy. One button.</p>
+        </div>
+
+        <div class="mc">
+          <div class="n">02</div>
+          <div class="t">Permissions</div>
+          <span class="chip open">No gate · soft warning</span>
+          <p>
+            You may continue having granted nothing. The screen says so plainly:
+            nothing will be recorded.
+          </p>
+          <p class="sub">
+            A hard gate here would trap you forever — macOS never re-prompts after a denial,
+            and there is no way back from inside the app.
+          </p>
+        </div>
+
+        <div class="mc">
+          <div class="n">03</div>
+          <div class="t">Capture &amp; Storage</div>
+          <span class="chip hard">Hard gate ×2</span>
+          <p>
+            <span class="strong">a.</span> The folder must exist and be writable.<br>
+            <span class="strong">b.</span> The volume must hold the 729&nbsp;MB of downloads —
+            checked here, before the first byte, never after a failure.
+          </p>
+          <p class="sub">Custom resolution (16–8192&nbsp;px) and bitrate (1–40&nbsp;Mbps) are range-checked on the same screen.</p>
+        </div>
+
+        <div class="mc">
+          <div class="n">04</div>
+          <div class="t">Your settings</div>
+          <span class="chip open">No gate</span>
+          <p>
+            Every row is either satisfiable or off. Nothing on this screen can refuse you —
+            it is a document, not a form.
+          </p>
+        </div>
+
+        <div class="mc">
+          <div class="n">06</div>
+          <div class="t">Setup · downloads</div>
+          <span class="chip never">Never gates</span>
+          <p>
+            Continue is live on arrival and never disables. Not while downloading.
+            Not on failure. Not on a cancel.
+          </p>
+          <p class="sub">This is the entire fix this issue exists for.</p>
+        </div>
+
+        <div class="mc">
+          <div class="n">07</div>
+          <div class="t">Voice</div>
+          <span class="chip open">No gate</span>
+          <p>
+            Skip is a first-class outcome. A rejected take does not block, and neither does a
+            model that has not landed yet.
+          </p>
+        </div>
+
+        <div class="mc">
+          <div class="n">08</div>
+          <div class="t">Finale</div>
+          <span class="chip open">No gate</span>
+          <p>Capture starts on arrival. One way out: into the app.</p>
+        </div>
+      </div>
+
+      <div class="map-foot">
+        <p class="map-verdict">Two hard gates. Both on one screen. Both about <em>the disk</em>, not about you.</p>
+        <div class="map-removed">
+          <b>Removed by this issue</b>
+          The old flow gated on “attention items”: Continue went dead whenever a selected model was
+          missing — and a model that was <span class="strong">still downloading</span> counted as missing.
+          Downloading and missing were the same state. Telling them apart is what deletes the gate,
+          and deleting that concept is most of this work.
+        </div>
+        <div class="map-key">
+          <div><span class="sm-bar"></span> hard gate — will not let you pass</div>
+          <div><span class="sm-notch"></span> one rule, on the round trip only</div>
+          <div><span class="sm-ghost"></span> the gate that used to be here</div>
+          <div><span class="sm-head"></span> the playhead — where you are</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+
+  <!-- ================= 1. WELCOME — THE BOOKEND THAT MOVES ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">01</span><h2>Welcome — the whole product, performed once</h2></div>
+    <p class="note">
+      Proving: one button, one sentence, and no “use recommended defaults” — every downstream
+      choice is already answered. All the motion in the flow lives here: a filmstrip of captured
+      screens rewinding under a fixed playhead, then giving up the words it read.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Mnema</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:9px"></b><em class="ph-head" style="left:9px"></em></div><span class="ph-lbl">1 / 8</span></div>
+      </div>
+      <div class="stage" style="padding-bottom:0">
+        <div class="hero">
+          <span class="m">Mnema</span>
+          <h3 class="disp wl-t" style="margin-top:14px">
+            <span class="wl-echo a" aria-hidden="true">Your memory,<br>on rewind.</span>
+            <span class="wl-echo b" aria-hidden="true">Your memory,<br>on rewind.</span>
+            Your memory,<br>on rewind.
+          </h3>
+          <p class="lead" style="margin-top:26px">
+            Records your screen so you can scrub back to anything you have seen. Every byte
+            stays on this Mac.
+          </p>
+          <div class="acts" style="margin-top:38px">
+            <button class="btn primary ring">Begin setup&nbsp; →</button>
+            <span class="fine">About a minute. Nothing is recorded until you finish.</span>
+          </div>
+        </div>
+
+        <!-- the rewind: three identical 8-frame groups, travelling exactly one group per cycle -->
+        <div class="rw">
+          <div class="rw-band" aria-hidden="true">
+            <div class="rw-strip e2"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+            <div class="rw-strip e1"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+            <div class="rw-strip"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+            <span class="rw-head"></span>
+          </div>
+          <div class="rw-rail">
+            <span class="rw-tag">◂◂ rewinding</span>
+            <div class="rw-tc" aria-hidden="true">
+              <div class="rw-reel"><span>10:42:07</span><span>10:42:05</span><span>10:41:59</span><span>10:41:57</span></div>
+            </div>
+            <span class="rw-read">read off that frame — <b>“Quarterly review — draft agenda”</b></span>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 2a. PERMISSIONS — denied + recovery ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">02 · a</span><h2>Permissions — moment two, Microphone denied</h2></div>
+    <p class="note">
+      Proving: one request on screen at a time, and no gate. Settled answers shrink to a single
+      ledger line; a denial is written as a complete answer, not an error.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Permissions</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:27px"></b><em class="ph-head" style="left:27px"></em></div><span class="ph-lbl">2 / 8</span></div>
+      </div>
+      <div class="stage">
+        <span class="m">One at a time · none of them required</span>
+        <div class="settled" style="margin-top:16px">
+          <div class="s-row">
+            <span class="tk">✓</span>
+            <span class="k">Screen recording</span>
+            <span class="v">granted · needs one relaunch &nbsp; <button class="btn sm">Relaunch</button></span>
+          </div>
+        </div>
+
+        <div style="flex:1; display:flex; flex-direction:column; justify-content:center">
+          <h3 class="disp mid">Microphone</h3>
+          <p class="lead" style="margin-top:20px">
+            You said no. Mnema keeps working — without transcripts or speaker names.
+          </p>
+          <div class="acts" style="margin-top:30px">
+            <button class="btn">Open System&nbsp;Settings&nbsp; ›</button>
+            <button class="btn">Re-check</button>
+            <span class="fine">Privacy &amp; Security → Microphone → Mnema</span>
+          </div>
+          <p class="fine" style="margin-top:26px">
+            macOS never asks again on its own, which is why this screen never blocks.
+          </p>
+        </div>
+
+        <hr class="rule">
+        <div class="acts" style="margin-top:20px; justify-content:space-between">
+          <div class="upcoming">
+            <span>next · System audio</span>
+            <span>then · Accessibility <span class="faint">(optional)</span></span>
+          </div>
+          <button class="btn primary">Continue without the microphone&nbsp; →</button>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">Permission row · every state</div>
+    <div class="tiles app">
+      <div class="tile">
+        <span class="tl"><span class="pip"></span>Not requested</span>
+        <div class="hd">Screen recording</div>
+        <p>Never auto-fired. The prompt appears when you press the button.</p>
+        <div class="foot"><button class="btn sm">Request</button></div>
+      </div>
+      <div class="tile ok">
+        <span class="tl"><span class="pip"></span>Granted</span>
+        <div class="hd">Screen recording <span class="tk">✓</span></div>
+        <p>macOS only honours this after a relaunch. Say so, then offer it.</p>
+        <div class="foot"><button class="btn sm">Relaunch Mnema</button></div>
+      </div>
+      <div class="tile bad">
+        <span class="tl"><span class="pip"></span>Denied · recoverable</span>
+        <div class="hd">Microphone</div>
+        <p>A deep link plus a re-check — never a dead end, never a blocked Continue.</p>
+        <div class="foot"><button class="btn sm">Open System Settings ›</button><button class="btn sm">Re-check</button></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Unknowable</span>
+        <div class="hd">System audio</div>
+        <p>macOS exposes no API to read this grant, so there is no check here, ever.</p>
+        <div class="foot"><span class="ring-glyph"></span><span class="fine">Requested · unconfirmed</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 2b. PERMISSIONS — system audio proves itself ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">02 · b</span><h2>Permissions — moment three, System audio proves itself</h2></div>
+    <p class="note">
+      Proving: macOS gives no API to read this grant, so the screen never shows a green check.
+      The paragraph that used to explain that is now one line; a live meter does the rest.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Permissions</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:27px"></b><em class="ph-head" style="left:27px"></em></div><span class="ph-lbl">2 / 8</span></div>
+      </div>
+      <div class="stage">
+        <span class="m">One at a time · none of them required</span>
+        <div class="settled" style="margin-top:16px">
+          <div class="s-row">
+            <span class="tk">✓</span><span class="k">Screen recording</span>
+            <span class="v">granted · relaunched</span>
+          </div>
+          <div class="s-row">
+            <span class="tk">✓</span><span class="k">Microphone</span>
+            <span class="v">granted</span>
+          </div>
+        </div>
+
+        <div style="flex:1; display:flex; flex-direction:column; justify-content:center">
+          <h3 class="disp mid">Play anything.</h3>
+          <p class="lead" style="margin-top:18px">
+            macOS will not tell us whether you granted this — sound arriving is the only proof.
+          </p>
+
+          <div style="display:flex; align-items:flex-end; gap:24px; margin-top:30px">
+            <div class="meter live" aria-hidden="true">
+              <i class="lit" style="height:12px"></i><i class="lit" style="height:22px"></i><i class="lit" style="height:15px"></i>
+              <i class="lit" style="height:31px"></i><i class="lit" style="height:19px"></i><i class="lit" style="height:26px"></i>
+              <i class="lit" style="height:36px"></i><i class="lit" style="height:17px"></i><i class="lit" style="height:28px"></i>
+              <i class="lit" style="height:21px"></i><i class="lit" style="height:33px"></i><i class="lit" style="height:14px"></i>
+              <i class="lit" style="height:24px"></i><i class="lit" style="height:30px"></i><i class="lit" style="height:16px"></i>
+              <i class="lit" style="height:23px"></i><i class="lit" style="height:11px"></i><i class="lit" style="height:18px"></i>
+              <i class="lit" style="height:27px"></i><i class="lit" style="height:13px"></i>
+            </div>
+            <div class="body" style="color:var(--app-text-strong)">Sound is arriving.</div>
+          </div>
+
+          <div class="acts" style="margin-top:30px">
+            <button class="btn">Request again</button>
+            <span class="fine">A prompt you closed by accident looks exactly like a No.</span>
+          </div>
+        </div>
+
+        <hr class="rule">
+        <div class="acts" style="margin-top:20px; justify-content:space-between">
+          <div class="upcoming"><span>next · Accessibility <span class="faint">(optional)</span></span></div>
+          <button class="btn primary">Continue&nbsp; →</button>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">And the honest failure of the same screen</div>
+    <div class="tiles app">
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Silence</span>
+        <div class="hd">Nothing has arrived yet</div>
+        <p>Silent is not denied — it might just be a quiet Mac. The meter keeps listening.</p>
+        <div class="foot"><span class="fine">Requested · unconfirmed</span></div>
+      </div>
+      <div class="tile">
+        <span class="tl"><span class="pip"></span>Granted nothing at all</span>
+        <div class="hd">Continue is still live</div>
+        <p>“Mnema will run, but it will not record anything.” Said plainly, then let through.</p>
+        <div class="foot"><button class="btn sm">Continue with nothing granted →</button></div>
+      </div>
+      <div class="tile info">
+        <span class="tl"><span class="pip"></span>Optional · offered last</span>
+        <div class="hd">Accessibility</div>
+        <p>The broadest grant, so it never rides along with the essential ones.</p>
+        <div class="foot"><button class="btn sm">Request</button><button class="btn sm">Skip</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 3. CAPTURE & STORAGE ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">03</span><h2>Capture &amp; Storage — the only screen with hard gates</h2></div>
+    <p class="note">
+      Proving: four decisions, four lines. Retention is four labels with ONE consequence line under
+      the selected one — the unselected options carry no sentence and no number of their own.
+      The measured figure and the pause-on-inactivity caveat survive as a single footnote.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Capture &amp; Storage</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:45px"></b><em class="ph-head" style="left:45px"></em></div><span class="ph-lbl">3 / 8</span></div>
+      </div>
+      <div class="stage">
+        <h3 class="disp sm">Four things to settle.</h3>
+
+        <div class="blocks" style="margin-top:36px; gap:32px; flex:none">
+          <div class="blk">
+            <div><span class="m">How often</span></div>
+            <div style="display:flex; align-items:center; gap:26px">
+              <div class="lad" role="img" aria-label="Capture rate: eleven stops from ten a second to once a minute. Currently one snapshot every 2 seconds.">
+                <span class="lad-track"></span>
+                <span class="lad-fill" style="width:30%"></span>
+                <span class="lad-stop" style="left:0"></span>
+                <span class="lad-stop" style="left:10%"></span>
+                <span class="lad-stop" style="left:20%"></span>
+                <span class="lad-stop" style="left:30%"></span>
+                <span class="lad-stop" style="left:40%"></span>
+                <span class="lad-stop" style="left:50%"></span>
+                <span class="lad-stop" style="left:60%"></span>
+                <span class="lad-stop" style="left:70%"></span>
+                <span class="lad-stop" style="left:80%"></span>
+                <span class="lad-stop" style="left:90%"></span>
+                <span class="lad-stop" style="left:100%"></span>
+                <span class="lad-knob" style="left:30%"></span>
+              </div>
+              <div class="body" style="color:var(--app-text-strong); white-space:nowrap">
+                every 2 seconds &nbsp;·&nbsp; <span class="num">~400 MB</span> a day
+              </div>
+            </div>
+          </div>
+
+          <div class="blk">
+            <div><span class="m">Where it lives</span></div>
+            <div style="display:flex; align-items:center; gap:22px">
+              <div class="field" style="width:300px"><span>~/Mnema</span><button class="btn sm">Change</button></div>
+              <span class="fine">482 GB free · writable</span>
+            </div>
+          </div>
+
+          <div>
+            <div class="blk">
+              <div><span class="m">How long to keep it</span></div>
+              <div class="seg"><b class="on">Keep everything</b><b>30 days</b><b>14 days</b><b>7 days</b></div>
+            </div>
+            <p class="blk-note">
+              About <span class="num strong">400 MB</span> a day with no limit — roughly
+              <span class="num strong">12 GB</span> a month.
+            </p>
+          </div>
+
+          <div class="blk">
+            <div><span class="m">Never recorded</span></div>
+            <div style="display:flex; align-items:center; gap:22px">
+              <span class="body" style="color:var(--app-text)"><span class="strong">14 apps</span> — 1Password, Messages, Banking…</span>
+              <button class="btn sm">Edit&nbsp; ▸</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:auto">
+          <p class="fine" style="max-width:none; margin-bottom:16px">
+            Measured: <span class="num">270 MB</span> a day at one snapshot every 3 seconds, with
+            pause-on-inactivity on. Every figure above is that, scaled.
+          </p>
+          <hr class="rule">
+          <div class="acts" style="margin-top:16px; justify-content:flex-end">
+            <button class="btn primary">Your settings&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">The flow's only two hard gates, rendered</div>
+    <div class="tiles app">
+      <div class="tile ok">
+        <span class="tl"><span class="pip"></span>Valid</span>
+        <div class="hd">~/Mnema</div>
+        <p>Exists, writable, 482 GB free. Both gates satisfied, so the screen gets out of the way.</p>
+        <div class="foot"><button class="btn sm">Your settings →</button></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Hard gate 1 · blocking</span>
+        <div class="hd">That folder is not writable</div>
+        <div class="field bad" style="font-size:var(--text-sm)"><span>/Volumes/Archive/Mnema</span><span style="color:var(--app-danger)">read-only</span></div>
+        <p>Named before recording begins, not after a day of lost capture.</p>
+        <div class="foot"><span class="blocked">Continue held</span><button class="btn sm">Choose another folder</button></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Hard gate 2 · blocking</span>
+        <div class="hd">Not enough room for the downloads</div>
+        <p><span class="strong">412 MB free · 729 MB needed.</span> Caught before the first byte is fetched.</p>
+        <div class="foot">
+          <span class="blocked">Continue held</span>
+          <button class="btn sm">Change folder</button>
+          <span class="fine">or turn Semantic&nbsp;Search off — 550&nbsp;MB.</span>
+        </div>
+      </div>
+      <div class="tile bad">
+        <span class="tl"><span class="pip"></span>Range · blocking</span>
+        <div class="hd">Custom capture values</div>
+        <p>Resolution 16–8192 px, bitrate 1–40 Mbps. Refused on the field, with the range written out.</p>
+        <div class="field bad" style="font-size:var(--text-sm)"><span>Bitrate&nbsp; 64 Mbps</span><span style="color:var(--app-danger)">max 40</span></div>
+      </div>
+    </div>
+  </section>
+
+
+<style>
+  /* ---- settings manifest: name + one short value, and nothing else ---- */
+  .manifest{width:600px; margin:0 auto; display:flex; flex-direction:column}
+  .row{
+    display:grid; grid-template-columns:16px 1fr auto; gap:16px; align-items:baseline;
+    padding:11px 0; border-bottom:1px solid var(--app-border);
+  }
+  .row:last-child{border-bottom:0}
+  .row .nm{font-size:var(--text-md); color:var(--app-text-strong)}
+  .row .val{font-size:var(--text-md); color:var(--app-text-muted)}
+  .row.off .nm{color:var(--app-text-muted)}
+  .row.off .val{color:var(--app-text-subtle)}
+  .row.warned .val{color:var(--app-warn)}
+
+  /* ---- change settings ---- */
+  .cz{display:grid; grid-template-columns:150px 1fr; gap:34px; flex:1; min-height:0}
+  .idx{display:flex; flex-direction:column; gap:11px; font-size:var(--text-sm); color:var(--app-text-subtle); border-right:1px solid var(--app-border); padding-right:20px}
+  .idx b{font-weight:400; color:var(--app-text-strong)}
+  .scrollpane{position:relative; min-height:0; overflow:hidden}
+  .scrollpane::after{
+    content:""; position:absolute; left:0; right:0; bottom:0; height:48px; pointer-events:none;
+    background:linear-gradient(to bottom,rgba(12,12,14,0),var(--app-bg) 90%);
+  }
+  .sbar{position:absolute; right:0; top:0; width:2px; height:40%; background:var(--app-border-strong); border-radius:2px}
+  .sec{padding:0 22px 20px 0}
+  .sec + .sec{border-top:1px solid var(--app-border); padding-top:18px}
+  .cz-row{display:grid; grid-template-columns:1fr auto; gap:24px; align-items:center; padding:10px 0}
+  .cz-row .t{font-size:var(--text-md); color:var(--app-text-strong)}
+  .cz-row .d{font-size:var(--text-sm); color:var(--app-text-subtle); margin-top:3px; max-width:52ch}
+  .locked .t{color:var(--app-text-muted)}
+  .locked .d{color:var(--app-warn)}
+
+  /* ---- setup ---- */
+  .pct{font-size:72px; line-height:1; letter-spacing:-.045em; color:var(--app-text-strong); font-variant-numeric:tabular-nums}
+  .work{display:flex; flex-direction:column}
+  .item{padding:20px 0; border-top:1px solid var(--app-border)}
+  .item:first-child{border-top:0; padding-top:2px}
+  .item .head{display:flex; align-items:baseline; gap:16px}
+  .item .t{font-size:var(--text-md); color:var(--app-text-strong)}
+  .item .st{margin-left:auto; font-size:var(--text-sm); display:flex; align-items:baseline; gap:12px}
+  .st.ready{color:var(--tick)}
+  .st.busy{color:var(--app-text)}
+  .st.fail{color:var(--app-danger)}
+  .track{height:3px; background:var(--app-border-strong); margin-top:13px; position:relative; overflow:hidden; border-radius:2px}
+  .track i{position:absolute; inset:0 auto 0 0; background:var(--app-text-strong); display:block; border-radius:2px}
+  .track i.sheen::after{
+    content:""; position:absolute; inset:0; width:60px;
+    background:linear-gradient(90deg,transparent,rgba(226,226,232,.6),transparent);
+    animation:sheen 3.4s ease-in-out infinite;
+  }
+  @keyframes sheen{0%{transform:translateX(-70px)} 100%{transform:translateX(430px)}}
+  .item .sub{font-size:var(--text-sm); color:var(--app-text-muted); margin-top:10px; display:flex; gap:14px; align-items:center; flex-wrap:wrap}
+  @media (prefers-reduced-motion: reduce){ .track i.sheen::after{animation:none} }
+</style>
+
+  <!-- ================= 4. YOUR SETTINGS ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">04</span><h2>Your settings — the centrepiece</h2></div>
+    <p class="note">
+      Proving: eight rows of name and one short value, then one sentence of context.
+      Provider names, model identifiers and per-row byte sizes have left this screen — they are on
+      Change settings. The total stays, once, at the foot. AI features stays visibly unticked.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Your settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8</span></div>
+      </div>
+      <div class="stage">
+        <h3 class="disp mid" style="text-align:center">Already answered.</h3>
+
+        <div class="manifest" style="margin-top:38px">
+          <div class="row"><span class="tk">✓</span><span class="nm">Screen capture</span><span class="val">on</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">Read on-screen text</span><span class="val">on</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">Microphone</span><span class="val">on</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">System audio</span><span class="val">on · macOS can't confirm the grant</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">Transcription</span><span class="val">on</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">Who's speaking</span><span class="val">on</span></div>
+          <div class="row"><span class="tk">✓</span><span class="nm">Semantic Search</span><span class="val">on</span></div>
+          <div class="row off"><span class="faint">○</span><span class="nm">AI features</span><span class="val">off — needs a provider</span></div>
+        </div>
+
+        <div style="margin-top:auto">
+          <p class="body" style="text-align:center; max-width:none; color:var(--app-text)">
+            Downloads <span class="num strong">729 MB</span> · saves to <span class="strong">~/Mnema</span> · keeps everything · about <span class="num strong">400 MB</span> a day
+          </p>
+          <hr class="rule" style="margin-top:22px">
+          <div class="acts" style="margin-top:16px; justify-content:flex-end">
+            <button class="btn">Change settings</button>
+            <button class="btn primary">Start&nbsp; →</button>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">When a permission is missing, the row says so — it does not vanish</div>
+    <div class="tiles app">
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Row state · permission missing</span>
+        <div class="hd" style="font-size:var(--text-base)">
+          <span class="faint">○</span>&nbsp; Microphone &nbsp;<span style="color:var(--app-warn)">— not granted</span>
+        </div>
+        <p>Still listed, still explains itself, still offers the way back — and never blocks Start.</p>
+        <div class="foot"><button class="btn sm">Grant ▸</button></div>
+      </div>
+      <div class="tile">
+        <span class="tl"><span class="pip"></span>Cascade · the total re-resolves</span>
+        <div class="hd" style="font-size:var(--text-base)">Downloads fall to <span class="num">550 MB</span></div>
+        <p>No audio source means nothing to transcribe and no voices to tell apart. Both rows switch themselves off.</p>
+        <div class="foot"><span class="fine">Screen capture and Semantic Search are unaffected.</span></div>
+      </div>
+      <div class="tile info">
+        <span class="tl"><span class="pip"></span>Never pre-ticked</span>
+        <div class="hd" style="font-size:var(--text-base)">AI features stay off</div>
+        <p>Consent is an affirmative act. Cloud transcription does not appear on this screen at all — it lives in Settings behind its own gate.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 5. CHANGE SETTINGS ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">05</span><h2>Change settings — the only screen allowed to be dense</h2></div>
+    <p class="note">
+      Proving: this is where the detail went, and why the other screens can be light. Providers,
+      model identifiers, sizes, the retention reasoning — everything demoted out of the glance
+      layer is here, organised into four sections, for the person who came looking for it.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Change settings</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8 · round trip</span></div>
+      </div>
+      <div class="stage tight">
+        <div style="display:flex; align-items:baseline; justify-content:space-between; margin-bottom:18px">
+          <h3 class="disp sm">You asked. Here is all of it.</h3>
+          <span class="fine">Going back re-resolves your settings.</span>
+        </div>
+
+        <div class="cz">
+          <nav class="idx">
+            <span class="m" style="margin-bottom:2px">Sections</span>
+            <b>Capture sources</b>
+            <span>Processing</span>
+            <span>Storage</span>
+            <span>AI features</span>
+          </nav>
+
+          <div class="scrollpane">
+            <div class="sbar"></div>
+
+            <div class="sec">
+              <span class="m">Capture sources</span>
+              <div class="cz-row">
+                <div>
+                  <div class="t">Microphone</div>
+                  <div class="d">Turning this off also turns off transcription and who's speaking.</div>
+                </div>
+                <span class="sw on"></span>
+              </div>
+              <div class="cz-row">
+                <div>
+                  <div class="t">System audio</div>
+                  <div class="d">What your Mac plays. Excludes Mnema itself and every privacy-listed app.</div>
+                </div>
+                <span class="sw on"></span>
+              </div>
+              <div class="cz-row locked">
+                <div>
+                  <div class="t">Browser addresses</div>
+                  <div class="d">Needs Accessibility permission</div>
+                </div>
+                <button class="btn sm">Grant</button>
+              </div>
+            </div>
+
+            <div class="sec">
+              <span class="m">Processing</span>
+              <div class="cz-row">
+                <div><div class="t">Read on-screen text</div><div class="d">On-device, nothing uploaded.</div></div>
+                <div class="seg sm"><b class="on">Apple Vision</b><b>Tesseract</b></div>
+              </div>
+              <div class="cz-row">
+                <div><div class="t">Transcription</div><div class="d">Whisper runs locally. Larger models are slower and more accurate.</div></div>
+                <div style="display:flex; gap:10px; align-items:center">
+                  <div class="seg sm"><b class="on">Whisper</b><b>Parakeet</b></div>
+                  <div class="field" style="width:186px; padding:6px 10px; font-size:var(--text-sm)"><span>base &nbsp;·&nbsp; 148 MB</span><span class="caret">▾</span></div>
+                </div>
+              </div>
+              <div class="cz-row">
+                <div><div class="t">Who's speaking</div><div class="d">Separates voices in a conversation. On-device CoreML, 31 MB.</div></div>
+                <span class="sw on"></span>
+              </div>
+              <div class="cz-row">
+                <div><div class="t">Semantic Search</div><div class="d">Finds by meaning, not just by word. 550 MB — three quarters of the whole download.</div></div>
+                <div class="field" style="width:246px; padding:6px 10px; font-size:var(--text-sm)"><span>nomic-embed-text-v1.5 · 550 MB</span><span class="caret">▾</span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <span class="m">Storage</span>
+              <div class="cz-row">
+                <div>
+                  <div class="t">How long to keep it</div>
+                  <div class="d">There is no undo, so the app never picks deletion for you — the default keeps everything.</div>
+                </div>
+                <div class="seg sm"><b class="on">Keep everything</b><b>30 d</b><b>14 d</b><b>7 d</b></div>
+              </div>
+              <div class="cz-row">
+                <div>
+                  <div class="t">Capture rate</div>
+                  <div class="d">Measured 270 MB a day at every 3 s with pause-on-inactivity on; storage scales linearly from there.</div>
+                </div>
+                <div class="field" style="width:186px; padding:6px 10px; font-size:var(--text-sm)"><span>every 2 s · ~400 MB</span><span class="caret">▾</span></div>
+              </div>
+            </div>
+
+            <div class="sec">
+              <span class="m">AI features</span>
+              <p class="fine" style="margin:8px 0 12px">Powers Ask AI, digests and User Context. Off until you pick a provider.</p>
+              <div class="cz-row">
+                <div><div class="t">On this Mac</div><div class="d">No key, no account, nothing leaves the machine.</div></div>
+                <div class="seg sm"><b class="on">Ollama</b><b>Llamafile</b></div>
+              </div>
+              <div class="cz-row">
+                <div><div class="t">Or a cloud account</div><div class="d">Your own key. Prompts and the context around them are sent to that provider.</div></div>
+                <div class="seg sm"><b>Anthropic</b><b>OpenAI</b></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <hr class="rule" style="margin-top:4px">
+        <div class="acts" style="margin-top:16px; justify-content:space-between">
+          <span class="fine">Turn the last audio source off and transcription and speakers switch off with it.</span>
+          <button class="btn primary">Back to your settings&nbsp; →</button>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">The one rule this screen enforces</div>
+    <div class="tiles app">
+      <div class="tile info">
+        <span class="tl"><span class="pip"></span>Blocked · the only rule here</span>
+        <div class="hd">AI features are on, with nothing to run them</div>
+        <p>Enabled-but-unconfigured is a silent failure: the feature looks alive and answers nothing.</p>
+        <div class="foot"><span class="blocked" style="color:var(--app-info); border-color:var(--app-info-border); background:var(--app-info-bg)">Back held</span><button class="btn sm">Add a key</button><button class="btn sm">Turn AI features off</button></div>
+      </div>
+      <div class="tile ok">
+        <span class="tl"><span class="pip"></span>Satisfied · local</span>
+        <div class="hd">Ollama · http://localhost:11434</div>
+        <p>Reachable, so the rule is met with no key and no account. This is why local providers come first.</p>
+        <div class="foot"><span class="fine tk">✓ responded in 40 ms</span></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Cascade · both directions</span>
+        <div class="hd">Microphone off</div>
+        <p>Transcription and who's speaking go off with it, and come back when a source returns.</p>
+        <div class="foot"><span class="fine">Downloads: 729 MB → 550 MB</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 6. SETUP ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">06</span><h2>Setup — downloads, and the gate that no longer exists</h2></div>
+    <p class="note">
+      Proving: downloading and missing are two different states, and Continue never disables.
+      Each row is now a name and a state — the bar carries the progress. The failed row still
+      carries its real error, because that is the one thing this screen exists for.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Setup</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:99px"></b><em class="ph-head" style="left:99px"></em></div><span class="ph-lbl">6 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="split wide">
+          <div style="display:flex; flex-direction:column">
+            <div class="pct">17%</div>
+            <p class="body" style="margin-top:14px; color:var(--app-text)">
+              Downloading <span class="strong">Whisper base</span> · <span class="num">123 MB of 729 MB</span>
+            </p>
+
+            <div style="margin-top:auto">
+              <hr class="rule">
+              <div class="acts" style="margin-top:22px">
+                <button class="btn primary">Continue&nbsp; →</button>
+              </div>
+              <p class="fine" style="margin-top:16px">
+                Live since you arrived, and it never disables. Downloads carry on behind you.
+              </p>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; justify-content:center">
+            <div class="work">
+              <div class="item">
+                <div class="head">
+                  <span class="t">Who's speaking</span>
+                  <span class="st ready">✓ Ready</span>
+                </div>
+              </div>
+
+              <div class="item">
+                <div class="head">
+                  <span class="t">Transcription</span>
+                  <span class="st busy">Downloading <button class="btn sm">Cancel</button></span>
+                </div>
+                <div class="track"><i class="sheen" style="width:62%"></i></div>
+              </div>
+
+              <div class="item">
+                <div class="head">
+                  <span class="t">Semantic Search</span>
+                  <span class="st fail">Network timeout after 30s <button class="btn sm">Retry</button></span>
+                </div>
+                <div class="track"><i style="width:0%"></i></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">Per-item states, including the one that used to leave a mess</div>
+    <div class="tiles app">
+      <div class="tile ok">
+        <span class="tl"><span class="pip"></span>Ready</span>
+        <div class="hd" style="font-size:var(--text-base)">Who's speaking · 31 MB</div>
+        <div class="track"><i style="width:100%; background:var(--tick)"></i></div>
+        <p>First on purpose — the Voice step next door cannot run without it.</p>
+      </div>
+      <div class="tile">
+        <span class="tl"><span class="pip"></span>Downloading</span>
+        <div class="hd" style="font-size:var(--text-base)">Whisper base · 148 MB</div>
+        <div class="track"><i class="sheen" style="width:62%"></i></div>
+        <p><span class="num">92 MB of 148 MB</span> — not the same state as missing, which is the whole fix.</p>
+      </div>
+      <div class="tile bad">
+        <span class="tl"><span class="pip"></span>Failed · real error</span>
+        <div class="hd" style="font-size:var(--text-base)">Semantic Search · 550 MB</div>
+        <div class="track"><i style="width:0%"></i></div>
+        <p style="color:var(--app-danger)">Network timeout after 30s</p>
+        <div class="foot"><button class="btn sm">Retry</button><span class="fine">Continue is still live.</span></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Cancelled · cleanly</span>
+        <div class="hd" style="font-size:var(--text-base)">Semantic Search turned itself off</div>
+        <p>Cancelling switches the feature off rather than leaving it selected-and-absent. The total drops to 179 MB.</p>
+        <div class="foot"><button class="btn sm">Turn it back on</button></div>
+      </div>
+    </div>
+  </section>
+
+
+<style>
+  /* ---- voice ---- */
+  .quote{
+    font-size:21px; line-height:1.55; color:var(--app-text-strong); letter-spacing:-.01em;
+    max-width:38ch; margin:0; text-wrap:balance;
+  }
+  .callout{
+    border-left:2px solid var(--app-warn); background:var(--app-warn-bg);
+    padding:12px 16px; font-size:var(--text-base); color:var(--app-text); line-height:1.65;
+  }
+  .callout b{font-weight:400; color:var(--app-warn)}
+  .promises{display:flex; flex-direction:column; gap:9px; font-size:var(--text-sm); color:var(--app-text-subtle)}
+  .promises span::before{content:"— "; color:var(--app-text-faint)}
+
+  /* ---- finale ---- */
+  .shot{
+    border:1px solid var(--app-border); border-radius:8px; background:#08080d; overflow:hidden;
+    position:relative; aspect-ratio:16/10;
+  }
+  .shot .sbarr{height:16px; background:var(--app-surface); border-bottom:1px solid var(--app-border)}
+  .shot .content{padding:14px 16px; display:flex; flex-direction:column; gap:9px; height:calc(100% - 16px)}
+  .shot .ln{height:6px; border-radius:2px; background:#20203a}
+  .shot .ln.hl{background:#2c3f36; box-shadow:0 0 0 1px var(--app-accent-border)}
+  .shot .grid2{display:grid; grid-template-columns:1fr 1fr; gap:9px; margin-top:6px}
+  .shot .box{height:44px; border:1px solid var(--app-border); border-radius:4px; background:var(--app-surface-subtle)}
+  .shot.empty{display:flex; align-items:center; justify-content:center; background:var(--app-surface-subtle)}
+  .tile .shot.empty{max-height:120px}
+  .ocr{
+    border:1px solid var(--app-border); border-radius:8px; padding:14px 16px;
+    background:var(--app-surface-subtle); font-size:var(--text-md); color:var(--app-text);
+  }
+  .ocr .hit{color:var(--app-accent)}
+
+  /* ---- motion language ---- */
+  .mo-grid{display:grid; grid-template-columns:1fr 1fr; gap:34px 30px; margin-top:34px}
+  .mo{display:flex; flex-direction:column}
+  .mo-head{display:flex; align-items:baseline; gap:12px}
+  .mo-head .mo-n{font-size:11px; letter-spacing:.14em; color:var(--page-accent)}
+  .mo-head h3{font-size:15px; color:var(--page-ink)}
+  .mo-why{margin:8px 0 14px; font-size:12px; color:var(--page-muted); max-width:56ch}
+  .mo-stage{
+    background:var(--app-bg); border:1px solid var(--app-border-strong); border-radius:10px;
+    height:190px; padding:20px 22px; position:relative; overflow:hidden; color:var(--app-text);
+    display:flex; flex-direction:column; justify-content:center;
+  }
+  .mo-stage .big{font-size:24px; letter-spacing:-.02em; color:var(--app-text-strong); line-height:1.15}
+  .mo-note{
+    position:absolute; right:14px; bottom:12px; font-size:var(--text-xs);
+    color:var(--app-text-subtle); letter-spacing:.12em; text-transform:uppercase;
+  }
+  .anno{position:absolute; font-size:var(--text-xs); color:var(--app-text-subtle); letter-spacing:.1em}
+  .anno::before{content:""; position:absolute; left:-14px; top:6px; width:10px; height:1px; background:var(--app-border-hover)}
+
+  /* ---- alternates ---- */
+  .alts{margin-top:110px; border-top:1px solid var(--page-rule); padding-top:52px}
+  .alts h2{font-size:clamp(24px,3.5vw,34px); letter-spacing:-.02em; margin:10px 0 0; font-weight:400}
+  .alt{margin-top:60px}
+  .alt h3{font-size:15px; font-weight:400; margin:0 0 8px; letter-spacing:-.01em}
+  .alt h3 span{color:var(--page-accent); font-size:11px; letter-spacing:.14em; margin-right:10px}
+  .alt p{margin:0 0 18px; font-size:12px; color:var(--page-muted); max-width:84ch}
+  .mini{width:580px; height:360px; flex:none; font-size:var(--text-sm)}
+  .mini .stage{padding:24px 26px 22px}
+  .mini .disp{font-size:24px}
+  .mini .btn{font-size:var(--text-sm); padding:8px 14px}
+  .mini .ph-lbl{font-size:9px}
+</style>
+
+  <!-- ================= 7a. VOICE — rejection ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">07 · a</span><h2>Voice — model ready, take rejected</h2></div>
+    <p class="note">
+      Proving: the words to read are supplied, so nobody improvises, and a rejection names its
+      actual reason. The honesty column that used to run four lines is now one.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Voice</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:117px"></b><em class="ph-head" style="left:117px"></em></div><span class="ph-lbl">7 / 8 · optional</span></div>
+      </div>
+      <div class="stage">
+        <div class="split wide">
+          <div style="display:flex; flex-direction:column">
+            <h3 class="disp sm">Fifteen seconds so Mnema can use your name.</h3>
+            <p class="fine" style="margin-top:16px">
+              Otherwise your side is filed as “Speaker&nbsp;1”.
+            </p>
+
+          </div>
+
+          <div style="display:flex; flex-direction:column; justify-content:center">
+            <span class="m">Read this out loud</span>
+            <p class="quote" style="margin-top:14px">
+              “I keep my work on this machine, and I would like Mnema to know my voice.”
+            </p>
+
+            <div style="display:flex; align-items:flex-end; gap:22px; margin-top:30px">
+              <div class="meter" aria-hidden="true">
+                <i class="lit" style="height:9px"></i><i class="lit" style="height:14px"></i><i class="lit" style="height:8px"></i>
+                <i class="lit" style="height:16px"></i><i class="lit" style="height:11px"></i><i style="height:6px"></i>
+                <i class="lit" style="height:13px"></i><i style="height:5px"></i><i class="lit" style="height:10px"></i>
+                <i style="height:6px"></i><i style="height:4px"></i><i style="height:7px"></i>
+                <i style="height:4px"></i><i style="height:5px"></i><i style="height:3px"></i>
+                <i style="height:4px"></i><i style="height:3px"></i><i style="height:4px"></i>
+              </div>
+              <span class="fine num">Take 2 · 0:14 · peaked at 18%</span>
+            </div>
+
+            <div class="callout" style="margin-top:26px">
+              <b>Too quiet.</b> Move closer to the mic and read it once more.
+            </div>
+
+            <div class="acts" style="margin-top:26px">
+              <button class="btn primary">Record again</button>
+              <button class="btn">▸ Play take 2</button>
+              <button class="btn ghost">Skip — you can do this later in Settings</button>
+            </div>
+          </div>
+        </div>
+        <hr class="rule" style="margin-top:20px">
+        <p class="fine" style="max-width:none; margin-top:14px">
+          The voiceprint never leaves this device, and recognition labels many turns — not every turn.
+        </p>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">Recording, and the other two rejections</div>
+    <div class="tiles app">
+      <div class="tile ok">
+        <span class="tl"><span class="pip"></span>Ready · recording</span>
+        <div class="hd" style="font-size:var(--text-base)">0:08 of about 0:15</div>
+        <div class="meter live" style="height:26px" aria-hidden="true">
+          <i class="lit" style="height:14px"></i><i class="lit" style="height:22px"></i><i class="lit" style="height:11px"></i>
+          <i class="lit" style="height:25px"></i><i class="lit" style="height:17px"></i><i class="lit" style="height:20px"></i>
+          <i class="lit" style="height:13px"></i><i class="lit" style="height:24px"></i><i class="lit" style="height:16px"></i>
+          <i class="lit" style="height:21px"></i><i class="lit" style="height:12px"></i><i class="lit" style="height:19px"></i>
+          <i class="lit" style="height:23px"></i><i class="lit" style="height:15px"></i><i class="lit" style="height:18px"></i>
+        </div>
+        <p>Level is good. Keep reading — the sentence is still on screen above the meter.</p>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Rejected</span>
+        <div class="hd" style="font-size:var(--text-base)">Too short</div>
+        <p>That take was 0:04. Under about ten seconds there is not enough voice to build a print from. Read the whole sentence.</p>
+        <div class="foot"><button class="btn sm">Record again</button></div>
+      </div>
+      <div class="tile warn">
+        <span class="tl"><span class="pip"></span>Rejected</span>
+        <div class="hd" style="font-size:var(--text-base)">Someone else was audible</div>
+        <p>Two voices in that take, so the print would be a blend of both. Somewhere quieter, or wait for the room.</p>
+        <div class="foot"><button class="btn sm">Record again</button><button class="btn sm">Skip for now</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 7b. VOICE — model still downloading ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">07 · b</span><h2>Voice — speaker model still downloading</h2></div>
+    <p class="note">
+      Proving: no spinner, no wall, no gate. The step says plainly what is missing and makes
+      <span class="strong">later</span> the primary action, handing off to a dashboard card.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Voice</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:117px"></b><em class="ph-head" style="left:117px"></em></div><span class="ph-lbl">7 / 8 · optional</span></div>
+      </div>
+      <div class="stage">
+        <div class="split wide">
+          <div style="display:flex; flex-direction:column">
+            <h3 class="disp sm">Not yet — and that is fine.</h3>
+            <p class="fine" style="margin-top:16px">This step waits for you, never the other way round.</p>
+
+          </div>
+
+          <div style="display:flex; flex-direction:column; justify-content:center">
+            <p class="lead" style="max-width:46ch">
+              The model that tells voices apart is still arriving.
+            </p>
+
+            <div class="track" style="margin-top:26px; max-width:420px"><i class="sheen" style="width:61%"></i></div>
+            <p class="fine num" style="margin-top:12px">19 MB of 31 MB · about 20 seconds</p>
+
+            <div class="acts" style="margin-top:32px">
+              <button class="btn primary">Set this up later&nbsp; →</button>
+              <button class="btn ghost">Skip voice entirely</button>
+            </div>
+            <p class="fine" style="margin-top:16px">
+              A card will be waiting on your dashboard the moment it is ready.
+            </p>
+          </div>
+        </div>
+        <hr class="rule" style="margin-top:20px">
+        <p class="fine" style="max-width:none; margin-top:14px">
+          The voiceprint never leaves this device, and recognition labels many turns — not every turn.
+        </p>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 8a. FINALE — success ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">08 · a</span><h2>Finale — capture running, first frame, first words</h2></div>
+    <p class="note">
+      Proving: capture starts here, and the screen ends on evidence rather than a summary.
+      Two motions land only on this frame — the <span class="strong">heartbeat</span> and the
+      <span class="strong">develop</span>, where the first OCR hit resolves out of noise.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Mnema</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:135px"></b><em class="ph-head" style="left:135px"></em></div><span class="ph-lbl">8 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="split wide">
+          <div style="display:flex; flex-direction:column">
+            <span class="rec"><span class="dot"></span><span class="m" style="display:inline">Recording</span></span>
+            <h3 class="disp" style="font-size:42px; margin-top:16px">It has<br>already<br>started.</h3>
+            <p class="fine" style="margin-top:18px">
+              Capture began the moment you arrived here.
+            </p>
+
+            <div style="margin-top:auto">
+              <hr class="rule">
+              <p class="fine" style="margin-top:16px">
+                Preparing · Semantic Search <span class="num">41%</span> — turns itself on.
+              </p>
+              <div class="acts" style="margin-top:22px">
+                <button class="btn primary">Open Mnema&nbsp; →</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; justify-content:center; gap:18px">
+            <div>
+              <span class="m">Your first frame</span>
+              <div class="shot" style="margin-top:10px">
+                <div class="sbarr"></div>
+                <div class="content" style="flex-direction:row; gap:16px">
+                  <div style="width:20%; display:flex; flex-direction:column; gap:8px; border-right:1px solid var(--app-border); padding-right:14px">
+                    <div class="ln" style="width:80%"></div>
+                    <div class="ln" style="width:60%"></div>
+                    <div class="ln" style="width:72%"></div>
+                    <div class="ln" style="width:54%"></div>
+                    <div class="ln" style="width:66%; margin-top:14px"></div>
+                    <div class="ln" style="width:48%"></div>
+                  </div>
+                  <div style="flex:1; display:flex; flex-direction:column; gap:9px">
+                    <div class="ln" style="width:38%; height:8px"></div>
+                    <div class="ln hl" style="width:64%"></div>
+                    <div class="ln" style="width:88%"></div>
+                    <div class="ln" style="width:74%"></div>
+                    <div class="grid2"><div class="box"></div><div class="box"></div></div>
+                    <div class="ln" style="width:56%"></div>
+                    <div class="ln" style="width:82%"></div>
+                    <div class="ln" style="width:68%"></div>
+                    <div class="grid2" style="margin-top:auto">
+                      <div class="box" style="height:34px"></div><div class="box" style="height:34px"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <p class="fine num" style="margin-top:9px">Captured 10:42:07 · 2 seconds ago</p>
+            </div>
+
+            <div>
+              <span class="m">First words read off it · already searchable</span>
+              <div class="ocr" style="margin-top:10px">
+                <span class="hit dev once"><span class="gl"><i style="animation-delay:0ms">▞</i><b style="animation-delay:0ms">Q</b></span><span class="gl"><i style="animation-delay:42ms">▛</i><b style="animation-delay:42ms">u</b></span><span class="gl"><i style="animation-delay:84ms">▒</i><b style="animation-delay:84ms">a</b></span><span class="gl"><i style="animation-delay:126ms">&</i><b style="animation-delay:126ms">r</b></span><span class="gl"><i style="animation-delay:168ms">▛</i><b style="animation-delay:168ms">t</b></span><span class="gl"><i style="animation-delay:210ms">@</i><b style="animation-delay:210ms">e</b></span><span class="gl"><i style="animation-delay:252ms">@</i><b style="animation-delay:252ms">r</b></span><span class="gl"><i style="animation-delay:294ms">≡</i><b style="animation-delay:294ms">l</b></span><span class="gl"><i style="animation-delay:336ms">≡</i><b style="animation-delay:336ms">y</b></span><span class="gl"><b>&nbsp;</b></span><span class="gl"><i style="animation-delay:420ms">▛</i><b style="animation-delay:420ms">r</b></span><span class="gl"><i style="animation-delay:462ms">±</i><b style="animation-delay:462ms">e</b></span><span class="gl"><i style="animation-delay:504ms">▜</i><b style="animation-delay:504ms">v</b></span><span class="gl"><i style="animation-delay:546ms">@</i><b style="animation-delay:546ms">i</b></span><span class="gl"><i style="animation-delay:588ms">∷</i><b style="animation-delay:588ms">e</b></span><span class="gl"><i style="animation-delay:630ms">▛</i><b style="animation-delay:630ms">w</b></span><span class="gl"><b>&nbsp;</b></span><span class="gl"><i style="animation-delay:714ms">▒</i><b style="animation-delay:714ms">—</b></span><span class="gl"><b>&nbsp;</b></span><span class="gl"><i style="animation-delay:798ms">#</i><b style="animation-delay:798ms">d</b></span><span class="gl"><i style="animation-delay:840ms">%</i><b style="animation-delay:840ms">r</b></span><span class="gl"><i style="animation-delay:882ms">▛</i><b style="animation-delay:882ms">a</b></span><span class="gl"><i style="animation-delay:924ms">@</i><b style="animation-delay:924ms">f</b></span><span class="gl"><i style="animation-delay:966ms">≡</i><b style="animation-delay:966ms">t</b></span><span class="gl"><b>&nbsp;</b></span><span class="gl"><i style="animation-delay:1050ms">░</i><b style="animation-delay:1050ms">a</b></span><span class="gl"><i style="animation-delay:1092ms">▟</i><b style="animation-delay:1092ms">g</b></span><span class="gl"><i style="animation-delay:1134ms">▓</i><b style="animation-delay:1134ms">e</b></span><span class="gl"><i style="animation-delay:1176ms">▖</i><b style="animation-delay:1176ms">n</b></span><span class="gl"><i style="animation-delay:1218ms">▙</i><b style="animation-delay:1218ms">d</b></span><span class="gl"><i style="animation-delay:1260ms">▗</i><b style="animation-delay:1260ms">a</b></span></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div></div>
+  </section>
+
+  <!-- ================= 8b. FINALE — nothing granted ================= -->
+  <section class="frame">
+    <div class="cap"><span class="no">08 · b</span><h2>Finale — nothing granted, so nothing is recording</h2></div>
+    <p class="note">
+      Proving: the real path of someone who denied Screen Recording. No heartbeat here, because
+      there is nothing alive to beat — that absence is the point.
+    </p>
+    <div class="win-scroll"><div class="win app">
+      <div class="bar">
+        <div class="dots"><i></i><i></i><i></i></div>
+        <span class="name">Mnema</span>
+        <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:135px"></b><em class="ph-head" style="left:135px"></em></div><span class="ph-lbl">8 / 8</span></div>
+      </div>
+      <div class="stage">
+        <div class="split wide">
+          <div style="display:flex; flex-direction:column">
+            <span class="rec"><span class="ring-glyph" style="width:9px; height:9px"></span><span class="m" style="display:inline">Not recording</span></span>
+            <h3 class="disp" style="font-size:42px; margin-top:16px">Nothing is<br>being<br>recorded.</h3>
+            <p class="fine" style="margin-top:18px">
+              You declined Screen Recording, so Mnema is idle.
+            </p>
+
+            <div style="margin-top:auto">
+              <hr class="rule">
+              <p class="fine" style="margin-top:16px">
+                Grant it later and capture starts on its own.
+              </p>
+              <div class="acts" style="margin-top:22px">
+                <button class="btn primary">Open System&nbsp;Settings&nbsp; ›</button>
+                <button class="btn">Re-check</button>
+                <button class="btn">Open Mnema anyway</button>
+              </div>
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; justify-content:center; gap:18px">
+            <div>
+              <span class="m">What you would be seeing</span>
+              <div class="shot empty" style="margin-top:10px">
+                <div class="body" style="color:var(--app-text-muted)">No frame has been captured.</div>
+              </div>
+            </div>
+
+            <p class="fine" style="max-width:none">
+              Privacy &amp; Security → Screen Recording → Mnema, then relaunch once.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div></div>
+
+    <div class="tiles-cap">The other two Finale states</div>
+    <div class="tiles app" style="grid-template-columns:repeat(2,minmax(0,1fr)); max-width:800px">
+      <div class="tile info">
+        <span class="tl"><span class="pip"></span>Waiting</span>
+        <div class="hd">Capture started · no frame yet</div>
+        <div class="shot empty" style="aspect-ratio:16/7; margin:2px 0">
+          <span class="fine">first frame due within 2 seconds</span>
+        </div>
+        <p>Two seconds is the capture interval, so this state is real and brief. It shows the interval rather than a spinner, because a spinner would not tell you how long.</p>
+      </div>
+      <div class="tile bad">
+        <span class="tl"><span class="pip"></span>Failed to start · real reason</span>
+        <div class="hd">Capture could not start</div>
+        <p style="color:var(--app-danger)">macOS refused the capture stream: Screen Recording was granted during setup and Mnema has not been relaunched since.</p>
+        <p>The reason is named, not hidden behind “something went wrong”. One button fixes exactly this cause.</p>
+        <div class="foot"><button class="btn sm">Relaunch Mnema</button><button class="btn sm">Open Mnema anyway</button></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MOTION LANGUAGE ================= -->
+  <section class="frame" style="margin-top:110px; border-top:1px solid var(--page-rule); padding-top:52px">
+    <div class="eyebrow">The signature — and where it is not allowed</div>
+    <h2 style="font-size:clamp(24px,3.5vw,34px); letter-spacing:-.02em; margin:10px 0 0; font-weight:400">Bookend motion</h2>
+    <p class="deck" style="margin-top:16px">
+      Motion lives on <span style="color:var(--page-ink)">two screens only: Welcome and the Finale</span>.
+      Those are the bookends — the two frames that are pure product statement rather than
+      decision-making, where nobody is reading a number or weighing an option. The six screens in
+      between are working screens, and movement on a working screen is friction, so they are still:
+      no scrub between them, no travelling playhead, nothing ambient. What they keep is
+      <span style="color:var(--page-ink)">functional feedback only</span> — a download bar that is
+      genuinely reporting bytes, a level meter that is genuinely reporting sound, and focus states.
+      Three motions survive, all of them below, all of them things the product actually does.
+    </p>
+
+    <div class="mo-grid">
+
+      <div class="mo" style="grid-column:1 / -1">
+        <div class="mo-head"><span class="mo-n">01</span><h3>The Rewind — Welcome, and the whole argument</h3></div>
+        <p class="mo-why" style="max-width:92ch">
+          A filmstrip of captured screens travelling <span style="color:var(--page-ink)">backwards</span>
+          under a fixed playhead: a slow creep for six seconds, a hard snap back six frames, then a
+          settle. Two ghost strips lag the live one by 100 and 200&nbsp;ms, so the snap smears into a
+          trail of frames instead of cutting — that is what dragging a playhead through video looks
+          like, and it is the only gesture this product has. The timecode falls with it, two seconds
+          per frame, which is the real default capture rate rather than a decorative number. When the
+          strip settles, the frame sitting under the playhead gives up the words it was carrying —
+          the promise (rewind) and the payoff (it read them) in one ten-second sentence, before a
+          single permission has been asked for. Everything is keyed to the same 10&nbsp;s cycle, so
+          it reads as one gesture and not four loops sharing a screen. CSS only, no script.
+        </p>
+        <div class="mo-stage app" style="height:250px; padding:0; justify-content:flex-end">
+          <div class="rw" style="margin:0">
+            <div class="rw-band" style="height:132px" aria-hidden="true">
+              <div class="rw-strip e2"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+              <div class="rw-strip e1"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+              <div class="rw-strip"><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:71%"></i><i class="ln" style="width:60%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:73%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:66%"></i><i class="ln" style="width:74%"></i><i class="ln" style="width:90%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:46%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:38%"></i><i class="ln" style="width:51%"></i><i class="ln" style="width:46%"></i></div></div><div class="fr hit"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:90%"></i><i class="ln hl" style="width:60%"></i><i class="ln" style="width:86%"></i><i class="ln" style="width:39%"></i><i class="ln" style="width:78%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:55%"></i><i class="ln" style="width:76%"></i><i class="ln" style="width:59%"></i><i class="ln" style="width:81%"></i><i class="ln" style="width:44%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:66%"></i><i class="ln" style="width:55%"></i><i class="ln" style="width:43%"></i><i class="ln" style="width:53%"></i><i class="ln" style="width:36%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:48%"></i><i class="ln" style="width:65%"></i><i class="ln" style="width:77%"></i><i class="ln" style="width:48%"></i><i class="ln" style="width:85%"></i></div></div><div class="fr"><span class="fbar"></span><div class="fbody"><i class="ln" style="width:41%"></i><i class="ln" style="width:34%"></i><i class="ln" style="width:37%"></i><i class="ln" style="width:90%"></i><i class="ln" style="width:79%"></i></div></div></div>
+              <span class="rw-head"></span>
+            </div>
+            <div class="rw-rail" style="margin:0 22px">
+              <span class="rw-tag">◂◂ rewinding</span>
+              <div class="rw-tc" aria-hidden="true">
+                <div class="rw-reel"><span>10:42:07</span><span>10:42:05</span><span>10:41:59</span><span>10:41:57</span></div>
+              </div>
+              <span class="rw-read">read off that frame — <b>“Quarterly review — draft agenda”</b></span>
+            </div>
+          </div>
+          <span class="mo-note" style="top:14px; bottom:auto">running · 10s loop</span>
+        </div>
+      </div>
+
+      <div class="mo">
+        <div class="mo-head"><span class="mo-n">02</span><h3>Text that develops — the Finale</h3></div>
+        <p class="mo-why">
+          Garbled glyphs settle into legible characters, left to right. This is not a typewriter
+          effect — it is a picture of what OCR is doing to that frame in that second. Used exactly
+          once in the whole flow, on the Finale's first hit, where it is a description of the work
+          rather than a flourish. Looping here so you can watch it; on the Finale it resolves once
+          and stays resolved.
+        </p>
+        <div class="mo-stage app">
+          <span class="m">First words read off your screen</span>
+          <div class="dev loop" style="font-size:22px; color:var(--app-accent); margin-top:16px; letter-spacing:-.01em"><span class="gl"><i style="animation-delay:0ms">▚</i><b style="animation-delay:0ms">d</b></span><span class="gl"><i style="animation-delay:42ms">▞</i><b style="animation-delay:42ms">r</b></span><span class="gl"><i style="animation-delay:84ms">▒</i><b style="animation-delay:84ms">a</b></span><span class="gl"><i style="animation-delay:126ms">▙</i><b style="animation-delay:126ms">f</b></span><span class="gl"><i style="animation-delay:168ms">▛</i><b style="animation-delay:168ms">t</b></span><span class="gl"><b>&nbsp;</b></span><span class="gl"><i style="animation-delay:252ms">∷</i><b style="animation-delay:252ms">a</b></span><span class="gl"><i style="animation-delay:294ms">░</i><b style="animation-delay:294ms">g</b></span><span class="gl"><i style="animation-delay:336ms">≡</i><b style="animation-delay:336ms">e</b></span><span class="gl"><i style="animation-delay:378ms">#</i><b style="animation-delay:378ms">n</b></span><span class="gl"><i style="animation-delay:420ms">▓</i><b style="animation-delay:420ms">d</b></span><span class="gl"><i style="animation-delay:462ms">%</i><b style="animation-delay:462ms">a</b></span></div>
+          <p class="fine" style="margin-top:14px">then searchable, forever</p>
+          <span class="mo-note">running · 7s loop</span>
+        </div>
+      </div>
+
+      <div class="mo">
+        <div class="mo-head"><span class="mo-n">—</span><h3>And the six screens in between</h3></div>
+        <p class="mo-why">
+          Nothing decorative. The playhead is a static marker; there is no scrub arriving, no pulse,
+          no drift. Two things move, and both of them are reporting a fact rather than performing
+          one: the download bar, which is showing bytes actually landing, and the level meter, which
+          is the only proof macOS will ever give that system audio was granted. If either stopped
+          moving, that would mean something — which is exactly the test for whether motion belongs
+          on a working screen.
+        </p>
+        <div class="mo-stage app" style="gap:20px">
+          <div>
+            <div class="fine" style="margin-bottom:8px">Download bar · reporting bytes</div>
+            <div class="track" style="max-width:280px"><i class="sheen" style="width:62%"></i></div>
+            <div class="fine num" style="margin-top:7px">92 MB of 148 MB</div>
+          </div>
+          <div style="display:flex; align-items:flex-end; gap:16px; margin-top:6px">
+            <div class="meter live" style="height:30px" aria-hidden="true">
+              <i class="lit" style="height:12px"></i><i class="lit" style="height:22px"></i><i class="lit" style="height:15px"></i>
+              <i class="lit" style="height:26px"></i><i class="lit" style="height:19px"></i><i class="lit" style="height:24px"></i>
+              <i class="lit" style="height:14px"></i><i class="lit" style="height:21px"></i><i class="lit" style="height:17px"></i>
+              <i class="lit" style="height:25px"></i><i class="lit" style="height:13px"></i><i class="lit" style="height:20px"></i>
+            </div>
+            <span class="fine">Level meter · reporting sound</span>
+          </div>
+          <span class="mo-note">functional, not decorative</span>
+        </div>
+      </div>
+
+      <div class="mo" style="grid-column:1 / -1">
+        <div class="mo-head"><span class="mo-n">03</span><h3>One heartbeat — the Finale</h3></div>
+        <p class="mo-why">
+          A slow accent pulse — a recording indicator — appears the instant capture starts on the
+          Finale and appears <span style="color:var(--page-ink)">nowhere else in the entire flow</span>.
+          Because it is the only pulsing thing the user has seen in eight screens, it does not read as
+          decoration; it reads as the app coming alive. On the Finale state where nothing was granted,
+          it is deliberately absent and replaced by a hollow ring, so the same glyph position tells
+          you truthfully whether anything is running.
+        </p>
+        <div class="mo-stage app" style="height:150px; flex-direction:row; align-items:center; gap:64px">
+          <div>
+            <span class="rec"><span class="dot"></span><span class="m" style="display:inline">Recording</span></span>
+            <p class="fine" style="margin-top:12px">Finale, capture running</p>
+          </div>
+          <div style="width:1px; align-self:stretch; background:var(--app-border)"></div>
+          <div>
+            <span class="rec"><span class="ring-glyph"></span><span class="m" style="display:inline">Not recording</span></span>
+            <p class="fine" style="margin-top:12px">Finale, nothing granted</p>
+          </div>
+          <div style="width:1px; align-self:stretch; background:var(--app-border)"></div>
+          <div>
+            <p class="fine" style="max-width:32ch">Every other screen in the flow: no pulse, no spinner, no breathing anything.</p>
+          </div>
+          <span class="mo-note">running · 2.8s loop</span>
+        </div>
+      </div>
+
+    </div>
+
+    <p class="note" style="margin-top:30px; max-width:88ch">
+      <span class="strong" style="color:var(--page-ink)">Reduced motion.</span>
+      Under <code>prefers-reduced-motion: reduce</code>, none of this is simply switched off.
+      The Rewind holds at the moment after the snap: the strip parked, the ghost trails not rendered,
+      the timecode showing the frame it landed on and the read-out already visible — so a user who
+      never sees it move still gets the whole sentence, just told rather than performed.
+      The develop shows resolved text from the first paint with no garble layer rendered at all;
+      the heartbeat becomes a steady accent dot with a static ring; the download bar keeps its
+      fill and drops its sheen. Every meaning survives, only the movement goes.
+    </p>
+  </section>
+
+
+  <!-- ================= ALTERNATES ================= -->
+  <section class="alts">
+    <div class="eyebrow">Where my own judgement goes</div>
+    <h2>Alternates</h2>
+    <p class="deck" style="margin-top:16px">
+      Five proposals, each rendered. Three things were tried and cut on the way here: the projected-disk
+      curve, the proportional cost stack, and the measured/estimated chip pair — all of them
+      information <em>about</em> the numbers rather than the numbers, and all of them density.
+      <br><br>
+      <span style="color:var(--page-ink)">The weakest frame above is now 03, Capture&nbsp;&amp;&nbsp;Storage.</span>
+      It is down to four lines, but it still carries four unrelated decisions and both hard gates,
+      and it is the one screen a user cannot revisit meaningfully — by the time they understand what
+      the rate means they have already recorded at it. Alternate 05 inverts it. Frame 05,
+      Change&nbsp;settings, is a close second, and Alternate 02 attacks that one.
+    </p>
+
+    <!-- ALT 1 -->
+    <div class="alt">
+      <h3><span>ALT 01</span>Move both hard gates onto Welcome as a pre-flight, so no decision screen can ever refuse you</h3>
+      <p>
+        Neither hard gate is about a choice the user made — “is this folder writable” and “is there
+        729 MB free” are facts about the machine, and the machine knows both of them before the user
+        has typed anything. Checking them on Welcome means the two blockers are resolved before a
+        minute of work is invested, rather than after, and Capture&nbsp;&amp;&nbsp;Storage becomes
+        gate-free. The flow then has a property that is very easy to explain to a user and to a
+        founder: <span style="color:var(--page-ink)">no screen where you make a decision can ever refuse
+        to let you leave it.</span> The cost is that Welcome stops being purely a bookend, and the
+        pre-flight has to stay quiet enough not to dilute the promise.
+      </p>
+      <div class="win-scroll"><div class="win app mini">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="name">Mnema</span>
+          <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:9px"></b><em class="ph-head" style="left:9px"></em></div><span class="ph-lbl">1 / 8</span></div>
+        </div>
+        <div class="stage" style="padding:26px 30px 22px">
+          <div style="flex:1; display:flex; flex-direction:column; justify-content:center">
+            <span class="m">Mnema</span>
+            <h3 class="disp" style="font-size:34px; margin-top:10px">Your memory,<br>on rewind.</h3>
+            <p class="fine" style="margin-top:14px; max-width:48ch">
+              About a minute. Nothing is recorded until you finish.
+            </p>
+          </div>
+          <hr class="rule">
+          <div style="display:flex; align-items:center; gap:22px; margin-top:14px">
+            <div style="display:flex; flex-direction:column; gap:7px; font-size:var(--text-sm); white-space:nowrap">
+              <div style="display:flex; gap:9px"><span class="tk">✓</span><span class="faint">~/Mnema exists and is writable</span></div>
+              <div style="display:flex; gap:9px"><span class="tk">✓</span><span class="faint">482 GB free · 729 MB needed</span></div>
+            </div>
+            <span class="fine" style="max-width:26ch">Both checks done here. Nothing after this can stop you.</span>
+            <button class="btn primary" style="margin-left:auto; padding:8px 14px">Begin setup →</button>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ALT 2 -->
+    <div class="alt">
+      <h3><span>ALT 02</span>Delete the Change settings screen — make it a mode of the same document</h3>
+      <p>
+        Your&nbsp;settings and Change&nbsp;settings show the same eight things twice, in two different
+        component vocabularies, on two screens the user has to navigate between. Make it one document
+        with a read mode and an edit mode: the rows keep their positions, the controls appear in place
+        of the values, and nothing else moves — this is a working screen, so the change of mode is
+        instant rather than performed. It removes a screen and removes the “does going back
+        re-resolve the totals?” question entirely, because there is no back.
+        The tension: the brief says Review must not be a form.
+        This does not make it one — no row expands, nothing discloses — but the whole document does
+        change state, and that is a decision worth taking deliberately rather than by accident.
+      </p>
+      <div class="win-scroll"><div class="win app mini" style="height:380px">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="name">Your settings</span>
+          <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:63px"></b><em class="ph-head" style="left:63px"></em></div><span class="ph-lbl">4 / 8</span></div>
+        </div>
+        <div class="stage" style="padding:22px 28px 20px">
+          <div style="display:flex; align-items:center; justify-content:space-between">
+            <span class="m">Your settings</span>
+            <div class="seg sm"><b>Read</b><b class="on">Change</b></div>
+          </div>
+          <div style="margin-top:16px; display:flex; flex-direction:column">
+            <div class="row" style="grid-template-columns:16px 150px 1fr auto; padding:7px 0">
+              <span class="tk">✓</span><span class="nm" style="font-size:var(--text-sm)">Screen capture</span>
+              <span class="val" style="font-size:var(--text-sm)"><span class="num">~400 MB</span>/day</span>
+              <div class="lad" style="width:150px; height:22px">
+                <span class="lad-track" style="top:10px"></span>
+                <span class="lad-fill" style="width:30%; top:10px"></span>
+                <span class="lad-stop" style="left:0; top:6px; height:9px"></span>
+                <span class="lad-stop" style="left:30%; top:6px; height:9px"></span>
+                <span class="lad-stop" style="left:60%; top:6px; height:9px"></span>
+                <span class="lad-stop" style="left:100%; top:6px; height:9px"></span>
+                <span class="lad-knob" style="left:30%; top:4px; height:14px; width:9px; margin-left:-4.5px; box-shadow:none"></span>
+              </div>
+            </div>
+            <div class="row" style="grid-template-columns:16px 150px 1fr auto; padding:7px 0">
+              <span class="tk">✓</span><span class="nm" style="font-size:var(--text-sm)">Transcription</span>
+              <span class="val" style="font-size:var(--text-sm)">148 MB</span>
+              <div class="field" style="width:150px; padding:4px 9px; font-size:var(--text-xs)"><span>Whisper base</span><span class="caret">▾</span></div>
+            </div>
+            <div class="row" style="grid-template-columns:16px 150px 1fr auto; padding:7px 0">
+              <span class="tk">✓</span><span class="nm" style="font-size:var(--text-sm)">Who's speaking</span>
+              <span class="val" style="font-size:var(--text-sm)">31 MB</span>
+              <span class="sw on"></span>
+            </div>
+            <div class="row" style="grid-template-columns:16px 150px 1fr auto; padding:7px 0">
+              <span class="tk">✓</span><span class="nm" style="font-size:var(--text-sm)">Semantic Search</span>
+              <span class="val" style="font-size:var(--text-sm)">550 MB</span>
+              <span class="sw on"></span>
+            </div>
+            <div class="row off" style="grid-template-columns:16px 150px 1fr auto; padding:7px 0; border-bottom:0">
+              <span class="faint">○</span><span class="nm" style="font-size:var(--text-sm)">AI features</span>
+              <span class="val" style="font-size:var(--text-sm)">needs a provider</span>
+              <div class="seg sm"><b class="on">Ollama</b><b>Anthropic</b></div>
+            </div>
+          </div>
+          <hr class="rule" style="margin-top:12px">
+          <div class="acts" style="margin-top:auto; justify-content:space-between">
+            <span class="fine num">729 MB · about 2 min · updates as you change things</span>
+            <button class="btn primary" style="padding:7px 14px">Start →</button>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ALT 3 -->
+    <div class="alt">
+      <h3><span>ALT 03</span>Setup is not a step. It is a strip that follows you.</h3>
+      <p>
+        The Setup screen's entire design problem is that it must not block — every requirement on it is
+        a requirement that it get out of the way. A screen whose job is to be leavable probably should
+        not be a screen. Press Start and land directly on Voice, with the downloads pinned as a strip
+        along the bottom that persists into the Finale and then into the app. The user never has to
+        decide to leave, because they were never stopped; the byte-weighted aggregate, the per-item
+        errors and the cancel-turns-the-feature-off rule all survive intact inside the strip, one
+        click away. Eight steps become seven, and the step that existed to be skipped is gone.
+      </p>
+      <div class="win-scroll"><div class="win app mini" style="height:380px">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="name">Voice</span>
+          <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:99px"></b><em class="ph-head" style="left:99px"></em></div><span class="ph-lbl">6 / 7 · optional</span></div>
+        </div>
+        <div class="stage" style="padding:24px 30px 0">
+          <span class="m">Voice · optional</span>
+          <h3 class="disp" style="font-size:22px; margin-top:10px">Fifteen seconds so Mnema can use your name.</h3>
+          <p class="quote" style="font-size:15px; margin-top:14px; max-width:44ch">
+            “I keep my work on this machine, and I would like Mnema to know my voice when I speak.”
+          </p>
+          <div class="acts" style="margin-top:18px">
+            <button class="btn primary" style="padding:8px 16px">Record</button>
+            <button class="btn ghost">Skip for now</button>
+          </div>
+          <div style="margin-top:auto; margin-left:-30px; margin-right:-30px; border-top:1px solid var(--app-border); background:var(--app-surface); padding:11px 30px; display:flex; align-items:center; gap:16px">
+            <div style="flex:1">
+              <div style="display:flex; justify-content:space-between; font-size:var(--text-sm)">
+                <span class="faint">Downloading Whisper base · 1 of 3 failed</span>
+                <span class="num faint">123 MB of 729 MB</span>
+              </div>
+              <div class="track" style="margin-top:7px"><i class="sheen" style="width:17%"></i></div>
+            </div>
+            <button class="btn sm">Details ▸</button>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ALT 4 -->
+    <div class="alt">
+      <h3><span>ALT 04</span>End on the gesture, not on a still — the Finale hands you the scrubber</h3>
+      <p>
+        The Finale currently proves that Mnema <em>captured</em> something. It could instead prove the
+        thing people actually bought, which is that you can go back — by handing the user a live
+        playhead over the ninety seconds they have just accumulated, with the OCR hits pinned under
+        the frames they came from. The playhead they have been watching in the title bar for eight
+        screens becomes a thing they can drag, on their own data, before they have opened the app once.
+        It costs no new machinery: those frames exist by the time this screen renders, and the
+        component is the product's main UI.
+      </p>
+      <div class="win-scroll"><div class="win app mini" style="height:400px">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="name">Mnema</span>
+          <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:135px"></b><em class="ph-head" style="left:135px"></em></div><span class="ph-lbl">8 / 8</span></div>
+        </div>
+        <div class="stage" style="padding:24px 30px 22px">
+          <span class="rec"><span class="dot"></span><span class="m" style="display:inline">Recording · 90 seconds of you already</span></span>
+          <h3 class="disp" style="font-size:22px; margin-top:12px">Drag it. That is the whole product.</h3>
+
+          <div style="display:grid; grid-template-columns:repeat(5,1fr); gap:7px; margin-top:16px">
+            <div class="shot" style="aspect-ratio:16/10"><div class="sbarr" style="height:8px"></div><div class="content" style="padding:6px 7px; gap:4px"><div class="ln" style="width:60%;height:3px"></div><div class="ln" style="width:80%;height:3px"></div><div class="ln" style="width:45%;height:3px"></div></div></div>
+            <div class="shot" style="aspect-ratio:16/10"><div class="sbarr" style="height:8px"></div><div class="content" style="padding:6px 7px; gap:4px"><div class="ln" style="width:70%;height:3px"></div><div class="ln" style="width:50%;height:3px"></div><div class="ln" style="width:66%;height:3px"></div></div></div>
+            <div class="shot" style="aspect-ratio:16/10; border-color:var(--app-accent-border)"><div class="sbarr" style="height:8px"></div><div class="content" style="padding:6px 7px; gap:4px"><div class="ln hl" style="width:76%;height:3px"></div><div class="ln" style="width:52%;height:3px"></div><div class="ln" style="width:64%;height:3px"></div></div></div>
+            <div class="shot" style="aspect-ratio:16/10"><div class="sbarr" style="height:8px"></div><div class="content" style="padding:6px 7px; gap:4px"><div class="ln" style="width:55%;height:3px"></div><div class="ln" style="width:72%;height:3px"></div><div class="ln" style="width:40%;height:3px"></div></div></div>
+            <div class="shot" style="aspect-ratio:16/10"><div class="sbarr" style="height:8px"></div><div class="content" style="padding:6px 7px; gap:4px"><div class="ln" style="width:64%;height:3px"></div><div class="ln" style="width:46%;height:3px"></div><div class="ln" style="width:70%;height:3px"></div></div></div>
+          </div>
+
+          <div style="position:relative; margin-top:12px; height:38px">
+            <div style="position:absolute; left:0; right:0; top:9px; height:1px; background:var(--app-border-hover)"></div>
+            <div style="position:absolute; left:0; top:9px; width:52%; height:1px; background:var(--app-text-muted)"></div>
+            <em style="position:absolute; left:52%; top:0; width:2px; height:20px; background:var(--app-accent); box-shadow:0 0 8px 1px var(--app-accent-glow)"></em>
+            <span style="position:absolute; left:0; top:24px; font-size:var(--text-xs)" class="faint num">10:41:00</span>
+            <span style="position:absolute; right:0; top:24px; font-size:var(--text-xs)" class="faint num">10:42:30</span>
+          </div>
+
+          <p class="fine" style="margin-top:10px">
+            Read off 10:41:47 — <span style="color:var(--app-accent)">“Quarterly review — draft agenda”</span>
+          </p>
+
+          <div class="acts" style="margin-top:auto; justify-content:space-between">
+            <span class="fine">Preparing · nomic-embed-text-v1.5 41% — search by meaning turns on by itself.</span>
+            <button class="btn primary" style="padding:7px 14px">Open Mnema →</button>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+    <!-- ALT 5 -->
+    <div class="alt">
+      <h3><span>ALT 05</span>Turn the rate slider around: let people choose the disk, and derive the rate from it</h3>
+      <p>
+        Nobody wants a snapshot interval. They want to know what this will cost them, and the interval
+        is only how the app achieves it — so the slider on Capture&nbsp;&amp;&nbsp;Storage is currently
+        pointed at the wrong quantity. Label it in megabytes a day, and show the interval as the
+        derived readout underneath. It fixes the honesty problem at the same time: an estimate is a
+        much more comfortable thing to <em>set</em> than to be quoted, and the one measured point on
+        the ladder can be marked on the scale where it will actually be read. The risk is that it
+        promises a budget the app cannot enforce — a busy day is a busy day — so the number has to
+        stay written as “about”, and a hard cap would be a different feature.
+      </p>
+      <div class="win-scroll"><div class="win app mini" style="height:320px">
+        <div class="bar">
+          <div class="dots"><i></i><i></i><i></i></div>
+          <span class="name">Capture &amp; Storage</span>
+          <div class="ph"><div class="ph-track"><i class="ph-tick" style="left:9px"></i><i class="ph-tick" style="left:27px"></i><i class="ph-tick" style="left:45px"></i><i class="ph-tick" style="left:63px"></i><i class="ph-tick" style="left:81px"></i><i class="ph-tick" style="left:99px"></i><i class="ph-tick" style="left:117px"></i><i class="ph-tick" style="left:135px"></i><b class="ph-fill" style="width:45px"></b><em class="ph-head" style="left:45px"></em></div><span class="ph-lbl">3 / 8</span></div>
+        </div>
+        <div class="stage" style="padding:26px 30px 22px">
+          <span class="m">How much disk this may use</span>
+          <div style="font-size:34px; letter-spacing:-.03em; color:var(--app-text-strong); margin-top:10px" class="num">
+            ~400 MB<span class="fine" style="font-size:var(--text-md)">&nbsp; a day</span>
+          </div>
+          <div class="lad" style="width:100%; margin-top:20px">
+            <span class="lad-track"></span>
+            <span class="lad-fill" style="width:30%"></span>
+            <span class="lad-stop" style="left:0"></span>
+            <span class="lad-stop" style="left:10%"></span>
+            <span class="lad-stop" style="left:20%"></span>
+            <span class="lad-stop" style="left:30%"></span>
+            <span class="lad-stop" style="left:40%"></span>
+            <span class="lad-stop" style="left:50%"></span>
+            <span class="lad-stop" style="left:60%"></span>
+            <span class="lad-stop" style="left:70%"></span>
+            <span class="lad-stop" style="left:80%"></span>
+            <span class="lad-stop" style="left:90%"></span>
+            <span class="lad-stop" style="left:100%"></span>
+            <span class="lad-knob" style="left:30%"></span>
+                        <div class="lad-ends"><span>8 GB</span><span>13 MB</span></div>
+          </div>
+          <p class="fine" style="margin-top:34px">
+            That works out at <span class="strong">one snapshot every 2 seconds</span>.
+            Keeping everything, this reaches about <span class="strong num">12 GB</span> a month
+            and does not level off.
+          </p>
+          <div class="acts" style="margin-top:auto; justify-content:space-between">
+            <span class="fine">Assumes pause-on-inactivity stays on.</span>
+            <button class="btn primary" style="padding:7px 14px">Your settings →</button>
+          </div>
+        </div>
+      </div></div>
+    </div>
+
+  </section>
+
+</div>
+</div>

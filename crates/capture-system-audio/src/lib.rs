@@ -8,6 +8,8 @@ mod activity;
 mod exclude;
 mod permission;
 #[cfg(target_os = "macos")]
+mod probe;
+#[cfg(target_os = "macos")]
 mod process;
 #[cfg(target_os = "macos")]
 mod rebuild;
@@ -31,6 +33,8 @@ pub use exclude::{compute_exclude_list, AudioProcess, ExcludeList};
 pub use exclude::{read_audio_processes, SystemAudioExcludeWatcher};
 #[cfg(target_os = "macos")]
 pub use cidre::cat::{AudioBuf, AudioStreamBasicDesc, AudioTimeStamp};
+#[cfg(target_os = "macos")]
+pub use probe::{start_system_audio_level_probe, take_system_audio_probe_level};
 #[cfg(target_os = "macos")]
 pub use process::own_process_object_id;
 #[cfg(target_os = "macos")]

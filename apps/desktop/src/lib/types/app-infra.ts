@@ -374,6 +374,8 @@ export interface SpeakerTurnDto {
 	providerClusterId: string;
 	speakerLabel: string;
 	personId: number | null;
+	/** `personId` was decided by owner-only auto-linking, not by a human. */
+	personLinkAuto: boolean;
 	suggestedPersonId: number | null;
 	recognitionConfidence: SpeakerRecognitionConfidence | null;
 	recognitionScore: number | null;
@@ -388,6 +390,7 @@ export interface PersonProfileDto {
 	displayName: string;
 	notes: string | null;
 	embeddingCount: number;
+	isAccountOwner: boolean;
 	createdAt: string;
 	updatedAt: string;
 }
@@ -400,6 +403,8 @@ export interface SpeakerClusterDto {
 	providerClusterId: string;
 	speakerLabel: string;
 	personId: number | null;
+	/** `personId` was decided by owner-only auto-linking, not by a human. */
+	personLinkAuto: boolean;
 	suggestedPersonId: number | null;
 	recognitionConfidence: SpeakerRecognitionConfidence | null;
 	recognitionScore: number | null;

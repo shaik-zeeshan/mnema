@@ -4091,6 +4091,123 @@ fn broker_speakers_reports_the_assigned_and_recognized_split_per_handle() {
     });
 }
 
+/// `assignedTurns` is published to agents as "Turns the USER assigned to this
+/// person. Confirmed identity." Owner-only auto-linking writes `person_id` with
+/// nobody in the loop, so counting an auto-linked turn as assigned hands the
+/// agent a confirmation the user was never asked for — the guesswork split it
+/// weighs before filtering silently reads as settled.
+#[test]
+fn broker_speakers_counts_an_auto_linked_owner_turn_as_recognized() {
+    run_async_test(async {
+        let config_dir = temp_config_dir("speakers-auto-link");
+        let save_dir = temp_save_dir("speakers-auto-link");
+        let infra = AppInfra::initialize(&save_dir)
+            .await
+            .expect("infra should initialize");
+        let grant = create_grant(
+            &config_dir,
+            "Local agent",
+            1,
+            BrokerGrantScope::RecentDays { days: 1 },
+        )
+        .expect("grant should create");
+        let owner = infra
+            .upsert_account_owner_voiceprint(
+                "You",
+                "mock_speaker",
+                "voice-model",
+                &speaker_embedding_bytes(&[1.0, 0.0]),
+            )
+            .await
+            .expect("owner voiceprint should store");
+        let now = now_unix_ms();
+        let segment = infra
+            .upsert_audio_segment(&NewAudioSegment::new(
+                AudioSegmentSourceKind::Microphone,
+                "auto-link-session",
+                1,
+                save_dir
+                    .join("auto-link-session.m4a")
+                    .display()
+                    .to_string(),
+                format_unix_ms(now.saturating_sub(60 * 60 * 1000)),
+                format_unix_ms(now),
+            ))
+            .await
+            .expect("segment should insert");
+        // The real auto-link path: a job frozen with "label my voice
+        // automatically" on, completing with a High owner suggestion.
+        let payload = crate::SpeakerAnalysisJobPayload {
+            provider: "mock_speaker".to_string(),
+            model_id: Some("voice-model".to_string()),
+            recognize_people: true,
+            auto_label_owner: true,
+            options: serde_json::Map::new(),
+        };
+        let job = infra
+            .enqueue_processing_job(
+                &ProcessingJobDraft::for_audio_segment_speaker_analysis(segment.id)
+                    .with_payload_json(
+                        serde_json::to_string(&payload).expect("payload should encode"),
+                    ),
+            )
+            .await
+            .expect("speaker job should enqueue");
+        infra
+            .claim_queued_processing_job(job.id)
+            .await
+            .expect("speaker job should claim")
+            .expect("claimed speaker job should exist");
+        infra
+            .complete_processing_job(
+                job.id,
+                &ProcessingResultDraft::new().with_structured_payload_json(
+                    serde_json::to_string(&speaker_analysis_output(
+                        "auto-link-session",
+                        segment.id,
+                        vec![recognized_cluster("speaker_00", &[1.0, 0.0], owner.id, "You")],
+                        vec![speaker_turn("speaker_00", 0, 1_000)],
+                    ))
+                    .expect("output should encode"),
+                ),
+            )
+            .await
+            .expect("speaker output should complete");
+
+        let cluster = infra
+            .list_speaker_clusters_for_session("auto-link-session")
+            .await
+            .expect("clusters should list")
+            .into_iter()
+            .next()
+            .expect("cluster should exist");
+        assert_eq!(cluster.person_id, Some(owner.id));
+        assert!(
+            cluster.person_link_auto,
+            "the auto-linker must have decided this link for the test to mean anything"
+        );
+
+        let roster = discover_speakers(&config_dir, &infra, &grant, None, None).await;
+
+        let split: Vec<_> = roster
+            .speakers
+            .iter()
+            .map(|speaker| {
+                (
+                    speaker.name.as_deref(),
+                    speaker.assigned_turns,
+                    speaker.recognized_turns,
+                )
+            })
+            .collect();
+        assert_eq!(
+            split,
+            vec![(Some("You"), 0, 1)],
+            "nobody confirmed this link, so no turn of it is assigned"
+        );
+    });
+}
+
 /// The dispatch, audit-name, and result-count arms in one pass — and the audit
 /// row must show only THAT a speaker lookup ran. `record_audit_event` stores no
 /// request parameters on purpose: the trail says a lookup happened, never who it

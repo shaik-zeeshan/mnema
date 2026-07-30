@@ -95,9 +95,11 @@ fn broker_speakers_query<'a>(
                 CASE WHEN person.id IS NULL THEN turn.cluster_id END AS cluster_id, \
                 SUM(turn.end_ms - turn.start_ms) AS speaking_ms, \
                 SUM(CASE WHEN person.id IS NULL THEN 0 \
-                         WHEN cluster.person_id IS NULL THEN 0 ELSE 1 END) AS assigned_turns, \
+                         WHEN cluster.person_id IS NULL THEN 0 \
+                         WHEN cluster.person_link_auto = 1 THEN 0 ELSE 1 END) AS assigned_turns, \
                 SUM(CASE WHEN person.id IS NULL THEN 0 \
-                         WHEN cluster.person_id IS NULL THEN 1 ELSE 0 END) AS recognized_turns \
+                         WHEN cluster.person_id IS NULL THEN 1 \
+                         WHEN cluster.person_link_auto = 1 THEN 1 ELSE 0 END) AS recognized_turns \
          FROM ",
     );
     // Joined only when there is a range to apply. All Retained History has none,
@@ -419,12 +421,24 @@ pub(super) fn broker_collapse_speakers(
             .suggested_person_id
             .and_then(|id| names.get(&id).map(|name| (id, name)));
         let (key, speaker) = match (assigned, recognized) {
-            (Some((id, name)), _) => (
+            (Some((id, name)), _) if !turn.person_link_auto => (
                 SpeakerKey::Person(id),
                 BrokerSpeaker {
                     name: Some(name.clone()),
                     attribution: "assigned".to_string(),
                     confidence: None,
+                    handle: person_handle(id, grant_id, secret),
+                },
+            ),
+            // Owner-only auto-linking put this person here, not the user.
+            // `assigned` means "the user said so" to every agent reading this
+            // wire, so an unconfirmed link publishes as the voice match it is.
+            (Some((id, name)), _) => (
+                SpeakerKey::Person(id),
+                BrokerSpeaker {
+                    name: Some(name.clone()),
+                    attribution: "recognized".to_string(),
+                    confidence: turn.recognition_confidence.clone(),
                     handle: person_handle(id, grant_id, secret),
                 },
             ),
@@ -600,6 +614,7 @@ mod tests {
             provider_cluster_id: "0".to_string(),
             speaker_label: format!("Speaker {cluster_id}"),
             person_id,
+            person_link_auto: false,
             suggested_person_id: suggested,
             recognition_confidence: suggested.map(|_| "high".to_string()),
             recognition_score: None,
@@ -830,6 +845,30 @@ mod tests {
         assert_eq!(speakers[0].attribution, "unknown");
         assert_eq!(speakers[0].confidence, None);
         assert_eq!(speakers[0].handle.kind, SPEAKER_HANDLE_KIND_VOICE);
+    }
+
+    /// Owner-only auto-linking writes `person_id` on a cluster no human ever
+    /// confirmed (`person_link_auto = 1`). `BrokerSpeaker::attribution` is
+    /// documented to every agent as "`assigned` (the user said so)", so
+    /// publishing an auto-link as `assigned` claims a confirmation the user was
+    /// never asked for. It is a voice match — `recognized`, with the confidence
+    /// that produced it.
+    #[test]
+    fn an_auto_linked_owner_turn_publishes_as_recognized_not_assigned() {
+        let names = HashMap::from([(7, "You".to_string())]);
+        let mut auto_linked = turn(1, Some(7), Some(7));
+        auto_linked.person_link_auto = true;
+
+        let speakers = collapse(vec![auto_linked], &names);
+
+        assert_eq!(speakers.len(), 1);
+        assert_eq!(speakers[0].name.as_deref(), Some("You"));
+        assert_eq!(
+            speakers[0].attribution, "recognized",
+            "an auto-link is a voice match, not something the user said"
+        );
+        assert_eq!(speakers[0].confidence.as_deref(), Some("high"));
+        assert_eq!(speakers[0].handle.kind, SPEAKER_HANDLE_KIND_PERSON);
     }
 
     /// One entry per person, not per cluster: over-clustering splits a voice

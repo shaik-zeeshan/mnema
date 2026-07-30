@@ -23,7 +23,7 @@ export function buildStartCaptureRequest(target: StartCaptureRequestSource): {
   captureSystemAudio: boolean;
 } {
   return {
-    captureScreen: target.draftCaptureScreen,
+    captureScreen: target.draftCaptureScreen && target.permissions?.screen === "granted",
     captureMicrophone:
       target.draftCaptureMicrophone && target.permissions?.microphone === "granted",
     captureSystemAudio: target.draftCaptureSystemAudio,

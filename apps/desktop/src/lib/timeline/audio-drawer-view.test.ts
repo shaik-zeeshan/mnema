@@ -763,6 +763,23 @@ describe("speaker labels", () => {
       .toBe("Priya");
   });
 
+  // Owner-only auto-linking (migration 0053) names a speaker with nobody
+  // confirming it. Settings states the guarantee outright — "Automatic labels are
+  // marked as automatic and can be undone" — so a label that reads identically to
+  // one the user set themselves makes that copy false and leaves an unconfirmed
+  // biometric match unauditable.
+  it("marks an auto-applied name as automatic, and leaves a confirmed one alone", () => {
+    expect(speakerClusterOptionLabel(cluster({ personId: 1, personLinkAuto: true }), PROFILES))
+      .toBe("Priya (auto)");
+    expect(speakerClusterOptionLabel(cluster({ personId: 1, personLinkAuto: false }), PROFILES))
+      .toBe("Priya");
+    // The marker follows the link, not the guess: a mere suggestion is already
+    // phrased as one and nobody applied it.
+    expect(
+      speakerClusterOptionLabel(cluster({ suggestedPersonId: 2, personLinkAuto: true }), PROFILES),
+    ).toBe("Daniel Okafor");
+  });
+
   it("never invents a name for a merge target that no longer exists", () => {
     const target = cluster({ id: 9, personId: 2 });
     expect(suggestedMergeTargetLabel(group(), [target], PROFILES)).toBeNull();

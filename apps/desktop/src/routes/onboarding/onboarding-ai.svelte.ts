@@ -14,14 +14,25 @@
 // draft state here; they are committed as the `aiRuntime` domain of the whole
 // `RecordingSettings` at `finish()` (see OnboardingController.buildSettingsRequest).
 //
-// NOTE on validation surface: `ai_runtime_list_models` lists from the draft
-// provider configs passed in the request (it does NOT need the providers
-// persisted first), so the model picker validates a saved key live during
+// NOTE on validation surface: `verify_ai_provider` and `ai_runtime_list_models`
+// both accept the DRAFT provider configs in the request (they do not need the
+// providers persisted first), so a provider can be verified live during
 // onboarding. `get_ai_runtime_status` / `ai_runtime_test_connection` read the
 // PERSISTED settings, which are still empty mid-onboarding — so this subsystem
-// deliberately omits the runtime-status / test-connection surfaces. The
-// "✓ key in keychain" badge plus a successful model listing are the signal.
+// deliberately omits the runtime-status / test-connection surfaces.
+//
+// READINESS (slice 11): "a string reached the keychain" is NOT configured. A
+// provider counts only once `verify_ai_provider` listed its models live THIS
+// session and that listing still contains the chosen model id — no kind is
+// exempt, so an Ollama that is not answering blocks exactly like a rejected
+// cloud key. The rule itself is the pure `$lib/onboarding/ai-readiness`.
+import { invoke } from "@tauri-apps/api/core";
+import { humanizeError } from "$lib/format-error";
 import { ModelPoolLoader } from "$lib/insights/modelPool.svelte";
+import {
+  aiReadinessMissing,
+  type AiVerification,
+} from "$lib/onboarding/ai-readiness";
 import { createAiRuntimeStore } from "$lib/settings/state/ai-runtime.svelte";
 import {
   AI_PROVIDER_KINDS,
@@ -45,6 +56,13 @@ export function createOnboardingAiStore() {
   // provider can't be added mid-clear and race a same-kind id re-add (ADR 0035)
   // into a false "key in keychain" probe.
   let aiProviderRemoving = $state(false);
+  // Live verification result per provider instance id (ADR 0035). Session-only
+  // and deliberately NOT persisted: it is evidence that the engine answered a
+  // moment ago, so editing a key/endpoint or re-seeding the draft drops it.
+  let aiVerifications = $state<Record<string, AiVerification>>({});
+  // Visible reason a persisted default model was cleared on re-entry (the
+  // provider no longer lists it). Null on a clean run.
+  let aiRestoredModelNote = $state<string | null>(null);
 
   // Shared incremental model-pool loader (one list call per provider).
   const modelLoader = new ModelPoolLoader();
@@ -73,21 +91,106 @@ export function createOnboardingAiStore() {
   });
 
   // ── Provider list mutations (mirror the Settings controller) ──────────────
-  function addProvider(kind: AiProviderKind): void {
+  function addProvider(kind: AiProviderKind, baseUrl = ""): string | null {
     // Guarded by aiProviderRemoving at the call site (control is disabled while a
     // clear is in flight); this guard is the defensive backstop.
-    if (aiProviderRemoving) return;
+    if (aiProviderRemoving) return null;
     const existingIds = draftAiProviders.map((p) => p.id);
-    draftAiProviders = [
-      ...draftAiProviders,
-      { id: newAiProviderId(kind, existingIds), kind, label: "", baseUrl: "" },
-    ];
+    const id = newAiProviderId(kind, existingIds);
+    draftAiProviders = [...draftAiProviders, { id, kind, label: "", baseUrl }];
     void aiRuntime.refreshAiProviderKeyPresence();
+    return id;
+  }
+
+  // One monotonic ticket per instance id. `verify_ai_provider` is a network
+  // round trip and it is RE-RUNNABLE (a card's Re-check, and every key/base-URL
+  // edit), so two probes for the same id can be in flight at once — a rejected
+  // key that times out settles long after a good one that answered in 300 ms.
+  // Only the newest ticket may write, otherwise the stale probe's verdict wins
+  // and `aiConfigReady` describes a config the user has already replaced.
+  // Plain Map, not `$state`: nothing renders off it.
+  const verifyTicket = new Map<string, number>();
+  function nextVerifyTicket(id: string): number {
+    const ticket = (verifyTicket.get(id) ?? 0) + 1;
+    verifyTicket.set(id, ticket);
+    return ticket;
+  }
+
+  /** Drop a provider's verification — its config changed, so the old proof is
+   *  no longer evidence of anything. Bumping the ticket also stops a probe
+   *  still in flight from landing its (now meaningless) verdict afterwards. */
+  function invalidateVerification(id: string): void {
+    nextVerifyTicket(id);
+    const { [id]: _dropped, ...rest } = aiVerifications;
+    aiVerifications = rest;
+  }
+
+  /**
+   * THE proof. Lists the provider's models with the key the vault already holds
+   * (the key is never sent from here and never comes back), against the DRAFT
+   * provider list so a provider still being typed can verify mid-onboarding.
+   */
+  async function verifyProvider(id: string): Promise<void> {
+    const ticket = nextVerifyTicket(id);
+    aiVerifications = { ...aiVerifications, [id]: { status: "checking" } };
+    // Superseded by a newer probe (or by a re-seed / removal) while the round
+    // trip was in flight, or the provider is gone — either way this verdict is
+    // about a config that no longer exists.
+    const stale = (): boolean => verifyTicket.get(id) !== ticket || !providerById(id);
+    try {
+      const result = await invoke<{ models: string[]; latencyMs: number }>("verify_ai_provider", {
+        request: { provider: id, providers: $state.snapshot(draftAiProviders) },
+      });
+      if (stale()) return;
+      aiVerifications = {
+        ...aiVerifications,
+        [id]: { status: "live", models: result.models, latencyMs: result.latencyMs },
+      };
+    } catch (error) {
+      if (stale()) return;
+      aiVerifications = {
+        ...aiVerifications,
+        [id]: { status: "error", reason: humanizeError(error) },
+      };
+    }
+  }
+
+  /**
+   * One-shot reachability probe for an endpoint that is NOT (yet) a connected
+   * provider — the "scan this Mac" ladder. Same command, an ephemeral instance
+   * id that never enters the draft list, so nothing is added until the user
+   * says so. `null` means nothing answered there.
+   */
+  async function probeEndpoint(
+    kind: AiProviderKind,
+    baseUrl: string,
+  ): Promise<{ models: string[]; latencyMs: number } | null> {
+    const id = `scan-${baseUrl}`;
+    try {
+      return await invoke<{ models: string[]; latencyMs: number }>("verify_ai_provider", {
+        request: { provider: id, providers: [{ id, kind, label: "", baseUrl }] },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Reaching the provider IS the save: store the typed key in the app vault,
+   * then verify. The caller hands the string over once and forgets it — nothing
+   * here keeps it (`saveAiProviderKey` clears its own input on success).
+   */
+  async function saveKeyAndVerify(id: string, key: string): Promise<void> {
+    aiRuntime.setProviderKeyInput(id, key);
+    await aiRuntime.saveAiProviderKey(id);
+    aiRuntime.setProviderKeyInput(id, "");
+    await verifyProvider(id);
   }
 
   async function removeProvider(id: string): Promise<void> {
     const removed = providerById(id);
     draftAiProviders = draftAiProviders.filter((p) => p.id !== id);
+    invalidateVerification(id);
     if (draftAiDefaultModel?.provider === id) {
       draftAiDefaultModel = null;
     }
@@ -118,9 +221,28 @@ export function createOnboardingAiStore() {
       label: p.label ?? "",
       baseUrl: p.baseUrl ?? "",
     }));
-    draftAiDefaultModel = defaultModel
+    // A re-seed replaces every provider config, so last session's proofs are
+    // void — nothing is ready again until it answers again. Bump every ticket
+    // too, or a probe still in flight re-adds the verdict this just cleared.
+    for (const known of [...verifyTicket.keys()]) nextVerifyTicket(known);
+    aiVerifications = {};
+    aiRestoredModelNote = null;
+    const restored = defaultModel
       ? { provider: defaultModel.provider, model: defaultModel.model }
       : null;
+    draftAiDefaultModel = restored;
+    // A persisted default the provider has since dropped (renamed, deprecated,
+    // un-pulled locally) would otherwise survive a reload looking valid. Verify
+    // it against the FRESH listing and clear it with a reason the user can see.
+    if (!restored) return;
+    void verifyProvider(restored.provider).then(() => {
+      const verification = aiVerifications[restored.provider];
+      if (verification?.status !== "live") return;
+      if (verification.models.includes(restored.model)) return;
+      if (draftAiDefaultModel?.model !== restored.model) return;
+      aiRestoredModelNote = `${aiProviderLabelById(restored.provider)} no longer lists ${restored.model} — choose another default model.`;
+      draftAiDefaultModel = null;
+    });
   }
 
   // Refresh which connected cloud providers already have a saved key (e.g. when
@@ -133,28 +255,24 @@ export function createOnboardingAiStore() {
   const anyCloudConnected = $derived(draftAiProviders.some((p) => isCloudAiProviderKind(p.kind)));
 
   // Single source of truth for "Ask AI is usable". Ask AI can only run if a
-  // chosen default model can actually resolve: a default model is selected, its
-  // provider exists in the draft list, and that provider is itself configured
-  // (cloud → key saved; openai_compatible → key saved + base URL; local → fine).
+  // chosen default model can actually answer: the model's provider VERIFIED LIVE
+  // this session and that listing still contains this exact model id. A stored
+  // key is not evidence and no kind is exempt — see `$lib/onboarding/ai-readiness`.
   // `aiConfigMissing` is the PRIMARY computation (returns the short human reason,
   // or null when ready) and `aiConfigReady` is derived from it, so the boolean
   // and the explanation can never drift. Both the attention rule
   // (OnboardingController.featureAttention) and AskAiBody read these — the
   // condition lives ONLY here.
-  const aiConfigMissing = $derived.by<string | null>(() => {
-    if (draftAiProviders.length === 0) return "Connect a reasoning engine to use Ask AI.";
-    const model = draftAiDefaultModel;
-    if (!model || model.model.trim().length === 0) return "Choose a default model for Ask AI.";
-    const provider = providerById(model.provider);
-    if (!provider) return "Pick a default model from a connected provider.";
-    if (provider.kind === "openai_compatible" && provider.baseUrl.trim().length === 0) {
-      return `Set the base URL for ${aiProviderLabelById(provider.id)}.`;
-    }
-    if (isCloudAiProviderKind(provider.kind) && !aiRuntime.aiProviderKeySavedByProvider[provider.id]) {
-      return `Save the API key for ${aiProviderLabelById(provider.id)}.`;
-    }
-    return null;
-  });
+  const aiConfigMissing = $derived(
+    aiReadinessMissing({
+      providers: draftAiProviders.map((p) => ({
+        id: p.id,
+        label: aiProviderInstanceLabel(p),
+      })),
+      verifications: aiVerifications,
+      defaultModel: draftAiDefaultModel,
+    }),
+  );
   const aiConfigReady = $derived(aiConfigMissing === null);
   const aiModelValue = $derived.by(() => {
     const ref = draftAiDefaultModel;
@@ -179,18 +297,10 @@ export function createOnboardingAiStore() {
           .join("; ")
       : null,
   );
-  // Soft note (NOT a blocker): the attention gate (`aiConfigReady`) clears once a
-  // cloud key is merely SAVED, but a save alone doesn't prove the key works —
-  // onboarding can't run the persisted-settings status/test surfaces, so a live
-  // model listing is the only proof. When the config looks ready yet the model
-  // list could not be fetched, the green state would falsely imply a working
-  // engine; this surfaces a brief caveat so the user knows the key is unverified.
-  // Deliberately a hint, not a hard gate (see the NOTE on validation surface above).
-  const aiUnverifiedNote = $derived(
-    aiConfigReady && modelsError !== null
-      ? "Key saved but unverified — models could not be listed."
-      : null,
-  );
+  // NOTE: there is deliberately no `aiUnverifiedNote`. It used to be a soft hint
+  // ("key saved but unverified") alongside an already-green `aiConfigReady`.
+  // Unverified is now a hard failure of `aiConfigMissing` itself, so ready
+  // implies verified and there is nothing left to caveat.
 
   return {
     // Re-exported constants/helpers the markup references verbatim.
@@ -213,13 +323,17 @@ export function createOnboardingAiStore() {
     get aiModelOpen() { return aiModelOpen; },
     set aiModelOpen(value: boolean) { aiModelOpen = value; },
     get aiProviderRemoving() { return aiProviderRemoving; },
+    get aiVerifications() { return aiVerifications; },
+    // Flat alias of the keychain-presence map (the AiSetup component's one
+    // reason to know a key was stored: an error card still says so).
+    get aiProviderKeySaved() { return aiRuntime.aiProviderKeySavedByProvider; },
+    get aiRestoredModelNote() { return aiRestoredModelNote; },
 
     // Derived view state.
     get anyCloudConnected() { return anyCloudConnected; },
     get aiConfigReady() { return aiConfigReady; },
     get aiConfigMissing() { return aiConfigMissing; },
     get aiModelValue() { return aiModelValue; },
-    get aiUnverifiedNote() { return aiUnverifiedNote; },
     get modelFailureRows() { return modelFailureRows; },
     get modelRetryTargets() { return modelRetryTargets; },
     get modelsError() { return modelsError; },
@@ -227,6 +341,10 @@ export function createOnboardingAiStore() {
     // Actions.
     addProvider,
     removeProvider,
+    verifyProvider,
+    invalidateVerification,
+    probeEndpoint,
+    saveKeyAndVerify,
     loadModels,
     syncFromSettings,
     init,

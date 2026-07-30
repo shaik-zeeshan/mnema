@@ -321,7 +321,7 @@ pub async fn delete_unused_ocr_models(
     }
     .await;
     let release_result = infra
-        .release_processing_model_cleanup_locks(&cleanup_lock)
+        .release_processing_model_locks(&cleanup_lock)
         .await
         .map_err(|error| format!("failed to release OCR model cleanup reservation: {error}"));
 
@@ -347,6 +347,24 @@ pub(crate) fn selected_ocr_model_available(
         return Ok(false);
     }
     Ok(provider_runtime_available(provider))
+}
+
+/// The model key of the selected OCR model when its files are **not** on disk, so its queued jobs
+/// can be parked (claim-time model gating) instead of burning their failure attempts against a
+/// model that is not there. `None` when the selection needs no model files (Apple Vision) or the
+/// model is installed. Deliberately files-only: unlike [`selected_ocr_model_available`] it ignores
+/// runtime availability, which is not something a download can fix.
+pub(crate) fn absent_selected_ocr_model_key(
+    app_data_dir: &Path,
+    settings: &OcrSettings,
+) -> Option<String> {
+    let provider = provider_id_for_settings(settings.provider);
+    let model_id = resolved_model_id_for_settings(settings)?;
+    let manifest = builtin_model_manifest();
+    let installed = find_model_descriptor(&manifest, provider, Some(&model_id))
+        .and_then(|descriptor| detect_model_status(ocr_models_dir(app_data_dir), descriptor).ok())
+        .is_some_and(|status| status.is_available());
+    (!installed).then(|| model_key(provider, &model_id))
 }
 
 pub(crate) fn provider_id_for_settings(provider: OcrProvider) -> &'static str {
@@ -699,7 +717,14 @@ async fn run_model_download_task(
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
 ) {
+    let download_lock = crate::app_infra::acquire_model_download_lock(
+        &app_handle,
+        app_infra::OCR_PROCESSOR,
+        model_key(&plan.provider, &plan.model_id),
+    )
+    .await;
     let result = download_and_install_model(&app_handle, &plan, &cancel_requested).await;
+    crate::app_infra::release_model_download_lock(&app_handle, download_lock).await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {
@@ -1138,5 +1163,57 @@ mod tests {
                 ocr::DEFAULT_PADDLE_OCR_MODEL_ID,
             )])
         );
+    }
+
+    /// The absent lane's whole value is that the key it locks is the SAME key the claim
+    /// predicate derives from a job's payload. Every store-level test proves "a locked key
+    /// parks a job"; this is the other half — that the app computes a key a job can match.
+    /// The claim SQL builds `TRIM($.provider) || '/' || TRIM($.modelId)` from the payload, so
+    /// a producer emitting any other shape locks a key nothing carries and the fix is inert
+    /// with every test still green.
+    #[test]
+    fn an_uninstalled_ocr_model_locks_the_key_the_claim_predicate_derives() {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-ocr-absent-key-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir should be created");
+
+        let mut settings = crate::native_capture::settings::default_recording_settings().ocr;
+        settings.provider = OcrProvider::Tesseract;
+        settings.model_id = Some(ocr::DEFAULT_TESSERACT_MODEL_ID.to_string());
+
+        assert_eq!(
+            absent_selected_ocr_model_key(&dir, &settings),
+            Some(format!(
+                "{}/{}",
+                ocr::TESSERACT_PROVIDER_ID,
+                ocr::DEFAULT_TESSERACT_MODEL_ID
+            )),
+            "the absent lock key must be provider/modelId — the exact shape the claim SQL builds"
+        );
+
+        // Apple Vision has no model files to be absent, so it must never take a lock:
+        // locking it would park every OCR job forever against a model that cannot download.
+        settings.provider = OcrProvider::AppleVision;
+        settings.model_id = None;
+        assert_eq!(absent_selected_ocr_model_key(&dir, &settings), None);
+
+        // A blank model id resolves to the provider's default rather than to "no selection",
+        // so it still locks — the job it must park carries that same resolved default.
+        settings.provider = OcrProvider::Tesseract;
+        settings.model_id = Some("   ".to_string());
+        assert_eq!(
+            absent_selected_ocr_model_key(&dir, &settings),
+            Some(format!(
+                "{}/{}",
+                ocr::TESSERACT_PROVIDER_ID,
+                ocr::DEFAULT_TESSERACT_MODEL_ID
+            )),
+            "a blank selection resolves to the provider default on both sides, not to None"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

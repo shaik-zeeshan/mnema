@@ -9,7 +9,7 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 - SPA-only: `apps/desktop/src/routes/+layout.ts` sets `ssr = false`; `svelte.config.js` uses `@sveltejs/adapter-static` with `fallback: "index.html"`.
 - In production packaging the SPA entry can arrive as `"/index.html"` — normalize static-entry paths in the shell before route-gating.
 - Tauri expects Vite on port `1420` with HMR on `1421`; `vite.config.js` hard-pins these and ignores `src-tauri/**`.
-- Bundle identifier is `day.mnema` (pre-2026-07 builds were `com.shaikzeeshan.mnema`; a one-time config-dir rename in `lib.rs` migrates old installs). Changing it changes the app identity for Tauri/macOS config and cache dirs, and resets TCC permissions. Keychain services renamed with it (`day.mnema.{vault,licensing,capture-index}`); each store reads its `LEGACY_KEYCHAIN_SERVICE` (`com.shaikzeeshan.mnema.*`) as a fallback and migrates the item to the new service — don't remove those fallbacks while pre-rename installs exist.
+- Bundle identifier is `day.mnema` (pre-2026-07 builds were `com.shaikzeeshan.mnema`). Changing it changes the app identity for Tauri/macOS config and cache dirs, and resets TCC permissions. Keychain services renamed with it (`day.mnema.{vault,licensing,capture-index}`). The pre-rename fallbacks — the config-dir move, the per-service `LEGACY_KEYCHAIN_SERVICE` reads, and the legacy-keychain→vault migration — were deleted on 2026-07-29: the app had no users, so nothing on disk predates the rename. A pre-rename dev install mints a fresh master key and config dir instead of inheriting the old ones.
 
 ---
 
@@ -49,11 +49,10 @@ Deep-dive quirks for the capture/storage/OCR/privacy system. Referenced from `CL
 
 ## Frame Preview
 
-- Preferred source: per-segment binary sidecar `<session>-segment-####.frame-index.bin` written by `crates/capture-screen` at finalization. Falls back to legacy JSON sidecar, then first-frame timestamp estimate.
+- Preferred source: per-segment binary sidecar `<session>-segment-####.frame-index.bin` written by `crates/capture-screen` at finalization. Falls back to a first-frame timestamp estimate.
 - Sidecar `video_offset_ms` is recorded **live at export time** as `sample_pts − first_appended_sample_pts`. Never derive it by pairing index entries with video samples positionally: the `.mov` receives every appended frame while JPEG exports are throttled, so entry *k* is generally NOT video sample *k* (the old positional pairing drifted up to ~23s per 60s segment). Sidecars written before 2026-07-03 carry those wrong offsets and are deliberately not repaired.
 - `get_frame_preview` returns **asset-backed file paths**, not base64. Stable frames via Tauri asset scope; fallback/video previews materialized under `app_cache_dir()/frame-previews/`.
 - Screen finalization rejects existing-but-unopenable `.mov` files — invalid segments must fail finalization, not be committed.
-- Convert legacy JSON sidecars: `cargo run -p app-infra --bin convert_frame_index_sidecars -- <saveDirectory>/recordings`
 
 ---
 

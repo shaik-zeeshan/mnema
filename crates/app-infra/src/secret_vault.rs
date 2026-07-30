@@ -18,10 +18,6 @@ const MASTER_KEY_LEN: usize = 32;
 
 #[cfg(target_os = "macos")]
 const KEYCHAIN_SERVICE: &str = "day.mnema.vault";
-/// Pre-rename service (installs before the day.mnema bundle-id change): read
-/// once, migrated to the new service, then deleted.
-#[cfg(target_os = "macos")]
-const LEGACY_KEYCHAIN_SERVICE: &str = "com.shaikzeeshan.mnema.vault";
 #[cfg(target_os = "macos")]
 const KEYCHAIN_ACCOUNT: &str = "master-key";
 // errSecItemNotFound: the keychain has no entry for this service/account.
@@ -69,19 +65,9 @@ fn read_master_key_item(service: &str) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
 #[cfg(target_os = "macos")]
 impl MasterKeySource for KeychainMasterKeySource {
     fn load(&self) -> Result<Option<[u8; MASTER_KEY_LEN]>> {
-        // A read failure on either item (e.g. a denied prompt) propagates as
-        // Err so unlock maps it to Denied and never mints a replacement key.
-        crate::keychain_service_migration::read_with_legacy_migration(
-            || read_master_key_item(KEYCHAIN_SERVICE),
-            || read_master_key_item(LEGACY_KEYCHAIN_SERVICE),
-            |key| self.store(key),
-            || {
-                let _ = security_framework::passwords::delete_generic_password(
-                    LEGACY_KEYCHAIN_SERVICE,
-                    KEYCHAIN_ACCOUNT,
-                );
-            },
-        )
+        // A read failure (e.g. a denied prompt) propagates as Err so unlock
+        // maps it to Denied and never mints a replacement key.
+        read_master_key_item(KEYCHAIN_SERVICE)
     }
 
     fn store(&self, key: &[u8; MASTER_KEY_LEN]) -> Result<()> {
@@ -337,6 +323,22 @@ pub fn unlock_secret_vault(save_dir: &Path) -> Result<SecretVaultUnlock> {
         return unlock_secret_vault_with_source(save_dir, &FileMasterKeySource::new(path));
     }
 
+    // Tripwire for test runs. A test that reaches this line is about to unlock the
+    // developer's REAL `day.mnema.vault` keychain item: it prompts (repeatedly,
+    // because an ad-hoc-signed test binary changes signature on every rebuild) and,
+    // since the process vault slot is first-writer-wins, it leaves the whole test
+    // binary pointed at the production vault. Tests are supposed to pin a scratch
+    // vault first — `install_shared_test_secret_vault` in the desktop crate,
+    // `install_shared_test_process_vault` here. Set MNEMA_TRIPWIRE_NO_KEYCHAIN=1 to
+    // turn "silently prompts the developer" into "fails loudly and names itself".
+    // Not `cfg(test)`: the leak happens in the DESKTOP crate's tests, where this
+    // crate is a dependency and `cfg(test)` is false.
+    if std::env::var_os("MNEMA_TRIPWIRE_NO_KEYCHAIN").is_some() {
+        panic!(
+            "a test reached the real keychain (day.mnema.vault) via unlock_secret_vault; \
+             pin a scratch vault first (install_shared_test_secret_vault)"
+        );
+    }
     unlock_secret_vault_with_source(save_dir, &KeychainMasterKeySource)
 }
 

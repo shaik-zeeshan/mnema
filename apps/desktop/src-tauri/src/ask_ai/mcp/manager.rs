@@ -1189,6 +1189,14 @@ done"#;
     /// on every failed call.
     #[tokio::test]
     async fn a_giant_server_error_result_is_bounded_before_reaching_the_model() {
+        // Dialing this server reads the connector secret through the PROCESS
+        // vault. Without pinning the shared test vault first, that read falls
+        // through to `SecretVaultHandle::new` -> the REAL `day.mnema.vault`
+        // keychain item — prompting the developer, and (because the process slot
+        // is first-writer-wins) leaving the whole test binary pointed at the
+        // production vault. The sibling `mod tests` pins it inside `stdio_cfg`;
+        // these later modules build their own config and have to do it too.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
         let dir = fixture_dir("mnema-mcp-huge-error");
         let big = "x".repeat(60_000);
         let cfg = McpServerConfig {
@@ -1276,6 +1284,14 @@ done"#;
     /// model as an apparent success — poisoning the turn.
     #[tokio::test]
     async fn large_in_band_error_result_keeps_its_error_signal() {
+        // Dialing this server reads the connector secret through the PROCESS
+        // vault. Without pinning the shared test vault first, that read falls
+        // through to `SecretVaultHandle::new` -> the REAL `day.mnema.vault`
+        // keychain item — prompting the developer, and (because the process slot
+        // is first-writer-wins) leaving the whole test binary pointed at the
+        // production vault. The sibling `mod tests` pins it inside `stdio_cfg`;
+        // these later modules build their own config and have to do it too.
+        crate::secret_vault_test_support::install_shared_test_secret_vault();
         let dir = fixture_dir("mnema-mcp-inband-error");
         let big = "x".repeat(60_000);
         let cfg = McpServerConfig {

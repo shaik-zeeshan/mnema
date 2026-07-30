@@ -35,6 +35,10 @@ use crate::native_capture::debug_log::{log_error, log_info};
 pub const SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT: &str =
     "semantic_search_model_download_progress";
 
+/// Processor name a semantic-search model lock is filed under. Semantic search is not a
+/// `processing_jobs` processor, so this only ever namespaces its own lock rows.
+const SEMANTIC_SEARCH_MODEL_LOCK_PROCESSOR: &str = "semantic_search";
+
 /// One model download may run at a time, mirroring the OCR/transcription model
 /// downloaders. The cancel flag is shared with the running task.
 pub type SemanticSearchModelDownloadState = Mutex<Option<ActiveSemanticSearchModelDownload>>;
@@ -1245,8 +1249,19 @@ async fn run_model_download_task(
         plan.files.len(),
         plan.total_bytes,
     ));
+    // ponytail: semantic search has no `processing_jobs` rows today (its worker is a sweep loop
+    // already gated on `selected_model_available`, and it never burns failure attempts), so this
+    // lock currently protects nothing. It is taken anyway so the four downloads behave alike the
+    // day semantic search grows a job — drop it if that day never comes.
+    let download_lock = crate::app_infra::acquire_model_download_lock(
+        &app_handle,
+        SEMANTIC_SEARCH_MODEL_LOCK_PROCESSOR,
+        format!("{}/{}", plan.provider, plan.model_id),
+    )
+    .await;
     let result =
         download_and_install_model(&app_handle, &plan, &cancel_requested, &cancel_notify).await;
+    crate::app_infra::release_model_download_lock(&app_handle, download_lock).await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {

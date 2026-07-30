@@ -216,6 +216,38 @@ pub(super) fn should_reconnect_waiting_microphone_session(
         && state.effective_device.is_some()
 }
 
+/// Start a fresh microphone session for a still-running capture runtime and wire
+/// its output file into the current segment.
+///
+/// The one microphone restart path: used both when a waited-for device reappears
+/// and when a bounded out-of-band recording (voice enrollment) hands the
+/// microphone back. Screen and the system-audio tap are untouched — neither
+/// shares the device.
+#[cfg(target_os = "macos")]
+pub(super) fn restart_microphone_session_for_runtime(
+    runtime: &mut NativeCaptureRuntime,
+    device_id: Option<&str>,
+    reason: &str,
+) -> Result<(), CaptureErrorResponse> {
+    ensure_microphone_planner_for_runtime(runtime, reason)?;
+    refresh_runtime_planner_dates(runtime);
+
+    let microphone_recording_file = next_microphone_output_file_for_runtime(runtime)?;
+    let session =
+        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
+            &microphone_recording_file,
+            device_id,
+        )?;
+
+    runtime.active_microphone_session = Some(session);
+    runtime.microphone_recording_file = Some(microphone_recording_file.clone());
+    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+        set_current_microphone_output_file(output_files, microphone_recording_file);
+    }
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 fn maybe_reconnect_waiting_microphone_session(
     app_handle: &tauri::AppHandle,
@@ -255,30 +287,11 @@ fn maybe_reconnect_waiting_microphone_session(
         return;
     }
 
-    if ensure_microphone_planner_for_runtime(runtime, "reconnecting microphone").is_err() {
-        return;
-    }
-
-    refresh_runtime_planner_dates(runtime);
-
-    let microphone_recording_file = match next_microphone_output_file_for_runtime(&runtime) {
-        Ok(path) => path,
-        Err(_) => return,
-    };
-
-    let mic_start =
-        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
-            &microphone_recording_file,
-            state.preference.device_id.as_deref(),
-        );
-
-    if let Ok(session) = mic_start {
-        runtime.active_microphone_session = Some(session);
-        runtime.microphone_recording_file = Some(microphone_recording_file.clone());
-        if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-            set_current_microphone_output_file(output_files, microphone_recording_file);
-        }
-    }
+    let _ = restart_microphone_session_for_runtime(
+        runtime,
+        state.preference.device_id.as_deref(),
+        "reconnecting microphone",
+    );
 }
 
 pub(super) fn resolve_capture_microphone_device_id(

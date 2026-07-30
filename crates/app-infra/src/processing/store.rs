@@ -19,7 +19,7 @@ use super::SystemAudioSpeechActivityJobPayload;
 use super::{
     AudioTranscriptionJobPayload, Frame, FrameEquivalence, FrameEquivalenceStatus, FrameSummary,
     NewFrame, ProcessingJob, ProcessingJobDraft, ProcessingJobStatus, ProcessingResult,
-    ProcessingResultDraft, ProcessingSubject, AUDIO_SEGMENT_SUBJECT_TYPE,
+    ProcessingResultDraft, ProcessingSubject, SpeakerAnalysisJobPayload, AUDIO_SEGMENT_SUBJECT_TYPE,
     AUDIO_TRANSCRIPTION_PROCESSOR, OCR_PROCESSOR, SPEAKER_ANALYSIS_PROCESSOR,
     SYSTEM_AUDIO_SPEECH_ACTIVITY_PROCESSOR,
 };
@@ -60,7 +60,7 @@ pub(crate) const OCR_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 /// burning CPU forever; abandonment at quit/crash does not count toward this cap.
 pub(crate) const AUDIO_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 
-/// Age past which a `processing_model_cleanup_locks` row is treated as orphaned by a prior crash
+/// Age past which a `processing_model_locks` row is treated as orphaned by a prior crash
 /// and is safe to clear during startup maintenance. A live model-deletion command acquires its
 /// lock and releases it within the deletion (seconds to a couple of minutes for the largest model
 /// archives), whereas a lock left behind by a crashed prior session is at minimum an app restart
@@ -68,6 +68,15 @@ pub(crate) const AUDIO_FAILED_JOB_MAX_ATTEMPTS: i64 = 3;
 /// realistic model-deletion duration, so the stale-only startup clear never wipes the freshly
 /// acquired lock of a model-deletion command running concurrently on the deferred-startup thread.
 pub(crate) const MODEL_CLEANUP_LOCK_STALE_AFTER_SECONDS: i64 = 600;
+
+/// A model whose files are being deleted.
+pub const MODEL_LOCK_REASON_CLEANUP: &str = "cleanup";
+/// A model whose files are being downloaded (the download wipes the install dir first, so the
+/// model is not readable for the duration).
+pub const MODEL_LOCK_REASON_DOWNLOADING: &str = "downloading";
+/// A model that is selected but not installed. Its jobs park as `queued` instead of being claimed
+/// and burning their three failure attempts against a model that is not on disk.
+pub const MODEL_LOCK_REASON_ABSENT: &str = "absent";
 
 /// Backoff applied before a failed **OCR Job** may be re-claimed by the automatic queue drain,
 /// indexed by the number of failures already recorded (so index 0 is the wait after the first
@@ -164,6 +173,12 @@ pub struct ProcessingJobListing {
     #[serde(flatten)]
     pub job: ProcessingJob,
     pub next_attempt_at: Option<String>,
+    /// `true` when this job's selected model is locked (downloading, absent, or being deleted).
+    /// A `queued` job with this set is PARKED, not waiting its turn — it will not be claimed and
+    /// will not spend a failure attempt until the model arrives. Without it a parked job is
+    /// indistinguishable from a queued one, which is the whole visible difference between the old
+    /// "fails after three attempts in six minutes" behaviour and the new one.
+    pub model_locked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -177,6 +192,9 @@ pub struct SpeakerTurnView {
     pub provider_cluster_id: String,
     pub speaker_label: String,
     pub person_id: Option<i64>,
+    /// `true` when `person_id` was decided by owner-only auto-linking rather than
+    /// by a human naming or confirming the cluster.
+    pub person_link_auto: bool,
     pub suggested_person_id: Option<i64>,
     pub recognition_confidence: Option<String>,
     pub recognition_score: Option<f32>,
@@ -193,6 +211,9 @@ pub struct PersonProfile {
     pub display_name: String,
     pub notes: Option<String>,
     pub embedding_count: i64,
+    /// The one profile that is the account owner (voice enrollment). At most one
+    /// row can carry this — enforced by a partial unique index (migration 0053).
+    pub is_account_owner: bool,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -207,6 +228,8 @@ pub struct SpeakerClusterView {
     pub provider_cluster_id: String,
     pub speaker_label: String,
     pub person_id: Option<i64>,
+    /// See [`SpeakerTurnView::person_link_auto`].
+    pub person_link_auto: bool,
     pub suggested_person_id: Option<i64>,
     pub recognition_confidence: Option<String>,
     pub recognition_score: Option<f32>,
@@ -215,7 +238,7 @@ pub struct SpeakerClusterView {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProcessingModelCleanupLock {
+pub struct ProcessingModelLock {
     pub processor: String,
     pub lock_token: String,
     pub acquired_model_keys: BTreeSet<String>,
@@ -1055,11 +1078,19 @@ impl ProcessingStore {
 
         let rows = query.build().fetch_all(self.db.read()).await?;
 
+        // One read for the whole page: the lock table holds at most a handful of rows, so
+        // resolving "is this job parked?" per row costs nothing beyond this.
+        let locked_model_keys = self.list_locked_model_keys().await?;
+
         rows.into_iter()
             .map(|row| {
+                let next_attempt_at = row.try_get("next_attempt_at")?;
+                let job = map_processing_job(row)?;
+                let model_locked = processing_job_model_is_locked(&job, &locked_model_keys);
                 Ok(ProcessingJobListing {
-                    next_attempt_at: row.try_get("next_attempt_at")?,
-                    job: map_processing_job(row)?,
+                    next_attempt_at,
+                    job,
+                    model_locked,
                 })
             })
             .collect()
@@ -1196,24 +1227,48 @@ impl ProcessingStore {
         self.get_job(job_id).await
     }
 
-    pub async fn acquire_model_cleanup_locks(
+    /// Takes a model lock for every key that is not already locked. `reason` is one of
+    /// [`MODEL_LOCK_REASON_CLEANUP`], [`MODEL_LOCK_REASON_DOWNLOADING`] or
+    /// [`MODEL_LOCK_REASON_ABSENT`] — the claim predicate does not read it, it is only there so
+    /// each writer can release its own rows without stepping on another's.
+    ///
+    /// The upsert takes a row over in exactly two cases: from the unowned `absent` lane (nobody
+    /// releases those, they are recomputed), and from a same-reason `downloading` row, which is
+    /// the orphan a session that died mid-download left behind — `release_model_locks` deletes by
+    /// `lock_token`, so a retry that bounced off the orphan could never release it.
+    /// `cleanup` stays a strict mutex: two model-deletion commands racing the same key must not
+    /// both believe they own it, or the one that finishes first unlocks the model while the other
+    /// is still deleting its files, and the model's jobs run against a half-deleted directory. A
+    /// cleanup row orphaned by a crash is cleared by [`Self::clear_stale_model_locks`] at startup,
+    /// which is what that threshold is for.
+    pub async fn acquire_model_locks(
         &self,
         processor: &str,
         model_keys: &BTreeSet<String>,
         lock_token: &str,
-    ) -> Result<ProcessingModelCleanupLock> {
+        reason: &str,
+    ) -> Result<ProcessingModelLock> {
         let mut transaction = self.db.begin_write().await?;
         let mut acquired_model_keys = BTreeSet::new();
 
         for model_key in model_keys {
             let insert = sqlx::query(
-                "INSERT OR IGNORE INTO processing_model_cleanup_locks \
-                    (processor, model_key, lock_token) \
-                 VALUES (?1, ?2, ?3)",
+                "INSERT INTO processing_model_locks \
+                    (processor, model_key, lock_token, reason) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (processor, model_key) DO UPDATE SET \
+                    lock_token = excluded.lock_token, reason = excluded.reason, \
+                    created_at = CURRENT_TIMESTAMP \
+                 WHERE processing_model_locks.reason = ?5 \
+                    OR (processing_model_locks.reason = excluded.reason \
+                        AND processing_model_locks.reason <> ?6)",
             )
             .bind(processor)
             .bind(model_key)
             .bind(lock_token)
+            .bind(reason)
+            .bind(MODEL_LOCK_REASON_ABSENT)
+            .bind(MODEL_LOCK_REASON_CLEANUP)
             .execute(&mut *transaction)
             .await?;
 
@@ -1224,19 +1279,19 @@ impl ProcessingStore {
 
         transaction.commit().await?;
 
-        Ok(ProcessingModelCleanupLock {
+        Ok(ProcessingModelLock {
             processor: processor.to_string(),
             lock_token: lock_token.to_string(),
             acquired_model_keys,
         })
     }
 
-    pub async fn release_model_cleanup_locks(
+    pub async fn release_model_locks(
         &self,
-        lock: &ProcessingModelCleanupLock,
+        lock: &ProcessingModelLock,
     ) -> Result<u64> {
         let delete = sqlx::query(
-            "DELETE FROM processing_model_cleanup_locks \
+            "DELETE FROM processing_model_locks \
              WHERE processor = ?1 AND lock_token = ?2",
         )
         .bind(&lock.processor)
@@ -1247,8 +1302,70 @@ impl ProcessingStore {
         Ok(delete.rows_affected())
     }
 
-    pub async fn clear_model_cleanup_locks(&self) -> Result<u64> {
-        let delete = sqlx::query("DELETE FROM processing_model_cleanup_locks")
+    /// Makes the locks held for `(processor, reason)` exactly `model_keys`: takes the missing ones
+    /// and drops the ones no longer wanted. Rows held under a different reason are untouched, so a
+    /// concurrent cleanup or download lock survives. Used for the absent-model reason, which has no
+    /// owning command to release it — it is recomputed from what is on disk.
+    pub async fn sync_model_locks_for_reason(
+        &self,
+        processor: &str,
+        reason: &str,
+        model_keys: &BTreeSet<String>,
+    ) -> Result<()> {
+        let mut transaction = self.db.begin_write().await?;
+
+        let mut delete = sqlx::QueryBuilder::new(
+            "DELETE FROM processing_model_locks WHERE processor = ",
+        );
+        delete.push_bind(processor);
+        delete.push(" AND reason = ");
+        delete.push_bind(reason);
+        if !model_keys.is_empty() {
+            delete.push(" AND model_key NOT IN (");
+            let mut separated = delete.separated(", ");
+            for model_key in model_keys {
+                separated.push_bind(model_key);
+            }
+            delete.push(")");
+        }
+        delete.build().execute(&mut *transaction).await?;
+
+        for model_key in model_keys {
+            sqlx::query(
+                "INSERT INTO processing_model_locks \
+                    (processor, model_key, lock_token, reason) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (processor, model_key) DO UPDATE SET \
+                    lock_token = excluded.lock_token, reason = excluded.reason",
+            )
+            .bind(processor)
+            .bind(model_key)
+            .bind(format!("{reason}:{processor}"))
+            .bind(reason)
+            .execute(&mut *transaction)
+            .await?;
+        }
+
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    /// Every currently locked `(processor, model_key)` pair, whatever the reason. The table holds
+    /// at most a handful of rows, so the dashboard reads it once and derives "Preparing" (a job
+    /// that is `queued` while its model is locked) for a whole job list without a query per job.
+    pub async fn list_locked_model_keys(&self) -> Result<BTreeSet<(String, String)>> {
+        let rows = sqlx::query("SELECT processor, model_key FROM processing_model_locks")
+            .fetch_all(self.db.read())
+            .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.get("processor"), row.get("model_key")))
+            .collect())
+    }
+
+    pub async fn clear_model_locks(&self) -> Result<u64> {
+        let delete = sqlx::query("DELETE FROM processing_model_locks")
             .execute(self.db.write())
             .await?;
 
@@ -1256,7 +1373,7 @@ impl ProcessingStore {
     }
 
     /// Clears only **orphaned** model-cleanup locks: rows whose `created_at` is older than
-    /// `stale_after`. This is the startup-maintenance variant of [`Self::clear_model_cleanup_locks`].
+    /// `stale_after`. This is the startup-maintenance variant of [`Self::clear_model_locks`].
     ///
     /// Startup maintenance now runs on the deferred-startup thread *after* Tauri commands are live,
     /// so a model-deletion command can be holding a freshly acquired cleanup lock while this runs.
@@ -1265,9 +1382,9 @@ impl ProcessingStore {
     /// prior session is at least an app restart old, while a live command's lock is seconds old, so
     /// the age threshold cleanly separates the two. `created_at` is UTC `CURRENT_TIMESTAMP`, so it is
     /// compared against `datetime('now')`, which is also UTC.
-    pub async fn clear_stale_model_cleanup_locks(&self, stale_after_seconds: i64) -> Result<u64> {
+    pub async fn clear_stale_model_locks(&self, stale_after_seconds: i64) -> Result<u64> {
         let delete = sqlx::query(
-            "DELETE FROM processing_model_cleanup_locks \
+            "DELETE FROM processing_model_locks \
              WHERE created_at <= datetime('now', printf('-%d seconds', ?1))",
         )
         .bind(stale_after_seconds)
@@ -1349,7 +1466,7 @@ impl ProcessingStore {
                        AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= CURRENT_TIMESTAMP) \
                        AND pj.processor = ?1 \
                        AND NOT EXISTS ( \
-                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         SELECT 1 FROM processing_model_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
                              WHEN pj.processor = 'speaker_analysis' \
@@ -1401,7 +1518,7 @@ impl ProcessingStore {
                     separated.push_unseparated(
                         ") \
                            AND NOT EXISTS ( \
-                             SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                             SELECT 1 FROM processing_model_locks AS lock \
                              WHERE lock.processor = pj.processor \
                                AND lock.model_key = CASE \
                                  WHEN pj.processor = 'speaker_analysis' \
@@ -1443,7 +1560,7 @@ impl ProcessingStore {
                      WHERE pj.status = 'queued' \
                        AND (pj.next_attempt_at IS NULL OR pj.next_attempt_at <= CURRENT_TIMESTAMP) \
                        AND NOT EXISTS ( \
-                         SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                         SELECT 1 FROM processing_model_locks AS lock \
                          WHERE lock.processor = pj.processor \
                            AND lock.model_key = CASE \
                              WHEN pj.processor = 'speaker_analysis' \
@@ -1492,7 +1609,7 @@ impl ProcessingStore {
                      updated_at = CURRENT_TIMESTAMP \
                  WHERE id = ?1 AND status = 'queued' \
                    AND NOT EXISTS ( \
-                     SELECT 1 FROM processing_model_cleanup_locks AS lock \
+                     SELECT 1 FROM processing_model_locks AS lock \
                      WHERE lock.processor = processing_jobs.processor \
                        AND lock.model_key = CASE \
                          WHEN processing_jobs.processor = 'speaker_analysis' \
@@ -1544,7 +1661,7 @@ impl ProcessingStore {
             transaction.commit().await?;
             return Ok(None);
         }
-        if processing_job_model_cleanup_locked(&mut transaction, &job).await? {
+        if processing_job_model_locked(&mut transaction, &job).await? {
             transaction.commit().await?;
             return Ok(None);
         }
@@ -1594,7 +1711,7 @@ impl ProcessingStore {
                 ProcessingJobStatus::Running.as_str(),
             ));
         }
-        if processing_job_model_cleanup_locked(&mut transaction, &job).await? {
+        if processing_job_model_locked(&mut transaction, &job).await? {
             transaction.commit().await?;
             return Err(processing_job_invalid_transition(
                 job_id,
@@ -2183,6 +2300,15 @@ impl ProcessingStore {
         // crash mid-fan-out is reconciled by the startup equivalence-reuse backfill.
         deferred_reuse.run(&self.db, &stored_result).await?;
 
+        // Owner-only auto-linking, off-lock for the same reason: it reuses the
+        // Confirm path, which takes its own write transaction.
+        if job.processor == SPEAKER_ANALYSIS_PROCESSOR
+            && job.subject_type == AUDIO_SEGMENT_SUBJECT_TYPE
+            && speaker_analysis_auto_label_owner(&job)
+        {
+            self.auto_link_owner_speaker_clusters(job.subject_id).await?;
+        }
+
         Ok(ProcessingJobCompletion {
             job: completed_job,
             result: stored_result,
@@ -2236,6 +2362,7 @@ impl ProcessingStore {
                 recording_speaker_clusters.provider_cluster_id, \
                 COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
                 recording_speaker_clusters.person_id, \
+                recording_speaker_clusters.person_link_auto, \
                 recording_speaker_clusters.recognition_person_id, \
                 recording_speaker_clusters.recognition_confidence, \
                 recording_speaker_clusters.recognition_score \
@@ -2256,6 +2383,7 @@ impl ProcessingStore {
             "SELECT \
                 person_profiles.id, person_profiles.display_name, person_profiles.notes, \
                 COUNT(person_voice_embeddings.id) AS embedding_count, \
+                person_profiles.is_account_owner, \
                 person_profiles.created_at, person_profiles.updated_at \
              FROM person_profiles \
              LEFT JOIN person_voice_embeddings ON person_voice_embeddings.person_id = person_profiles.id \
@@ -2289,11 +2417,164 @@ impl ProcessingStore {
             .await
     }
 
+    /// The account owner's Person Profile id, if voice enrollment ever ran.
+    pub async fn account_owner_person_id(&self) -> Result<Option<i64>> {
+        Ok(
+            sqlx::query_scalar("SELECT id FROM person_profiles WHERE is_account_owner = 1")
+                .fetch_optional(self.db.read())
+                .await?,
+        )
+    }
+
+    /// Store an enrollment voiceprint against the account owner's Person
+    /// Profile, creating that profile on first enrollment.
+    ///
+    /// The row carries `source_cluster_id = NULL`, which already makes it immune
+    /// to the retention orphan sweep (`source_cluster_id IS NOT NULL AND NOT
+    /// EXISTS(…)`) — `is_deliberate = 1` is set for consistency with every other
+    /// user-created voiceprint, not as a second mechanism.
+    ///
+    /// Re-enrolling replaces the previous enrollment (the `source_cluster_id IS
+    /// NULL` rows) rather than stacking, so Settings re-enroll is idempotent.
+    /// Voiceprints the user named from the audio drawer carry a
+    /// `source_cluster_id` and are untouched.
+    ///
+    /// `model_id` must be the value the enrollment embedder handed back — the
+    /// speakrs **preset** id, which is what `recording_speaker_clusters.model_id`
+    /// holds and what `list_person_enrollments_for_speaker_model` filters on.
+    pub async fn upsert_account_owner_voiceprint(
+        &self,
+        display_name: &str,
+        provider: &str,
+        model_id: &str,
+        embedding: &[u8],
+    ) -> Result<PersonProfile> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(AppInfraError::SpeakerAnalysisEngine(
+                "person display name cannot be empty".to_string(),
+            ));
+        }
+        let mut transaction = self.db.begin_write().await?;
+        let existing: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM person_profiles WHERE is_account_owner = 1")
+                .fetch_optional(&mut *transaction)
+                .await?;
+        let person_id = match existing {
+            Some(person_id) => {
+                sqlx::query(
+                    "UPDATE person_profiles \
+                     SET display_name = ?2, updated_at = CURRENT_TIMESTAMP WHERE id = ?1",
+                )
+                .bind(person_id)
+                .bind(display_name)
+                .execute(&mut *transaction)
+                .await?;
+                person_id
+            }
+            None => sqlx::query(
+                "INSERT INTO person_profiles (display_name, is_account_owner) VALUES (?1, 1)",
+            )
+            .bind(display_name)
+            .execute(&mut *transaction)
+            .await?
+            .last_insert_rowid(),
+        };
+        sqlx::query(
+            "DELETE FROM person_voice_embeddings \
+             WHERE person_id = ?1 AND source_cluster_id IS NULL",
+        )
+        .bind(person_id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO person_voice_embeddings (\
+                person_id, provider, model_id, embedding, source_session_id, source_cluster_id, is_deliberate\
+             ) VALUES (?1, ?2, ?3, ?4, NULL, NULL, 1)",
+        )
+        .bind(person_id)
+        .bind(provider)
+        .bind(model_id)
+        .bind(embedding)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        self.get_required_person_profile(person_id).await
+    }
+
+    /// Owner-only high-confidence auto-linking.
+    ///
+    /// A cluster whose recognition suggestion is for the account-owner profile
+    /// *and* is `High` gets linked without asking. Everyone else stays
+    /// suggest-and-confirm. The score/ambiguity/rejection policy is entirely the
+    /// speaker-analysis provider's (`providers/shared.rs`): a suggestion only
+    /// exists here once all three of its guards passed, so this consumes the
+    /// tiers and never retunes them.
+    ///
+    /// Runs AFTER the completion transaction commits because it reuses
+    /// `link_speaker_cluster_to_person_inner` — the same path Confirm takes —
+    /// which opens its own write transaction.
+    ///
+    /// `add_embedding` is **false** and must stay false: a wrong auto-link that
+    /// wrote a voiceprint would make the next wrong match more likely, with no
+    /// human ever in the loop.
+    async fn auto_link_owner_speaker_clusters(&self, audio_segment_id: i64) -> Result<()> {
+        let Some(owner_id) = self.account_owner_person_id().await? else {
+            return Ok(());
+        };
+        // The rejection guard that matters here is the provider's 0.80 similarity
+        // check, which suppresses the suggestion before it is ever stored. This
+        // NOT EXISTS covers the one case that check cannot see: the *same*
+        // cluster, whose stored suggestion survives an unlink, being re-linked on
+        // the next speaker job for the segment.
+        let cluster_ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT DISTINCT recording_speaker_clusters.id \
+             FROM recording_speaker_clusters \
+             INNER JOIN speaker_turns ON speaker_turns.cluster_id = recording_speaker_clusters.id \
+             WHERE speaker_turns.audio_segment_id = ?1 \
+               AND recording_speaker_clusters.person_id IS NULL \
+               AND recording_speaker_clusters.transcript_local_label IS NULL \
+               AND recording_speaker_clusters.recognition_person_id = ?2 \
+               AND recording_speaker_clusters.recognition_confidence = 'high' \
+               AND NOT EXISTS (\
+                    SELECT 1 FROM speaker_recognition_rejections \
+                    WHERE speaker_recognition_rejections.person_id = ?2 \
+                      AND speaker_recognition_rejections.source_cluster_id = recording_speaker_clusters.id\
+               )",
+        )
+        .bind(audio_segment_id)
+        .bind(owner_id)
+        .fetch_all(self.db.read())
+        .await?;
+        for cluster_id in cluster_ids {
+            self.link_speaker_cluster_to_person_inner(cluster_id, owner_id, false, true)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Delete a Person Profile. Its voiceprints go with it (`ON DELETE CASCADE`) and its clusters
+    /// are unlinked (`ON DELETE SET NULL`).
+    ///
+    /// `person_link_auto` describes how `person_id` was decided, so it is cleared in the same
+    /// transaction the FK nulls `person_id` in — the FK cannot do it, and a cluster left claiming
+    /// an automatic link to nobody is a lie about how it was labelled that no later unlink can
+    /// correct (there is nothing left to unlink).
     pub async fn delete_person_profile(&self, person_id: i64) -> Result<()> {
+        let mut transaction = self.db.begin_write().await?;
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET person_link_auto = 0, updated_at = CURRENT_TIMESTAMP \
+             WHERE person_id = ?1 AND person_link_auto = 1",
+        )
+        .bind(person_id)
+        .execute(&mut *transaction)
+        .await?;
         sqlx::query("DELETE FROM person_profiles WHERE id = ?1")
             .bind(person_id)
-            .execute(self.db.write())
+            .execute(&mut *transaction)
             .await?;
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -2305,7 +2586,7 @@ impl ProcessingStore {
             "SELECT \
                 id, session_id, provider, model_id, provider_cluster_id, \
                 COALESCE(transcript_local_label, stable_label) AS speaker_label, \
-                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                person_id, person_link_auto, recognition_person_id, recognition_confidence, recognition_score, \
                 suggested_merge_target_cluster_id, suggested_merge_score \
              FROM recording_speaker_clusters \
              WHERE session_id = ?1 \
@@ -2340,11 +2621,24 @@ impl ProcessingStore {
         self.get_required_speaker_cluster(cluster_id).await
     }
 
+    /// Link a cluster to a person because a human said so (naming, "use saved
+    /// person", or confirming a suggestion).
     pub async fn link_speaker_cluster_to_person(
         &self,
         cluster_id: i64,
         person_id: i64,
         add_embedding: bool,
+    ) -> Result<SpeakerClusterView> {
+        self.link_speaker_cluster_to_person_inner(cluster_id, person_id, add_embedding, false)
+            .await
+    }
+
+    async fn link_speaker_cluster_to_person_inner(
+        &self,
+        cluster_id: i64,
+        person_id: i64,
+        add_embedding: bool,
+        automatic: bool,
     ) -> Result<SpeakerClusterView> {
         let mut transaction = self.db.begin_write().await?;
         let cluster = get_speaker_cluster_row(&mut *transaction, cluster_id).await?;
@@ -2392,19 +2686,24 @@ impl ProcessingStore {
         .await?;
         sqlx::query(
             "UPDATE recording_speaker_clusters \
-             SET person_id = ?2, transcript_local_label = NULL, updated_at = CURRENT_TIMESTAMP \
+             SET person_id = ?2, person_link_auto = ?3, transcript_local_label = NULL, \
+                 updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?1",
         )
         .bind(cluster_id)
         .bind(person_id)
+        .bind(i64::from(automatic))
         .execute(&mut *transaction)
         .await?;
         if add_embedding {
             if let Some(embedding) = cluster.embedding {
                 sqlx::query(
+                    // is_deliberate = 1: every caller that asks for an embedding
+                    // here is a human naming/confirming a cluster, so the
+                    // retention sweep must not collect it with the cluster.
                     "INSERT INTO person_voice_embeddings (\
-                        person_id, provider, model_id, embedding, source_session_id, source_cluster_id\
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        person_id, provider, model_id, embedding, source_session_id, source_cluster_id, is_deliberate\
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
                 )
                 .bind(person_id)
                 .bind(&cluster.provider)
@@ -2435,7 +2734,7 @@ impl ProcessingStore {
         .await?;
         sqlx::query(
             "UPDATE recording_speaker_clusters \
-             SET person_id = NULL, updated_at = CURRENT_TIMESTAMP \
+             SET person_id = NULL, person_link_auto = 0, updated_at = CURRENT_TIMESTAMP \
              WHERE id = ?1",
         )
         .bind(cluster_id)
@@ -2551,6 +2850,26 @@ impl ProcessingStore {
         .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
+        // A merge carries the source's *provenance* across too. `person_link_auto`
+        // describes how `person_id` was decided, and the source row is purged below —
+        // so a cluster the user confirmed, merged into an auto-linked one naming the
+        // SAME person, would leave every confirmed turn republished as a machine guess
+        // (`assigned` becomes `recognized` on the broker wire) with an undo affordance
+        // over a link the user made. Only same-person merges: a different source person
+        // is dropped by the merge, and its confirmation with it.
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET person_link_auto = 0, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?2 \
+               AND person_link_auto = 1 \
+               AND person_id IS NOT NULL \
+               AND person_id = (SELECT person_id FROM recording_speaker_clusters WHERE id = ?1) \
+               AND (SELECT person_link_auto FROM recording_speaker_clusters WHERE id = ?1) = 0",
+        )
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
         purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
         transaction.commit().await?;
         self.get_required_speaker_cluster(target_cluster_id).await
@@ -2648,6 +2967,7 @@ impl ProcessingStore {
             "SELECT \
                 person_profiles.id, person_profiles.display_name, person_profiles.notes, \
                 COUNT(person_voice_embeddings.id) AS embedding_count, \
+                person_profiles.is_account_owner, \
                 person_profiles.created_at, person_profiles.updated_at \
              FROM person_profiles \
              LEFT JOIN person_voice_embeddings ON person_voice_embeddings.person_id = person_profiles.id \
@@ -2665,7 +2985,7 @@ impl ProcessingStore {
             "SELECT \
                 id, session_id, provider, model_id, provider_cluster_id, \
                 COALESCE(transcript_local_label, stable_label) AS speaker_label, \
-                person_id, recognition_person_id, recognition_confidence, recognition_score, \
+                person_id, person_link_auto, recognition_person_id, recognition_confidence, recognition_score, \
                 suggested_merge_target_cluster_id, suggested_merge_score \
              FROM recording_speaker_clusters \
              WHERE id = ?1",
@@ -2693,6 +3013,7 @@ where
             recording_speaker_clusters.provider_cluster_id, \
             COALESCE(recording_speaker_clusters.transcript_local_label, recording_speaker_clusters.stable_label) AS speaker_label, \
             recording_speaker_clusters.person_id, \
+            recording_speaker_clusters.person_link_auto, \
             recording_speaker_clusters.recognition_person_id, \
             recording_speaker_clusters.recognition_confidence, \
             recording_speaker_clusters.recognition_score \
@@ -2704,6 +3025,19 @@ where
     .fetch_one(executor)
     .await?;
     map_speaker_turn_view(row)
+}
+
+/// Whether this speaker-analysis job was enqueued with "label my voice
+/// automatically" on. Read off the frozen payload, the same place
+/// `recognize_people` lives; an unparseable or legacy payload reads as off,
+/// because auto-linking is the one recognition step nobody confirms.
+fn speaker_analysis_auto_label_owner(job: &ProcessingJob) -> bool {
+    job.payload_json
+        .as_deref()
+        .and_then(|payload_json| {
+            serde_json::from_str::<SpeakerAnalysisJobPayload>(payload_json).ok()
+        })
+        .is_some_and(|payload| payload.auto_label_owner)
 }
 
 fn speaker_analysis_payload_from_transcription_job(job: &ProcessingJob) -> Result<Option<String>> {
@@ -3485,6 +3819,7 @@ mod tests {
             provider: "sherpa_onnx".to_string(),
             model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
             recognize_people: false,
+            auto_label_owner: false,
             options: serde_json::Map::new(),
         };
         let job = speaker_analysis_job_with_payload(Some(
@@ -3515,7 +3850,7 @@ mod tests {
 
     /// Builds a fresh in-memory SQLite pool with the full embedded migration chain
     /// applied, so the SQL-atomic claim path (`claim_next_queued_job_matching_processor`)
-    /// runs against the real `processing_jobs` + `processing_model_cleanup_locks` schema.
+    /// runs against the real `processing_jobs` + `processing_model_locks` schema.
     async fn migrated_store() -> ProcessingStore {
         // The migrate! macro resolves its path against CARGO_MANIFEST_DIR, so the
         // crate's `./migrations` chain applies the same here as it does at startup.
@@ -3999,6 +4334,7 @@ mod tests {
                 provider: "sherpa_onnx".to_string(),
                 model_id: Some("pyannote-3.0-nemo-titanet-small".to_string()),
                 recognize_people: false,
+                auto_label_owner: false,
                 options: serde_json::Map::new(),
             })
             .expect("legacy payload should serialize");
@@ -4017,10 +4353,11 @@ mod tests {
                 speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID,
             );
             let lock = store
-                .acquire_model_cleanup_locks(
+                .acquire_model_locks(
                     SPEAKER_ANALYSIS_PROCESSOR,
                     &BTreeSet::from([speakrs_key]),
                     "test-lock-token",
+                    MODEL_LOCK_REASON_CLEANUP,
                 )
                 .await
                 .expect("cleanup lock should acquire");
@@ -4038,7 +4375,7 @@ mod tests {
 
             // Once the lock is released, the same job becomes claimable.
             store
-                .release_model_cleanup_locks(&lock)
+                .release_model_locks(&lock)
                 .await
                 .expect("cleanup lock should release");
             let claimed = store
@@ -4048,6 +4385,666 @@ mod tests {
                 .expect("legacy sherpa job should be claimable once unlocked");
             assert_eq!(claimed.id, job.id);
             assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    fn model_lock_test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build")
+    }
+
+    const LOCKED_MODEL_PROVIDER: &str = "local_whisper";
+    const LOCKED_MODEL_ID: &str = "tiny.en";
+
+    fn locked_model_key() -> String {
+        model_key(LOCKED_MODEL_PROVIDER, LOCKED_MODEL_ID)
+    }
+
+    /// One queued transcription job frozen onto `local_whisper/tiny.en`, the model the tests below
+    /// lock as downloading or absent.
+    async fn enqueue_job_for_lockable_model(store: &ProcessingStore) -> ProcessingJob {
+        let payload = serde_json::to_string(&AudioTranscriptionJobPayload::new(
+            LOCKED_MODEL_PROVIDER,
+            Some(LOCKED_MODEL_ID.to_string()),
+            "en",
+        ))
+        .expect("payload should serialize");
+
+        store
+            .enqueue_job(
+                &ProcessingJobDraft::for_audio_segment_transcription(1).with_payload_json(payload),
+            )
+            .await
+            .expect("audio transcription job should enqueue")
+    }
+
+    async fn lock_model_as_downloading(store: &ProcessingStore) -> ProcessingModelLock {
+        store
+            .acquire_model_locks(
+                AUDIO_TRANSCRIPTION_PROCESSOR,
+                &BTreeSet::from([locked_model_key()]),
+                "test-download-token",
+                MODEL_LOCK_REASON_DOWNLOADING,
+            )
+            .await
+            .expect("download lock should acquire")
+    }
+
+    /// The live bug this gating fixes: a job whose model is downloading (the download wipes the
+    /// install dir first) or absent must never be claimed — running it burns a failure attempt on a
+    /// model that is not on disk, and three of those kill the segment in about six minutes.
+    #[test]
+    fn queued_job_is_not_claimed_while_its_model_is_locked() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            let _lock = lock_model_as_downloading(&store).await;
+
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error while locked")
+                    .is_none(),
+                "a job whose model is locked must not be claimed"
+            );
+
+            let parked = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(
+                parked.status,
+                ProcessingJobStatus::Queued,
+                "the parked job stays queued rather than running or failing"
+            );
+        });
+    }
+
+    /// Releasing the lock (download finished, model installed) must make the parked job claimable
+    /// again on the very next drain — nothing else needs to happen to it.
+    #[test]
+    fn releasing_the_model_lock_makes_the_parked_job_claimable() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            let lock = lock_model_as_downloading(&store).await;
+            assert!(store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should not error while locked")
+                .is_none());
+
+            store
+                .release_model_locks(&lock)
+                .await
+                .expect("download lock should release");
+
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed after release")
+                .expect("the parked job should be claimable once unlocked");
+            assert_eq!(claimed.id, job.id);
+            assert_eq!(claimed.status, ProcessingJobStatus::Running);
+        });
+    }
+
+    /// A `downloading` lock row left behind by a session that died mid-download must not survive
+    /// the *next* download of the same model. `release_model_locks` deletes by `lock_token`, so a
+    /// retry whose insert bounced off the orphan releases nothing: the model is installed and every
+    /// one of its jobs stays parked for the rest of the session (the stale sweep only runs at
+    /// startup).
+    #[test]
+    fn retrying_a_download_after_a_crash_releases_the_orphaned_lock() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+
+            store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([locked_model_key()]),
+                    "crashed-session-token",
+                    MODEL_LOCK_REASON_DOWNLOADING,
+                )
+                .await
+                .expect("orphaned download lock should acquire");
+
+            let retry = lock_model_as_downloading(&store).await;
+            store
+                .release_model_locks(&retry)
+                .await
+                .expect("download lock should release");
+
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed once the model is installed")
+                .expect("the parked job should be claimable after the retried download completes");
+            assert_eq!(claimed.id, job.id);
+        });
+    }
+
+    /// A download wipes the model directory before it writes, so its download lock is the only
+    /// thing keeping the model's jobs off a half-written directory. The absent lane is unowned and
+    /// recomputed on every download settle against the *selected* model only, so a selection change
+    /// mid-download drops this key from the absent set - it must not take the in-flight download's
+    /// protection with it.
+    #[test]
+    fn download_lock_survives_an_absent_resync_that_drops_the_model() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+
+            let download = lock_model_as_downloading(&store).await;
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::new(),
+                )
+                .await
+                .expect("absent-model lock should sync");
+
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error")
+                    .is_none(),
+                "a job must stay parked while its model is being downloaded"
+            );
+
+            store
+                .release_model_locks(&download)
+                .await
+                .expect("download lock should release");
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed once the download finished")
+                .expect("the parked job should be claimable once the download released");
+            assert_eq!(claimed.id, job.id);
+            assert_eq!(claimed.failure_count, 0, "parking must not count as a failure");
+        });
+    }
+
+    /// Ending a model download is two writes: re-derive the absent locks from what is on disk, and
+    /// drop the download lock. A download that failed or was cancelled left the install directory
+    /// wiped, so the absent lock is the only thing keeping its jobs parked. Taking that lock must
+    /// therefore work while the download lock still holds the row.
+    #[test]
+    fn absent_lock_taken_during_a_download_survives_the_download_lock_release() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            let download = lock_model_as_downloading(&store).await;
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+            store
+                .release_model_locks(&download)
+                .await
+                .expect("download lock should release");
+
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error")
+                    .is_none(),
+                "a model that is still absent must stay parked once its download lock is released"
+            );
+            let parked = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(parked.status, ProcessingJobStatus::Queued);
+            assert_eq!(parked.failure_count, 0, "parking must not count as a failure");
+            assert_eq!(parked.attempt_count, 0, "a parked job is never attempted");
+        });
+    }
+
+    /// `sync_model_locks_for_reason`'s DELETE is scoped `AND reason = ?`, and that scoping is
+    /// load-bearing: the deferred-startup thread runs concurrently with model-deletion commands
+    /// (which is why the stale threshold exists), so an unscoped delete would let the absent
+    /// resync wipe a LIVE cleanup lock and un-park jobs against a model whose files are being
+    /// deleted right now. Drop the clause and this fails; nothing else does.
+    #[test]
+    fn syncing_absent_locks_leaves_a_live_cleanup_lock_alone() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let other_key = model_key(LOCKED_MODEL_PROVIDER, "small.en");
+            let cleanup = store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([other_key.clone()]),
+                    "cleanup-token",
+                    MODEL_LOCK_REASON_CLEANUP,
+                )
+                .await
+                .expect("cleanup lock should acquire");
+            assert!(
+                cleanup.acquired_model_keys.contains(&other_key),
+                "the cleanup lane must own its row for this test to mean anything"
+            );
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+
+            let locked = store
+                .list_locked_model_keys()
+                .await
+                .expect("locked keys should list");
+            assert!(
+                locked.contains(&(AUDIO_TRANSCRIPTION_PROCESSOR.to_string(), other_key.clone())),
+                "a live cleanup lock must survive an absent resync"
+            );
+            assert!(
+                locked.contains(&(
+                    AUDIO_TRANSCRIPTION_PROCESSOR.to_string(),
+                    locked_model_key()
+                )),
+                "the absent lock must be taken"
+            );
+
+            // Emptying the absent lane drops only its own row.
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::new(),
+                )
+                .await
+                .expect("absent-model lock should sync");
+            let locked = store
+                .list_locked_model_keys()
+                .await
+                .expect("locked keys should list");
+            assert!(
+                locked.contains(&(AUDIO_TRANSCRIPTION_PROCESSOR.to_string(), other_key)),
+                "the cleanup lock is still not this lane's to drop"
+            );
+            assert!(
+                !locked.contains(&(
+                    AUDIO_TRANSCRIPTION_PROCESSOR.to_string(),
+                    locked_model_key()
+                )),
+                "the absent lock is gone once the model is installed"
+            );
+        });
+    }
+
+    /// The cleanup lane is a MUTEX, not a takeover. The old `INSERT OR IGNORE` made a second,
+    /// concurrent model-deletion command acquire nothing, so it treated every key it did not own
+    /// as protected and deleted none of them. The upsert added here for the crashed-download
+    /// retry also lets one `cleanup` acquisition steal another LIVE one's row — and
+    /// `release_model_locks` deletes by `lock_token`, so the deleter that finishes first unlocks
+    /// the model while the other is still removing its files. Its queued jobs are then claimed
+    /// against a half-deleted model and spend their failure attempts on it: exactly the loss
+    /// claim-time gating exists to prevent.
+    #[test]
+    fn a_second_cleanup_acquisition_cannot_steal_a_live_cleanup_lock() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+
+            let first = store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([locked_model_key()]),
+                    "first-delete-token",
+                    MODEL_LOCK_REASON_CLEANUP,
+                )
+                .await
+                .expect("the first cleanup lock should acquire");
+            assert!(
+                first.acquired_model_keys.contains(&locked_model_key()),
+                "the first deleter owns the row for this test to mean anything"
+            );
+
+            let second = store
+                .acquire_model_locks(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    &BTreeSet::from([locked_model_key()]),
+                    "second-delete-token",
+                    MODEL_LOCK_REASON_CLEANUP,
+                )
+                .await
+                .expect("the second cleanup acquisition should not error");
+            assert!(
+                second.acquired_model_keys.is_empty(),
+                "a live cleanup lock is not a second deleter's to take"
+            );
+
+            // The second command finishes and releases what it believes it holds.
+            store
+                .release_model_locks(&second)
+                .await
+                .expect("the second cleanup lock should release");
+
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error while locked")
+                    .is_none(),
+                "the first deleter still holds the lock, so its model's jobs stay parked"
+            );
+            let parked = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(parked.failure_count, 0, "parking must not count as a failure");
+            assert_eq!(parked.attempt_count, 0, "a parked job is never attempted");
+        });
+    }
+
+    /// `speaker_analysis_auto_label_owner`'s doc states the safety property outright: "an
+    /// unparseable or legacy payload reads as off, because auto-linking is the one
+    /// recognition step nobody confirms." Every other test drives it through a well-formed
+    /// payload with the field set, so the fail-safe branches — no payload at all, malformed
+    /// JSON, and a valid payload written before this field existed — were unexercised. The
+    /// third is the shape EVERY job enqueued before this PR carries, and reading it as `true`
+    /// would auto-link on a backlog the user never opted into.
+    #[test]
+    fn a_legacy_or_unreadable_speaker_payload_never_auto_labels() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+
+            let job_with = |payload_json: Option<String>| {
+                let mut draft = ProcessingJobDraft::for_audio_segment_speaker_analysis(1);
+                if let Some(payload_json) = payload_json {
+                    draft = draft.with_payload_json(payload_json);
+                }
+                draft
+            };
+
+            // A payload from before `autoLabelOwner` existed: valid, complete, and silent
+            // about the field.
+            let legacy = store
+                .enqueue_job(&job_with(Some(
+                    r#"{"provider":"speakrs","modelId":"pyannote-community-1-wespeaker","recognizePeople":true}"#
+                        .to_string(),
+                )))
+                .await
+                .expect("legacy job should enqueue");
+            assert!(
+                !speaker_analysis_auto_label_owner(&legacy),
+                "a payload written before the field existed must not auto-link"
+            );
+
+            let payloadless = store
+                .enqueue_job(&job_with(None))
+                .await
+                .expect("payloadless job should enqueue");
+            assert!(!speaker_analysis_auto_label_owner(&payloadless));
+
+            let malformed = store
+                .enqueue_job(&job_with(Some("not json".to_string())))
+                .await
+                .expect("malformed job should enqueue");
+            assert!(!speaker_analysis_auto_label_owner(&malformed));
+
+            // And the positive control, so this cannot pass by always returning false.
+            let mut payload = SpeakerAnalysisJobPayload::new(
+                "speakrs".to_string(),
+                Some("pyannote-community-1-wespeaker".to_string()),
+            );
+            payload.auto_label_owner = true;
+            let opted_in = store
+                .enqueue_job(&job_with(Some(
+                    serde_json::to_string(&payload).expect("payload should serialize"),
+                )))
+                .await
+                .expect("opted-in job should enqueue");
+            assert!(speaker_analysis_auto_label_owner(&opted_in));
+        });
+    }
+
+    /// The "Preparing" read-out. `processing_job_model_is_locked` swallows an unparseable payload
+    /// as `false` on purpose — an Apple Vision job or a malformed payload must never render as
+    /// parked — and nothing checked any of its four branches.
+    #[test]
+    fn a_parked_job_reads_as_locked_and_a_model_less_job_never_does() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let parked = enqueue_job_for_lockable_model(&store).await;
+            let unlocked = store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(2).with_payload_json(
+                        serde_json::to_string(&AudioTranscriptionJobPayload::new(
+                            LOCKED_MODEL_PROVIDER,
+                            Some("small.en".to_string()),
+                            "en",
+                        ))
+                        .expect("payload should serialize"),
+                    ),
+                )
+                .await
+                .expect("second job should enqueue");
+            let payloadless = store
+                .enqueue_job(&ProcessingJobDraft::for_audio_segment_transcription(3))
+                .await
+                .expect("payloadless job should enqueue");
+            let malformed = store
+                .enqueue_job(
+                    &ProcessingJobDraft::for_audio_segment_transcription(4)
+                        .with_payload_json("not json".to_string()),
+                )
+                .await
+                .expect("malformed job should enqueue");
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+            let locked = store
+                .list_locked_model_keys()
+                .await
+                .expect("locked keys should list");
+
+            assert!(
+                processing_job_model_is_locked(&parked, &locked),
+                "the job frozen onto the locked model is parked"
+            );
+            assert!(
+                !processing_job_model_is_locked(&unlocked, &locked),
+                "a job on a different model is not parked"
+            );
+            assert!(
+                !processing_job_model_is_locked(&payloadless, &locked),
+                "a job with no payload has no model key and is never parked"
+            );
+            assert!(
+                !processing_job_model_is_locked(&malformed, &locked),
+                "an unparseable payload must not render as parked"
+            );
+        });
+    }
+
+    /// The listing resolves the same flag, so the debug table can tell a parked job from one
+    /// waiting its turn. Without it the only visible change from claim-time gating is that jobs
+    /// stop failing and start sitting in `queued` forever, which reads as a hang.
+    #[test]
+    fn the_job_listing_reports_a_parked_job_as_model_locked() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+
+            let before = store
+                .list_jobs_by_processor(AUDIO_TRANSCRIPTION_PROCESSOR, None, None, 10, 0)
+                .await
+                .expect("jobs should list");
+            assert!(
+                before.iter().all(|listing| !listing.model_locked),
+                "nothing is locked yet"
+            );
+
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+
+            let after = store
+                .list_jobs_by_processor(AUDIO_TRANSCRIPTION_PROCESSOR, None, None, 10, 0)
+                .await
+                .expect("jobs should list");
+            let listing = after
+                .iter()
+                .find(|listing| listing.job.id == job.id)
+                .expect("the parked job should be listed");
+            assert!(
+                listing.model_locked,
+                "a queued job whose model is locked is PARKED, and the listing has to say so"
+            );
+        });
+    }
+
+    /// The point of claim-time gating over a retry policy: parking costs the job nothing. However
+    /// long the model stays missing, the job comes out with all three failure attempts intact.
+    #[test]
+    fn parked_job_never_spends_a_failure_attempt() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            // The absent-model lane: no command owns the lock, it is synced from what is on disk.
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::from([locked_model_key()]),
+                )
+                .await
+                .expect("absent-model lock should sync");
+
+            for _ in 0..10 {
+                assert!(store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should not error while locked")
+                    .is_none());
+            }
+
+            let parked = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(parked.failure_count, 0, "parking must not count as a failure");
+            assert_eq!(parked.attempt_count, 0, "a parked job is never attempted");
+
+            // The model arrives: the absent lock is synced away and the job runs with a full budget.
+            store
+                .sync_model_locks_for_reason(
+                    AUDIO_TRANSCRIPTION_PROCESSOR,
+                    MODEL_LOCK_REASON_ABSENT,
+                    &BTreeSet::new(),
+                )
+                .await
+                .expect("absent-model lock should clear");
+            let claimed = store
+                .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                .await
+                .expect("claim should succeed once the model exists")
+                .expect("the parked job should be claimable");
+            assert_eq!(claimed.id, job.id);
+            assert_eq!(claimed.failure_count, 0);
+            assert_eq!(claimed.attempt_count, 1);
+        });
+    }
+
+    /// Gating must not soften the genuine-failure cap: once the model is there, a job that really
+    /// keeps failing still gives up after `AUDIO_FAILED_JOB_MAX_ATTEMPTS` (3).
+    #[test]
+    fn genuine_failures_still_cap_at_three_after_parking() {
+        model_lock_test_runtime().block_on(async {
+            let store = migrated_store().await;
+            let job = enqueue_job_for_lockable_model(&store).await;
+            let lock = lock_model_as_downloading(&store).await;
+            store
+                .release_model_locks(&lock)
+                .await
+                .expect("download lock should release");
+
+            for expected_failures in 1..=AUDIO_FAILED_JOB_MAX_ATTEMPTS {
+                store
+                    .expire_processing_job_retry_backoff_for_test(job.id)
+                    .await
+                    .expect("retry backoff should expire for test");
+                let claimed = store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should succeed under the cap")
+                    .expect("job should be claimable under the cap");
+                assert_eq!(claimed.id, job.id);
+                let failed = store
+                    .mark_job_failed(job.id, Some("engine exploded"))
+                    .await
+                    .expect("mark_job_failed should succeed");
+                assert_eq!(failed.failure_count, expected_failures);
+                store
+                    .requeue_failed_job_within_attempt_cap(job.id)
+                    .await
+                    .expect("failed job requeue should succeed");
+            }
+
+            let terminal = store
+                .get_job(job.id)
+                .await
+                .expect("job should be readable")
+                .expect("job should exist");
+            assert_eq!(terminal.status, ProcessingJobStatus::Failed);
+            assert_eq!(terminal.failure_count, AUDIO_FAILED_JOB_MAX_ATTEMPTS);
+
+            store
+                .expire_processing_job_retry_backoff_for_test(job.id)
+                .await
+                .expect("retry backoff should expire for test");
+            assert!(
+                store
+                    .claim_next_queued_job_for_processor(AUDIO_TRANSCRIPTION_PROCESSOR)
+                    .await
+                    .expect("claim should succeed")
+                    .is_none(),
+                "a job at the failure cap stays terminally failed"
+            );
         });
     }
 
@@ -4694,7 +5691,7 @@ fn map_processing_job(row: SqliteRow) -> Result<ProcessingJob> {
     })
 }
 
-async fn processing_job_model_cleanup_locked(
+async fn processing_job_model_locked(
     transaction: &mut Transaction<'_, Sqlite>,
     job: &ProcessingJob,
 ) -> Result<bool> {
@@ -4704,7 +5701,7 @@ async fn processing_job_model_cleanup_locked(
     };
 
     let row = sqlx::query(
-        "SELECT 1 FROM processing_model_cleanup_locks \
+        "SELECT 1 FROM processing_model_locks \
          WHERE processor = ?1 AND model_key = ?2 \
          LIMIT 1",
     )
@@ -4714,6 +5711,21 @@ async fn processing_job_model_cleanup_locked(
     .await?;
 
     Ok(row.is_some())
+}
+
+/// Whether `job`'s model is one of the locked `(processor, model_key)` pairs from
+/// [`ProcessingStore::list_locked_model_keys`]. A `queued` job whose model is locked is the
+/// "Preparing" state: the claim predicate skips it, so it is not running, not failing, and not
+/// burning an attempt. A job with no model key (Apple Vision OCR, a payload-less job) is never
+/// locked, matching the claim predicate's `NULL` model key.
+pub fn processing_job_model_is_locked(
+    job: &ProcessingJob,
+    locked_model_keys: &BTreeSet<(String, String)>,
+) -> bool {
+    match processing_model_key_for_job(job) {
+        Ok(Some(model_key)) => locked_model_keys.contains(&(job.processor.clone(), model_key)),
+        Ok(None) | Err(_) => false,
+    }
 }
 
 fn processing_model_key_for_job(job: &ProcessingJob) -> Result<Option<String>> {
@@ -4829,6 +5841,7 @@ fn map_speaker_turn_view(row: SqliteRow) -> Result<SpeakerTurnView> {
         provider_cluster_id: row.get("provider_cluster_id"),
         speaker_label: row.get("speaker_label"),
         person_id: row.get("person_id"),
+        person_link_auto: row.get::<i64, _>("person_link_auto") != 0,
         suggested_person_id: row.get("recognition_person_id"),
         recognition_confidence: row.get("recognition_confidence"),
         recognition_score: row
@@ -4847,6 +5860,7 @@ fn map_person_profile(row: SqliteRow) -> Result<PersonProfile> {
         display_name: row.get("display_name"),
         notes: row.get("notes"),
         embedding_count: row.get("embedding_count"),
+        is_account_owner: row.get::<i64, _>("is_account_owner") != 0,
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -4861,6 +5875,7 @@ fn map_speaker_cluster_view(row: SqliteRow) -> Result<SpeakerClusterView> {
         provider_cluster_id: row.get("provider_cluster_id"),
         speaker_label: row.get("speaker_label"),
         person_id: row.get("person_id"),
+        person_link_auto: row.get::<i64, _>("person_link_auto") != 0,
         suggested_person_id: row.get("recognition_person_id"),
         recognition_confidence: row.get("recognition_confidence"),
         recognition_score: row

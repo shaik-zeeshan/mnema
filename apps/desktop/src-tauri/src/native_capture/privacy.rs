@@ -161,7 +161,9 @@ impl PrivacyFilterRefreshRuntime {
             return None;
         }
         let generation = self.requested_generation;
-        let reason = self.latest_reason.unwrap_or(PrivacyRefreshReason::FallbackPoll);
+        let reason = self
+            .latest_reason
+            .unwrap_or(PrivacyRefreshReason::FallbackPoll);
         let token = COLLECTION_TOKEN_SOURCE.fetch_add(1, Ordering::Relaxed);
         self.collecting_generation = Some(generation);
         self.collecting_token = Some(token);
@@ -827,6 +829,58 @@ mod tests {
             fresh_applied,
             "the live session's own collector must still apply its result"
         );
+    }
+
+    // A privacy rule for an app that is not installed yet carries a display name
+    // and no bundle id. It must reach NEITHER consumer until it resolves — a
+    // half-resolved rule that silently records an app the user believes is
+    // excluded is the failure mode. Both lists derive from
+    // `decision.excluded_bundle_ids`, so proving `evaluate_privacy` drops the
+    // pending rule proves it for the screen filter and the tap together.
+    #[test]
+    fn a_pending_privacy_rule_reaches_neither_the_screen_filter_nor_the_tap() {
+        let settings = capture_types::PrivacySettings {
+            excluded_apps: vec![
+                capture_metadata::ExcludedAppEntry {
+                    id: "resolved".to_string(),
+                    enabled: true,
+                    bundle_id: "com.example.installed".to_string(),
+                    display_name: "Installed".to_string(),
+                },
+                capture_metadata::ExcludedAppEntry {
+                    id: "pending".to_string(),
+                    enabled: true,
+                    bundle_id: String::new(),
+                    display_name: "Not Installed Yet".to_string(),
+                },
+            ],
+            filter_system_audio: true,
+        };
+
+        let decision = capture_metadata::evaluate_privacy(
+            &settings,
+            &capture_metadata::MetadataContext::default(),
+        );
+        let only_resolved = vec!["com.example.installed".to_string()];
+        assert_eq!(decision.excluded_bundle_ids, only_resolved);
+        assert_eq!(decision.matched_rule_ids, vec!["resolved".to_string()]);
+
+        let screen_filter =
+            privacy_filter_from_decision(decision.clone()).expect("the resolved rule applies");
+        assert_eq!(screen_filter.excluded_bundle_ids, only_resolved);
+
+        let update = PrivacyFilterUpdate {
+            decision: decision.clone(),
+            filter: None,
+            filter_system_audio: true,
+        };
+        assert_eq!(update.excluded_bundle_ids(), only_resolved.as_slice());
+        let initial = InitialPrivacyFilter {
+            decision,
+            filter: None,
+            filter_system_audio: true,
+        };
+        assert_eq!(initial.excluded_bundle_ids(), only_resolved);
     }
 
     #[test]

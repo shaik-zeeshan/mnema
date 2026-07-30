@@ -246,6 +246,7 @@ export class RecordingStore {
   draftTranscriptionChunkSeconds = $state(30);
   draftSpeakerSeparateSpeakers = $state(false);
   draftSpeakerRecognizeSavedPeople = $state(false);
+  draftSpeakerAutoLabelOwner = $state(true);
   draftSpeakerProvider = $state("speakrs");
   draftSpeakerModelId = $state<string | null>("pyannote-community-1-wespeaker");
   draftSpeakerTimeoutMinutes = $state(10);
@@ -455,6 +456,7 @@ export class RecordingStore {
     );
     this.draftSpeakerSeparateSpeakers = s.speakerAnalysis?.separateSpeakers ?? false;
     this.draftSpeakerRecognizeSavedPeople = s.speakerAnalysis?.recognizeSavedPeople ?? false;
+    this.draftSpeakerAutoLabelOwner = s.speakerAnalysis?.autoLabelOwner ?? true;
     // Coerce legacy saved values: the sherpa_onnx provider (and its model ids)
     // no longer exist, so old users' saved settings must resolve to the speakrs
     // default — otherwise the preset picker would select a provider/model the

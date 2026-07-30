@@ -1,6 +1,12 @@
 {
   "productName": "mnema-dev",
   "identifier": "day.mnema.dev",
+  "build": {
+    "beforeBuildCommand": "../../scripts/prepare-mnema-cli-sidecar.sh debug && bun run build"
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false
+  },
   "plugins": {
     "deep-link": {
       "desktop": {

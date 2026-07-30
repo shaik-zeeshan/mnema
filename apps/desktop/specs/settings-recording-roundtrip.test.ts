@@ -128,6 +128,10 @@ const CANONICAL_SETTINGS: RecordingSettings = {
   speakerAnalysis: {
     separateSpeakers: true,
     recognizeSavedPeople: false,
+    // Deliberately `false`, i.e. the NON-default: the Rust side defaults this to
+    // true, so leaving it out made both halves of the comparison `undefined` and
+    // the round-trip guard blind to a dropped or swapped `autoLabelOwner`.
+    autoLabelOwner: false,
     provider: "speakrs",
     modelId: "pyannote-community-1-wespeaker",
     timeoutSeconds: 600,
@@ -229,6 +233,7 @@ function draftsFromCanonical(s: RecordingSettings): RecordingDraftState {
 
     draftSpeakerSeparateSpeakers: s.speakerAnalysis.separateSpeakers,
     draftSpeakerRecognizeSavedPeople: s.speakerAnalysis.recognizeSavedPeople,
+    draftSpeakerAutoLabelOwner: s.speakerAnalysis.autoLabelOwner,
     draftSpeakerProvider: s.speakerAnalysis.provider,
     draftSpeakerModelId: s.speakerAnalysis.modelId,
     // store holds minutes; live builder converts back to seconds.

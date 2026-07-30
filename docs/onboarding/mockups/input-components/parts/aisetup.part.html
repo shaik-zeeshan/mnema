@@ -1,0 +1,884 @@
+<section class="cmp" id="cmp-aisetup">
+  <header class="cmp-head">
+    <span class="ob-m">Component</span>
+    <h2 class="ob-disp sm">AI provider setup</h2>
+    <p class="ob-body">
+      Whether AI features run at all, whether your words leave this Mac, and which model answers —
+      decided by a connection that has to prove itself before it counts.
+    </p>
+  </header>
+
+  <div class="cmp-stage">
+    <div class="ai-panel" id="aisetup-panel"></div>
+  </div>
+
+  <div class="cmp-notes">
+    <p class="ob-m">States you can drive</p>
+    <div class="ob-acts drivers">
+      <button class="ob-btn sm" type="button" data-drive="reset">Fresh screen (the fork)</button>
+      <button class="ob-btn sm" type="button" data-drive="skip">Skip — what goes dark</button>
+      <button class="ob-btn sm" type="button" data-drive="empty-picker">Picker with no provider</button>
+      <button class="ob-btn sm" type="button" data-drive="key-good">Key: verifying → valid</button>
+      <button class="ob-btn sm" type="button" data-drive="key-bad">Key: rejected (401)</button>
+      <button class="ob-btn sm" type="button" data-drive="unreachable">Endpoint unreachable</button>
+      <button class="ob-btn sm" type="button" data-drive="scan-hit">Local scan finds Ollama</button>
+      <button class="ob-btn sm" type="button" data-drive="scan-miss">Local scan finds nothing</button>
+      <button class="ob-btn sm" type="button" data-drive="rack">Two Ollamas — the rack</button>
+      <button class="ob-btn sm" type="button" data-drive="stale">Default model vanished</button>
+      <button class="ob-btn sm" type="button" data-drive="held">AI on, nothing to run it</button>
+    </div>
+    <p class="ob-fine drive-hint" id="aisetup-hint">
+      Nothing here talks to a network. A deterministic fake table decides reachability: a key containing
+      <span class="mono">reject</span> is refused 401, a host that is not in the table refuses the connection,
+      and the scan only answers on ports something is actually listening on.
+    </p>
+
+    <hr class="ob-rule" />
+
+    <p class="ob-m">What this replaces</p>
+    <ul class="ob-fine impl">
+      <li><b>ChangeSettingsScreen.svelte:448</b> — the bare AI switch. Becomes the outcome of connecting, not
+        the entry point: nothing is asked until the user answers "later" or "now".</li>
+      <li><b>:463–471 / :483–492</b> — the two rows of <span class="mono">+ kind</span> buttons (one per local
+        kind, one per cloud kind). Deleted. A single grouped selector plus <i>Scan this Mac</i> replaces
+        eight buttons that all did the same thing: append an empty, unverified row.</li>
+      <li><b>:516</b> base URL, <b>:525</b>/<b>:539</b> key field + <i>Save key</i> — the Save button goes.
+        Reaching the provider <i>is</i> the save: the key is sent, the model list comes back, and the list is
+        the receipt. A key that cannot list models never becomes a saved provider.</li>
+      <li><b>:553</b> the local endpoint field — demoted to the fallback under the scan. Typing a port is for
+        the engine on another machine, not for the one already running here.</li>
+      <li><b>:570</b> <span class="mono">ModelPickerMenu</span> — the merged menu stays as the readout, but the
+        chips inside each live card are the selection surface, so a model that was not in the last live
+        listing is not offerable.</li>
+    </ul>
+
+    <p class="ob-m">Backend change this design requires</p>
+    <p class="ob-fine">
+      This component's readiness rule is <b>stricter than production</b>: a default model counts only if its
+      provider <i>verified live</i> and that live listing <i>still contains that exact model id</i>. Today the
+      app can finish onboarding with AI enabled and no working model, which lands straight on the known bug
+      where a job against an absent model dies in about six minutes and is never retried. Four call sites:
+    </p>
+    <ul class="ob-fine impl">
+      <li><b>onboarding-ai.svelte.ts:144–157</b> — <span class="mono">aiConfigMissing</span> treats a cloud
+        provider as configured once <i>a string was written to the keychain</i>. No validity check at all, and
+        non-cloud kinds get no endpoint check either. Needs to read a verification result, not key presence.</li>
+      <li><b>:189–193</b> — <span class="mono">aiUnverifiedNote</span> ("Key saved but unverified") already
+        knows the truth and is deliberately only a hint. Promote it: unverified must fail
+        <span class="mono">aiConfigReady</span>, not annotate it.</li>
+      <li><b>ChangeSettingsScreen.svelte:182</b> — <span class="mono">aiBlocked</span> reads that same soft
+        readiness, so the one hard gate in onboarding is gated on an untested key.</li>
+      <li><b>:188–192</b> — the <span class="mono">$effect</span> <b>auto-enables</b> the feature on the
+        false→true readiness transition. Auto-enabling on an unverified provider is how the user ends up with
+        AI on and nothing behind it. Keep the auto-enable, but fire it off verified readiness only.</li>
+      <li><b>syncFromSettings (:114–124)</b> — restores a persisted default model without checking it still
+        exists in any live pool. A model the provider dropped (renamed, deprecated, unpulled locally) survives
+        a reload as a valid-looking default. It must be re-validated against the fetched pool and cleared with
+        a visible reason when it is gone.</li>
+    </ul>
+    <p class="ob-fine">
+      Concretely: one <span class="mono">verify_ai_provider(id) → { models: [], latency_ms }</span> command that
+      lists models with the key the vault holds, called on connect and on <i>Test</i>; readiness derived from
+      its result plus a membership check of the chosen model id. The frontend never needs the key back.
+    </p>
+
+    <p class="ob-m">Secret handling</p>
+    <p class="ob-fine">
+      The key field is <span class="mono">type="password"</span>, <span class="mono">autocomplete="off"</span>,
+      <span class="mono">data-1p-ignore</span>, <span class="mono">data-lpignore</span>, and has no
+      <span class="mono">value</span> attribute — the demo buttons assign the input <i>property</i>. The string
+      is read once, sent, and the field is cleared; state keeps a boolean, never the text. Nothing renders it,
+      so it never reaches markup, an <span class="mono">aria-label</span>, a title, or a URL.
+    </p>
+  </div>
+
+  <style>
+    #cmp-aisetup .ai-panel { color: var(--app-text); }
+    #cmp-aisetup .mono { font-variant-numeric: tabular-nums; }
+    #cmp-aisetup .err { color: var(--app-danger); }
+
+    /* rows */
+    #cmp-aisetup .row { display: flex; align-items: flex-start; gap: 16px; justify-content: space-between; padding: 11px 0; }
+    #cmp-aisetup .row + .row { border-top: 1px solid var(--app-border); }
+    #cmp-aisetup .row .t { color: var(--app-text-strong); font-size: var(--text-md); }
+    #cmp-aisetup .row .d { color: var(--app-text-subtle); font-size: var(--text-sm); max-width: 48ch; }
+    #cmp-aisetup .grow { flex: 1 1 auto; min-width: 0; }
+    #cmp-aisetup .block { display: block; }
+
+    /* fields */
+    #cmp-aisetup .fld {
+      font: inherit; font-size: var(--text-sm); color: var(--app-text); background: var(--app-surface-raised);
+      border: 1px solid var(--app-border-strong); border-radius: 7px; width: 100%; min-width: 0;
+      /* one control height, shared with every button that sits beside one */
+      height: var(--ob-ctl-h); padding: 0 10px;
+    }
+    #cmp-aisetup .fld::placeholder { color: var(--app-text-faint); }
+    #cmp-aisetup select.fld { cursor: pointer; }
+    #cmp-aisetup .line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    /* a button on a field's row is the field's height, not the inline height */
+    #cmp-aisetup .line > .ob-btn { min-height: var(--ob-ctl-h); }
+    #cmp-aisetup .line > .fld { flex: 1 1 200px; }
+    #cmp-aisetup .line > select.fld { flex: 0 1 200px; }
+    #cmp-aisetup .fld:focus-visible, #cmp-aisetup summary:focus-visible,
+    #cmp-aisetup [role="switch"]:focus-visible, #cmp-aisetup .mchip:focus-visible,
+    #cmp-aisetup .opt:focus-visible { outline: none; box-shadow: var(--app-ring); }
+
+    /* switch */
+    #cmp-aisetup [role="switch"] {
+      width: 40px; height: 22px; flex: 0 0 auto; border-radius: 999px; cursor: pointer; padding: 0;
+      border: 1px solid var(--app-border-strong); background: var(--app-surface-raised); position: relative;
+      transition: background .14s ease, border-color .14s ease;
+    }
+    #cmp-aisetup [role="switch"] i {
+      position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+      background: var(--app-text-faint); transition: transform .14s ease, background .14s ease;
+    }
+    #cmp-aisetup [role="switch"][aria-checked="true"] { background: var(--app-accent-bg); border-color: var(--app-accent-border); }
+    #cmp-aisetup [role="switch"][aria-checked="true"] i { transform: translateX(18px); background: var(--app-accent); }
+
+    /* lamps + pills */
+    #cmp-aisetup .lamp { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; background: var(--app-text-faint); display: inline-block; }
+    #cmp-aisetup .lamp.live { background: var(--app-accent); box-shadow: 0 0 6px var(--app-accent-glow); }
+    #cmp-aisetup .lamp.bad { background: var(--app-danger); }
+    #cmp-aisetup .lamp.busy { background: var(--app-warn); }
+    #cmp-aisetup .pill {
+      display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-xs); letter-spacing: .06em;
+      border: 1px solid var(--app-border); border-radius: 999px; padding: 3px 9px; color: var(--app-text-muted);
+      background: var(--app-surface-subtle); text-transform: uppercase; white-space: nowrap;
+    }
+    #cmp-aisetup .pill.ok { color: var(--app-accent); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    #cmp-aisetup .pill.bad { color: var(--app-danger); border-color: var(--app-danger-border); background: var(--app-danger-bg); }
+    #cmp-aisetup .pill.info { color: var(--app-info); border-color: var(--app-info-border); background: var(--app-info-bg); }
+
+    /* the fork */
+    #cmp-aisetup .choose { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    @media (max-width: 600px) { #cmp-aisetup .choose { grid-template-columns: 1fr; } }
+    #cmp-aisetup .ob-btn.loud { padding: 17px 16px; font-size: var(--text-md); line-height: 1.4; }
+    #cmp-aisetup .loss { margin-top: 13px; display: flex; flex-direction: column; gap: 5px; }
+    #cmp-aisetup .loss span { font-size: var(--text-sm); color: var(--app-text-subtle); display: flex; gap: 9px; }
+    #cmp-aisetup .loss span::before { content: "—"; color: var(--app-text-faint); }
+
+    /* data-path line — one persistent line, not a fork */
+    #cmp-aisetup .flow {
+      margin-top: 10px; display: flex; align-items: center; gap: 9px; font-size: var(--text-xs);
+      color: var(--app-text-muted); border: 1px dashed var(--app-border-strong); border-radius: 8px; padding: 8px 11px;
+    }
+    #cmp-aisetup .flow .wire { flex: 1 1 40px; height: 1px; background: repeating-linear-gradient(90deg, var(--app-text-faint) 0 5px, transparent 5px 10px); }
+    #cmp-aisetup .flow.out { color: var(--app-info); border-color: var(--app-info-border); }
+    #cmp-aisetup .flow.out .wire { background: repeating-linear-gradient(90deg, var(--app-info) 0 5px, transparent 5px 10px); }
+
+    /* probe progress — only ever driven by a real in-flight probe */
+    /* the track is invisible at rest so an idle form has no stray rule in it */
+    #cmp-aisetup .bar { height: 3px; border-radius: 999px; background: transparent; overflow: hidden; margin-top: 9px; }
+    #cmp-aisetup .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--app-accent-strong), var(--app-accent)); transition: width .12s linear; }
+    #cmp-aisetup .status:not(:empty) { margin-top: 7px; min-height: 1.7em; }
+    #cmp-aisetup .status.ok { color: var(--app-accent); }
+
+    /* scan ladder */
+    #cmp-aisetup .scan { border: 1px solid var(--app-border); border-radius: 9px; overflow: hidden; margin-top: 10px; }
+    #cmp-aisetup .scan .sr { display: flex; align-items: center; gap: 10px; padding: 9px 12px; font-size: var(--text-sm); }
+    #cmp-aisetup .scan .sr + .sr { border-top: 1px solid var(--app-border); }
+    #cmp-aisetup .scan .addr { color: var(--app-text-muted); flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #cmp-aisetup .scan .ms { font-size: var(--text-xs); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+
+    /* connection card / rack */
+    #cmp-aisetup .prov { border: 1px solid var(--app-border); border-radius: 9px; padding: 11px 12px; margin-top: 8px; background: var(--app-surface-subtle); }
+    #cmp-aisetup .prov.pinned { border-color: var(--app-accent-border); }
+    #cmp-aisetup .prov-head { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+    #cmp-aisetup .prov-head .name { color: var(--app-text-strong); font-size: var(--text-sm); flex: 1 1 140px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #cmp-aisetup .models { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+    #cmp-aisetup .mchip {
+      font: inherit; font-size: var(--text-xs); border: 1px solid var(--app-border); background: var(--app-surface-raised);
+      color: var(--app-text-muted); border-radius: 999px; padding: 4px 10px; cursor: pointer;
+    }
+    #cmp-aisetup .mchip:hover { border-color: var(--app-border-hover); }
+    #cmp-aisetup .mchip[aria-pressed="true"] { color: var(--app-accent); border-color: var(--app-accent-border); background: var(--app-accent-bg); }
+    #cmp-aisetup .mchip.enter { animation: aisetup-pop .18s ease-out both; }
+    @keyframes aisetup-pop { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+    /* default-model readout (native <details>) */
+    #cmp-aisetup .picker { position: relative; width: 290px; max-width: 100%; flex: 0 1 auto; }
+    #cmp-aisetup .picker > summary {
+      list-style: none; cursor: pointer; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      font-size: var(--text-sm); border: 1px solid var(--app-border-strong); border-radius: 7px;
+      padding: 8px 10px; background: var(--app-surface-raised); color: var(--app-text);
+    }
+    #cmp-aisetup .picker > summary::-webkit-details-marker { display: none; }
+    #cmp-aisetup .picker > summary[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+    #cmp-aisetup .picker > summary .ph { color: var(--app-text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #cmp-aisetup .pop {
+      position: absolute; z-index: 10; right: 0; min-width: 100%; width: max-content; max-width: 360px;
+      margin-top: 4px; max-height: 250px; overflow: auto;
+      background: var(--app-surface-raised); border: 1px solid var(--app-border-strong); border-radius: 8px;
+      box-shadow: var(--app-shadow-popover); padding: 6px;
+    }
+    #cmp-aisetup .pop .grp { font-size: var(--text-xs); letter-spacing: .14em; text-transform: uppercase; color: var(--app-text-subtle); padding: 8px 8px 4px; display: flex; justify-content: space-between; gap: 8px; }
+    #cmp-aisetup .opt {
+      display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 10px; text-align: left;
+      font: inherit; font-size: var(--text-sm); color: var(--app-text); background: transparent; border: 0;
+      border-radius: 6px; min-height: var(--ob-ctl-h); padding: 0 8px; cursor: pointer;
+    }
+    #cmp-aisetup .opt:hover:not(:disabled) { background: var(--app-surface-hover); }
+    #cmp-aisetup .opt:disabled { color: var(--app-text-faint); cursor: not-allowed; }
+    #cmp-aisetup .opt[aria-selected="true"] { color: var(--app-accent); }
+    #cmp-aisetup .opt .side { font-size: var(--text-xs); color: var(--app-text-subtle); font-variant-numeric: tabular-nums; }
+
+    /* gate footer */
+    #cmp-aisetup .gate { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--app-border); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    #cmp-aisetup .gate .msg { font-size: var(--text-sm); flex: 1 1 220px; }
+    #cmp-aisetup .gate.held .msg { color: var(--app-warn); }
+    #cmp-aisetup .gate.ok .msg { color: var(--app-accent); }
+
+    /* notes */
+    #cmp-aisetup .drivers { margin: 10px 0 12px; }
+    #cmp-aisetup .drive-hint { max-width: none; }
+    #cmp-aisetup .impl { margin: 8px 0 18px; padding-left: 18px; max-width: 78ch; }
+    #cmp-aisetup .impl li { margin-bottom: 6px; }
+    #cmp-aisetup .impl b { color: var(--app-text-strong); font-weight: 400; }
+    #cmp-aisetup .cmp-notes .ob-m { margin-top: 14px; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #cmp-aisetup *, #cmp-aisetup *::before, #cmp-aisetup *::after { transition: none !important; animation: none !important; }
+    }
+  </style>
+
+  <script>
+  (() => {
+    "use strict";
+    const root = document.getElementById("cmp-aisetup");
+    const panel = document.getElementById("aisetup-panel");
+
+    /* ── deterministic fake world ─────────────────────────────────────────
+       Nothing here touches a network. Reachability rules:
+         · cloud       — needs a key; a key containing "reject" is refused 401.
+         · compatible  — needs a key AND a base URL host in COMPAT_HOSTS.
+         · local       — host:port must be in RUNNING (the scan-miss driver empties it).
+       A key string is never stored, rendered, or put in an attribute. ── */
+    const KINDS = {
+      ollama:            { label: "Ollama",           cloud: false, endpoint: "http://localhost:11434" },
+      llamafile:         { label: "Llamafile",        cloud: false, endpoint: "http://localhost:8080" },
+      anthropic:         { label: "Anthropic",        cloud: true,  host: "api.anthropic.com" },
+      openai:            { label: "OpenAI",           cloud: true,  host: "api.openai.com" },
+      openai_compatible: { label: "OpenAI-compatible", cloud: true, host: null },
+    };
+    const CLOUD_MODELS = {
+      anthropic:         ["claude-opus-4-1", "claude-sonnet-4-5", "claude-haiku-4-5"],
+      openai:            ["gpt-5.1", "gpt-5-mini", "o4-mini"],
+      openai_compatible: ["deepseek-v3", "llama-3.3-70b-instruct", "mixtral-8x22b"],
+    };
+    const COMPAT_HOSTS = ["api.fireworks.ai", "openrouter.ai", "api.together.xyz"];
+    const ALL_RUNNING = {
+      "localhost:11434":    ["llama3.1:8b", "qwen2.5:14b", "gemma3:12b"],
+      "127.0.0.1:11434":    ["llama3.1:8b", "qwen2.5:14b", "gemma3:12b"],
+      "studio.local:11434": ["llama3.3:70b", "qwen2.5:14b"],
+      "localhost:8080":     ["llamafile-tinyllama-1.1b"],
+    };
+    let RUNNING = ALL_RUNNING;                       // scan-miss driver swaps in {}
+    const SCAN_PORTS = [
+      { port: 11434, kind: "ollama",    name: "Ollama" },
+      { port: 8080,  kind: "llamafile", name: "Llamafile" },
+      { port: 1234,  kind: "llamafile", name: "OpenAI-compatible server" },
+    ];
+
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const hostOf = (url) => {
+      const t = String(url || "").trim();
+      if (!t) return "";
+      try { return new URL(t).host || t; } catch { return t.replace(/^\w+:\/\//, ""); }
+    };
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+
+    /** The one place "is this thing actually reachable" is decided. */
+    async function probe(p, onProgress) {
+      const t0 = performance.now();
+      const total = 380 + (p.id.length % 5) * 90;    // deterministic fake latency
+      for (let t = 0; t < total; t += 60) {
+        if (onProgress) onProgress(Math.min(1, t / total));
+        await sleep(60);
+      }
+      if (onProgress) onProgress(1);
+      const ms = Math.round(performance.now() - t0);
+      const kind = KINDS[p.kind];
+      if (kind.cloud) {
+        if (!p.keySaved) return { status: "error", reason: "no key yet", ms };
+        if (p.keyRejected) return { status: "error", reason: "401 — the provider rejected this key", ms };
+        if (p.kind === "openai_compatible") {
+          const h = hostOf(p.baseUrl);
+          if (!h) return { status: "error", reason: "no base URL", ms };
+          if (!COMPAT_HOSTS.includes(h)) return { status: "error", reason: "could not reach " + h, ms };
+        }
+        return { status: "live", models: CLOUD_MODELS[p.kind], ms };
+      }
+      const h = hostOf(p.baseUrl || kind.endpoint);
+      const models = RUNNING[h];
+      if (!models) return { status: "error", reason: "connection refused at " + h, ms };
+      return { status: "live", models, ms };
+    }
+
+    /* ── state ─────────────────────────────────────────────────────────── */
+    function newState(extra) {
+      return Object.assign({
+        mode: null,            // null = the fork · "later" · "now"
+        kind: "ollama",
+        url: "",
+        providers: [],
+        model: null,           // { provider, model }
+        aiOn: false,
+        wasReady: false,
+        scan: null,
+        scanning: false,
+        manual: "",
+        status: "",            // last probe result line — kept in state so a
+        statusCls: "",         // re-render can never wipe the verdict
+      }, extra || {});
+    }
+    let s = newState();
+
+    /** ADR 0035: identity is a per-instance id, so the 2nd Ollama is `ollama-2`. */
+    function addProvider(st, kind, baseUrl) {
+      const ids = st.providers.map((p) => p.id);
+      let id = kind, n = 2;
+      while (ids.includes(id)) id = kind + "-" + n++;
+      const p = { id, kind, baseUrl: baseUrl ?? "", status: "new", models: [], reason: null, ms: null, keySaved: false, keyRejected: false };
+      st.providers.push(p);
+      return p;
+    }
+    function label(p) {
+      const k = KINDS[p.kind];
+      const h = hostOf(p.baseUrl || k.endpoint || k.host || "");
+      // Two instances of one kind can even share a host (two accounts), so the
+      // 2nd+ instance carries its id suffix — the only place an id ever surfaces.
+      const suffix = p.id === p.kind ? "" : " (" + p.id.slice(p.kind.length + 1) + ")";
+      return (h ? k.label + " · " + h : k.label) + suffix;
+    }
+    function statusWord(p) {
+      if (p.status === "live") return plural(p.models.length, "model") + " · " + p.ms + " ms";
+      if (p.status === "checking") return "checking…";
+      if (p.status === "error") return p.keyRejected ? "key rejected" : "not answering";
+      return "not tested";
+    }
+
+    /** STRICTER THAN PRODUCTION: the provider must have verified live AND still
+     *  list this exact model id. See the notes block for the four call sites. */
+    function ready(st) {
+      if (!st.model) return false;
+      const p = st.providers.find((x) => x.id === st.model.provider);
+      return !!(p && p.status === "live" && p.models.includes(st.model.model));
+    }
+    function missingReason(st) {
+      if (st.providers.length === 0) return "Connect a reasoning engine to use Ask AI.";
+      if (!st.model) {
+        const live = st.providers.filter((p) => p.status === "live");
+        return live.length ? "Choose a default model." : "No engine has verified yet — nothing can answer.";
+      }
+      const p = st.providers.find((x) => x.id === st.model.provider);
+      if (!p) return "Pick a default model from a connected engine.";
+      if (p.status === "live" && !p.models.includes(st.model.model)) {
+        return label(p) + " no longer lists " + st.model.model + " — pick another.";
+      }
+      if (p.status === "error") return label(p) + " is not answering — " + p.reason + ".";
+      return "Verify " + label(p) + " before finishing.";
+    }
+    /** Auto-enable on the false→true transition — but off VERIFIED readiness. */
+    function syncGate(st) {
+      const r = ready(st);
+      if (r && !st.wasReady && !st.aiOn) st.aiOn = true;
+      st.wasReady = r;
+    }
+
+    const VAULT_NOTE =
+      "The key goes into the app's encrypted vault (day.mnema.vault, unlocked by one keychain item) — " +
+      "never a config file, and this window forgets the string the moment it is sent.";
+
+    /* ── fragments ─────────────────────────────────────────────────────── */
+    function switchRow() {
+      return `
+        <div class="row">
+          <div class="grow">
+            <div class="t">AI features</div>
+            <div class="d">${esc(ready(s) ? "Ready — " + s.model.model + " will answer." : missingReason(s))}</div>
+          </div>
+          <button type="button" role="switch" aria-checked="${s.aiOn}" aria-label="AI features" data-act="toggle-ai"><i></i></button>
+        </div>`;
+    }
+
+    function flowLine() {
+      const k = KINDS[s.kind];
+      if (!k.cloud) {
+        return `<div class="flow"><span>this Mac</span><span class="wire"></span><span>${esc(hostOf(s.url || k.endpoint))}</span><span>· nothing leaves</span></div>`;
+      }
+      const host = k.host || hostOf(s.url) || "the host you type";
+      return `<div class="flow out"><span>this Mac</span><span class="wire"></span><span>${esc(host)}</span><span>· prompts and their context leave</span></div>`;
+    }
+
+    function connectForm() {
+      const k = KINDS[s.kind];
+      const local = !k.cloud;
+      const compat = s.kind === "openai_compatible";
+      const found = s.scan ? s.scan.filter((r) => r.models) : [];
+      const kindOptions = (cloud) => Object.entries(KINDS)
+        .filter(([, v]) => v.cloud === cloud)
+        .map(([id, v]) => `<option value="${id}" ${s.kind === id ? "selected" : ""}>${esc(v.label)}</option>`).join("");
+
+      return `
+        <div class="row block">
+          <div class="t">${s.providers.length ? "Connect another engine" : "Connect an engine"}</div>
+          <div class="d" style="margin-bottom:9px">${
+            local ? "If one is already running here, nothing has to be typed." : "Your own account. There is no Save — the key proves itself."
+          }</div>
+          <div class="line">
+            <select class="fld" id="aisetup-kind" aria-label="Provider">
+              <optgroup label="On this Mac — nothing leaves">${kindOptions(false)}</optgroup>
+              <optgroup label="Cloud — your words leave this Mac">${kindOptions(true)}</optgroup>
+            </select>
+            ${local
+              ? `<button class="ob-btn sm" type="button" data-act="scan" ${s.scanning ? "disabled" : ""}>${
+                  s.scanning ? "Scanning…" : s.scan ? "Scan again" : "Scan this Mac"}</button>`
+              : `<input class="fld" id="aisetup-key" type="password" aria-label="API key" autocomplete="off"
+                   spellcheck="false" data-1p-ignore data-lpignore="true"
+                   placeholder="paste your key — it verifies itself" />`}
+          </div>
+          ${compat ? `<input class="fld" id="aisetup-base" style="margin-top:8px" aria-label="Base URL" autocomplete="off"
+                 spellcheck="false" placeholder="https://api.example.com/v1" value="${esc(s.url)}" />` : ""}
+          ${flowLine()}
+          ${local && s.scan ? `<div class="scan">${s.scan.map((r) => `
+            <div class="sr">
+              <span class="lamp ${r.state === "live" ? "live" : r.state === "trying" ? "busy" : r.state === "dead" ? "bad" : ""}"></span>
+              <span class="addr">localhost:${r.port} <span class="ob-fine" style="display:inline">· ${esc(r.name)}</span></span>
+              ${r.models ? `<span class="pill ok">${plural(r.models.length, "model")}</span>` : ""}
+              <span class="ms">${r.ms != null ? r.ms + " ms" : r.state === "trying" ? "…" : "no answer"}</span>
+              ${r.models
+                ? (s.providers.some((p) => hostOf(p.baseUrl) === "localhost:" + r.port)
+                    ? `<span class="pill">connected</span>`
+                    : `<button class="ob-btn sm" type="button" data-act="use" data-port="${r.port}" data-kind="${r.kind}">Use this</button>`)
+                : ""}
+            </div>`).join("")}</div>` : ""}
+          ${local && s.scan && !s.scanning && found.length === 0
+            ? `<p class="ob-fine" style="margin-top:10px">Nothing is listening on the usual ports — that is an answer, not an error. Start Ollama and scan again, point at an engine on your network below, or pick a cloud account above.</p>` : ""}
+          ${local
+            ? `<div class="line" style="margin-top:8px">
+                 <input class="fld" id="aisetup-url" aria-label="Endpoint on another machine" autocomplete="off" spellcheck="false"
+                   value="${esc(s.manual)}" placeholder="or an engine on your network — studio.local:11434" />
+                 <button class="ob-btn sm" type="button" data-act="manual">Connect</button>
+               </div>`
+            : ""}
+          <div class="bar" id="aisetup-bar"><i></i></div>
+          <div class="ob-fine status ${esc(s.statusCls)}" id="aisetup-status">${esc(s.status)}</div>
+          ${!local ? `<div class="ob-acts">
+            <button class="ob-btn sm" type="button" data-act="verify">Verify now</button>
+            <button class="ob-btn sm ghost" type="button" data-act="demo-good">simulate a working key</button>
+            <button class="ob-btn sm ghost" type="button" data-act="demo-bad">simulate a rejected key</button>
+          </div>` : ""}
+        </div>`;
+    }
+
+    /** One connection. From the second provider on these read as a rack; the
+     *  card owning the default model is pinned to the top. */
+    function card(p, rack) {
+      const cloud = KINDS[p.kind].cloud;
+      const pinned = !!(s.model && s.model.provider === p.id);
+      const editing = s.editing === p.id;
+      return `
+        <div class="prov ${pinned && rack ? "pinned" : ""}">
+          <div class="prov-head">
+            <span class="lamp ${p.status === "live" ? "live" : p.status === "error" ? "bad" : p.status === "checking" ? "busy" : ""}"></span>
+            <span class="name">${esc(label(p))}</span>
+            ${pinned ? `<span class="pill info">default</span>` : ""}
+            <span class="pill ${p.status === "live" ? "ok" : p.status === "error" ? "bad" : ""}">${esc(statusWord(p))}</span>
+            ${cloud && p.keySaved ? `<span class="pill" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>` : ""}
+          </div>
+          ${p.status === "error" ? `<div class="ob-fine err" style="margin-top:6px">${esc(p.reason)}</div>` : ""}
+          ${p.status === "live" ? `<div class="models">${p.models.map((m) => `
+            <button class="mchip ${p.justLive ? "enter" : ""}" type="button" data-act="pick" data-p="${esc(p.id)}" data-m="${esc(m)}"
+              aria-pressed="${!!(s.model && s.model.provider === p.id && s.model.model === m)}">${esc(m)}</button>`).join("")}</div>` : ""}
+          ${editing ? `
+            <div class="line" style="margin-top:9px">
+              ${cloud
+                ? `<input class="fld" id="aisetup-editkey" type="password" aria-label="Replacement API key" autocomplete="off"
+                     spellcheck="false" data-1p-ignore data-lpignore="true"
+                     placeholder="${p.keySaved ? "a key is stored — type a new one to replace it" : "paste your key"}" />`
+                : `<input class="fld" id="aisetup-editurl" aria-label="Endpoint" autocomplete="off" spellcheck="false"
+                     value="${esc(p.baseUrl)}" placeholder="${esc(KINDS[p.kind].endpoint || "")}" />`}
+              <button class="ob-btn sm" type="button" data-act="save" data-p="${esc(p.id)}">Connect &amp; verify</button>
+              <button class="ob-btn sm ghost" type="button" data-act="cancel">Cancel</button>
+            </div>`
+            : `<div class="ob-acts" style="margin-top:9px">
+              <button class="ob-btn sm" type="button" data-act="test" data-p="${esc(p.id)}">Test</button>
+              <button class="ob-btn sm" type="button" data-act="edit" data-p="${esc(p.id)}">Edit</button>
+              <button class="ob-btn sm ghost" type="button" data-act="remove" data-p="${esc(p.id)}">Remove</button>
+            </div>`}
+        </div>`;
+    }
+
+    function connections() {
+      const rack = s.providers.length > 1;
+      const list = rack
+        ? s.providers.slice().sort((a, b) => {
+            const pin = (p) => (s.model && s.model.provider === p.id ? 0 : 1);
+            return pin(a) - pin(b);
+          })
+        : s.providers;
+      const head = rack
+        ? `<p class="ob-fine" style="margin:14px 0 0">${plural(s.providers.length, "connection")} — each one is its own instance with its own key, its own endpoint and its own model list.</p>`
+        : "";
+      return head + list.map((p) => card(p, rack)).join("");
+    }
+
+    /** The merged readout. Disabled until a provider exists; models belonging to
+     *  a provider that is not answering are listed but NOT choosable. */
+    function pickerRow(open) {
+      const none = s.providers.length === 0;
+      const groups = s.providers.map((p) => {
+        const dead = p.status !== "live";
+        const rows = p.models.map((m) => `
+          <button class="opt" type="button" role="option" ${dead ? "disabled" : ""}
+            aria-selected="${!!(s.model && s.model.provider === p.id && s.model.model === m)}"
+            data-act="pick" data-p="${esc(p.id)}" data-m="${esc(m)}">
+            <span>${esc(m)}</span><span class="side">${dead ? "unavailable" : ""}</span>
+          </button>`).join("");
+        return `<div class="grp"><span>${esc(label(p))}</span><span>${esc(statusWord(p))}</span></div>
+          ${rows || `<div class="opt" style="color:var(--app-text-faint)">${esc(p.status === "error" ? p.reason : "no models listed yet")}</div>`}`;
+      }).join("");
+      const shown = s.model ? s.model.model : null;
+      return `
+        <div class="row">
+          <div class="grow">
+            <div class="t">Default model</div>
+            <div class="d">${none ? "Nothing to choose from yet — connect an engine first." : "Only models a connected engine listed just now."}</div>
+          </div>
+          <details class="picker" ${open ? "open" : ""}>
+            <summary aria-disabled="${none}" aria-haspopup="listbox" data-act="picker">
+              <span class="${shown ? "" : "ph"}">${shown ? esc(shown) : "Choose a default model"}</span><span aria-hidden="true">▾</span>
+            </summary>
+            <div class="pop" role="listbox" aria-label="Default model">
+              <button class="opt" type="button" role="option" aria-selected="${!s.model}" data-act="pick" data-p="" data-m="">
+                <span>No default model</span><span class="side">AI stays off</span>
+              </button>
+              ${groups}
+            </div>
+          </details>
+        </div>`;
+    }
+
+    function gateRow() {
+      if (s.aiOn && !ready(s)) {
+        return `<div class="gate held">
+          <span class="msg">Continue held · AI features are on with nothing that can answer</span>
+          <button class="ob-btn sm" type="button" data-act="toggle-ai">Turn AI features off</button>
+          <button class="ob-btn sm" type="button" disabled>Continue</button>
+        </div>`;
+      }
+      const live = s.providers.filter((p) => p.status === "live");
+      const models = live.reduce((n, p) => n + p.models.length, 0);
+      return `<div class="gate ${s.aiOn ? "ok" : ""}">
+        <span class="msg ob-fine">${s.aiOn
+          ? "Ready · " + plural(models, "model") + " across " + plural(live.length, "verified engine")
+          : "AI features stay off. Settings → Intelligence turns them on any time."}</span>
+        <button class="ob-btn sm primary" type="button">Continue</button>
+      </div>`;
+    }
+
+    /* ── render ────────────────────────────────────────────────────────── */
+    function render() {
+      const open = !!panel.querySelector(".picker[open]");
+      let body;
+      if (s.mode === null) {
+        body = `
+          <span class="ob-m">AI features · optional</span>
+          <p class="ob-fine" style="margin:7px 0 0">
+            Ask AI, daily digests and User Context need a reasoning engine. Recording, search, transcription
+            and speaker names do not — they work either way.
+          </p>
+          <div class="choose">
+            <button class="ob-btn primary loud" type="button" data-act="later">Set this up later</button>
+            <button class="ob-btn loud" type="button" data-act="now">I have a key — set it up now</button>
+          </div>
+          <div class="loss">
+            <span>Skipping downloads nothing and needs no account.</span>
+            <span>Everything else on this screen keeps working exactly the same.</span>
+            <span>One switch in Settings → Intelligence turns it on whenever you want it.</span>
+          </div>`;
+      } else if (s.mode === "later") {
+        body = `
+          <span class="ob-m">AI features · off</span>
+          <div class="row" style="margin-top:6px">
+            <div class="grow">
+              <div class="t">These three stay dark</div>
+              <div class="d">
+                <b style="color:var(--app-text-strong);font-weight:400">Ask AI</b> (no questions about your
+                day), <b style="color:var(--app-text-strong);font-weight:400">daily digests</b> (nothing is
+                written each evening) and <b style="color:var(--app-text-strong);font-weight:400">User
+                Context</b> (nothing is distilled about you).
+              </div>
+            </div>
+            <button type="button" role="switch" aria-checked="false" aria-label="AI features" data-act="now"><i></i></button>
+          </div>
+          <div class="row">
+            <div class="grow">
+              <div class="t">These keep working</div>
+              <div class="d">Recording, timeline, search, transcription, speaker names, privacy exclusions.</div>
+            </div>
+          </div>
+          <p class="ob-fine" style="margin-top:12px">Turn it on later at <b style="color:var(--app-text-strong);font-weight:400">Settings → Intelligence → AI features</b>. Nothing needs re-running.</p>
+          <div class="ob-acts" style="margin-top:10px">
+            <button class="ob-btn sm" type="button" data-act="now">Actually, set it up now</button>
+          </div>
+          ${gateRow()}`;
+      } else {
+        body = `
+          <span class="ob-m">AI features</span>
+          ${switchRow()}
+          ${connectForm()}
+          ${connections()}
+          ${pickerRow(open)}
+          ${s.providers.some((p) => KINDS[p.kind].cloud) ? `<p class="ob-fine" style="margin-top:10px">${VAULT_NOTE}</p>` : ""}
+          <div class="ob-acts" style="margin-top:10px">
+            <button class="ob-btn sm ghost" type="button" data-act="later">Never mind — set this up later</button>
+          </div>
+          ${gateRow()}`;
+      }
+      panel.innerHTML = body;
+
+      const kindSel = panel.querySelector("#aisetup-kind");
+      if (kindSel) kindSel.onchange = (e) => { s.kind = e.target.value; s.url = ""; s.scan = null; s.status = ""; s.statusCls = ""; render(); };
+      const keyEl = panel.querySelector("#aisetup-key");
+      if (keyEl) keyEl.oninput = debounceVerify;
+      const baseEl = panel.querySelector("#aisetup-base");
+      if (baseEl) baseEl.oninput = (e) => { s.url = e.target.value; debounceVerify(); };
+      const urlEl = panel.querySelector("#aisetup-url");
+      if (urlEl) urlEl.oninput = (e) => { s.manual = e.target.value; };
+    }
+
+    /* ── probe plumbing ────────────────────────────────────────────────── */
+    let timer = null;
+    function debounceVerify() {
+      clearTimeout(timer);
+      setStatus("waiting for you to finish typing…", "");
+      timer = setTimeout(() => void connectCloud(), 650);
+    }
+    function setStatus(text, cls) {
+      s.status = text; s.statusCls = cls || "";
+      const el = panel.querySelector("#aisetup-status");
+      if (el) { el.textContent = text; el.className = "ob-fine status " + s.statusCls; }
+    }
+    function setBar(f) {
+      const el = panel.querySelector("#aisetup-bar > i");
+      if (el) el.style.width = Math.round(f * 100) + "%";
+    }
+
+    /** Read the typed key ONCE, hand it over, clear the field. Never stored. */
+    async function connectCloud() {
+      const keyEl = panel.querySelector("#aisetup-key");
+      const typed = keyEl ? keyEl.value : "";
+      if (typed.trim().length < 6) { setStatus("", ""); setBar(0); return; }
+      const p = addProvider(s, s.kind, s.url);
+      p.keySaved = true;
+      p.keyRejected = /reject/i.test(typed);
+      if (keyEl) keyEl.value = "";
+      await run(p, typed);
+    }
+
+    async function connectLocal(kind, baseUrl) {
+      const p = addProvider(s, kind, baseUrl);
+      await run(p, null);
+    }
+
+    async function run(p, typedOnce) {
+      p.status = "checking";
+      render();
+      setStatus("reaching " + hostOf(p.baseUrl || KINDS[p.kind].endpoint || KINDS[p.kind].host) + "…", "");
+      const res = await probe(p, setBar);
+      Object.assign(p, res, { justLive: res.status === "live" });
+      if (res.status === "live" && !s.model) s.model = { provider: p.id, model: res.models[0] };
+      syncGate(s);
+      render();
+      setBar(0);
+      setStatus(res.status === "live"
+        ? "✓ " + plural(res.models.length, "model") + " listed in " + res.ms + " ms"
+        : "✗ " + res.reason, res.status === "live" ? "ok" : "err");
+      // Secret hygiene: the typed string must not survive anywhere in the live
+      // control — not as text, not as an attribute, not in the field it came from.
+      if (typedOnce) {
+        const field = panel.querySelector("#aisetup-key") || panel.querySelector("#aisetup-editkey");
+        console.assert(!panel.innerHTML.includes(typedOnce) && !(field && field.value.includes(typedOnce)),
+          "aisetup: a key string survived in the control");
+      }
+      setTimeout(() => { p.justLive = false; render(); }, 320);
+    }
+
+    async function runScan() {
+      s.scanning = true;
+      s.scan = SCAN_PORTS.map((r) => ({ ...r, state: "queued", ms: null, models: null }));
+      render();
+      for (const r of s.scan) {
+        r.state = "trying"; render();
+        const t0 = performance.now();
+        await sleep(240 + (r.port % 120));
+        const models = RUNNING["localhost:" + r.port];
+        if (models) { r.state = "live"; r.models = models; r.ms = Math.round(performance.now() - t0); }
+        else { r.state = "dead"; r.ms = null; }
+        render();
+      }
+      s.scanning = false;
+      render();
+    }
+
+    /* ── one delegated click handler ───────────────────────────────────── */
+    panel.addEventListener("click", async (ev) => {
+      const btn = ev.target.closest("[data-act]");
+      if (!btn) return;
+      const act = btn.dataset.act;
+      const p = btn.dataset.p ? s.providers.find((x) => x.id === btn.dataset.p) : null;
+
+      if (act === "picker") { if (s.providers.length === 0) ev.preventDefault(); return; }
+      if (act === "later")  { s.mode = "later"; s.aiOn = false; render(); return; }
+      if (act === "now")    { s.mode = "now"; render(); return; }
+      if (act === "toggle-ai") { s.aiOn = !s.aiOn; s.wasReady = ready(s); render(); return; }
+      if (act === "pick") {
+        s.model = btn.dataset.m ? { provider: btn.dataset.p, model: btn.dataset.m } : null;
+        syncGate(s); render(); return;
+      }
+      if (act === "scan")   { await runScan(); return; }
+      if (act === "use")    { await connectLocal(btn.dataset.kind, "http://localhost:" + btn.dataset.port); return; }
+      if (act === "manual") {
+        const v = (panel.querySelector("#aisetup-url") || {}).value || "";
+        if (!v.trim()) return;
+        s.manual = "";
+        await connectLocal(s.kind, v.includes("://") ? v : "http://" + v);
+        return;
+      }
+      if (act === "verify") { clearTimeout(timer); await connectCloud(); return; }
+      if (act === "demo-good" || act === "demo-bad") {
+        const el = panel.querySelector("#aisetup-key");
+        if (el) { el.value = act === "demo-good" ? "demo-key-that-works" : "demo-key-reject"; debounceVerify(); }
+        return;
+      }
+      if (act === "test")   { if (p) { p.status = "checking"; render(); Object.assign(p, await probe(p)); syncGate(s); render(); } return; }
+      if (act === "edit")   { s.editing = btn.dataset.p; render(); return; }
+      if (act === "cancel") { s.editing = null; render(); return; }
+      if (act === "save") {
+        const urlEl = panel.querySelector("#aisetup-editurl");
+        const keyEl = panel.querySelector("#aisetup-editkey");
+        let typed = null;
+        if (urlEl) p.baseUrl = urlEl.value;
+        if (keyEl && keyEl.value.trim()) { typed = keyEl.value; p.keySaved = true; p.keyRejected = /reject/i.test(typed); keyEl.value = ""; }
+        s.editing = null;
+        await run(p, typed);
+        return;
+      }
+      if (act === "remove") {
+        s.providers = s.providers.filter((x) => x.id !== btn.dataset.p);
+        if (s.model && s.model.provider === btn.dataset.p) s.model = null;
+        syncGate(s); render();
+      }
+    });
+
+    /* ── state drivers (the notes block) ───────────────────────────────── */
+    function seed(kind, baseUrl, patch) {
+      const p = addProvider(s, kind, baseUrl);
+      Object.assign(p, patch);
+      return p;
+    }
+    const HINTS = {
+      skip: "The skip state names the three features that go dark and the exact Settings path that turns them on.",
+      "empty-picker": "No provider yet: the default-model picker is disabled and says so, instead of opening an empty menu.",
+      "key-good": "Typing stops → the field reaches the provider → the reward is the real model list with a count and a measured latency.",
+      "key-bad": "A key containing “reject” is refused 401. No provider is left looking configured, and no model is offerable.",
+      unreachable: "A host nothing answers on: the card goes dark, its models are listed but not choosable, and the gate holds.",
+      "scan-hit": "The scan offers what answered — the common local case needs zero characters typed.",
+      "scan-miss": "Nothing listening is a useful answer, not an error: it says so and offers the two ways forward.",
+      rack: "Two Ollamas on two machines — one instance id each (ADR 0035). The card owning the default is pinned first.",
+      stale: "The provider is live but no longer lists the persisted default. Production would still call this ready; here it is not.",
+      held: "AI on with nothing that can answer — Continue is held until a verified model exists or the switch goes off.",
+    };
+    root.querySelectorAll("[data-drive]").forEach((b) => {
+      b.addEventListener("click", async () => {
+        const d = b.dataset.drive;
+        clearTimeout(timer);
+        RUNNING = ALL_RUNNING;
+        s = newState({ mode: d === "reset" ? null : "now" });
+
+        if (d === "skip") s.mode = "later";
+        if (d === "empty-picker") s.kind = "anthropic";
+        if (d === "key-good" || d === "key-bad") s.kind = "anthropic";
+        if (d === "scan-miss") RUNNING = {};
+        if (d === "unreachable") {
+          seed("ollama", "http://studio.local:11435", { status: "error", reason: "connection refused at studio.local:11435", ms: 380, models: ["llama3.3:70b"] });
+          s.model = { provider: "ollama", model: "llama3.3:70b" };
+          s.aiOn = true;
+        }
+        if (d === "rack") {
+          const a = seed("ollama", "http://localhost:11434", { status: "live", models: ALL_RUNNING["localhost:11434"], ms: 412 });
+          seed("ollama", "http://studio.local:11434", { status: "live", models: ALL_RUNNING["studio.local:11434"], ms: 631 });
+          s.model = { provider: a.id, model: "qwen2.5:14b" };
+          s.aiOn = true; s.wasReady = true;
+        }
+        if (d === "stale") {
+          // syncFromSettings restored a model the live listing no longer contains.
+          seed("anthropic", "", { status: "live", models: CLOUD_MODELS.anthropic, ms: 494, keySaved: true });
+          s.model = { provider: "anthropic", model: "claude-3-5-sonnet-20241022" };
+          s.aiOn = true; s.wasReady = true;
+        }
+        if (d === "held") {
+          seed("anthropic", "", { status: "error", reason: "401 — the provider rejected this key", ms: 402, keySaved: true, keyRejected: true });
+          s.aiOn = true;
+        }
+        render();
+        const hint = document.getElementById("aisetup-hint");
+        if (hint && HINTS[d]) hint.textContent = HINTS[d];
+
+        // Post-render: these drive the live surface exactly as a user would.
+        if (d === "key-good" || d === "key-bad") {
+          const el = panel.querySelector("#aisetup-key");
+          if (el) { el.focus(); el.value = d === "key-good" ? "demo-key-that-works" : "demo-key-reject"; debounceVerify(); }
+        }
+        if (d === "scan-hit" || d === "scan-miss") await runScan();
+      });
+    });
+
+    /* ── self-check: the readiness rule is the whole point ─────────────── */
+    (function selfCheck() {
+      const t = newState();
+      const a = addProvider(t, "ollama", "http://localhost:11434");
+      const b = addProvider(t, "ollama", "http://studio.local:11434");
+      console.assert(a.id === "ollama" && b.id === "ollama-2",
+        "aisetup: same-kind instances must get distinct ids (ADR 0035), got " + a.id + "/" + b.id);
+
+      t.model = { provider: a.id, model: "llama3.1:8b" };
+      console.assert(ready(t) === false, "aisetup: an unverified provider must never count as ready");
+
+      a.keySaved = true;                       // production's whole test — must NOT be enough
+      console.assert(ready(t) === false, "aisetup: a stored key alone must not make a config ready");
+
+      a.status = "live"; a.models = ALL_RUNNING["localhost:11434"];
+      console.assert(ready(t) === true, "aisetup: a live provider listing the model must be ready");
+
+      a.models = a.models.filter((m) => m !== "llama3.1:8b");   // model vanished from the pool
+      console.assert(ready(t) === false, "aisetup: a default model absent from the live listing must not be ready");
+      console.assert(/no longer lists/.test(missingReason(t)), "aisetup: the vanished-model reason must name it");
+
+      a.status = "error"; a.reason = "connection refused";
+      console.assert(ready(t) === false, "aisetup: a provider that stopped answering must not be ready");
+
+      // Auto-enable fires only on the false→true VERIFIED transition.
+      const u = newState();
+      const c = addProvider(u, "anthropic", "");
+      Object.assign(c, { keySaved: true, status: "error", reason: "401" });
+      u.model = { provider: c.id, model: "claude-opus-4-1" };
+      syncGate(u);
+      console.assert(u.aiOn === false, "aisetup: a rejected key must never auto-enable the feature");
+      Object.assign(c, { status: "live", models: CLOUD_MODELS.anthropic, keyRejected: false });
+      syncGate(u);
+      console.assert(u.aiOn === true, "aisetup: verified readiness must auto-enable the feature");
+
+      // Counted, not pasted: the footer count is the sum of live listings.
+      const live = u.providers.filter((p) => p.status === "live");
+      console.assert(live.reduce((n, p) => n + p.models.length, 0) === CLOUD_MODELS.anthropic.length,
+        "aisetup: the model count must be summed from live listings");
+    })();
+
+    render();
+  })();
+  </script>
+</section>
