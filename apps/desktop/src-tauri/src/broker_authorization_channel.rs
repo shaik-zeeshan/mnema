@@ -437,6 +437,63 @@ fn scope_satisfies_minimum(selected: &str, minimum: &str) -> bool {
     selected == minimum || selected == "allRetained"
 }
 
+/// Plain-language noun phrase for a wire scope, for the consent prompt's prose.
+/// Mirrors the `scopeProse` map in `routes/access/request/+page.svelte` so the
+/// quick dialog and the full sheet describe the same grant the same way.
+fn scope_prose(scope: &str) -> &'static str {
+    if scope == "allRetained" {
+        "your entire retained capture history"
+    } else {
+        "searchable Mnema text from the last day"
+    }
+}
+
+/// Plain-language duration for the consent prompt ("24 hours", "7 days").
+fn duration_prose(seconds: u64) -> String {
+    let hours = seconds.div_ceil(60 * 60).max(1);
+    match hours {
+        1 => "1 hour".to_string(),
+        h if h % 24 == 0 && h > 24 => format!("{} days", h / 24),
+        24 => "24 hours".to_string(),
+        h => format!("{h} hours"),
+    }
+}
+
+/// Body copy for the quick "Allow CLI Access?" dialog.
+///
+/// This must describe the access the client ACTUALLY asked for, and — when Allow
+/// would grant less than that — say so. The prompt previously hardcoded "from the
+/// last day for 24 hours" regardless of the request, so a client asking for the
+/// entire retained history was consented to under a description of a much narrower
+/// grant, and Allow silently minted the narrow one. Neither side learned that the
+/// request had been downgraded: `validate_cli_access_approval` only rejects a quick
+/// approval that fails the request's MINIMUM, and every CLI request sends a
+/// `lastDay` minimum, so the quick path always "succeeded".
+///
+/// The safe default is deliberately kept — Allow still grants only
+/// [`QUICK_APPROVAL_SCOPE`] for [`QUICK_APPROVAL_DURATION_SECONDS`], so an
+/// inattentive click can never hand over full history. What changes is that the
+/// dialog stops misdescribing the request and points at More Options, which opens
+/// the full sheet already seeded with what the client asked for.
+fn default_prompt_body(request: &AuthorizationChannelRequest) -> String {
+    let wants = format!(
+        "{} wants access to {} for {}.",
+        request.client.label,
+        scope_prose(&request.scope.preferred),
+        duration_prose(request.duration.preferred_seconds),
+    );
+    let quick_covers_scope = scope_satisfies_minimum(QUICK_APPROVAL_SCOPE, &request.scope.preferred);
+    let quick_covers_duration = QUICK_APPROVAL_DURATION_SECONDS >= request.duration.preferred_seconds;
+    if quick_covers_scope && quick_covers_duration {
+        return wants;
+    }
+    format!(
+        "{wants}\n\nAllow grants only {} for {}. Use More Options to review and grant what it asked for.",
+        scope_prose(QUICK_APPROVAL_SCOPE),
+        duration_prose(QUICK_APPROVAL_DURATION_SECONDS),
+    )
+}
+
 enum AuthorizationDecision {
     Approved,
     MoreOptions,
@@ -450,10 +507,7 @@ async fn prompt_for_default_access(
     let app = app.clone();
     let request = request.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let body = format!(
-            "{} wants access to searchable Mnema text from the last day for 24 hours.",
-            request.client.label
-        );
+        let body = default_prompt_body(&request);
         match app
             .dialog()
             .message(body)
@@ -677,6 +731,55 @@ mod tests {
     #[test]
     fn last_day_does_not_satisfy_all_retained_minimum() {
         assert!(!scope_satisfies_minimum("lastDay", "allRetained"));
+    }
+
+    /// Build a request whose MINIMUM stays `lastDay`/1h — as every real CLI request
+    /// does — while the PREFERRED side asks for more. This is the shape the quick
+    /// prompt used to misdescribe.
+    fn request_preferring(preferred_scope: &str, preferred_seconds: u64) -> AuthorizationChannelRequest {
+        let mut request = test_authorization_request("lastDay", 60 * 60);
+        request.scope.preferred = preferred_scope.to_string();
+        request.duration.preferred_seconds = preferred_seconds;
+        request
+    }
+
+    #[test]
+    fn quick_prompt_names_the_scope_the_client_actually_asked_for() {
+        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
+
+        assert!(
+            body.contains("your entire retained capture history"),
+            "the prompt must not describe a broad request as a narrow one: {body}"
+        );
+    }
+
+    #[test]
+    fn quick_prompt_discloses_that_allow_grants_less_than_requested() {
+        let body = default_prompt_body(&request_preferring("allRetained", 24 * 60 * 60));
+
+        assert!(
+            body.contains("Allow grants only"),
+            "a downgrade must be disclosed, not silent: {body}"
+        );
+        assert!(body.contains("More Options"), "and must point at the way to grant it: {body}");
+    }
+
+    #[test]
+    fn quick_prompt_discloses_a_duration_downgrade_too() {
+        let body = default_prompt_body(&request_preferring("lastDay", 7 * 24 * 60 * 60));
+
+        assert!(body.contains("7 days"), "names the requested duration: {body}");
+        assert!(body.contains("Allow grants only"), "discloses the downgrade: {body}");
+    }
+
+    #[test]
+    fn quick_prompt_stays_a_single_sentence_when_allow_grants_exactly_what_was_asked() {
+        let body = default_prompt_body(&request_preferring("lastDay", 24 * 60 * 60));
+
+        assert!(
+            !body.contains("Allow grants only"),
+            "no downgrade to disclose, so no second paragraph: {body}"
+        );
     }
 
     #[test]
