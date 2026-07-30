@@ -22,7 +22,9 @@ The per-model input text a model was trained to prepend, distinguished by **Quer
 _Avoid_: "prefix" (a prompt may be a full instruction, not just a token prefix).
 
 **Anchor**:
-The unit a single stored vector represents — "one stored vector per anchor" is the kept pooling/dedup invariant. Text overflowing the window is split into token-window chunks, each embedded, then mean-pooled back into the one anchor vector (never silently truncated).
+The unit a single stored vector represents — "one stored vector per anchor" is the kept pooling/dedup invariant. Text overflowing the window is split into token-window chunks, each embedded, then mean-pooled back into the one anchor vector.
+
+A **document**'s chunks are capped at `runtime::MAX_DOCUMENT_CHUNKS` (currently **1**), so in practice an overflowing document is indexed from its **first window only and the tail is not searchable**. This replaces the crate's former "never silently truncated" invariant on the document side, deliberately: real capture text averages **3.18 chunks/anchor** (3.76 for OCR frames, 98.7% of which overflow), so the cap removes ~3.2× of all forward passes — the largest cost lever in the embed path, and the only one that does not also slow the backfill down. Judged nDCG@10 went 0.760 → 0.777 in the offline bake-off, with a known **concept-query soft spot (−0.118)**. **Queries are never capped.**
 
 ## Relationships
 

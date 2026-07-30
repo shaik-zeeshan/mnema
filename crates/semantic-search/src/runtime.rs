@@ -7,12 +7,18 @@
 //! forward — tokenize, run the architecture, pool, L2-normalize — lives BELOW the
 //! trait in [`crate::backend::candle`].
 //!
-//! Overflow handling: the model's tokenizer truncates text past its window. To
-//! honor "auto-split on overflow, never silently truncated/dropped", this wrapper
-//! counts tokens up front with a non-truncating split tokenizer; when the text
-//! overflows the window it is split into token-window chunks, each chunk is
+//! Overflow handling: the model's tokenizer truncates text past its window. This
+//! wrapper counts tokens up front with a non-truncating split tokenizer; when the
+//! text overflows the window it is split into token-window chunks, each chunk is
 //! embedded by the backend, and the chunk vectors are mean-pooled and
 //! L2-normalized into one vector.
+//!
+//! **Documents are capped at [`MAX_DOCUMENT_CHUNKS`] chunks** — at 1, a document is
+//! indexed from its FIRST window only and the tail is dropped. This crate therefore
+//! no longer honours the old "never silently truncated" invariant on the document
+//! side; it is a deliberate cost trade (~3.2x fewer forward passes on real capture
+//! text). Queries are never capped. See the constant for the measured quality
+//! evidence and the known soft spot.
 
 use std::path::Path;
 
@@ -25,6 +31,33 @@ use crate::models::{SemanticSearchModelDescriptor, TOKENIZER_FILE_NAME};
 /// Special-token budget reserved per chunk (e.g. `[CLS]`/`[SEP]`) so a split
 /// chunk plus its special tokens still fits the model window.
 const SPECIAL_TOKEN_HEADROOM: usize = 2;
+
+/// How many token-window chunks a **document** may contribute to its stored vector.
+///
+/// At 1 this is the "one vector per anchor" lever: a document is embedded from its
+/// FIRST window only and the remainder is **not indexed**. That is a deliberate
+/// quality-for-heat trade, not an accident — it is the single biggest cost lever in
+/// the embed path, and unlike pacing it costs no drain time.
+///
+/// Measured on real Mnema capture text (779 anchors): **3.18 chunks/anchor overall,
+/// 3.76 for OCR frames**, because 98.7% of frames exceed the 256-token window. So a
+/// cap of 1 removes ~3.2x of all forward passes outright, and also collapses the
+/// padding waste (the backend pads each sub-batch to its longest member, and real
+/// text ranges 403..1519 tokens).
+///
+/// Quality evidence, from the offline bake-off on a 3,518-doc real index:
+/// judged **nDCG@10 0.760 -> 0.777** (it went UP — the first window is the most
+/// on-topic part of an OCR frame, and mean-pooling a whole screen dilutes it).
+/// **The known soft spot is concept queries: -0.118.** The bake-off's own
+/// recommendation was to ship this behind a larger concept-query judge; that judge
+/// has NOT been run. Shipped anyway as an explicit call — revisit by raising this to
+/// 2 (recovering some tail recall at ~1.6x the cost of 1) if concept-style recall
+/// regresses in practice.
+///
+/// QUERIES are never capped (see `embed_texts`): a query is short in practice, is
+/// latency- not throughput-bound, and truncating the user's own words is a different
+/// and much worse trade than truncating an indexed document.
+const MAX_DOCUMENT_CHUNKS: usize = 1;
 
 /// Hard GPU batch ceiling: the most chunks handed to one backend `embed_batch`.
 ///
@@ -236,7 +269,14 @@ impl SemanticSearchEmbedder {
         let mut all_chunks: Vec<String> = Vec::new();
         for text in texts {
             match self.split_on_overflow(text, chunk_max_tokens) {
-                Ok(chunks) => {
+                Ok(mut chunks) => {
+                    // Cap DOCUMENT chunks (see [`MAX_DOCUMENT_CHUNKS`]): the tail
+                    // beyond the cap is dropped, not indexed. Queries are never
+                    // capped. `chunk_counts` must record the POST-cap length or the
+                    // fan-in would slice the flat vector list at the wrong offsets.
+                    if matches!(kind, EmbedKind::Document) {
+                        chunks.truncate(MAX_DOCUMENT_CHUNKS);
+                    }
                     split_results.push(None);
                     chunk_counts.push(chunks.len());
                     // Prepend the per-model prompt STRING to each chunk before it
@@ -583,11 +623,120 @@ fn mean_pool_l2(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tokenizers::models::wordlevel::WordLevel;
     use tokenizers::pre_tokenizers::whitespace::Whitespace;
 
     /// A tiny whitespace word-level tokenizer (one token per word) so token counts
     /// are predictable and we can assert the split shape exactly.
+    /// Records every fragment the wrapper hands down, so a test can assert exactly
+    /// how many forward passes a text produced. Returns a unit vector per input.
+    #[derive(Default)]
+    struct RecordingBackend {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl SemanticSearchBackend for RecordingBackend {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            let mut seen = self.seen.lock().expect("seen");
+            let mut out = Vec::with_capacity(texts.len());
+            for (index, text) in texts.iter().enumerate() {
+                seen.push((*text).to_string());
+                // Distinct unit vectors, so a wrong fan-in slice is visible rather
+                // than accidentally matching.
+                let mut vector = vec![0.0; 2];
+                vector[index % 2] = 1.0;
+                out.push(vector);
+            }
+            Ok(out)
+        }
+
+        fn dimension(&self) -> usize {
+            2
+        }
+    }
+
+    /// So the test can keep a handle on the recorder while the embedder owns it.
+    impl SemanticSearchBackend for Arc<RecordingBackend> {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            (**self).embed_batch(texts)
+        }
+
+        fn dimension(&self) -> usize {
+            (**self).dimension()
+        }
+    }
+
+    /// An embedder over [`RecordingBackend`] with the whitespace tokenizer, built by
+    /// struct literal (same module) so the test needs no model dir on disk.
+    fn recording_embedder(max_tokens: usize) -> (SemanticSearchEmbedder, Arc<RecordingBackend>) {
+        let backend = Arc::new(RecordingBackend::default());
+        let embedder = SemanticSearchEmbedder {
+            backend: Box::new(Arc::clone(&backend)),
+            split_tokenizer: whitespace_tokenizer(),
+            max_tokens,
+            query_prompt: None,
+            document_prompt: None,
+            mrl_truncate_dim: None,
+            stored_dimension: 2,
+        };
+        (embedder, backend)
+    }
+
+    #[test]
+    fn a_document_is_capped_to_one_window_but_a_query_is_not() {
+        // 6 content words at a 4-token budget (minus SPECIAL_TOKEN_HEADROOM = 2)
+        // splits into 3 chunks — see `split_covers_every_token`.
+        let text = "alpha bravo charlie delta echo foxtrot";
+
+        let (embedder, backend) = recording_embedder(4);
+        let results = embedder.embed_texts(&[text], EmbedKind::Document);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok(), "the capped document still embeds");
+        let seen = backend.seen.lock().expect("seen").clone();
+        assert_eq!(
+            seen,
+            vec!["alpha bravo".to_string()],
+            "a DOCUMENT is embedded from its first window only; the tail is dropped"
+        );
+        assert_eq!(seen.len(), MAX_DOCUMENT_CHUNKS);
+
+        // The same text as a QUERY is never capped — every window still embeds.
+        let (embedder, backend) = recording_embedder(4);
+        let results = embedder.embed_texts(&[text], EmbedKind::Query);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_ok());
+        assert_eq!(
+            backend.seen.lock().expect("seen").len(),
+            3,
+            "a QUERY must keep every window — truncating the user's words is not the trade"
+        );
+    }
+
+    #[test]
+    fn capping_keeps_each_text_aligned_with_its_own_vector() {
+        // The hazard the cap introduces: `chunk_counts` must record the POST-cap
+        // length, or the fan-in slices the flat vector list at the wrong offsets and
+        // anchors silently receive EACH OTHER's vectors. Mix an overflowing text with
+        // short ones so a desync would misalign the neighbours.
+        let long = "alpha bravo charlie delta echo foxtrot";
+        let (embedder, backend) = recording_embedder(4);
+        let results = embedder.embed_texts(&[long, "charlie", long, "delta"], EmbedKind::Document);
+
+        assert_eq!(results.len(), 4);
+        assert!(results.iter().all(|r| r.is_ok()), "every text resolves");
+        let seen = backend.seen.lock().expect("seen").clone();
+        assert_eq!(
+            seen.len(),
+            4,
+            "4 texts => exactly 4 forward passes once documents are capped to one window"
+        );
+        assert!(
+            seen.contains(&"charlie".to_string()) && seen.contains(&"delta".to_string()),
+            "the short texts are embedded as themselves, not swallowed by a bad slice"
+        );
+    }
+
     fn whitespace_tokenizer() -> Tokenizer {
         let vocab = ["[UNK]", "alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
             .iter()
