@@ -143,8 +143,8 @@ pub struct SemanticSearchModelDescriptor {
     pub dimension: usize,
     /// The model's token window. Text overflowing this is auto-split on overflow
     /// before embedding — but a DOCUMENT's chunks are then capped by
-    /// `runtime::MAX_DOCUMENT_CHUNKS` (at 1, only the first window is indexed and
-    /// the tail is dropped). Queries are never capped.
+    /// `runtime::MAX_DOCUMENT_CHUNKS`, so text past that many windows is dropped
+    /// and never indexed. Queries are never capped.
     pub max_tokens: usize,
     /// Approximate on-disk footprint of the downloaded safetensors model, in bytes.
     /// Surfaced in Settings as the disk-cost disclosure (ADR 0036).

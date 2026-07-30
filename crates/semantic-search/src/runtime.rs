@@ -13,12 +13,11 @@
 //! embedded by the backend, and the chunk vectors are mean-pooled and
 //! L2-normalized into one vector.
 //!
-//! **Documents are capped at [`MAX_DOCUMENT_CHUNKS`] chunks** — at 1, a document is
-//! indexed from its FIRST window only and the tail is dropped. This crate therefore
-//! no longer honours the old "never silently truncated" invariant on the document
-//! side; it is a deliberate cost trade (~3.2x fewer forward passes on real capture
-//! text). Queries are never capped. See the constant for the measured quality
-//! evidence and the known soft spot.
+//! **Documents are capped at [`MAX_DOCUMENT_CHUNKS`] chunks** — text past the cap's
+//! last window is dropped and never indexed. This crate therefore no longer honours
+//! the old "never silently truncated" invariant on the document side; it is a
+//! deliberate cost trade. Queries are never capped. See the constant for the
+//! measured content cost of each cap and why 2 was chosen.
 
 use std::path::Path;
 
@@ -34,30 +33,57 @@ const SPECIAL_TOKEN_HEADROOM: usize = 2;
 
 /// How many token-window chunks a **document** may contribute to its stored vector.
 ///
-/// At 1 this is the "one vector per anchor" lever: a document is embedded from its
-/// FIRST window only and the remainder is **not indexed**. That is a deliberate
-/// quality-for-heat trade, not an accident — it is the single biggest cost lever in
-/// the embed path, and unlike pacing it costs no drain time.
+/// This is the single biggest work lever in the embed path — it sets how many
+/// forward passes each anchor costs — and it is paid for in **content that is never
+/// indexed**: everything past the cap's last window is dropped and cannot be
+/// retrieved. Measurement below shows what it does and does not buy.
 ///
-/// Measured on real Mnema capture text (779 anchors): **3.18 chunks/anchor overall,
-/// 3.76 for OCR frames**, because 98.7% of frames exceed the 256-token window. So a
-/// cap of 1 removes ~3.2x of all forward passes outright, and also collapses the
-/// padding waste (the backend pads each sub-batch to its longest member, and real
-/// text ranges 403..1519 tokens).
+/// Measured on 2,409 real Mnema anchors (1.47 M tokens, the app's own tokenizer,
+/// 250-token effective budget after the `search_document: ` prompt and special-token
+/// headroom):
 ///
-/// Quality evidence, from the offline bake-off on a 3,518-doc real index:
-/// judged **nDCG@10 0.760 -> 0.777** (it went UP — the first window is the most
-/// on-topic part of an OCR frame, and mean-pooling a whole screen dilutes it).
-/// **The known soft spot is concept queries: -0.118.** The bake-off's own
-/// recommendation was to ship this behind a larger concept-query judge; that judge
-/// has NOT been run. Shipped anyway as an explicit call — revisit by raising this to
-/// 2 (recovering some tail recall at ~1.6x the cost of 1) if concept-style recall
-/// regresses in practice.
+/// | cap | chunks/anchor | corpus tokens left unindexed |
+/// |-----|---------------|------------------------------|
+/// | 1   | 1.00          | **60.0%**                    |
+/// | 2   | 1.93          | **25.6%**                    |
+/// | 3   | 2.56          | 12.0%                        |
+/// | none| 2.97          | 0%                           |
+///
+/// The loss is almost entirely **screen frames**: 94.2% of them span more than one
+/// window and lose 60.3% of their text at a cap of 1, while audio anchors lose ~1%
+/// (only 10-14% of them overflow at all).
+///
+/// **2 is the chosen point, and the cap turns out not to be a heat lever at all.**
+/// Swept on an M4 Air against the real corpus at the shipped pacing (multiplier 3.0),
+/// 60 s per point, each starting from a cooled die with the app quit:
+///
+/// | cap | duty | GPU active | drain rate  |
+/// |-----|------|------------|-------------|
+/// | 1   | 26%  | 2.75 W     | 4.53 anchors/s |
+/// | 2   | 26%  | 2.81 W     | 2.40 anchors/s |
+/// | 3   | 25%  | 2.94 W     | 1.60 anchors/s |
+///
+/// Duty is pinned by `BACKFILL_BATCH_COOLDOWN_MULTIPLIER` (duty = `1/(1+m)`), so a
+/// heavier per-anchor cost buys proportionally more rest instead of more watts:
+/// going 1 → 2 costs **+2% GPU power**, within run-to-run scatter, and peak die
+/// temperatures across the three points sit inside the ±5 °C the harness sees
+/// between repeats of the SAME point. What the cap actually buys is drain *speed* —
+/// ~7 min per 1000 anchors at 2 against ~4 min at 1 (and ~16 min uncapped).
+///
+/// So the trade is content against backfill duration, not content against heat. At a
+/// cap of 1 three fifths of everything read on screen was unindexed to save 2% of an
+/// already-paced 2.8 W; 2 halves the drain rate to recover more than half of it.
+///
+/// Earlier quality evidence, from the offline bake-off on a 3,518-doc real index:
+/// judged **nDCG@10 0.760 -> 0.777** at a cap of 1 (the first window is the most
+/// on-topic part of an OCR frame, and mean-pooling a whole screen dilutes it), with
+/// a **concept-query soft spot of -0.118**. That judge covered 26 queries against a
+/// single grader; the larger judge has still not been run against this cap.
 ///
 /// QUERIES are never capped (see `embed_texts`): a query is short in practice, is
 /// latency- not throughput-bound, and truncating the user's own words is a different
 /// and much worse trade than truncating an indexed document.
-const MAX_DOCUMENT_CHUNKS: usize = 1;
+const MAX_DOCUMENT_CHUNKS: usize = 2;
 
 /// Hard GPU batch ceiling: the most chunks handed to one backend `embed_batch`.
 ///
@@ -694,12 +720,17 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert!(results[0].is_ok(), "the capped document still embeds");
         let seen = backend.seen.lock().expect("seen").clone();
+        // Asserted against the constant, not a baked-in count, so moving the cap does
+        // not silently turn this into a test of nothing.
         assert_eq!(
             seen,
-            vec!["alpha bravo".to_string()],
-            "a DOCUMENT is embedded from its first window only; the tail is dropped"
+            ["alpha bravo", "charlie delta", "echo foxtrot"][..MAX_DOCUMENT_CHUNKS.min(3)]
+                .iter()
+                .map(|chunk| (*chunk).to_string())
+                .collect::<Vec<_>>(),
+            "a DOCUMENT is embedded from its first MAX_DOCUMENT_CHUNKS windows in order; \
+             everything past them is dropped"
         );
-        assert_eq!(seen.len(), MAX_DOCUMENT_CHUNKS);
 
         // The same text as a QUERY is never capped — every window still embeds.
         let (embedder, backend) = recording_embedder(4);
@@ -726,10 +757,13 @@ mod tests {
         assert_eq!(results.len(), 4);
         assert!(results.iter().all(|r| r.is_ok()), "every text resolves");
         let seen = backend.seen.lock().expect("seen").clone();
+        // Two 3-chunk documents capped to MAX_DOCUMENT_CHUNKS, plus two single-chunk
+        // texts. Derived from the constant so the cap can move without rewriting this.
         assert_eq!(
             seen.len(),
-            4,
-            "4 texts => exactly 4 forward passes once documents are capped to one window"
+            2 * MAX_DOCUMENT_CHUNKS.min(3) + 2,
+            "each overflowing document contributes exactly MAX_DOCUMENT_CHUNKS passes \
+             and each short text exactly one"
         );
         assert!(
             seen.contains(&"charlie".to_string()) && seen.contains(&"delta".to_string()),
