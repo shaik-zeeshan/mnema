@@ -341,3 +341,39 @@ function workItem(input: {
 export function workListBytes(workList: readonly DownloadWorkItem[]): number {
   return workList.reduce((sum, item) => sum + item.bytes, 0);
 }
+
+/**
+ * Assemble what the user has already decided into `SavedChoices`, so the
+ * resolver only fills gaps.
+ *
+ * Extracted from `OnboardingFlow` so it can be tested directly: `resolveSetup`
+ * honouring a `SavedChoices` object proves nothing about the flow BUILDING one,
+ * and the first-run branch below is where "saved settings win" actually lives.
+ * On a first run there is no persisted setting to win with, so the only
+ * deliberate choices in existence are the rows the user has flipped this
+ * session — drop `touched` and a row turned off on *Change settings* is
+ * silently re-enabled by the next re-resolve, which the round trip back through
+ * *Permissions* triggers.
+ *
+ * `excludedApps` is deliberately ABSENT on a first run: present-even-empty is
+ * the signal that the user has been here, which suppresses the recommended
+ * privacy list.
+ */
+export function savedChoicesFor(input: {
+  everSaved: boolean;
+  touched: Partial<Record<FeatureId, boolean>>;
+  drafts: Record<FeatureId, boolean>;
+  models: ModelSelections;
+  excludedAppIds: string[];
+}): SavedChoices | null {
+  if (!input.everSaved) {
+    return Object.keys(input.touched).length === 0 ? null : { features: { ...input.touched } };
+  }
+  return {
+    // The drafts are only written at `finish()`, so a row flipped on
+    // *Change settings* is live in `touched` and nowhere else — it wins.
+    features: { ...input.drafts, ...input.touched },
+    models: input.models,
+    excludedApps: input.excludedAppIds,
+  };
+}

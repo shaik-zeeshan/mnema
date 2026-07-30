@@ -9,6 +9,7 @@ import {
   SPEAKRS_BYTES,
   WHISPER_BASE_BYTES,
   resolveSetup,
+  savedChoicesFor,
   workListBytes,
 } from "./resolve-setup";
 
@@ -445,5 +446,81 @@ describe("resolveSetup — a first run has no persisted settings to win with", (
     expect(resolved.workList.some((item) => item.subsystem === "semanticSearch")).toBe(false);
     // `excludedApps` absent => first run => the recommended list is still applied.
     expect(resolved.applyRecommendedExcludedApps).toBe(true);
+  });
+});
+
+// `resolveSetup` honouring a SavedChoices object proves nothing about the flow
+// BUILDING one, and the first-run branch is where "saved settings win" actually
+// lives: a first run has no persisted settings to win with, so the only
+// deliberate choices in existence are the rows flipped this session.
+describe("savedChoicesFor — what the flow hands the resolver", () => {
+  const DRAFTS = {
+    screen: true,
+    microphone: true,
+    systemAudio: true,
+    ocr: true,
+    transcription: true,
+    speakerSeparation: true,
+    semanticSearch: true,
+    aiFeatures: false,
+    privacy: true,
+  };
+  const MODELS = {
+    ocrProvider: "apple_vision",
+    ocrModelId: null,
+    transcriptionProvider: "local_whisper",
+    transcriptionModelId: DEFAULT_TRANSCRIPTION_MODEL_ID,
+    speakerProvider: "speakrs",
+    speakerModelId: DEFAULT_SPEAKER_MODEL_ID,
+    semanticSearchModelId: DEFAULT_SEMANTIC_SEARCH_MODEL_ID,
+  };
+  const base = (over) => ({
+    everSaved: false,
+    touched: {},
+    drafts: DRAFTS,
+    models: MODELS,
+    excludedAppIds: [],
+    ...over,
+  });
+
+  it("is null on a first run with nothing touched — every field is a gap", () => {
+    expect(savedChoicesFor(base({}))).toBeNull();
+  });
+
+  it("carries ONLY the rows a first-run user flipped, and no excludedApps", () => {
+    const saved = savedChoicesFor(base({ touched: { semanticSearch: false } }));
+    expect(saved).toEqual({ features: { semanticSearch: false } });
+    // Absent (not empty) — present-even-empty would suppress the recommended
+    // privacy list on a run where the user has never seen it.
+    expect(saved).not.toHaveProperty("excludedApps");
+    expect(saved).not.toHaveProperty("models");
+  });
+
+  // The two halves composed. This is the invariant the PR states in prose:
+  // "re-entry never re-enables something the user deliberately turned off".
+  it("a first-run opt-out survives the round trip back through the resolver", () => {
+    const saved = savedChoicesFor(base({ touched: { semanticSearch: false } }));
+    const resolved = resolveSetup(ALL, NOTHING_INSTALLED, saved);
+    expect(resolved.features.semanticSearch).toBe(false);
+    expect(resolved.workList.some((item) => item.subsystem === "semanticSearch")).toBe(false);
+    // Still a first run for privacy purposes.
+    expect(resolved.applyRecommendedExcludedApps).toBe(true);
+  });
+
+  it("on re-entry passes every draft, and a touched row beats its draft", () => {
+    const saved = savedChoicesFor(
+      base({ everSaved: true, touched: { semanticSearch: false }, excludedAppIds: ["com.acme.app"] }),
+    );
+    expect(saved.features.semanticSearch).toBe(false);
+    expect(saved.features.ocr).toBe(true);
+    expect(saved.features.aiFeatures).toBe(false);
+    expect(saved.models).toEqual(MODELS);
+    expect(saved.excludedApps).toEqual(["com.acme.app"]);
+  });
+
+  it("a returning user with an empty privacy list is not re-seeded", () => {
+    const saved = savedChoicesFor(base({ everSaved: true }));
+    expect(saved.excludedApps).toEqual([]);
+    expect(resolveSetup(ALL, NOTHING_INSTALLED, saved).applyRecommendedExcludedApps).toBe(false);
   });
 });
