@@ -1894,6 +1894,13 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // installed panic hook, and prevents worker spawn because the reconcile may
     // not have completed.
     let post_maintenance = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // FIRST, and deliberately so. `run_startup_maintenance` has just cleared every lock row
+        // older than the stale threshold, which by construction includes the previous session's
+        // long-lived `absent` locks. This closure's panic path intentionally still spawns the
+        // workers, so any pass ahead of this one that panics would leave the absent locks cleared,
+        // never re-taken, and the workers running — every job frozen onto a missing model burning
+        // its three attempts for the whole session. It depends on none of the passes below.
+        tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
         run_generated_frame_preview_cache_startup_pass(app_handle);
         run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
         if let Ok(settings) = app_handle
@@ -1916,8 +1923,6 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
             );
         }
         run_audio_transcription_backfill_startup_pass(&infra, app_handle);
-        // Park queued jobs whose model is not installed before the workers can claim them.
-        tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
     }));
     if post_maintenance.is_err() {
         // The panic itself is already recorded by the installed panic hook; we
@@ -2073,6 +2078,13 @@ pub(crate) async fn release_model_download_lock(
     app_handle: &tauri::AppHandle,
     lock: Option<::app_infra::ProcessingModelLock>,
 ) {
+    // The re-derive runs FIRST and the release second, so the two locks overlap instead of
+    // leaving a gap. A failed or cancelled download left the install directory wiped, and
+    // releasing before re-deriving would unlock a model that is not on disk for as long as the
+    // re-derive takes (a settings read plus a status stat per subsystem) — long enough for a
+    // worker to claim its jobs and spend their failure attempts against nothing. The absent sync
+    // takes the row over from the download lock, so the model is never unlocked in between.
+    reconcile_absent_model_locks(app_handle).await;
     if let (Some(lock), Some(infra)) = (lock, app_handle.try_state::<AppInfraState>()) {
         if let Err(error) = infra.release_processing_model_locks(&lock).await {
             crate::native_capture::debug_log::log_error(format!(
@@ -2080,7 +2092,6 @@ pub(crate) async fn release_model_download_lock(
             ));
         }
     }
-    reconcile_absent_model_locks(app_handle).await;
 }
 
 /// Locks every selected model that is not installed, and unlocks the ones that are. A locked model

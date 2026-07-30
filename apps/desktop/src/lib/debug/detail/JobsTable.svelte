@@ -114,6 +114,11 @@
               <td class="debug-detail__err-cell" use:tip={job.lastError ?? ""}>
                 {#if state === "retrying"}
                   <span class="debug-detail__retry">{nextAttemptLabel(job.nextAttemptAt, detail.now)}</span>
+                {:else if state === "preparing"}
+                  <!-- Parked, not stuck: the claim predicate skips a job whose model is
+                       locked, so it spends no attempt while it waits. Says so, because
+                       "queued forever with 0/0 attempts" reads as a hang otherwise. -->
+                  <span class="debug-detail__retry">waiting for its model</span>
                 {/if}
                 {truncateDebugText(job.lastError, 48)}
               </td>

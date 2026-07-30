@@ -22,7 +22,14 @@ pub struct StorageProbe {
 /// [`crate::native_capture::settings::default_save_directory`]
 /// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Infallible by design: every
 /// failure mode is one of the three fields, not an error the screen must handle.
-#[tauri::command]
+/// `(async)` on a non-async body is Tauri's "run this on the blocking
+/// threadpool" marker, and it is load-bearing: a plain `#[tauri::command]` runs
+/// the body on the macOS main thread inside the WKWebView IPC handler, and every
+/// call here is `open`/`unlink`/`statfs` against a directory the *user* picked —
+/// an external disk that has to spin up, or a stale SMB/NFS mount under
+/// `/Volumes` whose syscalls block for the mount's timeout. That is a whole-app
+/// freeze for a readout.
+#[tauri::command(async)]
 pub fn probe_storage_path(path: Option<String>) -> StorageProbe {
     let requested = path.unwrap_or_default().trim().to_string();
     let resolved = if requested.is_empty() {
@@ -45,9 +52,26 @@ pub fn probe_storage_path(path: Option<String>) -> StorageProbe {
 
 /// Writability is PROVEN, not inferred: mode bits say nothing about ACLs or a
 /// read-only mount, so write a probe file and remove it.
+/// The name is per-call and the open is `create_new` (`O_CREAT|O_EXCL`) so the
+/// probe can only ever create its own file: `File::create` reuses whatever sits
+/// at a fixed path, and opening a FIFO or a device node there blocks the caller
+/// forever. It also means a probe file left behind by a crash can never make a
+/// perfectly writable folder read as unwritable, which would hold the gate shut
+/// with no way out.
 fn is_writable(dir: &Path) -> bool {
-    let probe = dir.join(".mnema-write-probe");
-    match std::fs::File::create(&probe) {
+    let probe = dir.join(format!(
+        ".mnema-write-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
         Ok(_) => {
             let _ = std::fs::remove_file(&probe);
             true

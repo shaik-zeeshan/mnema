@@ -321,7 +321,9 @@ export function sentenceVerdict(input: SentenceInput): SentenceVerdict {
   if (free < need) {
     // Same split as `captureStorageBlockReason`: the models not fitting and
     // there being nowhere to record are different problems with different fixes.
-    if (free < RESERVE_FLOOR_BYTES + downloads) {
+    // An empty work-list has no download clause to print — `formatBytes(0)` is
+    // the app's "can't determine" sentinel, so it would read "unknown size".
+    if (downloads > 0 && free < RESERVE_FLOOR_BYTES + downloads) {
       return {
         ...base,
         tone: "bad",

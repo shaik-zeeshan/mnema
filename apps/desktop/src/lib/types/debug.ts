@@ -192,10 +192,11 @@ export interface ProcessorPipelineStatus {
  * Wire: Rust's `ProcessingJobListing` `#[serde(flatten)]`s the job, so the
  * fields land **flat** — there is no nested `job` key — with `nextAttemptAt`
  * alongside them. Hence `extends ProcessingJobDto` rather than a `job` member.
- * It flattens the *domain* job, so `modelLocked` (resolved only by the job-listing
- * commands) is not on this wire shape and is omitted here.
+ * It flattens the *domain* job and then resolves `modelLocked` alongside it, so a
+ * parked job (`status === "queued" && modelLocked`) is distinguishable from one
+ * that is merely waiting its turn.
  */
-export interface ProcessingJobListing extends Omit<ProcessingJobDto, "modelLocked"> {
+export interface ProcessingJobListing extends ProcessingJobDto {
 	/**
 	 * When the queue may re-claim this job. Set by the bounded failure-retry lane
 	 * (and by the transient-liveness requeue) to `now + backoff`; `null` on a job

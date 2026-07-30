@@ -98,7 +98,11 @@ export function captureStorageBlockReason(
       // Both shortfalls quote the same total — the volume needs all of it either
       // way. Only the leading clause differs, so the screen (and a user) can
       // tell "the models don't fit" from "there is nowhere to record".
-      return probe.freeBytes < RESERVE_FLOOR_BYTES + input.requiredBytes
+      // With an empty work-list the first clause would blame a term worth zero
+      // bytes: nothing is being downloaded, the volume is simply under the
+      // reserve.
+      return input.requiredBytes > 0 &&
+        probe.freeBytes < RESERVE_FLOOR_BYTES + input.requiredBytes
         ? `Not enough room for the downloads. ${figures}`
         : `Not enough room to record a day of capture. ${figures}`;
     }

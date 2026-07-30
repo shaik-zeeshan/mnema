@@ -98,6 +98,30 @@ export async function loadOnboarding(target: OnboardingLifecycleTarget): Promise
   }
 }
 
+/**
+ * Enrolling a voiceprint on the Voice screen turns `recognize_saved_people` ON
+ * backend-side (`enroll_account_owner_voice`) — without it the voiceprint is
+ * loaded by nothing. This save is authoritative and is rebuilt from drafts that
+ * were seeded BEFORE the enrollment, so it would write the stale `false` straight
+ * back over the flip.
+ *
+ * Read here rather than mirrored into a draft on the Voice screen because
+ * `finish()` re-derives the speaker drafts from `flow.features` anyway, and this
+ * is the one funnel every onboarding save goes through — the Settings page's
+ * enrollment door mirrors into its own draft for the same reason.
+ */
+async function withEnrolledVoiceRecognition(
+  request: RecordingSettings,
+): Promise<RecordingSettings> {
+  if (request.speakerAnalysis?.recognizeSavedPeople !== false) return request;
+  const enrolled = await invoke<number | null>("get_account_owner_person_id").catch(() => null);
+  if (enrolled === null || enrolled === undefined) return request;
+  return {
+    ...request,
+    speakerAnalysis: { ...request.speakerAnalysis, recognizeSavedPeople: true },
+  };
+}
+
 async function saveSettings(target: OnboardingLifecycleTarget): Promise<void> {
   target.saving = true;
   target.errorMessage = null;
@@ -108,7 +132,7 @@ async function saveSettings(target: OnboardingLifecycleTarget): Promise<void> {
     // command so a late validation failure can't leave a partially-persisted
     // configuration behind.
     const updated = await invoke<RecordingSettings>("update_recording_settings", {
-      request: target.buildSettingsRequest(),
+      request: await withEnrolledVoiceRecognition(target.buildSettingsRequest()),
     });
     target.settings = updated;
     target.syncDrafts(updated);
@@ -156,6 +180,12 @@ export async function finishOnboarding(
     // it could exist. `FinaleScreen` navigates on "Open Mnema".
   } catch (err) {
     target.errorMessage = serializeError(err);
+  } finally {
+    // Because navigation is the caller's, NOTHING unmounts this state on the
+    // success path any more — so the in-flight flags have to be released here,
+    // on every path. `OnboardingFlow.busy` derives from `completing`, and a
+    // stuck `true` leaves Welcome's "Begin setup" disabled for a user who walks
+    // back from the Finale.
     target.completing = false;
     target.starting = false;
   }

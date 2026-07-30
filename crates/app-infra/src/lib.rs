@@ -5823,6 +5823,280 @@ mod tests {
         });
     }
 
+    /// The retention fix's own test hand-inserts `is_deliberate = 1`, so it proves the SWEEP
+    /// honours the flag and nothing about who SETS it. This covers the write path the bug was
+    /// actually about: naming a speaker cluster in the audio drawer stores a voiceprint that
+    /// carries a `source_cluster_id`, so it is exactly the row the orphan GC collects unless the
+    /// flag is set. Flip the literal in `link_speaker_cluster_to_person_inner` back to 0 and this
+    /// fails; the sweep test does not.
+    #[test]
+    fn naming_a_cluster_marks_its_voiceprint_deliberate() {
+        run_async_test(async {
+            let dir = TestDir::new("deliberate-on-name");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let segment = audio_segment_for(&infra, "deliberate-on-name", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &segment,
+                speaker_output_with_suggestion(
+                    "deliberate-on-name",
+                    segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    None,
+                ),
+                false,
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("deliberate-on-name")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            let person = infra
+                .create_person_profile("Mom", None)
+                .await
+                .expect("person profile should create");
+
+            infra
+                .link_speaker_cluster_to_person(cluster.id, person.id, true)
+                .await
+                .expect("cluster should link with an embedding");
+
+            let rows: Vec<(i64, i64)> = sqlx::query_as(
+                "SELECT source_cluster_id IS NOT NULL, is_deliberate \
+                 FROM person_voice_embeddings WHERE person_id = ?1",
+            )
+            .bind(person.id)
+            .fetch_all(infra.pool())
+            .await
+            .expect("voiceprints should query");
+            assert_eq!(
+                rows,
+                vec![(1, 1)],
+                "a voiceprint saved by naming a cluster carries its cluster id AND is deliberate"
+            );
+        });
+    }
+
+    /// `add_embedding = false` on the auto-link path is the load-bearing safety constraint: a
+    /// wrong auto-link that wrote a voiceprint would make the next wrong match more likely, with
+    /// no human ever in the loop. Asserted on the data, not on the argument.
+    #[test]
+    fn auto_linking_never_writes_a_voiceprint() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-no-embedding");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let before: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM person_voice_embeddings WHERE person_id = ?1")
+                    .bind(owner.id)
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("voiceprints should count");
+
+            let segment = audio_segment_for(&infra, "auto-link-no-embedding", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &segment,
+                speaker_output_with_suggestion(
+                    "auto-link-no-embedding",
+                    segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-no-embedding")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.person_id, Some(owner.id), "the auto-link must have run");
+            let after: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM person_voice_embeddings WHERE person_id = ?1")
+                    .bind(owner.id)
+                    .fetch_one(infra.pool())
+                    .await
+                    .expect("voiceprints should count");
+            assert_eq!(after, before, "an auto-link must never write a voiceprint");
+        });
+    }
+
+    /// Auto-linking must not overrule a name the user typed. The link path clears
+    /// `transcript_local_label`, and the re-analysis upsert only keeps a COPY of it in
+    /// `stable_label` (`COALESCE(transcript_local_label, excluded.stable_label)`) — so once the
+    /// auto-link nulls it, the next speaker run overwrites the copy and the typed name is gone
+    /// for good.
+    #[test]
+    fn auto_linking_does_not_destroy_a_name_the_user_typed() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-typed-name");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+
+            let first = audio_segment_for(&infra, "auto-link-typed-name", 1).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &first,
+                speaker_output_with_suggestion(
+                    "auto-link-typed-name",
+                    first.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    None,
+                ),
+                true,
+            )
+            .await;
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-typed-name")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            infra
+                .name_speaker_cluster(cluster.id, "Interviewer")
+                .await
+                .expect("cluster should take the typed name");
+
+            let second = audio_segment_for(&infra, "auto-link-typed-name", 2).await;
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &second,
+                speaker_output_with_suggestion(
+                    "auto-link-typed-name",
+                    second.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            let clusters = infra
+                .list_speaker_clusters_for_session("auto-link-typed-name")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 1, "the stable cluster should be reused");
+            assert_eq!(
+                clusters[0].person_id, None,
+                "a cluster the user named must stay suggest-and-confirm"
+            );
+            assert_eq!(
+                clusters[0].speaker_label, "Interviewer",
+                "auto-linking must not throw away the name the user typed"
+            );
+        });
+    }
+
+    /// Deleting the owner profile unlinks its clusters through the FK's `ON DELETE SET NULL`.
+    /// `person_link_auto` describes how `person_id` was decided, so it has to go with it —
+    /// otherwise a cluster reports "a machine picked this person" while reporting no person at
+    /// all, and no unlink can correct it (there is nothing left to unlink).
+    #[test]
+    fn deleting_the_owner_profile_clears_the_auto_link_flag() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-owner-deleted");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let segment = audio_segment_for(&infra, "auto-link-owner-deleted", 1).await;
+
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &segment,
+                speaker_output_with_suggestion(
+                    "auto-link-owner-deleted",
+                    segment.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+
+            infra
+                .delete_person_profile(owner.id)
+                .await
+                .expect("owner profile should delete");
+
+            let cluster = infra
+                .list_speaker_clusters_for_session("auto-link-owner-deleted")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .next()
+                .expect("cluster should exist");
+            assert_eq!(cluster.person_id, None, "the profile is gone");
+            assert!(
+                !cluster.person_link_auto,
+                "a cluster with no person cannot still claim an automatic link"
+            );
+        });
+    }
+
+    /// Enrolling rejects a blank display name, and the partial unique index really does make a
+    /// second account owner unwritable — migration 0053 claims "no write path can produce a
+    /// second one even by accident", which nothing asserted.
+    #[test]
+    fn owner_enrollment_guards_hold() {
+        run_async_test(async {
+            let dir = TestDir::new("owner-enrollment-guards");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            enroll_owner(&infra).await;
+
+            assert!(
+                infra
+                    .upsert_account_owner_voiceprint(
+                        "   ",
+                        "mock_speaker",
+                        "voice-model",
+                        &test_embedding_bytes(&OWNER_ENROLLMENT_EMBEDDING),
+                    )
+                    .await
+                    .is_err(),
+                "a blank display name is refused"
+            );
+
+            let second_owner = sqlx::query(
+                "INSERT INTO person_profiles (display_name, is_account_owner) VALUES ('Someone', 1)",
+            )
+            .execute(infra.pool())
+            .await;
+            assert!(
+                second_owner.is_err(),
+                "the partial unique index must reject a second account owner"
+            );
+        });
+    }
+
     #[test]
     fn saved_speaker_profile_embedding_is_available_to_later_sessions() {
         run_async_test(async {

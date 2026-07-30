@@ -452,15 +452,34 @@ impl RecordingLifecycle {
 
     /// Give the microphone back after a bounded out-of-band recording. A no-op
     /// unless the runtime still wants it: anything that legitimately took
-    /// ownership meanwhile — a device-change reconnect, an inactivity pause, a
-    /// user pause, or a stop — wins.
+    /// ownership meanwhile — a device-change reconnect, a user pause, a low-disk
+    /// suspension, or a stop — wins.
+    ///
+    /// A `LowDisk` suspension is the one suspension kind that stops the
+    /// microphone on purpose: every source writes to the same full volume
+    /// (ADR 0040), and `suspend_screen_capture` already committed the mic file
+    /// and nulled `microphone_recording_file`. It restarts the microphone itself
+    /// once space returns, so restoring here would both write onto a full volume
+    /// and attach a live output file to an already-committed segment. A
+    /// `DisplayUnavailable` suspension is deliberately *not* in this list — the
+    /// microphone keeps recording through it (ADR 0021, amended).
+    ///
+    /// An inactivity pause is deliberately NOT a reason to bail either: it is a
+    /// SOFT pause that leaves the session listening, because microphone activity
+    /// is the only source the microphone family's resume decision reads. The
+    /// bounded recording hard-stopped that session, so a pause left standing here
+    /// could never end — no session, no samples, no wake-up.
     #[cfg(target_os = "macos")]
     pub(crate) fn restore_microphone_after_out_of_band_recording(
         &mut self,
     ) -> Result<(), CaptureErrorResponse> {
         if !self.runtime.is_running
             || self.runtime.user_capture_paused
-            || self.runtime.inactivity.is_microphone_paused()
+            || self
+                .runtime
+                .capture_suspension
+                .as_ref()
+                .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
             || self.runtime.active_microphone_session.is_some()
             || !self
                 .runtime
@@ -469,6 +488,17 @@ impl RecordingLifecycle {
                 .is_some_and(|sources| sources.microphone)
         {
             return Ok(());
+        }
+
+        // Clear the soft inactivity pause before restarting: the next inactivity
+        // tick re-pauses within a tick if the user is still idle, whereas leaving
+        // it set strands the microphone with no session to wake it.
+        if self.runtime.inactivity.is_microphone_paused() {
+            self.runtime.inactivity.set_family_paused_states(
+                self.runtime.inactivity.screen_paused,
+                false,
+                self.runtime.inactivity.system_audio_paused,
+            );
         }
 
         let device_id = self.runtime.microphone_device_id_for_capture.clone();

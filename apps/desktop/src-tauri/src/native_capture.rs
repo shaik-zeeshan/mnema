@@ -2894,14 +2894,51 @@ impl Drop for BoundedMicrophoneClipGuard {
     }
 }
 
+/// Filename prefix every bounded enrollment take carries. It is what makes the
+/// clips this recorder wrote identifiable in a shared OS temp dir, and what the
+/// enrollment door checks before it opens (and destroys) a caller-named path.
+#[cfg(target_os = "macos")]
+pub(crate) const ENROLLMENT_CLIP_PREFIX: &str = "mnema-voice-enrollment-";
+
+/// Delete enrollment clips left behind in `dir` by an earlier take.
+///
+/// `voice_enrollment` destroys a clip when it judges it — but only then. A
+/// retake, a discarded review, a closed window, or a crash abandons the take,
+/// and a raw recording of the user's voice then sits in the OS temp dir
+/// indefinitely: outside the encrypted capture store, outside retention, and
+/// outside Delete Recent Capture. Sweeping before the next take is the one place
+/// every one of those paths passes through.
+///
+/// ponytail: swept at the start of the next take rather than tracked per clip.
+/// A discarded take survives until the user records again; closing that fully
+/// would need a delete-on-discard command, i.e. a new arbitrary-path-delete
+/// surface — worse than the gap.
+#[cfg(target_os = "macos")]
+pub(crate) fn remove_abandoned_bounded_microphone_clips(dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        if file_name.starts_with(ENROLLMENT_CLIP_PREFIX) && file_name.ends_with(".m4a") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn take_bounded_microphone_clip(
     duration_ms: u64,
     device_id: Option<&str>,
 ) -> Result<String, CaptureErrorResponse> {
-    let output_file = std::env::temp_dir()
+    let temp_dir = std::env::temp_dir();
+    remove_abandoned_bounded_microphone_clips(&temp_dir);
+    let output_file = temp_dir
         .join(format!(
-            "mnema-voice-enrollment-{}.m4a",
+            "{ENROLLMENT_CLIP_PREFIX}{}.m4a",
             runtime::now_unix_ms()
         ))
         .to_string_lossy()
@@ -2955,6 +2992,21 @@ pub(crate) fn current_recording_settings_from_app_handle(
 ) -> RecordingSettings {
     let state = app_handle.state::<RecordingSettingsState>();
     current_recording_settings(state.inner())
+}
+
+/// Whether this save moved any model-backed subsystem's provider or model id.
+/// Those are exactly the fields the absent-model lock keys off, so a change here
+/// means the locks must be re-derived from what is on disk.
+pub(crate) fn model_selection_changed(
+    previous: &RecordingSettings,
+    next: &RecordingSettings,
+) -> bool {
+    previous.ocr.provider != next.ocr.provider
+        || previous.ocr.model_id != next.ocr.model_id
+        || previous.transcription.provider != next.transcription.provider
+        || previous.transcription.model_id != next.transcription.model_id
+        || previous.speaker_analysis.provider != next.speaker_analysis.provider
+        || previous.speaker_analysis.model_id != next.speaker_analysis.model_id
 }
 
 fn finish_recording_settings_update(
@@ -3034,6 +3086,21 @@ fn finish_recording_settings_update(
                 "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
             );
         }
+    }
+
+    // A model SELECTION change can make the selected model absent without any
+    // download or deletion running, and neither of the absent lane's two owners
+    // (startup, download-settle) fires here. Without this, every job admitted
+    // against the newly selected but not-yet-installed model is claimed and burns
+    // its three failure attempts — the exact loss claim-time gating exists to
+    // prevent, and the non-blocking setup flow makes "selected but not installed"
+    // the normal case. Fire-and-forget for the same reason as the OCR pass above:
+    // settings commands run on the main thread.
+    if model_selection_changed(&previous_settings, &settings) {
+        let app_handle = app_handle.clone();
+        tauri::async_runtime::spawn(async move {
+            crate::app_infra::reconcile_absent_model_locks(&app_handle).await;
+        });
     }
 
     // Local Whisper contexts have no idle-unload (unlike Parakeet) and otherwise

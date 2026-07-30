@@ -42,6 +42,15 @@ export const DEFAULT_SPEAKER_MODEL_ID = "pyannote-community-1-wespeaker";
 export const DEFAULT_SEMANTIC_SEARCH_MODEL_ID = "nomic-embed-text-v1.5";
 /** `semantic-search/src/models.rs:39` — `SEMANTIC_SEARCH_PROVIDER_ID`. */
 export const SEMANTIC_SEARCH_PROVIDER = "local";
+/**
+ * The cloud transcription provider. It is never CHOSEN here (ADR 0047), but a
+ * saved choice is copied through like any other — and its descriptors do carry
+ * model ids (`nova-3`/`nova-2`), whose `available` flag means "an API key is
+ * present", not "bytes are on disk". So it has to be dropped from the DOWNLOAD
+ * agenda explicitly: it is OS-managed, there is nothing to fetch, and
+ * `start_audio_transcription_model_download` rejects it outright.
+ */
+export const CLOUD_TRANSCRIPTION_PROVIDER = "deepgram";
 
 // Download sizes, mirrored from the Rust manifests that own them. Kept as
 // constants (not fetched) so the resolver stays pure; each cites its source so
@@ -268,7 +277,9 @@ function buildWorkList(
       facts: installed.speakerAnalysis,
     }),
     workItem({
-      enabled: features.transcription,
+      enabled:
+        features.transcription &&
+        models.transcriptionProvider !== CLOUD_TRANSCRIPTION_PROVIDER,
       subsystem: "audioTranscription",
       feature: "transcription",
       provider: models.transcriptionProvider,

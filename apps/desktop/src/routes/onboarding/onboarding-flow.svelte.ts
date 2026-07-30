@@ -113,6 +113,13 @@ export class OnboardingFlow {
   /** One-shot latch for pushing the resolved model picks into the drafts. */
   private seededModels = false;
 
+  /** Rows the user has flipped on *Change settings*. A re-resolve (the round
+   *  trip back through Permissions) reads the LIVE value of each one and hands
+   *  it to the resolver as a saved choice, so "saved settings win" also holds on
+   *  a first run, where there is nothing persisted to pass. Plain, not `$state`:
+   *  nothing renders off it. */
+  private touchedFeatures = new Set<FeatureId>();
+
   // ── Where we are ─────────────────────────────────────────────────────────
   get def(): StepDef {
     return stepDef(this.step);
@@ -224,6 +231,7 @@ export class OnboardingFlow {
     const after = applyToggle(before, id);
     if (after === before) return null;
     this.features = after;
+    this.touchedFeatures.add(id);
     return before;
   }
 
@@ -274,9 +282,20 @@ export class OnboardingFlow {
     }
   }
 
-  /** `null` on a genuine first run — every field is a gap for the resolver. */
+  /** `null` on a genuine first run with nothing touched — every field is then a
+   *  gap for the resolver. A row the user has flipped on *Change settings* is a
+   *  deliberate choice either way, so it always travels: `next()` re-resolves on
+   *  the way out of *Permissions*, and the round trip back through that screen
+   *  (or the manifest's own "Grant ▸" link) would otherwise restore the default
+   *  and re-queue the download the user just dropped. */
   private savedChoices(): SavedChoices | null {
-    if (!this.everSaved) return null;
+    const touched: Partial<Record<FeatureId, boolean>> = {};
+    for (const id of this.touchedFeatures) touched[id] = this.features[id];
+    if (!this.everSaved) {
+      // `excludedApps` stays absent, so the recommended privacy list is still
+      // applied on a first run.
+      return this.touchedFeatures.size === 0 ? null : { features: touched };
+    }
     const c = this.controller;
     return {
       features: {
@@ -289,6 +308,9 @@ export class OnboardingFlow {
         semanticSearch: c.draftSemanticSearchEnabled,
         aiFeatures: c.draftAskAiEnabled,
         privacy: c.privacyEnabled,
+        // The drafts are only written at `finish()`, so a row flipped on
+        // *Change settings* is live here and nowhere else — it wins.
+        ...touched,
       },
       models: {
         ocrProvider: c.draftOcrProvider,

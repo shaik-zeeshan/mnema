@@ -17,13 +17,20 @@ import type { ProcessingJobListing, ProcessingJobStatus } from "$lib/types";
  * A `failed` row is therefore always terminal: the retry lane already had its
  * chance and declined (cap reached, or the processor has no retry policy).
  */
-export type JobState = ProcessingJobStatus | "retrying";
+export type JobState = ProcessingJobStatus | "retrying" | "preparing";
 
 export function jobState(
-	job: Pick<ProcessingJobListing, "status" | "nextAttemptAt">,
+	job: Pick<ProcessingJobListing, "status" | "nextAttemptAt" | "modelLocked">,
 	nowMs: number,
 ): JobState {
 	if (job.status !== "queued") return job.status;
+	// A locked model means the job is PARKED: the claim predicate skips it, so it
+	// is not waiting its turn and is not serving a backoff. It burns no attempt
+	// while it waits, which is the whole point of claim-time gating — but without
+	// its own state it looks identical to a queued job that is about to run.
+	// Checked before the backoff so a job that is both parked and deferred reads
+	// as parked: the model is the reason it will not run next.
+	if (job.modelLocked) return "preparing";
 	const next = parseJobTs(job.nextAttemptAt);
 	return next != null && next > nowMs ? "retrying" : "queued";
 }
@@ -32,6 +39,7 @@ export function jobStateBadgeClass(state: JobState): string {
 	if (state === "completed") return "badge badge--ok badge--sm";
 	if (state === "failed") return "badge badge--err badge--sm";
 	if (state === "retrying") return "badge badge--warn badge--sm";
+	if (state === "preparing") return "badge badge--warn badge--sm";
 	if (state === "running") return "badge badge--running badge--sm";
 	return "badge badge--neutral badge--sm";
 }

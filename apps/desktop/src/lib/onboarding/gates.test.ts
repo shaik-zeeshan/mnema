@@ -100,7 +100,10 @@ describe("test 7 — capture & storage gate predicates", () => {
       new URL("../../../src-tauri/src/native_capture/disk_space.rs", import.meta.url),
       "utf8",
     );
-    expect(rust).toContain(`RESERVE_FLOOR_BYTES: u64 = 1024 * 1024 * 1024`);
+    // Anchored, not `toContain`: a bare substring match still passes if the Rust
+    // constant grows a factor (`... * 1024 * 2`), which would silently let the
+    // onboarding gate under-reserve against what the capture pipeline enforces.
+    expect(rust).toMatch(/RESERVE_FLOOR_BYTES: u64 = 1024 \* 1024 \* 1024;/);
     expect(RESERVE_FLOOR_BYTES).toBe(1024 * 1024 * 1024);
   });
 
@@ -192,3 +195,34 @@ function featuresOf(resolved: ReturnType<typeof resolveSetup>) {
     privacy: f.privacy,
   };
 }
+
+describe("regression — the gate's non-probe branches", () => {
+  // `captureStorageBlockReason` returns the custom-range errors from OUTSIDE the
+  // `if (probe)` block, so an unmeasurable volume must still not let an invalid
+  // resolution through: those values serialize as `null` and break the backend
+  // save at the Finale. Every other case in this file supplies a probe, so
+  // moving that return inside the block would keep them all green.
+  test("a custom-range error blocks even when the volume could not be measured", () => {
+    expect(
+      captureStorageBlockReason(
+        input({ probe: null, customResolutionErrors: ["Width must be 16–8192 px."] }),
+      ),
+    ).toBe("Width must be 16–8192 px.");
+    expect(
+      captureStorageBlockReason(
+        input({ probe: null, customBitrateErrors: ["Bitrate must be 1–40 Mbps."] }),
+      ),
+    ).toBe("Bitrate must be 1–40 Mbps.");
+  });
+
+  // Re-entry with every model already installed: `requiredBytes` is 0, so
+  // `free < RESERVE_FLOOR_BYTES + 0` degenerates to "below the safety reserve".
+  // Blaming downloads that do not exist names a term worth zero bytes.
+  test("a nearly full volume with nothing to download names the reserve, not downloads", () => {
+    const reason = captureStorageBlockReason(
+      input({ requiredBytes: 0, probe: { exists: true, writable: true, freeBytes: 800e6 } }),
+    );
+    expect(reason).not.toBeNull();
+    expect(reason).not.toContain("for the downloads");
+  });
+});

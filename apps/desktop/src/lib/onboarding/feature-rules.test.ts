@@ -1,6 +1,6 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig, so skip static checking here.
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, test } from "bun:test";
 import {
   applyToggle,
   cascadeOf,
@@ -470,5 +470,36 @@ describe("normalizeFeatures", () => {
   it("is idempotent", () => {
     const once = normalizeFeatures(state({ microphone: true, transcription: true }));
     expect(normalizeFeatures(once)).toEqual(once);
+  });
+});
+
+describe("regression — enabling transcription must not force diarization back on", () => {
+  // `feature-rules.ts` states the rule: enabling transcription "also re-offers
+  // speaker separation, but does not force it — the user turned it off
+  // deliberately". The existing enable test asserts only the transcription
+  // fields, so adding `|| id === "transcription"` to `applyToggle`'s upward
+  // cascade would force a 419 MB speakrs download back on with every test green.
+  test("a deliberately disabled speaker separation survives enabling transcription", () => {
+    const base = normalizeFeatures({
+      permissions: { screen: true, microphone: true, systemAudio: true },
+      screen: true,
+      microphone: true,
+      systemAudio: true,
+      ocr: true,
+      transcription: false,
+      speakerSeparation: false,
+      semanticSearch: true,
+      aiFeatures: false,
+      privacy: true,
+      transcribeMicrophone: false,
+      transcribeSystemAudio: false,
+      recognizeSavedPeople: false,
+    });
+    expect(base.speakerSeparation).toBe(false);
+
+    const after = applyToggle(base, "transcription");
+
+    expect(after.transcription).toBe(true);
+    expect(after.speakerSeparation).toBe(false);
   });
 });

@@ -136,8 +136,44 @@ enum ClipJudgment {
     Rejected(VoiceEnrollmentOutcomeDto),
 }
 
-#[cfg(feature = "speaker-analysis-speakrs")]
+/// The one path shape this door accepts: a clip the bounded recorder itself
+/// wrote, directly in the OS temp dir. `clip_path` arrives from the renderer, so
+/// without this the door would open — and, below, destroy — any file the caller
+/// names.
+#[cfg(target_os = "macos")]
+fn is_bounded_enrollment_clip(clip_path: &std::path::Path) -> bool {
+    clip_path.parent() == Some(std::env::temp_dir().as_path())
+        && clip_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(crate::native_capture::ENROLLMENT_CLIP_PREFIX)
+                    && name.ends_with(".m4a")
+            })
+}
+
+/// Judge the clip, then destroy it — on every exit: stored, rejected, or failed.
+///
+/// The clip is a raw recording of the user's voice sitting in the OS temp dir,
+/// outside the encrypted capture store, outside retention, and outside Delete
+/// Recent Capture. It exists only to be embedded, so nothing keeps it once the
+/// embedder has spoken.
 fn embed_enrollment_clip_for_build(
+    clip_path: &std::path::Path,
+    models_dir: &std::path::Path,
+) -> Result<ClipJudgment, String> {
+    #[cfg(target_os = "macos")]
+    if !is_bounded_enrollment_clip(clip_path) {
+        // Deliberately says nothing about the path it was handed.
+        return Err("voice enrollment accepts only a clip it recorded".to_string());
+    }
+    let judgment = embed_enrollment_clip_inner(clip_path, models_dir);
+    let _ = std::fs::remove_file(clip_path);
+    judgment
+}
+
+#[cfg(feature = "speaker-analysis-speakrs")]
+fn embed_enrollment_clip_inner(
     clip_path: &std::path::Path,
     models_dir: &std::path::Path,
 ) -> Result<ClipJudgment, String> {
@@ -165,7 +201,7 @@ fn embed_enrollment_clip_for_build(
 }
 
 #[cfg(not(feature = "speaker-analysis-speakrs"))]
-fn embed_enrollment_clip_for_build(
+fn embed_enrollment_clip_inner(
     _clip_path: &std::path::Path,
     _models_dir: &std::path::Path,
 ) -> Result<ClipJudgment, String> {

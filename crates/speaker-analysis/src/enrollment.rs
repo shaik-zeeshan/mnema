@@ -201,22 +201,46 @@ mod tests {
         assert_eq!(outcome, EnrollmentOutcome::NoSpeech);
     }
 
-    #[test]
-    fn sub_minimum_clip_is_rejected_as_too_short() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("short.wav");
-        say("Alex", "Just a few words.", &path);
-
-        let outcome = embed_enrollment_clip(&path, &models_dir()).expect("short clip decodes");
-        match outcome {
-            EnrollmentOutcome::TooShort { duration_ms } => {
-                assert!(duration_ms < MIN_ENROLLMENT_AUDIO_MS, "got {duration_ms}ms");
-            }
-            other => panic!("expected TooShort, got {other:?}"),
+    /// Audible PCM at `sample_count` samples: a low-amplitude square wave, which clears
+    /// `MIN_DIARIZATION_PEAK` so the length gate is what decides, not the speech gate.
+    fn audible_pcm(sample_count: usize) -> Vec<u8> {
+        let mut pcm = Vec::with_capacity(sample_count * 2);
+        for index in 0..sample_count {
+            let sample: i16 = if (index / 40) % 2 == 0 { 6_000 } else { -6_000 };
+            pcm.extend_from_slice(&sample.to_le_bytes());
         }
+        pcm
+    }
+
+    /// Pins `MIN_ENROLLMENT_AUDIO_MS` exactly, with no dependence on the installed `say` voice's
+    /// speaking rate and no model bundle. The old `say`-derived test asserted only
+    /// `duration_ms < MIN_ENROLLMENT_AUDIO_MS`, i.e. it restated the branch it was testing.
+    #[test]
+    fn the_minimum_enrollment_length_is_exact() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let under = dir.path().join("under.wav");
+        // 9,999 ms: one millisecond short.
+        write_wav(&under, &audible_pcm(16_000 * 9_999 / 1_000));
+        assert_eq!(
+            embed_enrollment_clip(&under, &models_dir()).expect("short clip decodes"),
+            EnrollmentOutcome::TooShort { duration_ms: 9_999 },
+            "a clip one millisecond under the minimum is too short"
+        );
+
+        let at = dir.path().join("at.wav");
+        // Exactly 10,000 ms: the integer-truncating duration must not round it under.
+        write_wav(&at, &audible_pcm(16_000 * 10));
+        assert!(
+            !matches!(
+                embed_enrollment_clip(&at, &models_dir()),
+                Ok(EnrollmentOutcome::TooShort { .. })
+            ),
+            "a clip exactly at the minimum is not too short"
+        );
     }
 
     #[test]
+    #[ignore = "needs the 419 MB speakrs model bundle installed"]
     fn clean_single_speaker_clip_yields_a_voiceprint() {
         if !models_installed() {
             eprintln!("skipping: speakrs models not installed at {}", models_dir().display());
@@ -239,6 +263,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "needs the 419 MB speakrs model bundle installed"]
     fn two_speaker_clip_is_rejected_as_multiple_speakers() {
         if !models_installed() {
             eprintln!("skipping: speakrs models not installed at {}", models_dir().display());

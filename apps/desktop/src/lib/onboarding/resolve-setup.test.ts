@@ -396,3 +396,54 @@ describe("resolveSetup — re-entry", () => {
     ).toBe(true);
   });
 });
+
+// ── ADR 0047: cloud transcription never appears in onboarding ───────────────
+
+describe("resolveSetup — Deepgram is never queued for download", () => {
+  // Deepgram's descriptors DO carry model ids (`nova-3`/`nova-2`) and their
+  // `available` flag means "an API key is present", not "bytes are on disk" — so
+  // with no key the model reads as not-installed and would land on the download
+  // agenda, which `start_audio_transcription_model_download` rejects outright.
+  // Keeping the saved provider is correct ("saved settings win"); queuing a
+  // download for it is not.
+  it("keeps the saved provider but queues no cloud download", () => {
+    const resolved = resolveSetup(
+      ALL,
+      {
+        ...NOTHING_INSTALLED,
+        audioTranscription: {
+          modelId: "nova-3",
+          displayName: "Deepgram Nova-3",
+          byteSize: null,
+          installed: false,
+        },
+      },
+      {
+        features: { microphone: true, systemAudio: true, transcription: true },
+        models: { transcriptionProvider: "deepgram", transcriptionModelId: "nova-3" },
+        excludedApps: [],
+      },
+    );
+    expect(resolved.models.transcriptionProvider).toBe("deepgram");
+    expect(resolved.workList.map((item) => item.provider)).not.toContain("deepgram");
+  });
+});
+
+describe("resolveSetup — a first run has no persisted settings to win with", () => {
+  // The flow's own `savedChoices()` returns `null` whenever nothing is persisted,
+  // which is EVERY genuine first run — so `next()`'s re-resolve on the way out of
+  // Permissions would restore the default for every row. `OnboardingFlow` now
+  // carries the rows the user actually flipped, so this is the shape it passes:
+  // a features-only `SavedChoices` with no `excludedApps`, which must both win
+  // AND leave the recommended privacy list to be applied.
+  it("a features-only saved set wins and still seeds the recommended privacy apps", () => {
+    const resolved = resolveSetup(ALL, NOTHING_INSTALLED, {
+      features: { semanticSearch: false },
+    });
+
+    expect(resolved.features.semanticSearch).toBe(false);
+    expect(resolved.workList.some((item) => item.subsystem === "semanticSearch")).toBe(false);
+    // `excludedApps` absent => first run => the recommended list is still applied.
+    expect(resolved.applyRecommendedExcludedApps).toBe(true);
+  });
+});

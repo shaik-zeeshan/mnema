@@ -356,7 +356,12 @@ fn random_hex(byte_count: usize) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 fn load_platform_key(index_id: &str) -> Result<Option<String>> {
-    let lookup = Command::new("security")
+    // Absolute path, like the store and delete paths below. A PATH-resolved
+    // `security` lets anything that can set the app's environment (a
+    // `launchctl setenv PATH`, an `LSEnvironment` entry) print a key of its
+    // choosing: on a fresh index that string becomes the SQLCipher passphrase
+    // for every capture, and it is never written to the keychain.
+    let lookup = Command::new("/usr/bin/security")
         .args([
             "find-generic-password",
             "-s",
