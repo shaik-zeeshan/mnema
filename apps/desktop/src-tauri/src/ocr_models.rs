@@ -1164,4 +1164,56 @@ mod tests {
             )])
         );
     }
+
+    /// The absent lane's whole value is that the key it locks is the SAME key the claim
+    /// predicate derives from a job's payload. Every store-level test proves "a locked key
+    /// parks a job"; this is the other half — that the app computes a key a job can match.
+    /// The claim SQL builds `TRIM($.provider) || '/' || TRIM($.modelId)` from the payload, so
+    /// a producer emitting any other shape locks a key nothing carries and the fix is inert
+    /// with every test still green.
+    #[test]
+    fn an_uninstalled_ocr_model_locks_the_key_the_claim_predicate_derives() {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-ocr-absent-key-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).expect("test dir should be created");
+
+        let mut settings = crate::native_capture::settings::default_recording_settings().ocr;
+        settings.provider = OcrProvider::Tesseract;
+        settings.model_id = Some(ocr::DEFAULT_TESSERACT_MODEL_ID.to_string());
+
+        assert_eq!(
+            absent_selected_ocr_model_key(&dir, &settings),
+            Some(format!(
+                "{}/{}",
+                ocr::TESSERACT_PROVIDER_ID,
+                ocr::DEFAULT_TESSERACT_MODEL_ID
+            )),
+            "the absent lock key must be provider/modelId — the exact shape the claim SQL builds"
+        );
+
+        // Apple Vision has no model files to be absent, so it must never take a lock:
+        // locking it would park every OCR job forever against a model that cannot download.
+        settings.provider = OcrProvider::AppleVision;
+        settings.model_id = None;
+        assert_eq!(absent_selected_ocr_model_key(&dir, &settings), None);
+
+        // A blank model id resolves to the provider's default rather than to "no selection",
+        // so it still locks — the job it must park carries that same resolved default.
+        settings.provider = OcrProvider::Tesseract;
+        settings.model_id = Some("   ".to_string());
+        assert_eq!(
+            absent_selected_ocr_model_key(&dir, &settings),
+            Some(format!(
+                "{}/{}",
+                ocr::TESSERACT_PROVIDER_ID,
+                ocr::DEFAULT_TESSERACT_MODEL_ID
+            )),
+            "a blank selection resolves to the provider default on both sides, not to None"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

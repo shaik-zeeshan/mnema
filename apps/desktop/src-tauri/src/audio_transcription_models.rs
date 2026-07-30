@@ -1579,4 +1579,51 @@ mod tests {
             BTreeSet::from([model_key(LOCAL_WHISPER_PROVIDER_ID, "small")])
         );
     }
+
+    /// See the sibling test in `ocr_models.rs`. The claim predicate derives an
+    /// audio_transcription job's key as `TRIM($.provider) || '/' || TRIM($.modelId)`; the
+    /// absent lane must produce exactly that, or a selected-but-missing transcription model
+    /// takes a lock no job matches and its jobs die the six-minute death this PR exists to
+    /// stop — with every store-level test still green.
+    #[test]
+    fn an_uninstalled_transcription_model_locks_the_key_the_claim_predicate_derives() {
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-transcription-absent-key-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir_all(&dir).expect("test dir should be created");
+
+        let mut settings =
+            crate::native_capture::settings::default_recording_settings().transcription;
+        settings.provider = capture_types::AudioTranscriptionProvider::LocalWhisper;
+        settings.model_id = Some("base".to_string());
+
+        assert_eq!(
+            absent_selected_audio_transcription_model_key(&dir, &settings),
+            Some(format!("{LOCAL_WHISPER_PROVIDER_ID}/base")),
+            "the absent lock key must be provider/modelId — the shape the claim SQL builds"
+        );
+
+        // A model id the manifest does not know still takes a lock, and that is the safe
+        // direction: such a job can never succeed, so parking it costs nothing, while NOT
+        // locking it would send it down the terminal-failure path and destroy the transcript
+        // — the exact loss claim-time gating exists to prevent. The key keeps the same shape,
+        // so the claim predicate matches it.
+        settings.model_id = Some("no-such-whisper-model".to_string());
+        assert_eq!(
+            absent_selected_audio_transcription_model_key(&dir, &settings),
+            Some(format!("{LOCAL_WHISPER_PROVIDER_ID}/no-such-whisper-model")),
+            "an unknown model parks its jobs rather than letting them burn their attempts"
+        );
+
+        // A blank model id is not a selection.
+        settings.model_id = Some("  ".to_string());
+        assert_eq!(
+            absent_selected_audio_transcription_model_key(&dir, &settings),
+            None
+        );
+
+        fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -962,4 +962,50 @@ mod tests {
             .is_some_and(|label| label.contains("CC-BY-4.0")));
         assert_eq!(speakrs.display_name, "On-device (CoreML)");
     }
+
+    /// The speaker_analysis half of the producer/consumer key agreement, and the one most
+    /// able to drift: the claim predicate does NOT concatenate this processor's payload the
+    /// way it does for ocr/audio_transcription. It binds a CONSTANT — `model_key(
+    /// SPEAKRS_PROVIDER_ID, SPEAKRS_DEFAULT_MODEL_ID)` — precisely so a legacy sherpa-keyed
+    /// job is still skipped when the speakrs model is locked. The producer instead runs the
+    /// selection through `normalize_model_selection`. Those two routes reach the same string
+    /// only while speakrs ships exactly one model; this test is what fails if that stops
+    /// being true, which is the condition the claim-side NOTE asks to be revisited.
+    #[test]
+    fn an_uninstalled_speaker_model_locks_the_constant_the_claim_predicate_binds() {
+        let dir = TestDir::new("absent-key");
+        let expected = format!(
+            "{}/{}",
+            speaker_analysis::SPEAKRS_PROVIDER_ID,
+            speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID
+        );
+
+        let mut settings =
+            crate::native_capture::settings::default_recording_settings().speaker_analysis;
+        settings.provider = speaker_analysis::SPEAKRS_PROVIDER_ID.to_string();
+        settings.model_id = Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string());
+        assert_eq!(
+            absent_selected_speaker_analysis_model_key(dir.path(), &settings),
+            Some(expected.clone()),
+            "the absent lock key must equal the constant the claim predicate binds"
+        );
+
+        // A legacy sherpa selection normalizes onto the speakrs default, so it must lock the
+        // SAME key — otherwise a user carrying an old selection gets no parking at all.
+        settings.provider = "sherpa_onnx".to_string();
+        settings.model_id = Some("nemo-small".to_string());
+        assert_eq!(
+            absent_selected_speaker_analysis_model_key(dir.path(), &settings),
+            Some(expected.clone()),
+            "a legacy selection normalizes onto speakrs and locks the speakrs key"
+        );
+
+        // An empty selection normalizes onto the speakrs default too, rather than vanishing.
+        settings.provider = String::new();
+        settings.model_id = None;
+        assert_eq!(
+            absent_selected_speaker_analysis_model_key(dir.path(), &settings),
+            Some(expected),
+        );
+    }
 }
