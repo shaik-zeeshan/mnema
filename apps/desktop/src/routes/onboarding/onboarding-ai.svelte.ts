@@ -102,9 +102,25 @@ export function createOnboardingAiStore() {
     return id;
   }
 
+  // One monotonic ticket per instance id. `verify_ai_provider` is a network
+  // round trip and it is RE-RUNNABLE (a card's Re-check, and every key/base-URL
+  // edit), so two probes for the same id can be in flight at once — a rejected
+  // key that times out settles long after a good one that answered in 300 ms.
+  // Only the newest ticket may write, otherwise the stale probe's verdict wins
+  // and `aiConfigReady` describes a config the user has already replaced.
+  // Plain Map, not `$state`: nothing renders off it.
+  const verifyTicket = new Map<string, number>();
+  function nextVerifyTicket(id: string): number {
+    const ticket = (verifyTicket.get(id) ?? 0) + 1;
+    verifyTicket.set(id, ticket);
+    return ticket;
+  }
+
   /** Drop a provider's verification — its config changed, so the old proof is
-   *  no longer evidence of anything. */
+   *  no longer evidence of anything. Bumping the ticket also stops a probe
+   *  still in flight from landing its (now meaningless) verdict afterwards. */
   function invalidateVerification(id: string): void {
+    nextVerifyTicket(id);
     const { [id]: _dropped, ...rest } = aiVerifications;
     aiVerifications = rest;
   }
@@ -115,19 +131,23 @@ export function createOnboardingAiStore() {
    * provider list so a provider still being typed can verify mid-onboarding.
    */
   async function verifyProvider(id: string): Promise<void> {
+    const ticket = nextVerifyTicket(id);
     aiVerifications = { ...aiVerifications, [id]: { status: "checking" } };
+    // Superseded by a newer probe (or by a re-seed / removal) while the round
+    // trip was in flight, or the provider is gone — either way this verdict is
+    // about a config that no longer exists.
+    const stale = (): boolean => verifyTicket.get(id) !== ticket || !providerById(id);
     try {
       const result = await invoke<{ models: string[]; latencyMs: number }>("verify_ai_provider", {
         request: { provider: id, providers: $state.snapshot(draftAiProviders) },
       });
-      // The provider may have been removed while the round trip was in flight.
-      if (!providerById(id)) return;
+      if (stale()) return;
       aiVerifications = {
         ...aiVerifications,
         [id]: { status: "live", models: result.models, latencyMs: result.latencyMs },
       };
     } catch (error) {
-      if (!providerById(id)) return;
+      if (stale()) return;
       aiVerifications = {
         ...aiVerifications,
         [id]: { status: "error", reason: humanizeError(error) },
@@ -202,7 +222,9 @@ export function createOnboardingAiStore() {
       baseUrl: p.baseUrl ?? "",
     }));
     // A re-seed replaces every provider config, so last session's proofs are
-    // void — nothing is ready again until it answers again.
+    // void — nothing is ready again until it answers again. Bump every ticket
+    // too, or a probe still in flight re-adds the verdict this just cleared.
+    for (const known of [...verifyTicket.keys()]) nextVerifyTicket(known);
     aiVerifications = {};
     aiRestoredModelNote = null;
     const restored = defaultModel

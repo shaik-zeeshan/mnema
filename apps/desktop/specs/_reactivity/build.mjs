@@ -51,4 +51,34 @@ compile(
   [],
 );
 
+// Onboarding AI store: the verify-probe ordering regression
+// (onboarding-ai-verify-race.test.ts). Its two rune dependencies are compiled
+// alongside it and re-pointed at the generated files; the plain-TS ones are
+// re-pointed at their absolute source (bun loads TS on the fly) and the
+// `$lib/types` imports are type-only and erased by the TS transpile.
+compile(
+  resolve(appRoot, "src/lib/insights/modelPool.svelte.ts"),
+  resolve(here, "gen/modelPool.js"),
+  [],
+);
+compile(
+  resolve(appRoot, "src/lib/settings/state/ai-runtime.svelte.ts"),
+  resolve(here, "gen/ai-runtime.js"),
+  [['"$lib/format-error"', `"${resolve(appRoot, "src/lib/format-error")}"`]],
+);
+compile(
+  resolve(appRoot, "src/routes/onboarding/onboarding-ai.svelte.ts"),
+  resolve(here, "gen/onboarding-ai.js"),
+  [
+    ['"$lib/format-error"', `"${resolve(appRoot, "src/lib/format-error")}"`],
+    ['"$lib/insights/modelPool.svelte"', '"./modelPool.js"'],
+    ['"$lib/onboarding/ai-readiness"', `"${resolve(appRoot, "src/lib/onboarding/ai-readiness")}"`],
+    ['"$lib/settings/state/ai-runtime.svelte"', '"./ai-runtime.js"'],
+    [
+      '"$lib/settings/state/ai-providers"',
+      `"${resolve(appRoot, "src/lib/settings/state/ai-providers")}"`,
+    ],
+  ],
+);
+
 console.log("compiled");
