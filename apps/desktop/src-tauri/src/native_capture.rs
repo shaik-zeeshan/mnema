@@ -2860,8 +2860,14 @@ fn record_bounded_microphone_clip_blocking(
     if released {
         let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
         if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
-            // The clip itself is fine; log and let the next rotation or a
-            // device-change reconnect re-arm the microphone.
+            // The clip itself is fine, so this only logs. Segment rotation and the
+            // device-change reconnect do NOT re-arm a microphone that has no
+            // session — rotation only rotates an existing one, and the reconnect
+            // is gated on a SpecificDevice preference. The single path that can
+            // start one from scratch is `resume_microphone_from_inactivity`, and
+            // it runs only while the family is paused, which is exactly why
+            // `restore_microphone_after_out_of_band_recording` leaves the
+            // inactivity pause standing when its restart fails.
             debug_log::log_error(format!(
                 "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
                 error.code, error.message

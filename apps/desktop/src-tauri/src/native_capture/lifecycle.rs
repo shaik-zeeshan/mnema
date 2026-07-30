@@ -490,9 +490,21 @@ impl RecordingLifecycle {
             return Ok(());
         }
 
-        // Clear the soft inactivity pause before restarting: the next inactivity
-        // tick re-pauses within a tick if the user is still idle, whereas leaving
-        // it set strands the microphone with no session to wake it.
+        let device_id = self.runtime.microphone_device_id_for_capture.clone();
+        super::microphone::restart_microphone_session_for_runtime(
+            &mut self.runtime,
+            device_id.as_deref(),
+            "restoring microphone after a bounded enrollment recording",
+        )?;
+
+        // Clear the soft inactivity pause only once the restart has actually
+        // produced a session: the next inactivity tick re-pauses within a tick if
+        // the user is still idle, whereas leaving it set strands the microphone
+        // with no session to wake it. Order matters — the caller only logs a
+        // failed restore, and `resume_microphone_from_inactivity` is the one path
+        // that re-arms a requested-but-session-less microphone. It runs only
+        // while the family is paused, so clearing the pause on the way *in* would
+        // make a failed restore permanent for the rest of the session.
         if self.runtime.inactivity.is_microphone_paused() {
             self.runtime.inactivity.set_family_paused_states(
                 self.runtime.inactivity.screen_paused,
@@ -501,12 +513,7 @@ impl RecordingLifecycle {
             );
         }
 
-        let device_id = self.runtime.microphone_device_id_for_capture.clone();
-        super::microphone::restart_microphone_session_for_runtime(
-            &mut self.runtime,
-            device_id.as_deref(),
-            "restoring microphone after a bounded enrollment recording",
-        )
+        Ok(())
     }
 
     pub(crate) fn recover_after_wake(

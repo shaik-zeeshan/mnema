@@ -5021,6 +5021,46 @@ fn pause_microphone_for_inactivity_is_idempotent() {
     assert!(runtime.inactivity.is_microphone_paused());
 }
 
+// A bounded enrollment recording hard-stops the microphone session. Restoring it
+// can fail — the recordings volume can go away while the 15 s take runs — and the
+// caller only logs that failure. The one thing that can still re-arm a requested
+// microphone with no session is `resume_microphone_from_inactivity`, and it only
+// runs while the family is paused. So a failed restore must leave the inactivity
+// pause standing; clearing it first strands the microphone dead for the rest of
+// the session.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_failed_microphone_restore_leaves_the_inactivity_pause_standing() {
+    let mut lifecycle = RecordingLifecycle::default();
+    {
+        let runtime = lifecycle.runtime_mut();
+        *runtime = audio_paused_runtime_fixture();
+        // The recordings volume is gone: opening the next microphone file fails
+        // before any audio device is touched.
+        runtime.microphone_planner = Some(SegmentPlanner::with_date_prefix(
+            "/dev/null/mnema-recordings-volume-gone",
+            "native-session-microphone",
+            current_date_prefix(),
+        ));
+        assert!(runtime.inactivity.is_microphone_paused());
+        assert!(runtime.active_microphone_session.is_none());
+    }
+
+    let error = lifecycle
+        .restore_microphone_after_out_of_band_recording()
+        .expect_err("restoring onto a vanished volume must fail");
+    assert_eq!(error.code, "io_error");
+
+    assert!(
+        lifecycle.runtime().inactivity.is_microphone_paused(),
+        "a failed restore must keep the microphone inactivity pause, or resume_microphone_from_inactivity can never re-arm the session"
+    );
+    assert!(
+        lifecycle.runtime().active_microphone_session.is_none(),
+        "no session was started, so the pause is the only thing that can wake one"
+    );
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_microphone_from_inactivity_requires_requested_sources() {
