@@ -28,6 +28,31 @@ describe("jobState", () => {
 	it("is plain queued when no attempt was ever scheduled", () => {
 		expect(jobState(job("queued", null), NOW)).toBe("queued");
 	});
+
+	// The parked state is the whole VISIBLE difference between the old behaviour
+	// (a job against an absent model fails three times in ~6 minutes and loses the
+	// transcript) and claim-time gating. Without it a parked job is
+	// indistinguishable from one that is about to run.
+	it("calls a queued job whose model is locked 'preparing'", () => {
+		expect(jobState({ ...job("queued", null), modelLocked: true }, NOW)).toBe("preparing");
+	});
+
+	// Precedence matters: a parked job may also carry a stale backoff from before
+	// its model went away. The model is the reason it will not run next, so that
+	// is what the row must say.
+	it("prefers 'preparing' over 'retrying' when a parked job also has a backoff", () => {
+		expect(jobState({ ...job("queued", "2026-07-15 14:36:00"), modelLocked: true }, NOW)).toBe(
+			"preparing",
+		);
+	});
+
+	// Only a queued job can be parked. A running/failed/completed row claiming
+	// "Preparing" would be a lie about work that has already started or ended.
+	it("never calls a non-queued job 'preparing', whatever the lock says", () => {
+		for (const status of ["running", "failed", "completed"]) {
+			expect(jobState({ ...job(status, null), modelLocked: true }, NOW)).toBe(status);
+		}
+	});
 });
 
 describe("nextAttemptLabel", () => {

@@ -207,6 +207,16 @@ export interface ProcessingJobListing extends ProcessingJobDto {
 	 * derived state, not a wire status (see `lib/debug/detail/jobs.ts`).
 	 */
 	nextAttemptAt: string | null;
+	/**
+	 * The job's model is locked (downloading, absent, or being deleted), so the queue skips it.
+	 * `status === "queued" && modelLocked` is the "Preparing" state: waiting for its model rather
+	 * than queued behind other work.
+	 *
+	 * Lives HERE, not on `ProcessingJobDto`: Rust resolves it on the listing wrapper
+	 * (`ProcessingJobListing`, `crates/app-infra/src/processing/store.rs`), not on the domain
+	 * `ProcessingJob` — so `get_processing_job` / `list_processing_jobs` never send it.
+	 */
+	modelLocked: boolean;
 }
 
 /** Newest-first page of one processor's jobs. `limit` clamps to 0..=500 (default 50). */

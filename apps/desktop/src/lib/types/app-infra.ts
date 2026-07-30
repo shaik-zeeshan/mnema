@@ -466,12 +466,6 @@ export interface ProcessingJobDto {
 	updatedAt: string;
 	startedAt: string | null;
 	finishedAt: string | null;
-	/**
-	 * The job's model is locked (downloading, absent, or being deleted), so the queue skips it.
-	 * `status === "queued" && modelLocked` is the "Preparing" state: waiting for its model rather
-	 * than queued behind other work. Only the job-listing commands resolve it; elsewhere it is false.
-	 */
-	modelLocked: boolean;
 }
 
 export interface ProcessingResultDto {
