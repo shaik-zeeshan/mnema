@@ -98,9 +98,14 @@ const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 /// sustain a back-to-back burn concurrent with capture/OCR. Mirrors the search
 /// backfill's pacing band (kept under candle: on macOS the Metal forward leaves the
 /// CPU idle, but on candle-CPU the forward is the burn this paces).
-const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 1.0;
+/// Mirrors the search backfill's band exactly — see the long rationale on
+/// `semantic_search_worker::BACKFILL_BATCH_COOLDOWN_MULTIPLIER`. Short version:
+/// the multiplier sets the duty cycle (`1 / (1 + multiplier)`), the MAX is only a
+/// safety bound and must stay well above `multiplier * typical_batch` or it becomes
+/// the governor and makes a throttled GPU press harder instead of backing off.
+const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 3.0;
 const BACKFILL_BATCH_COOLDOWN_MIN: Duration = Duration::from_millis(150);
-const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
 
 /// The outcome of one sweep pass, deciding the loop's next sleep.
 enum SweepPass {
@@ -411,6 +416,15 @@ async fn run_sweep_pass(
         None
     };
 
+    // Share the one background GPU slot with the search backfill sweep so the two
+    // never embed concurrently — see
+    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
+    // of letting them overlap (+38% GPU power, +9°C).
+    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
+        .acquire()
+        .await
+        .ok();
+
     let embed_started_at = Instant::now();
     let app_data_dir_for_task = app_data_dir.clone();
     let descriptor_for_task = descriptor.clone();
@@ -711,6 +725,17 @@ mod tests {
             BACKFILL_BATCH_COOLDOWN_MAX
         );
         let mid = Duration::from_millis(500);
-        assert_eq!(backfill_batch_cooldown(mid), mid);
+        assert_eq!(
+            backfill_batch_cooldown(mid),
+            mid.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER)
+        );
+        // REGRESSION GUARD (mirrors the search backfill's): a realistic batch must
+        // not hit the ceiling, or MAX becomes the governor and the duty cycle stops
+        // responding to a throttled GPU.
+        let realistic = Duration::from_secs(4);
+        assert!(
+            backfill_batch_cooldown(realistic) < BACKFILL_BATCH_COOLDOWN_MAX,
+            "MAX must stay a safety bound, not the governor, for a realistic batch"
+        );
     }
 }

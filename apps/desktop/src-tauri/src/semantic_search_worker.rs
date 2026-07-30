@@ -152,13 +152,51 @@ const MAX_CONSECUTIVE_LOAD_FAILURES: u32 = 3;
 /// is not importable wholesale, so the same clamp-scaled-by-work-time pattern is
 /// replicated here at backfill granularity. See the report for the exact
 /// vs-OCR delta.
-const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 1.0;
+/// The multiplier is what actually sets the steady-state duty cycle:
+/// `duty = 1 / (1 + multiplier)`. At 3.0 the worker embeds ~25% of the time.
+///
+/// It was 1.0 (a 50% target) — but measurement showed the multiplier was inert in
+/// practice, because a real batch of 16 anchors takes ~3.5s while
+/// [`BACKFILL_BATCH_COOLDOWN_MAX`] was 2s, so the CAP bound on every single pass
+/// and the multiplier never applied. Two consequences, both measured on an M4 Air
+/// against real capture text: the GPU sat at 65% duty / 7.4W sustained, and — worse
+/// — duty *rose* when the GPU slowed (to 86% under Low Power Mode), because a
+/// longer batch still got the same fixed 2s rest. A throttled machine was made to
+/// press HARDER.
+///
+/// With the cap raised out of the way (below) the multiplier governs again and the
+/// duty cycle is **self-correcting**: a slower forward earns proportionally more
+/// rest, so thermal throttling backs the worker off instead of amplifying it. This
+/// is why the worker deliberately does NOT read `NSProcessInfo.thermalState` or the
+/// power source — proportional pacing already responds to a throttled GPU, and a
+/// thermal-state reader would duplicate it.
+const BACKFILL_BATCH_COOLDOWN_MULTIPLIER: f64 = 3.0;
 /// Lower bound of the inter-batch cooldown — a real yield even for a trivially
 /// fast batch (the old 0ms gave none), so the sweep never busy-loops the cores.
 const BACKFILL_BATCH_COOLDOWN_MIN: Duration = Duration::from_millis(150);
-/// Upper bound of the inter-batch cooldown, so a slow batch still drains the
-/// backlog in reasonable time rather than stalling.
-const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+/// Safety bound only — NOT the governor. It exists so a pathologically slow batch
+/// cannot park the sweep for minutes; it must stay well above
+/// `multiplier * typical_batch` (~10.5s today) or it silently becomes the governor
+/// again and reintroduces the throttle-amplifying bug described above.
+const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
+
+/// Serialises the two BACKGROUND embed workers — this one and
+/// `user_context::subject_vector_worker` — onto one GPU slot, so they never run
+/// forwards concurrently.
+///
+/// Each worker holds its own embedder and paces itself independently, with nothing
+/// coordinating them. Measured on an M4 Air against real capture text, two
+/// concurrent workers cost **+38% GPU power (7.4W → 10.2W) and +9°C** for only +45%
+/// throughput — and 10.2W is 86% of the device's saturation ceiling, i.e. two
+/// background embedders effectively saturate the GPU. Serialising them removes that
+/// worst case; the pacing cooldowns then compose instead of stacking.
+///
+/// The QUERY path (`semantic_search_query.rs`) deliberately does NOT take this
+/// permit: it is user-facing and latency-sensitive, and making a search wait behind
+/// a backfill batch (~3.5s) to save background watts is the wrong trade. Only the
+/// two background sweeps share the slot.
+pub(crate) static BACKGROUND_EMBED_SLOT: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(1);
 
 /// The outcome of one sweep pass, deciding the loop's next sleep.
 enum SweepPass {
@@ -724,6 +762,13 @@ async fn run_sweep_pass(
     // than the batched embed misclassifying the whole cluster transient forever.
     let batch_ids: Vec<i64> = batch.iter().map(|anchor| anchor.anchor_id).collect();
     let per_anchor_isolation = state.is_stuck_on(&batch_ids);
+
+    // Take the shared background GPU slot before the forward, so this sweep and the
+    // subject-vector sweep never embed concurrently (see [`BACKGROUND_EMBED_SLOT`]).
+    // Held until this pass returns; the wait is bounded by one sibling batch. An
+    // `Err` here would mean the semaphore was closed, which never happens for a
+    // `static` — proceed unpaced rather than dropping the batch.
+    let _embed_slot = BACKGROUND_EMBED_SLOT.acquire().await.ok();
 
     let embed_started_at = Instant::now();
     let app_data_dir_for_task = app_data_dir.clone();
@@ -1672,11 +1717,35 @@ mod tests {
             BACKFILL_BATCH_COOLDOWN_MAX,
             "a very slow batch is capped at the ceiling"
         );
-        // A mid-band batch scales through unclamped (multiplier is 1.0).
+        // A mid-band batch scales by the multiplier and passes through unclamped.
         let mid = Duration::from_millis(500);
-        assert_eq!(backfill_batch_cooldown(mid), mid);
+        assert_eq!(
+            backfill_batch_cooldown(mid),
+            mid.mul_f64(BACKFILL_BATCH_COOLDOWN_MULTIPLIER)
+        );
         assert!(backfill_batch_cooldown(mid) >= BACKFILL_BATCH_COOLDOWN_MIN);
         assert!(backfill_batch_cooldown(mid) <= BACKFILL_BATCH_COOLDOWN_MAX);
+
+        // REGRESSION GUARD: a REALISTIC batch must not reach the ceiling. A batch of
+        // SWEEP_BATCH_SIZE real anchors measures ~3.5s on an M4 Air, and if the cap
+        // binds there it becomes the governor instead of the multiplier — which is
+        // the exact bug this band was retuned to fix (duty pinned at 65%, and RISING
+        // to 86% when the GPU throttled, because a slower batch still got the same
+        // fixed rest). Keep MAX well above `multiplier * typical_batch`.
+        let realistic = Duration::from_secs(4);
+        assert!(
+            backfill_batch_cooldown(realistic) < BACKFILL_BATCH_COOLDOWN_MAX,
+            "MAX must stay a safety bound, not the governor, for a realistic batch"
+        );
+        // ...and the duty cycle it produces is the multiplier's target, so a slower
+        // forward earns proportionally more rest (self-correcting under throttle).
+        let cooldown = backfill_batch_cooldown(realistic);
+        let duty = realistic.as_secs_f64() / (realistic + cooldown).as_secs_f64();
+        let target = 1.0 / (1.0 + BACKFILL_BATCH_COOLDOWN_MULTIPLIER);
+        assert!(
+            (duty - target).abs() < 0.01,
+            "duty {duty:.3} should track the multiplier's target {target:.3}"
+        );
     }
 
     #[test]
