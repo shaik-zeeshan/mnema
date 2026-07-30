@@ -18,7 +18,7 @@
       commands this screen calls directly (slices 13 + 14).
     owns
       Two states. Speakrs ready → inline enrollment with a supplied sentence, a
-      level meter, playback confirmation and a working retry loop over the three
+      level meter and a working retry loop over the three
       typed rejections (MultipleSpeakers / TooShort / NoSpeech). Speakrs still
       downloading → say so, with "Set this up later" as the PRIMARY action.
       Never a spinner, never a wall. Two honesty lines: the voiceprint never
@@ -43,7 +43,7 @@
       about.
 -->
 <script lang="ts">
-  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
   import { classifyReadiness } from "$lib/onboarding/model-readiness";
   import { describeError, formatBytes } from "$lib/settings/state/format";
   // Wire shape, clip length, the read-aloud sentence AND the three rejection
@@ -79,7 +79,6 @@
   // ── State ────────────────────────────────────────────────────────────────
   let phase = $state<Phase>("idle");
   let takeNumber = $state(0);
-  let clipPath = $state<string | null>(null);
   /** Measured wall-clock length of the last completed take. */
   let takeMs = $state(0);
   /** Ring of the last `BARS` polled microphone levels, 0-1. */
@@ -147,7 +146,6 @@
       stopTicker();
       takeMs = Date.now() - startedAt;
       takeNumber += 1;
-      clipPath = path;
       phase = "judging";
       // Judgment is entirely the embedder's; we render whatever it returns.
       const outcome = await invoke<VoiceEnrollmentOutcome>("enroll_account_owner_voice", {
@@ -167,17 +165,11 @@
     }
   }
 
-  // ── Playback confirmation ────────────────────────────────────────────────
-  let player: HTMLAudioElement | null = null;
-
-  function playTake(): void {
-    if (!clipPath) return;
-    player?.pause();
-    player = new Audio(convertFileSrc(clipPath));
-    player.play().catch((err: unknown) => {
-      failure = describeError(err);
-    });
-  }
+  // No playback confirmation here, deliberately: this screen submits the take
+  // in the same breath as recording it, and `enroll_account_owner_voice`
+  // destroys the clip when it judges it (stored, rejected, or failed alike). The
+  // Settings enrollment door is the surface with a review stage, so it is the
+  // one that can honestly offer a replay.
 
   // ── Formatting ───────────────────────────────────────────────────────────
   function clock(ms: number): string {
@@ -276,11 +268,6 @@
             {:else}
               Record again
             {/if}
-          </button>
-        {/if}
-        {#if clipPath}
-          <button class="ob-btn" onclick={playTake} disabled={busy}>
-            ▸ Play take {takeNumber}
           </button>
         {/if}
       </div>
