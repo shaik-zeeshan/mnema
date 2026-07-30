@@ -229,4 +229,75 @@ mod tests {
             "label-my-voice-automatically is on by default once enrolled"
         );
     }
+
+    /// `clip_path` arrives from the renderer and `embed_enrollment_clip_for_build` calls
+    /// `remove_file` on it. `is_bounded_enrollment_clip` is the ONLY thing between those two
+    /// facts — its own doc says "without this the door would open — and, below, destroy — any
+    /// file the caller names" — and it is pure, free to test, and was untested. A rejected
+    /// path must not merely be refused: the file must still be there afterwards.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_a_clip_the_bounded_recorder_wrote_is_accepted_and_a_rejected_path_survives() {
+        use std::path::PathBuf;
+
+        let temp = std::env::temp_dir();
+        let unique = format!("{}-{:?}", std::process::id(), std::thread::current().id());
+
+        let accepted = temp.join(format!(
+            "{}{unique}.m4a",
+            crate::native_capture::ENROLLMENT_CLIP_PREFIX
+        ));
+        assert!(
+            is_bounded_enrollment_clip(&accepted),
+            "the shape the bounded recorder actually writes must be accepted"
+        );
+
+        // Every rejected shape, including the one that matters most: a path that escapes the
+        // temp dir entirely while still carrying the expected file name.
+        let nested_dir = temp.join(format!("mnema-enrollment-guard-{unique}"));
+        std::fs::create_dir_all(&nested_dir).expect("nested dir should be created");
+        let rejected: Vec<PathBuf> = vec![
+            // Right name, wrong directory.
+            nested_dir.join(format!(
+                "{}{unique}.m4a",
+                crate::native_capture::ENROLLMENT_CLIP_PREFIX
+            )),
+            // Right directory, wrong prefix — i.e. somebody else's temp file.
+            temp.join(format!("not-an-enrollment-{unique}.m4a")),
+            // Right directory and prefix, wrong extension.
+            temp.join(format!(
+                "{}{unique}.wav",
+                crate::native_capture::ENROLLMENT_CLIP_PREFIX
+            )),
+            // A traversal that resolves outside the temp dir.
+            temp.join(format!(
+                "../{}{unique}.m4a",
+                crate::native_capture::ENROLLMENT_CLIP_PREFIX
+            )),
+        ];
+
+        for path in &rejected {
+            std::fs::write(path, b"not really audio").expect("probe file should be written");
+            assert!(
+                !is_bounded_enrollment_clip(path),
+                "the guard must refuse {}",
+                path.display()
+            );
+            // `ClipJudgment` deliberately has no `Debug` (it carries the voiceprint), so
+            // compare the error arm rather than the whole Result.
+            assert_eq!(
+                embed_enrollment_clip_for_build(path, &temp).err(),
+                Some("voice enrollment accepts only a clip it recorded".to_string()),
+                "a refused path is refused without saying anything about itself"
+            );
+            assert!(
+                path.exists(),
+                "a refused path must not be deleted: {}",
+                path.display()
+            );
+            std::fs::remove_file(path).ok();
+        }
+
+        std::fs::remove_dir_all(&nested_dir).ok();
+    }
 }
