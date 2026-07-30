@@ -6057,6 +6057,95 @@ mod tests {
                 !cluster.person_link_auto,
                 "a cluster with no person cannot still claim an automatic link"
             );
+
+        });
+    }
+
+    /// Over-clustering routinely splits one voice across clusters, so a segment can hold an
+    /// auto-linked cluster AND a cluster the user confirmed for the SAME person. Merging the
+    /// confirmed one into the auto-linked one keeps the target's `person_link_auto = 1`, so every
+    /// turn the user explicitly confirmed is republished as a machine guess — `assignedTurns`
+    /// drops to zero on the broker wire and the undo affordance appears on a link the user made.
+    /// Merging the other way round yields the opposite answer for the same user intent.
+    #[test]
+    fn merging_a_confirmed_cluster_into_an_auto_linked_one_keeps_the_confirmation() {
+        run_async_test(async {
+            let dir = TestDir::new("auto-link-merge-confirmed");
+            let infra = AppInfra::initialize(dir.path())
+                .await
+                .expect("app infra should initialize");
+            let owner = enroll_owner(&infra).await;
+            let first = audio_segment_for(&infra, "auto-link-merge-confirmed", 1).await;
+            let second = audio_segment_for(&infra, "auto-link-merge-confirmed", 2).await;
+
+            // Cluster A: the auto-linker decided this one.
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &first,
+                speaker_output_with_suggestion(
+                    "auto-link-merge-confirmed",
+                    first.id,
+                    &OWNER_ENROLLMENT_EMBEDDING,
+                    Some(owner_suggestion(
+                        owner.id,
+                        speaker_analysis::RecognitionConfidence::High,
+                        0.91,
+                    )),
+                ),
+                true,
+            )
+            .await;
+            // Cluster B: same voice, split off by over-clustering, and the user named it.
+            complete_speaker_output_with_auto_label(
+                &infra,
+                &second,
+                speaker_output_with_suggestion(
+                    "auto-link-merge-confirmed",
+                    second.id,
+                    &[0.0, 1.0],
+                    None,
+                ),
+                true,
+            )
+            .await;
+            let clusters = infra
+                .list_speaker_clusters_for_session("auto-link-merge-confirmed")
+                .await
+                .expect("clusters should list");
+            assert_eq!(clusters.len(), 2, "over-clustering split the voice in two");
+            let auto_cluster_id = clusters
+                .iter()
+                .find(|cluster| cluster.person_link_auto)
+                .expect("one cluster should be auto-linked")
+                .id;
+            let confirmed_cluster_id = clusters
+                .iter()
+                .find(|cluster| cluster.id != auto_cluster_id)
+                .expect("the other cluster should exist")
+                .id;
+            infra
+                .link_speaker_cluster_to_person(confirmed_cluster_id, owner.id, false)
+                .await
+                .expect("the user should be able to name the second cluster");
+
+            infra
+                .merge_speaker_clusters(confirmed_cluster_id, auto_cluster_id)
+                .await
+                .expect("clusters should merge");
+
+            let merged = infra
+                .list_speaker_clusters_for_session("auto-link-merge-confirmed")
+                .await
+                .expect("clusters should list")
+                .into_iter()
+                .find(|cluster| cluster.id == auto_cluster_id)
+                .expect("the merge target should survive");
+            assert_eq!(merged.person_id, Some(owner.id));
+            assert!(
+                !merged.person_link_auto,
+                "the merged cluster carries a link the user confirmed, so it must not keep \
+                 reporting itself as automatic"
+            );
         });
     }
 

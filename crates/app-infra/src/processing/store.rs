@@ -2850,6 +2850,26 @@ impl ProcessingStore {
         .bind(target_cluster_id)
         .execute(&mut *transaction)
         .await?;
+        // A merge carries the source's *provenance* across too. `person_link_auto`
+        // describes how `person_id` was decided, and the source row is purged below —
+        // so a cluster the user confirmed, merged into an auto-linked one naming the
+        // SAME person, would leave every confirmed turn republished as a machine guess
+        // (`assigned` becomes `recognized` on the broker wire) with an undo affordance
+        // over a link the user made. Only same-person merges: a different source person
+        // is dropped by the merge, and its confirmation with it.
+        sqlx::query(
+            "UPDATE recording_speaker_clusters \
+             SET person_link_auto = 0, updated_at = CURRENT_TIMESTAMP \
+             WHERE id = ?2 \
+               AND person_link_auto = 1 \
+               AND person_id IS NOT NULL \
+               AND person_id = (SELECT person_id FROM recording_speaker_clusters WHERE id = ?1) \
+               AND (SELECT person_link_auto FROM recording_speaker_clusters WHERE id = ?1) = 0",
+        )
+        .bind(source_cluster_id)
+        .bind(target_cluster_id)
+        .execute(&mut *transaction)
+        .await?;
         purge_orphaned_speaker_cluster(&mut transaction, source_cluster_id).await?;
         transaction.commit().await?;
         self.get_required_speaker_cluster(target_cluster_id).await
