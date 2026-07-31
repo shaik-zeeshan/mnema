@@ -583,7 +583,7 @@ fn l2_normalize(x: &Tensor) -> candle_core::Result<Tensor> {
     let x = x.to_dtype(DType::F32)?;
     // Floor the norm at a tiny positive value so a degenerate all-zero pooled row
     // divides to a finite (zero) vector instead of NaN/Inf — the same guard the
-    // wrapper's `mean_pool_l2` applies via its epsilon, and the clamp idiom
+    // wrapper's `weighted_mean_pool_l2` applies via its epsilon, and the clamp idiom
     // `mean_pool` above uses for its token counts. A real pooled vector's
     // pre-normalization norm is O(√H), far above the floor, so a normal embedding
     // is never perturbed.

@@ -10,8 +10,9 @@
 //! Overflow handling: the model's tokenizer truncates text past its window. This
 //! wrapper counts tokens up front with a non-truncating split tokenizer; when the
 //! text overflows the window it is split into token-window chunks, each chunk is
-//! embedded by the backend, and the chunk vectors are mean-pooled and
-//! L2-normalized into one vector.
+//! embedded by the backend, and the chunk vectors are mean-pooled **weighted by
+//! chunk length** and L2-normalized into one vector — a short trailing window must
+//! not count as much as a full one (see [`weighted_mean_pool_l2`]).
 //!
 //! **Documents are capped at [`MAX_DOCUMENT_CHUNKS`] chunks** — text past the cap's
 //! last window is dropped and never indexed. This crate therefore no longer honours
@@ -292,6 +293,7 @@ impl SemanticSearchEmbedder {
         // so the fan-in can slice the flat vectors back per text.
         let mut split_results: Vec<Option<EmbeddingError>> = Vec::with_capacity(texts.len());
         let mut chunk_counts: Vec<usize> = Vec::new();
+        let mut chunk_weights: Vec<f32> = Vec::new();
         let mut all_chunks: Vec<String> = Vec::new();
         for text in texts {
             match self.split_on_overflow(text, chunk_max_tokens) {
@@ -305,6 +307,17 @@ impl SemanticSearchEmbedder {
                     }
                     split_results.push(None);
                     chunk_counts.push(chunks.len());
+                    // Weight each chunk by its byte length so the fan-in pools them in
+                    // proportion to how much text they carry (see
+                    // [`weighted_mean_pool_l2`]). Measured BEFORE the prompt is
+                    // prepended — the prompt is a constant per chunk and would flatten
+                    // the ratio a short tail depends on.
+                    // ponytail: bytes, not tokens. Chunks come from contiguous token
+                    // windows of one text through one tokenizer, so bytes-per-token is
+                    // uniform within the text and the ratio is what matters; getting
+                    // exact counts means threading them out of the split. Swap in real
+                    // token counts if a mixed-script anchor ever measures worse.
+                    chunk_weights.extend(chunks.iter().map(|chunk| chunk.len() as f32));
                     // Prepend the per-model prompt STRING to each chunk before it
                     // reaches the backend. `prepend_prompt` returns the chunk
                     // unchanged for a `None`/empty prompt, so the bare-text path is
@@ -331,7 +344,8 @@ impl SemanticSearchEmbedder {
         // text: a text fails only if one of ITS OWN chunks failed, independent of
         // sibling texts in the batch. Texts that already failed splitting keep their
         // own split error below.
-        let mut fanned_in = fan_in_chunk_results(&chunk_counts, chunk_results).into_iter();
+        let mut fanned_in =
+            fan_in_chunk_results(&chunk_counts, &chunk_weights, chunk_results).into_iter();
 
         // Interleave: a split-failure slot keeps its error; every other slot draws
         // the next fan-in result, in the same order the chunk counts were pushed.
@@ -582,18 +596,29 @@ fn truncate_and_renormalize(v: &[f32], d: usize) -> Vec<f32> {
 /// fails a healthy neighbor. Otherwise a text with exactly one chunk passes its
 /// single vector through unchanged (byte-for-byte parity with `embed_text`'s
 /// single-chunk path — the backend already L2-normalized it); a text with more than
-/// one chunk is `mean_pool_l2`'d (→ `EmptyEmbedding` if pooling returns `None`, e.g.
-/// a ragged/empty slice). An under-delivered batch clamps its slice instead of
-/// panicking.
+/// one chunk is [`weighted_mean_pool_l2`]'d (→ `EmptyEmbedding` if pooling returns
+/// `None`, e.g. a ragged/empty slice). An under-delivered batch clamps its slice
+/// instead of panicking.
+///
+/// `chunk_weights` is the FLAT per-chunk weight list in the same order as
+/// `chunk_results` — sliced with the identical indices, so the two can't desync. A
+/// missing weight pools uniformly.
 fn fan_in_chunk_results(
     chunk_counts: &[usize],
+    chunk_weights: &[f32],
     chunk_results: Vec<Result<Vec<f32>, EmbeddingError>>,
 ) -> Vec<Result<Vec<f32>, EmbeddingError>> {
     let mut results = Vec::with_capacity(chunk_counts.len());
     let mut cursor = 0usize;
     for &count in chunk_counts {
+        let start = cursor.min(chunk_results.len());
         let end = (cursor + count).min(chunk_results.len());
-        let slice = &chunk_results[cursor.min(chunk_results.len())..end];
+        let slice = &chunk_results[start..end];
+        // Same indices as `slice`, clamped against the weight list's own length so a
+        // short/absent weight list degrades to uniform pooling rather than misaligning.
+        let weights = chunk_weights
+            .get(start.min(chunk_weights.len())..end.min(chunk_weights.len()))
+            .unwrap_or(&[]);
         cursor += count;
 
         // This text fails iff one of its own chunks failed. Surface that chunk's
@@ -614,29 +639,41 @@ fn fan_in_chunk_results(
         if count == 1 && vectors.len() == 1 {
             results.push(Ok(vectors[0].clone()));
         } else {
-            results.push(mean_pool_l2(&vectors).ok_or(EmbeddingError::EmptyEmbedding));
+            let pooled = weighted_mean_pool_l2(&vectors, weights);
+            results.push(pooled.ok_or(EmbeddingError::EmptyEmbedding));
         }
     }
     results
 }
 
-/// Mean-pool a set of chunk vectors and L2-normalize the result, so a split text
-/// is comparable to an unsplit one.
-fn mean_pool_l2(vectors: &[Vec<f32>]) -> Option<Vec<f32>> {
+/// Mean-pool a set of chunk vectors **weighted by how much text each chunk carries**
+/// and L2-normalize the result, so a split text is comparable to an unsplit one.
+///
+/// Equal weighting is what the chunk cap turned into a regression: an anchor that
+/// overflows the window by a handful of tokens had its 6-token tail averaged in
+/// 50/50 with its 250-token head, and the query that names that head fell from rank
+/// 2 to 1062 (concept judge, cap 1 → 2). `weights[i]` is chunk `i`'s byte length; a
+/// missing, non-finite or non-positive weight falls back to an equal share, so an
+/// absent weight list reproduces the old uniform mean exactly.
+///
+/// No division by the weight total — L2-normalizing the weighted SUM gives the same
+/// unit vector.
+fn weighted_mean_pool_l2(vectors: &[Vec<f32>], weights: &[f32]) -> Option<Vec<f32>> {
     let first = vectors.first()?;
     let dim = first.len();
     if dim == 0 || vectors.iter().any(|v| v.len() != dim) {
         return None;
     }
     let mut summed = vec![0f32; dim];
-    for vector in vectors {
+    for (index, vector) in vectors.iter().enumerate() {
+        let weight = weights
+            .get(index)
+            .copied()
+            .filter(|weight| weight.is_finite() && *weight > 0.0)
+            .unwrap_or(1.0);
         for (acc, value) in summed.iter_mut().zip(vector.iter()) {
-            *acc += *value;
+            *acc += *value * weight;
         }
-    }
-    let count = vectors.len() as f32;
-    for acc in summed.iter_mut() {
-        *acc /= count;
     }
     let norm = summed.iter().map(|v| v * v).sum::<f32>().sqrt();
     let epsilon = 1e-12f32;
@@ -829,7 +866,7 @@ mod tests {
 
     #[test]
     fn mean_pool_l2_averages_and_normalizes() {
-        let pooled = mean_pool_l2(&[vec![3.0, 0.0], vec![0.0, 3.0]]).expect("pooled");
+        let pooled = weighted_mean_pool_l2(&[vec![3.0, 0.0], vec![0.0, 3.0]], &[]).expect("pooled");
         // Mean is (1.5, 1.5); after L2 normalization each component is ~0.7071.
         assert_eq!(pooled.len(), 2);
         let norm = (pooled[0] * pooled[0] + pooled[1] * pooled[1]).sqrt();
@@ -838,22 +875,76 @@ mod tests {
     }
 
     #[test]
+    fn a_short_trailing_chunk_barely_moves_the_pooled_vector() {
+        // The defect the weighting fixes: an anchor that overflows the window by a
+        // handful of tokens had that fragment averaged in 50/50 with its full head
+        // window, and the query naming the head fell from rank 2 to 1062.
+        let head = vec![1.0, 0.0];
+        let tail = vec![0.0, 1.0];
+        let pooled =
+            weighted_mean_pool_l2(&[head.clone(), tail.clone()], &[1000.0, 24.0]).expect("pooled");
+        assert!(
+            pooled[0] > 0.99 && pooled[1] < 0.05,
+            "a 24-byte tail must not swing a 1000-byte head: {pooled:?}"
+        );
+
+        // A full-size second window still counts nearly in full — the fix is a
+        // proportion, not a "drop the tail" rule.
+        let even =
+            weighted_mean_pool_l2(&[head.clone(), tail.clone()], &[1000.0, 900.0]).expect("pooled");
+        assert!(
+            (even[0] - even[1]).abs() < 0.1,
+            "near-equal windows pool evenly: {even:?}"
+        );
+
+        // No weights = the old uniform mean, exactly.
+        let uniform = weighted_mean_pool_l2(&[head, tail], &[]).expect("pooled");
+        assert!((uniform[0] - uniform[1]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_document_pools_toward_its_longest_window() {
+        // End-to-end plumbing check: the per-chunk weights must reach the fan-in
+        // aligned with their own chunk. Budget = 2 content tokens, so this splits
+        // into a 41-byte head and a 1-byte tail.
+        let text = "aaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbb c";
+        let (embedder, backend) = recording_embedder(4);
+        let results = embedder.embed_texts(&[text], EmbedKind::Document);
+        let pooled = results[0].as_ref().expect("pooled");
+
+        // The recording backend hands out `e_{index % 2}` in forward-pass order, so
+        // the head's own vector is whichever slot it occupied — read it back rather
+        // than assuming the length sort's direction.
+        let seen = backend.seen.lock().expect("seen").clone();
+        assert_eq!(seen.len(), 2, "the text splits into exactly two windows");
+        let head_slot = seen
+            .iter()
+            .position(|chunk| chunk.starts_with('a'))
+            .expect("head chunk");
+        assert!(
+            pooled[head_slot % 2] > 0.99,
+            "the pooled vector must sit on the long head window, not halfway: {pooled:?}"
+        );
+    }
+
+    #[test]
     fn mean_pool_rejects_ragged_or_empty_inputs() {
-        assert!(mean_pool_l2(&[]).is_none());
-        assert!(mean_pool_l2(&[vec![1.0, 2.0], vec![1.0]]).is_none());
-        assert!(mean_pool_l2(&[vec![], vec![]]).is_none());
+        assert!(weighted_mean_pool_l2(&[], &[]).is_none());
+        assert!(weighted_mean_pool_l2(&[vec![1.0, 2.0], vec![1.0]], &[]).is_none());
+        assert!(weighted_mean_pool_l2(&[vec![], vec![]], &[]).is_none());
     }
 
     #[test]
     fn fan_in_regroups_single_and_multi_chunk_texts() {
         // chunk_counts [1,2,1] over 4 flat chunk results: text0 = v0 passthrough,
-        // text1 = mean_pool_l2(v1,v2), text2 = v3 passthrough.
+        // text1 = the weighted pool of (v1,v2), text2 = v3 passthrough.
         let v0 = vec![1.0, 0.0];
         let v1 = vec![3.0, 0.0];
         let v2 = vec![0.0, 3.0];
         let v3 = vec![0.0, 1.0];
         let results = fan_in_chunk_results(
             &[1, 2, 1],
+            &[1.0, 1.0, 1.0, 1.0],
             vec![Ok(v0.clone()), Ok(v1.clone()), Ok(v2.clone()), Ok(v3.clone())],
         );
         assert_eq!(results.len(), 3);
@@ -863,15 +954,15 @@ mod tests {
         assert_eq!(results[0].as_ref().expect("text0"), &v0);
         assert_eq!(results[2].as_ref().expect("text2"), &v3);
 
-        // The 2-chunk slot is mean_pool_l2(v1,v2): the same value the standalone
+        // The 2-chunk slot is the pool of (v1,v2): the same value the standalone
         // helper produces, so a batched split text matches an unbatched one.
         let pooled = results[1].as_ref().expect("text1");
-        assert_eq!(pooled, &mean_pool_l2(&[v1, v2]).expect("pool"));
+        assert_eq!(pooled, &weighted_mean_pool_l2(&[v1, v2], &[1.0, 1.0]).expect("pool"));
     }
 
     #[test]
     fn fan_in_on_empty_input_is_empty() {
-        let results = fan_in_chunk_results(&[], Vec::new());
+        let results = fan_in_chunk_results(&[], &[], Vec::new());
         assert!(results.is_empty());
     }
 
@@ -882,6 +973,7 @@ mod tests {
         // chunk errored, text2 (1 chunk) is fine.
         let results = fan_in_chunk_results(
             &[1, 1, 1],
+            &[1.0, 1.0, 1.0],
             vec![
                 Ok(vec![1.0, 0.0]),
                 Err(EmbeddingError::Embed("poison".to_string())),
@@ -903,6 +995,7 @@ mod tests {
         // neighbor still succeeds. text0 = [Ok, Err] => Err; text1 = [Ok] => Ok.
         let results = fan_in_chunk_results(
             &[2, 1],
+            &[1.0, 1.0, 1.0],
             vec![
                 Ok(vec![1.0, 0.0]),
                 Err(EmbeddingError::Embed("poison".to_string())),
@@ -920,6 +1013,7 @@ mod tests {
         // be pooled → EmptyEmbedding, while the well-formed neighbor still passes.
         let results = fan_in_chunk_results(
             &[2, 1],
+            &[1.0, 1.0, 1.0],
             vec![Ok(vec![1.0, 2.0]), Ok(vec![1.0]), Ok(vec![9.0, 9.0])],
         );
         assert_eq!(results.len(), 2);
@@ -929,13 +1023,13 @@ mod tests {
         // An under-delivered batch (fewer results than chunk_counts.sum()) clamps
         // its slice instead of panicking. A 2-chunk text handed only 1 vector still
         // pools that one survivor — no panic, no dropped text.
-        let short = fan_in_chunk_results(&[2], vec![Ok(vec![1.0, 0.0])]);
+        let short = fan_in_chunk_results(&[2], &[1.0, 1.0], vec![Ok(vec![1.0, 0.0])]);
         assert_eq!(short.len(), 1);
         assert!(short[0].is_ok());
 
         // A FULLY starved text (its whole slice clamped to empty) can't pool and
         // fails cleanly: text0 consumed the only result, leaving text1 nothing.
-        let starved = fan_in_chunk_results(&[1, 1], vec![Ok(vec![1.0, 0.0])]);
+        let starved = fan_in_chunk_results(&[1, 1], &[1.0, 1.0], vec![Ok(vec![1.0, 0.0])]);
         assert_eq!(starved.len(), 2);
         assert!(starved[0].is_ok());
         assert!(matches!(starved[1], Err(EmbeddingError::EmptyEmbedding)));
