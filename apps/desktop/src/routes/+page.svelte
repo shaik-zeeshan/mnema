@@ -1,7 +1,7 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import { timelineGapMs } from "$lib/components/capture-rate";
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -36,7 +36,7 @@
     type SpeakerInlineAction,
     type SpeakerTranscriptGroup,
   } from "$lib/timeline/audio-drawer-view";
-  import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import { FramePreviewUrlHolder, readFramePreviewBytes } from "$lib/frame-preview";
   import {
     loadOcrForFrame,
     loadOcrFromJob,
@@ -645,6 +645,7 @@
   const activePreviewDecodeRetries = new Map<number, number>();
 
   function handleActivePreviewLoadError(frameId: number): void {
+    previewUrlHolder.settle();
     const activeIndex = timelineFrames.findIndex((frame) => frame.id === frameId);
     const activeFrame = activeIndex >= 0 ? timelineFrames[activeIndex] : null;
     const intervalPreview = scrubPreviewIntervalForFrame(activeFrame);
@@ -685,6 +686,10 @@
   }
 
   function handleActivePreviewLoad(frameId: number): void {
+    // The replacement is on screen, so the URLs it replaced can go. Both paths
+    // settle: on error the stage is already showing the failed URL, so the ones
+    // it displaced are no longer painted either.
+    previewUrlHolder.settle();
     // A successful repaint means the current bytes decoded fine, so clear this
     // frame's decode-retry budget. Otherwise a frame that transiently failed
     // (then recovered) keeps a poisoned counter, and a later genuine decode
@@ -724,6 +729,44 @@
   let timelinePreviewDisplayMode = $state<TimelinePreviewDisplayMode>("parked");
   let timelinePreviewDisplaySettleTimer: ReturnType<typeof setTimeout> | null = null;
   let timelinePreviewDisplayLastScrubAt = 0;
+
+  // The stage paints a blob URL, never the frame's `asset://` URL: WebKit keeps
+  // a decoded IOSurface per asset URL it has ever loaded and only drops them on
+  // an explicit purge, so painting them directly parks one full-size surface per
+  // scrubbed frame in the WebContent process for the life of the window. The
+  // holder keeps exactly one alive (see `FramePreviewUrlHolder`).
+  const previewUrlHolder = new FramePreviewUrlHolder();
+  let previewObjectUrl = $state<string | null>(null);
+  const timelinePreviewPath = $derived(timelinePreviewDisplay?.filePath ?? null);
+
+  $effect(() => {
+    const path = timelinePreviewPath;
+    if (path == null) {
+      previewUrlHolder.clear();
+      previewObjectUrl = null;
+      return;
+    }
+    // The mime cache fills in behind the fetch; tracking it would re-fetch the
+    // same bytes the moment it lands.
+    const frameId = untrack(() => timelinePreviewDisplay?.frameId ?? null);
+    const mimeType = untrack(() =>
+      frameId == null ? null : previewMimeTypeCache.get(frameId) ?? null,
+    );
+    // Deliberately does NOT clear `previewObjectUrl` first: the previous frame
+    // keeps painting until the next one's bytes land, so a scrub never flashes
+    // an empty stage.
+    void previewUrlHolder
+      .swap(path, mimeType)
+      .then((url) => {
+        if (url) previewObjectUrl = url;
+      })
+      .catch(() => {
+        if (frameId != null) handleActivePreviewLoadError(frameId);
+      });
+  });
+
+  // Teardown-only (no reactive reads): revoke whatever is still live on unmount.
+  $effect(() => () => previewUrlHolder.clear());
 
   function previewDisplayCandidateForFrame(
     frame: FrameDto | null,
@@ -6202,8 +6245,8 @@
     {:else if timelineActive}
       {@const previewDisplay = timelinePreviewDisplay}
       {@const previewPath = previewDisplay?.filePath ?? null}
-      {@const previewUrl = previewPath ? framePreviewAssetUrl(previewPath) : null}
-      {#if previewUrl}
+      {@const previewUrl = previewObjectUrl}
+      {#if previewPath}
         {@const activeExactPreviewReady = previewCache.has(timelineActive.id)}
         {@const displayedActiveExactPreview = previewDisplay?.frameId === timelineActive.id && previewDisplay.source === "exact"}
         <div
@@ -6296,16 +6339,18 @@
           class="timeline__preview"
           role="img"
           aria-label={`frame ${previewDisplay?.frameId ?? timelineActive.id}`}
-          style={`background-image: url("${previewUrl}");`}
+          style={previewUrl ? `background-image: url("${previewUrl}");` : ""}
         ></div>
-        <img
-          class="timeline__preview-load-sentinel"
-          src={previewUrl}
-          alt=""
-          aria-hidden="true"
-          onload={() => handleActivePreviewLoad(previewDisplay?.frameId ?? timelineActive.id)}
-          onerror={() => handleActivePreviewLoadError(previewDisplay?.frameId ?? timelineActive.id)}
-        />
+        {#if previewUrl}
+          <img
+            class="timeline__preview-load-sentinel"
+            src={previewUrl}
+            alt=""
+            aria-hidden="true"
+            onload={() => handleActivePreviewLoad(previewDisplay?.frameId ?? timelineActive.id)}
+            onerror={() => handleActivePreviewLoadError(previewDisplay?.frameId ?? timelineActive.id)}
+          />
+        {/if}
         <!-- OCR overlay: anchored to the painted background-image rect
              (background-size: contain, centered) inside the stage. The
              rect is derived from stage size + the active frame's intrinsic

@@ -54,6 +54,36 @@ describe("LruCache eviction order", () => {
   });
 });
 
+describe("LruCache onEvict", () => {
+  it("fires for eviction, overwrite, and clear — exactly once each", () => {
+    const dropped: string[] = [];
+    const c = new LruCache<string>(2, (v) => dropped.push(v));
+
+    c.set(1, "a");
+    c.set(2, "b");
+    c.set(3, "c"); // capacity 2 → "a" evicted
+    expect(dropped).toEqual(["a"]);
+
+    c.set(2, "b2"); // overwrite → the replaced value is released
+    expect(dropped).toEqual(["a", "b"]);
+
+    c.set(3, "c"); // same value re-set → nothing to release
+    expect(dropped).toEqual(["a", "b"]);
+
+    c.clear(); // remaining values, least-recently-set first
+    expect(dropped).toEqual(["a", "b", "b2", "c"]);
+    expect(c.size).toBe(0);
+  });
+
+  it("is optional — a cache without one still evicts", () => {
+    const c = new LruCache<string>(1);
+    c.set(1, "a");
+    c.set(2, "b");
+    c.clear();
+    expect(c.size).toBe(0);
+  });
+});
+
 describe("index stepping bounds", () => {
   it("clamps into [0, count-1]", () => {
     expect(clampIndex(-3, 5)).toBe(0);

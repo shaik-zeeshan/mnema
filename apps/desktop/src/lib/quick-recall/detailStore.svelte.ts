@@ -9,7 +9,6 @@
 // Everything degrades gracefully: any failed/missing piece resolves to
 // null/empty and the pane still renders identity/badges/times.
 import { invoke } from "@tauri-apps/api/core";
-import { framePreviewAssetUrl } from "$lib/frame-preview";
 import type {
   AudioSearchResultDto,
   FrameScrubPreviewsDto,
@@ -26,9 +25,12 @@ const CACHE_CAP = 80;
 
 export type FrameDetailData = {
   kind: "frame";
-  // Asset URL of the 1280px hero preview; null (preview missing for any
+  // On-disk path of the 1280px hero preview; null (preview missing for any
   // `missingReason`, or the fetch failed) renders the SVG glyph fallback.
-  heroUrl: string | null;
+  // A PATH, not a renderable URL, on purpose: this store caches 80 entries and
+  // the pane paints one hero at a time, so the URL's lifetime belongs to the
+  // pane's `FramePreviewUrlHolder` — see `$lib/frame-preview`.
+  heroPath: string | null;
   // Flat OCR `result_text` for the representative frame; null when no OCR
   // result exists (or the fetch failed) — the pane shows a quiet note.
   ocrText: string | null;
@@ -96,21 +98,21 @@ export class DetailStore {
 
 function hasContent(data: DetailData): boolean {
   return data.kind === "frame"
-    ? data.heroUrl !== null || data.ocrText !== null
+    ? data.heroPath !== null || data.ocrText !== null
     : data.turns.length > 0;
 }
 
 async function loadFrameDetail(
   frame: FrameSearchResultDto,
 ): Promise<FrameDetailData> {
-  const [heroUrl, ocrText] = await Promise.all([
-    fetchHeroUrl(frame.thumbnailFrameId),
+  const [heroPath, ocrText] = await Promise.all([
+    fetchHeroPath(frame.thumbnailFrameId),
     fetchOcrText(frame.representativeFrame.id),
   ]);
-  return { kind: "frame", heroUrl, ocrText };
+  return { kind: "frame", heroPath, ocrText };
 }
 
-async function fetchHeroUrl(frameId: number): Promise<string | null> {
+async function fetchHeroPath(frameId: number): Promise<string | null> {
   try {
     const response = await invoke<FrameScrubPreviewsDto>(
       "get_frame_scrub_previews",
@@ -120,9 +122,7 @@ async function fetchHeroUrl(frameId: number): Promise<string | null> {
       response.previews.find((preview) => preview.frameId === frameId) ??
       response.previews[0];
     // A `missingReason` entry has `preview: null` → glyph fallback via null.
-    return entry?.preview
-      ? framePreviewAssetUrl(entry.preview.filePath)
-      : null;
+    return entry?.preview?.filePath ?? null;
   } catch {
     return null;
   }

@@ -23,7 +23,6 @@
   import IconPlay from "~icons/lucide/play";
   import Segmented from "$lib/components/Segmented.svelte";
   import { tip } from "$lib/components/tooltip";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { setPendingTimelineFocus } from "$lib/timeline/pending-focus";
   import {
     CATEGORY_COLOR,
@@ -103,6 +102,9 @@
     onThumb: (fid, url) => (thumbUrls[fid] = url),
     onMeta: (meta) => (currentMeta = meta),
   });
+  // Teardown-only (no reactive reads): the loader's cached previews are object
+  // URLs, so closing the receipt has to revoke them or they outlive the modal.
+  $effect(() => () => loader.dispose());
   // Cited-audio hydration: shared profiles + the span's ordered TurnView[].
   const audioLoader = new ReceiptAudioLoader({
     onProfiles: (p) => (profiles = p),
@@ -146,7 +148,11 @@
     const id = currentFrameId;
     return id == null ? null : loader.peekPreview(id);
   });
-  const currentUrl = $derived(currentPreview ? framePreviewAssetUrl(currentPreview.filePath) : null);
+  const currentUrl = $derived.by<string | null>(() => {
+    cacheBump; // recompute when a preview lands
+    const id = currentFrameId;
+    return id == null ? null : loader.peekPreviewUrl(id);
+  });
 
   const metaApp = $derived(currentMeta?.appName ?? null);
   const metaTitle = $derived(currentMeta?.windowTitle ?? null);

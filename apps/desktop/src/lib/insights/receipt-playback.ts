@@ -9,10 +9,17 @@
  * without reordering (used from Svelte deriveds so display never mutates order).
  * Values are opaque (preview DTOs, frame DTOs, …); eviction just drops the
  * reference and lets GC reclaim it.
+ *
+ * `onEvict` fires once for every value the cache lets go — LRU eviction, an
+ * overwrite of an existing key, and `clear()` — so values holding a resource GC
+ * cannot reclaim (an object URL) can release it exactly once.
  */
 export class LruCache<V> {
   private map = new Map<number, V>();
-  constructor(private capacity: number) {}
+  constructor(
+    private capacity: number,
+    private onEvict?: (value: V) => void,
+  ) {}
 
   peek(key: number): V | undefined {
     return this.map.get(key);
@@ -31,13 +38,25 @@ export class LruCache<V> {
   }
 
   set(key: number, value: V): void {
-    if (this.map.has(key)) this.map.delete(key);
+    const replaced = this.map.get(key);
+    if (replaced !== undefined) {
+      this.map.delete(key);
+      if (replaced !== value) this.onEvict?.(replaced);
+    }
     this.map.set(key, value);
     while (this.map.size > this.capacity) {
       // Map preserves insertion order; the first key is the LRU.
       const lru = this.map.keys().next().value as number;
+      const evicted = this.map.get(lru);
       this.map.delete(lru);
+      if (evicted !== undefined) this.onEvict?.(evicted);
     }
+  }
+
+  /** Drop everything, running `onEvict` for each value on the way out. */
+  clear(): void {
+    for (const value of this.map.values()) this.onEvict?.(value);
+    this.map.clear();
   }
 
   get size(): number {

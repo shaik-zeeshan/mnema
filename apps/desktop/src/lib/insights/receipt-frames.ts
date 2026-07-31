@@ -7,12 +7,18 @@
 // window math (`desiredWindow`) and `LruCache` live in receipt-playback.ts.
 
 import { invoke } from "@tauri-apps/api/core";
-import { framePreviewAssetUrl } from "$lib/frame-preview";
+import {
+	framePreviewAssetUrl,
+	readFramePreviewBytes,
+	type FramePreviewUrlDependencies,
+} from "$lib/frame-preview";
 import { LruCache, desiredWindow } from "$lib/insights/receipt-playback";
 import type {
 	FrameDto,
 	FramePreviewDto,
+	FrameScrubPreviewsDto,
 	GetFramePreviewRequest,
+	GetFrameScrubPreviewsRequest,
 } from "$lib/types/app-infra";
 
 // ── Tuning knobs ─────────────────────────────────────────────────────────
@@ -20,7 +26,11 @@ const DECODE_CONCURRENCY = 2; // simultaneous get_frame_preview calls
 const LOOKAHEAD = 6; // frames to prefetch ahead of the playhead
 const BEHIND = 1; // frames to keep warm behind it
 const PREVIEW_CACHE_CAP = 40; // LRU of decoded previews
+const THUMB_BATCH_SIZE = 24; // filmstrip cells per get_frame_scrub_previews call
 const META_CACHE_CAP = 40; // LRU of per-frame FrameDto meta
+
+/** A cached playback frame: its DTO plus the object URL the viewer paints. */
+type CachedPreview = { dto: FramePreviewDto; url: string };
 
 export interface ReceiptFrameEvents {
 	/** A preview landed — the display should re-read `peekPreview`. */
@@ -37,28 +47,46 @@ export type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promi
 export class ReceiptFrameLoader {
 	#events: ReceiptFrameEvents;
 	#invoke: InvokeFn;
-	#previews = new LruCache<FramePreviewDto>(PREVIEW_CACHE_CAP);
+	#urlDeps: FramePreviewUrlDependencies;
+	// Playback paints object URLs, never the frames' `asset://` URLs: WebKit
+	// keeps a decoded IOSurface per asset URL it has ever loaded and only drops
+	// them on an explicit purge, so a receipt played end to end used to strand
+	// one full-size surface per frame for the life of the window. Minting the
+	// URL here — at prefetch time, warm-decoded like before — keeps the instant
+	// swap AND caps the live surfaces at the LRU's size, because eviction now
+	// revokes.
+	#previews = new LruCache<CachedPreview>(PREVIEW_CACHE_CAP, (cached) =>
+		this.#revokeUrl(cached.url),
+	);
 	#metaCache = new LruCache<FrameDto>(META_CACHE_CAP);
 	#inFlight = new Set<number>();
 	#failed = new Set<number>();
 	#thumbQueue: number[] = [];
 	#thumbInFlight = new Set<number>();
 	#thumbDone = new Set<number>();
+	#thumbPumpScheduled = false;
 	#stripIds: number[] = [];
 	#index = 0;
 	#gen = 0; // bumped per reset; stale async work drops
 	#metaToken = 0; // last-requested-meta wins
 
-	constructor(events: ReceiptFrameEvents, invokeFn: InvokeFn = invoke) {
+	constructor(
+		events: ReceiptFrameEvents,
+		invokeFn: InvokeFn = invoke,
+		urlDeps: FramePreviewUrlDependencies = {},
+	) {
 		this.#events = events;
 		this.#invoke = invokeFn;
+		this.#urlDeps = urlDeps;
 	}
 
 	/** New activity: drop caches/queues and invalidate all in-flight work. */
 	reset(): void {
 		this.#gen++;
-		this.#previews = new LruCache(PREVIEW_CACHE_CAP);
-		this.#metaCache = new LruCache(META_CACHE_CAP);
+		// `clear()`, not a fresh LruCache: the cache owns live object URLs and
+		// replacing it would strand every one of them.
+		this.#previews.clear();
+		this.#metaCache.clear();
 		this.#inFlight.clear();
 		this.#failed.clear();
 		this.#thumbQueue.length = 0;
@@ -69,7 +97,18 @@ export class ReceiptFrameLoader {
 
 	/** Read a decoded preview without touching LRU order (safe from deriveds). */
 	peekPreview(frameId: number): FramePreviewDto | null {
-		return this.#previews.peek(frameId) ?? null;
+		return this.#previews.peek(frameId)?.dto ?? null;
+	}
+
+	/** The object URL to paint for `frameId`, or null when it isn't cached. */
+	peekPreviewUrl(frameId: number): string | null {
+		return this.#previews.peek(frameId)?.url ?? null;
+	}
+
+	/** Unmount: invalidate in-flight work and revoke every live object URL. */
+	dispose(): void {
+		this.#gen++;
+		this.#previews.clear();
 	}
 
 	// ── Bounded, cancellable preview prefetch ──────────────────────────────
@@ -96,12 +135,19 @@ export class ReceiptFrameLoader {
 			});
 			if (gen !== this.#gen) return; // superseded — drop
 			if (dto) {
-				this.#previews.set(fid, dto);
+				const url = await this.#mintPreviewUrl(dto);
+				if (gen !== this.#gen) {
+					this.#revokeUrl(url); // superseded mid-read — never cached, never painted
+					return;
+				}
+				this.#previews.set(fid, { dto, url });
 				// ponytail: warm the browser decode with a throwaway Image so the
 				// <img> swap is instant (no CSS transition) — that's what sells the
 				// "video" feel over raw frames.
-				const warm = new Image();
-				warm.src = framePreviewAssetUrl(dto.filePath);
+				if (typeof Image !== "undefined") {
+					const warm = new Image();
+					warm.src = url;
+				}
 				this.#events.onPreview();
 			} else {
 				this.#failed.add(fid);
@@ -115,41 +161,75 @@ export class ReceiptFrameLoader {
 	}
 
 	// ── Filmstrip thumbnails ───────────────────────────────────────────────
-	// Every visible cell requests its preview once; a DECODE_CONCURRENCY pump
-	// keeps decode load bounded. Resolved URLs are handed to the component
-	// (outside the playback LRU) so eviction during playback never blanks a
-	// loaded thumb.
+	// Every visible cell requests its thumbnail once; one batch is in flight at
+	// a time. Resolved URLs are handed to the component (outside the playback
+	// LRU) so eviction during playback never blanks a loaded thumb.
+	//
+	// Thumbnails come from `get_frame_scrub_previews` — the 200px scrub preview,
+	// same source as Quick Recall's result rows — NOT the playback preview. A
+	// cell is ~70×44 CSS px, so painting the full-size preview there decoded a
+	// surface ~30× the pixels the cell can show, and WebKit keeps one per URL
+	// for the life of the window: a long receipt's strip alone ran to GBs.
 	requestThumb(fid: number): void {
 		if (!Number.isFinite(fid) || this.#thumbDone.has(fid)) return;
 		if (this.#thumbInFlight.has(fid) || this.#thumbQueue.includes(fid)) return;
 		this.#thumbQueue.push(fid);
-		this.#pumpThumbs();
+		this.#scheduleThumbPump();
+	}
+
+	// One IntersectionObserver callback delivers each newly-visible cell as its
+	// own `requestThumb`, so coalescing to a microtask turns a burst into one
+	// batch instead of a round trip for the first cell and a batch for the rest.
+	#scheduleThumbPump(): void {
+		if (this.#thumbPumpScheduled) return;
+		this.#thumbPumpScheduled = true;
+		queueMicrotask(() => {
+			this.#thumbPumpScheduled = false;
+			this.#pumpThumbs();
+		});
 	}
 
 	#pumpThumbs(): void {
-		while (this.#thumbInFlight.size < DECODE_CONCURRENCY) {
-			const fid = this.#thumbQueue.shift();
-			if (fid === undefined) return;
-			this.#thumbInFlight.add(fid);
-			void this.#fetchThumb(fid, this.#gen);
-		}
+		if (this.#thumbInFlight.size > 0) return; // one batch at a time
+		const batch = this.#thumbQueue.splice(0, THUMB_BATCH_SIZE);
+		if (batch.length === 0) return;
+		for (const fid of batch) this.#thumbInFlight.add(fid);
+		void this.#fetchThumbs(batch, this.#gen);
 	}
 
-	async #fetchThumb(fid: number, gen: number): Promise<void> {
+	async #mintPreviewUrl(dto: FramePreviewDto): Promise<string> {
+		const bytes = await readFramePreviewBytes(dto.filePath, this.#urlDeps);
+		const create = this.#urlDeps.createObjectUrlImpl ?? URL.createObjectURL;
+		return create(new Blob([bytes], { type: dto.mimeType }));
+	}
+
+	#revokeUrl(url: string): void {
+		const revoke = this.#urlDeps.revokeObjectUrlImpl ?? URL.revokeObjectURL;
+		revoke(url);
+	}
+
+	async #fetchThumbs(fids: number[], gen: number): Promise<void> {
 		try {
-			const dto =
-				this.#previews.peek(fid) ??
-				(await this.#invoke<FramePreviewDto | null>("get_frame_preview", {
-					request: { frameId: fid } satisfies GetFramePreviewRequest,
-				}));
-			if (gen === this.#gen && dto) {
-				this.#thumbDone.add(fid);
-				this.#events.onThumb(fid, framePreviewAssetUrl(dto.filePath));
+			const response = await this.#invoke<FrameScrubPreviewsDto>(
+				"get_frame_scrub_previews",
+				// No `maxPixelSize`: the backend's default (200) is also its floor.
+				{ request: { frameIds: fids } satisfies GetFrameScrubPreviewsRequest },
+			);
+			if (gen !== this.#gen) return;
+			for (const entry of response.previews) {
+				// A `missingReason` entry has no preview — leave it out of
+				// `#thumbDone` so a later re-intersection retries it.
+				if (!entry.preview) continue;
+				this.#thumbDone.add(entry.frameId);
+				this.#events.onThumb(
+					entry.frameId,
+					framePreviewAssetUrl(entry.preview.filePath, this.#urlDeps),
+				);
 			}
 		} catch {
-			// cell keeps its placeholder
+			// cells keep their placeholders
 		} finally {
-			this.#thumbInFlight.delete(fid);
+			for (const fid of fids) this.#thumbInFlight.delete(fid);
 			this.#pumpThumbs();
 		}
 	}
