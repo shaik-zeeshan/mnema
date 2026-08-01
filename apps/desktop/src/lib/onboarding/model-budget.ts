@@ -66,6 +66,11 @@ const SHORT_LABELS: Record<string, string> = {
   "multilingual-e5-small": "E5 Small",
   "bge-m3": "BGE-M3",
   "snowflake-arctic-embed-l-v2.0": "Snowflake",
+  // The ModernBERT English trio. Their display names strip to three or four
+  // words, which is too long for a pill, so they get explicit short labels.
+  "gte-modernbert-base": "GTE",
+  "granite-embedding-english-r2": "Granite R2",
+  "granite-embedding-small-english-r2": "Granite Small",
 };
 
 /** Memory while running, keyed by model id first, then provider. */

@@ -122,3 +122,21 @@ documents the **Prompt** concept (Query/Document, declared per descriptor) and t
 **dimension-distinctness** invariant — the final catalog dimensions are 384 / 768 / 1024 /
 2048 / 256 (e5 / nomic / bge-m3 / Stella / Arctic), pairwise-distinct as the store requires.
 The remaining quality lever, **first-window embed**, stays deferred.
+
+**Amended 2026-08-01 (issue #190/#193): dimension-distinctness is retired.** The vector store
+now stamps the `model_id` of the embedding space its `vec0` table holds, written in the same
+transaction as the table itself, and gates every write and every startup reconciliation on
+that stamp (`app-infra/src/semantic_search.rs`). Distinct dimensions were only ever a proxy
+for model identity; with the identity recorded directly the proxy is unnecessary, and the
+catalog deliberately breaks it to add three ModernBERT-backbone English Custom options —
+`gte-modernbert-base` and `granite-embedding-english-r2` at 768 (= nomic) and
+`granite-embedding-small-english-r2` at 384 (= e5). The hand-coded-descriptor rule and the
+`config.json` drift guard are unchanged; the catalog test that enforced pairwise-distinct
+dimensions is replaced by one enforcing unique `model_id`s.
+
+That amendment also adds a **fourth architecture arm, `ModernBert`**, with one
+device-precision exception: candle 0.10.2's `modernbert` forward adds an F32-only attention
+mask to hidden states carrying the weight dtype, so this arm loads at **F32 on Metal as well
+as CPU** (`backend::candle::arch_dtype`), costing resident weight bytes (~596 MB for the
+149M-param models) instead of the F16 halving every other arm gets. A CI test pins the
+upstream defect so the workaround can be deleted the moment a candle bump fixes it.

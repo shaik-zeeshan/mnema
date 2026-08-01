@@ -569,7 +569,7 @@ pub async fn select_semantic_search_model(
     // persisted `model_id` and the live table dimension stay in lockstep.
     let cleared = infra
         .semantic_search()
-        .recreate_vectors_table(dimension)
+        .recreate_vectors_table(&model_id, dimension)
         .await
         .map_err(|error| format!("failed to rebuild semantic search vectors: {error}"))?;
 
@@ -595,23 +595,27 @@ pub async fn select_semantic_search_model(
 
     // Hardening assert (F15): the rebuild + persist are two separate transactions
     // under the in-process `SELECT_MODEL_LOCK`, relying on startup reconciliation to
-    // re-align a half-applied switch. At minimum, confirm the live vec0 column width
-    // now matches the selected descriptor's dimension here, so a half-applied switch
-    // (a concurrent worker DROP+CREATE landing between, or a recreate that did not
-    // take) is DETECTED and logged loudly rather than silently degrading search to
-    // keyword-only. The selection is already persisted, so a mismatch is reported but
-    // not rolled back — the next startup reconciliation self-heals it. (The deeper
-    // model-identity epoch stamp remains out of scope for this pass; see ADR 0036.)
-    match infra.semantic_search().live_vector_dimension().await {
-        Ok(Some(live)) if live == dimension => {}
+    // re-align a half-applied switch. Confirm the live vec0 table now names the
+    // model we just selected, so a half-applied switch (a concurrent worker
+    // DROP+CREATE landing between, or a recreate that did not take) is DETECTED and
+    // logged loudly rather than silently degrading search to keyword-only. The
+    // selection is already persisted, so a mismatch is reported but not rolled back —
+    // the next startup reconciliation self-heals it.
+    //
+    // The check is on the MODEL STAMP, not the column width: with same-dimension
+    // models in the catalog (gte-modernbert / granite-r2 are 768 like nomic,
+    // granite-small is 384 like multilingual-e5-small), a width compare would read
+    // green on exactly the switches most in need of detection.
+    match infra.semantic_search().live_vector_model().await {
+        Ok(Some(live)) if live == model_id => {}
         Ok(other) => {
             crate::native_capture::debug_log::log_error(format!(
-                "semantic search model switch to '{model_id}': live vec0 column width {other:?} does NOT match the selected model dimension {dimension} after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
+                "semantic search model switch to '{model_id}': the live vec0 table is stamped {other:?}, NOT the selected model, after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
             ));
         }
         Err(error) => {
             crate::native_capture::debug_log::log_error(format!(
-                "semantic search model switch to '{model_id}': could not read the live vec0 column width to confirm it matches the selected dimension {dimension} after rebuild+persist: {error}"
+                "semantic search model switch to '{model_id}': could not read the live vec0 model stamp to confirm it matches the selection after rebuild+persist: {error}"
             ));
         }
     }
@@ -622,70 +626,75 @@ pub async fn select_semantic_search_model(
     Ok(cleared)
 }
 
-/// The vec0 table dimension reconciliation should expect for a settings snapshot,
-/// or `None` when reconciliation must be **skipped** because the dimension cannot
-/// be determined safely — resolved from the persisted `model_id` **regardless of
-/// the `enabled` flag**.
+/// The `(model_id, dimension)` reconciliation should expect the vec0 table to hold
+/// for a settings snapshot, or `None` when reconciliation must be **skipped**
+/// because the selection cannot be resolved safely — read from the persisted
+/// `model_id` **regardless of the `enabled` flag**.
 ///
 /// Reconciliation keys off the *selected model*, NOT the *active feature*: a user
-/// on a non-768 tier (Multilingual e5 = 384, Custom bge-m3 = 1024) who toggles
+/// on a non-default tier (Multilingual e5 = 384, Custom bge-m3 = 1024) who toggles
 /// Semantic Search OFF still has that `model_id` persisted (disabling never clears
-/// it), and their vec0 table is at the model's width, not 768. If we resolved the
-/// dimension through the worker's `resolve_selected_descriptor` (which returns
-/// `None` the moment `enabled == false`, BEFORE it even reads `model_id`), startup
-/// would fall back to 768 and `reconcile_vectors_table(768)` would DROP+recreate
-/// their table — wiping the entire vector index and forcing a full re-embed. So we
-/// resolve straight from `model_id` here, and the `enabled` flag is deliberately
-/// ignored.
+/// it), and their vec0 table belongs to that model, not the default. If we resolved
+/// through the worker's `resolve_selected_descriptor` (which returns `None` the
+/// moment `enabled == false`, BEFORE it even reads `model_id`), startup would fall
+/// back to the default and reconciliation would DROP+recreate their table — wiping
+/// the entire vector index and forcing a full re-embed. So we resolve straight from
+/// `model_id` here, and the `enabled` flag is deliberately ignored.
 ///
 /// Two `None`-shaped inputs must NOT be conflated:
-///   - `model_id == None` (a fresh/never-selected profile) => `Some(768)`: the
-///     migration default is correct, a fresh DB is already a `float[768]` table.
+///   - `model_id == None` (a fresh/never-selected profile) => the English default
+///     tier: the migration default is correct, a fresh DB is already a 768-wide
+///     table, and adopting it under the default model's name is exactly right.
 ///   - `model_id == Some(unresolvable)` (catalog/config drift — the id no longer
-///     resolves to a descriptor) => `None`: we do NOT know the table's true
-///     dimension, so falling back to 768 here would DROP a populated 384/1024
-///     table and force a full re-embed over a transient resolve failure. Returning
-///     `None` makes the caller SKIP reconciliation and leave the existing table
-///     untouched; the next time the id resolves (or the real selection re-runs the
-///     switch), the table re-aligns.
-fn reconcile_expected_dimension(settings: &capture_types::SemanticSearchSettings) -> Option<usize> {
+///     resolves to a descriptor) => `None`: we do NOT know what the table holds, so
+///     falling back to the default here would DROP a populated 384/1024 table and
+///     force a full re-embed over a transient resolve failure. Returning `None`
+///     makes the caller SKIP reconciliation and leave the existing table untouched;
+///     the next time the id resolves (or the real selection re-runs the switch), the
+///     table re-aligns.
+fn reconcile_expected_model(
+    settings: &capture_types::SemanticSearchSettings,
+) -> Option<(String, usize)> {
     match settings.model_id.as_deref() {
-        None => Some(DEFAULT_SEMANTIC_SEARCH_DIMENSION),
+        None => Some((
+            capture_types::default_semantic_search_model_id()?,
+            DEFAULT_SEMANTIC_SEARCH_DIMENSION,
+        )),
         Some(model_id) => resolve_descriptor(&settings.provider, model_id)
-            .map(|descriptor| descriptor.dimension),
+            .map(|descriptor| (descriptor.model_id, descriptor.dimension)),
     }
 }
 
-/// Reconcile the `vec0` table dimension against the selected model's expected
-/// dimension on startup — the **self-heal** for a permanently-stuck switch.
+/// Reconcile the `vec0` table against the selected model on startup — the
+/// **self-heal** for a permanently-stuck switch.
 ///
-/// If a model switch ever left the table at the old dimension while the selection
-/// named a new-dimension model (e.g. a rebuild that failed under DB contention in
-/// an older build, or a hand-edited config), every search degrades to
-/// keyword-only and the worker idles forever — recovery cannot come from
-/// re-selecting the same model (the UI early-returns on an unchanged pick). Run
-/// once on the deferred-startup seam, this rebuilds the table to the selected
-/// model's dimension so the worker can backfill under it again. Idempotent: a
-/// table that already matches is left untouched (the common case — no rebuild, no
-/// vectors discarded).
+/// If a model switch ever left the table holding the old model's vectors while the
+/// selection named a new one (e.g. a rebuild that failed under DB contention, or a
+/// hand-edited config), every search degrades to keyword-only and the worker idles
+/// forever — recovery cannot come from re-selecting the same model (the UI
+/// early-returns on an unchanged pick). Run once on the deferred-startup seam, this
+/// rebuilds the table under the selected model so the worker can backfill again.
+/// Idempotent: a table that already matches is left untouched (the common case — no
+/// rebuild, no vectors discarded), and a table predating the model stamp is adopted
+/// in place rather than wiped (see `reconcile_vectors_table`).
 ///
-/// The expected dimension is resolved from `model_id` **ignoring `enabled`** (see
-/// [`reconcile_expected_dimension`]): a disabled-but-previously-selected non-768
+/// The expected model is resolved from `model_id` **ignoring `enabled`** (see
+/// [`reconcile_expected_model`]): a disabled-but-previously-selected non-default
 /// model must KEEP its table (disabling never clears `model_id`), so reconciliation
-/// only falls back to the migration default 768 when no model was ever selected.
+/// only falls back to the English default when no model was ever selected.
 /// Resolving through the worker's enabled-gated `resolve_selected_descriptor` here
-/// would wipe a disabled non-768 user's index on every restart (B1).
+/// would wipe a disabled non-default user's index on every restart (B1).
 ///
 /// A persisted `model_id` that no longer resolves (catalog/config drift) makes
-/// [`reconcile_expected_dimension`] return `None`; we then SKIP reconciliation
-/// entirely and leave the existing table as-is, so a transient resolve failure can
-/// never silently DROP a populated 384/1024 index back to 768. The real selection
-/// re-aligns the table the next time the id resolves.
+/// [`reconcile_expected_model`] return `None`; we then SKIP reconciliation entirely
+/// and leave the existing table as-is, so a transient resolve failure can never
+/// silently DROP a populated index. The real selection re-aligns the table the next
+/// time the id resolves.
 pub(crate) async fn reconcile_semantic_search_index_on_startup(
     infra: &crate::app_infra::AppInfraState,
     settings: &capture_types::SemanticSearchSettings,
 ) {
-    let Some(expected_dimension) = reconcile_expected_dimension(settings) else {
+    let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(settings) else {
         crate::native_capture::debug_log::log_info(format!(
             "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",
             settings.model_id.as_deref().unwrap_or("<none>"),
@@ -695,11 +704,11 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
     };
     match infra
         .semantic_search()
-        .reconcile_vectors_table(expected_dimension)
+        .reconcile_vectors_table(&expected_model_id, expected_dimension)
         .await
     {
         Ok(Some(discarded)) => crate::native_capture::debug_log::log_info(format!(
-            "semantic search startup reconciliation: live vec0 dimension disagreed with the selected model; rebuilt the table at {expected_dimension} dims (discarded {discarded} stale vector(s)); the backfill worker will re-derive every anchor"
+            "semantic search startup reconciliation: the live vec0 table disagreed with the selected model; rebuilt it for '{expected_model_id}' at {expected_dimension} dims (discarded {discarded} stale vector(s)); the backfill worker will re-derive every anchor"
         )),
         Ok(None) => {
             // The common case: the table already matches the selected model. No log
@@ -936,6 +945,22 @@ fn pinned_file_sha256(hf_repo: &str, relative_path: &str) -> Option<&'static str
         "Snowflake/snowflake-arctic-embed-l-v2.0" => &[(
             "model.safetensors",
             "21bf1a120b1c6562aeec379dfa9039b0d360591c784cb1c6786e87256b738ee1",
+        )],
+        // Custom tier — the ModernBERT-backbone English options (issue #190/#193).
+        // Each ships a single `model.safetensors`; pinning its LFS sha256 at the
+        // pinned revision closes the same F7 "integrity UNVERIFIED" branch the other
+        // Custom models close.
+        "Alibaba-NLP/gte-modernbert-base" => &[(
+            "model.safetensors",
+            "3e85899d5728cb7de79781c0c3acfb91ccef9f875f1f7e0b3c9f3dd4b6a724ba",
+        )],
+        "ibm-granite/granite-embedding-english-r2" => &[(
+            "model.safetensors",
+            "23bd9625b32680f180703408ed9d8d7b3a9c1efe4c950111e3ae9d9695b21b29",
+        )],
+        "ibm-granite/granite-embedding-small-english-r2" => &[(
+            "model.safetensors",
+            "dcbfaf2ee50d358763cbc0c08e5b045ecbf6aeb02dc0e86ffb910029bf9ebb5f",
         )],
         _ => &[],
     };
@@ -2178,60 +2203,83 @@ mod tests {
         );
     }
 
-    /// B1 regression: startup reconciliation resolves the expected vec0 dimension
+    /// B1 regression: startup reconciliation resolves the expected `(model, dimension)`
     /// from `model_id` IGNORING `enabled`, so a disabled-but-previously-selected
-    /// non-768 model keeps its table instead of being wiped back to `float[768]`.
+    /// non-default model keeps its table instead of being wiped back to the default.
     #[test]
-    fn reconcile_dimension_ignores_enabled_and_keys_off_model_id() {
+    fn reconcile_model_ignores_enabled_and_keys_off_model_id() {
         // A user on the Multilingual tier (e5-small, 384-dim) who toggled the feature
         // OFF: `model_id` is still persisted (disabling never clears it), so the
-        // expected dimension must stay 384 — NOT fall back to the 768 default that
-        // would DROP+recreate their vector index.
+        // expected model must stay e5 — NOT fall back to the default that would
+        // DROP+recreate their vector index.
         let disabled_e5 = capture_types::SemanticSearchSettings {
             enabled: false,
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: Some("multilingual-e5-small".to_string()),
         };
         assert_eq!(
-            reconcile_expected_dimension(&disabled_e5),
-            Some(384),
-            "a disabled non-768 model must keep its table dimension (B1: never wipe)"
+            reconcile_expected_model(&disabled_e5),
+            Some(("multilingual-e5-small".to_string(), 384)),
+            "a disabled non-default model must keep its table (B1: never wipe)"
         );
 
         // Only a genuinely never-selected profile (model_id == None) falls back to
-        // the migration default 768, so a fresh DB stays at `float[768]`.
+        // the English default tier, which is what a fresh 768-wide DB holds.
         let never_selected = capture_types::SemanticSearchSettings {
             enabled: false,
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: None,
         };
         assert_eq!(
-            reconcile_expected_dimension(&never_selected),
-            Some(DEFAULT_SEMANTIC_SEARCH_DIMENSION),
-            "no model ever selected => the migration default 768"
+            reconcile_expected_model(&never_selected),
+            Some((
+                "nomic-embed-text-v1.5".to_string(),
+                DEFAULT_SEMANTIC_SEARCH_DIMENSION
+            )),
+            "no model ever selected => the English default tier at the migration width"
         );
         assert_eq!(DEFAULT_SEMANTIC_SEARCH_DIMENSION, 768);
 
-        // An enabled non-768 model resolves the same way (enabled is irrelevant here).
+        // An enabled non-default model resolves the same way (enabled is irrelevant).
         let enabled_bge = capture_types::SemanticSearchSettings {
             enabled: true,
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: Some("bge-m3".to_string()),
         };
-        assert_eq!(reconcile_expected_dimension(&enabled_bge), Some(1024));
+        assert_eq!(
+            reconcile_expected_model(&enabled_bge),
+            Some(("bge-m3".to_string(), 1024))
+        );
+
+        // A same-dimension Custom model resolves to ITS id at the shared width — the
+        // pair reconciliation compares, and the reason it can no longer be a bare
+        // dimension.
+        let gte = capture_types::SemanticSearchSettings {
+            enabled: true,
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: Some("gte-modernbert-base".to_string()),
+        };
+        assert_eq!(
+            reconcile_expected_model(&gte),
+            Some((
+                "gte-modernbert-base".to_string(),
+                DEFAULT_SEMANTIC_SEARCH_DIMENSION
+            )),
+            "gte-modernbert shares nomic's 768 width, so only the id distinguishes them"
+        );
 
         // FIX 4: a persisted model_id that no longer RESOLVES (catalog/config
         // drift) must return None so the caller SKIPS reconciliation and leaves the
-        // populated table untouched — never the 768 fallback that would DROP it.
+        // populated table untouched — never the default fallback that would DROP it.
         let unresolvable = capture_types::SemanticSearchSettings {
             enabled: true,
             provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
             model_id: Some("a-model-that-no-longer-exists".to_string()),
         };
         assert_eq!(
-            reconcile_expected_dimension(&unresolvable),
+            reconcile_expected_model(&unresolvable),
             None,
-            "an unresolvable model_id must skip reconciliation, not wipe to 768"
+            "an unresolvable model_id must skip reconciliation, not wipe to the default"
         );
     }
 

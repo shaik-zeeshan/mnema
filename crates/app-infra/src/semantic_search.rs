@@ -30,6 +30,31 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use crate::db::CaptureDb;
 use crate::Result;
 
+/// The `app_settings` key stamping **which model's embedding space** the live
+/// `search_document_vectors` table holds — the **model epoch guard**.
+///
+/// The vec0 table records only its column *width*, and width alone stopped being a
+/// usable discriminator the moment the catalog gained models that share a dimension
+/// with an already-shipping one (`gte-modernbert-base` and
+/// `granite-embedding-english-r2` are 768 like `nomic-embed-text-v1.5`;
+/// `granite-embedding-small-english-r2` is 384 like `multilingual-e5-small`). Without
+/// this stamp, switching between two same-width models would leave every stale vector
+/// in place — a different embedding space, no error, no self-heal, degraded search
+/// that looks healthy.
+///
+/// The stamp is written in the SAME transaction as the DROP+CREATE
+/// ([`SemanticSearchStore::recreate_vectors_table`]), so table and stamp can never
+/// disagree, and it is checked on every write
+/// ([`SemanticSearchStore::store_vectors_if_model_matches`]) and on startup
+/// reconciliation ([`SemanticSearchStore::reconcile_vectors_table`]).
+///
+/// The **query** path deliberately does NOT check it. The only way the table can
+/// hold vectors from a model other than the selected one is a write that slipped
+/// through, and the write gate is what prevents that: a half-applied switch leaves
+/// the table freshly recreated and therefore *empty*, which returns no results
+/// rather than wrong ones.
+const VECTORS_MODEL_KEY: &str = "semantic_search.vectors_model_id";
+
 /// One **Search Result Anchor** that needs a **Semantic Search Vector**: its
 /// `search_documents.id` (which is also its `vec0` rowid) and the raw `body_text`
 /// to embed. Raw, not redacted: the vector lives inside the **Encrypted Capture
@@ -150,13 +175,13 @@ impl SemanticSearchStore {
     /// guaranteed-non-empty text), so this is defensive against a corrupt/
     /// pathological ONNX graph only.
     ///
-    /// **Internal primitive — call [`SemanticSearchStore::store_vector_if_dimension_matches`]
+    /// **Internal primitive — call [`SemanticSearchStore::store_vector_if_model_matches`]
     /// instead.** This is `pub(crate)` (not `pub`) on purpose (F13): it does NO
     /// live-dimension check, so a caller that reaches it directly bypasses the single
     /// dimension authority and can write a wrong-length blob the live `vec0` column
     /// would reject (or, worse under a future same-dimension model, a cross-model
     /// vector). The gate lives in
-    /// [`SemanticSearchStore::store_vector_if_dimension_matches`]; the worker calls
+    /// [`SemanticSearchStore::store_vector_if_model_matches`]; the worker calls
     /// only that. Narrowing visibility to `pub(crate)` keeps the in-crate tests
     /// compiling while making it impossible for external code to skip the gate.
     pub(crate) async fn store_vector(&self, anchor_id: i64, vector: &[f32]) -> Result<bool> {
@@ -191,43 +216,46 @@ impl SemanticSearchStore {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Store a vector **only if its length matches the live `vec0` column
-    /// dimension**, returning whether it was stored.
+    /// Store a vector **only if it belongs to the live table's embedding space** —
+    /// its producing `model_id` matches the table's stamp AND its length matches the
+    /// live `vec0` column width — returning whether it was stored.
     ///
-    /// This is the worker-side half of the single dimension authority (the live
-    /// `vec0` column width is the one source of truth — see
-    /// [`live_vector_dimension`]). The two-step model switch (persist `model_id`,
-    /// then recreate the table) is non-atomic across the worker: between the
-    /// embedder reloading at the new dimension and the table being rebuilt — and
-    /// **permanently** if the rebuild ever fails — an embedded vector would be the
-    /// wrong length for the table. A raw [`store_vector`] would have vec0 reject
-    /// the blob and the sweep would error-loop that doomed batch every retry
-    /// forever. Here a mismatch is a **skip, not an error**: the anchor stays in
-    /// the missing set and is re-embedded once the dimensions agree (after the
-    /// rebuild lands, or after startup reconciliation self-heals a stuck table),
-    /// so the worker idles instead of error-looping.
+    /// This is the worker-side half of the index authority. The two-step model
+    /// switch (rebuild the table, then persist `model_id`) is non-atomic across the
+    /// worker: between the embedder reloading under the new model and the table
+    /// being rebuilt — and **permanently** if the rebuild ever fails — an embedded
+    /// vector would belong to a different embedding space than the table. A raw
+    /// [`store_vector`] would either have vec0 reject the blob (different width, so
+    /// the sweep error-loops that doomed batch every retry forever) or, far worse,
+    /// **silently accept it** when the two models share a width. Here a mismatch is a
+    /// **skip, not an error**: the anchor stays in the missing set and is re-embedded
+    /// once table and model agree (after the rebuild lands, or after startup
+    /// reconciliation self-heals a stuck table), so the worker idles instead of
+    /// error-looping or contaminating the index.
     ///
-    /// `Ok(true)` — stored. `Ok(false)` — skipped: either on a dimension mismatch
-    /// (or the table is absent), **or** because the `direct` anchor row no longer
-    /// exists (a delete raced the store — [`store_vector`] inserts nothing, so no
-    /// orphan is left). `Err` — a non-finite vector (L1) or a real DB failure.
+    /// `Ok(true)` — stored. `Ok(false)` — skipped: the table names a different model
+    /// (or is unstamped, or absent), the vector length disagrees with the live
+    /// column, **or** the `direct` anchor row no longer exists (a delete raced the
+    /// store — [`store_vector`] inserts nothing, so no orphan is left). `Err` — a
+    /// non-finite vector (L1) or a real DB failure.
     ///
-    /// **Load-bearing invariant — distinct dimensions per model.** The dimension
-    /// equality here is the *only* guard against cross-model contamination: a
-    /// vector embedded under the OLD model while a switch is mid-flight is rejected
-    /// solely because its length differs from the live column width. This is sound
-    /// **only** under the invariant that every catalog model has a distinct
-    /// dimension (enforced by `catalog_dimensions_are_pairwise_distinct` in
-    /// `semantic-search/src/models.rs`). Introducing a second model that shares a
-    /// dimension with another would let an in-flight old-model vector be written
-    /// into the new-model index silently (a different embedding space, no error, no
-    /// self-heal) — that requires a stronger model-identity/epoch guard here, not
-    /// the dimension check alone.
-    pub async fn store_vector_if_dimension_matches(
+    /// **The model stamp is the discriminator, not the width** ([`VECTORS_MODEL_KEY`]).
+    /// Dimension equality is kept as a second, cheaper gate — it is what actually
+    /// stops vec0 from rejecting a blob — but it is no longer load-bearing for
+    /// cross-model contamination, and must not be relied on as such: the catalog now
+    /// ships models that share a dimension with another on purpose.
+    pub async fn store_vector_if_model_matches(
         &self,
+        model_id: &str,
         anchor_id: i64,
         vector: &[f32],
     ) -> Result<bool> {
+        if self.live_vector_model().await?.as_deref() != Some(model_id) {
+            // The table holds another model's embedding space (or is unstamped):
+            // skip without error so the sweep idles until reconciliation re-aligns
+            // it, rather than writing a vector from the wrong space.
+            return Ok(false);
+        }
         match self.live_vector_dimension().await? {
             // Length matches the live column: attempt the atomic row-conditioned
             // store. It still returns `false` if the anchor vanished mid-embed, so
@@ -241,23 +269,25 @@ impl SemanticSearchStore {
         }
     }
 
-    /// Batched counterpart to [`store_vector_if_dimension_matches`]: stores a whole
+    /// Batched counterpart to [`store_vector_if_model_matches`]: stores a whole
     /// sweep batch in **one** write transaction (one writer-lock acquisition for the
     /// batch instead of one per anchor), returning a per-anchor `stored` flag
     /// aligned to `pairs`. Each `true`/`false` carries the exact same meaning as the
-    /// single-anchor call — `true` stored, `false` skipped (dimension mismatch, no
-    /// table, or the `direct` anchor vanished mid-embed so the row-conditioned
-    /// INSERT affected nothing). Reducing the lock-acquisition rate is the point:
-    /// the per-anchor version made the background sweep grab the writer lock once
-    /// per vector, churning contention with foreground capture writes.
+    /// single-anchor call — `true` stored, `false` skipped (the table names another
+    /// model, dimension mismatch, no table, or the `direct` anchor vanished
+    /// mid-embed so the row-conditioned INSERT affected nothing). Reducing the
+    /// lock-acquisition rate is the point: the per-anchor version made the background
+    /// sweep grab the writer lock once per vector, churning contention with
+    /// foreground capture writes.
     ///
     /// All-or-nothing on a real DB failure: a genuine `Err` rolls the batch back, so
-    /// the caller retries the whole batch (transient). The live dimension is read
-    /// once up front; the same single-dimension-authority invariant as
-    /// [`store_vector_if_dimension_matches`] applies (a wrong-length vector is
-    /// skipped, never inserted).
-    pub async fn store_vectors_if_dimension_matches(
+    /// the caller retries the whole batch (transient). The model stamp and the live
+    /// dimension are both read once up front; the same index-authority invariant as
+    /// [`store_vector_if_model_matches`] applies (a vector from another model's
+    /// embedding space, or of the wrong length, is skipped, never inserted).
+    pub async fn store_vectors_if_model_matches(
         &self,
+        model_id: &str,
         pairs: &[(i64, Vec<f32>)],
     ) -> Result<Vec<bool>> {
         if pairs.is_empty() {
@@ -272,6 +302,12 @@ impl SemanticSearchStore {
                      (a NaN/inf component would poison KNN ordering)"
                 )));
             }
+        }
+        // The table holds another model's embedding space (or is unstamped) → every
+        // anchor is a skip, awaiting reconciliation. Checked BEFORE the write
+        // transaction is opened so a mid-switch sweep never even takes the lock.
+        if self.live_vector_model().await?.as_deref() != Some(model_id) {
+            return Ok(vec![false; pairs.len()]);
         }
         // No live table → every anchor is a skip (awaiting re-index), no write needed.
         let Some(dimension) = self.live_vector_dimension().await? else {
@@ -326,32 +362,88 @@ impl SemanticSearchStore {
         live_vector_dimension(self.db.read()).await
     }
 
-    /// Reconcile the live `vec0` table dimension against `expected_dimension`,
-    /// recreating the table only when they disagree. Returns `Some(discarded)`
-    /// with the number of vectors dropped if a recreate happened, or `None` if
-    /// the table already matched (no-op).
+    /// The **model id stamped on the live `search_document_vectors` table** — which
+    /// embedding space its vectors belong to — or `None` when no stamp has been
+    /// written yet (see [`VECTORS_MODEL_KEY`]).
+    ///
+    /// `None` is possible on exactly one path: a table created by migration `0039`
+    /// (or a `0039`-era install) that has never been through
+    /// [`recreate_vectors_table`]. Because 768 was the only English width that
+    /// existed then, an unstamped table can only hold `nomic-embed-text-v1.5`
+    /// vectors, which is what [`reconcile_vectors_table`] relies on to adopt it
+    /// rather than wipe it.
+    pub async fn live_vector_model(&self) -> Result<Option<String>> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+                .bind(VECTORS_MODEL_KEY)
+                .fetch_optional(self.db.read())
+                .await?;
+        Ok(value)
+    }
+
+    /// Reconcile the live `vec0` table against the selected model — both its
+    /// **stamped model id** and its column width — recreating the table only when
+    /// they disagree. Returns `Some(discarded)` with the number of vectors dropped
+    /// if a recreate happened, or `None` if the table already matched (no-op).
     ///
     /// This is the **startup self-heal** for a permanently-stuck switch: if a
     /// model switch persisted a new `model_id` but the table recreate failed (DB
     /// busy under the worker's concurrent writes — `DROP TABLE` needs an exclusive
-    /// lock), the table is left at the old dimension while the selection names a
-    /// new-dimension model. Both the worker (`store_vector_if_dimension_matches`)
-    /// and the query path then read the live column and skip/idle — search never
-    /// hard-fails, but the index also never rebuilds. Running this on the
-    /// deferred-startup seam with the selected model's expected dimension brings
-    /// the table back into agreement so the sweep can backfill under the new
-    /// model. Idempotent: a matching table is left untouched.
+    /// lock), the table is left holding the old model's vectors while the selection
+    /// names a new one. Both the worker ([`store_vectors_if_model_matches`]) and the
+    /// query path then skip/idle — search never hard-fails, but the index also never
+    /// rebuilds. Running this on the deferred-startup seam with the selected model
+    /// brings the table back into agreement so the sweep can backfill under it.
+    /// Idempotent: a matching table is left untouched.
+    ///
+    /// **Adopting an unstamped table.** A table that predates the model stamp
+    /// (created by migration `0039` or a `0039`-era `recreate_vectors_table`) is
+    /// *stamped in place* rather than wiped, when its width already matches the
+    /// selected model. That is sound because the pre-stamp regime enforced the very
+    /// same invariant by a different mechanism: catalog dimensions were pairwise
+    /// distinct and reconciliation rebuilt on any width disagreement, so a matching
+    /// width back then *did* imply the table belonged to the selected model. Wiping
+    /// instead would cost every existing install one full re-embed for no safety.
     pub async fn reconcile_vectors_table(
         &self,
+        model_id: &str,
         expected_dimension: usize,
     ) -> Result<Option<u64>> {
-        match self.live_vector_dimension().await? {
-            Some(dimension) if dimension == expected_dimension => Ok(None),
-            // Mismatched OR absent: rebuild at the expected dimension so the
-            // worker/query path's live-dimension authority agrees with the
-            // selected model again.
-            _ => Ok(Some(self.recreate_vectors_table(expected_dimension).await?)),
+        let live_model = self.live_vector_model().await?;
+        let live_dimension = self.live_vector_dimension().await?;
+        match (live_model.as_deref(), live_dimension) {
+            // Stamp and width both agree with the selection: nothing to do.
+            (Some(stamped), Some(dimension))
+                if stamped == model_id && dimension == expected_dimension =>
+            {
+                Ok(None)
+            }
+            // Unstamped table at the right width: adopt it (see above) — stamp only,
+            // no rebuild, no vectors discarded.
+            (None, Some(dimension)) if dimension == expected_dimension => {
+                self.stamp_vectors_model(model_id).await?;
+                Ok(None)
+            }
+            // Anything else — a different model's stamp, a width disagreement, or no
+            // table at all — rebuilds under the selected model so the worker's index
+            // authority agrees with the selection again.
+            _ => Ok(Some(
+                self.recreate_vectors_table(model_id, expected_dimension).await?,
+            )),
         }
+    }
+
+    /// Write the [`VECTORS_MODEL_KEY`] stamp on its own, WITHOUT touching the table.
+    ///
+    /// Only for adopting a pre-stamp table in [`reconcile_vectors_table`], where the
+    /// table is already known to hold this model's vectors. Every other stamp write
+    /// rides inside [`recreate_vectors_table`]'s transaction, which is what keeps the
+    /// stamp and the table impossible to disagree.
+    async fn stamp_vectors_model(&self, model_id: &str) -> Result<()> {
+        let mut tx = self.db.begin_write().await?;
+        stamp_vectors_model(&mut tx, model_id).await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Drop and recreate the `search_document_vectors` vec0 table at `dimension`,
@@ -369,17 +461,21 @@ impl SemanticSearchStore {
     /// `AFTER DELETE` trigger keys off the table *name*, so it stays valid across
     /// the recreate.
     ///
-    /// **Load-bearing invariant — distinct dimensions per model.** The rebuilt
-    /// table records only the new `dimension`, never any model identity. Together
-    /// with [`store_vector_if_dimension_matches`], the live column width is the
-    /// sole discriminator between the old and new embedding spaces during a switch.
-    /// That is safe **only** while every catalog model has a distinct dimension
-    /// (enforced by `catalog_dimensions_are_pairwise_distinct` in
-    /// `semantic-search/src/models.rs`). A future same-dimension model would make a
-    /// switch indistinguishable by width alone, so an in-flight old-model vector
-    /// could land in the new index undetected — that case requires a stronger
-    /// model-identity/epoch guard stamped here, not just the dimension width.
-    pub async fn recreate_vectors_table(&self, dimension: usize) -> Result<u64> {
+    /// **Load-bearing invariant — the model stamp.** The rebuilt table carries
+    /// `model_id` in the [`VECTORS_MODEL_KEY`] stamp, written **inside this same
+    /// transaction** as the DROP+CREATE, so the table and the name of the embedding
+    /// space it holds can never disagree — not on a crash, not on a rollback.
+    /// Together with [`store_vectors_if_model_matches`], that stamp is the
+    /// discriminator between the old and new embedding spaces during a switch. It
+    /// replaced the old "every catalog model has a distinct dimension" invariant,
+    /// which the catalog deliberately broke to add the ModernBERT English options
+    /// (768 = nomic, 384 = multilingual-e5-small). Do not reintroduce the width as
+    /// the identity check.
+    pub async fn recreate_vectors_table(
+        &self,
+        model_id: &str,
+        dimension: usize,
+    ) -> Result<u64> {
         let mut tx = self.db.begin_write().await?;
         // Count existing vectors only when the table is actually present: this is
         // also reached from `reconcile_vectors_table`'s "absent → rebuild" self-heal
@@ -411,6 +507,9 @@ impl SemanticSearchStore {
         ))
         .execute(&mut *tx)
         .await?;
+        // Same transaction as the DROP+CREATE: the table and its model stamp commit
+        // together or not at all.
+        stamp_vectors_model(&mut tx, model_id).await?;
         tx.commit().await?;
         Ok(u64::try_from(previous).unwrap_or(0))
     }
@@ -552,6 +651,26 @@ pub(crate) async fn live_vector_dimension(pool: &SqlitePool) -> Result<Option<us
     Ok(sql.as_deref().and_then(parse_vec0_dimension))
 }
 
+/// Write the [`VECTORS_MODEL_KEY`] stamp inside a caller-owned write transaction.
+///
+/// Taking the transaction (rather than the pool) is the point: the stamp must land
+/// in the SAME transaction as the DROP+CREATE it describes, so a rolled-back rebuild
+/// can never leave a stamp that names a table that was not built.
+async fn stamp_vectors_model(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    model_id: &str,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(VECTORS_MODEL_KEY)
+    .bind(model_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Parse the declared dimension `N` out of a `vec0(embedding int8[N])` table
 /// DDL (`sqlite_master.sql`). The whole feature keys its dimension authority off
 /// this — the recreate writes exactly this shape (see
@@ -577,6 +696,15 @@ mod tests {
     };
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// Real catalog model ids used as the vec0 table's model stamp in these tests.
+    /// `MODEL_A` and `MODEL_B` are two DIFFERENT models that share the same 768
+    /// width — the exact collision the model-stamp epoch guard exists for, and the
+    /// one a dimension check cannot see. `MODEL_WIDE` is 1024, so a switch to it
+    /// changes the width too.
+    const MODEL_A: &str = "nomic-embed-text-v1.5";
+    const MODEL_B: &str = "gte-modernbert-base";
+    const MODEL_WIDE: &str = "bge-m3";
 
     fn test_dir(name: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -799,7 +927,7 @@ mod tests {
             // A model switch rebuilds the whole index; every anchor re-appears in
             // the missing set so the sweep re-derives it under the new model.
             let removed = store
-                .recreate_vectors_table(768)
+                .recreate_vectors_table(MODEL_A, 768)
                 .await
                 .expect("recreate succeeds");
             assert_eq!(removed, 3);
@@ -838,7 +966,7 @@ mod tests {
             // dimension. The old vector is discarded and the column now accepts a
             // 1024-dim vector that the fixed float[768] table would have rejected.
             let removed = store
-                .recreate_vectors_table(1024)
+                .recreate_vectors_table(MODEL_WIDE, 1024)
                 .await
                 .expect("recreate at 1024 succeeds");
             assert_eq!(removed, 1, "the single 768-dim vector is discarded");
@@ -1044,7 +1172,7 @@ mod tests {
             // read — the single source of truth is the table, not any persisted
             // model selection.
             store
-                .recreate_vectors_table(1024)
+                .recreate_vectors_table(MODEL_WIDE, 1024)
                 .await
                 .expect("recreate at 1024");
             assert_eq!(
@@ -1065,14 +1193,20 @@ mod tests {
 
             let store = infra.semantic_search();
             let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            // Stamp the migration-fresh table for MODEL_A, as startup reconciliation
+            // does before the worker's first sweep.
+            store
+                .reconcile_vectors_table(MODEL_A, 768)
+                .await
+                .expect("adopt the migration table");
 
-            // The live table is float[768]. A 1024-dim vector (an embedder reloaded
+            // The live table is int8[768]. A 1024-dim vector (an embedder reloaded
             // at a new dimension before the table was rebuilt — the non-atomic
             // switch window, or a permanently-stuck table) does NOT fatally error:
             // it is skipped (`Ok(false)`), so the worker idles instead of
             // error-looping a doomed batch every 30s.
             let stored = store
-                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(1024, 0.5))
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(1024, 0.5))
                 .await
                 .expect("a dimension mismatch is a skip, not a fatal error");
             assert!(!stored, "the wrong-dimension vector is skipped");
@@ -1086,7 +1220,7 @@ mod tests {
 
             // A correctly-sized 768-dim vector stores normally and clears the anchor.
             let stored = store
-                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(768, 0.5))
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(768, 0.5))
                 .await
                 .expect("matching dimension stores");
             assert!(stored, "the matching-dimension vector is stored");
@@ -1110,13 +1244,17 @@ mod tests {
             let store = infra.semantic_search();
             let missing = store.anchors_missing_vector(10).await.expect("query");
             assert_eq!(missing.len(), 2, "two anchors await a vector");
+            store
+                .reconcile_vectors_table(MODEL_A, 768)
+                .await
+                .expect("adopt the migration table");
 
             // One correctly-sized (768) vector and one wrong-dimension (1024) vector
             // in a single batched call: the matching one stores, the mismatch is
             // skipped (not an error, not stored), and the per-anchor outcomes line up
             // with the input order.
             let outcomes = store
-                .store_vectors_if_dimension_matches(&[
+                .store_vectors_if_model_matches(MODEL_A, &[
                     (missing[0].anchor_id, unit_vector(768, 0.5)),
                     (missing[1].anchor_id, unit_vector(1024, 0.5)),
                 ])
@@ -1161,7 +1299,7 @@ mod tests {
             // rebuilds the table (discarding the stale vector) so the live dimension
             // agrees with the model again and the sweep can backfill under it.
             let discarded = store
-                .reconcile_vectors_table(1024)
+                .reconcile_vectors_table(MODEL_WIDE, 1024)
                 .await
                 .expect("reconcile succeeds");
             assert_eq!(discarded, Some(1), "the stale 768-dim vector is discarded");
@@ -1175,7 +1313,7 @@ mod tests {
     }
 
     #[test]
-    fn reconcile_is_a_no_op_when_the_dimension_already_matches() {
+    fn reconcile_adopts_an_unstamped_table_of_the_right_width_instead_of_wiping_it() {
         run_async_test(async {
             let dir = test_dir("reconcile-match");
             let infra = AppInfra::initialize(&dir)
@@ -1189,18 +1327,176 @@ mod tests {
                 .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
                 .await
                 .expect("store a 768-dim vector");
+            // The migration-0039 table carries no model stamp at all.
+            assert_eq!(store.live_vector_model().await.expect("stamp"), None);
 
-            // The migration default (768) already matches the default model's
-            // dimension: reconciliation is a no-op and the existing vector survives.
+            // Reconciliation ADOPTS it rather than rebuilding: the width already
+            // matches the selected model, and under the pre-stamp regime a matching
+            // width implied a matching model. Wiping here would cost every existing
+            // install a full re-embed for no safety.
             let discarded = store
-                .reconcile_vectors_table(768)
+                .reconcile_vectors_table(MODEL_A, 768)
                 .await
                 .expect("reconcile succeeds");
-            assert_eq!(discarded, None, "a matching table is left untouched");
+            assert_eq!(discarded, None, "an adopted table is left untouched");
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(MODEL_A.to_string()),
+                "adoption stamps the table"
+            );
             assert!(!store
                 .anchor_still_missing_vector(anchor.anchor_id)
                 .await
                 .expect("recheck"));
+
+            // And a second run is a plain no-op — stamp and width both agree now.
+            assert_eq!(
+                store
+                    .reconcile_vectors_table(MODEL_A, 768)
+                    .await
+                    .expect("reconcile succeeds"),
+                None
+            );
+        });
+    }
+
+    /// The whole reason the model stamp exists: two DIFFERENT models at the SAME
+    /// width. A width check reads green on every assertion here, so this is the
+    /// regression that a revert to the old dimension-only gate would reintroduce.
+    #[test]
+    fn a_same_dimension_model_switch_is_caught_by_the_model_stamp() {
+        run_async_test(async {
+            let dir = test_dir("same-dim-switch");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .reconcile_vectors_table(MODEL_A, 768)
+                .await
+                .expect("adopt under MODEL_A");
+
+            // Switching to MODEL_B rebuilds the table at the SAME 768 width, so the
+            // live column is byte-for-byte the same shape it was before.
+            let discarded = store
+                .recreate_vectors_table(MODEL_B, 768)
+                .await
+                .expect("switch to MODEL_B");
+            assert_eq!(discarded, 0);
+            assert_eq!(
+                store.live_vector_dimension().await.expect("dim"),
+                Some(768),
+                "the width is unchanged — which is exactly why it cannot be the guard"
+            );
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(MODEL_B.to_string())
+            );
+
+            // An in-flight vector from the OLD model is the right length for the live
+            // column and would have been silently accepted by a dimension-only gate.
+            // The stamp rejects it — as a skip, so the sweep idles rather than
+            // error-looping, and the anchor stays queued for re-embedding under
+            // MODEL_B.
+            let stored = store
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("a model mismatch is a skip, not a fatal error");
+            assert!(!stored, "the stale-model vector must not enter MODEL_B's index");
+            assert!(store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+
+            // The batched path enforces the same rule.
+            let outcomes = store
+                .store_vectors_if_model_matches(
+                    MODEL_A,
+                    &[(anchor.anchor_id, unit_vector(768, 0.5))],
+                )
+                .await
+                .expect("batched model mismatch is a skip");
+            assert_eq!(outcomes, vec![false]);
+
+            // Under the model the table actually names, the same vector stores.
+            assert!(store
+                .store_vector_if_model_matches(MODEL_B, anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("matching model stores"));
+        });
+    }
+
+    /// Reconciliation must rebuild on a stamp disagreement even when the width is
+    /// identical — the startup self-heal counterpart of the write gate above.
+    #[test]
+    fn reconcile_rebuilds_when_only_the_model_stamp_disagrees() {
+        run_async_test(async {
+            let dir = test_dir("reconcile-same-dim-model");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            seed_frame_with_text(&infra, "2026-05-17T10:00:00Z", "alpha").await;
+
+            let store = infra.semantic_search();
+            let anchor = store.anchors_missing_vector(10).await.expect("query")[0].clone();
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A");
+            store
+                .store_vector(anchor.anchor_id, &unit_vector(768, 0.5))
+                .await
+                .expect("store a MODEL_A vector");
+
+            // The selection now names MODEL_B at the same 768 width — a stuck switch
+            // a dimension-only reconciler would have declared healthy.
+            let discarded = store
+                .reconcile_vectors_table(MODEL_B, 768)
+                .await
+                .expect("reconcile succeeds");
+            assert_eq!(discarded, Some(1), "the stale MODEL_A vector is discarded");
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(MODEL_B.to_string())
+            );
+            assert!(store
+                .anchor_still_missing_vector(anchor.anchor_id)
+                .await
+                .expect("recheck"));
+        });
+    }
+
+    /// A rolled-back rebuild must not leave a stamp naming a table that was never
+    /// built — the reason the stamp rides inside the DROP+CREATE transaction.
+    #[test]
+    fn the_model_stamp_and_the_table_commit_together() {
+        run_async_test(async {
+            let dir = test_dir("stamp-atomicity");
+            let infra = AppInfra::initialize(&dir)
+                .await
+                .expect("infra should initialize");
+            let store = infra.semantic_search();
+
+            store
+                .recreate_vectors_table(MODEL_A, 768)
+                .await
+                .expect("build under MODEL_A");
+
+            // A rebuild that fails inside its transaction (an invalid width vec0
+            // refuses) must roll BOTH the table and the stamp back to MODEL_A.
+            assert!(
+                store.recreate_vectors_table(MODEL_B, 0).await.is_err(),
+                "a zero-width vec0 column is rejected"
+            );
+            assert_eq!(
+                store.live_vector_model().await.expect("stamp"),
+                Some(MODEL_A.to_string()),
+                "a rolled-back rebuild leaves the previous stamp, never the new one"
+            );
+            assert_eq!(store.live_vector_dimension().await.expect("dim"), Some(768));
         });
     }
 
@@ -1301,7 +1597,7 @@ mod tests {
             // The dimension-guarded path is just as safe (it routes through the
             // same atomic store): a delete racing it also leaves nothing.
             let stored = store
-                .store_vector_if_dimension_matches(anchor.anchor_id, &unit_vector(768, 0.5))
+                .store_vector_if_model_matches(MODEL_A, anchor.anchor_id, &unit_vector(768, 0.5))
                 .await
                 .expect("dimension-guarded store returns cleanly for a deleted anchor");
             assert!(!stored, "the dimension-guarded path also writes no orphan");

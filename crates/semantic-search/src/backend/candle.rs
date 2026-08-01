@@ -8,7 +8,8 @@
 //! (`VarBuilder::from_pth`, used by bge-m3, whose repo ships no safetensors) — run
 //! the architecture the descriptor names (NomicBert for the English default,
 //! XLM-Roberta for the multilingual-e5 / bge-m3 / Arctic families, StellaEnV5 for
-//! the Stella English option), pool per the descriptor (Mean or CLS), and
+//! the Stella English option, ModernBert for the gte-modernbert / granite-r2
+//! English Custom options), pool per the descriptor (Mean or CLS), and
 //! L2-normalize. Always returns F32 vectors so the scoring path is unchanged.
 //!
 //! **StellaEnV5 (`stella_en_400M_v5`) is the one architecture that owns its own
@@ -30,8 +31,12 @@
 //! **Device & precision.** Tries `Device::new_metal(0)` then falls back to CPU.
 //! Metal kernels only link when the crate `metal` feature is on, so the metal
 //! attempt is `#[cfg(feature = "metal")]`; a non-metal build is CPU-only and still
-//! compiles. Precision is device-dependent: F16 on Metal (the RAM win, ~11% slower
-//! — accepted), F32 on CPU (F16 is emulated/slow there).
+//! compiles. Precision is device- AND architecture-dependent (see [`arch_dtype`]):
+//! F16 on Metal (the RAM win, ~11% slower — accepted), F32 on CPU (F16 is
+//! emulated/slow there) — except **ModernBERT, which is F32 on every device**
+//! because candle 0.10.2's `modernbert` forward adds an F32-only attention mask to
+//! hidden states in the weight dtype, so an F16 load cannot complete one forward
+//! pass. `arch_dtype` documents the RAM cost and the upstream upgrade path.
 //!
 //! **U8 attention mask** (not U32): candle's `nomic_bert` builds the additive mask
 //! via `where_cond`, whose condition dtype is the mask's dtype. On Metal only
@@ -44,6 +49,9 @@ use std::sync::Mutex;
 
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
+use candle_transformers::models::modernbert::{
+    Config as ModernBertConfig, ModernBert,
+};
 use candle_transformers::models::nomic_bert::{
     Config as NomicConfig, NomicBertModel,
 };
@@ -71,6 +79,38 @@ enum LoadedModel {
     /// the backend's `embed_batch` is `&self`; the lock bridges that and keeps
     /// `CandleBackend: Send`.
     Stella(Mutex<StellaEmbeddingModel>),
+    /// ModernBERT backbone (gte-modernbert-base, granite-embedding-*-r2). Returns
+    /// raw hidden states like NomicBert/XlmRoberta, so it pools externally.
+    /// **Always loaded at F32** — see [`arch_dtype`].
+    ModernBert(ModernBert),
+}
+
+/// The VarBuilder dtype for an architecture on a given device.
+///
+/// F16 on Metal (the RAM win, ~11% slower — accepted), F32 on CPU, **except
+/// ModernBERT, which is F32 everywhere**: candle 0.10.2's
+/// `modernbert::ModernBert::forward` hardcodes its additive attention mask to F32
+/// (`prepare_4d_attention_mask(mask, DType::F32, None)`, and `get_local_attention_mask`
+/// builds an F32 sliding-window mask), then does `att.broadcast_add(&mask)` where
+/// `att` carries the *weight* dtype. Under F16 weights that add fails outright —
+/// `dtype mismatch in add, lhs: F16, rhs: F32` — so a Metal F16 load cannot run a
+/// single forward pass. `xlm_roberta` builds the same F32 mask but casts it to the
+/// hidden dtype at use, which is why that arm is F16-clean and this one is not.
+///
+/// The cost is resident weight bytes: ~596 MB for the 149M-param 768-dim models
+/// (gte-modernbert-base, granite-embedding-english-r2) and ~188 MB for the 47M-param
+/// granite-embedding-small-english-r2, against ~274 MB for nomic at F16. That is the
+/// documented ceiling of these Custom options. The upgrade path is upstream: when a
+/// candle release casts the ModernBERT mask to the hidden dtype (as `xlm_roberta`
+/// already does), drop the special case here and the arm becomes F16 on Metal like
+/// every other one. Precedent for a per-arch dtype: Stella's dense head is pinned to
+/// F32 in both builds for the same class of reason (see the module docs above).
+fn arch_dtype(architecture: SemanticSearchArchitecture, device: &Device) -> DType {
+    match architecture {
+        SemanticSearchArchitecture::ModernBert => DType::F32,
+        _ if device.is_metal() => DType::F16,
+        _ => DType::F32,
+    }
 }
 
 /// The candle embedding backend: one loaded model + the forward-pass tokenizer.
@@ -180,13 +220,10 @@ impl CandleBackend {
         let model_dir = model_dir.as_ref();
 
         // F16 on Metal (RAM win, ~11% slower — accepted), F32 on CPU (F16 is
-        // emulated/slow there). The on-disk weights are F32; the dtype arg casts
-        // them into device memory at load.
-        let dtype = if device.is_metal() {
-            DType::F16
-        } else {
-            DType::F32
-        };
+        // emulated/slow there) — and F32 everywhere for ModernBERT, whose candle
+        // forward cannot run in F16 at all. The on-disk weights are F32 or BF16; the
+        // dtype arg casts them into device memory at load.
+        let dtype = arch_dtype(descriptor.architecture, &device);
 
         let weights_path = model_dir.join(&descriptor.expected_layout.weights_relative_path);
         // The weights file must exist before we hand it to candle; surface a
@@ -199,7 +236,10 @@ impl CandleBackend {
                 path: weights_path.clone(),
                 source: std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("{} not found", descriptor.expected_layout.weights_relative_path),
+                    format!(
+                        "{} not found",
+                        descriptor.expected_layout.weights_relative_path
+                    ),
                 ),
             });
         }
@@ -225,9 +265,7 @@ impl CandleBackend {
         let is_pytorch_checkpoint = weights_path
             .extension()
             .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| {
-                ext.eq_ignore_ascii_case("bin") || ext.eq_ignore_ascii_case("pth")
-            });
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("bin") || ext.eq_ignore_ascii_case("pth"));
         let vb = if is_pytorch_checkpoint {
             VarBuilder::from_pth(&weights_path, dtype, &device)
                 .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?
@@ -262,6 +300,38 @@ impl CandleBackend {
                 let model = XLMRobertaModel::new(&cfg, vb)
                     .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
                 (LoadedModel::XlmRoberta(model), native_dim)
+            }
+            // ModernBERT yields raw hidden states, so it pools externally exactly
+            // like NomicBert / XlmRoberta. The native width is the backbone
+            // `hidden_size` (768 for gte-modernbert-base and
+            // granite-embedding-english-r2, 384 for granite-embedding-small-english-r2);
+            // none of them truncate, so it equals `descriptor.dimension`.
+            SemanticSearchArchitecture::ModernBert => {
+                let cfg: ModernBertConfig = serde_json::from_slice(&config_bytes)
+                    .map_err(|error| EmbeddingError::LoadConfig(error.to_string()))?;
+                let native_dim = cfg.hidden_size;
+                // candle 0.10.2's `ModernBert::load` hardcodes a `model.` prefix on
+                // every tensor name (`vb.pp("model.embeddings.tok_embeddings")`, …)
+                // because it was written against `ModernBertForMaskedLM` checkpoints
+                // like `answerdotai/ModernBERT-base`, where the backbone sits under
+                // `model.` next to `head.` / `decoder.`. All three shipped options are
+                // bare `ModernBertModel` exports whose keys have NO prefix
+                // (`embeddings.tok_embeddings.weight`), so an unpatched load dies with
+                // "cannot find tensor model.embeddings.tok_embeddings.weight". Re-point
+                // the queries at the unprefixed names when the prefixed embedding
+                // tensor is absent — every name `ModernBert::load` asks for starts with
+                // `model.`, so the strip is uniform. Pinned by
+                // `modernbert_parity::*_loads_unprefixed_modernbertmodel_weights`.
+                let vb = if vb.contains_tensor("model.embeddings.tok_embeddings.weight") {
+                    vb
+                } else {
+                    vb.rename_f(|name: &str| {
+                        name.strip_prefix("model.").unwrap_or(name).to_string()
+                    })
+                };
+                let model = ModernBert::load(vb, &cfg)
+                    .map_err(|error| EmbeddingError::LoadModel(error.to_string()))?;
+                (LoadedModel::ModernBert(model), native_dim)
             }
             // Stella is a backbone + dense projection head. The base `vb` built
             // above (device dtype, mmaped `model.safetensors`) is the BASE; the head
@@ -488,11 +558,19 @@ impl CandleBackend {
                     )
                     .map_err(|error| EmbeddingError::Embed(error.to_string()))?
             }
+            // ModernBERT takes the raw 2d attention mask and builds its own additive
+            // 4d mask internally — in F32, and WITHOUT casting it to the hidden
+            // dtype, which is why this arm is loaded at F32 on every device (see
+            // `arch_dtype`). The U8 mask is fine: `prepare_4d_attention_mask` casts
+            // whatever it is given to F32 before inverting it.
+            LoadedModel::ModernBert(model) => model
+                .forward(&input_ids, &attention_mask)
+                .map_err(|error| EmbeddingError::Embed(error.to_string()))?,
             // Stella returned above via its own module-owned pooling path; it never
             // reaches this hidden-states-then-external-pool branch.
-            LoadedModel::Stella(_) => unreachable!(
-                "Stella is handled by the early-return forward path before this match"
-            ),
+            LoadedModel::Stella(_) => {
+                unreachable!("Stella is handled by the early-return forward path before this match")
+            }
         };
 
         // Pool per the model's declared strategy, then L2-normalize.
@@ -502,7 +580,8 @@ impl CandleBackend {
         }
         .map_err(|error| EmbeddingError::Embed(error.to_string()))?; // (B, H)
 
-        let normed = l2_normalize(&pooled).map_err(|error| EmbeddingError::Embed(error.to_string()))?;
+        let normed =
+            l2_normalize(&pooled).map_err(|error| EmbeddingError::Embed(error.to_string()))?;
         let normed = normed
             .to_dtype(DType::F32)
             .and_then(|t| t.to_device(&Device::Cpu))
@@ -587,6 +666,10 @@ fn l2_normalize(x: &Tensor) -> candle_core::Result<Tensor> {
     // `mean_pool` above uses for its token counts. A real pooled vector's
     // pre-normalization norm is O(√H), far above the floor, so a normal embedding
     // is never perturbed.
-    let norm = x.sqr()?.sum_keepdim(1)?.sqrt()?.clamp(1e-9, f64::INFINITY)?; // (B,1)
+    let norm = x
+        .sqr()?
+        .sum_keepdim(1)?
+        .sqrt()?
+        .clamp(1e-9, f64::INFINITY)?; // (B,1)
     x.broadcast_div(&norm)
 }

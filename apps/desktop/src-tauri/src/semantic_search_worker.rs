@@ -973,15 +973,16 @@ async fn run_sweep_pass(
                 // row-conditioned store is the real correctness boundary (M1); this
                 // re-check is an early-out optimization.
                 match infra.semantic_search().anchor_still_missing_vector(anchor_id).await {
-                    // `store_vector_if_dimension_matches` is the worker half of the
-                    // single dimension authority (the live vec0 column width). If the
-                    // embedder reloaded at a new dimension but the table has not yet
+                    // `store_vectors_if_model_matches` is the worker half of the index
+                    // authority (the model id stamped on the live vec0 table). If the
+                    // embedder reloaded under a new model but the table has not yet
                     // been rebuilt — the non-atomic model-switch window, or
                     // permanently after a failed rebuild — the store is **skipped, not
                     // errored**, so the sweep idles instead of error-looping a doomed
-                    // batch every 30s forever. Startup reconciliation rebuilds the
-                    // stuck table so the dimensions agree again and the skipped
-                    // anchors re-embed.
+                    // batch every 30s forever, and never writes a vector from one
+                    // model's embedding space into another's index. Startup
+                    // reconciliation rebuilds the stuck table so the stamp agrees
+                    // again and the skipped anchors re-embed.
                     Ok(true) => {
                         // Defer the write: collect this anchor's vector and store the
                         // whole batch in one transaction after the loop (see
@@ -1056,7 +1057,7 @@ async fn run_sweep_pass(
     if !to_store.is_empty() {
         match infra
             .semantic_search()
-            .store_vectors_if_dimension_matches(&to_store)
+            .store_vectors_if_model_matches(&descriptor.model_id, &to_store)
             .await
         {
             Ok(outcomes) => {

@@ -84,8 +84,10 @@ pub enum SemanticSearchModelTier {
 /// the candle backend (`backend/candle.rs`) to the matching
 /// `candle_transformers::models::*` module: `NomicBert` for the English default
 /// (`nomic-embed-text-v1.5`), `XlmRoberta` for the multilingual-e5 family and
-/// `bge-m3`, and `StellaEnV5` for `stella_en_400M_v5` (dispatches to
-/// `candle_transformers::models::stella_en_v5`, whose dense head pools internally).
+/// `bge-m3`, `StellaEnV5` for `stella_en_400M_v5` (dispatches to
+/// `candle_transformers::models::stella_en_v5`, whose dense head pools internally),
+/// and `ModernBert` for the ModernBERT-backbone English Custom options
+/// (`gte-modernbert-base`, the granite-embedding-r2 pair).
 /// Hand-coded per model — never inferred from an id.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -93,6 +95,7 @@ pub enum SemanticSearchArchitecture {
     NomicBert,
     XlmRoberta,
     StellaEnV5,
+    ModernBert,
 }
 
 /// The sentence-pooling strategy a **Semantic Search Model** reads its single
@@ -316,6 +319,15 @@ pub struct SupportedEmbeddingModel {
 /// - **Custom multilingual option:** `snowflake-arctic-embed-l-v2.0` — XLM-Roberta,
 ///   256-dim stored (Matryoshka-truncated from native 1024), CLS, 8192-token,
 ///   Apache-2.0, ~2.29 GB.
+/// - **Custom English options on the ModernBERT backbone** (issue #190/#193):
+///   `gte-modernbert-base` — 768-dim, CLS, Apache-2.0, ~302 MB;
+///   `granite-embedding-english-r2` — 768-dim, CLS, Apache-2.0, ~302 MB;
+///   `granite-embedding-small-english-r2` — 384-dim, CLS, Apache-2.0, ~99 MB.
+///   All three collide on dimension with an existing model (768 = nomic, 384 = e5),
+///   which is only safe because the vector store now stamps the **model id** of the
+///   embedding space its table holds (`recreate_vectors_table` /
+///   `store_vectors_if_model_matches` in `app-infra/src/semantic_search.rs`) — the
+///   column width is no longer the discriminator.
 ///
 /// The `approx_download_bytes` for each model is the sum of its required files
 /// (weights + `tokenizer.json` + `config.json`) at the pinned revision — it feeds
@@ -477,6 +489,104 @@ fn catalog() -> Vec<SemanticSearchModelDescriptor> {
             // truncates each vector to the first 256 elements and renormalizes (in
             // `runtime.rs`, above the backend trait) before storage.
             mrl_truncate_dim: Some(256),
+            expected_layout: InstalledModelLayout::default(),
+        },
+        // ── ModernBERT-backbone English Custom options (issue #190 / #193) ──
+        //
+        // All three are the SAME candle arm and, notably, near-identical files:
+        // `gte-modernbert-base` and `granite-embedding-english-r2` differ by 128
+        // bytes of safetensors and ship the same tokenizer — granite-r2's base IS a
+        // ModernBERT-base, so they are a fine-tuning comparison at identical cost.
+        //
+        // The offline bake-off on 5087 real anchors at the shipped 256-token window
+        // (issue #191) is the source for every quality claim in the descriptions
+        // below. None of them beat `nomic-embed-text-v1.5`, which is why these ship
+        // as **Custom** options and the English default tier is untouched.
+        //
+        // Every one of them collides on dimension with an already-shipping model
+        // (768 = nomic, 384 = multilingual-e5-small). That is only safe because the
+        // vector store stamps the model id of the embedding space its table holds;
+        // see the catalog doc block above.
+        SemanticSearchModelDescriptor {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "gte-modernbert-base".to_string(),
+            display_name: "GTE ModernBERT Base (English, Custom)".to_string(),
+            description: "Custom English option (Alibaba-NLP/gte-modernbert-base), \
+                768-dimensional, Apache-2.0, CLS-pooled. Matches the default Nomic \
+                tier's retrieval quality on real capture data at roughly half the \
+                disk (~302 MB vs ~548 MB), but embeds slower — pick it for disk, \
+                not for speed or quality."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::ModernBert,
+            hf_repo: "Alibaba-NLP/gte-modernbert-base".to_string(),
+            hf_revision: "e7f32e3c00f91d699e8c43b53106206bcc72bb22".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            dimension: 768,
+            max_tokens: 8192,
+            // 301_625_980 B exactly: model.safetensors (298_041_568) +
+            // tokenizer.json (3_583_228) + config.json (1_184) at the pinned
+            // revision.
+            approx_download_bytes: 301_625_980,
+            pooling: SemanticSearchPooling::Cls,
+            // gte-modernbert embeds queries and documents bare — no instruction
+            // prefix on either side (unlike nomic / e5).
+            query_prompt: None,
+            document_prompt: None,
+            mrl_truncate_dim: None,
+            expected_layout: InstalledModelLayout::default(),
+        },
+        SemanticSearchModelDescriptor {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "granite-embedding-english-r2".to_string(),
+            display_name: "Granite Embedding English R2 (English, Custom)".to_string(),
+            description: "Custom English option (ibm-granite/granite-embedding-english-r2), \
+                768-dimensional, Apache-2.0, CLS-pooled. Same ~302 MB footprint as \
+                GTE ModernBERT and competitive on screen text, but measurably worse \
+                on audio transcripts — prefer GTE ModernBERT unless you index \
+                screen text only."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::ModernBert,
+            hf_repo: "ibm-granite/granite-embedding-english-r2".to_string(),
+            hf_revision: "47ea694b257b703fee9253d75c2b1f2985180498".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            dimension: 768,
+            max_tokens: 8192,
+            // 301_626_231 B exactly: model.safetensors (298_041_696) +
+            // tokenizer.json (3_583_228) + config.json (1_307).
+            approx_download_bytes: 301_626_231,
+            pooling: SemanticSearchPooling::Cls,
+            query_prompt: None,
+            document_prompt: None,
+            mrl_truncate_dim: None,
+            expected_layout: InstalledModelLayout::default(),
+        },
+        SemanticSearchModelDescriptor {
+            provider: SEMANTIC_SEARCH_PROVIDER_ID.to_string(),
+            model_id: "granite-embedding-small-english-r2".to_string(),
+            display_name: "Granite Embedding Small English R2 (English, Custom)"
+                .to_string(),
+            description: "Custom English option \
+                (ibm-granite/granite-embedding-small-english-r2), 384-dimensional, \
+                Apache-2.0, CLS-pooled. The low-disk, high-throughput end: ~99 MB \
+                and roughly 2.4× the indexing speed of the default, paying for it \
+                with clearly weaker retrieval — especially on audio transcripts."
+                .to_string(),
+            tier: SemanticSearchModelTier::Custom,
+            architecture: SemanticSearchArchitecture::ModernBert,
+            hf_repo: "ibm-granite/granite-embedding-small-english-r2".to_string(),
+            hf_revision: "2ab6fa8ea2d674564defd37171ae19079b864b33".to_string(),
+            license_label: Some("Apache-2.0".to_string()),
+            dimension: 384,
+            max_tokens: 8192,
+            // 98_916_591 B exactly: model.safetensors (95_332_048) +
+            // tokenizer.json (3_583_228) + config.json (1_315).
+            approx_download_bytes: 98_916_591,
+            pooling: SemanticSearchPooling::Cls,
+            query_prompt: None,
+            document_prompt: None,
+            mrl_truncate_dim: None,
             expected_layout: InstalledModelLayout::default(),
         },
     ]
@@ -945,12 +1055,27 @@ mod tests {
     #[test]
     fn pooling_is_a_declared_field_hand_coded_per_model() {
         // Pooling is hand-coded per model, NEVER inferred from an id prefix (the
-        // historical silent-drift bug). nomic / e5 = Mean; bge-m3 / Arctic = CLS.
-        // Stella's `Mean` is the closest-truth label only (it pools internally via
-        // its dense head and the external pool is bypassed at load), but the
-        // descriptor field still carries `Mean`, so it is checked here too.
+        // historical silent-drift bug). nomic / e5 = Mean; bge-m3 / Arctic /
+        // ModernBERT trio = CLS. Stella's `Mean` is the closest-truth label only (it
+        // pools internally via its dense head and the external pool is bypassed at
+        // load), but the descriptor field still carries `Mean`, so it is checked here
+        // too.
+        //
+        // The three ModernBERT models are the trap this test exists for: their
+        // `config.json` declares `"classifier_pooling": "mean"`, which is the
+        // *sequence-classification head's* pooling and has nothing to do with the
+        // embedding. Their `1_Pooling/config.json` — the sentence-transformers
+        // pooling that actually produced the published retrieval scores — sets
+        // `pooling_mode_cls_token: true`. Reading the wrong one silently mean-pools a
+        // CLS-trained model.
         let mean = ["nomic-embed-text-v1.5", "multilingual-e5-small", "stella_en_400M_v5"];
-        let cls = ["bge-m3", "snowflake-arctic-embed-l-v2.0"];
+        let cls = [
+            "bge-m3",
+            "snowflake-arctic-embed-l-v2.0",
+            "gte-modernbert-base",
+            "granite-embedding-english-r2",
+            "granite-embedding-small-english-r2",
+        ];
         for id in mean {
             let descriptor =
                 resolve_descriptor(SEMANTIC_SEARCH_PROVIDER_ID, id).unwrap_or_else(|| panic!("{id}"));
@@ -985,15 +1110,18 @@ mod tests {
     #[test]
     fn supported_models_lists_the_curated_catalog() {
         let supported = list_supported_models();
-        // The two default tiers (nomic / e5) plus the three Custom options
-        // (bge-m3, Stella, Arctic).
-        assert_eq!(supported.len(), 5, "exactly the five curated models");
+        // The two default tiers (nomic / e5) plus the six Custom options (bge-m3,
+        // Stella, Arctic, and the three ModernBERT English models).
+        assert_eq!(supported.len(), 8, "exactly the eight curated models");
         let ids: Vec<&str> = supported.iter().map(|m| m.model_id.as_str()).collect();
         assert!(ids.contains(&"nomic-embed-text-v1.5"));
         assert!(ids.contains(&"multilingual-e5-small"));
         assert!(ids.contains(&"bge-m3"));
         assert!(ids.contains(&"stella_en_400M_v5"));
         assert!(ids.contains(&"snowflake-arctic-embed-l-v2.0"));
+        assert!(ids.contains(&"gte-modernbert-base"));
+        assert!(ids.contains(&"granite-embedding-english-r2"));
+        assert!(ids.contains(&"granite-embedding-small-english-r2"));
         // The English default is not flagged multilingual; the e5/bge tiers are.
         let nomic = supported.iter().find(|m| m.model_id == "nomic-embed-text-v1.5").unwrap();
         assert!(!nomic.multilingual);
@@ -1010,6 +1138,16 @@ mod tests {
             .find(|m| m.model_id == "snowflake-arctic-embed-l-v2.0")
             .unwrap();
         assert!(arctic.multilingual, "Arctic (XlmRoberta) is multilingual");
+        // Same cleave for the ModernBERT arm: English models on a non-XlmRoberta
+        // architecture, so Custom tier but NOT flagged multilingual.
+        for id in [
+            "gte-modernbert-base",
+            "granite-embedding-english-r2",
+            "granite-embedding-small-english-r2",
+        ] {
+            let model = supported.iter().find(|m| m.model_id == id).unwrap();
+            assert!(!model.multilingual, "{id} (English, ModernBert) is not multilingual");
+        }
     }
 
     /// How a descriptor's stored `dimension` relates to the model's *backbone*
@@ -1120,6 +1258,37 @@ mod tests {
                 max_position_offset: 2,
                 backbone_hidden: 1024,
                 dim_source: DimSource::MrlTruncate,
+            },
+            // The ModernBERT trio. `max_position_embeddings` is 8192 with NO special-
+            // token offset: ModernBERT positions come from rotary embeddings, so that
+            // field sizes the rope table rather than a learned position-embedding
+            // matrix the way XLM-Roberta's does.
+            ConfigReference {
+                model_id: "gte-modernbert-base",
+                architecture: SemanticSearchArchitecture::ModernBert,
+                architectures_class: "ModernBertModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 0,
+                backbone_hidden: 768,
+                dim_source: DimSource::BackboneHidden,
+            },
+            ConfigReference {
+                model_id: "granite-embedding-english-r2",
+                architecture: SemanticSearchArchitecture::ModernBert,
+                architectures_class: "ModernBertModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 0,
+                backbone_hidden: 768,
+                dim_source: DimSource::BackboneHidden,
+            },
+            ConfigReference {
+                model_id: "granite-embedding-small-english-r2",
+                architecture: SemanticSearchArchitecture::ModernBert,
+                architectures_class: "ModernBertModel",
+                max_tokens_field: "max_position_embeddings",
+                max_position_offset: 0,
+                backbone_hidden: 384,
+                dim_source: DimSource::BackboneHidden,
             },
         ];
 
@@ -1449,34 +1618,34 @@ mod tests {
     }
 
     /// **Cross-model contamination guard.** Every catalog model MUST have a
-    /// distinct vector dimension. This is a load-bearing invariant for the
-    /// `app-infra` vector store: during a model switch, `store_vector_if_dimension_matches`
-    /// and `recreate_vectors_table` use the live `vec0` column *width* as the ONLY
-    /// discriminator between the old and new embedding spaces (they stamp no model
-    /// identity). That is sound only while dimensions are pairwise distinct — the
-    /// moment two models share a dimension, an in-flight old-model vector could be
-    /// written into the new-model index silently (a different embedding space, no
-    /// error, no self-heal). If this test fails, you are adding a colliding-dimension
-    /// model: the dimension check no longer guards contamination, and the store seam
-    /// needs a stronger model-identity/epoch guard before that model can ship.
+    /// distinct `model_id`, because the id — stamped on the `vec0` table by
+    /// `recreate_vectors_table` and checked by `store_vectors_if_model_matches` in
+    /// `app-infra/src/semantic_search.rs` — is the discriminator between two
+    /// embedding spaces during a model switch. Two descriptors sharing an id would
+    /// make a switch between them invisible to that stamp, so an in-flight
+    /// old-model vector could land in the new index silently (a different embedding
+    /// space, no error, no self-heal).
+    ///
+    /// This REPLACES the former `catalog_dimensions_are_pairwise_distinct`. Distinct
+    /// dimensions were the guard only while the vector store recorded nothing but the
+    /// column width; the catalog now ships same-dimension models on purpose
+    /// (`gte-modernbert-base` / `granite-embedding-english-r2` are 768 like
+    /// `nomic-embed-text-v1.5`; `granite-embedding-small-english-r2` is 384 like
+    /// `multilingual-e5-small`). Do not reinstate a dimension-uniqueness assertion.
     #[test]
-    fn catalog_dimensions_are_pairwise_distinct() {
+    fn catalog_model_ids_are_unique() {
         let descriptors = catalog();
-        let mut seen: Vec<(usize, &str)> = Vec::with_capacity(descriptors.len());
+        let mut seen: Vec<&str> = Vec::with_capacity(descriptors.len());
         for descriptor in &descriptors {
-            if let Some((_, other_id)) =
-                seen.iter().find(|(dimension, _)| *dimension == descriptor.dimension)
-            {
-                panic!(
-                    "catalog models {} and {} share dimension {} — distinct dimensions are the \
-                     ONLY guard against cross-model contamination in the vector store (see \
-                     store_vector_if_dimension_matches / recreate_vectors_table in \
-                     app-infra/src/semantic_search.rs); a same-dimension model needs a stronger \
-                     model-identity/epoch guard there before it can ship",
-                    other_id, descriptor.model_id, descriptor.dimension
-                );
-            }
-            seen.push((descriptor.dimension, &descriptor.model_id));
+            assert!(
+                !seen.contains(&descriptor.model_id.as_str()),
+                "catalog contains two models with id '{}' — the model id is the vector store's \
+                 ONLY discriminator between embedding spaces (see recreate_vectors_table / \
+                 store_vectors_if_model_matches in app-infra/src/semantic_search.rs), so a \
+                 duplicate id makes a switch between them undetectable",
+                descriptor.model_id
+            );
+            seen.push(&descriptor.model_id);
         }
     }
 

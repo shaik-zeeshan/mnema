@@ -1946,15 +1946,19 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     );
 
     // Semantic Search startup reconciliation (self-heal): if a past model switch
-    // left the vec0 table at a dimension that disagrees with the selected model
-    // (e.g. a rebuild that failed under DB contention), every search degrades to
+    // left the vec0 table holding a model that disagrees with the selection (e.g. a
+    // rebuild that failed under DB contention), every search degrades to
     // keyword-only and the worker idles forever — recovery cannot come from
     // re-selecting the same model (the UI early-returns on an unchanged pick). Run
     // once here on the deferred-startup seam, BEFORE the backfill worker spawns, to
-    // rebuild a stuck table back to the selected model's dimension. Idempotent: a
-    // matching table is left untouched (the common case). Best-effort — a failure
-    // is logged and the worker still spawns (it will idle on the mismatch rather
-    // than error-loop).
+    // rebuild a stuck table under the selected model. Idempotent: a matching table
+    // is left untouched (the common case). Best-effort — a failure is logged and the
+    // worker still spawns (it will idle on the mismatch rather than error-loop).
+    //
+    // Running BEFORE the worker also matters for a fresh install: migration 0039's
+    // table carries no model stamp, and the worker's store gate requires one, so
+    // this pass is what adopts it (stamp only, no rebuild — see
+    // `reconcile_vectors_table`) before the first sweep runs.
     {
         let settings = crate::semantic_search_worker::effective_semantic_search_settings(app_handle);
         tauri::async_runtime::block_on(
