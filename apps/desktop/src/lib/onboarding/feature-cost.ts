@@ -17,7 +17,7 @@
 //    exactly, so the totals here and the capture-rate sentence never disagree.
 //
 // Semantic Search sits ON TOP of the anchor: the measured machine shipped no
-// vectors, so its cost is computed (one 768-dim f32 per frame-document) rather
+// vectors, so its cost is computed (one int8 vector per frame-document) rather
 // than carved out of the 270.
 import { DEFAULT_CAPTURE_INTERVAL_S } from "../components/capture-rate";
 import { ANCHOR_MB_PER_DAY, estimateDailyStorageMb } from "./disk-estimate";
@@ -48,8 +48,14 @@ export const ANCHOR_SHARE_MB = {
 
 /** Hours of activity a day, from the anchor's pause-on-inactivity measurement. */
 const ACTIVE_HOURS = 8;
-/** nomic-embed-text-v1.5 output width, f32. */
-const EMBED_DIMS = 768;
+/**
+ * Output width of the default Semantic Search Model (nomic-embed-text-v1.5).
+ * One byte per dimension at rest: migration `0039` stores every vector through
+ * `vec_quantize_int8(?, 'unit')`, so the f32 the embedder produces is NOT what
+ * lands on disk. `frameVectorMb` takes this as an argument so a model tier with
+ * another width (issue #190) moves one call, not this constant.
+ */
+export const DEFAULT_EMBED_DIMS = 768;
 /** Vectors over a day of transcripts — small and flat next to the frame side. */
 const TRANSCRIPT_VECTOR_MB = 2;
 
@@ -93,9 +99,20 @@ export function framesPerDay(intervalSeconds: number): number {
   return (ACTIVE_HOURS * 3600) / interval;
 }
 
-/** MB/day of embedding vectors over the captured frames. */
-export function frameVectorMb(intervalSeconds: number): number {
-  return (framesPerDay(intervalSeconds) * EMBED_DIMS * 4) / 1e6;
+/**
+ * MB/day of embedding vectors over the captured frames — a CEILING.
+ *
+ * One int8 vector per frame-document. It is an over-estimate on purpose: an
+ * `equivalent_reuse` anchor (a frame whose screen did not change) is never
+ * embedded and has no `vec0` row at all, and how much of a real day dedups away
+ * is a habit, not a constant. Erring high on the screen where the user decides
+ * whether to keep the feature is the right direction to be wrong in.
+ */
+export function frameVectorMb(
+  intervalSeconds: number,
+  dims: number = DEFAULT_EMBED_DIMS,
+): number {
+  return (framesPerDay(intervalSeconds) * dims) / 1e6;
 }
 
 /** What `state` costs: MB/day on disk, bytes still to download, per row and total. */

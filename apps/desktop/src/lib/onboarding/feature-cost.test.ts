@@ -8,8 +8,10 @@
 import { describe, expect, it } from "bun:test";
 import {
   ANCHOR_SHARE_MB,
+  DEFAULT_EMBED_DIMS,
   costDelta,
   featureCost,
+  framesPerDay,
   frameVectorMb,
 } from "./feature-cost";
 import { normalizeFeatures, applyToggle, preview } from "./feature-rules";
@@ -94,7 +96,7 @@ describe("featureCost — disk per row", () => {
   it("puts Semantic Search on top of the anchor, never inside it", () => {
     const base = featureCost(state(), anchorCtx).diskMbPerDay;
     const withSearch = featureCost(state({ semanticSearch: true }), anchorCtx);
-    // One 768-dim f32 per frame-document, plus a flat term for the transcripts.
+    // One 768-dim int8 vector per frame-document, plus a flat transcript term.
     expect(withSearch.diskByFeature.semanticSearch).toBeCloseTo(
       frameVectorMb(ANCHOR_INTERVAL_S) + 2,
       6,
@@ -103,7 +105,22 @@ describe("featureCost — disk per row", () => {
       base + withSearch.diskByFeature.semanticSearch,
       6,
     );
-    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(29);
+    expect(Math.round(frameVectorMb(ANCHOR_INTERVAL_S))).toBe(7);
+  });
+
+  it("prices a vector at one byte per dimension, not four", () => {
+    // Migration 0039 stores every vector through `vec_quantize_int8(?, 'unit')`,
+    // so an f32 figure here overstates the row by 4× on the screen where the
+    // user decides whether to keep Semantic Search on.
+    expect(frameVectorMb(ANCHOR_INTERVAL_S)).toBeCloseTo(
+      (framesPerDay(ANCHOR_INTERVAL_S) * DEFAULT_EMBED_DIMS) / 1e6,
+      6,
+    );
+    // A narrower model tier (issue #190) costs proportionally less.
+    expect(frameVectorMb(ANCHOR_INTERVAL_S, 384)).toBeCloseTo(
+      frameVectorMb(ANCHOR_INTERVAL_S) / 2,
+      6,
+    );
   });
 
   it("stops charging for frame vectors when there are no frames to read", () => {
