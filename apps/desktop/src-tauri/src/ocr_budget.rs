@@ -36,6 +36,20 @@ const OCR_ACTIVE_RECORDING_COOLDOWN_MIN: Duration = Duration::from_millis(1000);
 const OCR_ACTIVE_RECORDING_COOLDOWN_MAX: Duration = Duration::from_millis(10000);
 const OCR_CATCH_UP_COOLDOWN_MIN: Duration = Duration::from_millis(250);
 const OCR_CATCH_UP_COOLDOWN_MAX: Duration = Duration::from_millis(2000);
+/// Cooldown as a multiple of the job's own run time, so the duty cycle is
+/// `1 / (1 + multiplier)` regardless of how slow a single frame turns out to be
+/// (2.5 => 29%, 4.0 => 20%). Raised from 2.5 on 2026-08-02 after measuring the
+/// live app: OCR is the whole of Mnema's CPU cost, and the app's total marginal
+/// draw was 1.4 W (9.1 W recording vs 7.7 W with the queue drained, 57.5 °C vs
+/// 52.8 °C) on a fanless M4 Air, where that heat has no fan to leave by. The
+/// trade is indexing latency: recent screen text becomes searchable later.
+const OCR_ACTIVE_RECORDING_COOLDOWN_MULTIPLIER: f64 = 4.0;
+/// The catch-up band, used whenever capture is off or paused. Deliberately
+/// hotter than the recording band — nothing is being captured, so the backlog
+/// should drain. Raised from 0.5 (67% duty) to 1.5 (40%) for the same reason:
+/// "paused" is the state a user picks *to cool the machine down*, and at 0.5 it
+/// burned harder than recording did.
+const OCR_CATCH_UP_COOLDOWN_MULTIPLIER: f64 = 1.5;
 
 static OCR_BUDGET_STATES: OnceLock<Mutex<HashMap<PathBuf, OcrBudgetState>>> = OnceLock::new();
 
@@ -601,14 +615,14 @@ fn cooldown_duration(last_run_ms: u64, recording_active: bool) -> Duration {
     if recording_active {
         scaled_clamped_duration(
             last_run_ms,
-            2.5,
+            OCR_ACTIVE_RECORDING_COOLDOWN_MULTIPLIER,
             OCR_ACTIVE_RECORDING_COOLDOWN_MIN,
             OCR_ACTIVE_RECORDING_COOLDOWN_MAX,
         )
     } else {
         scaled_clamped_duration(
             last_run_ms,
-            0.5,
+            OCR_CATCH_UP_COOLDOWN_MULTIPLIER,
             OCR_CATCH_UP_COOLDOWN_MIN,
             OCR_CATCH_UP_COOLDOWN_MAX,
         )
@@ -1389,5 +1403,50 @@ mod tests {
             timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
             Some(2000)
         );
+    }
+
+    /// The governor's whole job is a duty cycle: OCR must not occupy more than
+    /// `1 / (1 + multiplier)` of the wall clock, because that fraction is what the
+    /// machine feels as heat. Asserted as the duty cycle rather than the raw
+    /// cooldown so the intent survives a retune of the multipliers.
+    #[test]
+    fn cooldown_holds_the_duty_cycle_in_both_bands() {
+        let duty = |run_ms: u64, recording: bool| {
+            let cooldown = cooldown_duration(run_ms, recording).as_millis() as f64;
+            run_ms as f64 / (run_ms as f64 + cooldown)
+        };
+
+        // Typical Vision run times, over the range where the multiplier (not a
+        // clamp) governs. That range differs per band because the MAX differs:
+        // recording binds at 2.5s (10s / 4.0), catch-up at 1.33s (2s / 1.5).
+        for run_ms in [400, 1000, 2000] {
+            assert!(
+                duty(run_ms, true) <= 0.21,
+                "recording duty {} too hot at run_ms={run_ms}",
+                duty(run_ms, true)
+            );
+        }
+        for run_ms in [400, 800, 1300] {
+            assert!(
+                duty(run_ms, false) <= 0.41,
+                "catch-up duty {} too hot at run_ms={run_ms}",
+                duty(run_ms, false)
+            );
+        }
+
+        // Pausing capture must never burn *hotter* than recording does — the
+        // regression this retune fixed (catch-up was 67% duty against 29%).
+        // Catch-up stays the hotter band by design, but within ~2x of recording
+        // (the ratio is (1 + 4.0) / (1 + 1.5) = 2.0 exactly), not the 2.3x it was.
+        assert!(duty(400, false) > duty(400, true));
+        assert!(duty(400, false) <= 2.05 * duty(400, true));
+
+        // ponytail: known ceiling — above ~2.5s (recording) / ~1.3s (catch-up) the
+        // MAX clamp binds and the duty cycle rises again, so a pathologically slow
+        // frame is not paced to target. Still strictly cooler than before the
+        // retune at every run time, so this is a pre-existing property, not a
+        // regression. Raise the MAX constants if slow frames ever show up hot.
+        assert!(duty(8000, true) > 0.21);
+        assert!(duty(8000, false) > 0.41);
     }
 }
