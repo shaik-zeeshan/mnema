@@ -1782,7 +1782,11 @@ span.shot{display:block}
     newest fact. Per FEEDBACK-3 rec 2, 14's "Audio Today" minutes tile is <b>replaced by a
     Conversations tile</b> — the unit is the conversation ("Launch sync · 38 min · 5 speakers"),
     and a row opens 13's diarized conversation UI (frames 02/05). Subjects keep 13's praised row
-    presentation. One --t-display per screen: the capture-hours hero.</p>
+    presentation. One --t-display per screen: the capture-hours hero.
+    Grill (2026-08-03): the Ask field and the Ask-history rows are <b>launchers into Quick
+    Look</b> — the answer never renders on this surface, per the settled Search+Ask-only-in-Quick-Look
+    rule. And at 800 the hours hero <b>stays</b> — the Capture tile drops its storage line
+    instead, because the hero is this screen's one --t-display use.</p>
   <div class="fit"><div>
     <p class="wlabel">1100 × 720 — default · 4-column bento under the material toolbar</p>
     <div class="window w1100 window--under">
@@ -1927,8 +1931,10 @@ span.shot{display:block}
                 </div>
                 <div class="tile">
                   <div class="tile-h"><span class="t-label">Capture</span></div>
-                  <div class="tile-row"><i class="rec__dot"></i><span class="t-ui">Recording</span><span class="t-meta is-mono is-num" style="margin-left:auto">2:14:07</span></div>
-                  <div class="tile-row"><span class="t-meta is-mono is-num">270 MB today</span></div>
+                  <div style="display:flex;align-items:baseline;gap:var(--gap-inline)">
+                    <span class="t-display is-num">6:42</span><span class="t-meta">hours today</span>
+                  </div>
+                  <div class="tile-row" style="margin-top:var(--s-6)"><i class="rec__dot"></i><span class="t-ui">Recording</span><span class="t-meta is-mono is-num" style="margin-left:auto">2:14:07</span></div>
                 </div>
                 <div class="tile">
                   <div class="tile-h"><span class="t-label">Conversations</span></div>

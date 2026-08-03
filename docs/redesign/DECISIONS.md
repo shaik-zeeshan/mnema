@@ -86,3 +86,83 @@ expandable — or as search results.**
    → **ADOPTED 2026-08-03** ("update the design"): the pill is the recording chrome across
    all of 16; the old cluster survives only in frame 11's for-the-record comparison row.
    The pill primitive and the monochrome-icon rule are now in `system.css` §6.
+
+---
+
+# Grill — design pressure-test (2026-08-03)
+
+`mockups/design.html` was grilled in fourteen questions across two rounds; every answer
+below is a founder decision ("agreed", with one modification on the conversations data
+source). Backend claims were verified against the code, the design against rendered
+screenshots at all three widths, both themes.
+
+## Recording chrome
+
+- **Two-click in-window stop is accepted.** Pill → popover → Stop; the popover's first item
+  is Stop/Pause. Panic is already covered outside the window: the app ships four global
+  shortcuts including ToggleRecording and Pause/Resume (`keyboard_bindings.rs`), and the
+  tray has full transport.
+- **Popover source toggles ship in two steps.** Verified: mid-session per-source machinery
+  exists internally (inactivity pause flags per source; the mic is genuinely released and
+  restored mid-session for voice enrollment) but there is **no user-facing path** — the only
+  user control writes settings for the next session, and the tray hard-disables source
+  toggles while recording. Decision: build a user-scoped per-source mask as its own slice
+  right after the pill chrome, routed through the existing paused-flag seam. Until it lands,
+  popover toggles render disabled-while-recording (today's tray semantics). Tray and
+  shortcut labels must always match the popover — one behavior everywhere.
+
+## Surfaces
+
+- **Out-of-box default surface: Timeline.** ("User picks the main" still stands; this is
+  the value before they pick.)
+- **Frozen boundary confirmed as drawn:** the new title bar (switcher + pill) sits *above*
+  the shipping thin bar; thin bar down is frozen, re-typed only. Nothing is absorbed.
+- **Materials are CSS.** `backdrop-filter` samples the app's own content, which is all
+  scroll-under-chrome needs; NSVisualEffectView (behind-window vibrancy) is deferred
+  indefinitely. Scroll-under being Overview-only — the frozen Timeline is opaque — is
+  accepted as honest, not a compromise.
+- **800×600 drop order accepted with one change: the captured-hours hero stays.** The
+  Capture tile drops "270 MB today" instead — the hero is the screen's one `--t-display`
+  use. Everything else (This-Week tile, Ask-history tile, speaker counts, one-sentence
+  digest) drops as drawn.
+- **The Overview Ask field is a launcher, not a surface.** Typing + return opens Quick Look
+  in Ask mode; history rows reopen the conversation in Quick Look; an answer never renders
+  in Overview. The Search+Ask-only-in-Quick-Look rule holds unamended.
+
+## Conversations & moments (the backend branch)
+
+- **Verified: no conversation aggregation exists.** "Conversation" in the codebase means AI
+  chat threads. `speaker_turns` has the raw material (cluster ids, timestamps) but nothing
+  groups it, counts speakers per window, or titles an audio grouping.
+- **The conversation unit rides `user_context_activities`** (founder's modification: extend
+  the activity rather than build a sessionization entity). An activity *is* a conversation
+  when a **read-time JOIN** against overlapping `speaker_turns` shows meaningful turn
+  coverage; speaker count = distinct clusters in the overlap; turns spilling past the
+  activity's end extend the *displayed* duration without mutating the activity row. No
+  migration, no prompt change, retroactive over existing data. The LLM keeps its job (title,
+  boundaries); whether speech happened inside them is a fact the database knows.
+- **Freshness lag accepted for v1.** The derivation worker beats every 2–10 min over
+  2–30 min windows, so a finished conversation appears within ~5–40 min. No in-progress
+  row; the tile shares the digest's "updated HH:MM" semantics.
+- **Moments strip v1 = headline frames + a dumb rule.** Verified: each activity already has
+  an engine-nominated headline frame (`is_headline` evidence) plus focus level and duration.
+  The strip is the day's activities' headline frames ordered by a focus+duration heuristic.
+  No ranking infrastructure; tune the rule if it feels wrong.
+
+## Rules & system
+
+- **The border ceiling counts containers, not control rings.** A pill's or segmented
+  control's own outline is free. This replaces the Settings-frame-at-13 annotation — the
+  frame is legitimately under the ceiling. README's de-boxing rule updated to match.
+- **`system.css` dark surface steps get fixed before implementation starts** — every
+  dark-mode region separation depends on them, and retuning surface tokens after components
+  ship touches everything. The other three recorded gaps (text-over-image, oversized-input
+  role, object-size ramp) are fix-when-hit at the component that needs them.
+
+## Implementation sequence (final)
+
+Dark-step fix in `system.css` → land `system.css` into `+layout.svelte` → shared `.btn` →
+state pill → per-source mask slice → switcher + "open Mnema on" setting (default Timeline)
+→ Quick Look search + grid + Ask-field launcher wiring → toasts → conversations JOIN +
+moments heuristic → **Overview bento last, built against real data** (its headline tiles
+are why it exists; it never ships hollow).

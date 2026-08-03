@@ -59,9 +59,10 @@ design's Deviations as proposals, never as work.
 element; no border sits flush against another; captions have no container; depth is surface
 step, spacing, or (floating only) shadow — never an edge; no left-accent-bar callouts; panels
 separate by one hairline or nothing; rounded corners only on things that float or clip an
-image; count your borders (~12 ceiling on a 1100px window, stated in the file). Clarification:
-a **single-level borderless filled group** (the System Settings idiom) is a surface step and
-is allowed.
+image; count your borders (~12 ceiling on a 1100px window, stated in the file — the ceiling
+counts **containers, not control rings**: a pill's or segmented control's own outline is free;
+grill 2026-08-03). Clarification: a **single-level borderless filled group** (the System
+Settings idiom) is a surface step and is allowed.
 
 **The native bar (nine points).** HIG window anatomy · AppKit controls drawn accurately
 (accent-filled default button, real focus ring, `:active` depress) · NSMenu anatomy for
@@ -97,11 +98,17 @@ Six sizes, three weights (400/510/590), 1.25 for UI and 1.55 for prose; no 12/15
 no weights 300/680. Body moves 12 → 13px (macOS Body). The shipping `--text-*` family is
 replaced by these roles; the migration map is in `system.css` §2.
 
-Sequence: land `system.css` into `+layout.svelte` → build the shared `.btn` (frame 17 is the
-component→code map) → the state pill → the surface switcher + "open Mnema on" setting → move
-search into Quick Look + the grid → the toast system. Frame 17 flags what needs a backend
-change first (conversations-for-day aggregation, moments ranking).
+Sequence (grill-final, 2026-08-03): fix the dark surface steps in `system.css` → land
+`system.css` into `+layout.svelte` → build the shared `.btn` (frame 17 is the component→code
+map) → the state pill → the per-source mid-session mask (user intent routed through the
+existing per-source paused-flag seam; popover toggles render disabled-while-recording until
+it lands) → the surface switcher + "open Mnema on" setting (default: Timeline) → move search
+into Quick Look + the grid (the Overview Ask field is a *launcher* into Quick Look, never an
+answer surface) → the toast system → the conversations read-time JOIN
+(`user_context_activities` × `speaker_turns`) + the moments focus/duration heuristic →
+**the Overview bento last, built against real data**. Full decision record: `DECISIONS.md`
+"Grill" section.
 
 Known gaps, recorded in `system.css` itself: dark surface steps too tight for region-scale
-separation; no text-over-image guidance; no oversized-input role (a big search field borrows
-`--t-title`); object-size ramp incomplete.
+separation (**fix first** — see sequence); the rest fix-when-hit: no text-over-image guidance;
+no oversized-input role (a big search field borrows `--t-title`); object-size ramp incomplete.
