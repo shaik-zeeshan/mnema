@@ -1,0 +1,470 @@
+/* ============================================================================
+   Mnema design system — the implementable artifact
+   ----------------------------------------------------------------------------
+   This file is the source of truth for type, spacing, and the shared primitives.
+   The mockups in ./mockups/ carry a verbatim copy of everything below; if they
+   disagree with this file, this file wins.
+
+   HOW THIS LANDS IN THE APP
+   - Colour tokens below are EXACTLY the ones that ship today
+     (apps/desktop/src/routes/+layout.svelte, :root at ~line 1589 dark /
+     ~line 1790 light). Nothing here renames or re-values a colour, so this block
+     can be pasted into that :root and no existing rule changes behaviour.
+   - The `--text-*` family that ships today (xs 10 / sm 11 / base 12 / md 13 /
+     lg 16 / xl 20) is REPLACED by the role-named ramp in §2. Those six tokens
+     carry a size and nothing else — no line-height, no tracking, no weight, no
+     rule about what they are for — which is why type in the app is inconsistent.
+     Migration map is in §2.
+   - §3 (spacing), §4 (control metrics) and §6 (primitives) are new. The app has
+     no spacing scale, no radius scale and no shared Button at all — `.btn` is a
+     class convention re-declared in ~6 files' scoped styles.
+   ============================================================================ */
+
+/* ── 1. Colour — unchanged from what ships ─────────────────────────────────
+   Listed by role so it is obvious which token to reach for. Values are the
+   shipping ones; do not re-tune them in this redesign.                       */
+
+:root {
+  /* surfaces — elevation is a surface STEP, not a shadow */
+  --app-bg: #0c0c0e;            /* window                                    */
+  --app-surface: #0e0e16;       /* region / panel                            */
+  --app-surface-subtle: #101018;
+  --app-surface-raised: #13131a;/* card, raised row                          */
+  --app-surface-hover: #1a1a2a;
+  --app-surface-active: #131320;
+
+  /* text — four steps. --app-text-faint is DECORATIVE ONLY (sub-AA).        */
+  --app-text-strong: #e2e2e8;
+  --app-text: #c0c0d0;
+  --app-text-muted: #9696ae;
+  --app-text-subtle: #7e7e98;
+  --app-text-faint: #33334a;
+
+  /* borders — three steps + the hairline rule (see §5)                      */
+  --app-border: #1e1e2e;
+  --app-border-strong: #2a2a3a;
+  --app-border-hover: #3a3a5a;
+
+  /* one accent */
+  --app-accent: #3dffa0;
+  --app-accent-strong: #2a8a60;
+  --app-accent-bg: #0d1f15;
+  --app-accent-border: #1a4a30;
+  --app-accent-contrast: #07120c;
+  --app-accent-glow: rgba(61, 255, 160, 0.18);
+
+  /* semantic */
+  --app-danger: #ff6b7a;  --app-danger-strong: #ff4455;
+  --app-danger-bg: #2e0f14; --app-danger-border: #4a1a20;
+  --app-warn: #d6a14a;    --app-warn-strong: #c47a30;
+  --app-warn-bg: #1a1208;   --app-warn-border: #7a4a18;
+  --app-info: #60b0ff;    --app-info-strong: #4a6aaa;
+  --app-info-bg: #0c1a2e;   --app-info-border: #1a3050;
+
+  /* recording red is a STATE, never an error. It marks things that ARE the
+     recording: the record control, the capture status indicator, and — per the
+     shipping timeline — the active frame tick and the selected audio segment.
+     (Amended after three directions hit the conflict: the frozen timeline
+     already paints those red, and the surface wins over the rule.)
+     It is never used for a failure. That is --app-danger. */
+  --app-record: #ff3148;
+  --app-record-fg: #ff8a96;
+  --app-record-bg: #1a0f12;
+  --app-record-border: #3a1820;
+
+  /* capture sources */
+  --app-src-screen: #c0b0ff; --app-src-screen-bg: #1a1a3a; --app-src-screen-border: #2a2a5a;
+  --app-src-mic: #80d0a8;    --app-src-mic-bg: #0f2e1f;    --app-src-mic-border: #1a4a30;
+  --app-src-sys: #b0c080;    --app-src-sys-bg: #2a2010;    --app-src-sys-border: #4a3a18;
+}
+
+[data-theme="light"] {
+  --app-bg: #f6f6f4;
+  --app-surface: #ffffff;
+  --app-surface-subtle: #f6f6f4;
+  --app-surface-raised: #fbfbfa;
+  --app-surface-hover: #eeeeec;
+  --app-surface-active: #e8f1ea;
+  --app-text-strong: #14141a;
+  --app-text: #2a2a32;
+  --app-text-muted: #5a5a6a;
+  --app-text-subtle: #5e5e6a;
+  --app-text-faint: #9a9aa4;
+  --app-border: #d8d8d4;
+  --app-border-strong: #c4c4c0;
+  --app-border-hover: #a4a4a0;
+  --app-accent: #1f7a4a;
+  --app-accent-strong: #155a36;
+  --app-accent-bg: #e6f4ec;
+  --app-accent-border: #9bd3b4;
+  --app-accent-contrast: #ffffff;
+  --app-accent-glow: rgba(31, 122, 74, 0.16);
+  --app-danger: #c43a48;  --app-danger-strong: #b42332;
+  --app-danger-bg: #fff0f2; --app-danger-border: #e4b6be;
+  --app-warn: #9a5a12;    --app-warn-strong: #7f4300;
+  --app-warn-bg: #fff1df;   --app-warn-border: #dfbc8a;
+  --app-info: #2b78c5;    --app-info-strong: #225fa3;
+  --app-info-bg: #eef5ff;   --app-info-border: #bdd3ef;
+  --app-record: #d62236; --app-record-fg: #c81d2e;
+  --app-record-bg: #ffffff; --app-record-border: #ecbcc2;
+  --app-src-screen: #6f5ed1; --app-src-screen-bg: #f1edff; --app-src-screen-border: #cdc3f2;
+  --app-src-mic: #2f8e59;    --app-src-mic-bg: #e8f5ec;    --app-src-mic-border: #afd8bf;
+  --app-src-sys: #8b7a2c;    --app-src-sys-bg: #faf4df;    --app-src-sys-border: #dbc98a;
+}
+
+/* ── 2. Type — SIX steps, each with one job ────────────────────────────────
+
+   The rule that fixes "some text too large, some too small": a size is not a
+   choice, it is a consequence of what the text IS. Pick the role, take the size.
+
+   | token        | px | lh   | tracking | weight | family | what it is FOR                                   |
+   |--------------|----|------|----------|--------|--------|--------------------------------------------------|
+   | --t-label    | 10 | 1.4  | +.02em   | 510    | mono   | machine labels: column heads, source names, kbd,  |
+   |              |    |      |          |        |        | units, uppercase eyebrows. NEVER a sentence.      |
+   | --t-meta     | 11 | 1.35 | +.01em   | 400    | either | secondary metadata: timestamps under a title,     |
+   |              |    |      |          |        |        | counts, helper lines, captions under a frame.     |
+   | --t-ui       | 13 | 1.25 | -.006em  | 400    | sans   | THE DEFAULT. Buttons, list rows, form labels,     |
+   |              |    |      |          |        |        | nav items, table cells, menus, chips. macOS Body. |
+   | --t-read     | 14 | 1.55 | -.008em  | 400    | sans   | PROSE ONLY: transcripts, AI answers, error        |
+   |              |    |      |          |        |        | explanations, empty-state body. Max ~70ch.        |
+   | --t-title    | 17 | 1.3  | -.016em  | 590    | sans   | screen + section titles, the moment title,        |
+   |              |    |      |          |        |        | dialog headings. One per region.                  |
+   | --t-display  | 22 | 1.2  | -.02em   | 590    | either | AT MOST ONE PER SCREEN. The readout clock, a hero |
+   |              |    |      |          |        |        | number, the empty-state lead. Nothing else.       |
+
+   HARD RULES
+   1. Six sizes exist. There is no 12, no 15, no 16, no 20, no 26. If a design
+      wants one, it is picking the wrong role.
+   2. Max FOUR sizes visible in one region; max five on a screen counting
+      --t-display. If you need more, the region is doing too much.
+   3. Three weights: 400 regular, 510 medium, 590 semibold. No 300, no 680,
+      no 700. Light weights are illegible at 10-13px and heavy weights make
+      chrome shout.
+   4. Line-height 1.25 for UI, 1.55 for prose. Never 1.5 on UI text — macOS
+      Body is 13pt/16pt = 1.23, and web's 1.5 is the loudest "not a Mac app"
+      tell there is.
+   5. Tracking follows the macOS curve: positive under 12px, zero at 12,
+      negative above. The values above are already on it.
+   6. MONO IS THE MACHINE VOICE and nothing else: times, durations, counts,
+      byte sizes, IDs, paths, keyboard hints, capture state, column headers.
+      Sans is the product speaking: titles, labels, prose, errors, empty states.
+      Mono never exceeds --t-title.
+   7. `font-variant-numeric: tabular-nums` on every number that can change in
+      place — clocks, durations, counts, sizes. Non-negotiable; jittering digits
+      are the most visible cheapness in a recording app.
+
+   MIGRATION from the shipping --text-* family
+     --text-xs   10  ->  --t-label  (and set the mono family + uppercase)
+     --text-sm   11  ->  --t-meta
+     --text-base 12  ->  --t-ui  (13). This is the single biggest change: the
+                         app's default body size goes 12 -> 13 and gains a
+                         line-height and tracking.
+     --text-md   13  ->  --t-ui
+     --text-lg   16  ->  --t-title (17)
+     --text-xl   20  ->  --t-display (22) if it is a hero number, else --t-title
+*/
+
+:root {
+  --app-font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Segoe UI Variable", system-ui, sans-serif;
+  --app-font-mono: "Spline Sans Mono", "Berkeley Mono", ui-monospace, "SF Mono",
+    Menlo, monospace;
+
+  --t-label: 10px;   --lh-label: 1.4;    --ls-label: .02em;
+  --t-meta: 11px;    --lh-meta: 1.35;    --ls-meta: .01em;
+  --t-ui: 13px;      --lh-ui: 1.25;      --ls-ui: -.006em;
+  --t-read: 14px;    --lh-read: 1.55;    --ls-read: -.008em;
+  --t-title: 17px;   --lh-title: 1.3;    --ls-title: -.016em;
+  --t-display: 22px; --lh-display: 1.2;  --ls-display: -.02em;
+
+  --w-regular: 400; --w-medium: 510; --w-semi: 590;
+}
+
+/* Apply a role with one class. These are the only text classes that exist. */
+.t-label {
+  font: var(--w-medium) var(--t-label)/var(--lh-label) var(--app-font-mono);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  color: var(--app-text-muted);
+}
+.t-meta {
+  font: var(--w-regular) var(--t-meta)/var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta);
+  color: var(--app-text-muted);
+}
+.t-ui {
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text);
+}
+.t-read {
+  font: var(--w-regular) var(--t-read)/var(--lh-read) var(--app-font-sans);
+  letter-spacing: var(--ls-read);
+  color: var(--app-text);
+  max-width: 70ch;
+}
+.t-title {
+  font: var(--w-semi) var(--t-title)/var(--lh-title) var(--app-font-sans);
+  letter-spacing: var(--ls-title);
+  color: var(--app-text-strong);
+}
+.t-display {
+  font: var(--w-semi) var(--t-display)/var(--lh-display) var(--app-font-sans);
+  letter-spacing: var(--ls-display);
+  color: var(--app-text-strong);
+}
+/* the machine-voice modifier: any role can be mono, none may change size */
+.is-mono { font-family: var(--app-font-mono); }
+.is-num  { font-variant-numeric: tabular-nums; }
+
+/* ── 3. Spacing — one ramp, and named layout constants ─────────────────────
+
+   The ramp is finer under 8 and coarser above, because 1-2px matters between
+   an icon and its label and nobody can see 2px between two sections.
+
+   The named constants are what actually stops drift: a designer picks
+   "section gap", not "24px", so the same relationship is the same number
+   everywhere.                                                                */
+
+:root {
+  --s-1: 1px;  --s-2: 2px;  --s-3: 3px;  --s-4: 4px;  --s-6: 6px;
+  --s-8: 8px;  --s-12: 12px; --s-16: 16px; --s-20: 20px; --s-24: 24px;
+  --s-32: 32px; --s-40: 40px; --s-48: 48px;
+
+  /* named layout constants — use these, not raw ramp values, for layout */
+  --gap-inline: var(--s-6);    /* icon -> its label, chip -> its count        */
+  --gap-label: var(--s-4);     /* a label and the value directly under it     */
+  --gap-row: var(--s-8);       /* between rows in a list or form              */
+  --gap-group: var(--s-16);    /* between related groups inside a section     */
+  --gap-section: var(--s-24);  /* between sections of a surface               */
+  --pad-window: var(--s-16);   /* a surface's outer inset                     */
+  --pad-control: var(--s-8);   /* horizontal padding inside a control         */
+  --pad-panel: var(--s-16);    /* inside a panel, popover, toast, dialog      */
+
+  /* DENSITY RULE: one inset per surface, used for BOTH its padding and its
+     grid gutter. If a grid's inset is 16, its gutter is 16.
+     ONE EXEMPTION: in a fixed, non-resizable window (Quick Look, 1120x720)
+     the grid must divide exactly into the width, so the inset may exceed the
+     gutter. Nowhere else. */
+  --grid-inset: var(--s-16);
+  --grid-gutter: var(--s-16);
+}
+
+/* KNOWN GAPS — recorded so they get decided rather than re-invented per screen.
+   1. The three dark surface steps (--app-bg #0c0c0e, --app-surface #0e0e16,
+      --app-surface-raised #13131a) sit within ~7 sRGB units. That is a CARD
+      ladder; it is too tight to separate full REGIONS in dark theme. Directions
+      that lean on tone widen it themselves. If region-scale tone separation
+      becomes the shell's structure, widen these here rather than five times.
+   2. There is no colour guidance for TEXT OVER AN IMAGE. Every text token
+      assumes it sits on --app-bg. A recall app puts labels on screenshots
+      constantly, so this needs a real answer (an opaque plate, or a scrim with
+      a measured floor) before implementation.
+   3. There is no oversized-input role. A prominent search field (~40-46px) has
+      to borrow --t-title at regular weight. Add a role if a second surface
+      needs one. */
+
+/* ── 4. Control metrics, radii, elevation, motion ──────────────────────────  */
+
+:root {
+  /* control heights. 28 is the default and the hit-target floor.
+     44 is the recommended target and is used for the record control. */
+  --h-sm: 24px;   /* dense, inside a row that is already >= 28              */
+  --h-md: 28px;   /* DEFAULT for every button, input, select, chip          */
+  --h-lg: 32px;   /* primary action in a dialog or an empty state           */
+  --h-row: 28px;      /* list row                                          */
+  --h-titlebar: 38px;
+  --hit-min: 28px;    /* nothing interactive may be smaller, including the
+                         transparent padding around a smaller visual box    */
+
+  /* Record control. Apple RECOMMENDS 44 but a 44px control cannot live in a
+     38px title bar — an earlier draft specified both and contradicted itself.
+     Resolution: in the title bar the record control is --h-md in a 38px row;
+     --h-record applies only where it stands alone as the primary action
+     (first-run empty state, onboarding, the tray's own surface). */
+  --h-record: 44px;
+
+  /* Object sizes — NOT control heights. Three directions independently had to
+     invent these, which means they belong here. Non-interactive boxes only. */
+  --o-badge: 20px;      /* badge, pill, keycap                              */
+  --o-icon-sm: 14px;    /* inline app icon beside a title                   */
+  --o-icon: 20px;       /* app icon in a rail band, a list row              */
+  --o-icon-lg: 24px;    /* app icon in the timeline readout                 */
+  --o-setting-row: 40px;/* a settings row: a label above a helper line      */
+  --o-row-prose: 40px;  /* a row whose content is a sentence, not a value   */
+
+  /* radii: 4-6 controls, 8 panels, 12 floating. The OS draws the window's
+     own 10px corner — never apply your own to the window. */
+  --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 999px;
+
+  /* elevation: a surface step first. Shadows are for FLOATING things only —
+     popover, menu, toast, dialog. Cards do not get shadows. */
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, .32);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, .48);
+  --ring: 0 0 0 2px var(--app-accent-glow);
+  --ring-danger: 0 0 0 2px color-mix(in srgb, var(--app-danger) 30%, transparent);
+  --opacity-disabled: .4;
+  --opacity-busy: .6;
+
+  /* motion: two durations, that is all. Fade IN is instant. */
+  --dur-quick: 100ms; --dur-regular: 250ms; --dur-out: 150ms; --dur-in: 0ms;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+  --ease-out: cubic-bezier(0, 0, .2, 1);
+}
+
+[data-theme="light"] {
+  --shadow-popover: 0 8px 24px rgba(21, 28, 38, .14);
+  --shadow-modal: 0 24px 64px rgba(21, 28, 38, .22);
+}
+
+/* ── 5. Hairlines ──────────────────────────────────────────────────────────  */
+:root { --hairline: 1px; }
+@media (min-resolution: 2dppx) { :root { --hairline: .5px; } }
+
+/* ── 6. Primitives — the components the app does not have today ────────────
+
+   `.btn` is currently re-declared in ~6 files' scoped styles with different
+   padding, radius and hover behaviour, and there are a dozen bespoke buttons
+   besides. This is the one definition.                                       */
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  gap: var(--gap-inline);
+  height: var(--h-md);
+  padding: 0 var(--pad-control);
+  border: var(--hairline) solid transparent;
+  border-radius: var(--r-md);
+  font: var(--w-medium) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  white-space: nowrap;
+  background: var(--app-surface-raised);
+  color: var(--app-text-strong);
+  border-color: var(--app-border-strong);
+  transition: background-color var(--dur-quick) var(--ease);
+}
+.btn:hover { background: var(--app-surface-hover); }
+.btn:active { background: var(--app-surface-active); }
+.btn:focus-visible { outline: none; box-shadow: var(--ring); }
+.btn[disabled], .btn[aria-disabled="true"] {
+  opacity: var(--opacity-disabled); pointer-events: none;
+}
+.btn[aria-busy="true"] { opacity: var(--opacity-busy); cursor: progress; }
+
+.btn--primary {
+  background: var(--app-accent); color: var(--app-accent-contrast);
+  border-color: transparent;
+}
+.btn--primary:hover { background: var(--app-accent); filter: brightness(1.08); }
+.btn--primary:active { filter: brightness(.94); }
+
+.btn--ghost { background: transparent; border-color: transparent; color: var(--app-text-muted); }
+.btn--ghost:hover { background: var(--app-surface-hover); color: var(--app-text-strong); }
+
+.btn--danger { background: var(--app-danger-bg); color: var(--app-danger); border-color: var(--app-danger-border); }
+.btn--danger:focus-visible { box-shadow: var(--ring-danger); }
+
+.btn--sm { height: var(--h-sm); padding: 0 var(--s-6); }
+.btn--lg { height: var(--h-lg); padding: 0 var(--s-12); }
+.btn--icon { width: var(--h-md); padding: 0; }
+.btn--icon.btn--sm { width: var(--h-sm); }
+
+/* A busy button swaps its icon for a spinner. It never changes size — a
+   button that resizes while you are pointing at it is a missed click. */
+
+.field {
+  display: flex; flex-direction: column; gap: var(--gap-label);
+}
+.input {
+  height: var(--h-md);
+  padding: 0 var(--pad-control);
+  border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md);
+  background: var(--app-surface-subtle);
+  color: var(--app-text-strong);
+  font: var(--w-regular) var(--t-ui)/1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+}
+.input:focus-visible { outline: none; border-color: var(--app-accent-border); box-shadow: var(--ring); }
+.input[aria-invalid="true"] { border-color: var(--app-danger-border); }
+
+/* The helper row EXISTS AT REST and fills with the error message. An error
+   must never insert a row — that reflows everything below it, including the
+   frame the user is looking at. */
+.field__help { min-height: calc(var(--t-meta) * var(--lh-meta)); }
+.field__help--error { color: var(--app-danger); }
+
+/* Toast: the ONE non-blocking error placement. Bottom-right, stacked max 3,
+   overlays content, never reflows. Errors never auto-dismiss. */
+.toast {
+  display: grid; gap: var(--gap-label);
+  width: 344px; padding: var(--pad-panel);
+  border-radius: var(--r-xl);
+  background: var(--app-surface-raised);
+  box-shadow: var(--shadow-popover);
+}
+.toast-stack {
+  position: absolute; right: var(--pad-window); bottom: var(--pad-window);
+  display: grid; gap: var(--gap-row); justify-items: end;
+}
+
+.kbd {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 20px; height: 20px; padding: 0 var(--s-4);
+  border-radius: var(--r-sm);
+  background: var(--app-surface-raised);
+  font: var(--w-medium) var(--t-label)/1 var(--app-font-mono);
+  color: var(--app-text-muted);
+}
+.kbd--mod { min-width: 48px; justify-content: flex-start; padding-left: var(--s-6); }
+
+/* Recording state pill — ADOPTED 2026-08-03 (FEEDBACK-3), replacing the
+   title-bar button cluster. One capsule: dot + elapsed + cost, degrading on
+   the R3 ladder (cost → timer → single glyph → dot alone; the dot never
+   goes). Click opens a native popover carrying pause/stop and per-source
+   toggles; the tray keeps full transport. Recording red is a state, never an
+   error: transient liveness tints via --pill-warn, not danger. */
+.pill {
+  display: inline-flex; align-items: center; gap: var(--gap-inline);
+  height: var(--h-sm); padding: 0 var(--s-8);
+  border-radius: var(--r-pill);
+  background: var(--app-record-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+}
+.pill__t  { font: var(--w-regular) var(--t-ui)/1 var(--app-font-mono);
+            font-variant-numeric: tabular-nums; color: var(--app-text); }
+.pill__gb { font: var(--w-regular) var(--t-meta)/1 var(--app-font-mono);
+            font-variant-numeric: tabular-nums; color: var(--app-text-subtle); }
+.pill--quiet { background: var(--app-surface-hover); box-shadow: none; }   /* idle / paused */
+.pill--warn  { background: var(--app-warn-bg);
+               box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); } /* low disk, device lost */
+
+/* Icons — the shipping convention is the design (FEEDBACK-3). UI icons are
+   monochrome line glyphs (the Lucide family in section-icons.ts): 16px,
+   stroke inherited via currentColor, tinted only by their row's text color.
+   Multicolor icon badges are banned in chrome and settings. The one
+   exception: a real third-party app's icon (privacy exclude list, timeline
+   app bands) keeps its true colors — identity, not decoration. */
+
+/* ── 7. Global resets that make the app feel native ────────────────────────  */
+
+body {
+  font: var(--w-regular) var(--t-ui)/var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text);
+  background: var(--app-bg);
+}
+/* The app currently sets font-family: var(--app-font-mono) on body, which is
+   why it reads as a debug tool. Mono is opt-in via .is-mono, never the default. */
+
+a { text-decoration: none; color: inherit; }
+:focus-visible { outline: none; box-shadow: var(--ring); }
+/* Native lists do not use a pointer cursor; buttons get :active depress. */
+.row:hover { background: var(--app-surface-hover); }
+.row { height: var(--h-row); display: flex; align-items: center; gap: var(--gap-inline); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
