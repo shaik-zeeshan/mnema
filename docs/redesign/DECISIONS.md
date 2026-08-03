@@ -1,6 +1,6 @@
 # Round 3 — founder feedback (2026-08-03)
 
-> **Status:** acted on. `mockups/16-converged.html` implements everything below (the keeps,
+> **Status:** acted on. `mockups/design.html` implements everything below (the keeps,
 > the Conversations tile, the state-pill proposal in its frame 11). The 13 spacing fixes are
 > applied, plus a nested-`<p>` markup bug in 13's frame 05 cite chips found during convergence.
 
