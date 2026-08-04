@@ -164,6 +164,14 @@ screenshots at all three widths, both themes.
   ship touches everything. The other three recorded gaps (text-over-image, oversized-input
   role, object-size ramp) are fix-when-hit at the component that needs them.
 
+## Dialogs (grill 2026-08-04)
+
+- **Confirmations and alerts always use `@tauri-apps/plugin-dialog`** — the CLAUDE.md rule
+  stands unamended. Where a mockup draws a styled confirm or alert, do **not** follow its
+  chrome; carry over only the content (title, message, button labels). The in-DOM
+  `Dialog.svelte` exists solely for rich-content sheets the native plugin cannot render
+  (the Settings sheet's forms, the CLI consent card). No existing confirm migrates.
+
 ## Implementation sequence (final)
 
 Dark-step fix in `system.css` → land `system.css` into `+layout.svelte` → shared `.btn` →
