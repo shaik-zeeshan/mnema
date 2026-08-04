@@ -141,6 +141,11 @@ screenshots at all three widths, both themes.
   activity's end extend the *displayed* duration without mutating the activity row. No
   migration, no prompt change, retroactive over existing data. The LLM keeps its job (title,
   boundaries); whether speech happened inside them is a fact the database knows.
+- **"Meaningful" = total overlapping turn time ≥ 2 minutes** (grill 2026-08-04). One knob,
+  no minimum speaker count — a 1-cluster entry still shows as "1 speaker" rather than
+  hiding a merged-diarization meeting. Accepted consequence: system-audio speech from media
+  passes the bar (an hour of a talk video shows as "1h · 1 speaker"); media-vs-conversation
+  filtering is explicitly not attempted in v1. Tune the knob when it feels wrong.
 - **Freshness lag accepted for v1.** The derivation worker beats every 2–10 min over
   2–30 min windows, so a finished conversation appears within ~5–40 min. No in-progress
   row; the tile shares the digest's "updated HH:MM" semantics.

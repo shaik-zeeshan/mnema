@@ -3175,7 +3175,7 @@ span.shot{display:block}
     counts every bordered/hairlined element (rule 8). Grade is against this direction's own bar:
     would a Mac user mistake it for a system app.</p>
   <table class="tbl">
-    <tr><th>Frame</th><th>Surface</th><th>Groups</th><th>Borders</th><th>Native controls proven</th><th>Weakness, honestly</th></tr>
+    <tr><th>Frame</th><th>Surface</th><th>Groups</th><th>Edges (raw)</th><th>Native controls proven</th><th>Weakness, honestly</th></tr>
     <tr><td>01 Timeline</td><td>frozen, full-width, no group fill</td><td class="mono">0</td><td class="mono">8</td><td>segmented, push, ghost, NSMenu, kbd</td><td>bands + shot chrome are the media busy-ness</td></tr>
     <tr><td>02 Audio moment</td><td>drawer = the one floating group</td><td class="mono">1</td><td class="mono">7</td><td>transport push, close, chips</td><td>drawer covers a third of the stage while open</td></tr>
     <tr><td>03 First run / loading</td><td>timeline empty states</td><td class="mono">0</td><td class="mono">5</td><td>default (accent) Record button</td><td>—</td></tr>
@@ -3187,7 +3187,7 @@ span.shot{display:block}
     <tr><td>09 QL Ask</td><td>prose + media rail</td><td class="mono">0</td><td class="mono">3</td><td>segmented mode, default handoff btn</td><td>—</td></tr>
     <tr><td>10 QL states</td><td>3 windows</td><td class="mono">0</td><td class="mono">3</td><td>toast with retry</td><td>—</td></tr>
     <tr><td>11 Chrome states</td><td>state pill + NSMenu popover + ladder + the replaced round-3 cluster (kept for the record)</td><td class="mono">0</td><td class="mono">—</td><td>pill, popover w/ checkmark gutter, ladder as designed decision</td><td>ADOPTED 2026-08-03 — transport is one click farther than the cluster; the tray keeps it at zero</td></tr>
-    <tr><td>12 Settings</td><td>source list + groups + sheet</td><td class="mono">4</td><td class="mono">13</td><td>vibrancy nav, sheet, switch, popup, danger</td><td>busiest frame — the border count ceiling</td></tr>
+    <tr><td>12 Settings</td><td>source list + groups + sheet</td><td class="mono">4</td><td class="mono">13</td><td>vibrancy nav, sheet, switch, popup, danger</td><td>busiest frame raw — but only 5 containers under the ceiling rule (see Border count)</td></tr>
     <tr><td>13 Tray + CLI</td><td>NSMenu + consent card</td><td class="mono">3</td><td class="mono">6</td><td>menu spec, checkboxes, default focus</td><td>—</td></tr>
   </table>
 </section>
@@ -3220,7 +3220,7 @@ span.shot{display:block}
     <tr><td>Surface switcher</td><td class="mono">lib/components/SurfaceSwitcher.svelte (new)</td><td class="mono">Timeline | Insights toggle in +layout.svelte</td><td>—</td><td>timeline · overview</td><td>Needs one backend addition: app_settings key <span class="mono">ui.main_surface</span> (trivial; read at window open).</td></tr>
     <tr><td>Record pill + popover</td><td class="mono">lib/components/RecordPill.svelte (new)</td><td class="mono">.titlebar__record + the round-3 button cluster in +layout.svelte — replaced by the pill</td><td>pill states (frame 11) · ladder steps 0–3</td><td>idle starting rec paused suspended degraded permission</td><td>ADOPTED 2026-08-03 (frame 11) — this is the recording chrome. "270 MB" needs a small backend stat command (bytes captured today) — does not exist. Popover is a DOM popover; the tray keeps native transport in status_bar.rs.</td></tr>
     <tr><td>Bento tile</td><td class="mono">lib/insights/Tile.svelte (new)</td><td class="mono">Insights section shells in Overview.svelte</td><td>1/2/3/4-col span · media (padding-0)</td><td>rest hover</td><td>14's grid geometry with 13's --grp-fill/--grp-radius: same tokens as SettingGroup, so one surface primitive can back both.</td></tr>
-    <tr><td>Conversations tile</td><td class="mono">rows inside Tile + existing AudioDrawer route</td><td class="mono">14's "Audio Today" minutes tile (deleted per FEEDBACK-3 rec 2)</td><td>—</td><td>rest hover</td><td>Needs a new app-infra aggregation: conversations-for-day (diarized segments grouped into titled conversations with duration + speaker count). Speaker turns exist; the grouping query + title do not — moderate backend change.</td></tr>
+    <tr><td>Conversations tile</td><td class="mono">rows inside Tile + existing AudioDrawer route</td><td class="mono">14's "Audio Today" minutes tile (deleted per FEEDBACK-3 rec 2)</td><td>—</td><td>rest hover</td><td>Grill 2026-08-03: no new aggregation entity — a read-time JOIN of <span class="mono">user_context_activities</span> × overlapping <span class="mono">speaker_turns</span> (speakers = distinct clusters; spilling turns extend displayed duration). Titles/boundaries stay the LLM's job. Small backend query, no migration, retroactive.</td></tr>
     <tr><td>Segmented / Switch / Checkbox / Input / Select</td><td class="mono">lib/components/{Segmented,Switch,Checkbox,Input,Select}.svelte</td><td class="mono">same — appearance only</td><td>per existing API</td><td>existing + is-focused ring</td><td>Select gains the accent chevron capsule; no API change.</td></tr>
     <tr><td>Scope chip</td><td class="mono">lib/components/Chip.svelte (new)</td><td class="mono">bespoke filter markup in quick-recall route</td><td>plain · active</td><td>rest hover on</td><td>Fill-only, borderless.</td></tr>
     <tr><td>Search field</td><td class="mono">quick-recall route, one class</td><td class="mono">.quick-recall input</td><td>search · ask</td><td>rest focus busy</td><td>Oversized: --t-title @ 400 per system.css gap 3.</td></tr>
@@ -3230,7 +3230,7 @@ span.shot{display:block}
     <tr><td>AudioDrawer</td><td class="mono">AudioDrawer component (ships)</td><td class="mono">same</td><td>—</td><td>open · playing</td><td>Re-typed; transcript --t-read, speakers --t-label.</td></tr>
     <tr><td>Menus</td><td class="mono">DOM popover for in-app; tray stays native in status_bar.rs</td><td class="mono">.timeline__stage-action-menu</td><td>context · popup</td><td>hover checked disabled</td><td>Frame 13's tray drawing is a SPEC for the Rust-owned NSMenu, not a reimplementation.</td></tr>
     <tr><td>Sheet / Modal</td><td class="mono">lib/components/Dialog.svelte (new) — decision needed</td><td class="mono">@tauri-apps/plugin-dialog confirms</td><td>sheet · centered</td><td>—</td><td>CLAUDE.md mandates plugin-dialog for confirms; the styled sheet needs an in-DOM dialog. Flagged in Deviations — needs a project decision, not a silent switch.</td></tr>
-    <tr><td>Filmstrip hero + digest</td><td class="mono">lib/insights/DayStrip.svelte (new)</td><td class="mono">Insights journal digest surface</td><td>3–6 stills by width</td><td>ready · no-AI (frame 06)</td><td>Digest text exists (journal). The strip needs a “representative frames for a day” query — new app-infra query + command (moderate backend change).</td></tr>
+    <tr><td>Filmstrip hero + digest</td><td class="mono">lib/insights/DayStrip.svelte (new)</td><td class="mono">Insights journal digest surface</td><td>3–6 stills by width</td><td>ready · no-AI (frame 06)</td><td>Digest text exists (journal). Grill 2026-08-03: strip v1 = the day's activities' headline frames (<span class="mono">is_headline</span> evidence exists, migration 0046) ordered by a focus+duration heuristic — small backend query, no ranking infrastructure.</td></tr>
     <tr><td>Conviction dots</td><td class="mono">part of subjects row</td><td class="mono">insights/Subjects.svelte tiers</td><td>0–5</td><td>—</td><td>Conviction data exists.</td></tr>
     <tr><td>Tooltip</td><td class="mono">use:tip directive (ships)</td><td class="mono">lib/components/tooltip.ts</td><td>—</td><td>—</td><td>Unchanged; restyled to menu material.</td></tr>
   </table>
@@ -3451,15 +3451,18 @@ span.shot{display:block}
 
 <section class="frame" id="borders">
   <h2><span class="fno">End</span>Border count — rule 8</h2>
-  <p class="fnote" style="max-width:96ch">Busiest frame: <b>12 (Settings, both renders)</b> — 13 bordered/hairlined elements:
-    3 inset row separators (Privacy) + 2 (General), 2 popup bezels, 1 danger button, 2 sheet
-    button bezels, 1 sheet popup, + 2 state-pill rings (the adopted chrome, one per render).
-    Grazes the ~12 ceiling — the pill's ring is the accepted cost of deviation 10. Timeline frames carry 8 (bar-button
-    bezels + the tick hairline treated as one element, plus the pill's one hairline ring);
-    Quick Look search carries 4 (field bezel, 2 match outlines, toolbar seam); the converged
-    Overview bento carries <b>3</b> (pill ring, toolbar seam, and the tile row separators counted
-    as one element) — ten tiles contribute zero because they are fills, not borders, which is the
-    entire point of the convergence.</p>
+  <p class="fnote" style="max-width:96ch"><b>The ceiling counts containers, not control rings</b> (grill 2026-08-03): a
+    control's own bezel — pill ring, segmented outline, button/popup bezel, field bezel,
+    selection ring — is the control's native AppKit drawing and is free; what counts is
+    structure — group borders, separators, seams. The audit table's Edges column stays the
+    raw count. Under the ceiling rule, the busiest frame is <b>12 (Settings)</b> at
+    <b>5</b> containers (3 inset row separators in Privacy + 2 in General; its 8 control
+    bezels — popups, danger button, sheet buttons, pill rings — are free). Timeline frames
+    carry <b>1</b> (the tick hairline treated as one element); Quick Look search <b>1</b>
+    (toolbar seam); the converged Overview bento <b>2</b> (toolbar seam + tile row
+    separators counted as one element) — ten tiles contribute zero because they are fills,
+    not borders, which is the entire point of the convergence. Every frame sits far under
+    the ~12 ceiling.</p>
 </section>
 
 </div>

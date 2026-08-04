@@ -79,7 +79,8 @@ cost → elapsed → single glyph → dot alone; the dot and the switcher never 
 ## Implementing
 
 **`system.css` is the source of truth.** Its colour tokens are byte-identical to
-`+layout.svelte`'s `:root` today, so the block pastes in without changing any existing rule.
+`+layout.svelte`'s `:root` today; the dark-surface-step fix (sequence step 1) is the one
+deliberate token change, after which the block pastes in without changing any other rule.
 It adds the type ramp, named spacing constants, control metrics, elevation and motion rules,
 and the shared primitives (`.btn` / `.input` / `.toast` / `.kbd` / `.pill`) that replace
 `.btn` being re-declared in six files' scoped styles. The design carries a verbatim copy plus
