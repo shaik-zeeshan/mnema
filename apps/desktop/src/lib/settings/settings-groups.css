@@ -47,53 +47,21 @@
     border-radius: 6px;
   }
 
-  .settings-shell .shortcut-editor-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .settings-shell .shortcut-editor-row {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px 14px;
-    align-items: center;
-    padding: 9px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
-  }
-
-  .settings-shell .shortcut-editor-row--error {
-    border-color: var(--app-danger-border);
-  }
-
+  /* A shortcut editor is a `.row` inside its category tile — geometry, the
+     40px metric and the tile-pad-inset separator all come from `.row`. The row
+     itself draws no frame: the direction has no bordered container, and the
+     conflict state is carried by the capture button's edge + the error line,
+     not by a box around the whole row. */
   .settings-shell .shortcut-editor-row__main {
     display: grid;
-    gap: 3px;
+    gap: 2px;
     min-width: 0;
-  }
-
-  /* A row inside a category list is a child of the category title; keep its
-     weight ≤550 so it never out-weighs the parent section label, and route the
-     size through the type scale. */
-  .settings-shell .shortcut-editor-row__title {
-    color: var(--app-text);
-    font-size: var(--t-ui);
-    font-weight: 550;
-    line-height: 1.3;
-  }
-
-  .settings-shell .shortcut-editor-row__description {
-    color: var(--app-text-muted);
-    font-size: var(--t-label);
-    line-height: 1.35;
   }
 
   .settings-shell .shortcut-editor-row__error {
     color: var(--app-danger-text);
-    font-size: var(--t-label);
-    line-height: 1.35;
+    font-size: var(--t-meta);
+    line-height: var(--lh-meta);
   }
 
   .settings-shell .shortcut-editor-row__controls {
@@ -102,10 +70,6 @@
     align-items: center;
     justify-content: flex-end;
     flex-wrap: wrap;
-  }
-
-  .settings-shell .shortcut-editor-row--listening {
-    border-color: var(--app-accent-border);
   }
 
   .settings-shell .shortcut-capture {
@@ -263,7 +227,7 @@
 
   @media (max-width: 720px) {
     .settings-shell .shortcut-editor-row {
-      grid-template-columns: 1fr;
+      flex-wrap: wrap;
     }
 
     .settings-shell .shortcut-editor-row__controls {

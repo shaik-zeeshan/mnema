@@ -142,69 +142,76 @@
 
 {#if keyboardBindingsSettings !== null}
   {#each SHORTCUT_CATEGORIES as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)} bare nested wide>
-      <div class="shortcut-editor-list">
-        {#each shortcutCategoryActions(category) as action (action.id)}
-          {@const binding = shortcutDraftBinding(action.id)}
-          {@const issue = shortcutIssueFor(action.id)}
-          {@const tokens = shortcutKeyTokens(binding)}
-          {@const listening = shortcutCaptureActionId === action.id}
-          <div id={`shortcut-row-${action.id}`} class="shortcut-editor-row" class:shortcut-editor-row--error={issue !== null} class:shortcut-editor-row--listening={listening}>
-            <div class="shortcut-editor-row__main">
-              <span class="shortcut-editor-row__title">{action.label}</span>
-              <span class="shortcut-editor-row__description">{action.description}</span>
-              {#if issue}
-                <span class="shortcut-editor-row__error">{issue}</span>
-              {/if}
-            </div>
-            <div class="shortcut-editor-row__controls">
-              <button
-                class="shortcut-capture"
-                class:shortcut-capture--recording={listening}
-                class:shortcut-capture--empty={!tokens && !listening}
-                type="button"
-                data-shortcut-capture={action.id}
-                disabled={savingKeyboardBindings}
-                aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
-                onclick={(event) => { startShortcutCapture(action.id); event.currentTarget.focus(); }}
-              >
-                {#if listening}
-                  <span class="shortcut-capture__pulse" aria-hidden="true"></span>
-                  <span class="shortcut-capture__hint">Press keys…</span>
-                {:else if tokens}
-                  <span class="shortcut-capture__keys">
-                    {#each tokens as token, i (i)}
-                      <kbd class="shortcut-cap">{token}</kbd>
-                    {/each}
-                  </span>
-                {:else}
-                  <span class="shortcut-capture__hint">Set shortcut</span>
-                {/if}
-              </button>
-              <button
-                class="settings-icon-btn"
-                type="button"
-                use:tip={"Reset to default"}
-                aria-label={`Reset ${action.label} to default`}
-                disabled={savingKeyboardBindings}
-                onclick={() => resetShortcut(action.id)}
-              >
-                <IconRestore aria-hidden="true" />
-              </button>
-              <button
-                class="settings-icon-btn"
-                type="button"
-                use:tip={"Clear shortcut"}
-                aria-label={`Clear ${action.label}`}
-                disabled={savingKeyboardBindings || !binding}
-                onclick={() => clearShortcut(action.id)}
-              >
-                <IconClear aria-hidden="true" />
-              </button>
-            </div>
+    <!-- Each category is its own top-level TILE, and each shortcut is a `.row`
+         inside its `.pay--rows` payload — the same object every other settings
+         group lists with. No group nested inside a group, and no self-framed
+         block sitting on the window background. -->
+    <SettingGroup title={shortcutCategoryLabel(category)} wide>
+      {#each shortcutCategoryActions(category) as action (action.id)}
+        {@const binding = shortcutDraftBinding(action.id)}
+        {@const issue = shortcutIssueFor(action.id)}
+        {@const tokens = shortcutKeyTokens(binding)}
+        {@const listening = shortcutCaptureActionId === action.id}
+        <div
+          id={`shortcut-row-${action.id}`}
+          class="shortcut-editor-row row row--static"
+          class:shortcut-editor-row--error={issue !== null}
+          class:shortcut-editor-row--listening={listening}
+        >
+          <div class="shortcut-editor-row__main row__txt">
+            <span class="shortcut-editor-row__title row__lbl">{action.label}</span>
+            <span class="shortcut-editor-row__description row__sub">{action.description}</span>
+            {#if issue}
+              <span class="shortcut-editor-row__error">{issue}</span>
+            {/if}
           </div>
-        {/each}
-      </div>
+          <div class="shortcut-editor-row__controls row__val">
+            <button
+              class="shortcut-capture"
+              class:shortcut-capture--recording={listening}
+              class:shortcut-capture--empty={!tokens && !listening}
+              type="button"
+              data-shortcut-capture={action.id}
+              disabled={savingKeyboardBindings}
+              aria-label={listening ? `Listening for ${action.label} shortcut` : `Set shortcut for ${action.label}`}
+              onclick={(event) => { startShortcutCapture(action.id); event.currentTarget.focus(); }}
+            >
+              {#if listening}
+                <span class="shortcut-capture__pulse" aria-hidden="true"></span>
+                <span class="shortcut-capture__hint">Press keys…</span>
+              {:else if tokens}
+                <span class="shortcut-capture__keys">
+                  {#each tokens as token, i (i)}
+                    <kbd class="shortcut-cap">{token}</kbd>
+                  {/each}
+                </span>
+              {:else}
+                <span class="shortcut-capture__hint">Set shortcut</span>
+              {/if}
+            </button>
+            <button
+              class="settings-icon-btn"
+              type="button"
+              use:tip={"Reset to default"}
+              aria-label={`Reset ${action.label} to default`}
+              disabled={savingKeyboardBindings}
+              onclick={() => resetShortcut(action.id)}
+            >
+              <IconRestore aria-hidden="true" />
+            </button>
+            <button
+              class="settings-icon-btn"
+              type="button"
+              use:tip={"Clear shortcut"}
+              aria-label={`Clear ${action.label}`}
+              disabled={savingKeyboardBindings || !binding}
+              onclick={() => clearShortcut(action.id)}
+            >
+              <IconClear aria-hidden="true" />
+            </button>
+          </div>
+        </div>
+      {/each}
     </SettingGroup>
   {/each}
 {/if}

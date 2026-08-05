@@ -402,9 +402,8 @@
   .settings-shell .ai-runtime-details > summary {
     cursor: pointer;
     width: fit-content;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-meta);
-    letter-spacing: 0.04em;
+    letter-spacing: var(--ls-meta);
     color: var(--app-text-muted);
     transition: color 0.12s;
   }

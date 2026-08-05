@@ -345,8 +345,10 @@
     gap: 8px;
     padding: 6px 10px;
     border-radius: 3px;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    /* Option labels are names a person reads ("Parakeet v3", "English"), not
+       machine values — sans, at UI size. Mono is for measurements. */
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
     color: var(--app-text);
     cursor: pointer;
     transition: background 0.1s, color 0.1s;
@@ -382,7 +384,7 @@
   .select-empty {
     padding: 14px 10px;
     text-align: center;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-family: var(--app-font-sans, inherit);
     font-size: var(--t-meta);
     font-style: italic;
     color: var(--app-text-subtle);

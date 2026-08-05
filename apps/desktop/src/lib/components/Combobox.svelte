@@ -241,8 +241,9 @@
     outline: none;
     box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
     transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    /* The selected label is a name, not a machine value. */
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
     gap: 8px;
     text-align: left;
   }
@@ -342,8 +343,9 @@
     background: transparent;
     border: none;
     outline: none;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    /* You type words in here. */
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
     color: var(--app-text);
     padding: 0;
   }
@@ -363,8 +365,8 @@
     gap: 8px;
     padding: 6px 10px;
     border-radius: 3px;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
     color: var(--app-text);
     cursor: pointer;
     transition: background 0.1s, color 0.1s;
@@ -398,7 +400,7 @@
   .combobox-empty {
     padding: 14px 10px;
     text-align: center;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-family: var(--app-font-sans, inherit);
     font-size: var(--t-meta);
     font-style: italic;
     color: var(--app-text-subtle);

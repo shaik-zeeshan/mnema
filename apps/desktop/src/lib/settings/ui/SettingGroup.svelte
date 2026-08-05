@@ -29,14 +29,6 @@
         omit it and the title stays inert text, which is what Settings wants.
         Used by the Debug page's feature cards to push their detail view. */
     onTitleClick?: () => void;
-    /** Drop the card chrome (border, background, accent hairline) so children
-        sit directly on the page. Used by the keybinding lists, whose rows
-        already carry their own borders — the parent frame is redundant. */
-    bare?: boolean;
-    /** Render the section title as a nested/child heading (smaller, lighter,
-        inset) so a group sitting under a parent section reads as its child,
-        not a fifth equal-weight sibling. Used by the shortcut category lists. */
-    nested?: boolean;
     /** Take both bento cells instead of one — the 2×1 footprint. Opt-in, for
         groups whose rows genuinely need the width (shortcut editors, connector
         tables). Everything else is 1×1. */
@@ -45,7 +37,11 @@
     children: Snippet;
   }
 
-  let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, bare = false, nested = false, wide = false, children }: Props = $props();
+  // `bare` and `nested` are gone: both existed only for the shortcut category
+  // lists, whose rows framed themselves and nested a group inside a group.
+  // Those are now plain tile rows in their own top-level tile, so neither the
+  // frame-dropping escape hatch nor the child-heading weight has a caller.
+  let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, wide = false, children }: Props = $props();
 </script>
 
 <!-- A settings group IS a bento tile: `.tile` chrome (the constant 18px
@@ -74,7 +70,7 @@
             {title}<span class="setting-group__title-chevron" aria-hidden="true">›</span>
           </button>
         {:else}
-          <span class="setting-group__title" class:setting-group__title--nested={nested}>{title}</span>
+          <span class="setting-group__title">{title}</span>
         {/if}
         {#if titleExtra}
           {@render titleExtra()}
@@ -97,10 +93,7 @@
     <p class="setting-group__hint">{hint}</p>
   {/if}
 
-  <div
-    class="setting-group__card pay pay--rows {cardClass ?? ''}"
-    class:setting-group__card--bare={bare}
-  >
+  <div class="setting-group__card pay pay--rows {cardClass ?? ''}">
     {@render children()}
   </div>
 </section>
@@ -187,16 +180,6 @@
     opacity: 0.7;
   }
 
-  /* Nested/child section title: a parent section (e.g. "Keyboard Shortcuts")
-     owns the strong eyebrow; the category groups beneath it are its children,
-     so lighten + inset their titles to read one level down rather than as
-     equal-weight siblings. */
-  .setting-group__title--nested {
-    font-weight: var(--w-medium);
-    letter-spacing: 0.1em;
-    color: var(--app-text-subtle);
-  }
-
   /* The hint is payload under the constant header row, not part of it — that is
      what keeps every tile on the grid opening at the same baseline. */
   .setting-group__hint {
@@ -237,14 +220,4 @@
     margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1);
   }
 
-  /* A `bare` group carries no tile fill at all: its children draw their own
-     frames, and a fill around them would be two boxes for one thing. */
-  .setting-group__card--bare {
-    margin: 0;
-  }
-
-  .setting-group:has(> .setting-group__card--bare) {
-    padding: 0;
-    background: none;
-  }
 </style>

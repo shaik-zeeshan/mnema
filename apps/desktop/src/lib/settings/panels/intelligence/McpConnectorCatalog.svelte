@@ -106,9 +106,14 @@
 </div>
 
 <style>
+  /* `.text-input` is mono because most settings fields hold machine values
+     (keys, URLs, commands, paths). This one holds a search phrase — words a
+     person types — so it takes the human voice back. */
   .catalog-search {
     width: 100%;
     margin-bottom: 14px;
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
   }
   .catalog-eyebrow {
     margin: 14px 0 8px 2px;
