@@ -128,8 +128,11 @@ enum SweepPass {
 #[derive(Default)]
 struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until the
-    /// first pass that needs it with an installed model.
-    embedder: Option<LoadedEmbedder>,
+    /// first pass that needs it with an installed model. An `Arc` because the
+    /// instance is shared with the Semantic Index Backfill and the query path
+    /// (`semantic_search_worker::SHARED_EMBEDDER`) — one set of weights, and on
+    /// macOS one candle Metal device, for the whole process.
+    embedder: Option<std::sync::Arc<LoadedEmbedder>>,
     /// Log the "no model installed" no-op only once per inert stretch.
     logged_no_model: bool,
     /// Per-subject **consecutive** deterministic-embed-failure counts. Keyed by the
@@ -501,8 +504,19 @@ async fn run_sweep_pass(
             return SweepPass::Error;
         }
     };
-    // Restore the embedder for the next pass.
-    state.embedder = Some(loaded);
+    // Restore the embedder for the next pass — unless it has been warm past the
+    // shared cap, in which case release this holder's `Arc` so a long drain (which
+    // never goes idle) still lets candle's Metal buffer pool go back to the OS.
+    // See `semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME`.
+    if loaded.is_stale() {
+        crate::native_capture::debug_log::log_info(format!(
+            "subject vector backfill recycled the embedder after {}s warm \
+             (bounds candle's Metal buffer pool; reloads on next batch)",
+            loaded.loaded_at.elapsed().as_secs()
+        ));
+    } else {
+        state.embedder = Some(loaded);
+    }
 
     let now = super::worker::now_ms();
     let mut stored = 0u64;

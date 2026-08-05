@@ -49,7 +49,14 @@ pub enum EmbeddingError {
 /// Object-safe (held as `Box<dyn SemanticSearchBackend>` by the embedder
 /// wrapper). It embeds pre-chunked, in-window fragments; chunking and cross-chunk
 /// pooling are NOT its concern — see the module docs.
-pub trait SemanticSearchBackend: Send {
+///
+/// `Sync` because a loaded embedder is shared (behind one `Arc`) by every caller
+/// in the desktop app — the backfill sweep, the Subject Vector worker, the query
+/// path — so that one process holds one set of model weights and, on macOS, one
+/// candle Metal device. `embed_batch` is already `&self`, so any implementor that
+/// needs `&mut` state must carry its own lock (as the Stella arm does); the bound
+/// makes the compiler enforce that rather than leaving it to the trait object.
+pub trait SemanticSearchBackend: Send + Sync {
     /// Embed already-chunked, in-window text fragments → one L2-normalized,
     /// per-model-pooled (Mean or CLS) vector per input, in input order.
     ///

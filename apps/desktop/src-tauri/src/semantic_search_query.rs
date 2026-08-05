@@ -41,7 +41,7 @@ use crate::semantic_search_worker::{
 /// await point).
 #[derive(Default)]
 pub struct SemanticQueryEmbedderState {
-    cached: Mutex<Option<LoadedEmbedder>>,
+    cached: Mutex<Option<std::sync::Arc<LoadedEmbedder>>>,
     load_lock: tokio::sync::Mutex<()>,
 }
 

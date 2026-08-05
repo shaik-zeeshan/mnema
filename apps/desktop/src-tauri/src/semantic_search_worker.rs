@@ -29,7 +29,7 @@
 //! cooldown is kept (still useful to pace candle-CPU on non-macOS).
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use capture_types::{default_semantic_search_settings, SemanticSearchSettings};
@@ -78,6 +78,31 @@ const IDLE_POLL_INTERVAL: Duration = Duration::from_secs(20);
 /// process that exits when drained returns *everything*, including the base
 /// runtime — this only frees the model).
 const IDLE_PASSES_BEFORE_EMBEDDER_DROP: u32 = 3;
+
+/// Maximum time a loaded embedder stays warm across *consecutive working* passes
+/// before it is recycled (dropped and reloaded on the next batch).
+///
+/// [`IDLE_PASSES_BEFORE_EMBEDDER_DROP`] only fires when the backlog is *drained*,
+/// so a long historical backfill keeps `did_work = true` for hours and never
+/// releases. That matters because of what the embedder holds on macOS: candle
+/// 0.10.2's Metal backend pools every buffer it allocates in
+/// `MetalDevice::{buffers, private_buffers}`, and its only reclaim path
+/// (`drop_unused_buffers`) sweeps `buffers` alone — `private_buffers`, which the
+/// StorageModePrivate intermediate allocator (`new_buffer`) fills on every forward
+/// pass, is never swept. So GPU memory only comes back when the whole `Device`
+/// drops. Measured on a 10h-old session: 574 MB of unmapped-graphics footprint
+/// returned the instant this worker released its embedder; the process peaked at
+/// 2.0 GB with embedders warm. Upstream: huggingface/candle#3464, #2271
+/// (PR #3755 open, unmerged).
+///
+/// Recycling on a wall-clock bound turns that unbounded growth into a sawtooth
+/// with a known ceiling, for the price of one model reload per interval.
+///
+/// ponytail: a wall-clock bound, not a per-batch counter — pool growth tracks
+/// forward passes, and batch wall time already varies with the CPU-pacing
+/// cooldown. Upgrade path: if candle ever sweeps `private_buffers`, delete this
+/// and the recycle check that reads it.
+const MAX_EMBEDDER_WARM_LIFETIME: Duration = Duration::from_secs(300);
 
 /// Backoff after a batch error (a DB hiccup or an embed failure). Embedding never
 /// blocks capture, so a failure just retries later rather than surfacing.
@@ -220,8 +245,11 @@ enum SweepPass {
 /// deliberately non-persistent — see [`MAX_CONSECUTIVE_ANCHOR_FAILURES`].
 struct SweepState {
     /// The loaded **Semantic Search Model**, reused across passes. `None` until
-    /// the first pass that needs it with an installed model.
-    embedder: Option<LoadedEmbedder>,
+    /// the first pass that needs it with an installed model. An `Arc` because the
+    /// instance is shared with the other holders via [`SHARED_EMBEDDER`]; holding
+    /// it here is what keeps the weights resident, and clearing it is this
+    /// worker's half of freeing them.
+    embedder: Option<Arc<LoadedEmbedder>>,
     /// Log the "no model installed" no-op only once per inert stretch.
     logged_no_model: bool,
     /// Per-anchor **consecutive** deterministic-embed-failure counts (L3). Keyed
@@ -584,7 +612,42 @@ pub(crate) struct LoadedEmbedder {
     pub(crate) provider: String,
     pub(crate) model_id: String,
     pub(crate) embedder: SemanticSearchEmbedder,
+    /// When this instance was built — the clock
+    /// [`MAX_EMBEDDER_WARM_LIFETIME`] is measured against. Set once at load and
+    /// shared by every holder, so all of them recycle the same instance within one
+    /// pass of each other rather than each running its own staggered timer.
+    pub(crate) loaded_at: Instant,
 }
+
+impl LoadedEmbedder {
+    /// Whether this instance has been warm past [`MAX_EMBEDDER_WARM_LIFETIME`] and
+    /// should be dropped so candle's Metal buffer pool goes back to the OS.
+    pub(crate) fn is_stale(&self) -> bool {
+        Self::stale_at(self.loaded_at)
+    }
+
+    /// [`is_stale`](Self::is_stale) over a bare load time, so the cap's boundary is
+    /// testable without a real model on disk.
+    fn stale_at(loaded_at: Instant) -> bool {
+        loaded_at.elapsed() >= MAX_EMBEDDER_WARM_LIFETIME
+    }
+}
+
+/// The one process-wide loaded **Semantic Search Model**, held as a [`Weak`] so
+/// the four independent holders — this worker, the **Subject Vector** backfill,
+/// the query path's cache, and the subject-candidate scorer — share a single set
+/// of model weights and, on macOS, a single candle `MetalDevice`.
+///
+/// Before this each holder called `load_embedder` for itself, so up to four
+/// devices could be resident at once, each with its own never-reclaimed Metal
+/// buffer pool (see [`MAX_EMBEDDER_WARM_LIFETIME`] for why the pool only frees on
+/// device drop). Measured peak with several warm: 2.0 GB of process footprint.
+///
+/// ponytail: `Weak`, not `Arc`, and no refcount of our own — the cache must not
+/// be the thing that keeps the model alive, or every holder's idle-drop would
+/// stop freeing anything. The last holder to drop its `Arc` frees the weights and
+/// the GPU pool; `upgrade()` returning `None` is exactly "nobody is using it".
+static SHARED_EMBEDDER: Mutex<Weak<LoadedEmbedder>> = Mutex::new(Weak::new());
 
 /// Distinguishes a `load_embedder` failure from a successful-load-but-embed
 /// failure when both now run inside the one `spawn_blocking` (M1). The closure
@@ -918,8 +981,22 @@ async fn run_sweep_pass(
             return SweepPass::Error;
         }
     };
-    // Restore the embedder for the next pass.
-    state.embedder = Some(loaded);
+    // Restore the embedder for the next pass — unless it has been warm past
+    // [`MAX_EMBEDDER_WARM_LIFETIME`], in which case drop it here so a long drain
+    // (which never goes idle, so `maybe_release_embedder_on_idle_decay` never
+    // fires) still returns candle's Metal buffer pool to the OS. The next batch
+    // pays one reload. Dropping this `Arc` only frees when the other holders have
+    // dropped theirs too — they check the same `loaded_at`, so they recycle within
+    // a pass of each other.
+    if loaded.is_stale() {
+        crate::native_capture::debug_log::log_info(format!(
+            "semantic index backfill recycled the embedder after {}s warm \
+             (bounds candle's Metal buffer pool; reloads on next batch)",
+            loaded.loaded_at.elapsed().as_secs()
+        ));
+    } else {
+        state.embedder = Some(loaded);
+    }
 
     // Whole-batch vs per-anchor failure (data-integrity gate): `embed_texts` now
     // isolates a true poison input to its own text (a failing chunk fails only its
@@ -1302,7 +1379,7 @@ pub(crate) fn selected_model_available(
 /// Whether the currently-loaded embedder is for `descriptor`'s exact
 /// provider/model id (so a Settings model switch reloads it).
 fn embedder_matches(
-    slot: &Option<LoadedEmbedder>,
+    slot: &Option<Arc<LoadedEmbedder>>,
     descriptor: &SemanticSearchModelDescriptor,
 ) -> bool {
     slot.as_ref().is_some_and(|loaded| {
@@ -1361,20 +1438,51 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
 /// `descriptor`. There is no ONNX intra-op thread cap to resolve (ADR 0037):
 /// candle runs the forward on the Metal GPU on macOS / candle-CPU elsewhere, with
 /// no thread-pool spin-wait to clamp.
+///
+/// Returns the [`SHARED_EMBEDDER`] instance when one is already alive for this
+/// exact provider/model id and is not [stale](LoadedEmbedder::is_stale), so a
+/// second caller (the Subject Vector backfill, a search query, the subject
+/// candidate scorer) reuses the loaded weights and the one candle device instead
+/// of building its own. Otherwise it loads a fresh one and publishes it as the
+/// shared instance.
+///
+/// Callers must keep holding the returned `Arc` for exactly as long as they want
+/// the model resident — dropping every `Arc` is what frees the weights and, on
+/// macOS, candle's Metal buffer pool.
+///
+/// The load runs under the shared lock on purpose: a concurrent second caller
+/// waits and then reuses the winner's instance rather than racing it into a
+/// duplicate multi-hundred-MB load. Every call site is already on a blocking
+/// thread, so this never parks the tokio reactor.
 pub(crate) fn load_embedder(
     app_data_dir: &std::path::Path,
     descriptor: &SemanticSearchModelDescriptor,
-) -> Result<LoadedEmbedder, String> {
+) -> Result<Arc<LoadedEmbedder>, String> {
+    let mut shared = SHARED_EMBEDDER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    if let Some(existing) = shared.upgrade() {
+        if existing.provider == descriptor.provider
+            && existing.model_id == descriptor.model_id
+            && !existing.is_stale()
+        {
+            return Ok(existing);
+        }
+    }
+
     let models_dir = semantic_search_models_dir(app_data_dir);
     let install_dir = model_install_dir(&models_dir, &descriptor.provider, &descriptor.model_id)
         .map_err(|error| error.to_string())?;
     let embedder = SemanticSearchEmbedder::load_from_dir(&install_dir, descriptor)
         .map_err(|error| error.to_string())?;
-    Ok(LoadedEmbedder {
+    let loaded = Arc::new(LoadedEmbedder {
         provider: descriptor.provider.clone(),
         model_id: descriptor.model_id.clone(),
         embedder,
-    })
+        loaded_at: Instant::now(),
+    });
+    *shared = Arc::downgrade(&loaded);
+    Ok(loaded)
 }
 
 #[cfg(test)]
@@ -1976,6 +2084,39 @@ mod tests {
         assert!(
             advance_idle_drop(&mut idles, false, true),
             "a sustained error loop releases the embedder at the grace threshold"
+        );
+    }
+
+    #[test]
+    fn warm_embedder_recycles_at_the_cap_and_not_before() {
+        // The cap is what bounds candle's Metal buffer pool during a long drain (the
+        // idle-drop never fires there, because every pass is `DidWork`). Two ways it
+        // can silently stop doing its job, both pinned here:
+        //
+        // 1. A unit slip (`from_millis` for `from_secs`) would make it 0.3s, so every
+        //    batch would reload the multi-hundred-MB model — a self-inflicted stall
+        //    that still "passes" as a memory fix.
+        // 2. A cap under one batch's cooldown would recycle between every batch.
+        assert!(
+            MAX_EMBEDDER_WARM_LIFETIME >= Duration::from_secs(60),
+            "the warm cap must be a multi-minute wall clock, not sub-second"
+        );
+        assert!(
+            MAX_EMBEDDER_WARM_LIFETIME > BACKFILL_BATCH_COOLDOWN_MAX,
+            "the warm cap must outlast one paced batch or the worker thrashes reloads"
+        );
+
+        let just_loaded = Instant::now();
+        assert!(
+            !LoadedEmbedder::stale_at(just_loaded),
+            "a freshly loaded embedder stays warm for the drain"
+        );
+        let at_the_cap = just_loaded
+            .checked_sub(MAX_EMBEDDER_WARM_LIFETIME)
+            .expect("the cap is representable against a just-taken Instant");
+        assert!(
+            LoadedEmbedder::stale_at(at_the_cap),
+            "an embedder warm for the whole cap recycles on the next batch"
         );
     }
 }
