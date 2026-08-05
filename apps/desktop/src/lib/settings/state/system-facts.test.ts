@@ -8,6 +8,7 @@ import {
   modelFootprint,
   projectedBytesPerDay,
   retentionConsequence,
+  semanticCoverage,
   semanticIndexPrice,
 } from "./system-facts";
 
@@ -153,5 +154,34 @@ describe("semanticIndexPrice", () => {
   it("says nothing when there is nothing to index, or nothing to count", () => {
     expect(semanticIndexPrice(facts())).toBeNull();
     expect(semanticIndexPrice(facts({ semanticPendingCount: null }))).toBeNull();
+  });
+});
+
+describe("semanticCoverage", () => {
+  it("states the fraction over both real counts summed", () => {
+    const c = semanticCoverage(facts({ semanticVectorCount: 1200, semanticPendingCount: 3800 }));
+    expect(c).toEqual({
+      indexed: 1200,
+      total: 5000,
+      percent: 24,
+      phrase: "1,200 of 5,000 captures indexed (24%) — 3,800 still to go.",
+    });
+  });
+
+  it("floors, so a nearly-done index never reads as finished", () => {
+    expect(semanticCoverage(facts({ semanticVectorCount: 999, semanticPendingCount: 1 }))?.percent).toBe(99);
+  });
+
+  it("says done only when nothing is pending", () => {
+    const c = semanticCoverage(facts({ semanticVectorCount: 5000, semanticPendingCount: 0 }));
+    expect(c?.percent).toBe(100);
+    expect(c?.phrase).toBe("Indexed — all 5,000 captures have a search vector.");
+  });
+
+  it("draws nothing without real counts, or with nothing indexable", () => {
+    expect(semanticCoverage(null)).toBeNull();
+    expect(semanticCoverage(facts({ semanticVectorCount: null }))).toBeNull();
+    expect(semanticCoverage(facts({ semanticPendingCount: null }))).toBeNull();
+    expect(semanticCoverage(facts())).toBeNull();
   });
 });
