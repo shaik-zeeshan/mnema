@@ -25,7 +25,8 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { confirm, message } from "@tauri-apps/plugin-dialog";
+  import { confirm } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import type {
     Conclusion,
     UserContextStatus,
@@ -255,7 +256,7 @@
       // so it's unreachable here (we're editing an existing one). Show a visible
       // dialog instead of silently swallowing the failure.
       const detail = humanizeError(error);
-      await message(detail, { title: "Couldn't save context", kind: "error" });
+      toast({ tone: "error", title: "Couldn't save context", message: detail });
     } finally {
       savingEdit = false;
     }
@@ -274,7 +275,7 @@
     } catch (error) {
       // Same unreachable-surface problem as saveEdit — surface a visible dialog.
       const detail = humanizeError(error);
-      await message(detail, { title: "Couldn't delete context", kind: "error" });
+      toast({ tone: "error", title: "Couldn't delete context", message: detail });
     }
   }
 

@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { message } from "@tauri-apps/plugin-dialog";
+import { toast } from "$lib/toast.svelte";
 
 /** The three distinguishable outcomes of an open-captured-url attempt:
  *  - `opened`: the brokered command opened the page.
@@ -38,8 +38,8 @@ const FEEDBACK_TITLE = "Couldn't open page";
 // Returns one of three statuses instead of swallowing the outcome: `"opened"`,
 // `"no-url"` (the command returned false — a benign no-op), or `"error"` (the
 // command threw, with `error` carrying the stringified failure). By default the
-// helper itself surfaces the `no-url` and `error` cases via the plugin-dialog
-// `message(...)`, so every card surface gets consistent feedback for free. Pass
+// helper itself surfaces the `no-url` and `error` cases as an app toast, so
+// every card surface gets consistent feedback for free. Pass
 // `{ silent: true }` to suppress that and render your own status (the dashboard
 // does this — it has its own inline frame-action status line).
 //
@@ -53,7 +53,7 @@ export async function openCapturedUrl(
 ): Promise<OpenCapturedUrlResult> {
   const result = await runOpenCapturedUrl(frameId);
   if (!options.silent) {
-    await surfaceOpenCapturedUrlResult(result);
+    surfaceOpenCapturedUrlResult(result);
   }
   return result;
 }
@@ -74,21 +74,20 @@ async function runOpenCapturedUrl(
   }
 }
 
-// Surface a non-`opened` outcome through the project's plugin-dialog so every
-// caller shows the same copy: an info note for `no-url`, an error dialog for a
-// real failure (mirroring the timeline's "Couldn't open URL: …"). A no-op on
-// success.
-async function surfaceOpenCapturedUrlResult(
-  result: OpenCapturedUrlResult,
-): Promise<void> {
+// Surface a non-`opened` outcome as a toast so every caller shows the same copy:
+// an info note for `no-url`, a persistent error for a real failure. Clicking a
+// card should never be answered with a modal. A no-op on success.
+function surfaceOpenCapturedUrlResult(result: OpenCapturedUrlResult): void {
   if (result.status === "no-url") {
-    await message(NO_URL_MESSAGE, { title: FEEDBACK_TITLE, kind: "info" });
+    toast({ id: "open-captured-url", title: FEEDBACK_TITLE, message: NO_URL_MESSAGE });
     return;
   }
   if (result.status === "error") {
-    await message(`Couldn't open URL: ${result.error}`, {
+    toast({
+      id: "open-captured-url",
+      tone: "error",
       title: FEEDBACK_TITLE,
-      kind: "error",
+      message: `Couldn't open URL: ${result.error}`,
     });
   }
 }

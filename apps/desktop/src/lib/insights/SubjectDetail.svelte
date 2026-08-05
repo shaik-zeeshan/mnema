@@ -24,7 +24,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import { goto } from "$app/navigation";
   import type {
     Conclusion,
@@ -259,9 +259,10 @@
       // A write failure must NOT blank the surface — surface it in a dialog and
       // leave the loaded subject intact. `pinned` is the DESIRED new state.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: pinned ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
-        kind: "error",
+        message: detail,
       });
     } finally {
       actionId = null;
@@ -280,9 +281,10 @@
       // A write failure must NOT blank the surface — surface it in a dialog and
       // leave the loaded subject intact.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't dismiss conclusion",
-        kind: "error",
+        message: detail,
       });
     } finally {
       actionId = null;
@@ -346,9 +348,9 @@
     // No precise frame/audio span was resolvable (or the handoff threw) — tell
     // the user before the graceful fallback so jumping to the Timeline top isn't
     // a silent surprise that looks like the wrong moment opened.
-    await message("Couldn't pinpoint the exact moment — opening the Timeline.", {
+    toast({
       title: "Opening Timeline",
-      kind: "info",
+      message: "Couldn't pinpoint the exact moment.",
     });
     void goto("/");
   }
