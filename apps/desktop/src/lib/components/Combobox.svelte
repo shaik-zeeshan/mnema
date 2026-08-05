@@ -235,12 +235,13 @@
     width: 100%;
     padding: 7px 10px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
+    border: 0;
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-border-strong);
+    transition: box-shadow 0.15s;
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
     gap: 8px;
@@ -248,30 +249,30 @@
   }
 
   :global(.combobox-trigger:hover) {
-    border-color: var(--app-border-hover);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
 
   :global(.combobox-trigger:active) {
     background: var(--app-surface-active);
   }
 
-  :global(.combobox-trigger:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
+  :global(.combobox-trigger:focus-visible),
+  :global(.combobox-trigger[data-state="open"]) {
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
 
-  :global(.combobox-trigger[data-state="open"]) {
-    border-color: var(--app-accent);
-  }
-
   :global(.combobox-trigger--warn) {
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
 
   :global(.combobox-trigger--warn:focus-visible) {
-    border-color: var(--app-warn-strong);
     box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-warn-strong),
       0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
@@ -305,12 +306,15 @@
     stroke: var(--app-accent);
   }
 
+  /* Level 5: a searchable pop-up is still an NSMenu — material, 5px padding. */
   :global(.combobox-content) {
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 4px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
+    border-radius: var(--r-lg);
+    padding: 5px;
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     z-index: 100;
     min-width: var(--bits-floating-anchor-width, 200px);
     max-height: 260px;
@@ -323,10 +327,10 @@
     align-items: center;
     gap: 8px;
     padding: 6px 9px;
-    margin: -4px -4px 4px;
-    background: var(--app-surface);
-    border-bottom: 1px solid var(--app-border);
-    border-radius: 6px 6px 0 0;
+    margin: -5px -5px 5px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
+    border-radius: var(--r-lg) var(--r-lg) 0 0;
   }
 
   .combobox-search-icon {
@@ -376,15 +380,20 @@
     text-align: left;
   }
 
-  :global(.combobox-item:hover),
-  :global(.combobox-item[data-highlighted]) {
-    background: var(--app-surface-hover);
+  /* Selected FIRST so a selected+highlighted row still takes the highlight. */
+  :global(.combobox-item[data-selected]) {
     color: var(--app-text-strong);
   }
 
-  :global(.combobox-item[data-selected]) {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
+  :global(.combobox-item:hover),
+  :global(.combobox-item[data-highlighted]) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+
+  :global(.combobox-item:hover) .combobox-item-check,
+  :global(.combobox-item[data-highlighted]) .combobox-item-check {
+    color: inherit;
   }
 
   .combobox-item-check {

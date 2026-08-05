@@ -111,22 +111,22 @@
     width: 16px;
     height: 16px;
     margin-top: 1px;
-    border: 1px solid var(--app-border-strong);
+    border: 0;
     border-radius: 5px;
     background: var(--app-surface);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     padding: 0;
     cursor: pointer;
     outline: none;
-    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.15s;
+    transition: background 0.15s, box-shadow 0.15s, transform 0.15s;
   }
 
   :global(.checkbox-box:hover:not([data-disabled])) {
-    border-color: var(--app-border-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
 
   :global(.checkbox-box:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent), var(--app-ring);
   }
 
   /* Momentary press cue before the state flips. */
@@ -134,16 +134,19 @@
     transform: scale(0.92);
   }
 
+  /* On = a flat accent fill, no rim: the colour is the state. */
   :global(.checkbox-box[data-state="checked"]),
-  :global(.checkbox-box[data-state="indeterminate"]) {
-    background: var(--app-accent);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 8px var(--app-accent-glow);
-  }
-
+  :global(.checkbox-box[data-state="indeterminate"]),
   :global(.checkbox-box[data-state="checked"]:hover:not([data-disabled])),
   :global(.checkbox-box[data-state="indeterminate"]:hover:not([data-disabled])) {
-    border-color: var(--app-accent);
+    background: var(--app-accent);
+    box-shadow: none;
+  }
+
+  /* Declared after the fill so a checked box keeps its focus ring. */
+  :global(.checkbox-box[data-state="checked"]:focus-visible),
+  :global(.checkbox-box[data-state="indeterminate"]:focus-visible) {
+    box-shadow: var(--app-ring);
   }
 
   :global(.checkbox-box[data-disabled]) {

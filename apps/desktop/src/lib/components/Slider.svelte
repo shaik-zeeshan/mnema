@@ -128,7 +128,7 @@
     left: 0;
     right: 0;
     height: 4px;
-    background: var(--app-border-strong);
+    background: var(--app-surface-hover);
     border-radius: 999px;
     transform: translateY(-50%);
   }
@@ -138,19 +138,21 @@
     top: 50%;
     left: 0;
     height: 4px;
-    background: linear-gradient(90deg, var(--app-accent-strong), var(--app-accent));
+    background: var(--app-accent);
     border-radius: 999px;
     transform: translateY(-50%);
   }
 
+  /* AppKit knob (07 `.slider__k`): a white physical object sitting ON the track,
+     lifted by its own shadow rather than ringed by a border. */
   :global(.slider-thumb) {
     position: absolute;
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
+    border: 0;
     border-radius: 50%;
-    background: var(--app-accent);
-    border: 2px solid var(--app-bg);
-    box-shadow: 0 0 8px var(--app-accent-glow);
+    background: #fff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.34), 0 0 0 0.5px rgba(0, 0, 0, 0.18);
     cursor: pointer;
     transition: box-shadow 0.12s ease, transform 0.12s ease;
     transform: translateX(-50%);
@@ -158,7 +160,7 @@
   }
 
   :global(.slider-thumb:focus-visible) {
-    box-shadow: var(--app-ring);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.34), var(--app-ring);
     outline: 2px solid var(--app-accent);
     outline-offset: 2px;
   }

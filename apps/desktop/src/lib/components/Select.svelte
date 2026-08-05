@@ -215,12 +215,15 @@
     width: 100%;
     padding: 7px 10px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
+    /* Borderless: the control's inset rim IS its ring, layered over the recess
+       that says "this is a field you can open". */
+    border: 0;
     border-radius: 8px;
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.15s, box-shadow 0.15s;
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-border-strong);
+    transition: box-shadow 0.15s;
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 12px;
     gap: 8px;
@@ -228,30 +231,30 @@
   }
 
   :global(.select-trigger:hover) {
-    border-color: var(--app-border-hover);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
 
   :global(.select-trigger:active) {
     background: var(--app-surface-active);
   }
 
-  :global(.select-trigger:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
+  :global(.select-trigger:focus-visible),
+  :global(.select-trigger[data-state="open"]) {
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      0 0 0 3px var(--app-accent-glow);
     outline: none;
   }
 
-  :global(.select-trigger[data-state="open"]) {
-    border-color: var(--app-accent);
-  }
-
   :global(.select-trigger--warn) {
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
 
   :global(.select-trigger--warn:focus-visible) {
-    border-color: var(--app-warn-strong);
     box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-warn-strong),
       0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
@@ -307,12 +310,15 @@
     }
   }
 
+  /* Level 5: a pop-up button's list is an NSMenu — material, 5px padding. */
   :global(.select-content) {
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 4px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
+    border-radius: var(--r-lg);
+    padding: 5px;
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     z-index: 100;
     min-width: var(--bits-select-anchor-width);
     max-height: 220px;
@@ -343,15 +349,22 @@
     text-align: left;
   }
 
-  :global(.select-item:hover),
-  :global(.select-item[data-highlighted]) {
-    background: var(--app-surface-hover);
+  /* NSMenu: the checkmark gutter is what says "this is the current value" — the
+     row under the pointer is the one that takes a fill. Selected is declared
+     FIRST so a selected+highlighted row still highlights. */
+  :global(.select-item[data-selected]) {
     color: var(--app-text-strong);
   }
 
-  :global(.select-item[data-selected]) {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
+  :global(.select-item:hover),
+  :global(.select-item[data-highlighted]) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+
+  :global(.select-item:hover) .select-item-check,
+  :global(.select-item[data-highlighted]) .select-item-check {
+    color: inherit;
   }
 
   .select-item-check {

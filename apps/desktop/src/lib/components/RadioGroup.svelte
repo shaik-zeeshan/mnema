@@ -118,22 +118,21 @@
     padding: 7px 10px;
     border-radius: 4px;
     background: transparent;
-    border: 1px solid transparent;
+    border: 0;
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
+    transition: background 0.12s;
     text-align: left;
     width: 100%;
     outline: none;
   }
 
   :global(.rg-item:hover) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
+    background: var(--glass-tint);
   }
 
   :global(.rg-item[data-state="checked"]) {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   :global(.rg-item:focus-visible) {
@@ -149,14 +148,15 @@
     width: 14px;
     height: 14px;
     border-radius: 50%;
-    border: 1px solid var(--app-border-strong);
+    border: 0;
+    box-shadow: inset 0 0 0 1.5px var(--app-border-hover);
     background: var(--app-surface);
     flex-shrink: 0;
-    transition: border-color 0.12s, background 0.12s;
+    transition: box-shadow 0.12s, background 0.12s;
   }
 
   .rg-indicator--checked {
-    border-color: var(--app-accent);
+    box-shadow: inset 0 0 0 1.5px var(--app-accent);
     background: var(--app-accent-bg);
   }
 
@@ -201,33 +201,33 @@
   :global(.rg-item--card) {
     align-items: flex-start;
     gap: 11px;
+    /* A card is a plate: the shadow IS the border it replaces. */
     padding: 14px;
-    border-radius: 10px;
-    border: 1px solid var(--app-border-strong);
+    border-radius: var(--r-lg);
+    border: 0;
     background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
 
   :global(.rg-item--card:hover) {
-    background: var(--app-surface);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   :global(.rg-item--card[data-state="checked"]) {
-    border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
+    box-shadow: var(--sh-tile),
+      inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   :global(.rg-item--card) .rg-indicator {
     margin-top: 1px;
     width: 16px;
     height: 16px;
-    border-color: var(--app-border-hover);
   }
 
   :global(.rg-item--card) .rg-indicator--checked {
-    border-color: var(--app-accent);
     background: transparent;
-    box-shadow: 0 0 8px var(--app-accent-glow);
+    box-shadow: inset 0 0 0 1.5px var(--app-accent);
   }
 
   :global(.rg-item--card) .rg-item-text {
@@ -251,7 +251,7 @@
   }
 
   .rg-indicator--disabled {
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 1.5px var(--app-border);
     background: var(--app-surface);
   }
 

@@ -145,9 +145,12 @@
   .step-btn {
     flex: 0 0 30px;
     width: 30px;
-    border: 1px solid var(--app-border-strong);
+    /* Same borderless plate as `.btn`: one pixel of lift plus its own rim. */
+    border: 0;
     border-radius: 4px;
-    background: var(--app-surface);
+    background: var(--app-surface-raised);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: 16px;
@@ -156,12 +159,11 @@
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
 
   .step-btn:hover {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
 
@@ -172,8 +174,7 @@
 
   .step-btn:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--app-ring), 0 1px 1px rgba(0, 0, 0, 0.1);
   }
 
   .step-btn:disabled {
@@ -193,7 +194,7 @@
     min-width: 0;
     height: 34px;
     padding: 0 10px;
-    border: 1px solid var(--app-border-strong);
+    border: 0;
     border-radius: 4px;
     background: var(--app-surface);
     color: var(--app-text);
@@ -202,8 +203,9 @@
     font-size: 12px;
     text-align: center;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-border-strong);
+    transition: box-shadow 0.12s, background 0.12s;
   }
 
   /* leave room for the unit chip and left-align the digits beside it */
@@ -217,18 +219,20 @@
   }
 
   .num-input:focus {
-    border-color: var(--app-accent);
     background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      0 0 0 3px var(--app-accent-glow);
   }
 
   .num-input--invalid {
-    border-color: var(--app-danger);
+    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-danger);
   }
 
   .num-input--invalid:focus {
-    border-color: var(--app-danger);
     box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
+      inset 0 0 0 var(--hairline) var(--app-danger),
       0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
   }
 

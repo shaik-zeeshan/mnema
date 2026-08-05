@@ -66,8 +66,16 @@
     max-width: calc(100vw - 2 * var(--pad-window));
     padding: var(--pad-panel);
     border-radius: var(--r-xl);
-    background: var(--app-surface-raised);
-    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border-strong);
+    /* Level 5 of the material ladder (direction 03): a toast floats over
+       whatever route is beneath it, so it wears popover material + the float
+       shadow, and its only hairline is the glass rim. The two lines it carries
+       are short status text, which is what this level exists for — a toast is
+       the one readable thing the ladder puts on material, exactly as 07 draws
+       it. Errors still never auto-dismiss; that lives in toast.svelte.ts. */
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
   .toast__title {
     display: flex;

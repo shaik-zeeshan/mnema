@@ -152,10 +152,13 @@
        as ThemeModeControl does. */
     width: fit-content;
     gap: 2px;
+    /* AppKit segmented (07 `.seg`): a recessed `--glass-tint` track with an
+       inset rim, and a selected item that is an OPAQUE raised pill. */
     padding: 2px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    border: 0;
+    border-radius: 7px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .segmented--disabled {
@@ -170,7 +173,7 @@
     gap: 5px;
     padding: 5px 12px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 5px;
     background: transparent;
     color: var(--app-text-muted);
     font: inherit;
@@ -185,7 +188,7 @@
 
   .seg:hover:not(.seg--active) {
     color: var(--app-text);
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
   }
 
   .seg:not(.seg--active):not(:disabled):active {
@@ -199,9 +202,10 @@
   }
 
   .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16),
+      0 0 0 var(--hairline) var(--glass-line);
   }
 
   .seg:disabled {
@@ -234,8 +238,7 @@
     padding: 2px;
     gap: 2px;
     border-radius: 999px;
-    border-color: var(--app-icon-border-hover);
-    background: var(--app-surface-raised);
+    background: var(--glass-tint);
   }
 
   .segmented--compact .seg {
@@ -245,14 +248,15 @@
   }
 
   .segmented--compact .seg:hover:not(.seg--active) {
-    background: var(--app-icon-bg-hover);
+    background: var(--glass-tint);
     color: var(--app-icon-fg-hover);
   }
 
   .segmented--compact .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16),
+      0 0 0 var(--hairline) var(--glass-line);
   }
 
   .segmented--compact .seg__icon,

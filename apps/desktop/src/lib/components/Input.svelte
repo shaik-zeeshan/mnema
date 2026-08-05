@@ -58,13 +58,15 @@
     color: var(--app-text-subtle);
   }
 
+  /* The base `.input` is borderless in this direction — its rim is an inset
+     shadow, so the invalid/danger state has to speak in the same language. */
   .input--invalid {
-    border-color: var(--app-danger);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger);
   }
 
   .input--invalid:focus {
-    border-color: var(--app-danger);
-    box-shadow: var(--ring-danger);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger),
+      var(--ring-danger);
   }
 
   .input:disabled {

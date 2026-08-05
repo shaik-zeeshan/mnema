@@ -1950,12 +1950,16 @@
     gap: var(--gap-inline);
     height: var(--h-md);
     padding: 0 var(--pad-control);
-    border: var(--hairline) solid var(--app-border-strong);
+    /* BORDERLESS (direction 03). A button is a small raised plate: one pixel of
+       shadow lifts it, and the only hairline is its own rim. */
+    border: 0;
     border-radius: var(--r-md);
     font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
     letter-spacing: var(--ls-ui);
     white-space: nowrap;
     background: var(--app-surface-raised);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-strong);
     cursor: pointer;
     transition: background-color var(--dur-quick) var(--ease);
@@ -1968,7 +1972,7 @@
   }
   :global(.btn:focus-visible) {
     outline: none;
-    box-shadow: var(--ring);
+    box-shadow: var(--ring), 0 1px 1px rgba(0, 0, 0, 0.1);
   }
   :global(.btn[disabled]),
   :global(.btn[aria-disabled="true"]) {
@@ -1980,10 +1984,11 @@
     cursor: progress;
   }
 
+  /* A flat accent fill needs no lift — the colour already is the emphasis. */
   :global(.btn--primary) {
     background: var(--app-accent);
     color: var(--app-accent-contrast);
-    border-color: transparent;
+    box-shadow: none;
   }
   :global(.btn--primary:hover) {
     background: var(--app-accent);
@@ -2000,28 +2005,30 @@
   :global(.btn--accent) {
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   :global(.btn--accent:hover) {
     background: var(--app-accent-bg);
     color: var(--app-accent);
-    border-color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent);
   }
 
+  /* Ghost has no plate at all: it fills with the material's own tint on hover,
+     which is the only thing a borderless button can honestly do. */
   :global(.btn--ghost) {
     background: transparent;
-    border-color: transparent;
+    box-shadow: none;
     color: var(--app-text-muted);
   }
   :global(.btn--ghost:hover) {
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
     color: var(--app-text-strong);
   }
 
   :global(.btn--danger) {
     background: var(--app-danger-bg);
     color: var(--app-danger);
-    border-color: var(--app-danger-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
   :global(.btn--danger:hover) {
     background: color-mix(in srgb, var(--app-danger) 14%, transparent);
@@ -2047,12 +2054,15 @@
     width: var(--h-sm);
   }
 
+  /* A field is recessed, not drawn: its inset rim IS the control ring, which the
+     direction keeps for free. No shadow — an input never floats. */
   :global(.input) {
     height: var(--h-md);
     padding: 0 var(--pad-control);
-    border: var(--hairline) solid var(--app-border-strong);
+    border: 0;
     border-radius: var(--r-md);
     background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text-strong);
     font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
     letter-spacing: var(--ls-ui);
@@ -2060,11 +2070,11 @@
   :global(.input:focus-visible),
   :global(.input:focus) {
     outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow: var(--ring);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border),
+      var(--ring);
   }
   :global(.input[aria-invalid="true"]) {
-    border-color: var(--app-danger-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
 
   :global(.kbd) {
@@ -2075,7 +2085,8 @@
     height: 20px;
     padding: 0 var(--s-4);
     border-radius: var(--r-sm);
-    background: var(--app-surface-raised);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
     color: var(--app-text-muted);
   }
@@ -2099,7 +2110,7 @@
     border: 0;
     border-radius: var(--r-pill);
     background: var(--app-record-bg);
-    box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-record-border);
     cursor: default;
   }
   /* §4 wants a 28px hit target; the capsule is --h-sm (24px). Grow the target
@@ -2117,20 +2128,22 @@
   :global(.pill__t) {
     font: var(--w-regular) var(--t-ui) / 1 var(--app-font-mono);
     font-variant-numeric: tabular-nums;
-    color: var(--app-text);
+    color: var(--app-text-strong);
   }
   :global(.pill__gb) {
     font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
     font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
   }
+  /* Three vocabularies, one shape: live = record tint + record rim, quiet =
+     the material's own tint + its rim, warn = warn tint + warn rim. */
   :global(.pill--quiet) {
-    background: var(--app-surface-hover);
-    box-shadow: none;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
   }
   :global(.pill--warn) {
     background: var(--app-warn-bg);
-    box-shadow: 0 0 0 var(--hairline) var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
   :global(.pill--quiet.pill--open),
   :global(.pill--warn.pill--open) {
@@ -2335,17 +2348,23 @@
     left: 0;
     z-index: 9999;
     max-width: 260px;
-    padding: 5px 8px 6px;
+    /* +2px on the left: the accent edge is now inset, so it eats into the box. */
+    padding: 5px 8px 6px 10px;
     font-family: var(--app-font-mono);
     font-size: var(--t-meta);
     line-height: 1.45;
     letter-spacing: 0.01em;
     color: var(--app-text-strong);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-left: 2px solid var(--app-accent);
+    /* Level 5 material — a tooltip floats over whatever it explains. The accent
+       "prompt" edge survives as an inset line, so the only true border here is
+       still the glass rim. */
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
     border-radius: 5px;
-    box-shadow: var(--app-shadow-popover);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 2px 0 0 var(--app-accent);
     white-space: pre-wrap;
     overflow-wrap: anywhere;
     pointer-events: none;
@@ -2367,7 +2386,9 @@
   }
 
   .app-shell {
-    --app-titlebar-height: 36px;
+    /* The direction's chrome height (07's `--h-titlebar`). The alias survives
+       because AudioDrawer + the narrow reading column both anchor off it. */
+    --app-titlebar-height: var(--h-titlebar);
     --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
@@ -2412,8 +2433,21 @@
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
     padding: 0 8px 0 78px;
-    background: var(--app-titlebar-bg);
-    border-bottom: 1px solid var(--app-titlebar-border);
+    /* Level 3 of the ladder: chrome material. macOS puts a toolbar on glass, so
+       we may too. The hard bottom border is gone — a hairline in this direction
+       is only ever a material's rim, so the bar carries the rim (bottom) plus
+       the top inner highlight instead. Content behind it is the window floor,
+       not a paragraph: nothing readable ever lands on this.
+
+       The material itself lives on ::before, NOT here. `backdrop-filter` makes
+       its element the containing block for `position: fixed` descendants, and
+       both popovers anchored in this bar (RecordingPill's transport menu and
+       the notification menu) are fixed precisely so they escape the
+       `overflow: hidden` spill backstop below — put the filter on `.titlebar`
+       and both get clipped out of existence again. A pseudo-element carries the
+       glass without capturing anything. */
+    background: transparent;
+    box-shadow: inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi);
     /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
        640px app minimum, and flex items can't shrink past their content width —
        clip rather than let the row spill the right-hand controls off-screen.
@@ -2429,6 +2463,17 @@
     z-index: 100;
   }
 
+  .titlebar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: var(--glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+
   .surface-titlebar {
     flex: 0 0 auto;
     display: flex;
@@ -2437,9 +2482,13 @@
     gap: 12px;
     height: 40px;
     padding: 0 10px 0 14px;
-    background: var(--app-titlebar-bg);
+    /* Same chrome material as the main title bar — a dedicated surface's bar is
+       the same object in a different window. */
+    background: var(--glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     border-radius: var(--app-window-radius) var(--app-window-radius) 0 0;
-    box-shadow: inset 0 -1px 0 var(--app-titlebar-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line), inset 0 1px 0 var(--glass-hi);
     user-select: none;
     -webkit-user-select: none;
     position: sticky;
@@ -2471,8 +2520,10 @@
     height: 28px;
     padding: 0 10px;
     border-radius: 999px;
-    border: 1px solid var(--app-icon-border-hover);
+    border: 0;
     background: var(--app-surface-raised);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font-family: inherit;
     font-size: var(--t-label);
@@ -2480,18 +2531,16 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
 
   .surface-titlebar__close:hover {
-    background: var(--app-icon-bg-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
     color: var(--app-text-strong);
   }
   .surface-titlebar__close:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--app-ring), 0 1px 1px rgba(0, 0, 0, 0.1);
   }
   .surface-titlebar__close:not(:disabled):active {
     transform: translateY(0.5px);
@@ -2528,20 +2577,21 @@
     cursor: default;
   }
 
-  /* ── Surface toggle (Timeline ⇄ Insights) ─────────────────────
-     The canonical segmented control from the Insights mockups (app.css
-     `.surface-toggle`), token-driven. The active segment is signalled by an
-     accent fill alone so the segments stay even-width. Shared visual contract
-     with the Insights sub-nav switcher. */
+  /* ── Surface toggle (Timeline ⇄ Overview ⇄ Insights) ──────────
+     An AppKit segmented control (07 `.seg`): a recessed `--glass-tint` track
+     with an inset rim, and a selected item that is an OPAQUE `--app-surface`
+     pill lifted off it by one pixel of shadow. Selection is a raised plate, not
+     a tint — the same "layer above" logic as every other surface here. */
   .surface-toggle {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border: 1px solid var(--app-border);
+    border: 0;
     border-radius: 7px;
-    background: var(--app-surface-subtle);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
   }
   .surface-toggle button {
     font: inherit;
@@ -2553,22 +2603,21 @@
     justify-content: center;
     padding: 0 13px;
     height: 22px;
-    border: 1px solid transparent;
+    border: 0;
     border-radius: 5px;
     background: transparent;
     color: var(--app-text-muted);
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease;
   }
   .surface-toggle button:hover {
     color: var(--app-text-strong);
   }
   .surface-toggle button:not(.active):hover {
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
   }
   .surface-toggle button:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
   .surface-toggle button:not(:disabled):active {
@@ -2576,25 +2625,22 @@
     filter: brightness(0.92);
   }
   .surface-toggle button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    /* Active = "you are here": use the brighter --app-accent (AA-legible on
-       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
-       body text, and reads ~4:1 here. */
-    color: var(--app-accent);
+    background: var(--app-surface);
+    color: var(--app-text-strong);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.16),
+      0 0 0 var(--hairline) var(--glass-line);
     font-weight: 600;
   }
   /* On the Settings route neither surface is the current page; de-emphasize the
      whole toggle so it doesn't read as a live selection, and quietly mark the
-     surface "Back to app" returns to (no accent fill — that's reserved for the
+     surface "Back to app" returns to (no raised pill — that's reserved for the
      active page). */
   .surface-toggle--muted {
     opacity: 0.72;
   }
   .surface-toggle--muted button.return-target {
     color: var(--app-text);
-    border-color: var(--app-border);
-    background: var(--app-surface-raised);
+    background: var(--glass-tint);
   }
 
   /* ── Quick Recall door ─────────────────────────────────────────
@@ -2607,15 +2653,17 @@
     gap: 7px;
     height: 26px;
     padding: 0 8px 0 9px;
-    border: 1px solid var(--app-border);
+    border: 0;
     border-radius: 7px;
-    background: var(--app-surface-subtle);
+    /* A recessed field on chrome: tint + rim, never a drawn border. */
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font: inherit;
     font-size: var(--t-ui);
     line-height: 1;
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease;
   }
   .titlebar__search-icon {
     flex: 0 0 auto;
@@ -2640,13 +2688,11 @@
   }
   .titlebar__search:hover {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
     color: var(--app-text-strong);
   }
   .titlebar__search:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--app-ring), inset 0 0 0 var(--hairline) var(--glass-line);
   }
   .titlebar__search:not(:disabled):active {
     transform: translateY(0.5px);
@@ -2770,30 +2816,29 @@
     height: 28px;
     border-radius: 4px;
     color: var(--app-icon-fg);
-    border: 1px solid transparent;
+    border: 0;
     background: transparent;
     cursor: pointer;
     padding: 0;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
   .titlebar__settings--labelled {
     gap: 6px;
     width: auto;
     padding: 0 12px 0 10px;
   }
+  /* Ghost vocabulary: fills with the material's own tint, never gains an edge. */
   .titlebar__settings:hover {
-    background: var(--app-icon-bg-hover);
+    background: var(--glass-tint);
     color: var(--app-icon-fg-hover);
-    border-color: var(--app-icon-border-hover);
   }
   .titlebar__settings.active {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     color: var(--app-accent-strong);
   }
   .titlebar__settings:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
   .titlebar__settings:not(:disabled):active {
@@ -2859,10 +2904,14 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    /* Level 5: popover material. The rows inside are opaque plates, so nothing
+       readable is left depending on what happens to be behind the window. */
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
   .notification-popover__head {
     display: flex;
@@ -2870,7 +2919,7 @@
     justify-content: space-between;
     gap: 10px;
     padding: 10px 12px;
-    border-bottom: 1px solid var(--app-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
     font-size: var(--t-meta);
     font-weight: 700;
     color: var(--app-text-strong);
@@ -2893,8 +2942,7 @@
   .notification-popover__clear:hover,
   .notification-item__clear:hover {
     color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-    border-color: var(--app-border);
+    background: var(--glass-tint);
   }
   .notification-popover__clear:focus-visible,
   .notification-item__clear:focus-visible {
@@ -2911,26 +2959,30 @@
     gap: 8px;
     padding: 9px 10px;
     border-radius: 6px;
-    border: 1px solid var(--app-border);
+    border: 0;
+    /* THE rule: a notification is prose, so it lands on an opaque plate even
+       though the popover around it is glass. */
     background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
   .notification-item + .notification-item {
     margin-top: 6px;
   }
   .notification-item--warning {
-    border-color: var(--app-warn-border);
     background: var(--app-warn-bg);
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
   .notification-item--error {
-    border-color: var(--app-danger-border);
     background: var(--app-danger-bg-soft);
+    box-shadow: var(--sh-tile),
+      inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
   .notification-item--error .notification-item__title {
     color: var(--app-danger-text);
   }
   .notification-item--info {
-    border-color: var(--app-info-border);
     background: var(--app-info-bg);
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-info-border);
   }
   .notification-item--info .notification-item__title {
     color: var(--app-info);
@@ -2967,7 +3019,8 @@
     margin: 6px 6px 0;
     padding: 7px 9px;
     border-radius: 6px;
-    border: 1px solid var(--app-danger-border);
+    border: 0;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
     background: var(--app-danger-bg-soft);
     color: var(--app-danger-text);
     font-size: var(--t-meta);
@@ -2977,7 +3030,8 @@
   }
   .notification-popover__error-dismiss {
     flex: 0 0 auto;
-    border: 1px solid currentColor;
+    border: 0;
+    box-shadow: inset 0 0 0 var(--hairline) currentColor;
     background: transparent;
     color: inherit;
     font: inherit;
@@ -3001,8 +3055,10 @@
     margin-top: 4px;
     padding: 4px 7px;
     border-radius: 4px;
-    border: 1px solid var(--app-border-strong);
-    background: var(--app-surface);
+    border: 0;
+    background: var(--app-surface-raised);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text);
     font-size: var(--t-label);
     font-weight: 800;
@@ -3010,13 +3066,11 @@
     text-transform: uppercase;
   }
   .notification-item__action:hover {
-    border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
   }
   .notification-item__action:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--app-ring), 0 1px 1px rgba(0, 0, 0, 0.1);
   }
   .notification-item__clear {
     align-self: start;
@@ -3117,11 +3171,13 @@
     width: min(560px, 100%);
     max-height: min(680px, calc(100vh - 48px));
     overflow-y: auto;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 12px;
+    /* The sheet stays OPAQUE — it is a page of readable rows, not a menu — but
+       it floats, so it wears the float shadow and a rim instead of a border. */
+    border: 0;
+    border-radius: var(--r-panel);
     background: var(--app-surface-raised);
     color: var(--app-text);
-    box-shadow: var(--app-shadow-popover);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     padding: 18px;
   }
 
@@ -3156,9 +3212,11 @@
     justify-content: center;
     width: 30px;
     height: 30px;
-    border: 1px solid var(--app-border);
+    border: 0;
     border-radius: 999px;
     background: var(--app-surface-raised);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     cursor: pointer;
     font: inherit;
@@ -3166,7 +3224,7 @@
 
   .shortcut-help__close:hover,
   .shortcut-help__close:focus-visible {
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
     color: var(--app-text-strong);
     outline: none;
   }
@@ -3201,9 +3259,11 @@
     justify-content: space-between;
     gap: 18px;
     padding: 9px 10px;
-    border: 1px solid var(--app-border);
+    /* A surface step replaces the border — the sheet's rows are stacked plates,
+       not boxed cells. */
+    border: 0;
     border-radius: 8px;
-    background: var(--app-surface-raised);
+    background: var(--app-surface);
   }
 
   .shortcut-help__row dt {
@@ -3225,7 +3285,8 @@
   .kbd--help {
     min-width: 24px;
     color: var(--app-text-strong);
-    box-shadow: inset 0 -1px 0 var(--app-overlay-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 0 -1px 0 var(--app-overlay-border);
   }
 
   .shortcut-help__note {

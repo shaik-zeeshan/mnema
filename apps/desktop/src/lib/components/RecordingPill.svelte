@@ -549,19 +549,23 @@
   .rec__record {
     background: var(--app-record-start-bg);
     color: var(--app-record-start-fg);
-    border-color: var(--app-record-start-border);
+    /* Borderless like every other button here: the record tint's edge is the
+       button's own rim, not a drawn border. */
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--app-record-start-border);
   }
   .rec__record:hover:not(:disabled) {
     background: var(--app-record-start-bg-hover);
     color: var(--app-record-start-fg-hover);
-    border-color: var(--app-record-start-border-hover);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--app-record-start-border-hover);
   }
 
   .rec__more {
     color: var(--app-text-muted);
   }
   .rec__more--open {
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
     color: var(--app-text-strong);
   }
 
@@ -573,14 +577,20 @@
     position: fixed;
     z-index: 200;
     min-width: 252px;
-    padding: var(--s-6);
-    border: var(--hairline) solid var(--app-border-strong);
-    border-radius: var(--r-md);
-    background: var(--app-surface-raised);
-    box-shadow: var(--shadow-popover);
+    /* NSMenu anatomy on level-5 material (07): 5px padding, 8px radius, 24px
+       items, a checkmark gutter, a glyph gutter, and a right-aligned mono key
+       hint. Everything in here is a menu label, never prose — so material is
+       where it belongs. */
+    padding: 5px;
+    border: 0;
+    border-radius: var(--r-lg);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 0;
   }
 
   .recpop__head {
@@ -609,17 +619,17 @@
   }
 
   .recpop__sep {
-    height: var(--hairline);
-    margin: var(--s-6) var(--s-8);
-    background: var(--app-border);
+    height: 1px;
+    margin: 5px var(--s-8);
+    background: var(--glass-line);
   }
 
   .recpop__item {
     display: flex;
     align-items: center;
-    gap: var(--gap-inline);
+    gap: var(--s-8);
     width: 100%;
-    height: var(--h-md);
+    height: 24px;
     padding: 0 var(--s-8);
     border: 0;
     border-radius: var(--r-sm);
@@ -629,19 +639,29 @@
     letter-spacing: var(--ls-ui);
     text-align: left;
   }
-  .recpop__item:hover:not(:disabled) {
-    background: var(--app-surface-hover);
+  /* NSMenu highlights the row under the pointer with a full accent fill; the
+     checkmark gutter, not the fill, is what says "on". */
+  .recpop__item:hover:not(:disabled),
+  .recpop__item:focus-visible {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  .recpop__item:hover:not(:disabled) .recpop__glyph,
+  .recpop__item:hover:not(:disabled) .recpop__check,
+  .recpop__item:focus-visible .recpop__glyph,
+  .recpop__item:focus-visible .recpop__check {
+    color: inherit;
   }
   .recpop__item:focus-visible {
     outline: none;
-    box-shadow: var(--ring);
   }
   .recpop__item:disabled {
     opacity: var(--opacity-disabled);
   }
 
-  .recpop__glyph,
-  .recpop__check {
+  /* Both gutters are the same width so a transport row's label and a source
+     row's label land on the same x, even though each row carries only one. */
+  .recpop__glyph {
     flex: 0 0 auto;
     width: 14px;
     display: inline-flex;
@@ -649,9 +669,31 @@
     justify-content: center;
     color: var(--app-text-muted);
   }
+  .recpop__check {
+    flex: 0 0 auto;
+    width: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--app-accent);
+  }
 
+  /* In an NSMenu the key equivalent is plain right-aligned mono type, not a
+     keycap — the keycap is for teaching a shortcut, this is for recalling one. */
   .recpop__kbd {
     margin-left: auto;
+    min-width: 0;
+    height: auto;
+    padding: 0;
+    background: none;
+    box-shadow: none;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
+  }
+  .recpop__item:hover:not(:disabled) .recpop__kbd,
+  .recpop__item:focus-visible .recpop__kbd {
+    color: inherit;
+    opacity: 0.8;
   }
 
   .recpop__restart {
