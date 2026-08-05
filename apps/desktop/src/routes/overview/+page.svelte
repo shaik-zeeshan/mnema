@@ -1,107 +1,139 @@
 <script lang="ts">
-  // Overview — Timeline's peer surface (⌘2). This is the scaffold only: the
-  // three sections below are the shape G11 settled (This Week bars + Ask
-  // history in, Open Threads as digest prose), and their content arrives with
-  // the Overview data endpoints slice. Deliberately no tiles and no placeholder
-  // numbers — a fake bar chart would be worse than an empty heading.
-  const sections = [
-    {
-      title: "This Week",
-      note: "Seven days of capture, one bar per day.",
-    },
-    {
-      title: "Recent asks",
-      note: "The questions you asked Mnema, newest first.",
-    },
-    {
-      title: "Open threads",
-      note: "The one thread the daily digest says is still open.",
-    },
-  ];
+  // Overview — Timeline's peer surface (⌘2), skinned in direction 01, BENTO
+  // NATIVE. The tile grid IS the layout: one cell unit, one 16px gutter, and
+  // exactly four legal footprints (1×1, 2×1, 2×2, 4×1 — a fifth is the moment
+  // the grid stops being a grid). Every tile opens with the SAME 18px header row
+  // on the same baseline, which is what licenses each payload below it to be
+  // completely free — and to bleed past the 14px inset and be clipped by the
+  // tile radius.
+  //
+  // All grid + tile machinery lives in `$lib/bento/bento.css` (imported once by
+  // the shell layout). Nothing here forks it; this file owns only the page
+  // frame, the day header, and the two column counts.
+  //
+  // Every tile runs on real backend data through `OverviewData` — one burst of
+  // already-registered commands. A tile with nothing to show renders its
+  // designed empty state; none of them ever invents a number (G8).
+  import { onMount } from "svelte";
+  import { OverviewData } from "$lib/overview/overview-data.svelte";
+  import { capturedLabel } from "$lib/overview/overview-format";
+  import MomentsTile from "$lib/overview/MomentsTile.svelte";
+  import DigestTile from "$lib/overview/DigestTile.svelte";
+  import CaptureTile from "$lib/overview/CaptureTile.svelte";
+  import StorageTile from "$lib/overview/StorageTile.svelte";
+  import ConversationsTile from "$lib/overview/ConversationsTile.svelte";
+  import WeekTile from "$lib/overview/WeekTile.svelte";
+  import ContextTile from "$lib/overview/ContextTile.svelte";
+  import SubjectsTile from "$lib/overview/SubjectsTile.svelte";
+  import AskTile from "$lib/overview/AskTile.svelte";
+
+  const data = new OverviewData();
+
+  onMount(() => {
+    void data.load();
+  });
+
+  const today = new Date();
+  const dayLabel = today.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+
+  // The day line states only what was measured: captured time and the
+  // conversation count (conversations, never minutes). No byte figure — nothing
+  // measures per-day bytes, and G8 forbids the guess.
+  const dayMeta = $derived.by(() => {
+    const parts: string[] = [];
+    const captured = capturedLabel(data.todayCoveredMs);
+    if (captured) parts.push(`${captured} captured`);
+    const count = data.conversations.length;
+    if (count) parts.push(`${count} ${count === 1 ? "conversation" : "conversations"}`);
+    return parts.join(" · ");
+  });
 </script>
 
-<div class="overview">
-  <header class="overview__head">
-    <h1 class="overview__title">Overview</h1>
-    <p class="overview__lede">
-      The read-at-a-glance surface. Not wired up yet — Timeline still has everything.
-    </p>
-  </header>
+<div class="ov scroll">
+  <div class="ov__col">
+    <div class="ov__day">
+      <p class="t-title">{dayLabel}</p>
+      {#if dayMeta}<p class="t-meta is-mono is-num">{dayMeta}</p>{/if}
+    </div>
 
-  <div class="overview__sections">
-    {#each sections as section (section.title)}
-      <section class="overview__section">
-        <h2 class="overview__section-title">{section.title}</h2>
-        <p class="overview__section-note">{section.note}</p>
-        <p class="overview__empty">Nothing here yet.</p>
-      </section>
-    {/each}
+    <div class="bento ov__grid">
+      <!-- R1 · 4×1 — media payload, bleeds all three edges -->
+      <MomentsTile moments={data.moments} loaded={data.loaded} />
+
+      <!-- R2 · 2×1 + 1×1 + 1×1 -->
+      <DigestTile digest={data.digest} status={data.contextStatus} loaded={data.loaded} />
+      <CaptureTile coveredMs={data.todayCoveredMs} />
+      <StorageTile facts={data.facts} loaded={data.loaded} />
+
+      <!-- R3 · 2×1 + 1×1 + 1×1 -->
+      <ConversationsTile conversations={data.conversations} loaded={data.loaded} />
+      <div class="drop-narrow"><WeekTile coverage={data.coverage} loaded={data.loaded} /></div>
+      <ContextTile
+        status={data.contextStatus}
+        conclusions={data.conclusions}
+        loaded={data.loaded}
+      />
+
+      <!-- R4 · 2×1 + 2×1 -->
+      <div class="drop-narrow">
+        <SubjectsTile
+          conclusions={data.conclusions}
+          subjectCount={data.contextStatus?.subjectCount ?? 0}
+          loaded={data.loaded}
+        />
+      </div>
+      <AskTile asks={data.asks} loaded={data.loaded} />
+    </div>
   </div>
 </div>
 
 <style>
-  .overview {
-    flex: 1 1 auto;
+  .ov {
+    flex: 1 1 auto; /* height:100% collapses under WKWebView — always flex here */
     min-height: 0;
     overflow-y: auto;
-    padding: 24px 28px 32px;
+  }
+  .ov__col {
+    padding: var(--s-16) var(--pad-window) var(--s-48);
+  }
+  .ov__day {
     display: flex;
-    flex-direction: column;
-    gap: 24px;
+    align-items: baseline;
+    gap: var(--s-12);
+    height: 24px;
+    margin-bottom: var(--gap-group);
   }
-
-  .overview__head {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .overview__title {
+  .ov__day p {
     margin: 0;
-    font-size: var(--t-title);
-    font-weight: 590;
-    color: var(--app-text-strong);
   }
 
-  .overview__lede {
-    margin: 0;
-    font-size: var(--t-ui);
-    color: var(--app-text-muted);
+  /* Four columns, four row heights — the default window. Row heights are fixed
+     because the grid's rhythm is the direction; a tile whose payload outgrows
+     its row scrolls inside itself rather than pushing the grid around. */
+  .ov__grid {
+    grid-template-rows: 152px 140px 144px 130px;
   }
 
-  .overview__sections {
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-    max-width: 720px;
+  /* `drop-narrow` is a pass-through wrapper so the tile inside keeps its own
+     footprint. `display: contents` means it adds no box to the grid. */
+  .drop-narrow {
+    display: contents;
   }
 
-  .overview__section {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .overview__section-title {
-    margin: 0;
-    font-size: var(--t-read);
-    font-weight: 590;
-    color: var(--app-text-strong);
-  }
-
-  .overview__section-note {
-    margin: 0;
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-  }
-
-  .overview__empty {
-    margin: 8px 0 0;
-    padding: 20px;
-    border: 1px dashed var(--app-border);
-    border-radius: 8px;
-    font-size: var(--t-ui);
-    color: var(--app-text-faint);
-    text-align: center;
+  /* The 800×600 floor: two columns, and the stated drop order — This week and
+     Subjects go, the captured-hours hero stays (it is this screen's one
+     --t-display). */
+  @media (max-width: 900px) {
+    .ov__grid {
+      grid-template-columns: repeat(2, 1fr);
+      grid-template-rows: 150px 128px 132px 118px 104px;
+    }
+    .drop-narrow {
+      display: none;
+    }
   }
 </style>
