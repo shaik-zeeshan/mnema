@@ -622,22 +622,26 @@
 </div>
 
 <style>
+  /* STATED DEVIATION (direction 01, 07-components.html): the drawer floats
+     ABOVE the rail dock instead of covering it, so the rail and the mic/sys
+     lane stay scrubbable while you listen. Same drawer, same anatomy, same
+     order — it just docks 132px up, at the top edge of the rail-wrap. */
   .audio-drawer {
     position: fixed;
-    left: 12px;
-    right: 12px;
-    bottom: 12px;
+    left: var(--s-8);
+    right: var(--s-8);
+    bottom: 132px;
     z-index: 30;
     display: flex;
     flex-direction: column;
     max-height: 50vh;
     overflow: hidden;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
+    background: var(--tile-fill);
+    border: 0;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
+    /* It genuinely floats, so it keeps a shadow — the only kind this
+       direction allows. */
+    box-shadow: var(--shadow-popover);
     animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
     outline: none;
   }
@@ -647,31 +651,15 @@
      the timeline — accepted tradeoff, peek is the mitigation. */
   .audio-drawer--expanded {
     /* Below the app titlebar, which is fixed and would otherwise cover the
-       drawer's own header row (rerun / timestamps / collapse / close). */
-    top: calc(var(--app-titlebar-height) + 8px);
+       drawer's own header row (rerun / timestamps / collapse / close). The
+       rail dock stays uncovered even here — that is the whole point of the
+       deviation. */
+    top: calc(var(--app-titlebar-height) + var(--s-8));
     max-height: none;
   }
 
   .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  /* The dark lift is far too heavy on paper. */
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-
-  :global([data-theme="light"]) .audio-drawer:focus-visible {
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      var(--app-ring);
+    box-shadow: var(--shadow-popover), 0 0 0 3.5px var(--app-accent-glow);
   }
 
   @keyframes audio-drawer-rise {
@@ -729,10 +717,10 @@
     right: 14px;
     bottom: 52px;
     padding: 4px 10px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-surface-raised);
-    box-shadow: var(--app-shadow-popover);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--mat-hud);
+    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge);
     color: var(--app-text-strong);
     font: inherit;
     font-size: 10px;
@@ -753,9 +741,10 @@
     gap: 10px;
     margin: 8px 12px 0;
     padding: 8px 10px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-md);
     background: var(--app-danger-bg-soft, transparent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
     font-size: 11px;
     color: var(--app-danger-text, var(--app-danger));
   }

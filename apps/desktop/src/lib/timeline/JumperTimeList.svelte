@@ -56,7 +56,7 @@
     {/if}
   </div>
 
-  <div class="timeline__picker-scroll">
+  <div class="timeline__picker-scroll scroll">
     {#if !hasSelection}
       <div class="timeline__picker-msg">
         <span class="timeline__picker-msg-ico" aria-hidden="true">◴</span>
@@ -111,9 +111,14 @@
 </div>
 
 <style>
+  /* Its own grouped fill, so the hour list reads as a second group beside
+     the day tiles rather than blurring into the popover material. */
   .timeline__picker-time {
     display: flex;
     flex-direction: column;
+    padding: var(--s-4);
+    border-radius: var(--r-lg);
+    background: var(--tile-fill);
     min-width: 0;
     /* min-height:0 lets the inner scroll pane bound itself against the grid
        row instead of forcing the whole column to content height. */
@@ -126,8 +131,8 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 8px;
-    padding: 8px 12px 6px;
-    border-bottom: 1px solid var(--app-border);
+    height: var(--tile-hd);
+    padding: 0 var(--s-8) 0 var(--s-4);
   }
   .timeline__picker-day {
     font-size: var(--t-ui);
@@ -146,18 +151,8 @@
   .timeline__picker-scroll {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 6px 8px;
+    padding: var(--s-6) var(--s-4);
     min-height: 160px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--app-border-strong) transparent;
-  }
-  .timeline__picker-scroll::-webkit-scrollbar {
-    width: 8px;
-  }
-  .timeline__picker-scroll::-webkit-scrollbar-thumb {
-    background: var(--app-border-strong);
-    border-radius: 4px;
-    border: 2px solid var(--app-surface);
   }
 
   .timeline__picker-hour {
@@ -168,13 +163,13 @@
     width: 100%;
     text-align: left;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
+    border: 0;
+    border-radius: var(--r-sm);
     color: var(--app-text);
     font-family: var(--app-font-mono);
     font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
-    padding: 4px 8px;
+    padding: var(--s-4) var(--s-8);
     margin-bottom: 1px;
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
@@ -208,8 +203,7 @@
     letter-spacing: 0.02em;
   }
   .timeline__picker-hour:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--tile-fill-hover);
   }
   .timeline__picker-hour:disabled {
     color: var(--app-text-faint);
@@ -236,8 +230,7 @@
   }
   .timeline__picker-hour:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
 
   .timeline__picker-msg {
@@ -276,9 +269,8 @@
   }
 
   .timeline__picker-time-foot {
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    padding: var(--s-6) var(--s-4) var(--s-4);
+    box-shadow: inset 0 var(--hairline) 0 var(--tile-sep);
   }
   .timeline__picker-day-latest {
     width: 100%;

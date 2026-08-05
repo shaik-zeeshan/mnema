@@ -123,10 +123,10 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
-    font-size: 11px;
+    min-height: 44px;
+    padding: var(--s-6) var(--pad-panel);
+    box-shadow: inset 0 calc(var(--hairline) * -1) 0 var(--tile-sep);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
 
@@ -138,12 +138,16 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
-    font-size: 10px;
+    height: var(--o-badge);
+    padding: 0 var(--s-6);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-hover);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: var(--ls-label);
   }
 
   .tag__swatch {
@@ -154,11 +158,11 @@
   }
 
   .tag--microphone .tag__swatch {
-    background: var(--app-source-mic);
+    background: var(--app-src-mic);
   }
 
   .tag--systemAudio .tag__swatch {
-    background: var(--app-source-sysaudio);
+    background: var(--app-src-sys);
   }
 
   .rhead__index {
@@ -194,12 +198,13 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-neutral-bg, transparent);
+    height: var(--o-badge);
+    padding: 0 var(--s-6);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-hover);
     color: var(--app-text-muted);
-    font-size: 10px;
+    font-size: var(--t-label);
     text-transform: uppercase;
     letter-spacing: 0.08em;
   }
@@ -213,69 +218,65 @@
   }
 
   .statuspill--ok {
-    border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
     color: var(--app-accent);
   }
 
   .statuspill--work {
-    border-color: var(--app-info-border, var(--app-border-strong));
-    background: color-mix(in srgb, var(--app-info) 10%, transparent);
+    background: color-mix(in srgb, var(--app-info) 12%, transparent);
     color: var(--app-info);
   }
 
   .statuspill--warn {
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 10%, transparent);
+    background: var(--app-warn-bg);
     color: var(--app-warn);
   }
 
   .statuspill--bad {
-    border-color: var(--app-danger-border);
-    background: color-mix(in srgb, var(--app-danger) 10%, transparent);
+    background: var(--app-danger-bg);
     color: var(--app-danger-text, var(--app-danger));
   }
 
   .ghost {
-    padding: 3px 9px;
-    border: 1px solid transparent;
-    border-radius: 5px;
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
     color: var(--app-text-muted);
-    font: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
     cursor: pointer;
+    transition: background-color var(--dur-quick) var(--ease);
   }
 
-  .ghost:hover:not(:disabled),
-  .ghost:focus-visible:not(:disabled) {
+  .ghost:hover:not(:disabled) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
     color: var(--app-text-strong);
+  }
+
+  .ghost:focus-visible:not(:disabled) {
     outline: none;
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
 
   .ghost:disabled {
-    opacity: var(--app-disabled-opacity);
+    opacity: var(--opacity-disabled);
     cursor: not-allowed;
   }
 
   .ghost[aria-pressed="true"] {
     color: var(--app-accent);
-    border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
 
   .rhead__close {
-    width: 24px;
-    height: 24px;
+    width: var(--h-sm);
+    height: var(--h-sm);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
     color: var(--app-text-muted);
     cursor: pointer;
@@ -284,13 +285,12 @@
   .rhead__close:hover,
   .rhead__close:focus-visible {
     color: var(--app-danger);
-    border-color: var(--app-danger-strong);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
+    background: var(--app-danger-bg);
     outline: none;
   }
 
   .rhead__close:focus-visible {
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
 
   .spinner {
@@ -314,6 +314,10 @@
   @media (prefers-reduced-motion: reduce) {
     .spinner {
       animation: none;
+    }
+
+    .ghost {
+      transition: none;
     }
   }
 </style>

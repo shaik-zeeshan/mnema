@@ -73,11 +73,12 @@
 </div>
 
 <style>
+  /* Direction 01: the month grid is a bare bento grid — no cell borders, a
+     full accent fill on the previewed day, and a 3px accent dot under any day
+     that actually holds recording. Days without coverage are disabled by the
+     predicate above, so the grid can never land you on an empty day (G6). */
   .timeline__picker-cal {
-    padding: 12px;
-    border-top: 1px solid var(--app-border);
-    /* Top-align the calendar so its nav row sits level with the time pane
-       header — no dead space above it. The grid's square cells fill the width. */
+    padding: var(--s-4) var(--s-8) var(--s-8);
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
@@ -85,9 +86,8 @@
   :global(.cal) {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--s-4);
     color: var(--app-text);
-    /* Fill the calendar pane so the week rows can stretch to its full height. */
     flex: 1 1 auto;
     min-height: 0;
   }
@@ -95,43 +95,41 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
-    padding: 0 2px 4px;
+    gap: var(--s-8);
+    height: var(--tile-hd);
   }
+  /* The month stepper — the direction's `.step` pair, borderless on a tinted
+     well, exactly like the rail's frame stepper. */
   :global(.cal__nav) {
-    width: 24px;
-    height: 24px;
+    width: 22px;
+    height: 20px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 3px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: color-mix(in srgb, var(--app-text-strong) 7%, transparent);
     color: var(--app-text-muted);
     cursor: pointer;
     font-size: var(--t-ui);
     line-height: 1;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background-color var(--dur-quick) var(--ease);
   }
   :global(.cal__nav:hover:not([data-disabled])) {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
   :global(.cal__nav[data-disabled]) {
-    opacity: var(--app-disabled-opacity);
+    opacity: var(--opacity-disabled);
     cursor: not-allowed;
   }
   :global(.cal__nav:focus-visible) {
     outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
   :global(.cal__heading) {
-    font-size: var(--t-ui);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-muted);
   }
   /* Override the bits-ui <table> layout into a flex column so the grid body
      fills the remaining height and each week row shares it equally. */
@@ -155,6 +153,7 @@
   :global(.cal__row) {
     display: grid;
     grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
   }
   /* Week rows (body only — not the weekday header) stretch to fill. */
   :global(.cal__grid tbody .cal__row) {
@@ -162,56 +161,69 @@
     min-height: 0;
   }
   :global(.cal__weekday) {
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    height: 18px;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
     text-align: center;
-    padding: 4px 0;
+    vertical-align: middle;
   }
   :global(.cal__cell) {
-    padding: 1px;
+    padding: 0;
   }
   :global(.cal__day) {
     position: relative;
     width: 100%;
     height: 100%;
-    min-height: 26px;
+    min-height: 24px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 3px;
-    font-family: var(--app-font-mono);
-    font-size: var(--t-meta);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
     font-variant-numeric: tabular-nums;
     color: var(--app-text);
-    background: transparent;
-    border: 1px solid transparent;
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background-color var(--dur-quick) var(--ease);
+  }
+  /* A day that holds recording carries an accent dot; a day that does not is
+     disabled and faint — the one signal, drawn once. */
+  :global(.cal__day:not([data-disabled]):not([data-outside-month])::after) {
+    content: "";
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--app-accent);
   }
   :global(.cal__day:hover:not([data-disabled])) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
   }
   :global(.cal__day[data-disabled]),
   :global(.cal__day[data-outside-month]) {
     color: var(--app-text-faint);
     cursor: not-allowed;
   }
-  /* Previewing / selected — accent FILL recipe (matches shipped calendar). */
+  /* Previewing / selected — full accent fill (the native selected-row rule). */
   :global(.cal__day[data-selected]) {
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    border-color: color-mix(in srgb, var(--app-accent) 50%, transparent);
-    color: var(--app-accent);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  :global(.cal__day[data-selected]::after) {
+    background: var(--app-accent-contrast);
   }
   :global(.cal__day[data-today]:not([data-selected])) {
-    border-color: var(--app-border-strong);
     color: var(--app-text-strong);
+    font-weight: var(--w-semi);
   }
-  /* "You are here" — accent LEFT BAR; layers atop the fill on the committed
-     day and stays visible when previewing a different day. */
+  /* "You are here" — accent left bar, echoing the playhead; layers atop the
+     fill on the committed day and survives previewing a different day. */
   :global(.cal__day--here) {
     box-shadow: inset 2px 0 0 0 var(--app-accent);
   }
@@ -220,7 +232,13 @@
   }
   :global(.cal__day:focus-visible) {
     outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(.cal__day),
+    :global(.cal__nav) {
+      transition: none;
+    }
   }
 </style>

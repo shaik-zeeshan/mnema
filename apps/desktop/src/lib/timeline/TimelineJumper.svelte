@@ -1,10 +1,13 @@
 <script lang="ts">
-  import { tip } from "$lib/components/tooltip";
   // ── Timeline Jumper ───────────────────────────────────────────────────────
-  // Two-pane "jump to date & time" popover (calendar | hourly time list)
-  // extracted out of the dashboard `+page.svelte`. Orchestrator only — the
-  // calendar pane (`JumperCalendar`), time-list pane (`JumperTimeList`) and the
-  // per-month summary cache (`createJumperCache`) live in sibling files.
+  // The bento jump panel (direction 01, page 02). Popover ONLY: its trigger is
+  // the rail's position pill (`RailReadout`), handed in as `triggerEl`, because
+  // the readout and the jump control are one object — there is no second date
+  // field and no from/to pair anywhere on the timeline (G5/G6).
+  //
+  // Orchestrator only — the day tiles (`JumperDayRows`), month grid
+  // (`JumperCalendar`), hour list (`JumperTimeList`) and the per-month summary
+  // cache (`createJumperCache`) live in sibling files.
   //
   // Behavior (spec §12 grill resolutions, binding):
   //   - Preview-on-select: clicking a calendar day previews that day's hours
@@ -33,8 +36,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
-  import IconCalendar from "~icons/lucide/calendar";
-  import IconChevronDown from "~icons/lucide/chevron-down";
   import type {
     DayCoverage,
     FrameDto,
@@ -70,8 +71,12 @@
     jumping?: boolean;
     /** Parent timeline busy (loading / loading-more) — disables commits. */
     timelineBusy?: boolean;
-    /** Whether the standalone "latest" affordance should render. */
-    showLatest?: boolean;
+    /**
+     * The control that owns this panel — the rail's position pill. Used for
+     * anchoring, outside-click detection and focus restore. The panel renders
+     * no trigger of its own.
+     */
+    triggerEl?: HTMLElement | null;
     /**
      * Perform the timeline jump to a resolved frame. Returns null on success,
      * or a human-readable error string on failure (the popover stays open and
@@ -87,7 +92,7 @@
     open = $bindable(false),
     jumping = $bindable(false),
     timelineBusy = false,
-    showLatest = false,
+    triggerEl = null,
     onJump,
     onJumpToLatest,
   }: Props = $props();
@@ -156,16 +161,7 @@
     );
   }
 
-  // ── Trigger readout + committed marker ──────────────────────────────────────
-  function formatTriggerLabel(ts: string): string {
-    const d = parseCapturedAt(ts);
-    if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString();
-  }
-  const triggerLabel = $derived(
-    activeFrame ? formatTriggerLabel(activeFrame.capturedAt) : "no active frame",
-  );
-
+  // ── Committed marker ────────────────────────────────────────────────────────
   const committedMoment = $derived.by<Date | null>(() => {
     if (!activeFrame) return null;
     const d = parseCapturedAt(activeFrame.capturedAt);
@@ -338,10 +334,6 @@
     }
     open = false;
   }
-  function toggle(): void {
-    open = !open;
-  }
-
   // Belt-and-braces: clear any pending close-beat timer on unmount.
   $effect(() => () => {
     if (closeTimer != null) clearTimeout(closeTimer);
@@ -376,13 +368,12 @@
 
   // ── Dialog a11y: focus trap, restore, Escape, click-outside, positioning ────
   let pickerEl = $state<HTMLDivElement | null>(null);
-  let pickerTriggerEl = $state<HTMLButtonElement | null>(null);
 
   function updatePickerPosition(): void {
-    if (!pickerEl || !pickerTriggerEl) return;
+    if (!pickerEl || !triggerEl) return;
     const viewportMargin = 12;
     const triggerGap = 6;
-    const triggerRect = pickerTriggerEl.getBoundingClientRect();
+    const triggerRect = triggerEl.getBoundingClientRect();
     const pickerRect = pickerEl.getBoundingClientRect();
     const viewportWidth = window.innerWidth;
     const viewportHeight = window.innerHeight;
@@ -391,10 +382,9 @@
       Math.max(0, viewportWidth - viewportMargin * 2),
     );
 
-    let left = triggerRect.left;
-    if (triggerRect.left + pickerWidth > viewportWidth - viewportMargin) {
-      left = triggerRect.right - pickerWidth;
-    }
+    // Centred on the position pill — the panel and the readout are one object,
+    // so the panel grows from under it rather than off one of its corners.
+    let left = triggerRect.left + triggerRect.width / 2 - pickerWidth / 2;
     left = Math.min(
       Math.max(viewportMargin, left),
       Math.max(viewportMargin, viewportWidth - viewportMargin - pickerWidth),
@@ -466,7 +456,7 @@
     const target = e.target as Node | null;
     if (!target) return;
     if (pickerEl?.contains(target)) return;
-    if (pickerTriggerEl?.contains(target)) return; // trigger handles its own toggle
+    if (triggerEl?.contains(target)) return; // trigger handles its own toggle
     close();
   }
 
@@ -485,7 +475,7 @@
       cancelled = true;
       const active = document.activeElement as HTMLElement | null;
       if (!active || active === document.body || pickerEl?.contains(active)) {
-        pickerTriggerEl?.focus();
+        triggerEl?.focus();
       }
     };
   });
@@ -503,7 +493,7 @@
     void tick().then(scheduleUpdate);
     const ro = new ResizeObserver(scheduleUpdate);
     if (pickerEl) ro.observe(pickerEl);
-    if (pickerTriggerEl) ro.observe(pickerTriggerEl);
+    if (triggerEl) ro.observe(triggerEl);
     window.addEventListener("resize", scheduleUpdate);
     window.addEventListener("scroll", scheduleUpdate, true);
     return () => {
@@ -527,36 +517,10 @@
 
 <svelte:window onpointerdown={onWindowPointerDown} />
 
-<div class="timeline__jump">
-  <!-- Position pill (G6): the label IS your position, the chevron is the jump.
-       One control owns both jobs — there is no second date input and no from/to
-       pair anywhere on the timeline. -->
-  <button
-    class="pill pill--quiet timeline__jump-trigger"
-    class:timeline__jump-trigger--open={open}
-    onclick={toggle}
-    bind:this={pickerTriggerEl}
-    aria-haspopup="dialog"
-    aria-expanded={open}
-    aria-controls="timeline-jump-picker"
-    use:tip={"Jump to date and time (J)"}
-  >
-    <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
-    <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
-    <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
-  </button>
-
-  {#if showLatest}
-    <button
-      class="btn btn--ghost btn--sm timeline__jump-latest"
-      onclick={() => void onJumpToLatest()}
-      disabled={timelineBusy || jumping}
-      use:tip={"Jump to latest frame (L)"}
-    >latest</button>
-  {/if}
-
-  {#if open}
+<!-- Popover only. The trigger is the rail's position pill (`RailReadout`),
+     handed in as `triggerEl` — the readout and the jump control are one
+     object, so there is no second date input and no from/to pair. -->
+{#if open}
     <div
       class="timeline__picker"
       id="timeline-jump-picker"
@@ -569,20 +533,11 @@
       onkeydown={onPickerKeydown}
     >
       <div class="timeline__picker-head">
-        <span class="timeline__picker-title">Jump to date &amp; time</span>
-        <button
-          class="btn btn--accent btn--sm timeline__picker-global-latest"
-          onclick={() => void commitGlobalLatest()}
-          disabled={timelineBusy || jumping}
-          use:tip={"Jump to latest frame"}
-        >
-          <span class="timeline__picker-glyph" aria-hidden="true">⟿</span>
-          latest
-        </button>
+        <span class="t-label timeline__picker-title">Jump to</span>
       </div>
 
       <div class="timeline__picker-panes">
-        <div class="timeline__picker-days">
+        <div class="timeline__picker-days scroll">
           <JumperDayRows
             rows={dayRows}
             loading={coverageLoading}
@@ -628,67 +583,14 @@
         {/if}
       </div>
     </div>
-  {/if}
-</div>
+{/if}
 
 <style>
-  /* `.btn` + `--ghost` / `--sm` / `--accent`: shared primitive
-     (system.css §6, routes/+layout.svelte). */
-
-  /* ── Trigger group ──────────────────────────────────────────────────────── */
-  .timeline__jump {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    position: relative;
-  }
-  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
-     reset and the open ring are local. */
-  .timeline__jump-trigger {
-    border: 0;
-    cursor: pointer;
-    font-variant-numeric: tabular-nums;
-    max-width: 260px;
-  }
-  .timeline__jump-trigger:hover {
-    background: var(--app-surface-active);
-  }
-  .timeline__jump-trigger--open {
-    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
-  }
-  .timeline__jump-chevron {
-    display: inline-flex;
-    align-items: center;
-    color: var(--app-text-muted);
-  }
-  .timeline__jump-chevron :global(svg) {
-    width: 11px;
-    height: 11px;
-  }
-  .timeline__jump-latest {
-    flex: 0 0 auto;
-  }
-  .timeline__jump-icon {
-    display: inline-flex;
-    align-items: center;
-    color: var(--app-accent);
-  }
-  .timeline__jump-icon :global(svg) {
-    width: 13px;
-    height: 13px;
-  }
-  .timeline__jump-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
-  .timeline__jump-kbd {
-    flex: 0 0 auto;
-    margin-left: 2px;
-  }
-
-  /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* ── The bento jump panel ────────────────────────────────────────────────
+     A popover over content, so it is one of the few surfaces allowed a
+     material + a shadow: `--mat-pop` (opaque over content) on `--r-xl`, one
+     hairline edge, `--shadow-popover`. Everything inside is a borderless
+     fill on `--tile-fill`; separators are `--tile-sep`. */
   .timeline__picker {
     position: fixed;
     z-index: 20;
@@ -697,51 +599,36 @@
     width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    padding: var(--s-4);
+    border-radius: var(--r-xl);
+    background: var(--mat-pop);
+    backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge);
     color: var(--app-text);
   }
   .timeline__picker-head {
+    flex: 0 0 var(--tile-hd);
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    gap: var(--s-8);
+    padding: var(--s-4) var(--s-8) var(--s-6);
   }
   .timeline__picker-title {
-    flex: 1;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
     color: var(--app-text-subtle);
   }
-  .timeline__picker-global-latest {
-    flex: 0 0 auto;
-    gap: 6px;
-  }
-  .timeline__picker-glyph {
-    font-size: var(--t-ui);
-    line-height: 1;
-  }
-  /* Left column: quick targets + seven day rows + the month grid, scrolled as
-     one; right column: the hour list for the previewed day. */
+  /* Left column: quick targets + the seven day tiles + the month grid, scrolled
+     as one; right column: the hour list for the previewed day. */
   .timeline__picker-days {
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid var(--app-border);
-    scrollbar-width: thin;
-    scrollbar-color: var(--app-border-strong) transparent;
   }
   .timeline__picker-panes {
     display: grid;
     grid-template-columns: 1fr 190px;
+    gap: var(--s-4);
     /* Bound the panes to the popover's fixed height (height set inline by
        updatePickerPosition) so the time list scrolls instead of the popover
        resizing with content. minmax(0,1fr) + min-height:0 break the default min-content
@@ -756,16 +643,14 @@
   .timeline__picker-foot {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-    font-size: var(--t-label);
-    min-height: 32px;
+    gap: var(--s-8);
+    padding: var(--s-6) var(--s-8) var(--s-4);
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    min-height: 26px;
   }
   .timeline__picker-foot-span {
     color: var(--app-text-subtle);
-    letter-spacing: 0.03em;
+    font-family: var(--app-font-mono);
     font-variant-numeric: tabular-nums;
   }
   .timeline__picker-foot-msg {
@@ -781,8 +666,6 @@
       width: min(320px, calc(100vw - 24px));
     }
     .timeline__picker-days {
-      border-right: none;
-      border-bottom: 1px solid var(--app-border);
       overflow-y: visible;
     }
     .timeline__picker-panes {
