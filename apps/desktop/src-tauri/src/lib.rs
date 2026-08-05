@@ -8,6 +8,7 @@ mod capture_coverage;
 mod cli_access;
 mod conversation;
 mod crl_refresh;
+mod current_frame;
 mod debug_health;
 mod debug_pipeline;
 mod debug_status;
@@ -694,6 +695,7 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
+            current_frame::capture_current_frame,
             ask_ai::mcp::manager::mcp_warm_connectors,
             ask_ai::mcp::manager::mcp_list_server_tools,
             ask_ai::mcp::oauth_flow::mcp_oauth_begin,
@@ -883,6 +885,7 @@ pub fn run() {
             windows::focus_quick_recall_window,
             windows::quick_recall_suppress_blur_dismiss,
             windows::summon_quick_recall_window_command,
+            windows::quick_recall_set_collapsed,
             windows::toggle_main_window_visibility_command,
             windows::get_onboarding_state,
             windows::complete_onboarding,

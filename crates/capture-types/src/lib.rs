@@ -1,5 +1,6 @@
 mod capture_coverage;
 mod conversation;
+mod current_frame;
 mod highlights;
 mod inactivity;
 mod licensing;
@@ -16,6 +17,7 @@ use serde::Serialize;
 pub use capture_metadata::{BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings};
 pub use capture_coverage::*;
 pub use conversation::*;
+pub use current_frame::*;
 pub use highlights::*;
 pub use inactivity::*;
 pub use licensing::*;

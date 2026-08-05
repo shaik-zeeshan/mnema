@@ -21,11 +21,12 @@ use futures_util::StreamExt;
 use rig_core::agent::{Agent, MultiTurnStreamItem};
 use rig_core::client::CompletionClient;
 use rig_core::completion::{CompletionModel, GetTokenUsage, PromptError, ToolDefinition};
-use rig_core::message::Message;
+use rig_core::message::{ImageMediaType, Message, UserContent};
 use rig_core::providers::{anthropic, llamafile, ollama, openai};
 use rig_core::streaming::{StreamedAssistantContent, StreamingPrompt};
 use rig_core::tool::{ToolDyn, ToolError};
 use rig_core::wasm_compat::{WasmBoxedFuture, WasmCompatSend};
+use rig_core::OneOrMany;
 
 use crate::{AiRuntimeError, CloudProvider, EngineConfig, LocalKind};
 
@@ -204,6 +205,26 @@ fn history_messages(history: &[AgentHistoryTurn]) -> Vec<Message> {
         .collect()
 }
 
+/// Build this turn's user message: the prompt text, plus the screenshot when the
+/// caller has one AND the resolved model can read images (round-4 decision G2 —
+/// the desktop resolver decides, this only carries).
+///
+/// JPEG because that is what the one-shot screen capture writes.
+fn user_prompt_message(prompt: &str, image_jpeg_base64: Option<&str>) -> Message {
+    let Some(image) = image_jpeg_base64
+        .map(str::trim)
+        .filter(|data| !data.is_empty())
+    else {
+        return Message::user(prompt);
+    };
+    let content = OneOrMany::many([
+        UserContent::text(prompt),
+        UserContent::image_base64(image, Some(ImageMediaType::JPEG), None),
+    ])
+    .expect("two content parts is never empty");
+    Message::User { content }
+}
+
 /// Run a tool-agnostic streaming agent loop against the selected engine.
 ///
 /// Builds the appropriate provider client+agent for `config` (mirroring the
@@ -222,6 +243,7 @@ pub async fn run_agent_loop(
     config: &EngineConfig,
     preamble: &str,
     prompt: &str,
+    prompt_image_jpeg_base64: Option<&str>,
     history: &[AgentHistoryTurn],
     tools: Vec<AgentTool>,
     executor: ToolExecutor,
@@ -231,6 +253,7 @@ pub async fn run_agent_loop(
 ) -> Result<(), AiRuntimeError> {
     let tool_set = brokered_tools(tools, &executor);
     let history = history_messages(history);
+    let prompt = user_prompt_message(prompt, prompt_image_jpeg_base64);
 
     match config {
         EngineConfig::Cloud {
@@ -348,7 +371,7 @@ pub async fn run_agent_loop(
 /// error — it is the expected bound, so the loop ends cleanly.
 async fn drive_agent_stream<M>(
     agent: Agent<M>,
-    prompt: &str,
+    prompt: Message,
     history: Vec<Message>,
     max_tool_calls: usize,
     cancel: Arc<AtomicBool>,
@@ -370,7 +393,7 @@ where
     }
 
     let mut stream = agent
-        .stream_prompt(prompt.to_string())
+        .stream_prompt(prompt)
         .with_history(history)
         .multi_turn(max_turns)
         .await;
@@ -505,7 +528,7 @@ mod tests {
 
         drive_agent_stream(
             agent,
-            "find hello",
+            Message::user("find hello"),
             vec![],
             8,
             cancel,
@@ -532,6 +555,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn prompt_message_attaches_the_screenshot_only_when_there_is_one() {
+        match user_prompt_message("what is this", None) {
+            Message::User { content } => assert_eq!(content.len(), 1),
+            other => panic!("expected a user message, got {other:?}"),
+        }
+
+        // Blank/whitespace data is "no image", not an empty image part.
+        match user_prompt_message("what is this", Some("   ")) {
+            Message::User { content } => assert_eq!(content.len(), 1),
+            other => panic!("expected a user message, got {other:?}"),
+        }
+
+        match user_prompt_message("what is this", Some("QUJD")) {
+            Message::User { content } => {
+                let parts: Vec<_> = content.into_iter().collect();
+                assert_eq!(parts.len(), 2);
+                assert!(matches!(parts[0], UserContent::Text(_)));
+                match &parts[1] {
+                    UserContent::Image(image) => {
+                        assert_eq!(image.media_type, Some(ImageMediaType::JPEG));
+                    }
+                    other => panic!("expected an image part, got {other:?}"),
+                }
+            }
+            other => panic!("expected a user message, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn streamed_deltas_arrive_in_order() {
         let (executor, _calls) = recording_executor();
@@ -549,7 +601,7 @@ mod tests {
 
         drive_agent_stream(
             agent,
-            "greet",
+            Message::user("greet"),
             vec![],
             4,
             cancel,
@@ -593,7 +645,7 @@ mod tests {
         let agent = mock_agent(model, vec![search_tool()], &executor);
 
         let cancel = Arc::new(AtomicBool::new(false));
-        drive_agent_stream(agent, "loop", vec![], cap, cancel, |_| {})
+        drive_agent_stream(agent, Message::user("loop"), vec![], cap, cancel, |_| {})
             .await
             .expect("hitting the cap is a clean stop, not an error");
 
@@ -644,7 +696,7 @@ mod tests {
 
         drive_agent_stream(
             agent,
-            "think",
+            Message::user("think"),
             vec![],
             4,
             cancel,
@@ -685,7 +737,7 @@ mod tests {
 
         drive_agent_stream(
             agent,
-            "count",
+            Message::user("count"),
             vec![],
             4,
             cancel,

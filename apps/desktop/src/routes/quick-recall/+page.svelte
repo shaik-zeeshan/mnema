@@ -47,6 +47,17 @@
   import TimelineStrip from "$lib/quick-recall/TimelineStrip.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import SyntaxHelp from "$lib/quick-recall/SyntaxHelp.svelte";
+  import {
+    captureCurrentFrame,
+    setQuickRecallCollapsed,
+    frameChipLabel,
+    frameExclusionNote,
+    frameVisionNote,
+    CURRENT_FRAME_BAR_HEIGHT,
+    CURRENT_FRAME_DISCLOSURE_HEIGHT,
+    CURRENT_FRAME_ANSWER_HEIGHT,
+    type CurrentFrameCapture,
+  } from "$lib/quick-recall/current-frame";
 
   // Search-mode extraction (slice 1): all search-mode state — query text,
   // debounce/scheduling, results, thumbnails cache, roving selection, filter
@@ -172,10 +183,16 @@
   // without affecting the already-working reused-window summons.
   function focusActiveField(retriesLeft = 8): void {
     const target: HTMLElement | null | undefined =
-      mode === "ask" ? (askSubmitted ? askAreaEl : askInputEl) : search.inputEl;
+      mode === "frame"
+        ? frameInputEl
+        : mode === "ask"
+          ? askSubmitted
+            ? askAreaEl
+            : askInputEl
+          : search.inputEl;
     target?.focus();
     // Select any leftover query so typing immediately replaces it.
-    if (mode !== "ask") search.inputEl?.select();
+    if (mode === "search") search.inputEl?.select();
 
     if (target && document.activeElement !== target && retriesLeft > 0) {
       requestAnimationFrame(() => focusActiveField(retriesLeft - 1));
@@ -199,6 +216,47 @@
   // Escape steps back: in Ask AI mode the first press returns to search (the
   // layout's window handler closes the window on a second press from search).
   function handleRootKeydown(event: KeyboardEvent): void {
+    const key = event.key.toLowerCase();
+    // ⌘⇧O opens the current-frame ask from anywhere; ⌘O grows the collapsed bar
+    // back (G3). Split chords because plain ⌘O is already "open page" in the
+    // search results list.
+    if (key === "o" && event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (event.shiftKey && mode !== "frame") {
+        event.preventDefault();
+        event.stopPropagation();
+        void enterCurrentFrame();
+        return;
+      }
+      if (!event.shiftKey && mode === "frame") {
+        event.preventDefault();
+        event.stopPropagation();
+        void exitCurrentFrame();
+        return;
+      }
+    }
+
+    // Escape steps back one piece at a time: the detached answer first, then the
+    // bar itself. Dismissing the answer never takes the controls with it (G3).
+    if (
+      event.key === "Escape" &&
+      mode === "frame" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey &&
+      !event.shiftKey &&
+      !event.isComposing
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (frameAnswerVisible) {
+        frameAnswerDismissed = true;
+        frameInputEl?.focus();
+      } else {
+        void exitCurrentFrame();
+      }
+      return;
+    }
+
     if (
       event.key === "Escape" &&
       mode === "ask" &&
@@ -279,7 +337,10 @@
 
   type AskAiPhase = "thinking" | "streaming" | "done" | "error";
 
-  let mode = $state<"search" | "ask">("search");
+  // "frame" is the current-frame ask (round-4 G1–G3): the SAME window collapses
+  // to a slim bar, the screenshot rides along as a chip-in-sentence, and the
+  // answer is a detached second piece below it.
+  let mode = $state<"search" | "ask" | "frame">("search");
 
   // Availability is resolved on mount. Until it resolves the affordance is
   // treated as unavailable so we never render a dead button that errors.
@@ -943,7 +1004,10 @@
   // Begin a FRESH Ask AI thread with its first turn. `question` is what gets
   // answered; the model gathers its own context via tool calls. Cancels any
   // in-flight thread and resets the transcript.
-  async function startAsk(question: string): Promise<void> {
+  async function startAsk(
+    question: string,
+    frame: CurrentFrameCapture | null = null,
+  ): Promise<void> {
     const trimmedQuestion = question.trim();
     if (trimmedQuestion.length === 0) {
       return;
@@ -981,6 +1045,9 @@
           question: trimmedQuestion,
           origin: "quick_recall",
           title,
+          // The captured frame rides with the question; the backend decides
+          // pixels-vs-OCR-text against the model that will answer (G2).
+          frame,
           ...askAiClock(),
         },
       });
@@ -1088,7 +1155,12 @@
 
     try {
       await invoke<void>("ask_ai_followup", {
-        request: { conversationId, question: trimmed, ...askAiClock() },
+        request: {
+          conversationId,
+          question: trimmed,
+          frame: mode === "frame" ? frameCapture : null,
+          ...askAiClock(),
+        },
       });
     } catch (error) {
       // The thread moved on (Escape / fresh ask) — drop a stale failure.
@@ -1410,6 +1482,126 @@
     resetAskThreadState();
     await tick();
     search.inputEl?.focus();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Current-frame ask (round-4 G1–G3)
+  //
+  // Capture is IMPLICIT: collapsing IS the gesture, so entering this mode takes
+  // the shot — there is no "attach screen?" modal. Indication is explicit
+  // instead: the chip names the app, the blanked apps, and (upfront, before the
+  // user types) the non-vision disclosure. The on-screen reading outline is
+  // slice 11, not this one.
+  // ---------------------------------------------------------------------------
+
+  let frameCapture = $state<CurrentFrameCapture | null>(null);
+  let frameCaptureError = $state<string | null>(null);
+  let frameInput = $state("");
+  let frameInputEl = $state<HTMLTextAreaElement | null>(null);
+  // The answer is a DETACHED second piece: dismissing it leaves the bar, the
+  // composer, and Stop exactly where they were.
+  let frameAnswerDismissed = $state(false);
+
+  let frameAnswerTurn = $derived(askTurns.length > 0 ? askTurns[askTurns.length - 1] : null);
+  let frameAnswerVisible = $derived(mode === "frame" && !frameAnswerDismissed && frameAnswerTurn !== null);
+  let frameChip = $derived(frameCapture === null ? null : frameChipLabel(frameCapture));
+  let frameExclusion = $derived(frameCapture === null ? null : frameExclusionNote(frameCapture));
+  let frameVision = $derived(frameCapture === null ? null : frameVisionNote(frameCapture));
+
+  // The collapsed window's height follows what the bar currently shows. Kept in
+  // an effect so growing for the answer and shrinking on dismiss are the same
+  // one rule rather than two call sites that can disagree.
+  $effect(() => {
+    if (mode !== "frame") {
+      return;
+    }
+    const height = frameAnswerVisible
+      ? CURRENT_FRAME_ANSWER_HEIGHT
+      : CURRENT_FRAME_BAR_HEIGHT + (frameVision === null ? 0 : CURRENT_FRAME_DISCLOSURE_HEIGHT);
+    void setQuickRecallCollapsed(height).catch(() => {
+      // Best-effort: a resize failure leaves the window where it is; the bar
+      // still renders and the turn still runs.
+    });
+  });
+
+  // Enter the current-frame ask. Collapses first so the shot is taken with the
+  // launcher already small — though correctness does not depend on that: the
+  // content filter excludes Mnema's own windows either way (G1).
+  async function enterCurrentFrame(): Promise<void> {
+    if (!askAvailable || mode === "frame") {
+      return;
+    }
+    await cancelActiveAsk();
+    resetAskThreadState();
+    filters.pickerOpen = false;
+    frameCapture = null;
+    frameCaptureError = null;
+    frameInput = "";
+    frameAnswerDismissed = false;
+    mode = "frame";
+    await tick();
+    frameInputEl?.focus();
+
+    try {
+      frameCapture = await captureCurrentFrame();
+    } catch (error) {
+      frameCaptureError = humanizeError(error);
+    }
+  }
+
+  // ⌘O grows the window back (G3).
+  async function exitCurrentFrame(): Promise<void> {
+    await cancelActiveAsk();
+    mode = "search";
+    resetAskThreadState();
+    frameCapture = null;
+    frameCaptureError = null;
+    frameInput = "";
+    frameAnswerDismissed = false;
+    try {
+      await setQuickRecallCollapsed(null);
+    } catch {
+      // Best-effort; see the resize effect.
+    }
+    await tick();
+    search.inputEl?.focus();
+  }
+
+  // The chip is deleted like a word: an explicit ✕, or Backspace with the caret
+  // at the very start of the composer. Dropping it turns the turn into a plain
+  // Ask AI question — the screen simply stops being context.
+  function removeFrameChip(): void {
+    frameCapture = null;
+    frameCaptureError = null;
+    frameInputEl?.focus();
+  }
+
+  async function submitFrameQuestion(): Promise<void> {
+    const question = frameInput.trim();
+    if (question.length === 0 || askStreaming) {
+      return;
+    }
+    frameAnswerDismissed = false;
+    frameInput = "";
+    await startAsk(question, frameCapture);
+  }
+
+  function handleFrameInputKeydown(event: KeyboardEvent): void {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void submitFrameQuestion();
+      return;
+    }
+    if (
+      event.key === "Backspace" &&
+      frameCapture !== null &&
+      frameInputEl !== null &&
+      frameInputEl.selectionStart === 0 &&
+      frameInputEl.selectionEnd === 0
+    ) {
+      event.preventDefault();
+      removeFrameChip();
+    }
   }
 
   $effect(() => {
@@ -1824,6 +2016,63 @@
   });
 </script>
 
+<!-- The answer body: render-ready blocks streamed from the backend, switched on
+     `kind`. Shared by the Ask AI transcript and the current-frame answer piece so
+     both doors render an answer identically (round-4 G3 — the answer is a
+     detached piece, not a different renderer). -->
+{#snippet answerBody(turn: AskTurn)}
+  <div class="quick-recall__answer">
+    {#each turn.blocks as block, bi (bi)}
+      {#if block.kind === "prose"}
+        <AnswerProse
+          source={block.markdown}
+          isStreaming={turn.phase !== "done" &&
+            bi === turn.blocks.length - 1}
+          onOpenLink={openAnswerLink}
+        />
+      {:else if block.kind === "bars"}
+        <figure class="quick-recall__graphic">
+          {#if block.title}
+            <figcaption class="quick-recall__graphic-title">
+              {block.title}
+            </figcaption>
+          {/if}
+          <MiniBars items={block.items} />
+        </figure>
+      {:else if block.kind === "dossier"}
+        <div
+          class="quick-recall__graphic quick-recall__graphic--dossier"
+        >
+          {#each block.items as item, di (di)}
+            <div class="quick-recall__dossier-card">
+              <p class="quick-recall__dossier-statement">
+                {item.statement}
+              </p>
+              <div class="quick-recall__dossier-foot">
+                {#if item.subject}
+                  <span class="quick-recall__subject-chip">
+                    {item.subject}
+                  </span>
+                {/if}
+                <span class="quick-recall__conf-wrap">
+                  <ConfidenceBar confidence={item.confidence} />
+                </span>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {:else if block.kind === "timeline"}
+        <!-- Timeline owns its own caption, so the .graphic
+             wrapper here doesn't repeat it as a figcaption. -->
+        <figure class="quick-recall__graphic">
+          <Timeline title={block.title} intervals={block.items} />
+        </figure>
+      {/if}
+    {/each}
+  </div>
+{/snippet}
+
+
 <!-- Inline app chip for tool-activity lines: the backend-resolved icon (or a
      letter fallback) + the app name, matching the app-icon look used elsewhere.
      The icon path is resolved server-side (entry.appIconPath); here it is a pure
@@ -2035,6 +2284,101 @@
              under the Filter Picker like the mockup's always-present strip. -->
         {#if search.hasResults}
           <TimelineStrip />
+        {/if}
+      </div>
+    {:else if mode === "frame"}
+      <!-- Current-frame ask (G3). The window itself is already collapsed to this
+           bar; the shot rides as a small inline chip INSIDE the sentence (never a
+           thumbnail), and the answer below is a detached second piece whose
+           dismissal never touches the composer or Stop. -->
+      <div
+        class="quick-recall__panel quick-recall__panel--frame"
+        in:fade={{ duration: modeFadeMs }}
+        out:fade={{ duration: modeFadeMs }}
+      >
+        <div class="quick-recall__frame-bar">
+          <div class="quick-recall__field quick-recall__field--frame">
+            {#if frameCapture !== null}
+              <span class="quick-recall__frame-chip" data-testid="frame-chip">
+                <span class="quick-recall__frame-chip-glyph" aria-hidden="true">⧉</span>
+                <span class="quick-recall__frame-chip-label">{frameChip}</span>
+                {#if frameExclusion !== null}
+                  <span class="quick-recall__frame-chip-note">· {frameExclusion}</span>
+                {/if}
+                <button
+                  type="button"
+                  class="quick-recall__frame-chip-remove"
+                  onclick={removeFrameChip}
+                  aria-label="Remove the screen from this question"
+                  use:tip={"Remove the screen from this question"}>✕</button
+                >
+              </span>
+            {:else if frameCaptureError !== null}
+              <span class="quick-recall__frame-chip quick-recall__frame-chip--error">
+                {frameCaptureError}
+              </span>
+            {:else}
+              <span class="quick-recall__frame-chip quick-recall__frame-chip--pending">
+                Reading this screen…
+              </span>
+            {/if}
+            <textarea
+              bind:this={frameInputEl}
+              bind:value={frameInput}
+              class="quick-recall__frame-input"
+              rows="1"
+              autocomplete="off"
+              autocapitalize="off"
+              spellcheck="false"
+              placeholder="Ask about this screen…"
+              aria-label="Ask about this screen"
+              aria-keyshortcuts="Enter Escape Meta+O"
+              disabled={askStreaming}
+              onkeydown={handleFrameInputKeydown}
+            ></textarea>
+            {#if askStreaming}
+              <button
+                type="button"
+                class="quick-recall__frame-stop"
+                onclick={() => void stopActiveAsk()}
+              >
+                Stop
+              </button>
+            {/if}
+          </div>
+          <!-- Upfront disclosure (G2): stated before the user types, not after
+               the answer comes back wrong. -->
+          {#if frameVision !== null}
+            <p class="quick-recall__frame-disclosure">{frameVision}</p>
+          {/if}
+        </div>
+
+        {#if frameAnswerVisible && frameAnswerTurn !== null}
+          <div class="quick-recall__frame-answer" role="region" aria-label="Answer">
+            <button
+              type="button"
+              class="quick-recall__frame-answer-dismiss"
+              onclick={() => {
+                frameAnswerDismissed = true;
+                frameInputEl?.focus();
+              }}
+              aria-label="Dismiss the answer"
+              use:tip={"Dismiss the answer"}>✕</button
+            >
+            {#if frameAnswerTurn.phase === "error"}
+              <p class="quick-recall__frame-answer-error">
+                {frameAnswerTurn.errorMessage ?? "Something went wrong."}
+              </p>
+            {:else}
+              {@render answerBody(frameAnswerTurn)}
+              {#if frameAnswerTurn.phase === "thinking"}
+                <p class="quick-recall__state quick-recall__state--working">
+                  <span class="quick-recall__dot" aria-hidden="true"></span>
+                  Reading the screen…
+                </p>
+              {/if}
+            {/if}
+          </div>
         {/if}
       </div>
     {:else}
@@ -2287,55 +2631,7 @@
                            blocks carry already-parsed data. The streaming caret
                            rides only the LAST prose block, and only until the turn
                            settles. -->
-                      <div class="quick-recall__answer">
-                        {#each turn.blocks as block, bi (bi)}
-                          {#if block.kind === "prose"}
-                            <AnswerProse
-                              source={block.markdown}
-                              isStreaming={turn.phase !== "done" &&
-                                bi === turn.blocks.length - 1}
-                              onOpenLink={openAnswerLink}
-                            />
-                          {:else if block.kind === "bars"}
-                            <figure class="quick-recall__graphic">
-                              {#if block.title}
-                                <figcaption class="quick-recall__graphic-title">
-                                  {block.title}
-                                </figcaption>
-                              {/if}
-                              <MiniBars items={block.items} />
-                            </figure>
-                          {:else if block.kind === "dossier"}
-                            <div
-                              class="quick-recall__graphic quick-recall__graphic--dossier"
-                            >
-                              {#each block.items as item, di (di)}
-                                <div class="quick-recall__dossier-card">
-                                  <p class="quick-recall__dossier-statement">
-                                    {item.statement}
-                                  </p>
-                                  <div class="quick-recall__dossier-foot">
-                                    {#if item.subject}
-                                      <span class="quick-recall__subject-chip">
-                                        {item.subject}
-                                      </span>
-                                    {/if}
-                                    <span class="quick-recall__conf-wrap">
-                                      <ConfidenceBar confidence={item.confidence} />
-                                    </span>
-                                  </div>
-                                </div>
-                              {/each}
-                            </div>
-                          {:else if block.kind === "timeline"}
-                            <!-- Timeline owns its own caption, so the .graphic
-                                 wrapper here doesn't repeat it as a figcaption. -->
-                            <figure class="quick-recall__graphic">
-                              <Timeline title={block.title} intervals={block.items} />
-                            </figure>
-                          {/if}
-                        {/each}
-                      </div>
+                      {@render answerBody(turn)}
 
                       <!-- Per-turn answer sources: the captures this turn drew on,
                            surfaced only once the turn is done. -->
@@ -2519,6 +2815,9 @@
         {/if}
         <span class="quick-recall__hint-item"><kbd>⌘F</kbd> filter</span>
         <span class="quick-recall__hint-item"><kbd>⌘1-9</kbd> jump</span>
+        {#if askAvailable}
+          <span class="quick-recall__hint-item"><kbd>⌘⇧O</kbd> this screen</span>
+        {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {:else}
         <!-- No results: the ask row is the only stop in the list, so ⏎ takes it. -->
@@ -2529,8 +2828,15 @@
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> ask AI</span>
         {/if}
+        {#if askAvailable}
+          <span class="quick-recall__hint-item"><kbd>⌘⇧O</kbd> this screen</span>
+        {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {/if}
+    {:else if mode === "frame"}
+      <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
+      <span class="quick-recall__hint-item"><kbd>⌘O</kbd> full window</span>
+      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {:else if !askSubmitted}
       <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
@@ -2979,6 +3285,182 @@
     background: var(--app-surface-subtle);
   }
 
+
+  /* ── Current-frame ask (round-4 G1–G3) ───────────────────────────────────
+     The window is already collapsed to this bar, so the panel is a stack of two
+     independent pieces: the bar (chip + composer + Stop), and the detached
+     answer. Nothing about dismissing the second touches the first. Geometry
+     stays plain — per-direction bar shapes land in phase 2. */
+  .quick-recall__panel--frame {
+    background: var(--app-surface-raised);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .quick-recall__frame-bar {
+    flex: 0 0 auto;
+  }
+
+  .quick-recall__field--frame {
+    gap: 8px;
+    align-items: center;
+    background: var(--app-accent-bg);
+    border-bottom-color: var(--app-accent-border);
+    flex-wrap: nowrap;
+  }
+
+  /* Chip-in-sentence: an inline word-sized token sitting where a word would,
+     never a thumbnail. Backspace at caret 0 deletes it like a word. */
+  .quick-recall__frame-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-shrink: 0;
+    max-width: 55%;
+    padding: 2px 6px;
+    border-radius: 6px;
+    border: 1px solid var(--app-accent-border);
+    background: color-mix(in srgb, var(--app-accent) 14%, transparent);
+    font-size: var(--t-meta);
+    line-height: 1.4;
+    color: var(--app-text);
+    white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .quick-recall__frame-chip--pending,
+  .quick-recall__frame-chip--error {
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border-color: var(--app-border);
+  }
+
+  .quick-recall__frame-chip--error {
+    color: var(--app-danger-text);
+  }
+
+  .quick-recall__frame-chip-glyph {
+    opacity: 0.7;
+  }
+
+  .quick-recall__frame-chip-label {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .quick-recall__frame-chip-note {
+    color: var(--app-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .quick-recall__frame-chip-remove {
+    border: 0;
+    background: none;
+    padding: 0 1px;
+    cursor: pointer;
+    color: inherit;
+    opacity: 0.55;
+    font-size: 10px;
+    line-height: 1;
+  }
+
+  .quick-recall__frame-chip-remove:hover {
+    opacity: 1;
+  }
+
+  .quick-recall__frame-chip-remove:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: var(--app-ring);
+    border-radius: 3px;
+  }
+
+  .quick-recall__frame-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    border: 0;
+    background: none;
+    resize: none;
+    padding: 0;
+    color: var(--app-text);
+    font: inherit;
+    font-size: var(--t-body);
+    line-height: 1.5;
+    outline: none;
+    max-height: 60px;
+  }
+
+  .quick-recall__frame-input::placeholder {
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__frame-stop {
+    flex-shrink: 0;
+    border: 1px solid var(--app-border);
+    border-radius: 6px;
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-size: var(--t-meta);
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+
+  /* Upfront non-vision disclosure (G2), stated before the user types. */
+  .quick-recall__frame-disclosure {
+    margin: 0;
+    padding: 6px 16px;
+    font-size: var(--t-meta);
+    line-height: 1.4;
+    color: var(--app-text-muted);
+    background: var(--app-surface-subtle);
+    border-bottom: 1px solid var(--app-border);
+  }
+
+  /* The detached second piece. Its own card, its own dismiss; the bar above is
+     untouched by anything that happens here. */
+  .quick-recall__frame-answer {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    margin: 10px;
+    padding: 12px 34px 12px 14px;
+    border: 1px solid var(--app-border);
+    border-radius: 10px;
+    background: var(--app-surface);
+    font-size: var(--t-body);
+    line-height: 1.55;
+  }
+
+  .quick-recall__frame-answer-dismiss {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    border: 0;
+    background: none;
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font-size: 11px;
+    line-height: 1;
+    padding: 3px;
+    border-radius: 4px;
+  }
+
+  .quick-recall__frame-answer-dismiss:hover {
+    color: var(--app-text);
+  }
+
+  .quick-recall__frame-answer-dismiss:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
+  }
+
+  .quick-recall__frame-answer-error {
+    margin: 0;
+    color: var(--app-danger-text);
+  }
 
   /* G4: taking the ask row TRANSFORMS the surface, so ask must not read as a
      second search screen. Search is a neutral field over a grid; ask is the

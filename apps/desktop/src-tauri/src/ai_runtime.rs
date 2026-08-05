@@ -485,6 +485,91 @@ pub(crate) fn resolve_engine_config(
     engine_config_for_ref(settings, default_model.provider.trim(), model)
 }
 
+/// The **vision-capability dimension** of the resolver (round-4 decision G2):
+/// the same precedence chain as [`resolve_engine_config`], plus whether the
+/// model it lands on can read images.
+///
+/// Deliberately paired with the resolver rather than bolted onto a feature: the
+/// question "can THIS turn's model see a screenshot" is only answerable after
+/// pin → override → default has run. Current-frame ask is the first caller; it
+/// stays available on a non-vision model by sending the screen's OCR text
+/// instead of pixels, so a `false` here is a fallback, never a refusal.
+pub(crate) fn resolve_engine_config_with_vision(
+    settings: &AiRuntimeSettings,
+    pin: Option<(&str, &str)>,
+    feature_override_model: Option<&str>,
+) -> Result<(ai_engine::EngineConfig, bool), String> {
+    let config = resolve_engine_config(settings, pin, feature_override_model)?;
+    let vision = engine_supports_vision(&config);
+    Ok((config, vision))
+}
+
+/// Whether a resolved engine can accept image input.
+///
+/// There is no model-capability metadata anywhere in the stack (see
+/// [`is_chat_capable_model`] for the same finding on chat-capability), and no
+/// provider's `/models` route reports one. So this is a substring table over the
+/// model id, keyed by provider — and it **defaults to `false`**: the OCR-text
+/// path works against every model, so a wrong `false` costs some fidelity while
+/// a wrong `true` costs the whole turn with a provider error.
+pub(crate) fn engine_supports_vision(config: &ai_engine::EngineConfig) -> bool {
+    match config {
+        ai_engine::EngineConfig::Cloud {
+            provider, model, ..
+        } => match provider {
+            // Every Claude model from 3 onward is multimodal; the 2.x ids that
+            // are not have neither "claude-3" nor a later prefix.
+            ai_engine::CloudProvider::Anthropic => model_id_matches(
+                model,
+                &[
+                    "claude-3",
+                    "claude-4",
+                    "claude-haiku",
+                    "claude-sonnet",
+                    "claude-opus",
+                ],
+            ),
+            ai_engine::CloudProvider::Openai => model_id_matches(
+                model,
+                &[
+                    "gpt-4o",
+                    "gpt-4.1",
+                    "gpt-4-turbo",
+                    "gpt-5",
+                    "o3",
+                    "o4",
+                    "chatgpt-4o",
+                ],
+            ),
+            // A caller-supplied OpenAI-compatible host serves arbitrary models
+            // behind arbitrary ids; there is nothing trustworthy to key off.
+            ai_engine::CloudProvider::OpenAiCompatible => false,
+        },
+        // Local model ids are the open-weights names, which carry their own
+        // vision marker by convention.
+        ai_engine::EngineConfig::Local { model, .. } => model_id_matches(
+            model,
+            &[
+                "llava",
+                "vision",
+                "-vl",
+                "vl-",
+                "minicpm-v",
+                "moondream",
+                "bakllava",
+                "gemma3",
+                "mistral-small3",
+                "granite3.2-vision",
+            ],
+        ),
+    }
+}
+
+fn model_id_matches(model: &str, needles: &[&str]) -> bool {
+    let lowered = model.to_lowercase();
+    needles.iter().any(|needle| lowered.contains(needle))
+}
+
 /// The static (no-network) half of the engine-configured prerequisite: master
 /// switch on, at least one connected provider, a default model chosen, and the
 /// default model's engine resolvable (key present / base URL set). Returns the
@@ -1386,6 +1471,84 @@ mod tests {
             "accounts/fireworks/models/deepseek-v4-pro"
         ));
         assert!(is_chat_capable_model("llama-3.3-70b"));
+    }
+
+    fn cloud(provider: ai_engine::CloudProvider, model: &str) -> ai_engine::EngineConfig {
+        ai_engine::EngineConfig::Cloud {
+            provider,
+            model: model.to_string(),
+            api_key: "test".to_string(),
+            base_url: None,
+        }
+    }
+
+    fn local(model: &str) -> ai_engine::EngineConfig {
+        ai_engine::EngineConfig::Local {
+            kind: ai_engine::LocalKind::Ollama,
+            endpoint: "http://localhost:11434".to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    #[test]
+    fn vision_capability_resolves_per_provider_and_model() {
+        use ai_engine::CloudProvider::{Anthropic, OpenAiCompatible, Openai};
+
+        // Anthropic: multimodal from Claude 3 on.
+        assert!(engine_supports_vision(&cloud(Anthropic, "claude-sonnet-4-5")));
+        assert!(engine_supports_vision(&cloud(Anthropic, "claude-3-5-haiku-latest")));
+        assert!(!engine_supports_vision(&cloud(Anthropic, "claude-2.1")));
+
+        // OpenAI: the 4o/4.1/5/o-series line, not the legacy text models.
+        assert!(engine_supports_vision(&cloud(Openai, "gpt-4o-mini")));
+        assert!(engine_supports_vision(&cloud(Openai, "gpt-5")));
+        assert!(engine_supports_vision(&cloud(Openai, "o3-mini")));
+        assert!(!engine_supports_vision(&cloud(Openai, "gpt-3.5-turbo")));
+
+        // A caller-supplied compatible host tells us nothing trustworthy, so it
+        // takes the always-safe text path.
+        assert!(!engine_supports_vision(&cloud(OpenAiCompatible, "gpt-4o")));
+
+        // Local: the open-weights naming convention is the only signal.
+        assert!(engine_supports_vision(&local("llava:13b")));
+        assert!(engine_supports_vision(&local("llama3.2-vision")));
+        assert!(engine_supports_vision(&local("qwen2.5-vl:7b")));
+        assert!(!engine_supports_vision(&local("llama3.1:8b")));
+        assert!(!engine_supports_vision(&local("deepseek-r1")));
+    }
+
+    #[test]
+    fn vision_dimension_follows_the_resolver_precedence_chain() {
+        let settings = local_settings();
+
+        // Default model (`llama-default`) is text-only → OCR-text fallback.
+        let (config, vision) =
+            resolve_engine_config_with_vision(&settings, None, None).expect("resolves");
+        assert_eq!(expect_local(config).2, "llama-default");
+        assert!(!vision, "a text-only default must select the fallback path");
+
+        // A feature override onto a vision model flips the dimension.
+        let (_, vision) = resolve_engine_config_with_vision(&settings, None, Some("llava:13b"))
+            .expect("resolves");
+        assert!(vision);
+
+        // A thread pin outranks the override, and re-decides the dimension with it.
+        let (config, vision) = resolve_engine_config_with_vision(
+            &settings,
+            Some(("llamafile", "moondream")),
+            Some("llama3.1:8b"),
+        )
+        .expect("resolves");
+        assert_eq!(expect_local(config).2, "moondream");
+        assert!(vision);
+
+        // Nothing resolvable is still an error, not a silent text fallback.
+        let mut no_default = local_settings();
+        no_default.default_model = None;
+        assert_eq!(
+            resolve_engine_config_with_vision(&no_default, None, None).unwrap_err(),
+            "no_default_model"
+        );
     }
 
     #[test]
