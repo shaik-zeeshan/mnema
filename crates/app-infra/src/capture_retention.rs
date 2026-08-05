@@ -409,6 +409,61 @@ impl CaptureRetentionStore {
             .collect()
     }
 
+    /// Media file paths of every capture segment (any source kind) whose
+    /// `started_at` is at or after `since` (RFC 3339). Feeds the title-bar
+    /// "bytes captured today" readout — the caller stats the files, so a
+    /// path whose file has since been deleted just contributes nothing.
+    pub async fn media_file_paths_started_since(&self, since: &str) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT DISTINCT media_file_path FROM capture_segments
+             WHERE media_file_path IS NOT NULL
+               AND julianday(started_at) >= julianday(?1)",
+        )
+        .bind(since)
+        .fetch_all(self.db.read())
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| row.get::<String, _>("media_file_path"))
+            .collect())
+    }
+
+    /// Wall-clock milliseconds covered by capture since `since` (RFC 3339):
+    /// the UNION of segment `[started_at, ended_at]` intervals across every
+    /// source, so simultaneous screen+mic+system segments count once. An open
+    /// segment (`ended_at` NULL) counts up to `now`. Feeds the Overview
+    /// "hours captured today" hero.
+    pub async fn capture_coverage_ms_since(&self, since: &str, now_unix_ms: i64) -> Result<u64> {
+        let rows = sqlx::query(
+            "SELECT started_at, ended_at FROM capture_segments
+             WHERE julianday(started_at) >= julianday(?1)
+             ORDER BY started_at ASC",
+        )
+        .bind(since)
+        .fetch_all(self.db.read())
+        .await?;
+        // ponytail: a segment straddling `since` (started before midnight,
+        // ended after) is excluded — error bounded by the 5-minute segment cap.
+        let to_unix_ms = |raw: &str| -> Option<i64> {
+            OffsetDateTime::parse(raw, &Rfc3339)
+                .ok()
+                .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
+        };
+        let intervals = rows
+            .into_iter()
+            .filter_map(|row| {
+                let start = to_unix_ms(&row.get::<String, _>("started_at"))?;
+                let end = row
+                    .get::<Option<String>, _>("ended_at")
+                    .as_deref()
+                    .and_then(to_unix_ms)
+                    .unwrap_or(now_unix_ms);
+                Some((start, end))
+            })
+            .collect::<Vec<_>>();
+        Ok(merged_interval_coverage_ms(intervals))
+    }
+
     pub async fn upsert_screen_segment_for_source_session(
         &self,
         source_session_id: &str,
@@ -829,6 +884,32 @@ pub fn delete_capture_artifact_path_if_safe(
     context: &RetentionCleanupContext,
 ) -> std::result::Result<(), String> {
     delete_path_if_safe(path, context)
+}
+
+/// Total milliseconds covered by the union of `[start, end]` unix-ms
+/// intervals — overlapping segments (screen + mic + system audio recording
+/// at once) count their wall-clock span once.
+pub fn merged_interval_coverage_ms(mut intervals: Vec<(i64, i64)>) -> u64 {
+    intervals.retain(|(start, end)| end > start);
+    intervals.sort_unstable_by_key(|(start, _)| *start);
+    let mut total: u64 = 0;
+    let mut current: Option<(i64, i64)> = None;
+    for (start, end) in intervals {
+        match current {
+            Some((cur_start, cur_end)) if start <= cur_end => {
+                current = Some((cur_start, cur_end.max(end)));
+            }
+            Some((cur_start, cur_end)) => {
+                total += (cur_end - cur_start) as u64;
+                current = Some((start, end));
+            }
+            None => current = Some((start, end)),
+        }
+    }
+    if let Some((cur_start, cur_end)) = current {
+        total += (cur_end - cur_start) as u64;
+    }
+    total
 }
 
 pub fn cutoff_ended_before(policy: RetentionPolicy, local_now: OffsetDateTime) -> Option<String> {
@@ -1666,6 +1747,19 @@ mod tests {
     }
 
     #[test]
+    fn merged_interval_coverage_counts_overlaps_once() {
+        // Disjoint intervals sum; overlapping (mic+screen) merge; contained
+        // intervals add nothing; inverted/empty intervals are dropped.
+        assert_eq!(merged_interval_coverage_ms(vec![]), 0);
+        assert_eq!(merged_interval_coverage_ms(vec![(0, 1_000), (2_000, 3_000)]), 2_000);
+        assert_eq!(merged_interval_coverage_ms(vec![(0, 1_000), (500, 1_500)]), 1_500);
+        assert_eq!(merged_interval_coverage_ms(vec![(0, 2_000), (500, 1_000)]), 2_000);
+        assert_eq!(merged_interval_coverage_ms(vec![(1_000, 1_000), (3_000, 2_000)]), 0);
+        // Unsorted input + touching endpoints merge into one span.
+        assert_eq!(merged_interval_coverage_ms(vec![(2_000, 3_000), (0, 2_000)]), 3_000);
+    }
+
+    #[test]
     fn day_policy_keeps_local_calendar_cutoff() {
         let cutoff = cutoff_ended_before_with_midnight_offset(
             RetentionPolicy::Days7,
@@ -2047,6 +2141,52 @@ mod tests {
 
             assert_eq!(segment.started_at, "2026-05-16T07:45:30Z");
             assert_eq!(segment.ended_at, "2026-05-16T07:45:30.100Z");
+        });
+    }
+
+    #[test]
+    fn media_file_paths_started_since_filters_by_start_and_requires_a_path() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        runtime.block_on(async {
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:")
+                .await
+                .expect("in-memory db should open");
+            create_retention_cleanup_tables(&pool).await;
+            for (id, kind, path, started_at) in [
+                (1, "screen", Some("/tmp/today.mov"), "2026-05-16T09:00:00Z"),
+                (2, "microphone", Some("/tmp/today.m4a"), "2026-05-16T00:00:00Z"),
+                (3, "screen", Some("/tmp/yesterday.mov"), "2026-05-15T23:59:59Z"),
+                (4, "system_audio", None, "2026-05-16T10:00:00Z"),
+            ] {
+                sqlx::query(
+                    "INSERT INTO capture_segments (
+                        id, capture_session_id, source_kind, source_session_id, segment_index,
+                        media_file_path, started_at, ended_at, status
+                     ) VALUES (?1, 'capture-1', ?2, 'source-' || ?1, 1, ?3, ?4, ?4, 'completed')",
+                )
+                .bind(id)
+                .bind(kind)
+                .bind(path)
+                .bind(started_at)
+                .execute(&pool)
+                .await
+                .expect("segment should insert");
+            }
+
+            let store = CaptureRetentionStore::new(CaptureDb::single(pool));
+            let mut paths = store
+                .media_file_paths_started_since("2026-05-16T00:00:00Z")
+                .await
+                .expect("paths should query");
+            paths.sort();
+
+            assert_eq!(paths, vec!["/tmp/today.m4a", "/tmp/today.mov"]);
         });
     }
 
