@@ -356,7 +356,7 @@
     overflow: hidden;
     border-radius: 999px;
     background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
+    border: 0;
   }
 
   .settings-shell .download-progress__bar span {

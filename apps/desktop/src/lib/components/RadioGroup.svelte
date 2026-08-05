@@ -111,6 +111,9 @@
     gap: 4px;
   }
 
+  /* A radio row is a ROW, not a card: the dot says which one is picked, so the
+     row never draws a border of its own. Direction 05 caps a settings window at
+     one bordered container, and a bordered row per option blows that instantly. */
   :global(.rg-item) {
     display: flex;
     align-items: center;
@@ -118,9 +121,9 @@
     padding: 7px 10px;
     border-radius: 4px;
     background: transparent;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s;
+    border: 0;
+    cursor: default;
+    transition: background 0.12s;
     text-align: left;
     width: 100%;
     outline: none;
@@ -128,12 +131,11 @@
 
   :global(.rg-item:hover) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
   }
 
+  /* Checked reads off the dot alone — no tint, no frame. */
   :global(.rg-item[data-state="checked"]) {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    background: transparent;
   }
 
   :global(.rg-item:focus-visible) {
@@ -155,16 +157,17 @@
     transition: border-color 0.12s, background 0.12s;
   }
 
+  /* Stock macOS radio: the whole dot fills accent with a punched-out centre. */
   .rg-indicator--checked {
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
+    border: 0;
+    background: var(--app-accent);
   }
 
   .rg-dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--app-accent);
+    background: var(--app-accent-contrast);
   }
 
   .rg-item-text {
@@ -198,23 +201,26 @@
     gap: 12px;
   }
 
+  /* The `card` variant keeps its box shape (some callers lay these out as a
+     grid) but it is a FILL with a hairline, not a bordered card, and checked is
+     a surface step rather than a coloured frame. */
   :global(.rg-item--card) {
     align-items: flex-start;
     gap: 11px;
     padding: 14px;
-    border-radius: 10px;
-    border: 1px solid var(--app-border-strong);
-    background: var(--app-surface);
+    border-radius: var(--r-lg);
+    border: 0;
+    background: var(--ti-grp-fill);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   :global(.rg-item--card:hover) {
-    background: var(--app-surface);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   :global(.rg-item--card[data-state="checked"]) {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
+    background: var(--ti-grp-fill);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   :global(.rg-item--card) .rg-indicator {
@@ -225,9 +231,8 @@
   }
 
   :global(.rg-item--card) .rg-indicator--checked {
-    border-color: var(--app-accent);
-    background: transparent;
-    box-shadow: 0 0 8px var(--app-accent-glow);
+    border: 0;
+    background: var(--app-accent);
   }
 
   :global(.rg-item--card) .rg-item-text {
