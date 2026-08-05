@@ -83,16 +83,12 @@ pub async fn get_user_context_status(
     // Daily-digest freshness readout. Both best-effort — a read error degrades
     // to "unknown" rather than failing the whole status.
     let local_offset_minutes = store.local_offset_minutes().await.ok().flatten();
-    let last_day_digest = store.latest_day_digest().await.ok().flatten().map(|digest| {
-        UserContextDigest {
-            range_kind: digest.range_kind,
-            range_start_ms: digest.range_start_ms,
-            range_end_ms: digest.range_end_ms,
-            narrative: digest.narrative,
-            headline: digest.headline,
-            generated_at_ms: digest.generated_at_ms,
-        }
-    });
+    let last_day_digest = store
+        .latest_day_digest()
+        .await
+        .ok()
+        .flatten()
+        .map(digest_wire);
     let last_derived_at_ms = store.last_derived_at_ms().await.map_err(|e| e.to_string())?;
     // Summarized-up-to watermark: the end edge of the most-recently-COVERED
     // window (failed runs advanced the scheduler cursor but summarized nothing,
@@ -459,6 +455,40 @@ pub async fn get_user_context_digest(
         false,
     )
     .await
+}
+
+/// The most recently generated DAY digest, read-only — **never** an engine
+/// call. Backs the Overview's Open Threads tile (round-4 decision G11: "v1 =
+/// digest prose only"), which renders whatever prose the last daily digest
+/// already wrote and must not start an LLM generation just because a tile
+/// mounted. [`get_user_context_digest`] is the generating door and stays the
+/// one Insights Overview uses for a specific range.
+///
+/// `Ok(None)` when no day digest has ever been written — the tile then shows
+/// its empty state.
+#[tauri::command]
+pub async fn get_latest_user_context_digest(
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<Option<UserContextDigest>, String> {
+    Ok(infra
+        .user_context()
+        .latest_day_digest()
+        .await
+        .map_err(|e| e.to_string())?
+        .map(digest_wire))
+}
+
+/// Stored digest row → wire DTO. Same field-for-field map `digest.rs` does on
+/// the generating path.
+fn digest_wire(digest: app_infra::StoredDigest) -> UserContextDigest {
+    UserContextDigest {
+        range_kind: digest.range_kind,
+        range_start_ms: digest.range_start_ms,
+        range_end_ms: digest.range_end_ms,
+        narrative: digest.narrative,
+        headline: digest.headline,
+        generated_at_ms: digest.generated_at_ms,
+    }
 }
 
 /// **Re-read**: force a fresh User Context Digest for one Insights Overview

@@ -836,6 +836,7 @@ pub fn run() {
             user_context::commands::get_user_context_subject,
             user_context::commands::get_user_context_digest,
             user_context::commands::regenerate_user_context_digest,
+            user_context::commands::get_latest_user_context_digest,
             user_context::commands::user_context_run_derivation_now,
             user_context::commands::user_context_dismiss_conclusion,
             user_context::commands::user_context_list_dismissed,
