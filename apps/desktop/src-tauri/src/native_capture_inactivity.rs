@@ -1,6 +1,6 @@
 use capture_types::{
     default_microphone_activity_sensitivity, default_system_audio_activity_sensitivity,
-    InactivityActivityMode, RecordingSettings,
+    CaptureSources, InactivityActivityMode, RecordingSettings,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +100,23 @@ pub(crate) struct ActivityPolicyEvaluations {
     pub system_audio: ActivityPolicyEvaluation,
 }
 
+/// The per-source paused-flag seam.
+///
+/// The `*_paused` flags are the one place that says "this source is not
+/// recording right now", and every consumer — rotation, suspension recovery,
+/// the tap-start retry, the frontend indicator — reads them through
+/// `is_*_paused()`. Two independent inputs write them:
+///
+/// - **inactivity** (`*_paused`): the tick pauses an idle source and resumes it
+///   on the next activity.
+/// - **user mask** (`*_user_masked`): the user turned this source off mid-session
+///   from the pill popover, the tray, or a shortcut. A user-scoped pause, NOT a
+///   suspension kind and NOT a transient-liveness condition — nothing but the
+///   user clears it, so every auto-resume path (activity, display return, tap
+///   rebuild, wake, low-disk recovery) must check it.
+///
+/// They never fight: both may hold at once, and a source records only when
+/// neither does.
 #[derive(Debug, Clone)]
 pub(crate) struct InactivityState {
     pub enabled: bool,
@@ -114,6 +131,9 @@ pub(crate) struct InactivityState {
     pub screen_paused: bool,
     pub microphone_paused: bool,
     pub system_audio_paused: bool,
+    pub screen_user_masked: bool,
+    pub microphone_user_masked: bool,
+    pub system_audio_user_masked: bool,
     pub is_paused: bool,
 }
 
@@ -132,6 +152,9 @@ impl Default for InactivityState {
             screen_paused: false,
             microphone_paused: false,
             system_audio_paused: false,
+            screen_user_masked: false,
+            microphone_user_masked: false,
+            system_audio_user_masked: false,
             is_paused: false,
         }
     }
@@ -155,8 +178,32 @@ impl InactivityState {
             screen_paused: false,
             microphone_paused: false,
             system_audio_paused: false,
+            // A mask is session-scoped: `start_capture_runtime` rebuilds this
+            // state per session, so a new recording always starts unmasked.
+            screen_user_masked: false,
+            microphone_user_masked: false,
+            system_audio_user_masked: false,
             is_paused: false,
         }
+    }
+
+    /// Which sources the user has turned off for this session.
+    pub(crate) fn user_masked_sources(&self) -> CaptureSources {
+        CaptureSources {
+            screen: self.screen_user_masked,
+            microphone: self.microphone_user_masked,
+            system_audio: self.system_audio_user_masked,
+        }
+    }
+
+    pub(crate) fn set_user_masked_sources(&mut self, mask: CaptureSources) {
+        self.screen_user_masked = mask.screen;
+        self.microphone_user_masked = mask.microphone;
+        self.system_audio_user_masked = mask.system_audio;
+    }
+
+    pub(crate) fn has_user_masked_source(&self) -> bool {
+        self.screen_user_masked || self.microphone_user_masked || self.system_audio_user_masked
     }
 
     pub(crate) fn set_family_paused_states(
@@ -185,16 +232,25 @@ impl InactivityState {
             && !self.system_audio_paused
     }
 
+    // A user mask ORs into the family's paused answer rather than only writing
+    // the flag: masking goes through the ordinary pause path (so the flag is set
+    // and the in-flight writer finalized), and this keeps the answer honest even
+    // if some future path clears the flag underneath it.
+
     pub(crate) fn is_screen_paused(&self) -> bool {
-        self.screen_paused || self.has_legacy_global_pause_state()
+        self.screen_paused || self.screen_user_masked || self.has_legacy_global_pause_state()
     }
 
     pub(crate) fn is_microphone_paused(&self) -> bool {
-        self.microphone_paused || self.has_legacy_global_pause_state()
+        self.microphone_paused
+            || self.microphone_user_masked
+            || self.has_legacy_global_pause_state()
     }
 
     pub(crate) fn is_system_audio_paused(&self) -> bool {
-        self.system_audio_paused || self.has_legacy_global_pause_state()
+        self.system_audio_paused
+            || self.system_audio_user_masked
+            || self.has_legacy_global_pause_state()
     }
 
     /// Returns true when either microphone or system audio is paused.
@@ -487,6 +543,10 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
+        // Activity never unmasks: only the user does.
+        if self.screen_user_masked {
+            return false;
+        }
         if !self.enabled || !self.is_screen_paused() || !snapshot.screen_activity_enabled {
             return false;
         }
@@ -528,6 +588,10 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
+        // Activity never unmasks: only the user does.
+        if self.microphone_user_masked {
+            return false;
+        }
         if !self.enabled || !self.is_microphone_paused() || !snapshot.microphone_activity.enabled {
             return false;
         }
@@ -559,6 +623,10 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
+        // Activity never unmasks: only the user does.
+        if self.system_audio_user_masked {
+            return false;
+        }
         if !self.enabled
             || !self.is_system_audio_paused()
             || !snapshot.system_audio_activity.enabled
@@ -644,7 +712,8 @@ impl InactivityState {
         // (is_paused=true with no per-family flags set). Per-family pauses set
         // is_paused=true through set_family_paused_states, but should only be
         // cleared by their own per-family resume handlers.
-        if !self.enabled || !self.has_legacy_global_pause_state() {
+        // A user mask would be swept away by the legacy all-source resume.
+        if !self.enabled || self.has_user_masked_source() || !self.has_legacy_global_pause_state() {
             return false;
         }
 

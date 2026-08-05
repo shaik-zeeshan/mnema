@@ -374,8 +374,11 @@
   });
 
   const canUseGlobalShortcuts = $derived(isMainWindow && isMainRoute);
+  // Source toggles work mid-session now: off is a user mask on that one source,
+  // on lifts it. The store refuses a source this recording didn't start with and
+  // the backend refuses turning off the last live one.
   const canToggleSourcesByShortcut = $derived(
-    canUseGlobalShortcuts && !isCapturing && !captureLoadingSettings,
+    canUseGlobalShortcuts && !captureLoadingSettings,
   );
   const canToggleRecordingByShortcut = $derived(
     isCapturing ? !captureLoadingStop : !captureLoadingStart && !captureLoadingSettings,
@@ -460,6 +463,7 @@
 
   async function toggleSourceShortcut(key: SourceKey): Promise<void> {
     if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
+    if (isCapturing && !sourceSelection.isInSession(key)) return;
     await toggleSourceSelected(key);
   }
 

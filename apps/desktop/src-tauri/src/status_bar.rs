@@ -84,10 +84,46 @@ fn any_source_enabled(sources: &CaptureSources) -> bool {
     sources.screen || sources.microphone || sources.system_audio
 }
 
+/// A recording session's own source facts: what it was started with, and what
+/// the user has masked off since. Present only while a session records.
+#[derive(Debug, Clone, Copy)]
+struct LiveSourceState<'a> {
+    requested: &'a CaptureSources,
+    masked: &'a CaptureSources,
+}
+
+impl LiveSourceState<'_> {
+    fn live(&self) -> CaptureSources {
+        CaptureSources {
+            screen: self.requested.screen && !self.masked.screen,
+            microphone: self.requested.microphone && !self.masked.microphone,
+            system_audio: self.requested.system_audio && !self.masked.system_audio,
+        }
+    }
+
+    fn requests(&self, source_id: &str) -> bool {
+        match source_id {
+            SOURCE_SCREEN_ID => self.requested.screen,
+            SOURCE_MICROPHONE_ID => self.requested.microphone,
+            SOURCE_SYSTEM_AUDIO_ID => self.requested.system_audio,
+            _ => false,
+        }
+    }
+}
+
+/// What the tray's source checkmarks mean.
+///
+/// While idle they are the *next* session's settings. While a session records
+/// they are what is recording right now — the session's requested sources minus
+/// the user's mid-session mask — so the tray, the pill popover and the 1/2/3
+/// shortcuts all read and write the same thing.
 fn effective_checked_sources(
     settings: &RecordingSettings,
-    _support: &CaptureSources,
+    live: Option<LiveSourceState<'_>>,
 ) -> CaptureSources {
+    if let Some(live) = live {
+        return live.live();
+    }
     CaptureSources {
         screen: settings.capture_screen,
         microphone: settings.capture_microphone,
@@ -126,10 +162,19 @@ fn source_item_enabled(
     current: &CaptureSources,
     support: &CaptureSources,
     operation: StatusBarOperation,
-    recording: bool,
+    live: Option<LiveSourceState<'_>>,
 ) -> bool {
-    if recording || operation != StatusBarOperation::Idle {
+    if operation != StatusBarOperation::Idle {
         return false;
+    }
+
+    // Mid-session the mask lives inside the session's own sources: a source the
+    // session never started with cannot be added without restarting, so it stays
+    // greyed out rather than offering a toggle that would do nothing.
+    if let Some(live) = live {
+        if !live.requests(source_id) {
+            return false;
+        }
     }
 
     let supported = match source_id {
@@ -161,6 +206,7 @@ fn build_menu_model(
     settings: &RecordingSettings,
     support: &CaptureSources,
     operation: StatusBarOperation,
+    live: Option<LiveSourceState<'_>>,
 ) -> StatusBarMenuModel {
     if !onboarding_complete {
         return StatusBarMenuModel {
@@ -175,7 +221,7 @@ fn build_menu_model(
         };
     }
 
-    let checked_sources = effective_checked_sources(settings, support);
+    let checked_sources = effective_checked_sources(settings, live);
     let recording_label = match operation {
         StatusBarOperation::Idle if recording => "Stop Recording",
         StatusBarOperation::Idle => "Start Recording",
@@ -213,7 +259,7 @@ fn build_menu_model(
         id,
         label,
         checked,
-        enabled: source_item_enabled(id, checked, &checked_sources, support, operation, recording),
+        enabled: source_item_enabled(id, checked, &checked_sources, support, operation, live),
     })
     .collect();
 
@@ -287,6 +333,15 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let support = crate::native_capture::get_capture_support().supported_sources;
     let session = crate::native_capture::current_native_capture_session(app);
     let recording = session.is_running;
+    // Present exactly while a session records: the source items then show and
+    // toggle the live mask instead of the next session's settings.
+    let live = recording
+        .then(|| session.requested_sources.as_ref())
+        .flatten()
+        .map(|requested| LiveSourceState {
+            requested,
+            masked: &session.masked_sources,
+        });
     let mut model = build_menu_model(
         crate::windows::is_onboarding_complete(app),
         recording,
@@ -295,6 +350,7 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
         &settings,
         &support,
         operation(app),
+        live,
     );
     // `cached_status` is `None` until the deferred license gate runs once; unknown
     // reads as allow (never lock the tray on unknown).
@@ -503,18 +559,30 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         return;
     }
 
+    let session = crate::native_capture::current_native_capture_session(app);
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
-    let current = CaptureSources {
-        screen: settings.capture_screen,
-        microphone: settings.capture_microphone,
-        system_audio: settings.capture_system_audio,
-    };
+    let live = session
+        .is_running
+        .then(|| session.requested_sources.as_ref())
+        .flatten()
+        .map(|requested| LiveSourceState {
+            requested,
+            masked: &session.masked_sources,
+        });
+    let current = effective_checked_sources(&settings, live);
     let Some(next) = computed_toggle_sources(current, id) else {
         refresh(app);
         return;
     };
 
-    if let Err(error) = crate::native_capture::update_recording_sources_from_app_handle(app, next) {
+    // Mid-session the toggle is the user mask (this session only); idle it is the
+    // capture-sources setting for the next one.
+    let result = if live.is_some() {
+        crate::native_capture::set_native_capture_live_sources_from_app_handle(app, next).map(|_| ())
+    } else {
+        crate::native_capture::update_recording_sources_from_app_handle(app, next).map(|_| ())
+    };
+    if let Err(error) = result {
         crate::native_capture::debug_log::log_warn(format!(
             "failed to update recording sources from status bar: [{}] {}",
             error.code, error.message
@@ -712,6 +780,7 @@ mod tests {
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert!(!model.onboarding_complete);
         assert_eq!(model.recording_label, None);
@@ -728,6 +797,7 @@ mod tests {
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert_eq!(model.recording_label, Some("Start Recording"));
         assert!(model.recording_enabled);
@@ -756,8 +826,15 @@ mod tests {
         );
     }
 
+    // Source items stay live while recording — they toggle the mid-session mask
+    // (see the mask tests below). Only a busy start/stop greys them out.
     #[test]
-    fn running_model_shows_stop_and_disables_sources() {
+    fn running_model_shows_stop_and_keeps_its_own_sources_toggleable() {
+        let requested = CaptureSources {
+            screen: true,
+            microphone: true,
+            system_audio: true,
+        };
         let model = build_menu_model(
             true,
             true,
@@ -766,10 +843,15 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            Some(LiveSourceState {
+                requested: &requested,
+                masked: &CaptureSources::default(),
+            }),
         );
         assert_eq!(model.recording_label, Some("Stop Recording"));
         assert!(model.recording_enabled);
-        assert!(model.source_items.iter().all(|item| !item.enabled));
+        assert!(model.source_items.iter().all(|item| item.checked));
+        assert!(model.source_items.iter().all(|item| item.enabled));
     }
 
     #[test]
@@ -785,6 +867,7 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert_eq!(model.status_label, Some("Paused — low disk"));
         assert_eq!(model.tooltip, "Mnema — Paused (low disk)");
@@ -803,6 +886,7 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
         assert_eq!(model.status_label, Some("Read-Only — trial ended"));
@@ -822,6 +906,7 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::Revoked));
         assert_eq!(model.status_label, Some("Read-Only — license revoked"));
@@ -843,6 +928,7 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         let status = capture_types::LicenseStatus::Licensed {
             update_through_ms: 0,
@@ -872,6 +958,7 @@ mod tests {
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         apply_read_only_status(&mut model, true, Some(&capture_types::LicenseStatus::ReadOnly));
         assert_eq!(model.recording_label, Some("Stop Recording"));
@@ -890,6 +977,7 @@ mod tests {
                 &settings_with_sources(true, true, true),
                 &support_all(),
                 operation,
+                None,
             );
             assert!(!model.recording_enabled);
             assert!(model.source_items.iter().all(|item| !item.enabled));
@@ -906,6 +994,7 @@ mod tests {
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert!(!screen.source_items[0].enabled);
 
@@ -917,6 +1006,7 @@ mod tests {
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert!(!microphone.source_items[1].enabled);
     }
@@ -934,6 +1024,7 @@ mod tests {
             &settings_with_sources(true, false, true),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert!(model.source_items[0].enabled);
     }
@@ -967,6 +1058,7 @@ mod tests {
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
+            None,
         );
         assert!(model.source_items[2].enabled);
     }
@@ -1003,11 +1095,108 @@ mod tests {
                 system_audio: false,
             },
             StatusBarOperation::Idle,
+            None,
         );
         assert!(model.source_items[0].checked);
         assert!(model.source_items[1].checked);
         assert!(!model.source_items[1].enabled);
         assert!(model.source_items[2].checked);
         assert!(!model.source_items[2].enabled);
+    }
+
+    // ── Mid-session source mask ──────────────────────────────────────────
+    // While recording, the tray's checkmarks are the live mask rather than the
+    // next session's settings, so the tray, the pill popover and 1/2/3 cannot
+    // disagree about what is recording.
+
+    fn recording_model(
+        requested: CaptureSources,
+        masked: CaptureSources,
+        settings: &RecordingSettings,
+    ) -> StatusBarMenuModel {
+        build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            settings,
+            &support_all(),
+            StatusBarOperation::Idle,
+            Some(LiveSourceState {
+                requested: &requested,
+                masked: &masked,
+            }),
+        )
+    }
+
+    #[test]
+    fn recording_source_checkmarks_follow_the_live_mask_not_the_settings() {
+        // Settings say screen-only; the session is running screen + microphone
+        // with the microphone masked off.
+        let model = recording_model(
+            CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            },
+            CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            },
+            &settings_with_sources(true, false, false),
+        );
+
+        assert!(model.source_items[0].checked, "screen is still recording");
+        assert!(
+            !model.source_items[1].checked,
+            "a masked microphone reads as off"
+        );
+        assert!(
+            model.source_items[1].enabled,
+            "the user must be able to lift their own mask"
+        );
+    }
+
+    #[test]
+    fn a_source_this_recording_did_not_start_with_cannot_be_added() {
+        let model = recording_model(
+            CaptureSources {
+                screen: true,
+                microphone: false,
+                system_audio: false,
+            },
+            CaptureSources::default(),
+            &settings_with_sources(true, true, true),
+        );
+
+        assert!(!model.source_items[1].checked);
+        assert!(
+            !model.source_items[1].enabled,
+            "the mask works inside the session's own sources"
+        );
+        assert!(!model.source_items[2].enabled);
+    }
+
+    #[test]
+    fn the_last_live_source_cannot_be_masked_off() {
+        let model = recording_model(
+            CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: false,
+            },
+            CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: false,
+            },
+            &settings_with_sources(true, true, false),
+        );
+
+        assert!(
+            !model.source_items[0].enabled,
+            "turning the screen off too would leave nothing recording; stop instead"
+        );
     }
 }

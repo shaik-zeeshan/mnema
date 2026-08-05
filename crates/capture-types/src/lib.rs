@@ -67,6 +67,7 @@ mod tests {
             is_user_paused: false,
             is_low_disk_suspended: false,
             requested_sources: None,
+            masked_sources: Default::default(),
             output_files: None,
             source_sessions: Some(SourceSessions {
                 screen: Some(SourceSessionMeta {

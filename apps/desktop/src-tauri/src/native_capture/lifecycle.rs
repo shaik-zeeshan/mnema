@@ -59,6 +59,19 @@ pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) ->
         && runtime.active_system_audio_session.is_none()
 }
 
+/// Requested sources minus the user's mask — what a session should actually be
+/// recording right now.
+pub(super) fn unmasked_sources(
+    requested: &CaptureSources,
+    mask: &CaptureSources,
+) -> CaptureSources {
+    CaptureSources {
+        screen: requested.screen && !mask.screen,
+        microphone: requested.microphone && !mask.microphone,
+        system_audio: requested.system_audio && !mask.system_audio,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct RecordingLifecycle {
     runtime: NativeCaptureRuntime,
@@ -328,7 +341,7 @@ impl RecordingLifecycle {
         }
         #[cfg(target_os = "macos")]
         {
-            let sources =
+            let requested =
                 self.runtime
                     .requested_sources
                     .clone()
@@ -338,6 +351,9 @@ impl RecordingLifecycle {
                             "Cannot resume recording because the requested sources are missing"
                                 .to_string(),
                     })?;
+            // A whole-session resume brings back what the user asked for, minus
+            // whatever they masked off — a mask outlives a pause/resume cycle.
+            let sources = unmasked_sources(&requested, &self.runtime.inactivity.user_masked_sources());
             let screen_planner = screen_planner_for_runtime(&self.runtime)
                 .cloned()
                 .ok_or_else(|| CaptureErrorResponse {
@@ -417,10 +433,121 @@ impl RecordingLifecycle {
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
         self.runtime.user_capture_paused = false;
-        self.runtime.current_segment_sources = self.runtime.requested_sources.clone();
+        self.runtime.current_segment_sources = self
+            .runtime
+            .requested_sources
+            .as_ref()
+            .map(|requested| {
+                unmasked_sources(requested, &self.runtime.inactivity.user_masked_sources())
+            });
         if let Some(control) = self.runtime.segment_loop_control.as_ref() {
             control.notify();
         }
+        Ok(self.session())
+    }
+
+    /// Turn individual sources off and back on while a session records.
+    ///
+    /// `live` is the desired set. A requested source missing from it becomes
+    /// **user-masked**: a user-scoped pause on that one source, not a suspension
+    /// kind and not a transient-liveness condition (ADR 0021/0040/0052). Nothing
+    /// but this call clears it — display return, tap rebuild, the zero-watchdog,
+    /// wake recovery and the activity tick all leave it alone. A mask and a
+    /// system suspension can hold at once; the source records only when neither
+    /// does.
+    ///
+    /// Masking runs the source's ordinary inactivity pause, so the in-flight
+    /// writer is finalized exactly the way an idle pause finalizes it — no new
+    /// writer behavior and no splicing across tap generations (ADR 0052).
+    ///
+    /// Sources the session never requested are ignored: the mask works inside
+    /// `requested_sources`, and adding a source mid-session would need a fresh
+    /// capture start, not this seam.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn set_live_sources(
+        &mut self,
+        app_handle: &tauri::AppHandle,
+        live: CaptureSources,
+    ) -> Result<NativeCaptureSession, CaptureErrorResponse> {
+        if !self.runtime.is_running {
+            return Err(CaptureErrorResponse {
+                code: "capture_session_not_running".to_string(),
+                message: "No native capture session is running".to_string(),
+            });
+        }
+        let Some(requested) = self.runtime.requested_sources.clone() else {
+            return Err(CaptureErrorResponse {
+                code: "capture_source_mask_missing_sources".to_string(),
+                message: "Cannot change sources because the requested sources are missing"
+                    .to_string(),
+            });
+        };
+
+        let mask = CaptureSources {
+            screen: requested.screen && !live.screen,
+            microphone: requested.microphone && !live.microphone,
+            system_audio: requested.system_audio && !live.system_audio,
+        };
+        if !super::runtime::has_any_capture_sources(&unmasked_sources(&requested, &mask)) {
+            return Err(CaptureErrorResponse {
+                code: "capture_source_mask_all_off".to_string(),
+                message: "At least one source has to keep recording. Stop the recording instead."
+                    .to_string(),
+            });
+        }
+
+        let previous = self.runtime.inactivity.user_masked_sources();
+        if previous == mask {
+            return Ok(self.session());
+        }
+
+        if self.runtime.user_capture_paused {
+            // A user pause already stopped every source, so there is nothing to
+            // finalize or restart — record the mask and mirror it onto the paused
+            // flags; `resume_user_capture` rebuilds the session from it.
+            self.runtime.inactivity.set_user_masked_sources(mask.clone());
+            self.runtime.inactivity.set_family_paused_states(
+                mask.screen,
+                mask.microphone,
+                mask.system_audio,
+            );
+            return Ok(self.session());
+        }
+
+        // Pause before latching, latch before resuming: the pause path refuses
+        // when the family already reads paused (and the mask is part of that
+        // answer), and the resume paths refuse while the mask is still set.
+        if mask.screen && !previous.screen {
+            pause_screen_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))?;
+            self.runtime.inactivity.screen_user_masked = true;
+        }
+        if mask.microphone && !previous.microphone {
+            pause_microphone_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))?;
+            self.runtime.inactivity.microphone_user_masked = true;
+        }
+        if mask.system_audio && !previous.system_audio {
+            pause_system_audio_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))?;
+            self.runtime.inactivity.system_audio_user_masked = true;
+        }
+
+        if !mask.screen && previous.screen {
+            self.runtime.inactivity.screen_user_masked = false;
+            resume_screen_from_inactivity(&mut self.runtime, Some(app_handle))?;
+        }
+        if !mask.microphone && previous.microphone {
+            self.runtime.inactivity.microphone_user_masked = false;
+            resume_microphone_from_inactivity(&mut self.runtime)?;
+        }
+        if !mask.system_audio && previous.system_audio {
+            self.runtime.inactivity.system_audio_user_masked = false;
+            resume_system_audio_from_inactivity(&mut self.runtime)?;
+        }
+
+        super::debug_log::log(format!(
+            "user source mask changed (screen={}, microphone={}, system_audio={})",
+            mask.screen, mask.microphone, mask.system_audio
+        ));
+
         Ok(self.session())
     }
 
@@ -475,6 +602,9 @@ impl RecordingLifecycle {
     ) -> Result<(), CaptureErrorResponse> {
         if !self.runtime.is_running
             || self.runtime.user_capture_paused
+            // A user-masked microphone stays off: enrollment borrowed a device
+            // that was already not recording, so there is nothing to give back.
+            || self.runtime.inactivity.microphone_user_masked
             || self
                 .runtime
                 .capture_suspension

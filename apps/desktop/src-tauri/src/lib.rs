@@ -867,6 +867,7 @@ pub fn run() {
             native_capture::start_native_capture,
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
+            native_capture::set_native_capture_live_sources,
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,

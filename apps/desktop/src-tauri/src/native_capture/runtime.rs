@@ -298,6 +298,7 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
         is_user_paused: runtime.user_capture_paused,
         is_low_disk_suspended,
         requested_sources: runtime.requested_sources.clone(),
+        masked_sources: runtime.inactivity.user_masked_sources(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
     }
@@ -342,6 +343,7 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
         is_user_paused: false,
         is_low_disk_suspended: false,
         requested_sources: runtime.requested_sources.clone(),
+        masked_sources: Default::default(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
     }

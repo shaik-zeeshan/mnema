@@ -20,7 +20,7 @@ pub enum CapturePermissionState {
     PossiblyBlocked,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureSources {
     pub screen: bool,
@@ -78,6 +78,10 @@ pub struct NativeCaptureSession {
     pub is_user_paused: bool,
     pub is_low_disk_suspended: bool,
     pub requested_sources: Option<CaptureSources>,
+    /// Sources the user turned off mid-session. A user-scoped pause on one
+    /// source, always a subset of `requested_sources`; what is actually
+    /// recording is `requested_sources` minus this.
+    pub masked_sources: CaptureSources,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,
 }
@@ -127,6 +131,25 @@ mod tests {
                 state
             );
         }
+    }
+
+    // Hand-mirrored in `apps/desktop/src/lib/types/session.ts` — no codegen, so
+    // the mask's wire shape is pinned here.
+    #[test]
+    fn masked_sources_round_trip_their_camel_case_wire_shape() {
+        let mask = CaptureSources {
+            screen: false,
+            microphone: true,
+            system_audio: true,
+        };
+        let json = serde_json::to_value(&mask).expect("serialize");
+        assert_eq!(json["screen"], false);
+        assert_eq!(json["microphone"], true);
+        assert_eq!(json["systemAudio"], true);
+        assert_eq!(
+            serde_json::from_value::<CaptureSources>(json).expect("deserialize"),
+            mask
+        );
     }
 
     #[test]

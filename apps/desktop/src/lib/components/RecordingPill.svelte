@@ -15,8 +15,10 @@
   button, not a pill) with a chevron beside it as the popover's idle door.
 
   Popover labels are byte-identical to the tray menu (`status_bar.rs`) — the
-  decision record requires one wording everywhere. Per-source toggles render
-  DISABLED while recording; the user-scoped mid-session mask is its own slice.
+  decision record requires one wording everywhere. Per-source toggles work mid
+  session: turning one off is a user-scoped mask on that source (paused-flag
+  seam), which no liveness recovery ever undoes. A source the session didn't
+  start with can't be added, and the last live source can't be turned off.
 -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
@@ -241,6 +243,27 @@
     if (key === "screen") return "toggleSourceScreen";
     if (key === "microphone") return "toggleSourceMicrophone";
     return "toggleSourceSystemAudio";
+  }
+
+  // A recording needs at least one live source, so the last one standing can't
+  // be switched off — stopping is the way out, and the transport above owns it.
+  const liveCount = $derived(
+    SOURCES.filter((source) => sourceSelection.isSelected(source.key)).length,
+  );
+  const hasOutOfSessionSource = $derived(
+    captureControls.isRunning &&
+      SOURCES.some((source) => !sourceSelection.isInSession(source.key)),
+  );
+
+  function sourceTip(source: { key: SourceKey; label: string }): string {
+    if (captureControls.isRunning && !sourceSelection.isInSession(source.key)) {
+      return `${source.label} — not part of this recording`;
+    }
+    if (sourceSelection.isSelected(source.key) && liveCount <= 1) {
+      return `${source.label} — the last source can't be turned off`;
+    }
+    const shortcut = shortcutFor(sourceShortcutId(source.key));
+    return shortcut ? `${source.label} (${shortcut})` : source.label;
   }
 
   // Transport labels are the tray's, byte-for-byte (`status_bar.rs`).
@@ -478,21 +501,20 @@
     <div class="recpop__sep" role="presentation"></div>
     <p class="recpop__label">Sources</p>
     {#each SOURCES as source (source.key)}
-      {@const live = captureControls.runtimeSources?.[source.key] ?? null}
-      {@const on = captureControls.isRunning
-        ? live?.requested === true
-        : sourceSelection.isSelected(source.key)}
+      {@const on = sourceSelection.isSelected(source.key)}
+      {@const outOfSession =
+        captureControls.isRunning && !sourceSelection.isInSession(source.key)}
+      {@const lastOne = on && liveCount <= 1}
       <button
         type="button"
         class="recpop__item"
         role="menuitemcheckbox"
         aria-checked={on}
-        disabled={captureControls.isRunning ||
+        disabled={outOfSession ||
+          lastOne ||
           captureControls.loadingSettings ||
           sourceSelection.isSaving(source.key)}
-        use:tip={shortcutFor(sourceShortcutId(source.key))
-          ? `${source.label} (${shortcutFor(sourceShortcutId(source.key))})`
-          : source.label}
+        use:tip={sourceTip(source)}
         onclick={() => void toggleSourceSelected(source.key)}
       >
         <span class="recpop__check" aria-hidden="true">
@@ -505,9 +527,9 @@
         <span>{source.label}</span>
       </button>
     {/each}
-    {#if captureControls.isRunning}
+    {#if captureControls.isRunning && hasOutOfSessionSource}
       <p class="recpop__note">
-        Sources are fixed for this recording. Change them from the tray, or stop and start again.
+        Sources this recording didn't start with can't be added — stop and start again to change them.
       </p>
     {/if}
   </div>

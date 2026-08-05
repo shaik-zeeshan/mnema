@@ -66,6 +66,7 @@ This file tracks Mnema platform-specific implementation status. It is intentiona
 - [x] Segment rotation and finalization for screen, microphone, and system audio.
 - [x] Bounded microphone clip recording for voice enrollment (`record_bounded_microphone_clip`): a fixed-length AVFoundation take to a temp `.m4a`, guarded by `native_capture/lifecycle.rs` so a live session's microphone is stopped for the take and restarted after. Microphone family only — screen and the system-audio tap keep recording throughout. The recorder holds no judgment about the clip; the level meter reads the shared microphone activity probe (`get_microphone_activity_level`) rather than opening a second audio tap.
 - [x] User capture pause/resume.
+- [x] Per-source mid-session mask: while a session records, screen / microphone / system audio can be turned off and back on individually from the recording pill's popover, the tray Sources submenu, or the bare `1`/`2`/`3` shortcuts. Implemented as a **user-scoped pause** on the same per-source paused-flag seam as the inactivity pause (`native_capture/lifecycle.rs::set_live_sources`) — not a Capture Suspension kind and not transient liveness: masking finalizes that source's in-flight segment the way an idle pause does, and **no** recovery path lifts it (display return, tap rebuild, zero-watchdog, wake, low-disk resume, activity). A mask and a system suspension can hold at once; a source records only when neither does. Scoped to the session's own `requested_sources` (a source the recording did not start with cannot be added mid-session) and the last live source cannot be masked off.
 - [x] Inactivity pause/resume for screen, microphone, and system audio families.
 - [x] Sleep/wake recovery for screen while preserving microphone and system-audio continuation.
 - [x] Screen liveness reconciliation from AppKit wake notifications and ScreenCaptureKit stream delegate failures.
@@ -153,7 +154,7 @@ Research notes:
   - **Decided (macOS, [ADR 0052](docs/adr/0052-system-audio-is-an-independent-capture-family-on-core-audio-process-taps.md)): system audio is an independent capture family, not a rider on screen capture.** A Windows implementation is out of scope here, but it should mirror that shape: own session and inactivity lifecycle, no screen dependency, audio-only sessions allowed, and privacy-listed apps excluded from the audio itself. Only the low-disk suspension stops audio alongside the screen ([ADR 0040](docs/adr/0040-low-disk-safety-is-a-transient-liveness-capture-suspension-kind.md)), because that one is about the volume, not the display.
 - [ ] Implement Windows capture session IDs and source-session bookkeeping.
 - [ ] Implement segment rotation without dropping OCR/frame-index invariants.
-- [ ] Implement user pause/resume and inactivity pause/resume for each requested source family.
+- [ ] Implement user pause/resume, the per-source mid-session mask, and inactivity pause/resume for each requested source family.
 - [ ] Implement capture liveness/error propagation equivalent to ScreenCaptureKit delegate stop errors.
 - [ ] Implement sleep/wake/session-lock recovery.
 
