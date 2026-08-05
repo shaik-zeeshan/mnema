@@ -7,7 +7,7 @@
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { semanticIndexPrice } from "$lib/settings/state/system-facts";
+  import { semanticCoverage, semanticIndexPrice } from "$lib/settings/state/system-facts";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { semanticSearchProgressPercent } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
@@ -44,7 +44,13 @@
 
   // Controller / store action methods.
   const loadSemanticSearchModelStatus = () => c.loadSemanticSearchModelStatus();
-  const setSemanticSearchEnabled = (value: boolean) => c.setSemanticSearchEnabled(value);
+  // Toggling re-reads the machine facts: off→on swaps the price copy for the
+  // coverage meter, and the meter must open on a fresh count, not the one
+  // cached when Settings mounted.
+  const setSemanticSearchEnabled = async (value: boolean) => {
+    await c.setSemanticSearchEnabled(value);
+    await systemFacts.refresh();
+  };
   const cancelSemanticSearchModelDownload = () => c.cancelSemanticSearchModelDownload();
   const startSemanticSearchPickedDownload = (
     model: Parameters<typeof c.startSemanticSearchPickedDownload>[0],
@@ -62,6 +68,13 @@
   // honestly quote one from.
   void systemFacts.ensureLoaded();
   const semanticPrice = $derived(semanticIndexPrice(systemFacts.value));
+
+  // …and its ON-state counterpart: once the feature is on, the price is spent,
+  // so the row states coverage instead — the same two real counts as a
+  // fraction. Never rendered in the off state (G10).
+  // ponytail: the counts refresh on toggle and on the group's Refresh button,
+  // not on a timer — indexing progress polls if a static meter proves annoying.
+  const coverage = $derived(semanticCoverage(systemFacts.value));
 </script>
 
 <SettingGroup
@@ -71,7 +84,10 @@
 >
   {#snippet actions()}
     <ReloadButton
-      onclick={() => void loadSemanticSearchModelStatus()}
+      onclick={() => {
+        void loadSemanticSearchModelStatus();
+        void systemFacts.refresh();
+      }}
       busy={loadingSemanticSearchModelStatus}
       title="Refresh"
       label="Refresh semantic search model status"
@@ -95,8 +111,27 @@
         <p class="group-hint group-hint--warn">
           Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
         </p>
-        {#if semanticPrice}
-          <p class="group-hint">{semanticPrice}</p>
+        {#if !rec.draftSemanticSearchEnabled}
+          {#if semanticPrice}
+            <p class="group-hint">{semanticPrice}</p>
+          {/if}
+        {:else if coverage}
+          <div class="download-progress" aria-live="polite">
+            <div
+              class="download-progress__bar"
+              role="progressbar"
+              aria-label="Semantic index coverage"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={coverage.percent}
+              aria-valuetext={coverage.phrase}
+            >
+              {#if coverage.percent > 0}
+                <span style={`width: ${coverage.percent}%`}></span>
+              {/if}
+            </div>
+            <p class="group-hint">{coverage.phrase}</p>
+          </div>
         {/if}
       </div>
     {/snippet}

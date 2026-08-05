@@ -126,3 +126,40 @@ export function semanticIndexPrice(facts: SystemFacts | null): string | null {
 	const bytes = facts.semanticPendingCount * facts.semanticVectorBytes;
 	return `Indexing what you have captured so far adds about ${formatBytes(bytes)} to the database (${facts.semanticPendingCount.toLocaleString()} captures still to index).`;
 }
+
+/** How much of what Mnema can index actually is (round-4 decision **G10**). */
+export interface SemanticCoverage {
+	indexed: number;
+	total: number;
+	/** 0–100, floored so a part-done index never reads as finished. */
+	percent: number;
+	phrase: string;
+}
+
+/**
+ * The coverage meter's numbers, for the ON state only — the caller gates on
+ * "semantic search is enabled" (G10); this only refuses when there is nothing
+ * real to draw: unreadable counts, or no indexable capture at all.
+ *
+ * `total` is the two real counts summed (vectors stored + anchors still
+ * missing one), so the fraction has a denominator that exists on this machine
+ * per G8. No time figure and no ETA: nothing measures embedding throughput, so
+ * any "X minutes left" would be invented.
+ */
+export function semanticCoverage(facts: SystemFacts | null): SemanticCoverage | null {
+	const indexed = facts?.semanticVectorCount ?? null;
+	const pending = facts?.semanticPendingCount ?? null;
+	if (indexed === null || pending === null) return null;
+	const total = indexed + pending;
+	if (total <= 0) return null;
+	const percent = Math.floor((indexed / total) * 100);
+	return {
+		indexed,
+		total,
+		percent,
+		phrase:
+			pending === 0
+				? `Indexed — all ${total.toLocaleString()} captures have a search vector.`
+				: `${indexed.toLocaleString()} of ${total.toLocaleString()} captures indexed (${percent}%) — ${pending.toLocaleString()} still to go.`,
+	};
+}
