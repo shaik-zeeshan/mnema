@@ -9,18 +9,26 @@
    COPY of ../system.css §1–§7 — VERBATIM. ../system.css wins on any conflict.
    ========================================================================= */
 
-/* ── 1. Colour — unchanged from what ships ─────────────────────────────────
+/* ── 1. Colour ──────────────────────────────────────────────────────────────
    Listed by role so it is obvious which token to reach for. Values are the
-   shipping ones; do not re-tune them in this redesign.                       */
+   shipping ones with ONE deliberate exception: the DARK SURFACE STEPS were
+   retuned 2026-08-04 (the one deliberate token change vs the shipping app).
+   The old ladder (#0c0c0e / #0e0e16 / #13131a) sat within ~7 sRGB units — a
+   card ladder, invisible at region scale. The new ladder steps ~11 sRGB units
+   per level; --app-surface adopts the region fill the converged direction
+   already validated (--grp-fill #17171f). Do not re-tune anything else.      */
 
 :root {
-  /* surfaces — elevation is a surface STEP, not a shadow */
+  /* surfaces — elevation is a surface STEP, not a shadow.
+     Dark ladder retuned 2026-08-04: bg → surface → raised step ~11 sRGB
+     units each so regions separate by tone; hover/active re-seated above
+     raised (the old hover #1a1a2a would have sat BELOW the new raised).     */
   --app-bg: #0c0c0e;            /* window                                    */
-  --app-surface: #0e0e16;       /* region / panel                            */
-  --app-surface-subtle: #101018;
-  --app-surface-raised: #13131a;/* card, raised row                          */
-  --app-surface-hover: #1a1a2a;
-  --app-surface-active: #131320;
+  --app-surface: #17171f;       /* region / panel                            */
+  --app-surface-subtle: #1c1c26;
+  --app-surface-raised: #22222e;/* card, raised row                          */
+  --app-surface-hover: #2e2e40;
+  --app-surface-active: #282836;
 
   /* text — four steps. --app-text-faint is DECORATIVE ONLY (sub-AA).        */
   --app-text-strong: #e2e2e8;
@@ -240,16 +248,13 @@
 }
 
 /* KNOWN GAPS — recorded so they get decided rather than re-invented per screen.
-   1. The three dark surface steps (--app-bg #0c0c0e, --app-surface #0e0e16,
-      --app-surface-raised #13131a) sit within ~7 sRGB units. That is a CARD
-      ladder; it is too tight to separate full REGIONS in dark theme. Directions
-      that lean on tone widen it themselves. If region-scale tone separation
-      becomes the shell's structure, widen these here rather than five times.
-   2. There is no colour guidance for TEXT OVER AN IMAGE. Every text token
+   (The former gap 1 — dark surface steps too tight for region separation —
+   was resolved 2026-08-04 by retuning the dark ladder in §1.)
+   1. There is no colour guidance for TEXT OVER AN IMAGE. Every text token
       assumes it sits on --app-bg. A recall app puts labels on screenshots
       constantly, so this needs a real answer (an opaque plate, or a scrim with
       a measured floor) before implementation.
-   3. There is no oversized-input role. A prominent search field (~40-46px) has
+   2. There is no oversized-input role. A prominent search field (~40-46px) has
       to borrow --t-title at regular weight. Add a role if a second surface
       needs one. */
 
@@ -442,8 +447,8 @@ a { text-decoration: none; color: inherit; }
 :root {
   /* The group fill: a rounded fill ONE step off the background, NO border,
      never nested (BRIEF-3 surface-step clarification of de-boxing rule 4).
-     Dark value widens the shipping raised step per system.css KNOWN GAP 1 —
-     #13131a is ~7 sRGB units off the bg, invisible as a region fill. */
+     This value was promoted into system.css as the retuned --app-surface
+     (2026-08-04), so the two are now the same colour by construction. */
   --grp-fill: #17171f;
   --grp-fill-hover: color-mix(in srgb, var(--grp-fill) 78%, var(--app-surface-hover));
   --grp-radius: 10px;         /* System Settings group radius; sits between
