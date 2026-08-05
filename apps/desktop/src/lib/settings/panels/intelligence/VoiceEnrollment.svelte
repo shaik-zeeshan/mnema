@@ -14,6 +14,11 @@
   autosave from writing the stale `false` back over it.
 -->
 <script lang="ts">
+  import { setSettingsSection } from "$lib/settings/state/settings-find.svelte";
+
+  // Every SettingRow below belongs to this section (⌘F row index scope, G7).
+  setSettingsSection("speakers");
+
   import { onDestroy } from "svelte";
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { convertFileSrc } from "@tauri-apps/api/core";

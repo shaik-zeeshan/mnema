@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { setSettingsSection } from "$lib/settings/state/settings-find.svelte";
+
+  // Every SettingRow below belongs to this section (⌘F row index scope, G7).
+  setSettingsSection("video");
+
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import CaptureRateControl from "$lib/components/CaptureRateControl.svelte";
   import { captureRateShortLabel } from "$lib/components/capture-rate";
