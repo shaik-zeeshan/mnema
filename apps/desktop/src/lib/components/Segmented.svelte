@@ -42,6 +42,13 @@
     ariaLabel?: string;
     /** Visual size; `compact` is the tighter pill used in titlebars. */
     compact?: boolean;
+    /**
+     * Optional keycaps, positionally parallel to `options` — `keys[i]` renders
+     * as a `.kbd` inside segment `i`. An empty/absent entry renders no cap: a
+     * keycap on a segment with no shortcut is a lie. Display strings only
+     * (e.g. "⌥1"); the component never binds them.
+     */
+    keys?: (string | undefined)[];
   }
 
   let {
@@ -53,6 +60,7 @@
     icon,
     ariaLabel,
     compact = false,
+    keys,
   }: Props = $props();
 
   const isOff = (v: string): boolean => disabledValues.includes(v);
@@ -139,23 +147,31 @@
       {#if option.label}
         <span class="seg__label">{option.label}</span>
       {/if}
+      {#if keys?.[index]}
+        <kbd class="kbd" aria-hidden="true">{keys[index]}</kbd>
+      {/if}
     </button>
   {/each}
 </div>
 
 <style>
+  /* AppKit segmented control: a recessed track with one raised chip on it.
+     The track is the hover surface so the chip (--app-surface) reads as
+     *above* it; direction 04 spends no accent here. */
   .segmented {
     display: inline-flex;
+    align-items: center;
     /* Hug the options even inside a stretch flex column, so the pill doesn't
        blow out to full width with the segments packed on one side. Callers that
        want a full-width control opt in by setting width:100% (+ flex segments),
        as ThemeModeControl does. */
     width: fit-content;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    height: var(--h-sm);
+    padding: 1.5px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   .segmented--disabled {
@@ -168,15 +184,15 @@
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 5px 12px;
+    height: 100%;
+    padding: 0 9px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 4.5px;
     background: transparent;
     color: var(--app-text-muted);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 540;
-    line-height: 1;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
     cursor: pointer;
     user-select: none;
     outline: none;
@@ -199,9 +215,11 @@
   }
 
   .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    box-shadow:
+      0 1px 2px var(--kbd-drop),
+      0 0 0 var(--hairline) var(--app-border-strong);
   }
 
   .seg:disabled {
@@ -250,9 +268,11 @@
   }
 
   .segmented--compact .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    box-shadow:
+      0 1px 2px var(--kbd-drop),
+      0 0 0 var(--hairline) var(--app-border-strong);
   }
 
   .segmented--compact .seg__icon,

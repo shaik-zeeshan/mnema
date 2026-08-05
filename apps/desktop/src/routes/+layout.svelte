@@ -38,6 +38,7 @@
     type AppNotification,
   } from "$lib/notifications.svelte";
   import Toasts from "$lib/Toasts.svelte";
+  import DeckBar from "$lib/DeckBar.svelte";
   import { clearArchivedToast, clearToastArchive, toasts } from "$lib/toast.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
@@ -876,9 +877,10 @@
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
            Insights stays reachable here until Ask moves into Quick Access.
-           "dashboard" retired (#103). The shortcut rides in the tooltip rather
-           than a visible ⌘1 chip: the segments are 22px tall and a direction
-           skin may render the chip in phase 2. -->
+           "dashboard" retired (#103). Direction 04 renders the shortcut as a
+           visible keycap (the segments grow to --h-sm so a 17px cap fits).
+           Insights gets no cap — it has no key, and a keycap that does nothing
+           is a lie. -->
       <div
         class="surface-toggle"
         class:surface-toggle--muted={isSettingsRoute}
@@ -894,6 +896,7 @@
           onclick={() => goToSurface("timeline")}
         >
           Timeline
+          <kbd class="kbd" aria-hidden="true">{shortcutDisplay("openTimelineSurface")}</kbd>
         </button>
         <button
           type="button"
@@ -904,6 +907,7 @@
           onclick={() => goToSurface("overview")}
         >
           Overview
+          <kbd class="kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</kbd>
         </button>
         <button
           type="button"
@@ -1235,6 +1239,15 @@
        gated on `isMainWindow`: Quick Recall and the dedicated surfaces raise
        toasts of their own. -->
   <Toasts />
+
+  <!-- The deck (direction 04). Last child of the shell, outside `<main>`, so it
+       is inside the window frame and nothing it carries can clip off-screen —
+       which is what lets settings autosave live in it instead of a save bar
+       (G7). Same gate as the main title bar: Quick Recall, onboarding and the
+       dedicated surface windows carry their own chrome. -->
+  {#if showMainTitlebar}
+    <DeckBar />
+  {/if}
 
   {#if shortcutsHelpOpen && canShowShortcutsHelp}
     <div class="shortcut-help" role="presentation" onpointerdown={onShortcutsHelpPointerDown}>
@@ -1626,6 +1639,16 @@
     --focus-deep: #3dffa0;
     --focus-mid: #d6a14a;
     --focus-distracted: #ff6b7a;
+
+    /* ── Direction 04 "Command Deck" ──────────────────────────────
+       The deck's height and the keycap's four tones. The keycap is this
+       direction's signature element — every actionable thing that has a
+       shortcut wears one, so its tones are root tokens, not local values. */
+    --deck-h: 28px;
+    --kbd-bg: #23232f;
+    --kbd-fg: #9696ae;
+    --kbd-edge: #33333f;
+    --kbd-drop: rgba(0, 0, 0, 0.3);
   }
 
   /* Light theme — bright, neutral, high contrast. The accent stays in the
@@ -1796,6 +1819,12 @@
     --focus-deep: #1f7a4a;
     --focus-mid: #9a5a12;
     --focus-distracted: #c43a48;
+
+    /* Direction 04 keycap tones (light). --deck-h is theme-independent. */
+    --kbd-bg: #f0f0ee;
+    --kbd-fg: #5a5a6a;
+    --kbd-edge: #d3d3cf;
+    --kbd-drop: rgba(21, 28, 38, 0.06);
 
     /* Floating elevation re-tinted for light (system.css §4): pure black at
        32%/48% reads as soot on near-white surfaces. */
@@ -1987,22 +2016,62 @@
     border-color: var(--app-danger-border);
   }
 
+  /* Keycap — direction 04's signature element. Physically a key: an inset
+     hairline edge plus a 1px drop so it sits *on* the surface rather than in
+     it. Everything that has a shortcut wears one, at 17px so it fits inside a
+     24px segment or a 28px deck row. */
   :global(.kbd) {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 20px;
-    height: 20px;
+    min-width: 17px;
+    height: 17px;
     padding: 0 var(--s-4);
     border-radius: var(--r-sm);
-    background: var(--app-surface-raised);
+    background: var(--kbd-bg);
+    color: var(--kbd-fg);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--kbd-edge),
+      0 1px 0 var(--kbd-drop);
     font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
-    color: var(--app-text-muted);
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  /* Fixed-width caps so a column of them aligns: --wide for a spelled-out
+     combo, --mod for the shortcut recorder's modifier slot. */
+  :global(.kbd--wide) {
+    min-width: 40px;
+  }
+  :global(.kbd--lg) {
+    height: 20px;
+    min-width: 20px;
+    font-size: var(--t-meta);
+  }
+  /* Held / active: the cap fills accent (⌃-held tile badges, selected rows). */
+  :global(.kbd--on) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-strong);
   }
   :global(.kbd--mod) {
     min-width: 48px;
     justify-content: flex-start;
     padding-left: var(--s-6);
+  }
+
+  /* A keycap and what it does, as one inline unit. The deck's right side and
+     every "hold ⌃ for tile shortcuts" affordance are made of these. */
+  :global(.hint) {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  /* `:not(.kbd)` because a bare `.hint span` outranks `.kbd` (0-1-1 vs 0-1-0)
+     and would repaint the keycap in sans — the mockup's own sheet has that
+     bug. The label is the only span here that wants the label treatment. */
+  :global(.hint span:not(.kbd)) {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-subtle);
   }
 
   /* Recording state pill — dot + elapsed + cost in one capsule. Recording red
@@ -2287,7 +2356,7 @@
   }
 
   .app-shell {
-    --app-titlebar-height: 36px;
+    --app-titlebar-height: var(--h-titlebar);
     --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
@@ -2331,9 +2400,12 @@
     /* Reserve ~72px on the left so our content never collides with the
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
-    padding: 0 8px 0 78px;
-    background: var(--app-titlebar-bg);
-    border-bottom: 1px solid var(--app-titlebar-border);
+    padding: 0 var(--s-12) 0 78px;
+    /* Direction 04: the bar is the same surface as the deck, separated from
+       content by one hairline inset rather than its own darker fill — the two
+       28–38px bars are the window's only chrome, so they read as one frame. */
+    background: var(--app-surface);
+    box-shadow: inset 0 -1px 0 var(--app-border);
     /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
        640px app minimum, and flex items can't shrink past their content width —
        clip rather than let the row spill the right-hand controls off-screen.
@@ -2457,28 +2529,29 @@
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
+    height: var(--h-sm);
+    padding: 1.5px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   .surface-toggle button {
-    font: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
-    letter-spacing: 0.02em;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0 13px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
+    gap: 5px;
+    padding: 0 9px;
+    height: 100%;
+    border: 0;
+    border-radius: 4.5px;
     background: transparent;
     color: var(--app-text-muted);
+    white-space: nowrap;
     cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease, color 0.12s ease;
   }
   .surface-toggle button:hover {
     color: var(--app-text-strong);
@@ -2488,21 +2561,21 @@
   }
   .surface-toggle button:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
   .surface-toggle button:not(:disabled):active {
     transform: translateY(0.5px);
     filter: brightness(0.92);
   }
+  /* Active = "you are here", drawn as AppKit does it: a raised --app-surface
+     chip on the recessed track, not an accent fill. The accent is spent on the
+     recording state and the deck's OK status, where it means something. */
   .surface-toggle button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    /* Active = "you are here": use the brighter --app-accent (AA-legible on
-       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
-       body text, and reads ~4:1 here. */
-    color: var(--app-accent);
-    font-weight: 600;
+    background: var(--app-surface);
+    color: var(--app-text-strong);
+    box-shadow:
+      0 1px 2px var(--kbd-drop),
+      0 0 0 var(--hairline) var(--app-border-strong);
   }
   /* On the Settings route neither surface is the current page; de-emphasize the
      whole toggle so it doesn't read as a live selection, and quietly mark the
@@ -2524,11 +2597,11 @@
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    height: 26px;
-    padding: 0 8px 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    gap: 6px;
+    height: var(--h-sm);
+    padding: 0 6px 0 9px;
+    border: var(--hairline) solid var(--app-border);
+    border-radius: var(--r-md);
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     font: inherit;
@@ -2651,6 +2724,11 @@
     }
     /* Idle's Record button sheds its label to the dot glyph. */
     .titlebar :global(.rec__record-label) {
+      display: none;
+    }
+    /* The switcher's keycaps go before its labels ever would — the surface
+       names are the navigation, the caps are the teach-in. */
+    .surface-toggle :global(.kbd) {
       display: none;
     }
   }
@@ -3142,10 +3220,13 @@
 
   /* The help sheet's keycaps are the shared `.kbd` with a physical-key lip —
      this is the one surface where a keycap IS the subject, not a hint. */
+  /* Help sheet caps are the one place a keycap is the row's subject, so they
+     run at --lg with strong text. The edge/drop come from `.kbd`. */
   .kbd--help {
     min-width: 24px;
+    height: 20px;
+    font-size: var(--t-meta);
     color: var(--app-text-strong);
-    box-shadow: inset 0 -1px 0 var(--app-overlay-border);
   }
 
   .shortcut-help__note {
