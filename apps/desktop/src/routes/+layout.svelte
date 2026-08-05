@@ -17,9 +17,12 @@
     resumeCapture,
     startCapture,
     stopCapture,
-    subscribeRuntimeSources,
     toggleSourceSelected,
+    type SourceKey,
   } from "$lib/capture-controls.svelte";
+  import RecordPill from "$lib/components/RecordPill.svelte";
+  import SurfaceSwitcher from "$lib/components/SurfaceSwitcher.svelte";
+  import { getMainSurfaceSetting, surfaceRoute, type MainSurface } from "$lib/main-surface";
   import { initTheme } from "$lib/theme.svelte";
   import { theme, persistAppearance } from "$lib/theme.svelte";
   import ThemeModeControl from "$lib/components/ThemeModeControl.svelte";
@@ -34,6 +37,14 @@
     reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
+  import ToastCard from "$lib/components/Toast.svelte";
+  import {
+    clearToastArchive,
+    dismissToast,
+    removeArchivedToast,
+    toastStore,
+  } from "$lib/toast.svelte";
+  import type { Toast } from "$lib/toast";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
   import LicenseDeepLinkModal from "$lib/LicenseDeepLinkModal.svelte";
@@ -95,7 +106,6 @@
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
   let notificationsPopoverEl = $state<HTMLDivElement | null>(null);
   let settingsButtonEl = $state<HTMLButtonElement | null>(null);
-  let restartingPrivacyCapture = $state(false);
   let shortcutsHelpOpen = $state(false);
   let shortcutsHelpPanelEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
@@ -220,6 +230,28 @@
     if (!coldDrainsDone) {
       coldDrainsDone = true;
 
+    // Default surface (`ui.main_surface`, frame 07): a cold main window that
+    // opened at the root switches to Overview when that is the saved default.
+    // Root-only on purpose — a deep link (/settings, an insights handoff, …)
+    // must never be navigated away from. Harmless alongside the insights peek
+    // below: the only route this can move to is `/insights`, which is also the
+    // only route the peek moves to, so they can't fight.
+    if (isMainWindow && normalizeAppPathname($page.url.pathname) === "/") {
+      void getMainSurfaceSetting()
+        .then((surface) => {
+          if (
+            !destroyed &&
+            surface === "overview" &&
+            normalizeAppPathname($page.url.pathname) === "/"
+          ) {
+            void goto("/insights", { replaceState: true });
+          }
+        })
+        .catch(() => {
+          // Best-effort: unknown setting opens on Timeline (the default).
+        });
+    }
+
     // Cold-window inverse: a freshly-opened main window boots on Timeline (`/`),
     // and the live `insights_open_conversation` event may have already fired
     // before the listener above attached — so without this the handoff would
@@ -283,7 +315,9 @@
   // and owns its own scroll region — the narrow column's max-width/padding would
   // shrink it and break the shell's `height:100%` fill.
   const isNarrow = $derived(isDebug);
-  const notificationCount = $derived(appNotifications.count);
+  // The bell archives every toast (frame 14): session-local toast records ride
+  // the same popover + count as the backend-persisted notifications.
+  const notificationCount = $derived(appNotifications.count + toastStore.archive.length);
   const hasNotifications = $derived(notificationCount > 0);
   const notificationLoadError = $derived(appNotifications.loadError);
   const notificationActionError = $derived(appNotifications.actionError);
@@ -294,11 +328,40 @@
     hasNotifications || notificationLoadError !== null,
   );
   const hasErrorNotification = $derived(
-    appNotifications.items.some((n) => n.severity === "error"),
+    appNotifications.items.some((n) => n.severity === "error") ||
+      toastStore.archive.some((t) => t.kind === "danger"),
   );
   const hasWarningNotification = $derived(
     appNotifications.items.some((n) => n.severity === "warning"),
   );
+  // One merged, newest-first bell list: backend notifications + archived
+  // toasts (frame 14 orders the bell by time, newest on top).
+  type BellRow =
+    | { key: string; at: number; source: "backend"; notification: AppNotification }
+    | { key: string; at: number; source: "toast"; toast: Toast };
+  const bellRows = $derived.by<BellRow[]>(() => {
+    const rows: BellRow[] = [
+      ...appNotifications.items.map((notification) => ({
+        key: `n:${notification.id}`,
+        at: notification.createdAtUnixMs,
+        source: "backend" as const,
+        notification,
+      })),
+      ...toastStore.archive.map((toast) => ({
+        key: `t:${toast.id}`,
+        at: toast.createdAtUnixMs,
+        source: "toast" as const,
+        toast,
+      })),
+    ];
+    rows.sort((a, b) => b.at - a.at);
+    return rows;
+  });
+  // Archived toast kinds map onto the popover's severity styling; success/info
+  // both read as informational rows.
+  function toastRowSeverity(toast: Toast): "error" | "info" {
+    return toast.kind === "danger" ? "error" : "info";
+  }
   // The count + worst-severity badge is `aria-hidden` (decorative), so assistive
   // tech otherwise hears only "Open notifications" with no sense of how many or
   // how urgent. Fold the live summary into the button name and mirror it into a
@@ -355,169 +418,13 @@
   }
 
   // ── Recording status mirrored from the shared capture-controls seam ────
+  // (The visual chrome itself lives in RecordPill.svelte; the layout keeps
+  // only what the global keyboard shortcuts below need.)
   const isCapturing = $derived(captureControls.running);
   const captureLoadingStart = $derived(captureControls.loadingStart);
   const captureLoadingStop = $derived(captureControls.loadingStop);
   const captureLoadingPause = $derived(captureControls.loadingPause);
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
-  const captureStatusLabel = $derived(captureControls.statusLabel);
-  const captureStatusModifier = $derived(captureControls.statusModifier);
-
-  // ── Pause / resume control ──────────────────────────────────────────────
-  // Pause is a *whole-session* control and must stay available even while an
-  // inactivity auto-pause has idled one or more sources: inactivity pausing is
-  // per-source (the session reports `is_inactivity_paused` when *any* source
-  // idles, even though others may still be recording), so it must not steal the
-  // user's ability to deliberately pause the entire session. This matches the
-  // pause/resume keyboard shortcut, which already keys off the user pause alone.
-  //
-  // The button reads "Resume" only when the *user* paused, or when a low-disk
-  // suspension (which the user cannot clear from here) holds the session — that
-  // is the one case the control is disabled. An inactivity pause leaves the
-  // button as an enabled "Pause" so the user can lock the whole session paused.
-  const showResume = $derived(
-    captureControls.isUserPaused || captureControls.isLowDiskSuspended,
-  );
-  const pauseDisabled = $derived(
-    captureLoadingPause ||
-      (captureControls.isLowDiskSuspended && !captureControls.isUserPaused),
-  );
-  const pauseButtonTitle = $derived(
-    captureControls.isUserPaused
-      ? "Resume recording"
-      : captureControls.isLowDiskSuspended
-        ? "Paused — free up disk space to resume recording"
-        : captureControls.isInactivityPaused
-          ? "Pause the whole session (recording auto-paused while you're away)"
-          : "Pause recording",
-  );
-
-  // ── Per-source runtime indicators ──────────────────────────────────────
-  // While a capture session is running, fetch `get_idle_debug` periodically
-  // through the shared seam so the title bar can show small per-source
-  // icons (screen / microphone / system audio) with running vs paused
-  // state. The subscription auto-clears when the session stops.
-  $effect(() => {
-    if (!showMainTitlebar || !isCapturing) return;
-    const release = subscribeRuntimeSources();
-    return release;
-  });
-
-  type SourceLane = {
-    key: "screen" | "microphone" | "systemAudio";
-    label: string;
-  };
-  type PrivacyVisualCaptureStatus = {
-    modifier: "retrying" | "restart-required";
-    label: string;
-    detail: string;
-  };
-  const sourceLanes: SourceLane[] = [
-    { key: "screen", label: "Screen" },
-    { key: "microphone", label: "Microphone" },
-    { key: "systemAudio", label: "System audio" },
-  ];
-
-  // While recording, each pill reflects the *live* runtime status of the
-  // source. While idle/stopped, each pill reflects whether that source is
-  // *selected* for the next session — clicking the pill toggles the
-  // corresponding `RecordingSettings` flag through the same Tauri command
-  // the settings page uses.
-  type LiveState = "running" | "paused" | "starting" | "off";
-  type SelectState = "selected" | "unselected";
-
-  function liveStateFor(key: SourceLane["key"]): LiveState {
-    const rs = captureControls.runtimeSources;
-    if (!rs) return "off";
-    const src = rs[key];
-    if (!src.requested) return "off";
-    if (src.paused) return "paused";
-    if (src.sessionActive && src.writerActive) return "running";
-    return "starting";
-  }
-  function selectStateFor(key: SourceLane["key"]): SelectState {
-    return sourceSelection.isSelected(key) ? "selected" : "unselected";
-  }
-
-  function liveTitleFor(lane: SourceLane, state: LiveState): string {
-    const verb =
-      state === "running"
-        ? "recording"
-        : state === "paused"
-          ? "paused"
-          : state === "starting"
-            ? "starting…"
-            : "off";
-    return `${lane.label}: ${verb}`;
-  }
-
-  function isPrivacySuspensionReason(reason: string | null): boolean {
-    return (
-      reason === "privacy_filter_apply_failed" ||
-      reason === "privacy_recovery_restart_required"
-    );
-  }
-
-  function isPrivacySuspendedSource(src: {
-    requested: boolean;
-    reason: string | null;
-  }): boolean {
-    return src.requested && isPrivacySuspensionReason(src.reason);
-  }
-
-  function formatSuspendedVisualSources(keys: SourceLane["key"][]): string {
-    const labels = keys.map((key) => {
-      if (key === "systemAudio") return "system audio";
-      return key;
-    });
-    if (labels.length === 0) return "visual capture";
-    if (labels.length === 1) return labels[0];
-    return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
-  }
-
-  const privacyVisualCaptureStatus = $derived.by<PrivacyVisualCaptureStatus | null>(() => {
-    if (!isCapturing) return null;
-    const rs = captureControls.runtimeSources;
-    if (!rs) return null;
-
-    const suspendedSources: SourceLane["key"][] = [];
-    if (isPrivacySuspendedSource(rs.screen)) {
-      suspendedSources.push("screen");
-    }
-    if (isPrivacySuspendedSource(rs.systemAudio)) {
-      suspendedSources.push("systemAudio");
-    }
-    if (suspendedSources.length === 0) return null;
-
-    const reason = suspendedSources
-      .map((key) => rs[key].reason)
-      .find((value) => value === "privacy_recovery_restart_required")
-      ?? "privacy_filter_apply_failed";
-    const sources = formatSuspendedVisualSources(suspendedSources);
-    const suffix = rs.microphone.requested
-      ? " Microphone can keep recording."
-      : "";
-
-    if (reason === "privacy_recovery_restart_required") {
-      return {
-        modifier: "restart-required",
-        label: `Restart recording to resume ${sources}`,
-        detail: `Privacy filter recovery failed. Stop and start recording to resume ${sources}.${suffix}`,
-      };
-    }
-
-    return {
-      modifier: "retrying",
-      label: `Privacy filter failed; retrying ${sources}`,
-      detail: `Mnema stopped ${sources} because the privacy filter could not be applied. It is retrying recovery.${suffix}`,
-    };
-  });
-
-  function selectTitleFor(lane: SourceLane, state: SelectState): string {
-    return state === "selected"
-      ? `${lane.label}: enabled — click to skip on next recording`
-      : `${lane.label}: disabled — click to include in next recording`;
-  }
 
   const canUseGlobalShortcuts = $derived(isMainWindow && isMainRoute);
   const canToggleSourcesByShortcut = $derived(
@@ -526,12 +433,6 @@
   const canToggleRecordingByShortcut = $derived(
     isCapturing ? !captureLoadingStop : !captureLoadingStart && !captureLoadingSettings,
   );
-
-  function sourceShortcutIdFor(key: SourceLane["key"]): GlobalShortcutId {
-    if (key === "screen") return "toggleSourceScreen";
-    if (key === "microphone") return "toggleSourceMicrophone";
-    return "toggleSourceSystemAudio";
-  }
 
   function shortcutDisplay(id: GlobalShortcutId): string {
     const binding = getEffectiveGlobalShortcut(id).bindings[0];
@@ -569,6 +470,8 @@
     rows.push(getEffectiveGlobalShortcut("toggleMainWindow"));
     rows.push(getEffectiveGlobalShortcut("toggleQuickRecall"));
     rows.push(getEffectiveGlobalShortcut("openSettings"));
+    rows.push(getEffectiveGlobalShortcut("surfaceTimeline"));
+    rows.push(getEffectiveGlobalShortcut("surfaceOverview"));
 
     if (devEnabled) {
       rows.push(getEffectiveGlobalShortcut("openDebug"));
@@ -610,7 +513,7 @@
     await startCapture();
   }
 
-  async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
+  async function toggleSourceShortcut(key: SourceKey): Promise<void> {
     if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
     await toggleSourceSelected(key);
   }
@@ -624,47 +527,23 @@
     }
   }
 
-  async function restartCaptureForPrivacyRecovery(): Promise<void> {
-    if (captureLoadingStart || captureLoadingStop || restartingPrivacyCapture || !isCapturing) return;
-    restartingPrivacyCapture = true;
-    try {
-      // stop/start funnel any failure into the shared capture-error dialog
-      // (capture-controls.svelte.ts) — so a failed restart is now visible.
-      await stopCapture();
-      if (!captureControls.isRunning) {
-        await startCapture();
-      }
-    } finally {
-      restartingPrivacyCapture = false;
-    }
-  }
-
-  // ── Main surface toggle (Timeline ⇄ Insights) ─────────────────────────
+  // ── Main surface navigation (Timeline ⇄ Overview) ─────────────────────
   // "dashboard" is retired: the Main window hosts two switchable Surfaces.
-  // The active segment reflects the current route (the static `/index.html`
-  // production entry normalizes to `/` = Timeline).
-  function goToSurface(surface: "timeline" | "insights"): void {
-    const target = surface === "insights" ? "/insights" : "/";
+  // The switcher control itself is `SurfaceSwitcher.svelte` (frame 07); this
+  // helper backs the ⌘1/⌘2 shortcut actions and the gear toggle below.
+  function goToSurface(surface: MainSurface): void {
+    const target = surfaceRoute(surface);
     if (normalizeAppPathname($page.url.pathname) === target) return;
     void goto(target);
   }
 
-  // On the Settings route neither surface is the current page, so the toggle has
-  // no active segment. Rather than leaving it blank we de-emphasize it and mark
-  // the surface "Back to app" will return to (visually only — no `aria-current`,
-  // since Settings is the page).
-  const settingsReturnsToInsights = $derived(
-    isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/insights"),
-  );
-  const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
-
   // The gear is a real toggle: opening Settings from a surface, then clicking
   // the gear again returns to the surface it was opened from (Timeline or
-  // Insights) instead of being a no-op with no obvious exit.
+  // Overview) instead of being a no-op with no obvious exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      const returnsToInsights = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
-      goToSurface(returnsToInsights ? "insights" : "timeline");
+      const returnsToOverview = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
+      goToSurface(returnsToOverview ? "overview" : "timeline");
       return;
     }
     void openSettings();
@@ -825,6 +704,7 @@
       isIdle: canToggleSourcesByShortcut,
       isMainRoute,
       isMainWindow,
+      isSurfaceRoute: isMainSurfaceRoute || isSettingsRoute,
       isShortcutSuppressedTarget: isShortcutSuppressedTarget(event.target),
       shortcutsHelpOpen,
     }, windowPlatform);
@@ -876,6 +756,11 @@
 
     if (action.type === "toggleSource") {
       void toggleSourceShortcut(action.source);
+      return;
+    }
+
+    if (action.type === "goToSurface") {
+      goToSurface(action.surface);
       return;
     }
 
@@ -943,6 +828,7 @@
 <div
   class="app-shell"
   class:app-shell--bounded={isMainSurfaceRoute || isSettingsRoute}
+  class:app-shell--under={isInsightsRoute}
   class:app-shell--dedicated={showDedicatedTitlebar}
   class:app-shell--macos={showDedicatedTitlebar && windowPlatform === "macos"}
   class:app-shell--windows={showDedicatedTitlebar && windowPlatform === "windows"}
@@ -957,249 +843,12 @@
   -->
   {#if showMainTitlebar}
   <header class="titlebar">
-    <div class="titlebar__group titlebar__group--left">
-      {#if showMainTitlebar}
-        <span
-          class="titlebar__status titlebar__status--{captureStatusModifier}"
-          aria-live="polite"
-          use:tip={"Recording status"}
-        >
-          <span class="titlebar__status-dot" aria-hidden="true"></span>
-          <span class="titlebar__status-label">{captureStatusLabel}</span>
-        </span>
-        {#if isCapturing}
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={showResume}
-            onclick={showResume ? resumeCapture : pauseCapture}
-            disabled={pauseDisabled}
-            aria-busy={captureLoadingPause}
-            use:tip={pauseButtonTitle}
-            aria-label={pauseButtonTitle}
-          >
-            {#if captureLoadingPause}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingPause ? (showResume ? "Resuming…" : "Pausing…") : showResume ? "Resume" : "Pause"}</span>
-          </button>
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--stop"
-            onclick={stopCapture}
-            disabled={captureLoadingStop}
-            aria-busy={captureLoadingStop}
-            use:tip={`Stop recording (${shortcutDisplay("toggleRecording")})`}
-            aria-label="Stop recording"
-          >
-            {#if captureLoadingStop}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {:else}
-              <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--start"
-            onclick={startCapture}
-            disabled={captureLoadingStart || captureLoadingSettings}
-            aria-busy={captureLoadingStart || captureLoadingSettings}
-            use:tip={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
-            aria-label="Start recording"
-          >
-            {#if captureLoadingStart || captureLoadingSettings}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {:else}
-              <span class="titlebar__record-glyph" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingStart ? "Starting…" : captureLoadingSettings ? "Loading…" : "Record"}</span>
-          </button>
-        {/if}
-        {#snippet sourceIcon(key: SourceLane["key"])}
-          {#if key === "screen"}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="2" y="4" width="20" height="13" rx="2" />
-              <path d="M8 21h8" />
-              <path d="M12 17v4" />
-            </svg>
-          {:else if key === "microphone"}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="9" y="2.5" width="6" height="12" rx="3" />
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
-              <path d="M12 17.5v3.5" />
-              <path d="M9 21h6" />
-            </svg>
-          {:else}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
-              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-              <path d="M18.5 5.5a9 9 0 0 1 0 13" />
-            </svg>
-          {/if}
-        {/snippet}
-        {#each sourceLanes as lane (lane.key)}
-          {#if isCapturing}
-            {@const state = liveStateFor(lane.key)}
-            <span
-              class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
-              use:tip={liveTitleFor(lane, state)}
-              aria-label={liveTitleFor(lane, state)}
-              role="status"
-            >
-              {@render sourceIcon(lane.key)}
-              <span class="titlebar__source-state" aria-hidden="true">
-                {#if state === "running"}
-                  <span class="titlebar__source-dot"></span>
-                {:else if state === "paused"}
-                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                    <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                    <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                  </svg>
-                {:else if state === "starting"}
-                  <span class="titlebar__source-ring"></span>
-                {:else}
-                  <span class="titlebar__source-slash"></span>
-                {/if}
-              </span>
-            </span>
-          {:else}
-            {@const state = selectStateFor(lane.key)}
-            <button
-              type="button"
-              class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              use:tip={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
-              aria-label={selectTitleFor(lane, state)}
-              aria-pressed={state === "selected"}
-              disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
-              onclick={() => toggleSourceSelected(lane.key)}
-            >
-              {@render sourceIcon(lane.key)}
-              <span class="titlebar__source-state" aria-hidden="true">
-                {#if state === "selected"}
-                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                    <path
-                      d="M1.5 4.2 3.2 5.9 6.5 2.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                {:else}
-                  <span class="titlebar__source-slash"></span>
-                {/if}
-              </span>
-            </button>
-          {/if}
-        {/each}
-        {#if privacyVisualCaptureStatus}
-          <span
-            class="titlebar__privacy-warning titlebar__privacy-warning--{privacyVisualCaptureStatus.modifier}"
-            use:tip={privacyVisualCaptureStatus.detail}
-            aria-label={privacyVisualCaptureStatus.detail}
-            aria-live="polite"
-            role="status"
-          >
-            <svg
-              class="titlebar__privacy-warning-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-              <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-            </svg>
-            <span class="titlebar__privacy-warning-label">{privacyVisualCaptureStatus.label}</span>
-            {#if privacyVisualCaptureStatus.modifier === "restart-required"}
-              <button
-                type="button"
-                class="titlebar__privacy-warning-action"
-                use:tip={privacyVisualCaptureStatus.detail}
-                aria-label={privacyVisualCaptureStatus.detail}
-                aria-busy={restartingPrivacyCapture}
-                disabled={captureLoadingStart || captureLoadingStop || restartingPrivacyCapture}
-                onclick={restartCaptureForPrivacyRecovery}
-              >
-                {restartingPrivacyCapture ? "Restarting…" : "Restart"}
-              </button>
-            {/if}
-          </span>
-        {/if}
-      {/if}
-    </div>
-
     <!-- Inert centre area carries the drag region + the Timeline⇄Insights
          surface toggle + the Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
-      <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
-      <div
-        class="surface-toggle"
-        class:surface-toggle--muted={isSettingsRoute}
-        role="navigation"
-        aria-label="Main surface"
-      >
-        <button
-          type="button"
-          class:active={isMainRoute}
-          class:return-target={settingsReturnsToTimeline}
-          aria-current={isMainRoute ? "page" : undefined}
-          onclick={() => goToSurface("timeline")}
-        >
-          Timeline
-        </button>
-        <button
-          type="button"
-          class:active={isInsightsRoute}
-          class:return-target={settingsReturnsToInsights}
-          aria-current={isInsightsRoute ? "page" : undefined}
-          onclick={() => goToSurface("insights")}
-        >
-          Insights
-        </button>
-      </div>
+      <!-- Surface switcher (frame 07) — Timeline ⌘1 | Overview ⌘2, with the
+           right-click "Open Mnema on" default-surface menu. -->
+      <SurfaceSwitcher />
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->
       <button
@@ -1298,7 +947,14 @@
               <div class="notification-popover__head">
                 <span>Notifications</span>
                 {#if hasNotifications}
-                  <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
+                  <button
+                    type="button"
+                    class="notification-popover__clear"
+                    onclick={() => {
+                      clearToastArchive();
+                      void clearAppNotifications();
+                    }}
+                  >
                     Clear all
                   </button>
                 {/if}
@@ -1331,38 +987,69 @@
                     </div>
                   </div>
                 {/if}
-                {#each appNotifications.items as notification (notification.id)}
-                  <div class="notification-item notification-item--{notification.severity}">
-                    <div class="notification-item__body">
-                      <span class="notification-item__title">{notification.title}</span>
-                      <span class="notification-item__message">{notification.message}</span>
-                      <time
-                        class="notification-item__time"
-                        datetime={new Date(notification.createdAtUnixMs).toISOString()}
-                        use:tip={formatNotificationTimestamp(notification.createdAtUnixMs)}
-                      >{formatNotificationAge(notification.createdAtUnixMs)}</time>
-                      {#if notification.action?.type === "open_settings_tab"}
-                        <button
-                          type="button"
-                          class="notification-item__action"
-                          onclick={() => void runNotificationAction(notification)}
-                        >
-                          {notificationActionLabel(notification)}
-                        </button>
-                      {/if}
+                {#each bellRows as row (row.key)}
+                  {#if row.source === "backend"}
+                    {@const notification = row.notification}
+                    <div class="notification-item notification-item--{notification.severity}">
+                      <div class="notification-item__body">
+                        <span class="notification-item__title">{notification.title}</span>
+                        <span class="notification-item__message">{notification.message}</span>
+                        <time
+                          class="notification-item__time"
+                          datetime={new Date(notification.createdAtUnixMs).toISOString()}
+                          use:tip={formatNotificationTimestamp(notification.createdAtUnixMs)}
+                        >{formatNotificationAge(notification.createdAtUnixMs)}</time>
+                        {#if notification.action?.type === "open_settings_tab"}
+                          <button
+                            type="button"
+                            class="notification-item__action"
+                            onclick={() => void runNotificationAction(notification)}
+                          >
+                            {notificationActionLabel(notification)}
+                          </button>
+                        {/if}
+                      </div>
+                      <button
+                        type="button"
+                        class="notification-item__clear"
+                        aria-label="Clear notification"
+                        onclick={() => void clearAppNotification(notification.id)}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                          <path d="M2.5 2.5 9.5 9.5" />
+                          <path d="M9.5 2.5 2.5 9.5" />
+                        </svg>
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      class="notification-item__clear"
-                      aria-label="Clear notification"
-                      onclick={() => void clearAppNotification(notification.id)}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-                        <path d="M2.5 2.5 9.5 9.5" />
-                        <path d="M9.5 2.5 2.5 9.5" />
-                      </svg>
-                    </button>
-                  </div>
+                  {:else}
+                    {@const toast = row.toast}
+                    <div class="notification-item notification-item--{toastRowSeverity(toast)}">
+                      <div class="notification-item__body">
+                        <span class="notification-item__title">
+                          {toast.message}{#if toast.count > 1}&nbsp;<span class="notification-item__count">×{toast.count}</span>{/if}
+                        </span>
+                        {#if toast.detail}
+                          <span class="notification-item__message">{toast.detail}</span>
+                        {/if}
+                        <time
+                          class="notification-item__time"
+                          datetime={new Date(toast.createdAtUnixMs).toISOString()}
+                          use:tip={formatNotificationTimestamp(toast.createdAtUnixMs)}
+                        >{formatNotificationAge(toast.createdAtUnixMs)}</time>
+                      </div>
+                      <button
+                        type="button"
+                        class="notification-item__clear"
+                        aria-label="Clear notification"
+                        onclick={() => removeArchivedToast(toast.id)}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+                          <path d="M2.5 2.5 9.5 9.5" />
+                          <path d="M9.5 2.5 2.5 9.5" />
+                        </svg>
+                      </button>
+                    </div>
+                  {/if}
                 {/each}
               </div>
             </div>
@@ -1464,6 +1151,8 @@
           </button>
         {/if}
       {/if}
+      <!-- Recording chrome: the state pill (design frame 11), rightmost. -->
+      <RecordPill />
     </div>
   </header>
   {/if}
@@ -1568,6 +1257,25 @@
       </div>
     </div>
   {/if}
+
+  <!-- Toast stack (design frame 14): fixed bottom-right, overlays everything,
+       never reflows content. Newest toast sits nearest the corner; overflow
+       beyond three collapses into a "+N more in the bell" chip that opens the
+       bell archive. -->
+  {#if toastStore.visible.length > 0}
+    <div class="toast-stack app-toast-stack">
+      {#if toastStore.overflow > 0}
+        <button
+          type="button"
+          class="toast toast--more"
+          onclick={() => openNotifications()}
+        >+{toastStore.overflow} more in the bell</button>
+      {/if}
+      {#each toastStore.visible as toast (toast.id)}
+        <ToastCard {toast} onDismiss={dismissToast} />
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1594,6 +1302,10 @@
     --app-fg-subtle: #45455a;
 
     --app-titlebar-bg: #08080c;
+    /* Material title bar over scroll-under content (Overview only): the
+       titlebar colour at ~76% so backdrop-filter samples the app's own
+       scrolled content through it (redesign frame 04; materials are CSS). */
+    --app-mat-toolbar: rgba(8, 8, 12, 0.76);
     --app-titlebar-border: #15151f;
     --app-titlebar-title: #45455a;
 
@@ -1628,6 +1340,18 @@
     --app-record-glyph-start: #ff3148;
     --app-record-glyph-stop: #ff8a96;
 
+    /* Recording red is a STATE, never an error (system.css §1) — the state
+       pill, capture indicator, and the timeline's active tick wear these. */
+    --app-record: #ff3148;
+    --app-record-fg: #ff8a96;
+    --app-record-bg: #1a0f12;
+    --app-record-border: #3a1820;
+
+    /* Capture-source identity tints (system.css §1; popover source glyphs). */
+    --app-src-screen: #c0b0ff;
+    --app-src-mic: #80d0a8;
+    --app-src-sys: #b0c080;
+
     --app-icon-fg: #8a8aaa;
     --app-icon-fg-hover: #e2e2e8;
     --app-icon-bg-hover: #1a1a2a;
@@ -1640,11 +1364,13 @@
        Keeping these centralized means each component declares the dark
        palette once via these tokens and the light theme below flips them
        in one place — no per-component palette duplication. */
-    --app-surface: #0e0e16;
-    --app-surface-subtle: #101018;
-    --app-surface-raised: #13131a;
-    --app-surface-hover: #1a1a2a;
-    --app-surface-active: #131320;
+    /* Dark ladder retuned 2026-08-04 (docs/redesign/system.css §1): steps
+       ~11 sRGB units per level so regions separate by tone. */
+    --app-surface: #17171f;
+    --app-surface-subtle: #1c1c26;
+    --app-surface-raised: #22222e;
+    --app-surface-hover: #2e2e40;
+    --app-surface-active: #282836;
     --app-border: #1e1e2e;
     --app-border-strong: #2a2a3a;
     --app-border-hover: #3a3a5a;
@@ -1668,11 +1394,12 @@
        in both modes because the accent fill it sits on is bright in both. */
     --app-accent-contrast: #07120c;
 
-    /* Brand monospace face. Referenced by 20+ rules across the app via
-       `var(--app-font-mono, ...)`; defining it here makes the brand face
-       resolve everywhere instead of silently falling back. Mode-independent. */
-    --app-font-mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
-      monospace;
+    /* Font stacks (docs/redesign/system.css §2). Sans is the product voice
+       and the default; mono is the machine voice, opt-in via `.is-mono`. */
+    --app-font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont,
+      "SF Pro Text", "Segoe UI Variable", system-ui, sans-serif;
+    --app-font-mono: "Spline Sans Mono", "Berkeley Mono", ui-monospace,
+      "SF Mono", Menlo, monospace;
 
     /* Shared focus-visible rings (mode-independent; the accent-glow they key
        off is per-mode, so the ring adapts to the active theme automatically). */
@@ -1692,13 +1419,95 @@
        lightness, but floating layers lift off with this one shadow. */
     --app-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.22);
 
-    /* Type scale (mode-independent). 6 integer steps consumed app-wide. */
-    --text-xs: 10px;
-    --text-sm: 11px;
-    --text-base: 12px;
-    --text-md: 13px;
-    --text-lg: 16px;
-    --text-xl: 20px;
+    /* ── Type ramp (docs/redesign/system.css §2, mode-independent) ──
+       Six roles, each with one job: a size is not a choice, it is a
+       consequence of what the text IS. label=machine labels · meta=secondary
+       metadata · ui=THE DEFAULT · read=prose only · title=screen/section
+       titles · display=at most one per screen (hero number, readout clock). */
+    --t-label: 10px;
+    --lh-label: 1.4;
+    --ls-label: 0.02em;
+    --t-meta: 11px;
+    --lh-meta: 1.35;
+    --ls-meta: 0.01em;
+    --t-ui: 13px;
+    --lh-ui: 1.25;
+    --ls-ui: -0.006em;
+    --t-read: 14px;
+    --lh-read: 1.55;
+    --ls-read: -0.008em;
+    --t-title: 17px;
+    --lh-title: 1.3;
+    --ls-title: -0.016em;
+    --t-display: 22px;
+    --lh-display: 1.2;
+    --ls-display: -0.02em;
+
+    /* Three weights: regular, medium, semibold. No 300, no 700. */
+    --w-regular: 400;
+    --w-medium: 510;
+    --w-semi: 590;
+
+    /* ── Spacing ramp + named layout constants (system.css §3) ── */
+    --s-1: 1px;
+    --s-2: 2px;
+    --s-3: 3px;
+    --s-4: 4px;
+    --s-6: 6px;
+    --s-8: 8px;
+    --s-12: 12px;
+    --s-16: 16px;
+    --s-20: 20px;
+    --s-24: 24px;
+    --s-32: 32px;
+    --s-40: 40px;
+    --s-48: 48px;
+    --gap-inline: var(--s-6);
+    --gap-label: var(--s-4);
+    --gap-row: var(--s-8);
+    --gap-group: var(--s-16);
+    --gap-section: var(--s-24);
+    --pad-window: var(--s-16);
+    --pad-control: var(--s-8);
+    --pad-panel: var(--s-16);
+    --grid-inset: var(--s-16);
+    --grid-gutter: var(--s-16);
+
+    /* ── Control metrics, radii, elevation, motion (system.css §4) ── */
+    --h-sm: 24px;
+    --h-md: 28px;
+    --h-lg: 32px;
+    --h-row: 28px;
+    --h-titlebar: 38px;
+    --hit-min: 28px;
+    --h-record: 44px;
+    --o-badge: 20px;
+    --o-icon-sm: 14px;
+    --o-icon: 20px;
+    --o-icon-lg: 24px;
+    --o-setting-row: 40px;
+    --o-row-prose: 40px;
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 8px;
+    --r-xl: 12px;
+    --r-pill: 999px;
+    --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.32);
+    --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.48);
+    --ring: 0 0 0 2px var(--app-accent-glow);
+    --ring-danger: 0 0 0 2px
+      color-mix(in srgb, var(--app-danger) 30%, transparent);
+    --opacity-disabled: 0.4;
+    --opacity-busy: 0.6;
+    --dur-quick: 100ms;
+    --dur-regular: 250ms;
+    --dur-out: 150ms;
+    --dur-in: 0ms;
+    --ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+    /* ── Hairline (system.css §5; halved on retina below) ── */
+    --hairline: 1px;
 
     --app-warn: #d6a14a;
     --app-warn-strong: #c47a30;
@@ -1794,6 +1603,7 @@
     --app-fg-subtle: #8a8a9a;
 
     --app-titlebar-bg: #ececea;
+    --app-mat-toolbar: rgba(236, 236, 234, 0.78);
     --app-titlebar-border: #d4d4d2;
     --app-titlebar-title: #9a9aa8;
 
@@ -1827,6 +1637,16 @@
 
     --app-record-glyph-start: #c81d2e;
     --app-record-glyph-stop: #ffffff;
+
+    /* Recording-state tokens, light values (system.css §1). */
+    --app-record: #d62236;
+    --app-record-fg: #c81d2e;
+    --app-record-bg: #ffffff;
+    --app-record-border: #ecbcc2;
+
+    --app-src-screen: #6f5ed1;
+    --app-src-mic: #2f8e59;
+    --app-src-sys: #8b7a2c;
 
     --app-icon-fg: #5a5a6a;
     --app-icon-fg-hover: #14141a;
@@ -1868,6 +1688,10 @@
        4.5:1 floor. White on #1f7a4a is 5.33:1. Matches the design of record
        (`docs/onboarding/mockups/revision-2.html`, `.app.light`). */
     --app-accent-contrast: #ffffff;
+
+    /* Floating-layer shadows soften on light (system.css §4). */
+    --shadow-popover: 0 8px 24px rgba(21, 28, 38, 0.14);
+    --shadow-modal: 0 24px 64px rgba(21, 28, 38, 0.22);
 
     --app-warn: #9a5a12;
     --app-warn-strong: #7f4300;
@@ -1948,6 +1772,273 @@
     --focus-distracted: #c43a48;
   }
 
+  @media (min-resolution: 2dppx) {
+    :global(:root) {
+      --hairline: 0.5px;
+    }
+  }
+
+  /* ── Type role classes (system.css §2) ─────────────────────────
+     Apply a role with one class. These are the only text classes that
+     exist; `.is-mono`/`.is-num` are the machine-voice modifiers. */
+  :global(.t-label) {
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+  :global(.t-meta) {
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    color: var(--app-text-muted);
+  }
+  :global(.t-ui) {
+    font: var(--w-regular) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text);
+  }
+  :global(.t-read) {
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
+    color: var(--app-text);
+    max-width: 70ch;
+  }
+  :global(.t-title) {
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
+    color: var(--app-text-strong);
+  }
+  :global(.t-display) {
+    font:
+      var(--w-semi) var(--t-display) / var(--lh-display) var(--app-font-sans);
+    letter-spacing: var(--ls-display);
+    color: var(--app-text-strong);
+  }
+  :global(.is-mono) {
+    font-family: var(--app-font-mono);
+  }
+  :global(.is-num) {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Shared primitives (system.css §6) ─────────────────────────
+     The one `.btn` definition (call sites migrate in slice 3), the field/
+     input pair, the toast stack, keycaps, and the recording state pill. */
+  :global(.btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-inline);
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid transparent;
+    border-radius: var(--r-md);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    border-color: var(--app-border-strong);
+    transition: background-color var(--dur-quick) var(--ease);
+  }
+  :global(.btn:hover) {
+    background: var(--app-surface-hover);
+  }
+  :global(.btn:active) {
+    background: var(--app-surface-active);
+  }
+  :global(.btn:focus-visible) {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  :global(.btn[disabled]),
+  :global(.btn[aria-disabled="true"]) {
+    opacity: var(--opacity-disabled);
+    pointer-events: none;
+  }
+  :global(.btn[aria-busy="true"]) {
+    opacity: var(--opacity-busy);
+    cursor: progress;
+  }
+  :global(.btn--primary) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    border-color: transparent;
+  }
+  :global(.btn--primary:hover) {
+    background: var(--app-accent);
+    filter: brightness(1.08);
+  }
+  :global(.btn--primary:active) {
+    filter: brightness(0.94);
+  }
+  :global(.btn--ghost) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--app-text-muted);
+  }
+  :global(.btn--ghost:hover) {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+  :global(.btn--danger) {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+  :global(.btn--danger:focus-visible) {
+    box-shadow: var(--ring-danger);
+  }
+  :global(.btn--sm) {
+    height: var(--h-sm);
+    padding: 0 var(--s-6);
+  }
+  :global(.btn--lg) {
+    height: var(--h-lg);
+    padding: 0 var(--s-12);
+  }
+  :global(.btn--icon) {
+    width: var(--h-md);
+    padding: 0;
+  }
+  :global(.btn--icon.btn--sm) {
+    width: var(--h-sm);
+  }
+
+  :global(.field) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap-label);
+  }
+  :global(.input) {
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+  }
+  :global(.input:focus-visible) {
+    outline: none;
+    border-color: var(--app-accent-border);
+    box-shadow: var(--ring);
+  }
+  :global(.input[aria-invalid="true"]) {
+    border-color: var(--app-danger-border);
+  }
+  /* The helper row EXISTS AT REST and fills with the error message; an
+     error must never insert a row. */
+  :global(.field__help) {
+    min-height: calc(var(--t-meta) * var(--lh-meta));
+  }
+  :global(.field__help--error) {
+    color: var(--app-danger);
+  }
+
+  /* Toast: the ONE non-blocking error placement. Bottom-right, stacked
+     max 3, overlays content, never reflows. Errors never auto-dismiss. */
+  :global(.toast) {
+    display: grid;
+    gap: var(--gap-label);
+    width: 344px;
+    padding: var(--pad-panel);
+    border-radius: var(--r-xl);
+    background: var(--app-surface-raised);
+    box-shadow: var(--shadow-popover);
+  }
+  :global(.toast-stack) {
+    position: absolute;
+    right: var(--pad-window);
+    bottom: var(--pad-window);
+    display: grid;
+    gap: var(--gap-row);
+    justify-items: end;
+  }
+  /* The app's one live stack host: window-fixed so it overlays every surface
+     (content, popovers, dialogs) without reflowing anything. Below the
+     tooltip layer (9999) so the dismiss button can still explain itself. */
+  .app-toast-stack {
+    position: fixed;
+    z-index: 9000;
+  }
+  .toast--more {
+    width: auto;
+    padding: var(--s-6) var(--s-12);
+    border: 0;
+    cursor: pointer;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-muted);
+  }
+  .toast--more:focus-visible {
+    outline: none;
+    box-shadow: var(--shadow-popover), var(--ring);
+  }
+
+  :global(.kbd) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 var(--s-4);
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-muted);
+  }
+  :global(.kbd--mod) {
+    min-width: 48px;
+    justify-content: flex-start;
+    padding-left: var(--s-6);
+  }
+
+  /* Recording state pill (FEEDBACK-3): one capsule — dot + elapsed + cost.
+     Recording red is a state, never an error. */
+  :global(.pill) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border-radius: var(--r-pill);
+    border: 0;
+    background: var(--app-record-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+  }
+  :global(.pill__t) {
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text);
+  }
+  :global(.pill__gb) {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
+  }
+  :global(.pill__w) {
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-record-fg);
+    white-space: nowrap;
+  }
+  :global(.pill--quiet) {
+    background: var(--app-surface-hover);
+    box-shadow: none;
+  }
+  :global(.pill--quiet .pill__w) {
+    color: var(--app-text-muted);
+  }
+  :global(.pill--warn) {
+    background: var(--app-warn-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-warn-border);
+  }
+  :global(.pill--warn .pill__w) {
+    color: var(--app-warn);
+  }
+
   :global(html) {
     height: 100%;
     overscroll-behavior: none;
@@ -1961,9 +2052,12 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
-    font-size: var(--text-md);
-    line-height: 1.6;
+    /* system.css §7: sans is the default voice; mono is opt-in via
+       `.is-mono`. UI line-height 1.25 (macOS Body), never web's 1.5. */
+    font-family: var(--app-font-sans);
+    font-size: var(--t-ui);
+    line-height: var(--lh-ui);
+    letter-spacing: var(--ls-ui);
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
     /* Native-app selection model: the chrome (icons, buttons, decorative
@@ -2017,6 +2111,22 @@
 
   :global(a) {
     text-decoration: none;
+  }
+
+  /* system.css §7: one focus ring everywhere. Component-scoped
+     :focus-visible rules keep winning on specificity where they exist. */
+  :global(:focus-visible) {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    :global(*),
+    :global(*::before),
+    :global(*::after) {
+      animation-duration: 1ms !important;
+      transition-duration: 1ms !important;
+    }
   }
 
   /* ── App-wide custom scrollbars ────────────────────────────────
@@ -2078,7 +2188,7 @@
     max-width: 260px;
     padding: 5px 8px 6px;
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     letter-spacing: 0.01em;
     color: var(--app-text-strong);
@@ -2168,6 +2278,36 @@
     position: sticky;
     top: 0;
     z-index: 100;
+    /* Named container for the record pill's frame-11 degradation ladder
+       (@container queries in RecordPill.svelte). Safe here: the bar's width
+       is set by the window, never by its content. */
+    container-type: inline-size;
+    container-name: titlebar;
+  }
+
+  /* ── Scroll-under material chrome (Overview route only) ──────────────
+     On `/insights` the title bar floats as an absolute material overlay:
+     the bento scrolls edge-to-edge beneath it, sampled by the CSS
+     backdrop-filter (frame 04; the frozen Timeline stays opaque). */
+  .app-shell--under .titlebar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    background: var(--app-mat-toolbar);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+    backdrop-filter: blur(20px) saturate(1.4);
+  }
+
+  .app-shell--under .app-content {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* With the title bar out of flow, the (rare) license banner becomes the
+     first in-flow element — keep it below the floating bar. */
+  .app-shell--under :global(.license-banner) {
+    margin-top: var(--app-titlebar-height);
   }
 
   .surface-titlebar {
@@ -2216,7 +2356,7 @@
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2246,14 +2386,6 @@
     flex: 0 0 auto;
   }
 
-  /* Let the left cluster yield at narrow widths so the deficit is absorbed by
-     the privacy-warning's ellipsis (its label already truncates) rather than
-     the centered drag region clipping the primary surface-toggle nav. */
-  .titlebar__group--left {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-
   .titlebar__drag {
     flex: 1 1 auto;
     /* Let the centre region collapse to zero so the inert drag slack yields
@@ -2269,74 +2401,9 @@
     cursor: default;
   }
 
-  /* ── Surface toggle (Timeline ⇄ Insights) ─────────────────────
-     The canonical segmented control from the Insights mockups (app.css
-     `.surface-toggle`), token-driven. The active segment is signalled by an
-     accent fill alone so the segments stay even-width. Shared visual contract
-     with the Insights sub-nav switcher. */
-  .surface-toggle {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
-  }
-  .surface-toggle button {
-    font: inherit;
-    font-size: var(--text-base);
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 13px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
-  }
-  .surface-toggle button:hover {
-    color: var(--app-text-strong);
-  }
-  .surface-toggle button:not(.active):hover {
-    background: var(--app-surface-hover);
-  }
-  .surface-toggle button:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .surface-toggle button:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .surface-toggle button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    /* Active = "you are here": use the brighter --app-accent (AA-legible on
-       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
-       body text, and reads ~4:1 here. */
-    color: var(--app-accent);
-    font-weight: 600;
-  }
-  /* On the Settings route neither surface is the current page; de-emphasize the
-     whole toggle so it doesn't read as a live selection, and quietly mark the
-     surface "Back to app" returns to (no accent fill — that's reserved for the
-     active page). */
-  .surface-toggle--muted {
-    opacity: 0.72;
-  }
-  .surface-toggle--muted button.return-target {
-    color: var(--app-text);
-    border-color: var(--app-border);
-    background: var(--app-surface-raised);
-  }
+  /* ── Surface switcher ─────────────────────────────────────────
+     The Timeline⇄Overview segmented control (frame 07) lives in
+     `SurfaceSwitcher.svelte`, styles included. */
 
   /* ── Quick Recall door ─────────────────────────────────────────
      A visible, mouse-discoverable entry to Quick Recall; the global ⌥Space
@@ -2353,7 +2420,7 @@
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -2372,7 +2439,7 @@
     background: var(--app-surface-raised);
     color: var(--app-text-subtle);
     font-family: var(--app-font-mono);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.3;
   }
   .sr-only {
@@ -2410,22 +2477,19 @@
      instead of squeezing we drop whole items, lowest-priority first.
 
      ALWAYS VISIBLE at every width (never hidden, never clipped):
-       • record / pause / stop control
-       • the Timeline⇄Insights `.surface-toggle`
+       • the record pill (its own frame-11 ladder sheds text, never the dot)
+       • the Timeline⇄Overview surface switcher (`SurfaceSwitcher.svelte`)
        • the settings gear (`.titlebar__settings`, sans `--help`)
        • notifications bell when present
      Combined with `.titlebar { overflow: hidden }`, the right group can never
      spill off-screen. (The dashboard body's own breakpoint lives in
      +page.svelte.) */
 
-  /* The titlebar is control-dense; the fully-labelled row needs ~820px to fit,
-     and the WM can force widths well below the app's 640px minimum, so the row
-     sheds progressively. Always-visible at every width: record/pause/stop, the
-     surface toggle, the settings gear, and notifications-when-present. Combined
-     with the base `.titlebar__status-label` ellipsis (left cluster yields
-     first) and `.titlebar { overflow: hidden }`, nothing can spill off-screen.
-     Breakpoints are tuned to real content widths — the labelled row overflows
-     below ~820px, which includes the 800px default window. */
+  /* The titlebar is control-dense; the WM can force widths well below the
+     app's 640px minimum, so the row sheds progressively. Always-visible at
+     every width: the record pill, the surface toggle, the settings gear, and
+     notifications-when-present. Combined with `.titlebar { overflow: hidden }`,
+     nothing can spill off-screen. */
 
   /* Compact ≤820px: drop the Search word + kbd to an icon-only button, hide the
      status text (the colored dot still conveys state), tighten the row gap. */
@@ -2440,9 +2504,6 @@
     .titlebar__search {
       gap: 0;
       padding: 0 6px;
-    }
-    .titlebar__status-label {
-      display: none;
     }
   }
 
@@ -2462,360 +2523,9 @@
     }
   }
 
-  /* Tight ≤600px (incl. WM-forced sub-minimum widths): drop the source toggles
-     — recording sources stay reachable via the tray menu + Settings — and
-     shrink the surface toggle's button padding so Timeline/Insights still fit
-     beside the record control and gear. */
-  @media (max-width: 600px) {
-    /* `.titlebar`-prefixed to outrank the later base `.titlebar__source`
-       display rule. */
-    .titlebar .titlebar__source {
-      display: none;
-    }
-    .surface-toggle button {
-      padding: 0 8px;
-    }
-  }
-
-  /* ── Recording status indicator ───────────────────────────── */
-  .titlebar__status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-status-fg);
-    font-variant-numeric: tabular-nums;
-    /* Let the status pill yield first under width pressure (its label width
-       varies with state — "Recording" is far wider than "Idle"), so the row
-       self-compresses before anything overflows, at any width. */
-    min-width: 0;
-  }
-
-  /* Base ellipsis so the label can shrink at any width (not just at a
-     breakpoint); the ≤820px tier hides it entirely in favour of the dot. */
-  .titlebar__status-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .titlebar__status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-status-dot);
-    flex: 0 0 auto;
-  }
-
-  .titlebar__status--running {
-    color: var(--app-status-running-fg);
-    border-color: var(--app-status-running-border);
-  }
-  .titlebar__status--running .titlebar__status-dot {
-    background: var(--app-status-running-dot);
-    box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
-  }
-  .titlebar__status--paused {
-    color: var(--app-status-paused-fg);
-    border-color: var(--app-status-paused-border);
-  }
-  .titlebar__status--paused .titlebar__status-dot {
-    background: var(--app-status-paused-dot);
-    box-shadow: 0 0 0 3px var(--app-status-paused-dot-glow);
-  }
-
-  @keyframes titlebar-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .titlebar__status--running .titlebar__status-dot,
-    .titlebar__source-dot {
-      animation: none;
-    }
-  }
-
-  /* ── Per-source recording pills ───────────────────────────────
-     One pill per requested capture source (screen / microphone /
-     system audio), rendered after the Record/Stop button. Each pill
-     pairs the source's icon with a status icon: a pulsing red dot
-     while live, pause bars while inactivity-paused, or a hollow ring
-     while the source is still spinning up. Sources not requested for
-     the current session aren't rendered. The pill chrome mirrors
-     `.titlebar__status` so the title bar stays visually coherent. */
-  .titlebar__source {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 8px;
-    height: 24px;
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    color: var(--app-status-fg);
-  }
-  .titlebar__source-icon {
-    display: block;
-    flex: 0 0 auto;
-  }
-  .titlebar__source-state {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 8px;
-    height: 8px;
-    line-height: 1;
-    flex: 0 0 auto;
-  }
-  .titlebar__source-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-status-running-dot);
-    box-shadow: 0 0 0 2px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
-  }
-  .titlebar__source-ring {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    border: 1.5px solid currentColor;
-    box-sizing: border-box;
-    opacity: 0.7;
-  }
-  .titlebar__source--running {
-    color: var(--app-status-running-fg);
-    border-color: var(--app-status-running-border);
-  }
-  .titlebar__source--paused {
-    color: var(--app-status-paused-fg);
-    border-color: var(--app-status-paused-border);
-  }
-  .titlebar__source--starting {
-    color: var(--app-fg-muted);
-  }
-  .titlebar__source--off {
-    color: var(--app-fg-subtle);
-    opacity: 0.55;
-  }
-
-  /* ── Toggle mode (idle / not recording) ───────────────────── */
-  .titlebar__source--toggle {
-    font-family: inherit;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
-  }
-  .titlebar__source--toggle:disabled {
-    cursor: progress;
-    opacity: var(--app-busy-opacity);
-  }
-  .titlebar__source--toggle.titlebar__source--selected {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-strong);
-    background: var(--app-surface-raised);
-  }
-  .titlebar__source--toggle.titlebar__source--unselected {
-    /* "Off" must still be legible: --app-fg-subtle at 0.7 opacity rendered the
-       glyph near-invisible (well under the 3:1 non-text floor). --app-text-subtle
-       (~4.9:1) at near-full opacity reads clearly as a disabled-but-present
-       source while staying dimmer than the selected --app-text-strong. */
-    color: var(--app-text-subtle);
-    border-color: var(--app-status-border);
-    background: var(--app-status-bg);
-    opacity: 0.9;
-  }
-  .titlebar__source--toggle:not(:disabled):hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-    opacity: 1;
-  }
-  .titlebar__source--toggle:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .titlebar__privacy-warning {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: min(380px, 34vw);
-    height: 22px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--app-warn-border);
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .titlebar__privacy-warning--restart-required {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger-text);
-  }
-  .titlebar__privacy-warning-icon {
-    flex: 0 0 auto;
-  }
-  .titlebar__privacy-warning-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .titlebar__privacy-warning-action {
-    flex: 0 0 auto;
-    height: 16px;
-    padding: 0 6px;
-    border-radius: 3px;
-    border: 1px solid currentColor;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    font-size: var(--text-xs);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .titlebar__privacy-warning-action:hover:not(:disabled) {
-    background: color-mix(in srgb, currentColor 14%, transparent);
-  }
-  .titlebar__privacy-warning-action:disabled {
-    cursor: progress;
-    opacity: var(--app-busy-opacity);
-  }
-
-  /* Diagonal slash glyph used when a source is unselected (idle) or
-     forcibly off (live). Drawn as a thin rotated bar so it reads as
-     "muted/skipped" without bringing in another SVG. */
-  .titlebar__source-slash {
-    width: 8px;
-    height: 1.5px;
-    background: currentColor;
-    border-radius: 1px;
-    transform: rotate(-45deg);
-    opacity: 0.85;
-  }
-
-  /* ── Record / Stop button ─────────────────────────────────── */
-  .titlebar__record {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
-    border-radius: 4px;
-    border: 1px solid transparent;
-    font-family: inherit;
-    font-size: var(--text-xs);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
-  }
-  .titlebar__record:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .titlebar__record:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .titlebar__record:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .titlebar__record--pause {
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  .titlebar__record--pause:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .titlebar__record--resume {
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-    border-color: var(--app-warn-border);
-  }
-  .titlebar__record--resume:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-warn-bg) 74%, var(--app-warn) 26%);
-    color: var(--app-text-strong);
-    border-color: var(--app-warn-strong);
-  }
-  .titlebar__record--start {
-    background: var(--app-record-start-bg);
-    color: var(--app-record-start-fg);
-    border-color: var(--app-record-start-border);
-  }
-  .titlebar__record--start:not(:disabled):hover {
-    background: var(--app-record-start-bg-hover);
-    color: var(--app-record-start-fg-hover);
-    border-color: var(--app-record-start-border-hover);
-  }
-  .titlebar__record--stop {
-    background: var(--app-record-stop-bg);
-    color: var(--app-record-stop-fg);
-    border-color: var(--app-record-stop-border);
-  }
-  .titlebar__record--stop:not(:disabled):hover {
-    background: var(--app-record-stop-bg-hover);
-    border-color: var(--app-record-stop-border-hover);
-  }
-  .titlebar__record-glyph {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    background: currentColor;
-    border-radius: 50%;
-    color: var(--app-record-glyph-start);
-  }
-  .titlebar__record--stop .titlebar__record-glyph {
-    color: var(--app-record-glyph-stop);
-  }
-  .titlebar__record-glyph--square {
-    border-radius: 1px;
-  }
-  /* In-flight spinner for the highest-stakes async actions (record / stop /
-     pause) so the button reads "busy", not frozen, while the lifecycle call is
-     outstanding. Inherits the button's text color via currentColor. */
-  .titlebar__record-spinner {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    border: 1.5px solid currentColor;
-    border-top-color: transparent;
-    animation: titlebar-spin 0.7s linear infinite;
-    flex: 0 0 auto;
-  }
-  @keyframes titlebar-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .titlebar__record-spinner {
-      animation: none;
-    }
-  }
+  /* Tight ≤600px: the surface switcher sheds its own kbd hints + padding via
+     `@container titlebar` rules in SurfaceSwitcher.svelte (the pill sheds its
+     text via the frame-11 ladder). */
 
   /* ── Surface actions ──────────────────────────────────────── */
   .titlebar__settings {
@@ -2887,7 +2597,7 @@
        escalate it. */
     background: var(--app-info);
     color: var(--app-bg);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     line-height: 12px;
     text-align: center;
@@ -2928,7 +2638,7 @@
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--app-border);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     color: var(--app-text-strong);
   }
@@ -2943,7 +2653,7 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .notification-popover__clear {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     padding: 4px 7px;
   }
@@ -3000,19 +2710,24 @@
   }
   .notification-item__title {
     color: var(--app-text-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     line-height: 1.2;
   }
   .notification-item__message {
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.35;
+  }
+  /* Coalesced-repeat badge on archived toast rows ("×3"). */
+  .notification-item__count {
+    color: var(--app-text-subtle);
+    font-weight: 400;
   }
   .notification-item__time {
     margin-top: 2px;
     color: var(--app-text-faint, var(--app-text-muted));
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
   }
@@ -3027,7 +2742,7 @@
     border: 1px solid var(--app-danger-border);
     background: var(--app-danger-bg-soft);
     color: var(--app-danger-text);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .notification-popover__error-text {
     min-width: 0;
@@ -3038,7 +2753,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -3061,7 +2776,7 @@
     border: 1px solid var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -3085,7 +2800,7 @@
   }
   .titlebar__settings-label {
     display: block;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.08em;
     line-height: 1;
@@ -3192,7 +2907,7 @@
 
   .shortcut-help__eyebrow {
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     line-height: 1;
@@ -3202,7 +2917,7 @@
 
   .shortcut-help h2 {
     color: var(--app-text-strong);
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     line-height: 1.15;
     letter-spacing: -0.02em;
   }
@@ -3240,7 +2955,7 @@
 
   .shortcut-help__group h3 {
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.12em;
     line-height: 1;
@@ -3272,7 +2987,7 @@
 
   .shortcut-help__row dd {
     color: var(--app-text);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.3;
     text-align: right;
   }
@@ -3286,7 +3001,7 @@
     background: var(--app-bg);
     color: var(--app-text-strong);
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     line-height: 1;
     text-align: center;
@@ -3296,7 +3011,7 @@
   .shortcut-help__note {
     margin-top: 14px;
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
   }
 </style>
