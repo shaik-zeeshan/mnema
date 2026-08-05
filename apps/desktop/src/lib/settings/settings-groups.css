@@ -160,23 +160,6 @@
     gap: 3px;
   }
 
-  .settings-shell .shortcut-cap {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-bg);
-    color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: var(--t-label);
-    font-weight: 700;
-    line-height: 1;
-  }
-
   .settings-shell .shortcut-capture__hint {
     line-height: 1;
   }

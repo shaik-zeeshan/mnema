@@ -441,3 +441,177 @@
     border-color: var(--app-danger);
   }
 
+
+  /* ══ Direction 04 — the six consequence instruments ═══════════════════════
+     Each one states a real denominator (G8): a number that exists on THIS
+     machine, or nothing at all. No temperatures, no minute-precise ETAs. */
+
+  /* 1 — Cost slider read-out (`.costout`): the stored unit, then the unit you
+     actually care about. Sits under the existing CaptureRateControl. */
+  .settings-shell .costout {
+    display: flex;
+    align-items: baseline;
+    gap: var(--gap-inline);
+    flex-wrap: wrap;
+    margin: 0;
+  }
+  .settings-shell .costout b {
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-ui);
+    font-weight: var(--w-medium);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong);
+  }
+  .settings-shell .costout span {
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
+    color: var(--app-text-muted);
+  }
+
+  /* 2 — Retention ladder axis: the projection (fill) and your actual footprint
+     (the `u` marker) on ONE scale, so the duration is legible against reality. */
+  .settings-shell .ladder {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    width: 100%;
+    max-width: 340px;
+  }
+  .settings-shell .ladder__bar {
+    position: relative;
+    height: 6px;
+    border-radius: 3px;
+    background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+    overflow: hidden;
+  }
+  .settings-shell .ladder__bar i {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    background: var(--app-accent);
+    opacity: 0.75;
+  }
+  .settings-shell .ladder__bar u {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--app-text-strong);
+  }
+
+  /* 3 — OCR duty-cycle bar: both halves drawn, because the cooldown IS the
+     pacing. No °C anywhere — there is no thermal fact to derive one from. */
+  .settings-shell .duty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    width: 100%;
+    max-width: 340px;
+  }
+  .settings-shell .duty + .duty {
+    margin-top: var(--s-8);
+  }
+  .settings-shell .duty__band {
+    margin: 0;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
+  }
+  .settings-shell .duty__bar {
+    display: flex;
+    height: 18px;
+    border-radius: var(--r-sm);
+    overflow: hidden;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  }
+  .settings-shell .duty__bar span {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  .settings-shell .duty__work {
+    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
+    color: var(--app-accent);
+  }
+  .settings-shell .duty__cool {
+    background: var(--app-surface-hover);
+    color: var(--app-text-subtle);
+  }
+  .settings-shell .duty__note {
+    margin: 0;
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
+    color: var(--app-text-muted);
+  }
+
+  /* 4 — Model row verdict chips: size · quant · fit, computed against this
+     Mac's real RAM. A `--bad` verdict also disables the row's Use button. */
+  .settings-shell .mline {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    flex-wrap: wrap;
+  }
+  .settings-shell .badge {
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
+    padding: 0 5px;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.08em;
+    white-space: nowrap;
+  }
+  .settings-shell .badge--ok {
+    background: color-mix(in srgb, var(--app-accent) 16%, transparent);
+    color: var(--app-accent);
+  }
+  .settings-shell .badge--warn {
+    background: color-mix(in srgb, var(--app-warn) 16%, transparent);
+    color: var(--app-warn-strong);
+  }
+  .settings-shell .badge--bad {
+    background: color-mix(in srgb, var(--app-danger) 16%, transparent);
+    color: var(--app-danger-text);
+  }
+
+  /* 5 — Shortcut recorder (`.rec-field`): keycap badges in a recessed field,
+     accent-lit while listening. The conflict line under it is owned by
+     `shortcut-editor-row__error` in settings-controls-fields.css; its copy is
+     G9's (in-app conflicts name their owner, an OS registration failure says
+     "taken by another app" with NO app name — there is no API that would let
+     Mnema name one honestly). */
+  .settings-shell .shortcut-capture {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: var(--h-md);
+    padding: 0 var(--s-6);
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+  }
+  .settings-shell .shortcut-capture--recording {
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+  }
+  .settings-shell .shortcut-capture--recording .shortcut-capture__hint {
+    color: var(--app-accent);
+  }

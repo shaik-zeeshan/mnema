@@ -172,8 +172,11 @@
                   <span class="shortcut-capture__hint">Press keys…</span>
                 {:else if tokens}
                   <span class="shortcut-capture__keys">
+                    <!-- Direction 04's signature keycap, from the global
+                         `.kbd` family; `--mod` fixes the width so a column of
+                         recorders lines up. -->
                     {#each tokens as token, i (i)}
-                      <kbd class="shortcut-cap">{token}</kbd>
+                      <kbd class="kbd" class:kbd--mod={token.length > 1}>{token}</kbd>
                     {/each}
                   </span>
                 {:else}

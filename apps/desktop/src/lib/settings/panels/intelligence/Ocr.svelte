@@ -17,6 +17,8 @@
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
   import { backlogPhrase } from "$lib/settings/state/system-facts";
+  import DutyBar from "$lib/settings/ui/DutyBar.svelte";
+  import { OCR_DUTY_RECORDING, OCR_DUTY_PAUSED } from "$lib/settings/state/ocr-pacing";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
@@ -91,6 +93,23 @@
       {#if ocrBacklogHint}
         <p class="group-hint">{ocrBacklogHint}</p>
       {/if}
+    {/snippet}
+  </SettingRow>
+
+  <!-- Pacing is reported, not configured: the split is a shipped governor
+       constant (state/ocr-pacing.ts mirrors ocr_budget.rs). Both halves of each
+       bar are drawn because the cooldown IS the pacing. No temperature and no
+       ETA — neither is measured anywhere, so neither is claimed (G8). -->
+  <SettingRow
+    label="Pacing"
+    description="Reading screen text is the heaviest thing Mnema does, so it is rationed: a slice of each minute working, the rest idle."
+    full
+  >
+    {#snippet control()}
+      <div class="control-stack">
+        <DutyBar cycle={OCR_DUTY_RECORDING} backlog={ocrBacklogHint} />
+        <DutyBar cycle={OCR_DUTY_PAUSED} />
+      </div>
     {/snippet}
   </SettingRow>
 

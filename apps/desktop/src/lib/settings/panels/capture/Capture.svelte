@@ -22,6 +22,30 @@
 
   const loadRecordingSettings = () => rec.loadRecordingSettings();
 
+  // Consequence-preview copy (direction 04): the present tense of the CURRENT
+  // state, not a description of the option. The excluded-app count is the real
+  // list length; nothing here is estimated.
+  const enabledExclusions = $derived(
+    rec.draftExcludedApps.filter((app) => app.enabled).length,
+  );
+  const screenConsequence = $derived(
+    rec.draftCaptureScreen
+      ? "Your display is being captured, and pauses on its own while the screen is asleep or locked."
+      : "Your display is not being captured — nothing on screen is recorded or searchable.",
+  );
+  const microphoneConsequence = $derived(
+    rec.draftCaptureMicrophone
+      ? "Your microphone is being recorded, and keeps recording while the screen is asleep or locked."
+      : "Your microphone is not being recorded — nothing you say is captured.",
+  );
+  const systemAudioConsequence = $derived(
+    !rec.draftCaptureSystemAudio
+      ? "Mac system audio is not being recorded — meetings, videos and app sound are not captured."
+      : rec.draftFilterSystemAudio && enabledExclusions > 0
+        ? `Mac system audio is being recorded for every app except the ${enabledExclusions} you excluded.`
+        : "Mac system audio is being recorded for every app — meetings, videos and app sound (macOS 15+).",
+  );
+
 </script>
 
 <SettingGroup
@@ -40,13 +64,17 @@
       {/snippet}
     </SettingRow>
   {:else}
-    <SettingRow label="Screen" description="Capture the display">
+    <!-- Consequence-preview rows (direction 04): the helper line states what IS
+         happening right now and flips with the switch — it never describes the
+         option in the abstract. Nothing here is a projection: each line reports
+         the draft state and, where there is one, a real count. -->
+    <SettingRow label="Screen" description={screenConsequence}>
       {#snippet control()}
         <Switch bind:checked={rec.draftCaptureScreen} ariaLabel="Screen" />
       {/snippet}
     </SettingRow>
 
-    <SettingRow label="Microphone" description="Capture audio from microphone">
+    <SettingRow label="Microphone" description={microphoneConsequence}>
       {#snippet control()}
         <Switch bind:checked={rec.draftCaptureMicrophone} ariaLabel="Microphone" />
       {/snippet}
@@ -56,7 +84,7 @@
          (ADR 0052): no screen dependency, so no `disabled` coupling to Screen. -->
     <SettingRow
       label="System Audio"
-      description="Capture Mac system audio (macOS 15+) — meetings, videos, and app sound."
+      description={systemAudioConsequence}
     >
       {#snippet control()}
         <Switch bind:checked={rec.draftCaptureSystemAudio} ariaLabel="System Audio" />

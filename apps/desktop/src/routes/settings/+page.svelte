@@ -53,9 +53,9 @@
   import "$lib/settings/settings-controls-fields.css";
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
-  import SettingsRail from "$lib/settings/SettingsRail.svelte";
-  import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
-  import SettingsFindBar from "$lib/settings/ui/SettingsFindBar.svelte";
+  import SettingsTabs from "$lib/settings/SettingsTabs.svelte";
+  import SettingsSaveState from "$lib/settings/ui/SettingsSaveState.svelte";
+  import { attachRowNav } from "$lib/settings/state/row-nav";
   import { settingsFind } from "$lib/settings/state/settings-find.svelte";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
@@ -266,6 +266,16 @@
   $effect(() => {
     activeGroup;
     untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
+  });
+
+  // ─── Keyboard row navigation (direction 04) ─────────────────────────────────
+  // ↑↓ steps the rows, ␣ activates the selected row's primary control, and the
+  // selected row takes full-row accent selection. Re-attached when the scroll
+  // region (re)mounts; the module itself is DOM-driven and framework-free.
+  $effect(() => {
+    const root = scrollRegion;
+    if (!root) return;
+    return attachRowNav(root);
   });
 
   // ─── Scroll-spy ─────────────────────────────────────────────────────────────
@@ -589,30 +599,25 @@
 </script>
 
 <!-- ── Settings shell ──────────────────────────────────────────────────────
-     A fixed left rail lists the 5 groups; only the right-hand content pane
-     scrolls. One group panel is mounted at a time, so the rail and window
-     chrome stay pinned. -->
+     Direction 04: no left rail. Five horizontal tabs (⌃1–⌃5) sit over ONE
+     scroll region with sticky section headers, and ⌘F turns that region into a
+     ranked list of matching rows. One group panel is mounted at a time (all
+     five while filtering), so the tab strip and window chrome stay pinned.
+     Autosave lives in the deck (G7), so this shell has no save surface at all. -->
 <div class="settings-shell" class:is-finding={settingsFind.active}>
   <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
        <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the rail's grouped sections. -->
+       the visible title is the window chrome + the tab strip. -->
   <h1 class="settings-page-title">Settings</h1>
-  <SettingsRail
-    {activeGroup}
-    {activeSection}
-    onNavigate={(section) => focusSettingsSection(section)}
-  />
+
+  <!-- Headless: publishes the autosave state into the deck + owns the failure
+       toasts (G7 — no bottom save bar, ever, and no Undo). -->
+  <SettingsSaveState />
+
+  <SettingsTabs {activeGroup} onNavigate={(section) => focusSettingsSection(section)} />
 
   <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
-    <!-- Top-anchored, outside the scroll region: the autosave chip can never
-         clip off a short window (G7 — no bottom save bar, ever). -->
-    <SettingsSaveChip />
-
-    <!-- ⌘F row filter (G7) — a state over the content pane, not a nav. Renders
-         nothing until ⌘F opens it. -->
-    <SettingsFindBar />
-
     <AppPrivacyExclusionPrompt
       controller={c.appPrivacyExclusion}
       onReview={() => focusSettingsSection("privacy")}
@@ -628,12 +633,16 @@
       {#if settingsFind.active}
         <!-- ⌘F: every group's panel is mounted so a hit in any section can
              render WITH ITS LIVE CONTROL; the rows/groups that don't match hide
-             themselves (see `.is-finding` in settings-layout.css). -->
-        <GeneralPanel />
-        <CapturePanel />
-        <IntelligencePanel />
-        <DataPanel />
-        <AboutPanel />
+             themselves (see `.is-finding` in settings-layout.css). The wrapper
+             is what makes the survivors read as ONE ranked list rather than
+             five gapped cards — it owns the outer radius the panels give up. -->
+        <div class="settings-hits">
+          <GeneralPanel />
+          <CapturePanel />
+          <IntelligencePanel />
+          <DataPanel />
+          <AboutPanel />
+        </div>
       {:else if activeGroup === "general"}
         <GeneralPanel />
       {:else if activeGroup === "capture"}
@@ -653,11 +662,16 @@
   /* The shell root rule lives here (its element is in this template); all other
      settings CSS is the shared, `.settings-shell`-namespaced
      lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
+  /* One column: the 40px tab strip, then the pane. The negative margin cancels
+     `.app-content--settings`'s `8px 20px 0` gutter so the tab strip and the
+     pane are full-bleed inside the window — the strip carries its own surface
+     and bottom hairline, which only reads as chrome edge-to-edge. */
   .settings-shell {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    gap: 18px;
+    flex-direction: column;
+    margin: -8px -20px 0;
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

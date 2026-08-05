@@ -11,10 +11,11 @@
   import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
+  import { retentionLabel } from "$lib/components/retention";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { retentionConsequence } from "$lib/settings/state/system-facts";
+  import { retentionConsequence, retentionLadder } from "$lib/settings/state/system-facts";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -29,6 +30,9 @@
   const retentionHint = $derived(
     retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
   );
+  // Direction 04's ladder axis: the projection AND the footprint you actually
+  // have, on one scale. Both figures are measured; null hides the bar entirely.
+  const ladder = $derived(retentionLadder(systemFacts.value, rec.draftRetentionPolicy));
 
   // A cleanup changes what is on disk, so the measured rate is re-read after it.
   const runRetentionCleanupNow = async () => {
@@ -185,7 +189,20 @@
     {#snippet control()}
       <div class="retention-control">
         <RetentionPicker bind:value={rec.draftRetentionPolicy} />
-        {#if retentionHint}
+        {#if ladder}
+          <div class="ladder">
+            <div class="ladder__bar" aria-hidden="true">
+              <i style:width="{ladder.keptPercent}%"></i>
+              <u style:left="{ladder.usedPercent}%"></u>
+            </div>
+            <p class="costout">
+              <b>{retentionLabel(rec.draftRetentionPolicy)}</b><span>{ladder.phrase}</span>
+            </p>
+          </div>
+        {/if}
+        {#if retentionHint && !ladder}
+          <!-- The ladder already carries this figure on its axis; the prose is
+               only the fallback for a machine where the axis can't be drawn. -->
           <p class="group-hint">{retentionHint}</p>
         {/if}
         <div class="row-actions">

@@ -12,7 +12,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { captureRateConsequence } from "$lib/settings/state/system-facts";
+  import { captureRateConsequence, captureRateCost } from "$lib/settings/state/system-facts";
   import IconInfo from "~icons/lucide/info";
   import IconLoader from "~icons/lucide/loader-circle";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -37,6 +37,10 @@
   const captureRateHint = $derived(
     captureRateConsequence(systemFacts.value, rec.draftFrameRate),
   );
+  // The same projection as a two-part read-out: the stored unit (fps) beside
+  // the unit that actually matters (disk per day, and the month denominator
+  // that makes it legible). Direction 04's `.costout`.
+  const captureCost = $derived(captureRateCost(systemFacts.value, rec.draftFrameRate));
 
 </script>
 
@@ -49,6 +53,9 @@
     {#snippet control()}
       <div class="control-stack">
         <CaptureRateControl bind:value={rec.draftFrameRate} />
+        {#if captureCost}
+          <p class="costout"><b>{captureCost.value}</b><span>→ {captureCost.cost}</span></p>
+        {/if}
         {#if captureRateHint}
           <p class="group-hint">{captureRateHint}</p>
         {/if}

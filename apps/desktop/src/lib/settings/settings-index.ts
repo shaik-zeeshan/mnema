@@ -85,6 +85,7 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	{ section: "userContext", label: "History Backfill", synonyms: ["past", "catch up", "reprocess"] },
 	{ section: "userContext", label: "Run derivation", synonyms: ["run now", "manual"] },
 	{ section: "ocr", label: "Enable OCR", synonyms: ["text recognition", "screen text"] },
+	{ section: "ocr", label: "Pacing", synonyms: ["duty cycle", "cooldown", "cpu", "throttle", "speed", "battery"] },
 	{ section: "ocr", label: "Provider", synonyms: ["engine", "tesseract", "apple vision"] },
 	{ section: "ocr", label: "Model", synonyms: ["download", "weights"] },
 	{ section: "ocr", label: "Language", synonyms: ["languages", "locale"] },
@@ -203,4 +204,16 @@ export function rowMatchesQuery(
 	if (tokens.length === 0) return false;
 	const hay = haystack(section, label);
 	return tokens.every((token) => hay.includes(token));
+}
+
+/**
+ * How many of the settings Mnema HAS match this query — counted off the index,
+ * not off the DOM. The index is the test-enforced enumeration of every settings
+ * row, so this is a statement about the settings catalogue ("7 of 96"), which
+ * stays true whether or not a conditional row happens to be mounted right now.
+ */
+export function matchingRowCount(query: string): number {
+	return SETTINGS_ROW_INDEX.filter((entry) =>
+		rowMatchesQuery(entry.section, entry.label, query),
+	).length;
 }

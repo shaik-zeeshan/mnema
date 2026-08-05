@@ -91,6 +91,99 @@ export function retentionConsequence(
 }
 
 /**
+ * The cost slider's read-out (direction 04's `.costout`): the stored unit on
+ * the left, the unit you actually care about on the right. Both halves come
+ * from the same measured projection, so the month figure is the day figure ×30
+ * — not a second guess.
+ */
+export interface CaptureRateCost {
+	/** The setting's own value, e.g. "2 fps". */
+	value: string;
+	/** The consequence, e.g. "≈ 1.4 GB / day · ≈ 42 GB / month". */
+	cost: string;
+}
+
+export function captureRateCost(
+	facts: SystemFacts | null,
+	targetFps: number | null | undefined,
+): CaptureRateCost | null {
+	const perDay = projectedBytesPerDay(facts, targetFps);
+	if (perDay === null || !targetFps) return null;
+	return {
+		value: `${targetFps} fps`,
+		cost: `≈ ${formatBytes(perDay)} / day · ≈ ${formatBytes(perDay * 30)} / month`,
+	};
+}
+
+/**
+ * The retention ladder's axis (direction 04): the projection and the user's
+ * ACTUAL footprint on one scale, so the choice is legible against reality
+ * rather than against a duration word.
+ *
+ * Both numbers are real. `kept` is the measured daily rate × the window; `used`
+ * is the measured rate × the days actually measured — what capture has really
+ * put on disk over the window Mnema can see. The scale is the volume's free
+ * space plus what is already used, i.e. the space this decision plays out in.
+ * `null` whenever any of the three is unmeasurable (G8: no denominator, no bar).
+ */
+export interface RetentionLadder {
+	keptPercent: number;
+	usedPercent: number;
+	phrase: string;
+}
+
+export function retentionLadder(
+	facts: SystemFacts | null,
+	policy: RetentionPolicy,
+): RetentionLadder | null {
+	if (!facts || facts.measuredBytesPerDay === null || facts.diskFreeBytes === null) return null;
+	const used = facts.measuredBytesPerDay * facts.measuredDays;
+	const days = retentionToDays(policy);
+	// "Forever" has no ceiling, so the projection is the whole remaining volume.
+	const kept = days === null ? facts.diskFreeBytes + used : facts.measuredBytesPerDay * days;
+	const scale = facts.diskFreeBytes + used;
+	if (scale <= 0) return null;
+	const pct = (bytes: number) => Math.max(0, Math.min(100, (bytes / scale) * 100));
+	return {
+		keptPercent: pct(kept),
+		usedPercent: pct(used),
+		phrase:
+			days === null
+				? `Nothing is deleted · ${formatBytes(used)} captured so far · ${formatBytes(facts.diskFreeBytes)} free`
+				: `keeps ≈ ${formatBytes(kept)} · you have ${formatBytes(used)} today`,
+	};
+}
+
+/**
+ * The model row's verdict chip (direction 04): a download size against THIS
+ * Mac's physical RAM — the comparison G8 names as real ("RAM total vs model
+ * sizes"). Sizes come from the crate manifests (the corrected registry: speakrs
+ * is 419 MB), never re-declared here.
+ *
+ * ponytail: three bands off the size:RAM ratio, not a runtime-RSS prediction.
+ * Nothing on this machine measures a model's working set, so the chip states
+ * the fact it has — weights vs RAM — and the copy says exactly that. Widen this
+ * the day a measured peak-RSS lands in `SystemFacts`.
+ */
+export interface ModelFit {
+	tone: "ok" | "warn" | "bad";
+	/** Chip text, e.g. "FITS — 4.7 OF 16 GB". */
+	label: string;
+	/** True when the model is too large to offer — the caller disables Use. */
+	blocked: boolean;
+}
+
+export function modelFit(facts: SystemFacts | null, byteSize: number | null): ModelFit | null {
+	const ram = facts?.totalRamBytes ?? null;
+	if (ram === null || byteSize === null || byteSize <= 0) return null;
+	const ratio = byteSize / ram;
+	const against = `${formatBytes(byteSize)} of ${formatBytes(ram)}`;
+	if (ratio > 0.6) return { tone: "bad", label: `TOO LARGE — ${against}`, blocked: true };
+	if (ratio > 0.25) return { tone: "warn", label: `TIGHT — ${against}`, blocked: false };
+	return { tone: "ok", label: `FITS — ${against}`, blocked: false };
+}
+
+/**
  * The model-picker denominator: a download size against the two machine limits
  * it competes with. Whichever of the two is unmeasurable is simply left out.
  */

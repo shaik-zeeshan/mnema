@@ -1,12 +1,11 @@
-/* Settings layout — shell, Codex-style left rail (back link + search + nav +
- * nav), content/scroll. First part of the shared Settings
- * stylesheet.
+/* Settings layout — direction 04 "Command Deck": tab strip, pane, reading
+ * column, ⌘F hit list. First part of the shared Settings stylesheet.
  *
  * The Settings styles are split across cohesive concern files, each under the
  * 800-line cap, and imported by the shell `routes/settings/+page.svelte` in
  * SOURCE ORDER — that order is load-bearing for the cascade (theme overrides
- * must load last). The five parts are:
- *   settings-layout.css   — shell / rail / scroll layout (this file)
+ * must load last). The six parts are:
+ *   settings-layout.css   — tabs / pane / scroll layout (this file)
  *   settings-groups.css   — settings groups & bordered sub-blocks
  *   settings-controls.css        — shared controls (part 1): notices/update/
  *                                  status/permission/download/cleanup viewer
@@ -20,267 +19,216 @@
  * names. @keyframes stay global (referenced by name). The `.settings-shell`
  * root rule itself lives on the shell component's own <style>.
  *
- * Rail design (mockup-2b "Codex rail"): a fixed top zone (← Back to app + a
- * search field), a scrolling nav of category headers (`.nav-cat`) + bare
- * sub-section items (`.nav-item`). The rail is always expanded (the old
- * collapse-to-icons feature, capture-summary pills, and ⌘B toggle are gone), and
- * it carries no save state — G7's autosave chip is a top-anchored strip in the
- * content pane (`.save-strip`), never a bottom bar. */
+ * Navigation shape (direction 04): the left rail is GONE. Five horizontal tabs
+ * (`.stab`, ⌃1–⌃5) sit in a 40px strip above one scroll region with sticky
+ * section headers, and the ⌘F filter field (`.ffield`) lives at the right end
+ * of that same strip because ⌘F is the real navigation. The shell carries NO
+ * save surface: G7's autosave state lives in the deck, the fixed bar inside the
+ * window frame (`$lib/Deck.svelte`), which cannot clip at any window size. */
 
-  /* ── Settings shell ───────────────────────────────────────────────────
-     Two columns: a fixed nav rail on the left, one scrolling content pane
-     on the right. The shell is the sole child of `.app-content` (a flex
-     column with `min-height: 0`), so `flex: 1` + `min-height: 0` hand the
-     leftover height down to `.settings-scroll`, which owns the overflow —
-     the window and rail never scroll. */
-
-
-  /* ── Left rail (Codex-style) ──────────────────────────────────────── */
-  .settings-shell .settings-rail {
-    position: relative;
-    flex: 0 0 232px;
+  /* ── Tab strip ─────────────────────────────────────────────────────── */
+  .settings-shell .stabs {
+    flex: 0 0 40px;
+    height: 40px;
     display: flex;
-    flex-direction: column;
-    min-height: 0;
-    padding-right: 18px;
+    align-items: center;
+    gap: var(--s-8);
+    padding: 0 var(--s-12);
+    background: var(--app-surface);
+    box-shadow: inset 0 -1px 0 var(--app-border);
   }
 
-  /* Rail divider: a dashed hairline that fades toward the top and bottom
-     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
-  .settings-shell .settings-rail::after {
-    content: "";
-    position: absolute;
-    inset: 0 0 0 auto;
-    width: 1px;
-    background: repeating-linear-gradient(
-      to bottom,
-      transparent 0px,
-      transparent 3px,
-      var(--app-border-strong) 3px,
-      var(--app-border-strong) 8px
-    );
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
-  }
-
-  /* ── Fixed top zone: back link + search ───────────────────────────── */
-  .settings-shell .rail-top {
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 2px 2px 12px 2px;
-  }
-
-  .settings-shell .rail-back {
+  /* "Back to app" — a glyph, not a labelled link: the tabs need the width, and
+     the window's own title bar already says which surface this is. */
+  .settings-shell .stabs__back {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    width: fit-content;
-    padding: 3px 5px;
-    margin-left: -5px;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 22px;
+    height: 22px;
+    margin-left: -4px;
+    padding: 0;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r-sm);
     color: var(--app-text-muted);
-    font-family: inherit;
-    font-size: var(--t-ui);
     cursor: pointer;
-    user-select: none;
-    transition: color 0.15s, background 0.15s;
   }
-  .settings-shell .rail-back:hover {
+  .settings-shell .stabs__back:hover {
     color: var(--app-text-strong);
     background: var(--app-surface-hover);
   }
-  .settings-shell .rail-back:focus-visible {
+  .settings-shell .stabs__back:focus-visible {
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
-  .settings-shell .rail-back:active {
-    background: var(--app-surface-active);
-    transform: translateY(0.5px);
-  }
-  .settings-shell .rail-back svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .settings-shell .rail-search {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-  /* Leading search glyph only (direct child) — the trailing clear button nests
-     its own svg and styles it itself. */
-  .settings-shell .rail-search > svg {
-    position: absolute;
-    left: 10px;
+  .settings-shell .stabs__back svg {
     width: 14px;
     height: 14px;
-    color: var(--app-text-muted);
-    pointer-events: none;
     fill: none;
     stroke: currentColor;
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .settings-shell .rail-search input {
-    width: 100%;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    /* Right padding reserves room for the in-field clear (X) button. */
-    padding: 8px 32px 8px 32px;
-    color: var(--app-text);
-    font-family: inherit;
-    font-size: var(--t-ui);
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
-  .settings-shell .rail-search input::placeholder {
-    color: var(--app-text-faint);
-  }
-  .settings-shell .rail-search input:focus {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
 
-  /* ── Scrolling nav zone ───────────────────────────────────────────── */
-  .settings-shell .rail-nav {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    /* Right gutter keeps items clear of the scrollbar; left aligns the active
-       edge bar against the rail edge. */
-    padding: 2px 6px 8px 0;
-  }
-
-  .settings-shell .rail-nav__list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .settings-shell .nav-group {
-    margin-top: 14px;
-  }
-  .settings-shell .nav-group:first-child {
-    margin-top: 2px;
-  }
-
-  .settings-shell .nav-cat {
-    margin: 0 0 5px 8px;
-    font-size: var(--t-label);
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .settings-shell .nav-item {
-    position: relative;
-    display: flex;
+  .settings-shell .stab {
+    display: inline-flex;
     align-items: center;
-    gap: 9px;
-    width: 100%;
-    height: 32px;
-    padding: 6px 10px;
+    gap: var(--gap-inline);
+    flex: 0 0 auto;
+    height: var(--h-md);
+    padding: 0 10px;
     background: transparent;
     border: 1px solid transparent;
-    border-radius: 6px;
+    border-radius: var(--r-md);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-sans);
+    font-size: var(--t-ui);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
     cursor: pointer;
     user-select: none;
-    font-family: inherit;
-    text-align: left;
-    color: var(--app-text-muted);
     transition: background 0.15s, color 0.15s;
   }
-  .settings-shell .nav-item svg {
-    flex: 0 0 16px;
-    width: 16px;
-    height: 16px;
-    color: inherit;
+  .settings-shell .stab svg {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 14px;
     fill: none;
     stroke: currentColor;
     stroke-width: 1.7;
     stroke-linecap: round;
     stroke-linejoin: round;
   }
-  .settings-shell .nav-item span {
-    font-size: var(--t-ui);
-    font-weight: 500;
-    line-height: 1;
-    color: inherit;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .settings-shell .nav-item:hover {
+  .settings-shell .stab:hover {
     background: var(--app-surface-hover);
     color: var(--app-text-strong);
   }
-  .settings-shell .nav-item:focus-visible {
+  .settings-shell .stab:focus-visible {
     outline: none;
     border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
-  /* Momentary press cue so a click registers before a slow section switch. */
-  .settings-shell .nav-item:active {
-    background: var(--app-surface-active);
-  }
 
-  /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
-     left edge bar, accent-tinted icon, strong label. */
-  .settings-shell .nav-item--active,
-  .settings-shell .nav-item--active:hover {
-    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-    color: var(--app-text-strong);
-  }
-  .settings-shell .nav-item--active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 2px;
+  /* Active tab: full accent fill, contrast text, and a translucent keycap so
+     the cap still reads as a key against the fill. */
+  .settings-shell .stab--on,
+  .settings-shell .stab--on:hover {
     background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
+    color: var(--app-accent-contrast);
   }
-  .settings-shell .nav-item--active svg {
-    color: var(--app-accent);
-  }
-  .settings-shell .nav-item--active span {
-    color: var(--app-text-strong);
+  .settings-shell .stab--on .kbd {
+    background: color-mix(in srgb, var(--app-accent-contrast) 20%, transparent);
+    color: inherit;
+    box-shadow: none;
   }
 
-  /* ── Content pane + scroll region ─────────────────────────────────── */
+  /* ── ⌘F field (right end of the tab strip) ─────────────────────────── */
+  .settings-shell .ffield {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    /* Shrinks before the tabs do: at 800px the field gives up its keycap and
+       placeholder room rather than pushing a tab off the strip. */
+    flex: 0 1 230px;
+    min-width: 96px;
+    height: var(--h-md);
+    padding: 0 var(--s-8);
+    margin-left: auto;
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+    font-family: var(--app-font-sans);
+    cursor: text;
+  }
+  .settings-shell .ffield > :global(svg) {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
+    fill: none;
+    stroke: var(--app-text-subtle);
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+  .settings-shell .ffield__ph {
+    font-size: var(--t-ui);
+    color: var(--app-text-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .settings-shell .ffield .kbd {
+    margin-left: auto;
+  }
+  .settings-shell .ffield--on {
+    background: var(--app-surface);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent-border),
+      var(--app-ring);
+  }
+  .settings-shell .ffield input {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-strong);
+    font-family: var(--app-font-sans);
+    font-size: var(--t-ui);
+    outline: none;
+  }
+  .settings-shell .ffield input::placeholder {
+    color: var(--app-text-subtle);
+  }
+  .settings-shell .ffield__count {
+    flex: 0 0 auto;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-meta);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted);
+  }
+  .settings-shell .ffield__clear {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: none;
+    color: var(--app-text-muted);
+    cursor: pointer;
+  }
+  .settings-shell .ffield__clear:hover {
+    color: var(--app-text-strong);
+  }
+  .settings-shell .ffield__clear :global(svg) {
+    width: 11px;
+    height: 11px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  /* ── Content pane + scroll region (the mockup's `.spane`) ──────────── */
   .settings-shell .settings-content {
     flex: 1 1 0;
     min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    background: var(--app-bg);
   }
 
   /* A plain BLOCK scroll container — deliberately not flex. One tab panel
@@ -288,63 +236,60 @@
      collapsed by the default `flex-shrink: 1` down to the container height; the
      scroll container then sees `scrollHeight === clientHeight`, shows no
      scrollbar, and clips the overflow instead of scrolling it (the bottom-cut
-     bug). As a block container it measures the panel's full height and scrolls.
-     Horizontal padding keeps content clear of the scrollbar gutter. */
+     bug). As a block container it measures the panel's full height and scrolls. */
   .settings-shell .settings-scroll {
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 24px 0;
   }
 
-  /* The centered content column: capped to a comfortable reading width and
-     centered with auto margins (not flex `align-items`, which has its own
-     overflow-clipping quirks in WebKit). When a panel stacks several cards
-     (Processing, Capture) they lay out in a column with an airy gap that reads
-     as distinct sections. The trailing `padding-bottom` lives on this scrolling
-     child so WebKit counts it in scrollHeight and the last row stays reachable. */
-  /* Group panels are plain content regions (not tabpanels — the rail is a
+  /* The reading column (the mockup's `.scol`): a fixed 660px centred with auto
+     margins (not flex `align-items`, which has its own overflow-clipping quirks
+     in WebKit), shrinking to the window at 800px and below. The trailing
+     `padding-bottom` lives on this scrolling child so WebKit counts it in
+     scrollHeight and the last row stays reachable.
+     Group panels are plain content regions (not tabpanels — the tab strip is a
      navigation landmark over one scrolling panel, not a tablist), so layout
      keys off a class. */
   .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 24px;
-    width: 100%;
-    max-width: 640px;
+    width: min(660px, 100% - 40px);
     margin: 0 auto;
-    padding-bottom: 48px;
+    padding: var(--s-20) 0 48px;
   }
 
   /* Auto-hiding scrollbars: invisible at rest, fade in on hover or scroll,
      accent-tinted on direct thumb interaction. */
-  .settings-shell .settings-scroll::-webkit-scrollbar, .settings-shell .rail-nav::-webkit-scrollbar {
+  .settings-shell .settings-scroll::-webkit-scrollbar {
     width: 8px;
   }
-  .settings-shell .settings-scroll::-webkit-scrollbar-track, .settings-shell .rail-nav::-webkit-scrollbar-track {
+  .settings-shell .settings-scroll::-webkit-scrollbar-track {
     background: transparent;
   }
-  .settings-shell .settings-scroll::-webkit-scrollbar-thumb, .settings-shell .rail-nav::-webkit-scrollbar-thumb {
+  .settings-shell .settings-scroll::-webkit-scrollbar-thumb {
     background: transparent;
     border: 2px solid transparent;
     background-clip: padding-box;
     border-radius: 999px;
   }
   /* Show thumb while the container is hovered or actively scrolling. */
-  .settings-shell .settings-scroll:hover::-webkit-scrollbar-thumb, .settings-shell .settings-scroll.is-scrolling::-webkit-scrollbar-thumb, .settings-shell .rail-nav:hover::-webkit-scrollbar-thumb {
+  .settings-shell .settings-scroll:hover::-webkit-scrollbar-thumb,
+  .settings-shell .settings-scroll.is-scrolling::-webkit-scrollbar-thumb {
     background: var(--app-border-hover);
     background-clip: padding-box;
   }
   /* Accent highlight when hovering directly over the thumb. */
-  .settings-shell .settings-scroll::-webkit-scrollbar-thumb:hover, .settings-shell .rail-nav::-webkit-scrollbar-thumb:hover {
+  .settings-shell .settings-scroll::-webkit-scrollbar-thumb:hover {
     background: var(--app-accent);
     background-clip: padding-box;
   }
-  .settings-shell .settings-scroll, .settings-shell .rail-nav {
+  .settings-shell .settings-scroll {
     scrollbar-width: thin;
     scrollbar-color: transparent transparent;
   }
-  .settings-shell .settings-scroll:hover, .settings-shell .settings-scroll.is-scrolling, .settings-shell .rail-nav:hover {
+  .settings-shell .settings-scroll:hover,
+  .settings-shell .settings-scroll.is-scrolling {
     scrollbar-color: var(--app-border-hover) transparent;
   }
 
@@ -366,6 +311,34 @@
     display: none;
   }
 
+  /* One ranked list, not five gapped panels: the surviving cards lose their own
+     radius and stack flush inside `.settings-hits`, which owns the outer
+     rounding. Section headers go away — every hit already carries its own
+     breadcrumb, which is what a filtered row needs instead. */
+  .settings-shell.is-finding .settings-hits {
+    width: min(660px, 100% - 40px);
+    margin: var(--s-20) auto 48px;
+    border-radius: var(--r-lg);
+    overflow: hidden;
+  }
+  .settings-shell.is-finding .settings-panel {
+    width: 100%;
+    padding: 0;
+  }
+  .settings-shell.is-finding .setting-group {
+    gap: 0;
+  }
+  .settings-shell.is-finding .setting-group__header {
+    display: none;
+  }
+  .settings-shell.is-finding .setting-group__card {
+    border-radius: 0;
+    border-width: 1px 0 0;
+  }
+  .settings-shell.is-finding .setting-group__card::before {
+    display: none;
+  }
+
   /* No-match state. Derived from the DOM (":has()"), not from a counter: a
      count kept in reactive state would have to be written by every row as it
      mounts — a write into the very tree that is mounting. CSS reads the truth
@@ -378,13 +351,4 @@
     text-align: center;
     font-size: var(--t-ui);
     color: var(--app-text-muted);
-  }
-
-  /* Five stacked panels would otherwise contribute five trailing gutters; move
-     the bottom padding to the scroll region for the duration. */
-  .settings-shell.is-finding .settings-panel {
-    padding-bottom: 0;
-  }
-  .settings-shell.is-finding .settings-scroll {
-    padding-bottom: 48px;
   }

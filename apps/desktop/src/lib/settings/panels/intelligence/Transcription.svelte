@@ -37,6 +37,11 @@
   const startingTranscriptionDownload = $derived(models.startingTranscriptionDownload);
   const cancellingTranscriptionDownload = $derived(models.cancellingTranscriptionDownload);
   const transcriptionDownloadError = $derived(models.transcriptionDownloadError);
+
+  // G8's model verdict, fed back from <ModelFootprintHint>: a red "TOO LARGE"
+  // (weights over 60% of this Mac's RAM) disables Download. Transcription is
+  // the family with the biggest artifacts, so it is the one that can trip.
+  let modelTooLarge = $state(false);
   const deletingUnusedTranscriptionModels = $derived(models.deletingUnusedTranscriptionModels);
   const deleteUnusedTranscriptionModelsMessage = $derived(models.deleteUnusedTranscriptionModelsMessage);
   const deletedUnusedTranscriptionModelLabels = $derived(models.deletedUnusedTranscriptionModelLabels);
@@ -435,12 +440,20 @@
                   </button>
                 </div>
               {:else}
-                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available} aria-busy={startingTranscriptionDownload}>
+                <button type="button" class="btn btn--primary" onclick={startSelectedTranscriptionModelDownload} disabled={startingTranscriptionDownload || selectedTranscriptionModel.available || modelTooLarge} aria-busy={startingTranscriptionDownload}>
                   {#if startingTranscriptionDownload}<ButtonSpinner />Starting{:else}Download ({formatBytes(selectedTranscriptionModel.download.byteSize)}){/if}
                 </button>
+                {#if modelTooLarge}
+                  <p class="group-hint group-hint--warn" role="alert">
+                    This model's weights are larger than most of this Mac's memory — capture and OCR need the headroom, so it can't be installed here.
+                  </p>
+                {/if}
               {/if}
               <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
-              <ModelFootprintHint byteSize={selectedTranscriptionModel.download.byteSize} />
+              <ModelFootprintHint
+                byteSize={selectedTranscriptionModel.download.byteSize}
+                onFit={(blocked) => (modelTooLarge = blocked)}
+              />
             {:else if !selectedTranscriptionModel.available}
               <p class="group-hint group-hint--warn">
                 This app-managed model is missing, but no packaged download artifact is available in the current manifest.

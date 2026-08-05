@@ -100,14 +100,16 @@
 
 <style>
   /* Rows are direct children of the card and sit flush; the card's padding
-     comes from these rows. */
+     comes from these rows. The mockup's `.srow`: 44px min height, 10px/12px. */
   .setting-row {
     position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 16px 20px;
+    gap: 12px;
+    min-height: 44px;
+    padding: 10px 12px;
+    border-radius: var(--r-sm);
     min-width: 0;
   }
 
@@ -121,11 +123,33 @@
     content: "";
     position: absolute;
     top: 0;
-    left: 20px;
-    right: 20px;
+    left: 12px;
+    right: 12px;
     height: 1px;
     background: var(--app-border);
     pointer-events: none;
+  }
+
+  /* ── Full-row accent selection (direction 04) ─────────────────
+     The keyboard-selected row (↑↓ — see `state/row-nav.ts`) takes a full accent
+     fill with contrast text, the native list idiom. Real behaviour, not a
+     style: the row holds DOM focus, and ␣ activates its primary control. */
+  :global(.setting-row--key) {
+    background: var(--app-accent);
+    outline: none;
+  }
+  :global(.setting-row--key)::before,
+  :global(.setting-row--key + .setting-row)::before {
+    opacity: 0;
+  }
+  :global(.setting-row--key) .setting-row__label,
+  :global(.setting-row--key) .setting-row__description,
+  :global(.setting-row--key) .setting-row__crumb {
+    color: var(--app-accent-contrast);
+  }
+  :global(.setting-row--key) .setting-row__description,
+  :global(.setting-row--key) .setting-row__crumb {
+    opacity: 0.82;
   }
 
   /* `divider={false}` suppresses the divider that would otherwise sit above
@@ -161,27 +185,35 @@
     flex: 1 1 auto;
   }
 
-  /* Transient "Saved ✓" echo — locality tells you WHICH row saved (the chip in
-     the top strip tells you whether). Accent pill, matching the chip's weight. */
+  /* A selected row's Switch has to survive the accent fill: an accent-on-accent
+     track is invisible, so the ON track inverts to a translucent contrast
+     wash with a contrast edge. */
+  :global(.setting-row--key) :global(.switch-track[data-state="checked"]) {
+    background: color-mix(in srgb, var(--app-accent-contrast) 26%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent-contrast) 55%, transparent);
+  }
+
+  /* Transient "Saved ✓" echo (the mockup's `.saved`) — locality tells you WHICH
+     row saved; the deck's persistent, timestamped state tells you whether. */
   .setting-row__echo {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     flex: 0 0 auto;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
     color: var(--app-accent);
+    font-family: var(--app-font-sans);
     font-size: var(--t-meta);
-    font-weight: 550;
+    font-weight: var(--w-medium);
     white-space: nowrap;
   }
 
+  :global(.setting-row--key) .setting-row__echo {
+    color: var(--app-accent-contrast);
+  }
+
   .setting-row__echo :global(svg) {
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2.4;
@@ -206,8 +238,11 @@
   }
 
   .setting-row__label {
+    /* The app body is mono; row text is the human half, so it names sans
+       explicitly — exactly the split the mockup's `.srow__l`/`.srow__s` draw. */
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
-    font-weight: 550;
+    font-weight: 500;
     letter-spacing: 0.01em;
     color: var(--app-text-strong);
     line-height: 1.3;
@@ -218,7 +253,8 @@
   }
 
   .setting-row__description {
-    font-size: 11px;
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     letter-spacing: 0.01em;
     line-height: 1.45;
