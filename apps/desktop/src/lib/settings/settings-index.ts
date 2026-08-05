@@ -34,6 +34,7 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	// ── General ──
 	{ section: "appearance", label: "Theme", synonyms: ["dark", "light", "system", "color scheme", "appearance"] },
 	{ section: "appearance", label: "Follow live recording", synonyms: ["auto scroll", "timeline", "live"] },
+	{ section: "startup", label: "Open Mnema on", synonyms: ["startup surface", "landing", "first screen", "timeline", "overview"] },
 	{ section: "startup", label: "Auto-start recording on launch", synonyms: ["login", "launch", "open at login", "automatic"] },
 	{ section: "shortcuts", label: "Global shortcuts", synonyms: ["hotkey", "key binding", "rebind", "keyboard"] },
 

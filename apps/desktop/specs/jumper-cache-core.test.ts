@@ -245,24 +245,9 @@ describe("JumperCacheCore.load — error handling", () => {
   });
 });
 
-describe("JumperCacheCore.isDateDisabled", () => {
-  test("pre-load: never disabled (lets the user navigate into an unloaded month)", () => {
-    const core = new JumperCacheCore(deferredFetcher().fetchMonth);
-    expect(core.isDateDisabled({ year: 2026, month: 6, day: 3 })).toBe(false);
-  });
-
-  test("post-load: disabled iff the local date has no frames in the loaded month", async () => {
-    const fetcher = deferredFetcher();
-    const core = new JumperCacheCore(fetcher.fetchMonth);
-    const p = core.load({ year: 2026, month: 6, day: 1 });
-    fetcher.pending[0].resolve([localFrame(1, 2026, 6, 3)]);
-    await p;
-
-    expect(core.isDateDisabled({ year: 2026, month: 6, day: 3 })).toBe(false); // has a frame
-    expect(core.isDateDisabled({ year: 2026, month: 6, day: 4 })).toBe(true); // loaded, empty
-    expect(core.isDateDisabled({ year: 2026, month: 7, day: 1 })).toBe(false); // month not loaded
-  });
-});
+// Note: the month grid's disabled days no longer come from the frame cache.
+// Slice 8 moved that to `dayHasCoverage` over the backend's `list_day_coverage`
+// (round-4 decision G6) — covered in `src/lib/timeline/jumper-coverage.test.ts`.
 
 describe("JumperCacheCore — invalidation guards + earliestKey", () => {
   test("invalidateMonthsForFrames is a no-op on empty / unparseable input", async () => {
