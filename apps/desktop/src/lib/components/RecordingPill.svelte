@@ -297,7 +297,13 @@
   $effect(() => {
     if (!open || !anchorEl) return;
     const rect = anchorEl.getBoundingClientRect();
-    anchorLeft = Math.round(rect.left);
+    // The pill now sits hard right (direction 05's titlebar), so a popover
+    // left-aligned to the trigger would hang off the window. Clamp it to the
+    // viewport; the popover stays under the pill, just nudged inward.
+    const width = popoverEl?.offsetWidth ?? 252;
+    anchorLeft = Math.round(
+      Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+    );
     anchorTop = Math.round(rect.bottom + 6);
   });
 

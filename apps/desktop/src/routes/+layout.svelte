@@ -870,20 +870,11 @@
   {#if showMainTitlebar}
   <header class="titlebar">
     <div class="titlebar__group titlebar__group--left">
-      <!-- The whole recording chrome — state pill + transport popover. It
-           replaced a six-control cluster (status chip, Record/Pause/Stop,
-           three source pills, privacy warning chip); see RecordingPill.svelte. -->
-      <RecordingPill platform={windowPlatform} />
-    </div>
-
-    <!-- Inert centre area carries the drag region + the surface switcher + the
-         Quick Recall (Search) door. -->
-    <div class="titlebar__drag" data-tauri-drag-region>
-      <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
-           Insights stays reachable here until Ask moves into Quick Access.
-           "dashboard" retired (#103). The shortcut rides in the tooltip rather
-           than a visible ⌘1 chip: the segments are 22px tall and a direction
-           skin may render the chip in phase 2. -->
+      <!-- Direction 05: the switcher leads the bar (the mockup's `.tbar`
+           anatomy — segmented switcher left, title, state pill hard right).
+           Timeline and Overview are the two peers (⌘1/⌘2) and now carry their
+           keycaps on the segment itself; Insights stays reachable here until
+           Ask moves into Quick Access. "dashboard" retired (#103). -->
       <div
         class="surface-toggle"
         class:surface-toggle--muted={isSettingsRoute}
@@ -899,6 +890,7 @@
           onclick={() => goToSurface("timeline")}
         >
           Timeline
+          <kbd class="kbd surface-toggle__kbd" aria-hidden="true">{shortcutDisplay("openTimelineSurface")}</kbd>
         </button>
         <button
           type="button"
@@ -909,6 +901,7 @@
           onclick={() => goToSurface("overview")}
         >
           Overview
+          <kbd class="kbd surface-toggle__kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</kbd>
         </button>
         <button
           type="button"
@@ -920,6 +913,15 @@
           Insights
         </button>
       </div>
+      <!-- The one title the mockups draw: Settings names itself, because on
+           that route neither surface segment is the current page. -->
+      {#if isSettingsRoute}
+        <span class="titlebar__title">Settings</span>
+      {/if}
+    </div>
+
+    <!-- Inert centre area carries the drag region + the Quick Recall door. -->
+    <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Quick Recall door — otherwise summonable only via the global ⌥Space
            shortcut, which a new user can't discover. -->
       <button
@@ -1187,6 +1189,11 @@
           </button>
         {/if}
       {/if}
+      <!-- The whole recording chrome — state pill + transport popover. It
+           replaced a six-control cluster (status chip, Record/Pause/Stop,
+           three source pills, privacy warning chip); see RecordingPill.svelte.
+           Direction 05 parks it hard right, where the mockup's `.tbar` puts it. -->
+      <RecordingPill platform={windowPlatform} />
     </div>
   </header>
   {/if}
@@ -2298,7 +2305,9 @@
   }
 
   .app-shell {
-    --app-titlebar-height: 36px;
+    /* Direction 05: the mockups' `--h-titlebar`. A 38px strip of --app-surface
+       with an inset bottom hairline — native, quiet, flat. */
+    --app-titlebar-height: 38px;
     --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
@@ -2342,9 +2351,11 @@
     /* Reserve ~72px on the left so our content never collides with the
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
-    padding: 0 8px 0 78px;
-    background: var(--app-titlebar-bg);
-    border-bottom: 1px solid var(--app-titlebar-border);
+    padding: 0 12px 0 78px;
+    /* Depth is a surface step, never a container border (direction 05): the bar
+       is a raised fill and its bottom edge is an INSET hairline, not a border. */
+    background: var(--app-surface);
+    box-shadow: inset 0 -1px 0 var(--app-border);
     /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
        640px app minimum, and flex items can't shrink past their content width —
        clip rather than let the row spill the right-hand controls off-screen.
@@ -2459,37 +2470,37 @@
     cursor: default;
   }
 
-  /* ── Surface toggle (Timeline ⇄ Insights) ─────────────────────
-     The canonical segmented control from the Insights mockups (app.css
-     `.surface-toggle`), token-driven. The active segment is signalled by an
-     accent fill alone so the segments stay even-width. Shared visual contract
-     with the Insights sub-nav switcher. */
+  /* ── Surface toggle (Timeline ⇄ Overview ⇄ Insights) ──────────
+     Direction 05's `.seg`: a recessed 2px well on --app-surface-subtle, and the
+     SELECTED item raised back onto --app-surface with a hairline ring and a
+     one-pixel drop. Native and flat — the accent is not spent here (the whole
+     page only gets ~4 accents, and none of them is navigation chrome). */
   .surface-toggle {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
     gap: 2px;
     padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    border-radius: var(--r-md);
     background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   .surface-toggle button {
-    font: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
-    letter-spacing: 0.02em;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 0 13px;
+    gap: 5px;
+    padding: 0 10px;
     height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
+    border: 0;
+    border-radius: 4px;
     background: transparent;
     color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+    white-space: nowrap;
+    cursor: default;
+    transition: background 0.12s ease, color 0.12s ease;
   }
   .surface-toggle button:hover {
     color: var(--app-text-strong);
@@ -2499,21 +2510,34 @@
   }
   .surface-toggle button:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .surface-toggle button:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
   .surface-toggle button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    /* Active = "you are here": use the brighter --app-accent (AA-legible on
-       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
-       body text, and reads ~4:1 here. */
-    color: var(--app-accent);
-    font-weight: 600;
+    background: var(--app-surface);
+    color: var(--app-text-strong);
+    box-shadow:
+      0 1px 2px var(--ti-recess),
+      0 0 0 var(--hairline) var(--app-border-strong);
+  }
+  /* The keycap rides inside its segment: quiet at rest, and it never competes
+     with the label (the mockup draws it at label size, one step down in ink). */
+  .surface-toggle__kbd {
+    background: transparent;
+    box-shadow: none;
+    min-width: 0;
+    height: auto;
+    padding: 0;
+    color: var(--app-text-faint);
+  }
+  .surface-toggle button.active .surface-toggle__kbd {
+    color: var(--app-text-subtle);
+  }
+
+  /* The window's one title — Settings, which owns no surface segment. */
+  .titlebar__title {
+    font: var(--w-semi) var(--t-ui) / 1 var(--app-font-sans);
+    color: var(--app-text-strong);
+    white-space: nowrap;
   }
   /* On the Settings route neither surface is the current page; de-emphasize the
      whole toggle so it doesn't read as a live selection, and quietly mark the
@@ -2524,7 +2548,6 @@
   }
   .surface-toggle--muted button.return-target {
     color: var(--app-text);
-    border-color: var(--app-border);
     background: var(--app-surface-raised);
   }
 
@@ -2625,7 +2648,10 @@
       gap: 6px;
     }
     .titlebar__search-label,
-    .titlebar__search-kbd {
+    .titlebar__search-kbd,
+    /* The 800×600 floor drops the segment keycaps, exactly as the mockup does —
+       the labels and the selection stay. */
+    .surface-toggle__kbd {
       display: none;
     }
     .titlebar__search {
