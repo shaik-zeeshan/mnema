@@ -6,6 +6,7 @@ import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
+  PermissionsMap,
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
 } from "$lib/types";
@@ -23,6 +24,8 @@ const _state = $state<{
   bootstrapped: boolean;
   sessionGeneration: number;
   runtimeSources: RuntimeSourcesStatus | null;
+  permissions: PermissionsMap | null;
+  idleMs: number | null;
 }>({
   recordingSettings: null,
   loadingStart: false,
@@ -32,6 +35,8 @@ const _state = $state<{
   bootstrapped: false,
   sessionGeneration: 0,
   runtimeSources: null,
+  permissions: null,
+  idleMs: null,
 });
 
 const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
@@ -127,6 +132,14 @@ export const captureControls = {
   get runtimeSources(): RuntimeSourcesStatus | null {
     return _state.runtimeSources;
   },
+  /** Last-fetched capture permissions (bootstrap + focus resync). */
+  get permissions(): PermissionsMap | null {
+    return _state.permissions;
+  },
+  /** System idle ms from the runtime-sources poll (recording only). */
+  get idleMs(): number | null {
+    return _state.idleMs;
+  },
 };
 
 export async function bootstrapCaptureControls(): Promise<void> {
@@ -141,6 +154,7 @@ export async function bootstrapCaptureControls(): Promise<void> {
     if (perm.session && _state.sessionGeneration === gen) {
       setSession(perm.session);
     }
+    _state.permissions = perm.permissions;
     _state.recordingSettings = settings;
   } catch (err) {
     reportCaptureError(err);
@@ -176,6 +190,7 @@ function applyCaptureSession(session: CaptureSession): void {
     void refreshRuntimeSources();
   } else {
     _state.runtimeSources = null;
+    _state.idleMs = null;
   }
 }
 
@@ -257,6 +272,7 @@ export async function resyncCaptureSession(): Promise<void> {
   try {
     const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
     if (_state.sessionGeneration !== gen) return;
+    _state.permissions = result.permissions;
     if (result.session) setSession(result.session);
   } catch {
     // Best-effort refresh only.
@@ -275,15 +291,18 @@ let _runtimeRefCount = 0;
 async function refreshRuntimeSources(): Promise<void> {
   if (!captureControls.isRunning) {
     _state.runtimeSources = null;
+    _state.idleMs = null;
     return;
   }
   try {
     const info = await invoke<IdleDebugInfo>("get_idle_debug");
     if (!captureControls.isRunning) {
       _state.runtimeSources = null;
+      _state.idleMs = null;
       return;
     }
     _state.runtimeSources = info.runtimeSources;
+    _state.idleMs = info.effectiveIdleMs;
   } catch {
     // Best-effort; keep last snapshot.
   }
@@ -309,6 +328,7 @@ export function subscribeRuntimeSources(): () => void {
       clearInterval(_runtimePollHandle);
       _runtimePollHandle = null;
       _state.runtimeSources = null;
+      _state.idleMs = null;
     }
   };
 }
@@ -347,7 +367,22 @@ export const sourceSelection = {
   isSaving(key: SourceKey): boolean {
     return _selectionState.saving[key];
   },
+  /** Whether the source is part of the LIVE session (false while idle). */
+  isRequested(key: SourceKey): boolean {
+    const session = captureSession.value;
+    if (session?.isRunning !== true || !session.requestedSources) return false;
+    return session.requestedSources[key] === true;
+  },
+  /**
+   * Checked intent. While recording this is the live session's requested ∘
+   * user mask (slice 5); while idle it is the next-session settings.
+   */
   isSelected(key: SourceKey): boolean {
+    const session = captureSession.value;
+    if (session?.isRunning === true && session.requestedSources) {
+      return session.requestedSources[key] === true &&
+        session.maskedSources?.[key] !== true;
+    }
     if (key === "screen") return sourceSelection.screen;
     if (key === "microphone") return sourceSelection.microphone;
     return sourceSelection.systemAudio;
@@ -355,23 +390,41 @@ export const sourceSelection = {
 };
 
 /**
- * Toggle (or set) whether a given source will be captured the next time
- * `startCapture()` runs. Persists the choice through the capture-sources
- * domain command, so unrelated settings drafts cannot be overwritten by a
- * title-bar source change.
+ * Toggle (or set) whether a given source is captured.
  *
- * No-op while a session is currently running — the live `runtimeSources`
- * snapshot determines the indicator state in that case, and source
- * selection only affects the next session.
+ * While idle: persists the choice for the NEXT session through the
+ * capture-sources settings domain command, so unrelated settings drafts
+ * cannot be overwritten by a title-bar source change.
+ *
+ * While recording: drives the mid-session per-source mask (slice 5) — the
+ * source stops/restarts inside the live session; settings are untouched, and
+ * the mask clears when the session stops. Same behavior as the tray's source
+ * items — one semantic everywhere.
  */
 export async function setSourceSelected(
   key: SourceKey,
   selected: boolean,
 ): Promise<void> {
-  if (captureControls.isRunning) return;
+  if (_selectionState.saving[key]) return;
+  if (captureControls.isRunning) {
+    if (!sourceSelection.isRequested(key)) return;
+    if (sourceSelection.isSelected(key) === selected) return;
+    _selectionState.saving[key] = true;
+    try {
+      const result = await invoke<{ session: CaptureSession }>(
+        "set_native_capture_source_mask",
+        { source: key, masked: !selected },
+      );
+      applyCaptureSession(result.session);
+    } catch (err) {
+      reportCaptureError(err);
+    } finally {
+      _selectionState.saving[key] = false;
+    }
+    return;
+  }
   const base = _state.recordingSettings;
   if (!base) return;
-  if (_selectionState.saving[key]) return;
 
   const overrides:
     Partial<Pick<RecordingSettings, "captureScreen" | "captureMicrophone" | "captureSystemAudio">> =
