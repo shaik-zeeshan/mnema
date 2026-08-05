@@ -14,7 +14,7 @@
     UserContextStatus,
     RecordingSettings,
   } from "$lib/types/recording";
-  import Overview from "$lib/insights/Overview.svelte";
+  import OverviewBento from "$lib/insights/OverviewBento.svelte";
   import DayTimeline from "$lib/insights/DayTimeline.svelte";
   import Subjects from "$lib/insights/Subjects.svelte";
   import SubjectDetail from "$lib/insights/SubjectDetail.svelte";
@@ -124,7 +124,10 @@
   // but `view` can still point at one (default "overview", or derivation was
   // turned off while on a locked tab) — steer to Chat.
   $effect(() => {
-    if (derivationOff && view !== "chat") {
+    // Engine-never-configured outranks the derivation lock: the Overview bento
+    // renders its frame-06 state (provider card + local tiles), so don't steer
+    // a gated shell onto Chat — that surface needs the engine even more.
+    if (!engineGated && derivationOff && view !== "chat") {
       view = "chat";
       selectedSubject = null;
     }
@@ -336,37 +339,14 @@
   });
 </script>
 
-{#if engineGated}
-  <!-- Engine never set up — the whole workspace is engine-derived, so pitch it.
-       `recording_settings_changed` re-runs loadEngineStatus, so finishing setup
-       in Settings unlocks this page live, no reload needed. -->
-  <div class="gate">
-    <div class="gate-panel">
-      <p class="gate-eyebrow">
-        <span class="diamond" aria-hidden="true">◆</span>
-        Insights
-      </p>
-      <h1 class="gate-title">Turn on the Reasoning Engine to unlock Insights.</h1>
-      <p class="gate-detail">
-        Insights is what the engine writes about your days — everything on this
-        surface is derived from it:
-      </p>
-      <ul class="gate-list">
-        <li><strong>The read</strong> — a daily digest of what you actually did.</li>
-        <li><strong>Journal</strong> — your day reconstructed as a timeline of activities.</li>
-        <li><strong>Subjects</strong> — the views it forms about you, with confidence trajectories.</li>
-        <li><strong>Chat</strong> — ask questions over your own history.</li>
-      </ul>
-      <button type="button" class="gate-cta" onclick={enableEngine}>
-        Open engine settings
-      </button>
-      <p class="gate-note">
-        Runs on your own provider — local (Ollama, Llamafile) or your cloud API key.
-      </p>
-    </div>
-  </div>
-{:else}
-<div class="insights" class:insights--collapsed={railCollapsed}>
+<!-- The Overview bento (frame 04) owns the engine-off state itself (frame 06),
+     so there is no whole-page gate anymore: the non-AI tiles stay useful and
+     `recording_settings_changed` re-runs loadEngineStatus, unlocking the AI
+     tiles live once setup finishes in Settings. -->
+<div class="insights" class:insights--collapsed={railCollapsed} class:insights--bento={view === "overview"}>
+  <!-- The bento is a full-bleed surface with no rail (frame 04); the rail and
+       its resizer return on every other sub-surface. -->
+  {#if view !== "overview"}
   <InsightsRail
     {view}
     onOpenTab={openTab}
@@ -392,11 +372,16 @@
       onReset={resetRailWidth}
     />
   {/if}
+  {/if}
 
-  <main class="insights-main" class:insights-main--chat={view === "chat"}>
+  <main
+    class="insights-main"
+    class:insights-main--chat={view === "chat"}
+    class:insights-main--bento={view === "overview"}
+  >
     <!-- When the rail is collapsed, a quiet floating button (top-left, with a
          subtle backdrop so it reads above sub-surface content) brings it back. -->
-    {#if railCollapsed}
+    {#if railCollapsed && view !== "overview"}
       <button
         type="button"
         class="rail-expand-float"
@@ -409,7 +394,12 @@
       </button>
     {/if}
     {#if view === "overview"}
-      <Overview onOpenSubject={openSubject} onOpenTab={openTab} />
+      <OverviewBento
+        engineOff={engineGated}
+        {statusLoaded}
+        onOpenSubject={openSubject}
+        onOpenTab={openTab}
+      />
     {:else if view === "journal"}
       <DayTimeline />
     {:else if view === "subjects"}
@@ -431,7 +421,6 @@
     {/if}
   </main>
 </div>
-{/if}
 
 <style>
   /* Insights workspace shell — mirrors `.insights` from the mockup (app.css),
@@ -444,112 +433,14 @@
     flex: 1 1 auto;
     min-height: 0;
     height: 100%;
+    /* The route's title bar is an absolute material overlay (scroll-under
+       chrome, layout `.app-shell--under`), so the rail'd sub-surfaces start
+       below it; the bento opts out and scrolls edge-to-edge under it. */
+    padding-top: var(--app-titlebar-height, 36px);
   }
 
-  /* ── Engine gate — full-surface pitch shown until the engine is set up ── */
-  .gate {
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    overflow-y: auto;
-    padding: 28px 20px;
-  }
-  .gate-panel {
-    /* Auto margins center when there's room but keep the top reachable when the
-       panel is taller than the viewport (flex centering would clip it). */
-    margin: auto;
-    max-width: 460px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 26px 28px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 11px;
-  }
-  .gate-eyebrow {
-    margin: 0;
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    font-size: var(--text-xs);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-  .gate-eyebrow .diamond {
-    color: var(--app-accent);
-    letter-spacing: 0;
-  }
-  .gate-title {
-    margin: 0;
-    font-size: var(--text-lg);
-    line-height: 1.35;
-    color: var(--app-text-strong);
-  }
-  .gate-detail {
-    margin: 0;
-    font-size: var(--text-md);
-    line-height: 1.6;
-    color: var(--app-text-muted);
-  }
-  .gate-list {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: var(--text-md);
-    line-height: 1.55;
-    color: var(--app-text-muted);
-  }
-  /* Hanging indent — wrapped lines align under the text, not the ◆ marker. */
-  .gate-list li {
-    position: relative;
-    padding-left: 16px;
-  }
-  .gate-list li::before {
-    content: "◆";
-    position: absolute;
-    left: 0;
-    font-size: 8px;
-    color: var(--app-accent);
-    vertical-align: 1px;
-  }
-  .gate-list strong {
-    color: var(--app-text-strong);
-    font-weight: 600;
-  }
-  .gate-cta {
-    align-self: flex-start;
-    margin-top: 8px;
-    font: inherit;
-    font-size: var(--text-md);
-    padding: 7px 15px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 7px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-  .gate-cta:hover {
-    border-color: var(--app-accent);
-  }
-  .gate-cta:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .gate-cta:active {
-    transform: translateY(1px);
-  }
-  .gate-note {
-    margin: 0;
-    font-size: var(--text-sm);
-    color: var(--app-text-faint);
+  .insights--bento {
+    padding-top: 0;
   }
 
   .insights-main {
@@ -613,6 +504,16 @@
   /* Chat owns its own full-height, edge-to-edge layout and internal scrolling,
      so the shell main drops its padding and outer scroll (mirrors the mockup's
      `.insights-main` override). The other tabs keep the padded scroll above. */
+  /* The bento owns its own edge-to-edge scroll region (under the material
+     title bar) — the shell main drops its padding and outer scroll. */
+  .insights-main--bento {
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
   .insights-main--chat {
     padding: 0;
     overflow: hidden;
