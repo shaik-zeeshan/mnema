@@ -38,6 +38,10 @@
     type AppNotification,
   } from "$lib/notifications.svelte";
   import Toasts from "$lib/Toasts.svelte";
+  // Direction 02 — Studio Shell. The skin is one global stylesheet plus the
+  // status strip below; every surface reaches it through `ss-*` classes.
+  import "$lib/studio/studio-shell.css";
+  import StatusStrip from "$lib/studio/StatusStrip.svelte";
   import { clearArchivedToast, clearToastArchive, toasts } from "$lib/toast.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
@@ -1234,6 +1238,14 @@
        `<main>`, so it overlays every route without reflowing any of them. Not
        gated on `isMainWindow`: Quick Recall and the dedicated surfaces raise
        toasts of their own. -->
+  <!-- The fourth fixed piece (direction 02): welded to the bottom window edge,
+       below `<main>`, so live capture state and save state are structurally
+       unclippable. Main window only — Quick Recall and the dedicated surfaces
+       carry their own bottom bars. -->
+  {#if showMainTitlebar}
+    <StatusStrip />
+  {/if}
+
   <Toasts />
 
   {#if shortcutsHelpOpen && canShowShortcutsHelp}
@@ -2287,7 +2299,8 @@
   }
 
   .app-shell {
-    --app-titlebar-height: 36px;
+    /* Studio Shell: 38px title bar — the first of the four fixed pieces. */
+    --app-titlebar-height: var(--h-titlebar);
     --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
@@ -2331,9 +2344,11 @@
     /* Reserve ~72px on the left so our content never collides with the
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
-    padding: 0 8px 0 78px;
-    background: var(--app-titlebar-bg);
-    border-bottom: 1px solid var(--app-titlebar-border);
+    padding: 0 10px 0 78px;
+    /* Studio Shell: the title bar reads as one plane with the tool strip below
+       it — surface, hairline, no separate chrome tint. */
+    background: var(--app-surface);
+    border-bottom: var(--hairline) solid var(--app-border);
     /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
        640px app minimum, and flex items can't shrink past their content width —
        clip rather than let the row spill the right-hand controls off-screen.

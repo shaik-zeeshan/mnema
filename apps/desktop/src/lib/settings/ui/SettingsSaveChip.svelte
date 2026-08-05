@@ -16,6 +16,7 @@
   import { dismissToast, toast } from "$lib/toast.svelte";
   import { getSettingsController } from "../state/controller.svelte";
   import { noteSaved } from "../state/row-echo.svelte";
+  import { statusSave } from "$lib/studio/status-strip.svelte";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -37,6 +38,27 @@
   // Entering "ok" is the one success signal every autosaved surface shares.
   $effect(() => {
     if (status === "ok") noteSaved();
+  });
+
+  // Direction 02 puts the "whether" half of autosave in the status strip, which
+  // the root layout owns. Publish this chip's state there while Settings is
+  // mounted, and clear it on the way out so the strip never shows a stale save
+  // state on Timeline.
+  $effect(() => {
+    statusSave.set({
+      tone: status === "error" || status === "blocked" ? "bad" : status === "saving" ? "busy" : "ok",
+      label:
+        status === "error"
+          ? "Not saved"
+          : status === "blocked"
+            ? "Resolve issues to save"
+            : status === "saving"
+              ? "Saving…"
+              : status === "ok"
+                ? "Saved"
+                : "All changes saved",
+    });
+    return () => statusSave.set(null);
   });
 
   // Autosave failures are the one persistent settings state, and they also raise

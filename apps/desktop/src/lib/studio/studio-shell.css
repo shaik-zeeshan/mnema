@@ -1,0 +1,1354 @@
+/* ============================================================================
+   Direction 02 — STUDIO SHELL skin.
+
+   Pro-app bones: four fixed pieces (38px title bar, 30px tool strip, the
+   scrolling content, a 24px status strip welded to the bottom edge) plus a
+   256px right inspector on every surface. Chrome is dense (22px controls) so
+   content gets the room; hairlines replace card edges.
+
+   Lifted from `docs/redesign/round4/02-studio-shell/07-components.html`
+   (§4–§12 of its kit). Two deliberate departures from the mockup source:
+
+    1. Every class this file introduces is prefixed `ss-`. Fourteen of the kit's
+       short names (`chip`, `tile`, `rail`, `kv`, `wave`, …) already exist as
+       component-scoped class names elsewhere in the app; a global rule under
+       those names bleeds padding and borders into unrelated components.
+    2. The kit's phase-1 primitives (`.btn`, `.input`, `.kbd`, `.pill`, `.t-*`)
+       are NOT redefined here. They are already live in `+layout.svelte`; this
+       direction reaches them through the token overrides below instead.
+
+   ponytail: one global stylesheet, imported once from the root layout. No
+   per-surface CSS modules until a surface actually needs a rule nobody else
+   wants.
+   ========================================================================== */
+
+/* ── Token overrides — the density dial ─────────────────────────────────── */
+:root {
+	/* The kit's grid rule: a container's inset equals its gutter, at 12. */
+	--gap-group: 12px;
+	--pad-panel: 12px;
+
+	/* Chrome geometry. Named so a surface never hard-codes 38/30/24/256. */
+	--h-titlebar: 38px;
+	--h-tool: 30px;
+	--h-status: 24px;
+	--w-insp: 256px;
+
+	/* 22px is the tool-strip control; the 28px content row floor is untouched. */
+	--h-sm: 22px;
+}
+
+/* ── The shell: four fixed pieces, one scrolling region ─────────────────── */
+.ss-tstrip {
+	height: var(--h-tool);
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	padding: 0 var(--s-8);
+	background: var(--app-surface-subtle);
+	border-bottom: var(--hairline) solid var(--app-border);
+}
+.ss-tstrip__g {
+	display: flex;
+	align-items: center;
+	gap: var(--s-6);
+}
+.ss-tstrip__sep {
+	width: var(--hairline);
+	height: 16px;
+	background: var(--app-border);
+	margin: 0 2px;
+	flex: 0 0 auto;
+}
+.ss-tstrip__spacer {
+	margin-left: auto;
+}
+
+/* Body row: the scrolling main + the inspector welded to its right. */
+.ss-body {
+	flex: 1 1 auto;
+	display: flex;
+	min-height: 0;
+}
+.ss-main {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+/* ── The inspector — one panel, four subjects ───────────────────────────── */
+.ss-insp {
+	width: var(--w-insp);
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	background: var(--app-surface);
+	border-left: var(--hairline) solid var(--app-border);
+	overflow: hidden;
+}
+.ss-insp--wide {
+	width: 280px;
+}
+.ss-insp__h {
+	height: 26px;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-6);
+	padding: 0 var(--s-10);
+	border-bottom: var(--hairline) solid var(--app-border);
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+	letter-spacing: var(--ls-label);
+	text-transform: uppercase;
+	color: var(--app-text-subtle);
+}
+.ss-insp__b {
+	flex: 1 1 auto;
+	overflow-y: auto;
+	padding: 0 0 var(--s-8);
+}
+.ss-insp__sec {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	height: 22px;
+	padding: 0 var(--s-10);
+	margin-top: var(--s-8);
+	border-bottom: var(--hairline) solid var(--app-border);
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+	letter-spacing: var(--ls-label);
+	text-transform: uppercase;
+	color: var(--app-text-subtle);
+}
+.ss-insp__sec:first-child {
+	margin-top: 0;
+}
+.ss-insp__empty {
+	padding: var(--s-16) var(--s-10);
+	font: var(--w-regular) var(--t-meta) / 1.5 var(--app-font-sans);
+	color: var(--app-text-subtle);
+}
+.ss-kv {
+	display: flex;
+	align-items: baseline;
+	gap: var(--s-8);
+	min-height: 22px;
+	padding: 3px var(--s-10);
+}
+.ss-kv__k {
+	flex: 0 0 84px;
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+	letter-spacing: var(--ls-label);
+	text-transform: uppercase;
+	color: var(--app-text-subtle);
+}
+.ss-kv__v {
+	flex: 1 1 auto;
+	min-width: 0;
+	font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans);
+	color: var(--app-text-strong);
+	overflow-wrap: anywhere;
+}
+.ss-kv__v.is-mono {
+	font-family: var(--app-font-mono);
+	font-variant-numeric: tabular-nums;
+}
+.ss-kv--stack {
+	display: block;
+}
+.ss-kv--stack .ss-kv__k {
+	display: block;
+	margin-bottom: 3px;
+}
+
+/* ── The status strip — live state that structurally cannot clip ────────── */
+.ss-sstrip {
+	height: var(--h-status);
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-10);
+	padding: 0 var(--s-8);
+	background: var(--app-surface);
+	border-top: var(--hairline) solid var(--app-border);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+}
+.ss-sstrip .is-mono,
+.ss-sstrip .ss-num {
+	font-family: var(--app-font-mono);
+	font-variant-numeric: tabular-nums;
+}
+.ss-sstrip__g {
+	display: flex;
+	align-items: center;
+	gap: var(--s-6);
+	min-width: 0;
+}
+.ss-sstrip__g--shrink {
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.ss-sstrip__dot {
+	width: 3px;
+	height: 3px;
+	border-radius: 50%;
+	background: var(--app-text-faint);
+	flex: 0 0 auto;
+}
+.ss-sstrip b {
+	font-weight: var(--w-medium);
+	color: var(--app-text);
+}
+.ss-sstrip__spacer {
+	margin-left: auto;
+}
+.ss-save {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 18px;
+	padding: 0 7px;
+	border-radius: var(--r-pill);
+	background: var(--app-accent-bg);
+	color: var(--app-accent-strong);
+	font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+}
+.ss-save svg {
+	width: 10px;
+	height: 10px;
+}
+.ss-save--busy {
+	background: var(--app-surface-hover);
+	color: var(--app-text-muted);
+}
+.ss-save--bad {
+	background: var(--app-danger-bg);
+	color: var(--app-danger);
+}
+.ss-sbtn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	height: 18px;
+	padding: 0 6px;
+	border: 0;
+	border-radius: var(--r-sm);
+	background: transparent;
+	color: var(--app-text-muted);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	cursor: default;
+}
+.ss-sbtn:hover,
+.ss-sbtn.is-on {
+	background: var(--app-surface-hover);
+	color: var(--app-text-strong);
+}
+.ss-sbtn svg {
+	width: 12px;
+	height: 12px;
+}
+
+/* ── Controls the kit adds on top of the phase-1 primitives ─────────────── */
+.ss-ic {
+	width: 13px;
+	height: 13px;
+	flex: 0 0 auto;
+	fill: none;
+	stroke: currentColor;
+	stroke-width: 1.6;
+	stroke-linecap: round;
+	stroke-linejoin: round;
+}
+.ss-ic--sm {
+	width: 11px;
+	height: 11px;
+}
+.ss-ic--lg {
+	width: 16px;
+	height: 16px;
+}
+
+/* Segmented control — the zoom span picker, the mode switches. */
+.ss-seg {
+	display: inline-flex;
+	align-items: center;
+	gap: 1px;
+	padding: 1px;
+	background: var(--app-surface-subtle);
+	border: var(--hairline) solid var(--app-border);
+	border-radius: var(--r-md);
+}
+.ss-seg__i {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 20px;
+	padding: 0 var(--s-8);
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-muted);
+	white-space: nowrap;
+	cursor: default;
+}
+.ss-seg__i.is-on {
+	background: var(--app-surface);
+	color: var(--app-text-strong);
+	box-shadow:
+		0 1px 2px rgb(0 0 0 / 10%),
+		0 0 0 var(--hairline) var(--app-border-strong);
+}
+.ss-seg--lg .ss-seg__i {
+	height: 24px;
+	font-size: var(--t-ui);
+}
+
+/* Chip — a stated fact, never a button that looks like one. */
+.ss-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 20px;
+	padding: 0 var(--s-8);
+	border-radius: var(--r-pill);
+	border: var(--hairline) solid var(--app-bezel);
+	background: transparent;
+	color: var(--app-text-muted);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	white-space: nowrap;
+}
+.ss-chip.is-on,
+.ss-chip--ok {
+	background: var(--app-accent-bg);
+	color: var(--app-accent-strong);
+	border-color: var(--app-accent-border);
+}
+.ss-chip--sq {
+	border-radius: var(--r-sm);
+	font-family: var(--app-font-mono);
+	font-size: var(--t-label);
+	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	height: 18px;
+	padding: 0 5px;
+}
+.ss-chip--warn {
+	color: var(--app-warn);
+	border-color: var(--app-warn-border);
+	background: var(--app-warn-bg);
+}
+.ss-chip--bad {
+	color: var(--app-danger);
+	border-color: var(--app-danger-border);
+	background: var(--app-danger-bg);
+}
+
+/* Popup button — the accent chevron badge is this direction's signature. */
+.ss-pop {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--s-8);
+	height: var(--h-sm);
+	padding: 0 5px 0 var(--s-8);
+	border-radius: var(--r-md);
+	border: var(--hairline) solid var(--app-border-strong);
+	background: var(--app-surface-raised);
+	color: var(--app-text-strong);
+	font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+	white-space: nowrap;
+	cursor: default;
+}
+.ss-pop:hover {
+	background: var(--app-surface-hover);
+}
+.ss-pop__b {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 16px;
+	border-radius: 3px;
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+	flex: 0 0 auto;
+}
+.ss-pop__b svg {
+	width: 9px;
+	height: 9px;
+	stroke-width: 2;
+}
+.ss-pop--md {
+	height: var(--h-md);
+}
+
+/* Switch. */
+.ss-sw {
+	width: 34px;
+	height: 20px;
+	border-radius: var(--r-pill);
+	background: var(--app-surface-hover);
+	box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+	position: relative;
+	flex: 0 0 auto;
+	border: 0;
+	padding: 0;
+}
+.ss-sw i {
+	position: absolute;
+	top: 2px;
+	left: 2px;
+	width: 16px;
+	height: 16px;
+	border-radius: 50%;
+	background: #fff;
+	box-shadow: 0 1px 2px rgb(0 0 0 / 28%);
+	transition: left var(--dur-quick) var(--ease);
+}
+.ss-sw.is-on {
+	background: var(--app-accent);
+	box-shadow: none;
+}
+.ss-sw.is-on i {
+	left: 16px;
+}
+
+/* NSMenu anatomy — checkmark gutter, glyph column, ⌘ column. */
+.ss-menu {
+	min-width: 220px;
+	padding: 4px;
+	border-radius: var(--r-lg);
+	background: var(--app-surface-raised);
+	box-shadow:
+		var(--shadow-popover),
+		0 0 0 var(--hairline) var(--app-border-strong);
+}
+.ss-menu__i {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	height: 24px;
+	padding: 0 8px;
+	border: 0;
+	width: 100%;
+	background: transparent;
+	border-radius: var(--r-sm);
+	font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+	color: var(--app-text-strong);
+	text-align: left;
+	cursor: default;
+}
+.ss-menu__i.is-hl,
+.ss-menu__i:hover:not(.is-off) {
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+}
+.ss-menu__i.is-off {
+	opacity: 0.4;
+}
+.ss-menu__ck {
+	width: 12px;
+	flex: 0 0 auto;
+	display: flex;
+}
+.ss-menu__ck svg {
+	width: 11px;
+	height: 11px;
+}
+.ss-menu__gl {
+	width: 14px;
+	display: flex;
+	color: var(--app-text-muted);
+	flex: 0 0 auto;
+}
+.ss-menu__i.is-hl .ss-menu__gl,
+.ss-menu__i:hover:not(.is-off) .ss-menu__gl {
+	color: inherit;
+}
+.ss-menu__kbd {
+	margin-left: auto;
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+	color: var(--app-text-subtle);
+}
+.ss-menu__i.is-hl .ss-menu__kbd,
+.ss-menu__i:hover:not(.is-off) .ss-menu__kbd {
+	color: inherit;
+	opacity: 0.8;
+}
+.ss-menu__hd {
+	padding: 6px 8px 4px;
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+	letter-spacing: var(--ls-label);
+	text-transform: uppercase;
+	color: var(--app-text-subtle);
+}
+.ss-menu__sep {
+	height: var(--hairline);
+	background: var(--app-border);
+	margin: 4px 6px;
+}
+
+/* ── Rows, groups, tiles — hairlines instead of card edges ──────────────── */
+.ss-grp {
+	background: var(--app-surface);
+	border-radius: var(--r-lg);
+	overflow: hidden;
+}
+.ss-row {
+	display: flex;
+	align-items: center;
+	gap: var(--s-10);
+	min-height: var(--h-row);
+	padding: 5px var(--s-10);
+	border-top: var(--hairline) solid var(--app-border);
+}
+.ss-row:first-child {
+	border-top: 0;
+}
+.ss-row:hover {
+	background: var(--app-surface-hover);
+}
+.ss-row--static:hover {
+	background: transparent;
+}
+.ss-row__txt {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	min-width: 0;
+	flex: 1 1 auto;
+}
+.ss-row__lbl {
+	font: var(--w-regular) var(--t-ui) / 1.3 var(--app-font-sans);
+	color: var(--app-text-strong);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ss-row__sub {
+	font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-sans);
+	color: var(--app-text-muted);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ss-row__val {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	margin-left: auto;
+	flex: 0 0 auto;
+}
+/* Full-row accent selection — the native rule, and what fills the inspector. */
+.ss-row--sel,
+.ss-row--sel:hover {
+	background: var(--app-accent);
+	border-radius: 5px;
+}
+.ss-row--sel .ss-row__lbl {
+	color: var(--app-accent-contrast);
+}
+.ss-row--sel .ss-row__sub,
+.ss-row--sel .ss-row__val * {
+	color: var(--app-accent-contrast);
+	opacity: 0.82;
+}
+.ss-chev {
+	color: var(--app-text-faint);
+	display: flex;
+	flex: 0 0 auto;
+}
+.ss-chev svg {
+	width: 11px;
+	height: 11px;
+}
+
+.ss-tiles {
+	display: grid;
+	grid-template-columns: repeat(4, 1fr);
+	gap: var(--gap-group);
+}
+.ss-tile {
+	background: var(--app-surface);
+	border-radius: var(--r-lg);
+	padding: 8px 10px 10px;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+}
+.ss-tile--2 {
+	grid-column: span 2;
+}
+.ss-tile--3 {
+	grid-column: span 3;
+}
+.ss-tile--4 {
+	grid-column: span 4;
+}
+.ss-tile--media {
+	padding: 0;
+	overflow: hidden;
+}
+.ss-tile.is-sel {
+	box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 60%, transparent);
+}
+/* A hairline under the tile header, not a card edge — the de-boxing rule. */
+.ss-tile__h {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	height: 18px;
+	border-bottom: var(--hairline) solid var(--app-border);
+	margin-bottom: var(--s-8);
+	flex: 0 0 auto;
+}
+.ss-tile__h .ss-more {
+	margin-left: auto;
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-subtle);
+}
+.ss-tile__b {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	overflow: hidden;
+}
+.ss-trow {
+	display: flex;
+	align-items: center;
+	gap: var(--gap-inline);
+	min-height: 20px;
+}
+.ss-trow .ss-r {
+	margin-left: auto;
+}
+.ss-thumb {
+	width: 26px;
+	height: 16px;
+	border-radius: 2px;
+	overflow: hidden;
+	flex: 0 0 auto;
+	object-fit: cover;
+}
+
+/* Sparkline / per-day bars — This Week, the jump menu's coverage. */
+.ss-spark {
+	display: flex;
+	align-items: flex-end;
+	gap: 4px;
+	height: 34px;
+}
+.ss-spark i {
+	flex: 1 1 auto;
+	border-radius: 1px;
+	background: var(--app-text-faint);
+	min-height: 1px;
+}
+.ss-spark i.is-on {
+	background: var(--app-accent);
+}
+.ss-daybar {
+	flex: 0 0 46px;
+	height: 6px;
+	border-radius: 2px;
+	background: var(--app-surface-hover);
+	overflow: hidden;
+	margin-left: auto;
+}
+.ss-daybar i {
+	display: block;
+	height: 100%;
+	background: var(--app-accent);
+	opacity: 0.8;
+}
+
+/* ── Timeline ───────────────────────────────────────────────────────────── */
+.ss-nowpill {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 20px;
+	padding: 0 var(--s-8);
+	border: 0;
+	border-radius: var(--r-pill);
+	background: var(--app-surface-raised);
+	box-shadow:
+		0 1px 3px rgb(0 0 0 / 20%),
+		0 0 0 var(--hairline) var(--app-border-strong);
+	white-space: nowrap;
+	font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-strong);
+	cursor: default;
+}
+.ss-nowpill .ss-num {
+	font-family: var(--app-font-mono);
+	font-variant-numeric: tabular-nums;
+}
+.ss-readout {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	min-height: 26px;
+}
+.ss-readout__app {
+	font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+	color: var(--app-text-strong);
+}
+.ss-readout__time {
+	font: var(--w-semi) var(--t-display) / 1 var(--app-font-mono);
+	font-variant-numeric: tabular-nums;
+	color: var(--app-text-strong);
+	letter-spacing: -0.02em;
+}
+.ss-readout__date {
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-muted);
+}
+/* Hover ghost + time bubble: the click is previewed before it commits. */
+.ss-ghost {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	width: 1px;
+	background: var(--app-text-muted);
+	opacity: 0.45;
+	z-index: 5;
+	pointer-events: none;
+}
+.ss-bubble {
+	position: absolute;
+	transform: translateX(-50%);
+	padding: 2px 6px;
+	border-radius: var(--r-sm);
+	background: var(--app-text-strong);
+	color: var(--app-bg);
+	font: var(--w-medium) var(--t-label) / 1.3 var(--app-font-mono);
+	white-space: nowrap;
+	z-index: 7;
+	pointer-events: none;
+}
+
+/* Jump menu — quick targets, seven day rows, month grid. */
+.ss-jump {
+	width: 264px;
+	padding: 4px;
+}
+.ss-cal {
+	display: grid;
+	grid-template-columns: repeat(7, 1fr);
+	gap: 1px;
+	padding: 4px 6px 6px;
+}
+.ss-cal b {
+	font: var(--w-medium) var(--t-label) / 18px var(--app-font-mono);
+	color: var(--app-text-faint);
+	text-align: center;
+	text-transform: uppercase;
+}
+.ss-cal span,
+.ss-cal button {
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	background: transparent;
+	border-radius: var(--r-sm);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+	color: var(--app-text-strong);
+	font-variant-numeric: tabular-nums;
+	position: relative;
+	cursor: default;
+}
+.ss-cal .is-off {
+	color: var(--app-text-faint);
+}
+.ss-cal .has::after {
+	content: "";
+	position: absolute;
+	bottom: 2px;
+	width: 3px;
+	height: 3px;
+	border-radius: 50%;
+	background: var(--app-accent);
+}
+.ss-cal .is-on {
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+}
+.ss-cal .is-on.has::after {
+	background: var(--app-accent-contrast);
+}
+
+/* ── Quick Access ───────────────────────────────────────────────────────── */
+.ss-qtop {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	height: 46px;
+	flex: 0 0 auto;
+	padding: 0 var(--s-12);
+	border-bottom: var(--hairline) solid var(--app-border);
+	background: var(--app-surface);
+}
+/* Search and Ask differ in SHAPE; the mode chip only names which you are in. */
+.ss-qmode {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 22px;
+	padding: 0 8px;
+	border-radius: var(--r-sm);
+	font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	flex: 0 0 auto;
+}
+.ss-qmode--search {
+	background: var(--app-surface-hover);
+	color: var(--app-text-strong);
+}
+.ss-qmode--ask {
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+}
+.ss-qfield {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	min-width: 0;
+	font: var(--w-regular) var(--t-title) / 1 var(--app-font-sans);
+	color: var(--app-text-strong);
+}
+.ss-qbar {
+	height: var(--h-tool);
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-6);
+	padding: 0 var(--s-12);
+	background: var(--app-surface-subtle);
+	border-bottom: var(--hairline) solid var(--app-border);
+}
+.ss-qbody {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+}
+.ss-qmain {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-y: auto;
+	padding: 12px 16px 0;
+}
+/* The bottom bar always states what ⏎ does. */
+.ss-qfoot {
+	height: var(--h-tool);
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	padding: 0 var(--s-12);
+	background: var(--app-surface);
+	border-top: var(--hairline) solid var(--app-border);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-text-muted);
+}
+.ss-qsec {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	height: 20px;
+	margin-bottom: 8px;
+}
+.ss-qgrid {
+	display: grid;
+	grid-template-columns: repeat(3, 1fr);
+	gap: var(--gap-group);
+	margin-bottom: 14px;
+}
+.ss-qgrid--2 {
+	grid-template-columns: repeat(2, 1fr);
+}
+.ss-qcell {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	min-width: 0;
+}
+.ss-qcell__f {
+	position: relative;
+	aspect-ratio: 16 / 9;
+	border-radius: var(--r-md);
+	overflow: hidden;
+	box-shadow: 0 0 0 var(--hairline) var(--app-border);
+	background: var(--app-surface-subtle);
+}
+.ss-qcell.is-sel .ss-qcell__f {
+	box-shadow: 0 0 0 2px var(--app-accent);
+}
+.ss-qcell__l1 {
+	display: flex;
+	align-items: baseline;
+	gap: 6px;
+	min-width: 0;
+}
+.ss-qcell__app {
+	font: var(--w-medium) var(--t-meta) / 1.3 var(--app-font-sans);
+	color: var(--app-text-muted);
+	flex: 0 0 auto;
+}
+.ss-qcell__ttl {
+	font: var(--w-regular) var(--t-ui) / 1.3 var(--app-font-sans);
+	color: var(--app-text-strong);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.ss-qcell__l2 {
+	display: flex;
+	gap: 6px;
+	font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-mono);
+	color: var(--app-text-subtle);
+	font-variant-numeric: tabular-nums;
+	overflow: hidden;
+	white-space: nowrap;
+}
+.ss-qcell__dur {
+	position: absolute;
+	right: 6px;
+	bottom: 6px;
+	padding: 1px 5px;
+	border-radius: 3px;
+	background: rgb(0 0 0 / 62%);
+	color: #fff;
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+}
+
+/* Ask mode: one prose column and a bottom composer — deliberately not a grid. */
+.ss-askcol {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+.ss-askscroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 16px 24px 0;
+}
+.ss-askq {
+	display: flex;
+	gap: var(--s-10);
+	margin-bottom: 14px;
+	align-items: flex-start;
+}
+.ss-askq__b {
+	font: var(--w-medium) var(--t-title) / 1.35 var(--app-font-sans);
+	color: var(--app-text-strong);
+	letter-spacing: var(--ls-title);
+	max-width: 62ch;
+}
+.ss-aska {
+	font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+	color: var(--app-text);
+	max-width: 70ch;
+}
+.ss-asktool {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 20px;
+	padding: 0 8px;
+	border-radius: var(--r-pill);
+	background: var(--app-surface);
+	color: var(--app-text-muted);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+}
+/* Cited moments are a horizontal media rail, not a list. */
+.ss-mrail {
+	display: flex;
+	gap: 10px;
+	margin-top: 12px;
+	overflow-x: auto;
+}
+.ss-mcard {
+	width: 152px;
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+.ss-mcard__f {
+	position: relative;
+	aspect-ratio: 16 / 9;
+	border-radius: var(--r-sm);
+	overflow: hidden;
+	box-shadow: 0 0 0 var(--hairline) var(--app-border);
+	background: var(--app-surface-subtle);
+}
+.ss-composer {
+	flex: 0 0 auto;
+	padding: 10px 24px 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* Collapsed Quick Access — the current-frame bar. 560px, top-centre; the
+   control pill is a SEPARATE object so hiding the answer never hides Stop. */
+.ss-hud {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 12px;
+}
+.ss-hudpill {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	height: 30px;
+	padding: 0 8px 0 10px;
+	border-radius: var(--r-pill);
+	background: var(--app-surface-raised);
+	color: var(--app-text-strong);
+	box-shadow:
+		var(--shadow-popover),
+		0 0 0 var(--hairline) var(--app-border-strong);
+}
+.ss-hudbar {
+	width: 560px;
+	max-width: 100%;
+	border-radius: 14px;
+	background: var(--app-surface-raised);
+	box-shadow:
+		var(--shadow-modal),
+		0 0 0 var(--hairline) var(--app-border-strong);
+	overflow: hidden;
+}
+.ss-hudbar__ctx {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 12px 0;
+	font: var(--w-regular) var(--t-meta) / 1.3 var(--app-font-sans);
+	color: var(--app-text-muted);
+}
+.ss-hudbar__in {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px 8px 12px;
+}
+.ss-hudpanel {
+	width: 560px;
+	max-width: 100%;
+	border-radius: 14px;
+	background: var(--app-surface-raised);
+	box-shadow:
+		var(--shadow-modal),
+		0 0 0 var(--hairline) var(--app-border-strong);
+	position: relative;
+	padding: 12px;
+}
+.ss-hudtab {
+	position: absolute;
+	top: -9px;
+	right: 12px;
+	height: 19px;
+	padding: 0 8px;
+	border-radius: var(--r-pill);
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+	font: var(--w-medium) var(--t-label) / 19px var(--app-font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+}
+.ss-qa {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+/* ── Settings — no rail: one scroll, sticky headers, a filter in the strip ─ */
+.ss-setscroll {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	position: relative;
+}
+.ss-stick {
+	position: sticky;
+	top: 0;
+	z-index: 5;
+	display: flex;
+	align-items: baseline;
+	gap: var(--s-10);
+	height: var(--h-tool);
+	padding: 0 16px;
+	background: var(--app-bg);
+	border-bottom: var(--hairline) solid var(--app-border);
+}
+.ss-stick__n {
+	font: var(--w-semi) var(--t-ui) / 1 var(--app-font-sans);
+	color: var(--app-text-strong);
+	letter-spacing: -0.01em;
+}
+.ss-stick__c {
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+	color: var(--app-text-faint);
+	margin-left: auto;
+	font-variant-numeric: tabular-nums;
+}
+.ss-subh {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 14px 16px 6px;
+	font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+	letter-spacing: var(--ls-label);
+	text-transform: uppercase;
+	color: var(--app-text-subtle);
+}
+.ss-setgrp {
+	margin: 0 16px;
+}
+.ss-srow {
+	display: flex;
+	align-items: center;
+	gap: var(--s-12);
+	min-height: 34px;
+	padding: 6px 10px;
+	border-top: var(--hairline) solid var(--app-border);
+}
+.ss-srow:first-child {
+	border-top: 0;
+}
+.ss-srow:hover {
+	background: var(--app-surface-hover);
+}
+.ss-srow.is-focus {
+	background: var(--app-surface-active);
+	box-shadow: inset 2px 0 0 var(--app-accent);
+}
+.ss-srow--wide {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+}
+.ss-srow__t {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.ss-srow__l {
+	font: var(--w-regular) var(--t-ui) / 1.3 var(--app-font-sans);
+	color: var(--app-text-strong);
+}
+.ss-srow__s {
+	font: var(--w-regular) var(--t-meta) / 1.4 var(--app-font-sans);
+	color: var(--app-text-muted);
+}
+.ss-srow__v {
+	display: flex;
+	align-items: center;
+	gap: var(--s-8);
+	margin-left: auto;
+	flex: 0 0 auto;
+}
+.ss-echo {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+	color: var(--app-accent-strong);
+}
+.ss-echo svg {
+	width: 11px;
+	height: 11px;
+}
+
+/* ── Custom inputs — a raw number plus the consequence it buys ──────────── */
+.ss-conseq {
+	font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans);
+	color: var(--app-text-muted);
+}
+.ss-conseq b {
+	font-family: var(--app-font-mono);
+	font-weight: var(--w-medium);
+	color: var(--app-text-strong);
+	font-variant-numeric: tabular-nums;
+}
+.ss-ladder {
+	display: flex;
+	gap: 1px;
+	padding: 1px;
+	border-radius: var(--r-md);
+	background: var(--app-surface-subtle);
+	border: var(--hairline) solid var(--app-border);
+}
+.ss-ladder span,
+.ss-ladder button {
+	flex: 1 1 auto;
+	height: 22px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	background: transparent;
+	border-radius: 4px;
+	font: var(--w-medium) var(--t-meta) / 1 var(--app-font-mono);
+	color: var(--app-text-muted);
+	font-variant-numeric: tabular-nums;
+	cursor: default;
+}
+.ss-ladder .is-on {
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+}
+/* Your real footprint, marked on the ladder's own axis. */
+.ss-axis {
+	position: relative;
+	height: 16px;
+	margin-top: 6px;
+}
+.ss-axis__l {
+	position: absolute;
+	top: 5px;
+	left: 0;
+	right: 0;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--app-surface-hover);
+}
+.ss-axis__f {
+	position: absolute;
+	top: 5px;
+	left: 0;
+	height: 2px;
+	border-radius: 1px;
+	background: var(--app-accent-border);
+}
+.ss-axis__m {
+	position: absolute;
+	top: 0;
+	width: 1px;
+	height: 12px;
+	background: var(--app-text-muted);
+}
+.ss-axis__m b {
+	position: absolute;
+	left: 50%;
+	top: 12px;
+	transform: translateX(-50%);
+	font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
+	color: var(--app-text-muted);
+	white-space: nowrap;
+}
+/* Two halves, both named. G8: no temperature claim, ever. */
+.ss-duty {
+	display: flex;
+	height: 18px;
+	border-radius: var(--r-sm);
+	overflow: hidden;
+	box-shadow: 0 0 0 var(--hairline) var(--app-border);
+}
+.ss-duty i {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+.ss-duty .ss-work {
+	background: var(--app-accent);
+	color: var(--app-accent-contrast);
+}
+.ss-duty .ss-cool {
+	background: var(--app-surface-hover);
+	color: var(--app-text-muted);
+}
+.ss-recorder {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	height: var(--h-md);
+	padding: 0 6px;
+	border-radius: var(--r-md);
+	border: var(--hairline) solid var(--app-border-strong);
+	background: var(--app-surface);
+}
+.ss-recorder.is-armed {
+	border-color: var(--app-accent-border);
+	box-shadow: var(--ring);
+	color: var(--app-text-subtle);
+	font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+	padding: 0 10px;
+}
+/* Model rows are 30px list rows, not cards. */
+.ss-mrow {
+	display: flex;
+	align-items: center;
+	gap: var(--s-10);
+	min-height: 30px;
+	padding: 5px 10px;
+	border-top: var(--hairline) solid var(--app-border);
+}
+.ss-mrow:first-child {
+	border-top: 0;
+}
+.ss-mrow.is-on {
+	background: var(--app-surface-active);
+}
+.ss-mrow__n {
+	font: var(--w-regular) var(--t-ui) / 1.3 var(--app-font-mono);
+	color: var(--app-text-strong);
+}
+.ss-mrow__meta {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+	white-space: nowrap;
+}
+.ss-gauge {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+.ss-gauge__b {
+	position: relative;
+	height: 8px;
+	border-radius: 4px;
+	flex: 1 1 auto;
+	overflow: hidden;
+	background: var(--app-surface-hover);
+	box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+}
+.ss-gauge__b i {
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	left: 0;
+	background: var(--app-accent);
+}
+.ss-gauge__b i.is-warn {
+	background: var(--app-warn);
+}
