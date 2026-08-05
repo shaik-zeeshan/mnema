@@ -23,6 +23,8 @@ mod system_audio;
 #[path = "native_capture_system_idle.rs"]
 pub(crate) mod system_idle;
 #[cfg(test)]
+mod source_mask_tests;
+#[cfg(test)]
 mod tests;
 
 use capture_microphone as microphone_capture;
@@ -3268,6 +3270,34 @@ pub(crate) fn pause_native_capture_from_app_handle(
     Ok(NativeCaptureSessionResponse { session })
 }
 
+/// The one seam behind all three mid-session source doors (pill popover, tray,
+/// bare 1/2/3 shortcuts). `sources` is the desired live set; the lifecycle turns
+/// the difference from `requested_sources` into a user mask.
+#[cfg(target_os = "macos")]
+pub(crate) fn set_native_capture_live_sources_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    sources: CaptureSources,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut runtime = state.lock().expect("native capture state poisoned");
+    let session = runtime.set_live_sources(app_handle, sources)?;
+    drop(runtime);
+    emit_native_capture_session_changed(app_handle, &session);
+    crate::status_bar::refresh(app_handle);
+    Ok(NativeCaptureSessionResponse { session })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn set_native_capture_live_sources_from_app_handle(
+    _app_handle: &tauri::AppHandle,
+    _sources: CaptureSources,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    Err(CaptureErrorResponse {
+        code: "capture_unsupported_platform".to_string(),
+        message: "Native capture is only supported on macOS".to_string(),
+    })
+}
+
 pub(crate) fn resume_native_capture_from_app_handle(
     app_handle: &tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
@@ -3581,6 +3611,17 @@ pub fn resume_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     resume_native_capture_from_app_handle(&app_handle)
+}
+
+/// Turn sources off and on while recording. `sources` is the desired live set;
+/// sources the session never requested are ignored (the mask works inside
+/// `requested_sources` — adding one needs a fresh start).
+#[tauri::command]
+pub fn set_native_capture_live_sources(
+    sources: CaptureSources,
+    app_handle: tauri::AppHandle,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    set_native_capture_live_sources_from_app_handle(&app_handle, sources)
 }
 
 fn stop_native_capture_with_state(

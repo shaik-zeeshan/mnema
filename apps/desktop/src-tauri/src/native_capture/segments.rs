@@ -3059,6 +3059,11 @@ pub(super) fn pause_system_audio_for_inactivity_with_app_handle(
 pub(super) fn resume_microphone_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
+    // Only the user unmasks. Guarding the resume itself rather than each caller
+    // covers the activity tick, low-disk recovery and any future re-arm path.
+    if runtime.inactivity.microphone_user_masked {
+        return Ok(());
+    }
     if !runtime.inactivity.is_microphone_paused() {
         return Ok(());
     }
@@ -3143,6 +3148,10 @@ pub(super) fn resume_microphone_from_inactivity(
 pub(super) fn resume_system_audio_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
+    // Only the user unmasks — a tap rebuild or the zero-watchdog must not.
+    if runtime.inactivity.system_audio_user_masked {
+        return Ok(());
+    }
     if !runtime.inactivity.is_system_audio_paused() {
         return Ok(());
     }
@@ -3450,6 +3459,10 @@ pub(super) fn resume_screen_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
     app_handle: Option<&tauri::AppHandle>,
 ) -> Result<(), CaptureErrorResponse> {
+    // Only the user unmasks — not activity, and not a display coming back.
+    if runtime.inactivity.screen_user_masked {
+        return Ok(());
+    }
     if should_defer_screen_resume_for_missing_display(
         capture_screen::screen_capture_session_is_live(runtime.active_screen_session.as_ref()),
         capture_screen::screen_display_available(),
@@ -4038,6 +4051,14 @@ where
         return Ok(false);
     }
 
+    // A user mask is the same kind of deliberate off: a wake or a display change
+    // must not restart a screen the user turned off. Only the mask is checked
+    // here, not the full `is_screen_paused()` — an inactivity pause has always
+    // been re-armed by wake recovery and the tick re-pauses it a moment later.
+    if runtime.inactivity.screen_user_masked {
+        return Ok(false);
+    }
+
     // A display-reconfiguration callback fires for *any* display change
     // (resolution/SetMode, monitor connect/Add, set-main), not only a wake, and
     // `NSWorkspaceDidWake` fires alongside it — so this path can be entered while
@@ -4352,6 +4373,10 @@ pub(super) fn recover_screen_capture_after_wake(
 pub(super) fn resume_runtime_from_inactivity(
     runtime: &mut NativeCaptureRuntime,
 ) -> Result<(), CaptureErrorResponse> {
+    // The legacy all-source resume would sweep a user mask away with it.
+    if runtime.inactivity.has_user_masked_source() {
+        return Ok(());
+    }
     if !runtime.inactivity.is_paused {
         return Ok(());
     }

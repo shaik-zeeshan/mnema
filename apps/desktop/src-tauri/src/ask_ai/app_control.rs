@@ -171,6 +171,7 @@ mod tests {
                 microphone: false,
                 system_audio: true,
             }),
+            masked_sources: Default::default(),
             // Deliberately populated so the "never leak local paths" assertion is
             // meaningful — the status JSON must still exclude it.
             output_files: Some(CaptureOutputFiles {
@@ -238,6 +239,7 @@ mod tests {
             is_user_paused: false,
             is_low_disk_suspended: false,
             requested_sources: None,
+            masked_sources: Default::default(),
             output_files: None,
             source_sessions: None,
         };

@@ -61,6 +61,12 @@ export interface SourceSessions {
 export interface CaptureSession {
 	isRunning: boolean;
 	requestedSources: RequestedSources | null;
+	/**
+	 * Sources the user turned off mid-session — a user-scoped pause on one
+	 * source, always a subset of `requestedSources`. What is actually recording
+	 * is `requestedSources` minus this.
+	 */
+	maskedSources: RequestedSources;
 	outputFiles: CaptureOutputFiles | null;
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;

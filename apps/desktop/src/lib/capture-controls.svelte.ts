@@ -325,11 +325,17 @@ export async function refreshRuntimeSourcesNow(): Promise<void> {
   await refreshRuntimeSources();
 }
 
-// ── Per-source selection (used by the title-bar source pills) ─────────
-// While not recording, each source pill acts as a toggle that flips the
-// corresponding `captureScreen / captureMicrophone / captureSystemAudio`
-// field in the capture-sources settings domain so the next session (and the
-// settings UI itself) picks up the same choice.
+// ── Per-source selection ──────────────────────────────────────────────
+// One toggle, two meanings, decided by whether a session is running:
+//
+// - **idle**: flips `captureScreen / captureMicrophone / captureSystemAudio`
+//   in the capture-sources settings domain — the *next* session's sources.
+// - **recording**: flips the live user mask through the lifecycle's paused-flag
+//   seam — this session only, and only within the sources it was started with.
+//   Nothing but the user clears a mask; liveness recovery leaves it alone.
+//
+// All three doors (this store, the tray, the 1/2/3 shortcuts) go through here
+// or through the same command, so they cannot disagree.
 export type SourceKey = "screen" | "microphone" | "systemAudio";
 
 const _selectionState = $state<{
@@ -338,44 +344,87 @@ const _selectionState = $state<{
   saving: { screen: false, microphone: false, systemAudio: false },
 });
 
+function settingsSelected(key: SourceKey): boolean {
+  if (key === "screen") return _state.recordingSettings?.captureScreen ?? true;
+  if (key === "microphone") return _state.recordingSettings?.captureMicrophone ?? false;
+  return _state.recordingSettings?.captureSystemAudio ?? false;
+}
+
 export const sourceSelection = {
   get screen(): boolean {
-    return _state.recordingSettings?.captureScreen ?? true;
+    return sourceSelection.isSelected("screen");
   },
   get microphone(): boolean {
-    return _state.recordingSettings?.captureMicrophone ?? false;
+    return sourceSelection.isSelected("microphone");
   },
   get systemAudio(): boolean {
-    return _state.recordingSettings?.captureSystemAudio ?? false;
+    return sourceSelection.isSelected("systemAudio");
   },
   isSaving(key: SourceKey): boolean {
     return _selectionState.saving[key];
   },
+  /**
+   * Whether this session started with the source at all. A source it never
+   * requested cannot be added mid-session — the mask only works inside
+   * `requestedSources` — so its toggle stays disabled until the next start.
+   */
+  isInSession(key: SourceKey): boolean {
+    return captureSession.value?.requestedSources?.[key] === true;
+  },
+  /** Turned off by the user for this session (not idle, not suspended). */
+  isMasked(key: SourceKey): boolean {
+    if (!captureControls.isRunning) return false;
+    return captureSession.value?.maskedSources?.[key] === true;
+  },
+  /** What the toggle reads: live sources while recording, settings while idle. */
   isSelected(key: SourceKey): boolean {
-    if (key === "screen") return sourceSelection.screen;
-    if (key === "microphone") return sourceSelection.microphone;
-    return sourceSelection.systemAudio;
+    if (!captureControls.isRunning) return settingsSelected(key);
+    return sourceSelection.isInSession(key) && !sourceSelection.isMasked(key);
   },
 };
 
 /**
- * Toggle (or set) whether a given source will be captured the next time
- * `startCapture()` runs. Persists the choice through the capture-sources
- * domain command, so unrelated settings drafts cannot be overwritten by a
- * title-bar source change.
+ * Turn a source on or off.
  *
- * No-op while a session is currently running — the live `runtimeSources`
- * snapshot determines the indicator state in that case, and source
- * selection only affects the next session.
+ * While recording this is the live user mask: the desired live set is sent to
+ * the lifecycle, which pauses or resumes that one source (finalizing its
+ * in-flight segment the way an idle pause does). The backend refuses a change
+ * that would leave nothing recording — stop the session for that.
+ *
+ * While idle it persists the choice through the capture-sources domain command,
+ * so unrelated settings drafts cannot be overwritten by a title-bar change.
  */
 export async function setSourceSelected(
   key: SourceKey,
   selected: boolean,
 ): Promise<void> {
-  if (captureControls.isRunning) return;
+  if (_selectionState.saving[key]) return;
+
+  if (captureControls.isRunning) {
+    if (!sourceSelection.isInSession(key)) return;
+    const sources = {
+      screen: key === "screen" ? selected : sourceSelection.isSelected("screen"),
+      microphone: key === "microphone" ? selected : sourceSelection.isSelected("microphone"),
+      systemAudio: key === "systemAudio" ? selected : sourceSelection.isSelected("systemAudio"),
+    };
+    _selectionState.saving[key] = true;
+    try {
+      const result = await invoke<{ session: CaptureSession }>(
+        "set_native_capture_live_sources",
+        { sources },
+      );
+      applyCaptureSession(result.session);
+      await refreshRuntimeSourcesNow();
+    } catch (err) {
+      reportCaptureError(err);
+    } finally {
+      _selectionState.saving[key] = false;
+    }
+    return;
+  }
+
   const base = _state.recordingSettings;
   if (!base) return;
-  if (_selectionState.saving[key]) return;
 
   const overrides:
     Partial<Pick<RecordingSettings, "captureScreen" | "captureMicrophone" | "captureSystemAudio">> =
