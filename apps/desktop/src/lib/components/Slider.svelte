@@ -91,7 +91,7 @@
   }
 
   .slider-label {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;

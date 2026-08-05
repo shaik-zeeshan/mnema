@@ -665,7 +665,7 @@
   }
   .ctx-header .subtitle {
     margin: 4px 0 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -715,7 +715,7 @@
     padding: 14px;
   }
   .section-title {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -723,7 +723,7 @@
   .pill {
     display: inline-flex;
     align-items: center;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     padding: 1px 8px;
     border-radius: 999px;
     border: 1px solid var(--app-border);
@@ -733,7 +733,7 @@
 
   .btn {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -791,7 +791,7 @@
     font: inherit;
     display: inline-flex;
     align-items: center;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.02em;
     padding: 2px 9px;
     border-radius: 999px;
@@ -818,7 +818,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 2px 8px;
@@ -839,7 +839,7 @@
     min-height: 60px;
     resize: vertical;
     font: inherit;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.6;
     padding: 11px 12px;
     border: 1px solid var(--app-border);
@@ -867,7 +867,7 @@
   .topic-input {
     width: 100%;
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     padding: 8px 11px;
     border: 1px solid var(--app-border);
     border-radius: 7px;
@@ -894,7 +894,7 @@
     margin: 11px 0 0;
   }
   .composer-suggest .suggest-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -929,7 +929,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
   .composer-foot .helper .hint-glyph {
@@ -937,7 +937,7 @@
   }
   .composer-error {
     margin: 10px 0 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-danger);
     line-height: 1.5;
   }
@@ -950,7 +950,7 @@
     margin: 2px 2px 0;
   }
   .count-pill {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     min-width: 18px;
     justify-content: center;
     padding: 1px 7px;
@@ -966,7 +966,7 @@
   }
   .dismissed-note {
     margin: 6px 2px 10px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
@@ -1008,7 +1008,7 @@
   }
 
   .stmt-text {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -1023,7 +1023,7 @@
   .topic-chip {
     display: inline-flex;
     align-items: center;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 1px 7px;
     border-radius: 4px;
@@ -1044,7 +1044,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 1px 8px;
     border-radius: 999px;
@@ -1053,11 +1053,11 @@
     color: var(--app-accent-strong);
   }
   .authored-pill .quill {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
   }
 
   .stmt-meta .meta-time {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
   .stmt-meta .meta-actions {
@@ -1088,7 +1088,7 @@
     min-height: 52px;
     resize: vertical;
     font: inherit;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     padding: 10px 11px;
     border: 1px solid var(--app-accent-border);
@@ -1111,7 +1111,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-accent-strong);
@@ -1128,7 +1128,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -1153,7 +1153,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 6px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
   .av-glyph--authored {
     color: var(--app-accent-strong);
@@ -1166,7 +1166,7 @@
     border: 1px solid var(--app-info-border);
   }
   .av-body .av-head {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
     display: flex;
@@ -1175,11 +1175,11 @@
   }
   .av-body .av-head .av-where {
     font-weight: 400;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
   }
   .av-body .av-desc {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
     margin-top: 2px;
@@ -1189,7 +1189,7 @@
     align-items: center;
     gap: 5px;
     margin-top: 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-accent-strong);
@@ -1207,7 +1207,7 @@
     align-items: center;
     gap: 5px;
     margin-top: 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1271,14 +1271,14 @@
     left: 3px;
     bottom: 0;
     color: var(--app-info);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
   }
   .steer-body {
     min-width: 0;
   }
   .steer-from {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-strong);
     font-weight: 600;
@@ -1293,7 +1293,7 @@
     gap: 7px;
     flex-wrap: wrap;
     margin-top: 5px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     color: var(--app-text-muted);
   }
@@ -1304,7 +1304,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -1317,13 +1317,13 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .steer-empty {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -1346,19 +1346,19 @@
     border-radius: 6px;
     border: 1px solid var(--app-border-strong);
     color: var(--app-text-subtle);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
   .guardrail-card .gd-body {
     min-width: 0;
   }
   .guardrail-card .gd-title {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     color: var(--app-text);
     letter-spacing: 0.02em;
   }
   .guardrail-card .gd-text {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
     margin-top: 3px;
@@ -1383,12 +1383,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.6;
   }
@@ -1405,7 +1405,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -1427,7 +1427,7 @@
     opacity: 0.6;
   }
   .state-retry-ico {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0;
   }

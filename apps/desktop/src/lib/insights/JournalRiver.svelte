@@ -242,7 +242,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -276,13 +276,13 @@
   .slot .when {
     padding-top: 16px;
     text-align: right;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
   .slot .when .dur {
     display: block;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
   }
   .spine {
@@ -332,7 +332,7 @@
     width: 0;
   }
   .gap-note .txt {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-faint);
     padding: 4px 0;
     font-style: italic;
@@ -385,7 +385,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.35;
     color: var(--app-text-muted);
     transition: color 0.12s ease;
@@ -448,7 +448,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -464,7 +464,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -477,7 +477,7 @@
   }
   .card h3 {
     margin: 0 0 4px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
@@ -485,7 +485,7 @@
   }
   .card p {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.65;
     color: var(--app-text-muted);
   }
@@ -496,7 +496,7 @@
     margin-top: 9px;
     padding-top: 8px;
     border-top: 1px dashed var(--app-border);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     flex-wrap: wrap;
   }
@@ -527,7 +527,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
   }
   .card--pending .pt .spin {
@@ -553,7 +553,7 @@
   }
   .card--pending .sub {
     margin-top: 3px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
   }
 
@@ -575,7 +575,7 @@
     background: var(--app-surface);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.08em;
     cursor: pointer;
     transition:
@@ -606,14 +606,14 @@
   }
   .empty h4 {
     margin: 0 0 6px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
   }
   .empty p {
     margin: 0 auto;
     max-width: 380px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.7;
     color: var(--app-text-muted);
   }

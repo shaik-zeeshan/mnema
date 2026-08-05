@@ -247,7 +247,7 @@
     gap: 8px;
     height: 28px;
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     transition:
       color 0.12s ease,
@@ -350,7 +350,7 @@
     border-radius: 6px;
     padding: 0 8px;
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     text-align: left;
     cursor: pointer;

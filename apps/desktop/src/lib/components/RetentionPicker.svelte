@@ -131,7 +131,7 @@
     background: var(--app-surface);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 540;
     line-height: 1;
     letter-spacing: 0.01em;

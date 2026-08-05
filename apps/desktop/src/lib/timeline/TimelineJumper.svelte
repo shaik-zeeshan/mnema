@@ -551,7 +551,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -585,7 +585,7 @@
   }
   .btn--sm {
     padding: 3px 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   /* Accent ghost — reserved for the global "Latest" / snap-to-now action. */
   .btn--accent {
@@ -611,7 +611,7 @@
     max-width: 240px;
     /* Typography inherits from `.btn` (uppercase, 700, 0.08em) so the readout
        matches the LATEST/OCR/REFRESH buttons sharing the timeline bar row. */
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
   }
   .timeline__jump-trigger--open {
     border-color: var(--app-accent-border);
@@ -621,7 +621,7 @@
     flex: 0 0 auto;
     /* Match the bar-2 control size (10px) used by the OCR/refresh buttons,
        which the `.timeline__bar .btn--sm` override shrinks app-side. */
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
   }
   .timeline__jump-icon {
     display: inline-flex;
@@ -639,7 +639,7 @@
   }
   .timeline__jump-kbd {
     flex: 0 0 auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     border: 1px solid var(--app-border);
     border-radius: 3px;
@@ -674,7 +674,7 @@
   }
   .timeline__picker-title {
     flex: 1;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -685,7 +685,7 @@
     gap: 6px;
   }
   .timeline__picker-glyph {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
   }
   .timeline__picker-panes {
@@ -709,7 +709,7 @@
     padding: 8px 12px;
     border-top: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     min-height: 32px;
   }
   .timeline__picker-foot-span {

@@ -182,7 +182,7 @@
 }
 
 .debug-shell .rs-state {
-  font-size: var(--text-xs);
+  font-size: var(--t-label);
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -230,7 +230,7 @@
 }
 
 .debug-shell .rs-row__label {
-  font-size: var(--text-xs);
+  font-size: var(--t-label);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;

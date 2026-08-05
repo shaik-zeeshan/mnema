@@ -6875,7 +6875,7 @@
 
   /* Align bar-2 control typography with the app titlebar (10px). */
   .timeline__bar .btn--sm {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
   }
 
   /* ── Recording control cluster ─────────────────────────────
@@ -6905,7 +6905,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -6935,7 +6935,7 @@
     background: transparent;
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   .btn--ghost:not(:disabled):hover {
@@ -6946,7 +6946,7 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
@@ -6963,7 +6963,7 @@
     background: var(--app-danger-bg-soft);
     border: 1px solid var(--app-danger-border);
     border-radius: 4px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-danger-text);
   }
 
@@ -6979,7 +6979,7 @@
   }
 
   .timeline__error-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -7019,7 +7019,7 @@
   .timeline__empty-title {
     margin: 0;
     font-family: inherit;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--app-text);
@@ -7440,7 +7440,7 @@
   }
 
   .timeline__overlay-key {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -7716,7 +7716,7 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text);
@@ -7987,7 +7987,7 @@
     display: flex;
     flex-direction: column;
     padding: 0 4px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8061,7 +8061,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8080,7 +8080,7 @@
   }
 
   .timeline-rail__audio-lane-error-label {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8230,7 +8230,7 @@
     top: 4px;
     width: fit-content;
     padding: 2px 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;

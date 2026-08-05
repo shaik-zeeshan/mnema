@@ -2659,7 +2659,7 @@
      on. The blinking accent caret already signals focus. */
 
   .quick-recall__glyph {
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1;
     color: var(--app-text-muted);
     flex-shrink: 0;
@@ -2749,7 +2749,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -2757,7 +2757,7 @@
 
   .quick-recall__footer kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -2790,7 +2790,7 @@
   }
 
   .quick-recall__section-label {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -2801,7 +2801,7 @@
   .quick-recall__state {
     margin: 0;
     padding: 8px 2px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -2818,7 +2818,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     white-space: nowrap;
     color: var(--app-accent);
@@ -2849,7 +2849,7 @@
 
   /* Mockup `.askai-btn kbd`: accent key cap on a transparent ground. */
   .quick-recall__ask-key {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-accent);
     background: transparent;
@@ -2882,7 +2882,7 @@
     gap: 6px;
     flex-shrink: 0;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     white-space: nowrap;
     color: var(--app-text-muted);
@@ -2899,7 +2899,7 @@
 
   .quick-recall__filter-trigger kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface);
@@ -2944,7 +2944,7 @@
     margin: 0;
     padding: 6px 18px 0;
     text-align: left;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-subtle);
     background: none;
@@ -2984,7 +2984,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-accent);
     background: var(--app-accent-bg);
@@ -2999,7 +2999,7 @@
   }
 
   .quick-recall__chip-hint {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
   }
@@ -3014,7 +3014,7 @@
     width: 16px;
     height: 16px;
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: inherit;
     background: transparent;
@@ -3065,7 +3065,7 @@
     margin: 0;
     padding: 8px 16px;
     flex-shrink: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-danger-text);
     border-bottom: 1px solid var(--app-border);
@@ -3089,7 +3089,7 @@
   .quick-recall__back {
     flex-shrink: 0;
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -3120,7 +3120,7 @@
   .quick-recall__ask-thread-label {
     flex: 1;
     min-width: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -3135,7 +3135,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -3298,7 +3298,7 @@
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -3319,7 +3319,7 @@
     gap: 9px;
   }
   .quick-recall__dossier-statement {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     line-height: 1.5;
     margin: 0;
@@ -3334,7 +3334,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -3360,7 +3360,7 @@
   }
 
   .quick-recall__sources-heading {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -3459,7 +3459,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     letter-spacing: 0.02em;
     color: var(--app-text-muted);
@@ -3488,7 +3488,7 @@
   }
 
   .quick-recall__handoff-arrow {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
   }
 
@@ -3499,7 +3499,7 @@
 
   .quick-recall__retry {
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -3555,7 +3555,7 @@
     border-radius: 6px;
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -3568,7 +3568,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -3623,7 +3623,7 @@
   /* The expanded disclosure exists to show the full filter detail, so its rows
      wrap rather than truncate (unlike the one-line live working label). */
   .quick-recall__activity-item {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-subtle);
     min-width: 0;

@@ -384,7 +384,7 @@
     border-left: 2px solid var(--app-warn);
     background: var(--app-warn-bg);
     padding: 12px 16px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text);
     line-height: 1.65;
     margin: 26px 0 0;

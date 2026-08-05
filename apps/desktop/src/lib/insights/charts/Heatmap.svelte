@@ -145,7 +145,7 @@
     gap: 8px;
   }
   .rlabel {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     white-space: nowrap;
   }
@@ -161,7 +161,7 @@
   }
   .legend {
     margin-top: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
   }
   /* Focus-mode key: colored swatch + label per intensity band. */

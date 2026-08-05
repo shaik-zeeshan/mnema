@@ -394,7 +394,7 @@
     align-items: center;
     padding: 11px 0;
     border-bottom: 1px solid var(--app-border);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
   .s-row:first-child {
     border-top: 1px solid var(--app-border);
@@ -413,7 +413,7 @@
     align-items: center;
     gap: 14px;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   /* the one question on screen */
@@ -474,7 +474,7 @@
     display: flex;
     gap: 26px;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .faint {
     color: var(--app-text-subtle);

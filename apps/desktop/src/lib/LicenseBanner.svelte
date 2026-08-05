@@ -158,7 +158,7 @@
     padding: 7px 14px;
     border-bottom: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
   }
 
@@ -186,7 +186,7 @@
 
   .license-banner__btn {
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     padding: 4px 10px;
     border-radius: 6px;
     border: 1px solid var(--app-border-strong);

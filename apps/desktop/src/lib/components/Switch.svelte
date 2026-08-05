@@ -84,14 +84,14 @@
   }
 
   .switch-label {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;
   }
 
   .switch-description {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     letter-spacing: 0.03em;
   }

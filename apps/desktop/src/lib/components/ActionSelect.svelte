@@ -86,7 +86,7 @@
     min-height: 24px;
     padding: 3px 8px;
     border-radius: 999px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;

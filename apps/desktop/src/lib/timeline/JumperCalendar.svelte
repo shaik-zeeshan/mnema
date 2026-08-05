@@ -116,7 +116,7 @@
     border-radius: 3px;
     color: var(--app-text-muted);
     cursor: pointer;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
@@ -135,7 +135,7 @@
     border-color: var(--app-accent-border);
   }
   :global(.cal__heading) {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 700;
     letter-spacing: 0.04em;
     color: var(--app-text-strong);
@@ -169,7 +169,7 @@
     min-height: 0;
   }
   :global(.cal__weekday) {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -190,7 +190,7 @@
     justify-content: center;
     border-radius: 3px;
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
     color: var(--app-text);
     background: transparent;

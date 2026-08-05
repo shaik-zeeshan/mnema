@@ -209,12 +209,12 @@
     border-bottom: 0;
   }
   .row .nm {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     white-space: nowrap;
   }
   .row .val {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     white-space: nowrap;
   }
@@ -238,7 +238,7 @@
      Permissions screen, which is the only place a grant can be requested. */
   .grant {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     background: transparent;
     border: 1px solid var(--app-border-strong);
@@ -276,12 +276,12 @@
   /* Lower case and dimmed: the label only has to name the number under it, so
      it stays below the uppercase step labels in the window chrome. */
   .fact dt {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     opacity: 0.7;
   }
   .fact dd {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.3;
     margin: 0;
   }

@@ -301,7 +301,7 @@
   }
   .cd-statement {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     color: var(--app-text-strong);
     font-weight: 500;
@@ -319,7 +319,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     padding: 6px 11px;
     border: 1px solid var(--app-border);
     border-radius: 6px;
@@ -400,7 +400,7 @@
     gap: 10px;
   }
   .cd-conf-big {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     line-height: 1;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -415,7 +415,7 @@
     gap: 3px;
   }
   .cd-conf-trend {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -430,7 +430,7 @@
     color: var(--app-danger);
   }
   .cd-conf-cap {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.13em;
@@ -465,7 +465,7 @@
     stroke-width: 1.5;
   }
   .cd-traj-note {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     display: flex;
     gap: 6px;

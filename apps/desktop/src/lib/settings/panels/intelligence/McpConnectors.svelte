@@ -362,7 +362,7 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     line-height: 1.4;
   }
@@ -373,7 +373,7 @@
     font-weight: 600;
   }
   .mcp-row__tag {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     text-transform: uppercase;
     letter-spacing: 0.06em;
     color: var(--app-text-muted);
@@ -387,7 +387,7 @@
     border: 0;
     background: transparent;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     cursor: pointer;

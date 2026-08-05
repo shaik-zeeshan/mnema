@@ -83,7 +83,7 @@
     width: 22px;
     height: 22px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-subtle);
     background: var(--app-surface-raised);
@@ -130,7 +130,7 @@
 
   .quick-recall__syntax-title {
     margin: 0 0 7px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.3;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -141,7 +141,7 @@
     display: grid;
     grid-template-columns: 96px 1fr;
     gap: 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     padding: 2px 0;
   }
