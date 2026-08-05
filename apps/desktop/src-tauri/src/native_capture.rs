@@ -16,6 +16,7 @@ pub(crate) mod output;
 pub(crate) mod privacy;
 mod runtime;
 mod segments;
+mod source_mask;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
 #[cfg(target_os = "macos")]
@@ -3280,6 +3281,28 @@ pub(crate) fn resume_native_capture_from_app_handle(
     Ok(NativeCaptureSessionResponse { session })
 }
 
+/// Thin adapter over the lifecycle's per-source mid-session mask (slice 5).
+/// `source` uses the frontend `SourceKey` spelling: "screen" | "microphone" |
+/// "systemAudio". The mask state itself travels on the session
+/// (`maskedSources`), so there is no separate getter.
+pub(crate) fn set_native_capture_source_mask_from_app_handle(
+    app_handle: &tauri::AppHandle,
+    source: &str,
+    masked: bool,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    let parsed = source_mask::MaskableSource::parse(source).ok_or_else(|| CaptureErrorResponse {
+        code: "invalid_request".to_string(),
+        message: format!("Unknown capture source: {source}"),
+    })?;
+    let state = app_handle.state::<NativeCaptureState>();
+    let mut lifecycle = state.lock().expect("native capture state poisoned");
+    let session = lifecycle.set_source_masked(Some(app_handle), parsed, masked)?;
+    drop(lifecycle);
+    emit_native_capture_session_changed(app_handle, &session);
+    crate::status_bar::refresh(app_handle);
+    Ok(NativeCaptureSessionResponse { session })
+}
+
 #[tauri::command]
 pub fn get_recording_settings(
     state: tauri::State<'_, RecordingSettingsState>,
@@ -3581,6 +3604,15 @@ pub fn resume_native_capture(
     app_handle: tauri::AppHandle,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     resume_native_capture_from_app_handle(&app_handle)
+}
+
+#[tauri::command]
+pub fn set_native_capture_source_mask(
+    app_handle: tauri::AppHandle,
+    source: String,
+    masked: bool,
+) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
+    set_native_capture_source_mask_from_app_handle(&app_handle, &source, masked)
 }
 
 fn stop_native_capture_with_state(

@@ -294,12 +294,23 @@ pub(super) fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCapt
 
     NativeCaptureSession {
         is_running: session_reports_running(runtime),
-        is_inactivity_paused: runtime.inactivity.is_paused,
+        // Mask-held families are the user's own doing, not an idle pause, so
+        // they never make the session read "Paused — inactive" (slice 5).
+        is_inactivity_paused: runtime.inactivity.is_paused_disregarding_user_masks(),
         is_user_paused: runtime.user_capture_paused,
         is_low_disk_suspended,
         requested_sources: runtime.requested_sources.clone(),
+        masked_sources: user_masked_sources(runtime),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
+    }
+}
+
+pub(super) fn user_masked_sources(runtime: &NativeCaptureRuntime) -> CaptureSources {
+    CaptureSources {
+        screen: runtime.inactivity.user_masked_screen,
+        microphone: runtime.inactivity.user_masked_microphone,
+        system_audio: runtime.inactivity.user_masked_system_audio,
     }
 }
 
@@ -342,6 +353,8 @@ pub(super) fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> Na
         is_user_paused: false,
         is_low_disk_suspended: false,
         requested_sources: runtime.requested_sources.clone(),
+        // The mask is session-scoped user intent: a stopped session has none.
+        masked_sources: CaptureSources::default(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
     }

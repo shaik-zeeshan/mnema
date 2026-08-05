@@ -115,6 +115,17 @@ pub(crate) struct InactivityState {
     pub microphone_paused: bool,
     pub system_audio_paused: bool,
     pub is_paused: bool,
+    /// Per-source mid-session user mask (slice 5): user intent to keep a source
+    /// stopped, a separate axis from idle detection and from suspensions. Stored
+    /// here because it rides the same family paused-flag seam: masking a source
+    /// forces its family paused flag on (so every raw-flag reader — rotation,
+    /// wake recovery, tap retry, suspension recovery — sees it down), and these
+    /// fields gate the resume decisions so activity can never resurrect a masked
+    /// source. Session-scoped by construction: every session reset rebuilds this
+    /// struct, which is exactly the "mask clears on stop" decision.
+    pub user_masked_screen: bool,
+    pub user_masked_microphone: bool,
+    pub user_masked_system_audio: bool,
 }
 
 impl Default for InactivityState {
@@ -133,6 +144,9 @@ impl Default for InactivityState {
             microphone_paused: false,
             system_audio_paused: false,
             is_paused: false,
+            user_masked_screen: false,
+            user_masked_microphone: false,
+            user_masked_system_audio: false,
         }
     }
 }
@@ -156,6 +170,9 @@ impl InactivityState {
             microphone_paused: false,
             system_audio_paused: false,
             is_paused: false,
+            user_masked_screen: false,
+            user_masked_microphone: false,
+            user_masked_system_audio: false,
         }
     }
 
@@ -183,6 +200,27 @@ impl InactivityState {
             && !self.screen_paused
             && !self.microphone_paused
             && !self.system_audio_paused
+    }
+
+    /// A legacy global pause (is_paused with no per-family flags) means every
+    /// family is physically down. Setting a user mask breaks the "no family
+    /// flags" shape that the legacy resume path keys on, so before a mask lands
+    /// the global pause is promoted into the equivalent per-family pauses —
+    /// per-family resume then owns each unmasked family independently.
+    pub(crate) fn promote_legacy_global_pause_to_family_flags(&mut self) {
+        if self.has_legacy_global_pause_state() {
+            self.set_family_paused_states(true, true, true);
+        }
+    }
+
+    /// The inactivity-pause state the session should report to the UI: a family
+    /// held down by the user mask is the user's own doing, not an idle pause, so
+    /// it must not flip the pill/tray to "Paused — inactive".
+    pub(crate) fn is_paused_disregarding_user_masks(&self) -> bool {
+        (self.screen_paused && !self.user_masked_screen)
+            || (self.microphone_paused && !self.user_masked_microphone)
+            || (self.system_audio_paused && !self.user_masked_system_audio)
+            || self.has_legacy_global_pause_state()
     }
 
     pub(crate) fn is_screen_paused(&self) -> bool {
@@ -487,7 +525,13 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_screen_paused() || !snapshot.screen_activity_enabled {
+        // A user-masked family never resumes on activity — only unmasking
+        // restores it (slice 5's per-source mask).
+        if !self.enabled
+            || self.user_masked_screen
+            || !self.is_screen_paused()
+            || !snapshot.screen_activity_enabled
+        {
             return false;
         }
         if !self.screen_resume_guard_elapsed(now_monotonic_ms) {
@@ -528,7 +572,11 @@ impl InactivityState {
         now_monotonic_ms: u64,
         snapshot: ActivitySnapshot,
     ) -> bool {
-        if !self.enabled || !self.is_microphone_paused() || !snapshot.microphone_activity.enabled {
+        if !self.enabled
+            || self.user_masked_microphone
+            || !self.is_microphone_paused()
+            || !snapshot.microphone_activity.enabled
+        {
             return false;
         }
 
@@ -560,6 +608,7 @@ impl InactivityState {
         snapshot: ActivitySnapshot,
     ) -> bool {
         if !self.enabled
+            || self.user_masked_system_audio
             || !self.is_system_audio_paused()
             || !snapshot.system_audio_activity.enabled
         {

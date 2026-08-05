@@ -84,6 +84,25 @@ fn any_source_enabled(sources: &CaptureSources) -> bool {
     sources.screen || sources.microphone || sources.system_audio
 }
 
+/// The live session's per-source state, present only while recording. Checked
+/// intent while recording is requested ∘ mask (slice 5): a checked item is a
+/// source that is part of this session and not user-masked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RecordingSourcesModel {
+    requested: CaptureSources,
+    masked: CaptureSources,
+}
+
+impl RecordingSourcesModel {
+    fn checked(&self) -> CaptureSources {
+        CaptureSources {
+            screen: self.requested.screen && !self.masked.screen,
+            microphone: self.requested.microphone && !self.masked.microphone,
+            system_audio: self.requested.system_audio && !self.masked.system_audio,
+        }
+    }
+}
+
 fn effective_checked_sources(
     settings: &RecordingSettings,
     _support: &CaptureSources,
@@ -120,15 +139,20 @@ fn computed_toggle_sources(current: CaptureSources, source_id: &str) -> Option<C
     any_source_enabled(&next).then_some(next)
 }
 
+// While idle the items drive the capture-sources settings (next session).
+// While recording they drive the mid-session per-source mask (slice 5): still
+// enabled, except for a source that is not part of this session (it cannot
+// join mid-flight) — and the one rule that applies in both modes, the last
+// checked source can't be unchecked (a session needs ≥1 live source).
 fn source_item_enabled(
     source_id: &str,
     checked: bool,
     current: &CaptureSources,
+    recording_sources: Option<&RecordingSourcesModel>,
     support: &CaptureSources,
     operation: StatusBarOperation,
-    recording: bool,
 ) -> bool {
-    if recording || operation != StatusBarOperation::Idle {
+    if operation != StatusBarOperation::Idle {
         return false;
     }
 
@@ -140,6 +164,17 @@ fn source_item_enabled(
     };
     if !supported {
         return false;
+    }
+    if let Some(recording) = recording_sources {
+        let requested = match source_id {
+            SOURCE_SCREEN_ID => recording.requested.screen,
+            SOURCE_MICROPHONE_ID => recording.requested.microphone,
+            SOURCE_SYSTEM_AUDIO_ID => recording.requested.system_audio,
+            _ => false,
+        };
+        if !requested {
+            return false;
+        }
     }
     if checked {
         let Some(next) = computed_toggle_sources(current.clone(), source_id) else {
@@ -158,6 +193,7 @@ fn build_menu_model(
     recording: bool,
     user_paused: bool,
     low_disk_suspended: bool,
+    recording_sources: Option<&RecordingSourcesModel>,
     settings: &RecordingSettings,
     support: &CaptureSources,
     operation: StatusBarOperation,
@@ -175,7 +211,13 @@ fn build_menu_model(
         };
     }
 
-    let checked_sources = effective_checked_sources(settings, support);
+    // While recording, checked reflects the live session (requested ∘ mask);
+    // while idle it reflects the next-session settings.
+    let recording_sources = if recording { recording_sources } else { None };
+    let checked_sources = match recording_sources {
+        Some(sources) => sources.checked(),
+        None => effective_checked_sources(settings, support),
+    };
     let recording_label = match operation {
         StatusBarOperation::Idle if recording => "Stop Recording",
         StatusBarOperation::Idle => "Start Recording",
@@ -213,7 +255,14 @@ fn build_menu_model(
         id,
         label,
         checked,
-        enabled: source_item_enabled(id, checked, &checked_sources, support, operation, recording),
+        enabled: source_item_enabled(
+            id,
+            checked,
+            &checked_sources,
+            recording_sources,
+            support,
+            operation,
+        ),
     })
     .collect();
 
@@ -287,11 +336,19 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     let support = crate::native_capture::get_capture_support().supported_sources;
     let session = crate::native_capture::current_native_capture_session(app);
     let recording = session.is_running;
+    let recording_sources = session
+        .requested_sources
+        .clone()
+        .map(|requested| RecordingSourcesModel {
+            requested,
+            masked: session.masked_sources.clone(),
+        });
     let mut model = build_menu_model(
         crate::windows::is_onboarding_complete(app),
         recording,
         session.is_user_paused,
         session.is_low_disk_suspended,
+        recording_sources.as_ref(),
         &settings,
         &support,
         operation(app),
@@ -503,6 +560,27 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         return;
     }
 
+    // While recording the item drives the mid-session per-source mask (slice
+    // 5): checked (live) → mask it, unchecked (masked) → unmask. Same guard,
+    // same semantics as the record-pill popover — one behavior everywhere.
+    if crate::native_capture::current_native_capture_session(app).is_running {
+        let source_key = match id {
+            SOURCE_SCREEN_ID => "screen",
+            SOURCE_MICROPHONE_ID => "microphone",
+            SOURCE_SYSTEM_AUDIO_ID => "systemAudio",
+            _ => return,
+        };
+        if let Err(error) = crate::native_capture::set_native_capture_source_mask_from_app_handle(
+            app,
+            source_key,
+            item.checked,
+        ) {
+            show_capture_error(app, "Recording source could not change", error);
+            refresh(app);
+        }
+        return;
+    }
+
     let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
     let current = CaptureSources {
         screen: settings.capture_screen,
@@ -689,6 +767,21 @@ mod tests {
         }
     }
 
+    fn no_sources_masked() -> CaptureSources {
+        CaptureSources::default()
+    }
+
+    fn recording_sources_all(masked: CaptureSources) -> RecordingSourcesModel {
+        RecordingSourcesModel {
+            requested: CaptureSources {
+                screen: true,
+                microphone: true,
+                system_audio: true,
+            },
+            masked,
+        }
+    }
+
     fn settings_with_sources(
         screen: bool,
         microphone: bool,
@@ -709,6 +802,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -725,6 +819,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -757,19 +852,85 @@ mod tests {
     }
 
     #[test]
-    fn running_model_shows_stop_and_disables_sources() {
+    fn running_model_shows_stop_and_enables_source_masking() {
+        // Slice 5: while recording, the source items stay enabled and drive
+        // the mid-session per-source mask instead of next-session settings.
+        let sources = recording_sources_all(no_sources_masked());
         let model = build_menu_model(
             true,
             true,
             false,
             false,
+            Some(&sources),
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
         );
         assert_eq!(model.recording_label, Some("Stop Recording"));
         assert!(model.recording_enabled);
-        assert!(model.source_items.iter().all(|item| !item.enabled));
+        assert!(model.source_items.iter().all(|item| item.enabled));
+        assert!(model.source_items.iter().all(|item| item.checked));
+    }
+
+    #[test]
+    fn running_model_reflects_the_mask_and_guards_the_last_live_source() {
+        // A masked source renders unchecked (but stays enabled, to unmask);
+        // with two of three masked, the last live one can't be unchecked.
+        let sources = recording_sources_all(CaptureSources {
+            screen: true,
+            microphone: false,
+            system_audio: true,
+        });
+        let model = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            Some(&sources),
+            &settings_with_sources(true, true, true),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert!(!model.source_items[0].checked, "masked screen is unchecked");
+        assert!(model.source_items[0].enabled, "masked screen can be unmasked");
+        assert!(model.source_items[1].checked);
+        assert!(
+            !model.source_items[1].enabled,
+            "the last live source can't be masked"
+        );
+        assert!(!model.source_items[2].checked);
+        assert!(model.source_items[2].enabled);
+    }
+
+    #[test]
+    fn running_model_checked_ignores_settings_and_reads_the_session() {
+        // Mid-session checked state is the session's requested ∘ mask, never
+        // the (possibly different) next-session settings.
+        let sources = RecordingSourcesModel {
+            requested: CaptureSources {
+                screen: false,
+                microphone: true,
+                system_audio: true,
+            },
+            masked: no_sources_masked(),
+        };
+        let model = build_menu_model(
+            true,
+            true,
+            false,
+            false,
+            Some(&sources),
+            &settings_with_sources(true, false, false),
+            &support_all(),
+            StatusBarOperation::Idle,
+        );
+        assert!(!model.source_items[0].checked);
+        assert!(
+            !model.source_items[0].enabled,
+            "a source outside this session cannot join it mid-flight"
+        );
+        assert!(model.source_items[1].checked && model.source_items[1].enabled);
+        assert!(model.source_items[2].checked && model.source_items[2].enabled);
     }
 
     #[test]
@@ -782,6 +943,7 @@ mod tests {
             true,
             false,
             true,
+            None,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -800,6 +962,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -819,6 +982,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -840,6 +1004,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -869,6 +1034,7 @@ mod tests {
             true,
             false,
             false,
+            None,
             &settings_with_sources(true, true, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -887,6 +1053,7 @@ mod tests {
                 false,
                 false,
                 false,
+            None,
                 &settings_with_sources(true, true, true),
                 &support_all(),
                 operation,
@@ -903,6 +1070,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, false, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -914,6 +1082,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -931,6 +1100,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, false, true),
             &support_all(),
             StatusBarOperation::Idle,
@@ -964,6 +1134,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(false, true, false),
             &support_all(),
             StatusBarOperation::Idle,
@@ -996,6 +1167,7 @@ mod tests {
             false,
             false,
             false,
+            None,
             &settings_with_sources(true, true, true),
             &CaptureSources {
                 screen: true,

@@ -61,6 +61,10 @@ export interface SourceSessions {
 export interface CaptureSession {
 	isRunning: boolean;
 	requestedSources: RequestedSources | null;
+	/** Mid-session per-source user mask (slice 5). Session-scoped: cleared on
+	 *  stop — settings stay the cross-session intent. A source is effectively
+	 *  live only when requested AND not masked. */
+	maskedSources: RequestedSources;
 	outputFiles: CaptureOutputFiles | null;
 	sourceSessions: SourceSessions | null;
 	isInactivityPaused: boolean;

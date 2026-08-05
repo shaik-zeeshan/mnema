@@ -328,7 +328,7 @@ impl RecordingLifecycle {
         }
         #[cfg(target_os = "macos")]
         {
-            let sources =
+            let requested =
                 self.runtime
                     .requested_sources
                     .clone()
@@ -338,6 +338,16 @@ impl RecordingLifecycle {
                             "Cannot resume recording because the requested sources are missing"
                                 .to_string(),
                     })?;
+            // A user resume restarts the session's sources minus the per-source
+            // user mask (slice 5): the mask survives a pause/resume cycle, and a
+            // masked source only comes back when the user unmasks it.
+            let sources = CaptureSources {
+                screen: requested.screen && !self.runtime.inactivity.user_masked_screen,
+                microphone: requested.microphone
+                    && !self.runtime.inactivity.user_masked_microphone,
+                system_audio: requested.system_audio
+                    && !self.runtime.inactivity.user_masked_system_audio,
+            };
             let screen_planner = screen_planner_for_runtime(&self.runtime)
                 .cloned()
                 .ok_or_else(|| CaptureErrorResponse {
@@ -417,7 +427,16 @@ impl RecordingLifecycle {
             apply_runtime_signal(&mut self.runtime, RuntimeSignal::SourcesReady)?;
         }
         self.runtime.user_capture_paused = false;
-        self.runtime.current_segment_sources = self.runtime.requested_sources.clone();
+        // The active set after a user resume is requested minus the per-source
+        // user mask; masked sources stay down until unmasked (slice 5).
+        self.runtime.current_segment_sources =
+            self.runtime.requested_sources.as_ref().map(|requested| CaptureSources {
+                screen: requested.screen && !self.runtime.inactivity.user_masked_screen,
+                microphone: requested.microphone
+                    && !self.runtime.inactivity.user_masked_microphone,
+                system_audio: requested.system_audio
+                    && !self.runtime.inactivity.user_masked_system_audio,
+            });
         if let Some(control) = self.runtime.segment_loop_control.as_ref() {
             control.notify();
         }
@@ -473,8 +492,13 @@ impl RecordingLifecycle {
     pub(crate) fn restore_microphone_after_out_of_band_recording(
         &mut self,
     ) -> Result<(), CaptureErrorResponse> {
+        // The user mask IS a reason to bail, unlike the inactivity pause below:
+        // the user may mask the microphone while the bounded clip records, and
+        // restoring here would resurrect a source the user just turned off
+        // (slice 5's per-source mask). Unmasking owns that restart.
         if !self.runtime.is_running
             || self.runtime.user_capture_paused
+            || self.runtime.inactivity.user_masked_microphone
             || self
                 .runtime
                 .capture_suspension

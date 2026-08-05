@@ -1039,7 +1039,7 @@ pub fn restart_after_app_update(app_handle: tauri::AppHandle) -> Result<(), AppU
 #[cfg(test)]
 mod tests {
     use super::*;
-    use capture_types::{NativeCaptureSession, SourceSessionMeta, SourceSessions};
+    use capture_types::{CaptureSources, NativeCaptureSession, SourceSessionMeta, SourceSessions};
 
     fn stopped_session() -> NativeCaptureSession {
         NativeCaptureSession {
@@ -1048,6 +1048,7 @@ mod tests {
             is_user_paused: false,
             is_low_disk_suspended: false,
             requested_sources: None,
+            masked_sources: CaptureSources::default(),
             output_files: None,
             source_sessions: None,
         }

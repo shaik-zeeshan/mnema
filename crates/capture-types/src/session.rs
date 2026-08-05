@@ -20,7 +20,7 @@ pub enum CapturePermissionState {
     PossiblyBlocked,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureSources {
     pub screen: bool,
@@ -78,6 +78,11 @@ pub struct NativeCaptureSession {
     pub is_user_paused: bool,
     pub is_low_disk_suspended: bool,
     pub requested_sources: Option<CaptureSources>,
+    /// Mid-session user intent to keep individual requested sources stopped
+    /// (slice 5's per-source mask). Session-scoped: cleared on stop — the
+    /// cross-session intent stays in the capture-sources settings. A source is
+    /// effectively live only when requested AND not masked.
+    pub masked_sources: CaptureSources,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,
 }
