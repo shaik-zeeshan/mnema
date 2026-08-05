@@ -88,7 +88,11 @@
   {#if matchCount > 1 || foundByMeaning || redacted}
     <span class="search-card__badges">
       {#if matchCount > 1}
-        <span class="search-card__badge">{matchCount} {matchWord}</span>
+        <!-- The match wash, stated on the frame with exactly the ink the caption
+             uses for <mark> — one accent, one fact, read twice. -->
+        <span class="search-card__badge search-card__badge--match"
+          >{matchCount} {matchWord}</span
+        >
       {/if}
       {#if foundByMeaning}
         <span class="search-card__badge search-card__badge--meaning">meaning</span>
@@ -227,21 +231,24 @@
 {/if}
 
 <style>
-  /* One grid cell. The tile is a column: header / title / caption / media, with
-     the media bleeding to the left, right and bottom edges (negative margins
-     against the tile's padding) so it meets the bottom radius. */
+  /* One grid cell — an OPAQUE FRAME PLATE. The material never touches a result:
+     the picture and its caption land on --app-surface, and the plate's shadow IS
+     the border it replaces (the direction's one exemption to "cards get no
+     shadow"; do not add a border back). The frame runs first, full-bleed to the
+     tile's top radius, and the caption sits beneath it. */
   .search-card {
     display: flex;
     flex-direction: column;
     gap: var(--s-4);
     width: 100%;
     min-width: 0;
-    padding: var(--s-12);
+    padding: var(--s-8) var(--s-12) var(--s-8);
     overflow: hidden;
     text-align: left;
-    border: var(--hairline) solid var(--app-border);
+    border: 0;
     border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
@@ -251,24 +258,23 @@
     .search-card {
       transition:
         background var(--dur-quick) var(--ease),
-        border-color var(--dur-quick) var(--ease),
         box-shadow var(--dur-quick) var(--ease);
     }
   }
 
   .search-card:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-raised);
+    box-shadow: var(--sh-float);
   }
 
-  /* Selected is the roving highlight: the accent ring the mockups settle on. */
+  /* Selected is the roving highlight: the accent ring plus the lift that says
+     this plate is the one the keyboard is on. */
   .search-card:focus-visible,
   .search-card--selected,
   .search-card--selected:hover {
     outline: none;
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    background: var(--app-surface-raised);
+    box-shadow: var(--sh-float), 0 0 0 2px var(--app-accent);
   }
 
   /* Header: app / source eyebrow left, time hard right. */
@@ -334,6 +340,8 @@
     text-overflow: ellipsis;
   }
 
+  /* ONE accent wash, spent twice: here in the caption and — same mix, same ink —
+     on the frame's match badge below, so the eye reads them as one fact. */
   .search-card mark {
     border-radius: 2px;
     background: color-mix(in srgb, var(--app-accent) 26%, transparent);
@@ -346,10 +354,12 @@
      legible on that backing while the image loads or when no preview exists. */
   .search-card__media {
     position: relative;
+    /* The frame leads the plate: 196px of picture, then the caption. */
+    order: -1;
     display: grid;
     place-items: center;
     height: 196px;
-    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
+    margin: calc(var(--s-8) * -1) calc(var(--s-12) * -1) var(--s-4);
     overflow: hidden;
     background: #101014;
     color: #6a6a74;
@@ -419,27 +429,36 @@
   .search-card__badge {
     display: inline-flex;
     align-items: center;
-    font-size: var(--t-label);
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
     padding: 3px 6px;
     border-radius: var(--r-sm);
-    border: var(--hairline) solid var(--app-border-strong);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
+    border: 0;
+    background: rgba(12, 12, 16, 0.62);
+    -webkit-backdrop-filter: blur(8px);
+    backdrop-filter: blur(8px);
+    color: #fff;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     white-space: nowrap;
   }
 
+  /* The caption's <mark> wash, restated over the frame. */
+  .search-card__badge--match {
+    background: color-mix(in srgb, var(--app-accent) 26%, transparent);
+    box-shadow: inset 0 0 0 var(--hairline)
+      color-mix(in srgb, var(--app-accent) 55%, transparent);
+    color: #fff;
+  }
+
   .search-card__badge--meaning {
     color: var(--app-accent);
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .search-card__badge--redacted {
     color: var(--app-warn);
     background: var(--app-warn-bg);
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
 </style>

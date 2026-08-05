@@ -93,7 +93,11 @@
          No clickable canned queries — calm cues only. -->
     <div class="quick-recall__state-center">
       <span class="quick-recall__state-glyph" aria-hidden="true">⌕</span>
-      <p class="quick-recall__state-lead">Search everything you've captured</p>
+      <!-- The empty state's lead is this page's ONE display-size line: there is
+           no results grid competing with it, so it can carry the window. -->
+      <p class="quick-recall__state-lead quick-recall__state-lead--display">
+        Search everything you've captured
+      </p>
       <p class="quick-recall__state-sub">Screen · Audio · Ask AI</p>
       <p class="quick-recall__state-faint">
         Type to find a moment{askAvailable ? ", or press " : "."}{#if askAvailable}<kbd
@@ -294,20 +298,20 @@
     font: inherit;
     color: var(--app-accent-strong);
     background: var(--app-accent-bg);
-    border: var(--hairline) solid var(--app-accent-border);
-    border-radius: var(--r-md);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     cursor: pointer;
   }
 
   .quick-recall__ask-row:hover {
-    border-color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent);
   }
 
   .quick-recall__ask-row--selected,
   .quick-recall__ask-row:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: var(--sh-float), 0 0 0 2px var(--app-accent);
   }
 
   .quick-recall__ask-row-glyph {
@@ -361,17 +365,16 @@
     gap: 8px;
   }
 
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
+  /* Sections are MUTED LABELS, never tabs — a section header that looks
+     clickable is the one thing this grid must not do. */
   .quick-recall__section-label {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: var(--t-meta);
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
+    letter-spacing: 0.12em;
+    color: var(--app-text-muted);
     padding: 0 2px;
   }
 
@@ -451,9 +454,15 @@
 
   .quick-recall__state-lead {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.4;
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     color: var(--app-text-strong);
+  }
+
+  .quick-recall__state-lead--display {
+    font-size: var(--t-display);
+    line-height: var(--lh-display);
+    letter-spacing: var(--ls-display);
   }
 
   .quick-recall__state-sub {
@@ -475,14 +484,12 @@
   }
 
   .quick-recall__state-center kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
     color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    border-radius: var(--r-sm);
+    padding: 3px 5px;
     margin: 0 1px;
   }
 
@@ -554,9 +561,10 @@
     font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-tile);
     cursor: pointer;
   }
 
@@ -569,13 +577,12 @@
 
   .quick-recall__semantic-hint:hover {
     color: var(--app-text);
-    border-color: var(--app-accent);
+    box-shadow: var(--sh-tile), inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .quick-recall__semantic-hint:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--sh-tile), var(--app-ring);
   }
 
   .quick-recall__semantic-hint:active {
@@ -606,9 +613,9 @@
     flex-direction: column;
     gap: var(--s-8);
     padding: var(--s-12);
-    border: var(--hairline) solid var(--app-border);
     border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
 
   .quick-recall__skeleton-media {

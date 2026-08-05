@@ -298,12 +298,12 @@
     position: relative;
   }
 
-  /* Mockup `.timeline`: thin 36px strip on the subtle chrome surface. */
+  /* Thin 36px strip. It is chrome, so it stays on the HUD's own material and
+     spends the material's rim instead of a border. */
   .timeline-strip__bar {
     height: 36px;
     position: relative;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 1px 0 var(--glass-line);
   }
 
   .timeline-strip__axis {
@@ -397,10 +397,11 @@
     bottom: calc(100% + 6px);
     z-index: 20;
     width: 152px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     padding: 5px;
     pointer-events: none;
   }

@@ -116,10 +116,14 @@
      {@html} content need `:global(...)`, since Svelte prunes scoped styles that
      don't appear in the component's own template markup. Every color comes from
      the app theme vars (which flip dark/light via `data-theme`) — never hex. */
+  /* Direction 03's reading ramp: --t-read on --lh-read. Prose is the one thing
+     on the surface a person actually reads, and it always lands on an opaque
+     plate — the callers own that plate, this owns the type. */
   .answer-prose {
-    font-size: 13px;
+    font-size: var(--t-read);
+    letter-spacing: var(--ls-read);
     color: var(--app-text);
-    line-height: 1.6;
+    line-height: var(--lh-read);
     word-break: break-word;
     overflow-wrap: anywhere;
   }
@@ -199,9 +203,9 @@
       monospace;
     font-size: 0.88em;
     padding: 0.1em 0.35em;
-    border-radius: 4px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
+    border-radius: var(--r-sm);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-strong);
   }
 
@@ -255,8 +259,7 @@
   /* ── Code-block chrome (emitted by markdown.ts) ──────────────────────── */
   .answer-prose :global(.answer-code) {
     margin: 0 0 0.7em;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: var(--r-lg);
     overflow: hidden;
     background: var(--app-surface-subtle);
   }
@@ -265,7 +268,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 5px 10px;
-    border-bottom: 1px solid var(--app-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
     background: var(--app-surface-raised);
   }
   .answer-prose :global(.answer-code__lang) {

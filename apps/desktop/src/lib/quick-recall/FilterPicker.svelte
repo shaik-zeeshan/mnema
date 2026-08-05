@@ -173,11 +173,14 @@
     max-height: calc(100% - 24px);
     overflow-y: auto;
     gap: 2px;
-    padding: 6px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    padding: 5px;
+    /* Level 5 of the ladder: a popover is exactly where macOS itself spends
+       material, so this one gets the densest glass and floats. */
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   /* Mockup `.app-menu .cat`: uppercase category header inside the card. */
@@ -321,7 +324,7 @@
     margin: 2px 0 0;
     padding: 5px 9px 3px;
     flex-shrink: 0;
-    border-top: 1px solid var(--app-border);
+    box-shadow: inset 0 1px 0 var(--glass-line);
     font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
@@ -331,15 +334,13 @@
   }
 
   .quick-recall__picker-cue kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
     text-transform: lowercase;
     color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    border-radius: var(--r-sm);
+    padding: 3px 5px;
     margin: 0 1px;
   }
 

@@ -37,8 +37,14 @@ export function setQuickRecallCollapsed(height: number | null): Promise<void> {
   return invoke<void>("quick_recall_set_collapsed", { height });
 }
 
-/** Collapsed heights. Bar alone, and bar plus the detached answer piece. */
-export const CURRENT_FRAME_BAR_HEIGHT = 96;
+/**
+ * Collapsed heights. Bar alone, and bar plus the detached answer piece.
+ *
+ * Direction 03 (Layered Glass) spends the bar as a 720 × 48 glass strip; the
+ * WIDTH is `COLLAPSED_QUICK_RECALL_WIDTH` in `windows.rs` (640) and is Rust's
+ * to change, so only the 48 lands here.
+ */
+export const CURRENT_FRAME_BAR_HEIGHT = 48;
 /** Extra height for the non-vision disclosure line, which sits under the bar. */
 export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 30;
 export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
@@ -47,6 +53,20 @@ export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
 export function frameChipLabel(frame: CurrentFrameCapture): string {
   const app = frame.appName?.trim();
   return app && app.length > 0 ? app : "This screen";
+}
+
+/**
+ * The wall-clock the shot was taken at, `HH:MM:SS`. The direction states what
+ * was captured twice — thumbnail + `⟨app⟩ · 14:32:08` — so "which frame went
+ * with the question" is answerable without opening anything.
+ */
+export function frameChipTime(frame: CurrentFrameCapture): string {
+  return new Date(frame.capturedAtUnixMs).toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 
 /**

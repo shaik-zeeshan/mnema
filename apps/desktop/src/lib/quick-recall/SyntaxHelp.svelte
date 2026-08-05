@@ -86,24 +86,24 @@
     font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-subtle);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
+    background: var(--glass-tint);
+    border: 0;
     border-radius: 50%;
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     cursor: pointer;
     transition:
-      border-color 0.12s ease,
+      box-shadow 0.12s ease,
       color 0.12s ease;
   }
 
   .quick-recall__syntax-trigger:hover,
   .quick-recall__syntax-trigger--open {
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   .quick-recall__syntax-trigger:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
 
@@ -122,10 +122,12 @@
     width: 252px;
     max-width: min(252px, calc(100vw - 30px));
     padding: 10px 12px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    /* Level 5: a popover wears the densest glass and floats. */
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .quick-recall__syntax-title {

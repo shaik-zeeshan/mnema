@@ -177,28 +177,28 @@
     padding: 8px;
     overflow: hidden;
     text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    background: var(--app-surface-raised);
+    /* A cited moment is content, so it lands on an opaque plate and the plate's
+       shadow is the border it replaces. */
+    border: 0;
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
     transition:
       background 0.12s ease,
-      border-color 0.12s ease,
       box-shadow 0.12s ease;
   }
 
   .source-card:hover {
-    border-color: var(--app-accent-border);
+    background: var(--app-surface-raised);
+    box-shadow: var(--sh-float);
   }
 
   .source-card:focus-visible {
     outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow:
-      0 0 0 1px var(--app-accent-border),
-      0 0 0 4px color-mix(in srgb, var(--app-accent) 12%, transparent);
+    box-shadow: var(--sh-float), 0 0 0 2px var(--app-accent);
   }
 
   .source-card__thumb {
@@ -208,8 +208,7 @@
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    border-radius: var(--r-md);
     overflow: hidden;
     background: var(--app-bg);
     color: var(--app-text-faint);
@@ -248,13 +247,11 @@
   }
 
   .source-card__thumb--mic {
-    border-color: var(--app-source-mic-border);
     background: var(--app-source-mic-bg);
     color: var(--app-source-mic);
   }
 
   .source-card__thumb--sysaudio {
-    border-color: var(--app-source-sysaudio-border);
     background: var(--app-source-sysaudio-bg);
     color: var(--app-source-sysaudio);
   }

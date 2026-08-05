@@ -51,6 +51,7 @@
     captureCurrentFrame,
     setQuickRecallCollapsed,
     frameChipLabel,
+    frameChipTime,
     frameExclusionNote,
     frameVisionNote,
     CURRENT_FRAME_BAR_HEIGHT,
@@ -1505,6 +1506,10 @@
   let frameAnswerTurn = $derived(askTurns.length > 0 ? askTurns[askTurns.length - 1] : null);
   let frameAnswerVisible = $derived(mode === "frame" && !frameAnswerDismissed && frameAnswerTurn !== null);
   let frameChip = $derived(frameCapture === null ? null : frameChipLabel(frameCapture));
+  let frameTime = $derived(frameCapture === null ? null : frameChipTime(frameCapture));
+  let frameThumb = $derived(
+    frameCapture === null ? null : convertFileSrc(frameCapture.imagePath),
+  );
   let frameExclusion = $derived(frameCapture === null ? null : frameExclusionNote(frameCapture));
   let frameVision = $derived(frameCapture === null ? null : frameVisionNote(frameCapture));
 
@@ -2093,7 +2098,17 @@
 
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="quick-recall" onkeydown={handleRootKeydown}>
+<!-- Direction 03: Quick Access is a real HUD — ONE floating glass panel over a
+     dimmed desktop, at --r-panel, with the material class owned by the shell
+     (never re-rolled here). Frame mode is the exception: the window has collapsed
+     to a bar, and the bar + the answer are two DETACHED pieces of glass with the
+     desktop showing between them (G3), so the shell itself goes transparent. -->
+<div
+  class="quick-recall"
+  class:glass-hud={mode !== "frame"}
+  class:quick-recall--detached={mode === "frame"}
+  onkeydown={handleRootKeydown}
+>
   <!-- The search↔Ask AI swap is the one hero transition: a brief cross-fade
        between the two mode subtrees, gated to instant when reduced-motion is on
        (modeFadeMs → 0). Each panel fills the mode area so they overlap cleanly
@@ -2111,6 +2126,10 @@
         <span class="quick-recall__sr-status" role="status" aria-live="polite"
           >{searchStatusAnnouncement}</span
         >
+        <!-- Mode identity as a tab hanging off the panel's top-right rim.
+             Graphite in search, accent in ask — the surfaces are one keystroke
+             apart (G4) but never look like the same screen. -->
+        <span class="quick-recall__modechip" aria-hidden="true">Search</span>
         <div class="quick-recall__field">
           <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
           <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
@@ -2296,12 +2315,21 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
-        <div class="quick-recall__frame-bar">
+        <div class="quick-recall__frame-bar glass-hud">
           <div class="quick-recall__field quick-recall__field--frame">
             {#if frameCapture !== null}
+              <!-- Indication is doubled on purpose: this 44 × 26 preview plus
+                   `⟨app⟩ · 14:32:08` here, and the reading outline drawn on the
+                   screen itself. Small by design — a large attached-frame
+                   thumbnail is what G3 rules out, not a preview. -->
+              {#if frameThumb !== null}
+                <img class="quick-recall__frame-thumb" src={frameThumb} alt="" aria-hidden="true" />
+              {/if}
               <span class="quick-recall__frame-chip" data-testid="frame-chip">
-                <span class="quick-recall__frame-chip-glyph" aria-hidden="true">⧉</span>
                 <span class="quick-recall__frame-chip-label">{frameChip}</span>
+                {#if frameTime !== null}
+                  <span class="quick-recall__frame-chip-time">· {frameTime}</span>
+                {/if}
                 {#if frameExclusion !== null}
                   <span class="quick-recall__frame-chip-note">· {frameExclusion}</span>
                 {/if}
@@ -2339,45 +2367,90 @@
             {#if askStreaming}
               <button
                 type="button"
-                class="quick-recall__frame-stop"
+                class="btn btn--sm quick-recall__frame-stop"
                 onclick={() => void stopActiveAsk()}
               >
                 Stop
               </button>
+            {:else}
+              <!-- The keycaps live where they are used: the page footer does not
+                   render at 48px, so the bar teaches its own two verbs. -->
+              <span class="quick-recall__frame-keys" aria-hidden="true">
+                <kbd class="kbd">⏎</kbd>
+                <kbd class="kbd">⌘O</kbd>
+              </span>
             {/if}
           </div>
           <!-- Upfront disclosure (G2): stated before the user types, not after
                the answer comes back wrong. -->
           {#if frameVision !== null}
-            <p class="quick-recall__frame-disclosure">{frameVision}</p>
+            <p class="quick-recall__frame-disclosure">
+              <span class="quick-recall__frame-disclosure-chip">{frameVision}</span>
+            </p>
           {/if}
         </div>
 
         {#if frameAnswerVisible && frameAnswerTurn !== null}
-          <div class="quick-recall__frame-answer" role="region" aria-label="Answer">
-            <button
-              type="button"
-              class="quick-recall__frame-answer-dismiss"
-              onclick={() => {
-                frameAnswerDismissed = true;
-                frameInputEl?.focus();
-              }}
-              aria-label="Dismiss the answer"
-              use:tip={"Dismiss the answer"}>✕</button
+          <!-- The detached second piece: its own glass, 12px under the bar. The
+               bar above it is untouched by anything that happens in here — Stop
+               stays up there, because the bar is the persistent piece (G3). -->
+          <div
+            class="quick-recall__frame-answer glass-hud"
+            role="region"
+            aria-label="Answer"
+          >
+            <span class="quick-recall__modechip quick-recall__modechip--ask" aria-hidden="true"
+              >Ask · this screen</span
             >
-            {#if frameAnswerTurn.phase === "error"}
-              <p class="quick-recall__frame-answer-error">
-                {frameAnswerTurn.errorMessage ?? "Something went wrong."}
-              </p>
-            {:else}
-              {@render answerBody(frameAnswerTurn)}
-              {#if frameAnswerTurn.phase === "thinking"}
-                <p class="quick-recall__state quick-recall__state--working">
-                  <span class="quick-recall__dot" aria-hidden="true"></span>
-                  Reading the screen…
-                </p>
+            <!-- One muted context line, never a filmstrip. -->
+            <p class="quick-recall__frame-context">
+              {#if frameChip !== null}
+                <span>Viewed screen · {frameChip}{frameTime === null ? "" : ` · ${frameTime}`}</span>
+              {:else}
+                <span>Asked without a screen</span>
               {/if}
-            {/if}
+              {#if frameExclusion !== null}
+                <span class="quick-recall__frame-context-chip">{frameExclusion}</span>
+              {/if}
+            </p>
+            <div class="quick-recall__frame-answer-body">
+              {#if frameAnswerTurn.phase === "error"}
+                <p class="quick-recall__frame-answer-error">
+                  {frameAnswerTurn.errorMessage ?? "Something went wrong."}
+                </p>
+              {:else}
+                {@render answerBody(frameAnswerTurn)}
+                {#if frameAnswerTurn.phase === "thinking"}
+                  <p class="quick-recall__state quick-recall__state--working">
+                    <span class="quick-recall__dot" aria-hidden="true"></span>
+                    Reading the screen…
+                  </p>
+                {/if}
+              {/if}
+            </div>
+            <div class="quick-recall__frame-answer-foot">
+              {#if frameCapture !== null}
+                <span class="quick-recall__frame-model">{frameCapture.modelLabel}</span>
+              {/if}
+              <button
+                type="button"
+                class="btn btn--sm quick-recall__frame-answer-dismiss"
+                onclick={() => {
+                  frameAnswerDismissed = true;
+                  frameInputEl?.focus();
+                }}
+                use:tip={"Dismiss the answer — the bar stays"}
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                class="btn btn--sm btn--primary"
+                onclick={() => void exitCurrentFrame()}
+              >
+                Continue in Quick Access<kbd class="kbd">⌘O</kbd>
+              </button>
+            </div>
           </div>
         {/if}
       </div>
@@ -2387,6 +2460,9 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
+        <span class="quick-recall__modechip quick-recall__modechip--ask" aria-hidden="true"
+          >Ask</span
+        >
         <div class="quick-recall__field quick-recall__field--ask">
           <button
             type="button"
@@ -2790,7 +2866,10 @@
     {/if}
   </div>
 
-  <div class="quick-recall__footer" aria-hidden="true">
+  <!-- The footer belongs to the full-size HUD. At 48px the collapsed bar has no
+       room for it, so frame mode carries its keycaps in the bar and in the
+       answer panel's own footer instead. -->
+  <div class="quick-recall__footer" aria-hidden="true" hidden={mode === "frame"}>
     {#if mode === "search"}
       {#if filters.pickerOpen}
         <!-- While the picker owns the keys, the footer reflects its own
@@ -2833,10 +2912,6 @@
         {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {/if}
-    {:else if mode === "frame"}
-      <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
-      <span class="quick-recall__hint-item"><kbd>⌘O</kbd> full window</span>
-      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {:else if !askSubmitted}
       <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
@@ -2850,6 +2925,11 @@
 </div>
 
 <style>
+  /* The HUD shell. The material, its rim and its shadow come from the shell's
+     `.glass-hud` class — this rule owns geometry only, so the recipe stays in
+     one place. The 20px inset against the 16px gutter is the direction's ONE
+     documented exemption to inset ≤ gutter: the 3-up 349px grid is fixed, and
+     the extra 4px is what keeps the tile edge off the panel rim. */
   .quick-recall {
     height: 100vh;
     height: 100dvh;
@@ -2857,12 +2937,48 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
+    border-radius: var(--r-panel);
     overflow: hidden;
     color: var(--app-text);
     font-family: inherit;
+    --grid-inset: 20px;
+    --grid-gutter: var(--s-16);
+  }
+
+  /* Frame mode: the window has collapsed, and the bar and the answer are two
+     separate pieces of glass with the live desktop between them. The shell must
+     therefore hold no material of its own and must not clip the gap. */
+  .quick-recall--detached {
+    background: none;
+    box-shadow: none;
+    overflow: visible;
+    gap: var(--s-12);
+  }
+
+  /* Mode identity: a chip hanging off the panel's top-right rim like a tab.
+     Graphite for search (chrome speaking about itself), accent for ask (the one
+     escalation that costs a model call). */
+  .quick-recall__modechip {
+    position: absolute;
+    top: 0;
+    right: var(--s-16);
+    z-index: 3;
+    display: inline-flex;
+    align-items: center;
+    height: 20px;
+    padding: 0 var(--s-8);
+    border-radius: 0 0 var(--r-lg) var(--r-lg);
+    background: var(--app-text-subtle);
+    color: var(--app-bg);
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+
+  .quick-recall__modechip--ask {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
 
   /* Mode area: positioning context for the cross-fading panels. flex-1 so it
@@ -2911,17 +3027,19 @@
     border: 0;
   }
 
+  /* The query line. No band, no border: the field IS the glass, and the only
+     edge it spends is the material's own rim below it. Right padding clears the
+     mode chip so a long query never runs under the tab. */
   .quick-recall__field {
     display: flex;
     align-items: center;
     gap: 10px;
     min-height: 56px;
-    padding: 8px 16px;
+    /* 20px of top padding is the mode chip's own height plus its rim: the
+       field's controls start below the tab rather than under it. */
+    padding: var(--s-20) var(--grid-inset) var(--s-8);
     flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    /* Mockup `.searchbar`: the chrome rows (search bar, footer) sit on the
-       subtle surface so the detail pane's plain surface reads as the stage. */
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
 
   /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
@@ -2965,8 +3083,10 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    /* Mockup `.searchbar input`: 16px query text. */
-    font-size: 16px;
+    /* An oversized query line — the one thing on the surface typed by a person,
+       so it outranks every label around it. */
+    font-size: var(--t-title);
+    letter-spacing: var(--ls-title);
     line-height: 1.4;
     padding: 0;
     caret-color: var(--app-accent);
@@ -2993,7 +3113,8 @@
     pointer-events: none;
     font-family: inherit;
     /* Must mirror .quick-recall__input's font metrics exactly. */
-    font-size: 16px;
+    font-size: var(--t-title);
+    letter-spacing: var(--ls-title);
     line-height: 1.4;
     white-space: pre;
     overflow: hidden;
@@ -3010,52 +3131,77 @@
     color: var(--app-text-muted);
   }
 
+  /* Footer: still glass, so it gets the material's rim rather than a border. */
   .quick-recall__footer {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    gap: var(--s-12);
+    padding: var(--s-8) var(--grid-inset);
+    box-shadow: inset 0 1px 0 var(--glass-line);
+  }
+
+  /* `hidden` on a flex container is a no-op without this — the display wins. */
+  .quick-recall__footer[hidden] {
+    display: none;
   }
 
   .quick-recall__hint-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--t-label);
+    gap: var(--s-4);
+    font-size: var(--t-meta);
     line-height: 1;
-    color: var(--app-text-subtle);
+    color: var(--app-text-muted);
     white-space: nowrap;
   }
 
   .quick-recall__footer kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 19px;
+    height: 19px;
+    padding: 0 5px;
+    border-radius: var(--r-sm);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
     text-transform: lowercase;
     color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 3px 5px;
-    min-width: 9px;
-    text-align: center;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .quick-recall__answer-area:focus {
     outline: none;
   }
 
+  /* Overlay scrollbars: a HUD floating over someone's desktop cannot afford a
+     permanent gutter, so the thumb rides over the content and the track is
+     nothing at all. */
   .quick-recall__results {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 12px 14px;
+    padding: var(--s-12) var(--grid-inset);
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--gap-group);
+  }
+
+  :global(.quick-recall *::-webkit-scrollbar) {
+    width: 8px;
+    height: 8px;
+  }
+
+  :global(.quick-recall *::-webkit-scrollbar-track) {
+    background: transparent;
+  }
+
+  :global(.quick-recall *::-webkit-scrollbar-thumb) {
+    background: var(--app-border-hover);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+    border-radius: var(--r-sm);
   }
 
   .quick-recall__section {
@@ -3099,56 +3245,47 @@
     line-height: 1;
     white-space: nowrap;
     color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
+    background: var(--glass-tint);
+    border: 0;
+    border-radius: var(--r-pill);
     padding: 5px 10px;
     cursor: pointer;
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     transition:
-      border-color 0.12s ease,
+      box-shadow 0.12s ease,
       color 0.12s ease,
       background 0.12s ease;
   }
 
   .quick-recall__filter-trigger kbd {
-    font-family: inherit;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
     line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    padding: 2px 4px;
+    color: inherit;
+    opacity: 0.7;
   }
 
   .quick-recall__filter-trigger:hover {
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
     color: var(--app-text-strong);
   }
 
   .quick-recall__filter-trigger:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
 
   .quick-recall__filter-trigger:active,
   .quick-recall__filter-trigger--active {
     background: var(--app-surface-active);
-    border-color: var(--app-accent);
     color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .quick-recall__filter-trigger--filtered {
     color: var(--app-accent);
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-
-  .quick-recall__filter-trigger--filtered kbd {
-    color: var(--app-accent);
-    background: transparent;
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .quick-recall__ask-hint {
@@ -3186,11 +3323,10 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: var(--s-8);
+    padding: var(--s-8) var(--grid-inset);
     flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
 
   .quick-recall__chip {
@@ -3201,8 +3337,8 @@
     line-height: 1;
     color: var(--app-accent);
     background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    border-radius: var(--r-pill);
     padding: 4px 5px 4px 10px;
     white-space: nowrap;
   }
@@ -3276,38 +3412,57 @@
      it reads as a correction prompt, not success chrome. */
   .quick-recall__parse-error {
     margin: 0;
-    padding: 8px 16px;
+    padding: var(--s-8) var(--grid-inset);
     flex-shrink: 0;
     font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-danger-text);
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
 
 
   /* ── Current-frame ask (round-4 G1–G3) ───────────────────────────────────
      The window is already collapsed to this bar, so the panel is a stack of two
      independent pieces: the bar (chip + composer + Stop), and the detached
-     answer. Nothing about dismissing the second touches the first. Geometry
-     stays plain — per-direction bar shapes land in phase 2. */
+     answer. Nothing about dismissing the second touches the first. Direction 03
+     spends the bar as a 48px-tall glass strip; the 720 the mockup draws is the
+     collapsed WIDTH, which lives in `windows.rs` (640) and is Rust's to move. */
   .quick-recall__panel--frame {
-    background: var(--app-surface-raised);
     display: flex;
     flex-direction: column;
     min-height: 0;
+    gap: var(--s-12);
   }
 
+  /* The bar: one piece of glass at panel radius. It is the persistent piece —
+     Stop lives here, not in the answer, so dismissing the answer never hides a
+     control (G3). */
   .quick-recall__frame-bar {
     flex: 0 0 auto;
+    border-radius: var(--r-panel);
+    overflow: hidden;
   }
 
   .quick-recall__field--frame {
-    gap: 8px;
+    gap: var(--s-8);
     align-items: center;
-    background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
+    min-height: 48px;
+    padding: 0 var(--s-8) 0 var(--s-12);
+    box-shadow: none;
     flex-wrap: nowrap;
+  }
+
+  /* The 44 × 26 preview. Accent-rimmed so it reads as the same fact the on-screen
+     outline states: this is what Mnema is reading. */
+  .quick-recall__frame-thumb {
+    flex: none;
+    width: 44px;
+    height: 26px;
+    border-radius: var(--r-sm);
+    object-fit: cover;
+    object-position: top center;
+    background: var(--app-bg);
+    box-shadow: 0 0 0 1.5px var(--app-accent);
   }
 
   /* Chip-in-sentence: an inline word-sized token sitting where a word would,
@@ -3319,11 +3474,11 @@
     flex-shrink: 0;
     max-width: 55%;
     padding: 2px 6px;
-    border-radius: 6px;
-    border: 1px solid var(--app-accent-border);
-    background: color-mix(in srgb, var(--app-accent) 14%, transparent);
-    font-size: var(--t-meta);
-    line-height: 1.4;
+    border-radius: var(--r-sm);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    font: var(--w-regular) var(--t-meta) / 1.4 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--app-text);
     white-space: nowrap;
     overflow: hidden;
@@ -3332,21 +3487,27 @@
   .quick-recall__frame-chip--pending,
   .quick-recall__frame-chip--error {
     color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border-color: var(--app-border);
   }
 
   .quick-recall__frame-chip--error {
     color: var(--app-danger-text);
   }
 
-  .quick-recall__frame-chip-glyph {
-    opacity: 0.7;
-  }
-
-  .quick-recall__frame-chip-label {
+  .quick-recall__frame-chip-label,
+  .quick-recall__frame-chip-time {
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .quick-recall__frame-chip-time {
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__frame-keys {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
   }
 
   .quick-recall__frame-chip-note {
@@ -3386,79 +3547,115 @@
     padding: 0;
     color: var(--app-text);
     font: inherit;
-    font-size: var(--t-body);
+    font-size: var(--t-ui);
     line-height: 1.5;
     outline: none;
     max-height: 60px;
   }
 
   .quick-recall__frame-input::placeholder {
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__frame-stop {
     flex-shrink: 0;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: var(--t-meta);
-    padding: 3px 9px;
-    cursor: pointer;
   }
 
-  /* Upfront non-vision disclosure (G2), stated before the user types. */
+  /* Upfront non-vision disclosure (G2), stated before the user types, as a
+     chip in a sentence rather than a warning band — the feature still works,
+     it just sends text instead of pixels. Rides inside the bar's own glass. */
   .quick-recall__frame-disclosure {
     margin: 0;
-    padding: 6px 16px;
+    padding: 0 var(--s-12) var(--s-8);
     font-size: var(--t-meta);
     line-height: 1.4;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
   }
 
-  /* The detached second piece. Its own card, its own dismiss; the bar above is
-     untouched by anything that happens here. */
+  .quick-recall__frame-disclosure-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    color: var(--app-text-muted);
+  }
+
+  /* The detached second piece: its own glass, its own shadow, 12px under the
+     bar (the gap is the panel's `gap`). Prose inside lands on an opaque plate —
+     a paragraph over live wallpaper is unreadable at any blur. */
   .quick-recall__frame-answer {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
-    overflow-y: auto;
-    margin: 10px;
-    padding: 12px 34px 12px 14px;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    font-size: var(--t-body);
-    line-height: 1.55;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    padding: var(--s-16) var(--s-12) var(--s-12);
+    border-radius: var(--r-panel);
+    font-size: var(--t-read);
+    line-height: var(--lh-read);
   }
 
-  .quick-recall__frame-answer-dismiss {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    border: 0;
-    background: none;
+  .quick-recall__frame-context {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    margin: 0;
+    padding-right: 140px;
+    font-size: var(--t-meta);
+    line-height: 1.35;
     color: var(--app-text-muted);
-    cursor: pointer;
-    font-size: 11px;
-    line-height: 1;
-    padding: 3px;
-    border-radius: 4px;
+    min-width: 0;
   }
 
-  .quick-recall__frame-answer-dismiss:hover {
-    color: var(--app-text);
+  .quick-recall__frame-context span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .quick-recall__frame-answer-dismiss:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
+  /* Excluded apps are NAMED, never silently dropped. */
+  .quick-recall__frame-context-chip {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: var(--r-pill);
+    background: var(--app-warn-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
+    color: var(--app-warn);
+    white-space: nowrap;
+  }
+
+  /* Scroll container only — the plate is `.quick-recall__answer` inside it, so
+     the two doors put prose on exactly the same surface. */
+  .quick-recall__frame-answer-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .quick-recall__frame-answer-foot {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+  }
+
+  .quick-recall__frame-model {
+    margin-right: auto;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .quick-recall__frame-answer-error {
     margin: 0;
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
     color: var(--app-danger-text);
   }
 
@@ -3467,13 +3664,14 @@
      app's one accent-filled bar over a raised stage — the posture change all
      five directions converged on, spent entirely in existing tokens. */
   .quick-recall__panel--ask {
-    background: var(--app-surface-raised);
+    background: none;
   }
 
+  /* Ask's identity is the ACCENT RULE under the field, not a filled band: the
+     material stays one continuous piece of glass and only the edge changes. */
   .quick-recall__field--ask {
-    gap: 12px;
-    background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
+    gap: var(--s-12);
+    box-shadow: inset 0 -1px 0 var(--app-accent-border);
   }
 
   /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
@@ -3481,8 +3679,7 @@
      (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
      buttons — which carry their own focus chrome — take focus. */
   .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: inset 0 -1px 0 var(--app-accent), var(--app-ring);
   }
 
   .quick-recall__back {
@@ -3593,23 +3790,36 @@
   }
 
   .quick-recall__answer-area {
-    gap: 18px;
+    gap: var(--gap-section);
     position: relative;
+    font-size: var(--t-read);
+    line-height: var(--lh-read);
   }
 
   /* One transcript turn: question header + answer + sources/activity. The turn
      is the positioning context for its own copy button (top-right). Turns are
      separated by a hairline rule so the back-and-forth reads as a transcript. */
+  /* One turn is a reading column plus a cited-moments rail. The rail column is
+     `auto`, so a turn with no sources costs nothing and the prose keeps the
+     whole width. Everything except the sources stays in column 1 — no markup
+     reshuffle, the grid does the placing. */
   .quick-recall__turn {
     position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-content: start;
+    column-gap: var(--s-20);
+    row-gap: 10px;
+  }
+
+  .quick-recall__turn > :global(*) {
+    grid-column: 1;
+    min-width: 0;
   }
 
   .quick-recall__turn:not(:first-child) {
     padding-top: 18px;
-    border-top: 1px solid var(--app-border);
+    box-shadow: inset 0 1px 0 var(--glass-line);
   }
 
   /* Read-only question header above each turn's answer. */
@@ -3633,22 +3843,25 @@
     letter-spacing: 0.04em;
   }
 
-  /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
-     ask input but framed as its own bottom bar. Disabled (dimmed) while
-     a turn streams. */
+  /* Follow-up composer: pinned beneath the scrolling transcript, disabled
+     (dimmed) while a turn streams.
+     The composer sits at the BOTTOM like a conversation, on its own opaque
+     plate — the one thing you type into should never float on material. */
   .quick-recall__composer {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 10px 15px;
-    border-top: 1px solid var(--app-border);
+    margin: var(--s-8) var(--grid-inset) var(--s-12);
+    padding: var(--s-8) var(--s-12);
+    border-radius: var(--r-xl);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
 
   /* WKWebView focus idiom: the borderless composer input delegates its focus ring
      to the bar it sits in. */
   .quick-recall__composer:focus-within {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: var(--sh-tile), var(--app-ring);
   }
 
   .quick-recall__composer-input {
@@ -3684,16 +3897,23 @@
      The prose blocks render via AnswerProse; the graphical blocks (bars /
      timeline / dossier) sit in a quiet bordered card, mirroring the Insights
      Chat surface so the two doors render answers identically. */
+  /* THE rule of the direction: an answer never sits on material. The reading
+     column is an opaque plate capped at 70ch, so its contrast never depends on
+     whatever window is behind the HUD. */
   .quick-recall__answer {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--s-12);
+    max-width: 70ch;
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
   .quick-recall__graphic {
     margin: 0;
     padding: 12px 13px;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
+    border-radius: var(--r-md);
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
@@ -3710,9 +3930,9 @@
   }
   .quick-recall__dossier-card {
     padding: 11px 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: var(--r-md);
     background: var(--app-surface);
+    box-shadow: var(--sh-tile);
     display: flex;
     flex-direction: column;
     gap: 9px;
@@ -3745,17 +3965,24 @@
     flex: 0 0 auto;
   }
 
-  /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.
-     Each section's cards scroll horizontally (AnswerSourceCard is fixed-width),
-     separated from the prose by a hairline rule. */
+  /* The cited-moments rail: 238px on the right of the turn, running the turn's
+     full height. Same sectioned Screen/Audio content as before — it stopped
+     being a strip under the prose and became the column beside it. */
   .quick-recall__sources {
+    grid-column: 2;
+    grid-row: 1 / -1;
+    width: 238px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 4px;
-    padding-top: 14px;
-    border-top: 1px solid var(--app-border);
+    gap: var(--s-8);
+  }
+
+  /* The rail runs DOWN, so its cards fill its width and stack. Scoped here so
+     the Insights Chat strip, which shares the component, keeps its 208px
+     horizontal cards. */
+  .quick-recall__sources :global(.source-card-wrap) {
+    width: 100%;
   }
 
   .quick-recall__sources-heading {
@@ -3771,28 +3998,10 @@
      until hover, matching the quiet terminal aesthetic of the surface. */
   .quick-recall__source-row {
     display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding-bottom: 4px;
+    flex-direction: column;
+    gap: var(--s-8);
     scrollbar-width: thin;
-    scrollbar-color: var(--app-border) transparent;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar {
-    height: 6px;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-thumb {
-    background: var(--app-border);
-    border-radius: 3px;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-thumb:hover {
-    background: var(--app-border-hover);
+    scrollbar-color: var(--app-border-hover) transparent;
   }
 
   /* Copy button: pinned to the top-right of the answer region, only visible at
@@ -3950,8 +4159,7 @@
     max-height: 180px;
     overflow: auto;
     padding: 8px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    border-radius: var(--r-md);
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     font-size: var(--t-meta);
