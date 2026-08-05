@@ -6,3 +6,4 @@ export * from "./types/logs";
 export * from "./types/app-infra";
 export * from "./types/debug";
 export * from "./types/app-updates";
+export * from "./types/system-facts";

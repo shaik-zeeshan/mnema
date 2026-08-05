@@ -5,6 +5,7 @@ mod logs;
 mod microphone;
 mod recording;
 mod session;
+mod system_facts;
 mod usage_charts;
 mod user_context;
 
@@ -18,6 +19,7 @@ pub use logs::*;
 pub use microphone::*;
 pub use recording::*;
 pub use session::*;
+pub use system_facts::*;
 pub use usage_charts::*;
 pub use user_context::*;
 

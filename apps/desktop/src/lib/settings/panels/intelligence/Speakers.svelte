@@ -6,6 +6,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { speakerStatusLabel } from "$lib/settings/state/models-format";
@@ -169,6 +170,7 @@
               </div>
             {/if}
             <p class="group-hint">Downloads this preset's segmentation and speaker-embedding models into app-managed storage.</p>
+            <ModelFootprintHint byteSize={selectedSpeakerModel.download.byteSize} />
           {/if}
           {#if speakerDownloadError}
             <p class="group-hint group-hint--warn">Speaker model action failed: {speakerDownloadError}</p>

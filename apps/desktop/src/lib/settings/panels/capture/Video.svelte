@@ -6,6 +6,8 @@
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
+  import { captureRateConsequence } from "$lib/settings/state/system-facts";
   import IconInfo from "~icons/lucide/info";
   import IconLoader from "~icons/lucide/loader-circle";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -23,6 +25,14 @@
   const customResolutionErrors = $derived(c.customResolutionErrors);
   const customBitrateErrors = $derived(c.customBitrateErrors);
 
+  // G8: the slider's consequence in real bytes, projected from this machine's
+  // measured capture days. Null (no complete day measured yet, or an unreadable
+  // volume) renders no line at all rather than a made-up figure.
+  void systemFacts.ensureLoaded();
+  const captureRateHint = $derived(
+    captureRateConsequence(systemFacts.value, rec.draftFrameRate),
+  );
+
 </script>
 
 <SettingGroup id="settings-section-video" title="Video Output">
@@ -32,7 +42,12 @@
     full
   >
     {#snippet control()}
-      <CaptureRateControl bind:value={rec.draftFrameRate} />
+      <div class="control-stack">
+        <CaptureRateControl bind:value={rec.draftFrameRate} />
+        {#if captureRateHint}
+          <p class="group-hint">{captureRateHint}</p>
+        {/if}
+      </div>
     {/snippet}
   </SettingRow>
 

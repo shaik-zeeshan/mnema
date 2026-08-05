@@ -5,6 +5,9 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
+  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
+  import { semanticIndexPrice } from "$lib/settings/state/system-facts";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { semanticSearchProgressPercent } from "$lib/settings/state/models-format";
   import { formatBytes } from "$lib/settings/state/format";
@@ -52,6 +55,13 @@
   const deleteSemanticSearchPickedModel = (
     model: Parameters<typeof c.deleteSemanticSearchPickedModel>[0],
   ) => c.deleteSemanticSearchPickedModel(model);
+
+  // G10's price-before-enable, priced per G8: the index cost is this machine's
+  // real un-indexed capture count times the schema's bytes-per-vector. No
+  // processing-time figure — there is no measured embedding throughput to
+  // honestly quote one from.
+  void systemFacts.ensureLoaded();
+  const semanticPrice = $derived(semanticIndexPrice(systemFacts.value));
 </script>
 
 <SettingGroup
@@ -81,9 +91,14 @@
       />
     {/snippet}
     {#snippet control()}
-      <p class="group-hint group-hint--warn">
-        Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
-      </p>
+      <div class="ss-stack">
+        <p class="group-hint group-hint--warn">
+          Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
+        </p>
+        {#if semanticPrice}
+          <p class="group-hint">{semanticPrice}</p>
+        {/if}
+      </div>
     {/snippet}
   </SettingRow>
 
@@ -221,6 +236,7 @@
             </div>
           {/if}
 
+          <ModelFootprintHint byteSize={semanticSearchPickedModel?.approxDownloadBytes ?? null} />
           {#if semanticSearchDownloadError}
             <p class="group-hint group-hint--warn">Download failed: {semanticSearchDownloadError}</p>
           {/if}

@@ -16,6 +16,7 @@ mod licensing;
 mod managed_storage_layout;
 mod native_capture;
 mod ocr_budget;
+mod system_facts;
 mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
@@ -880,6 +881,7 @@ pub fn run() {
             windows::get_onboarding_state,
             windows::complete_onboarding,
             managed_storage_layout::probe_storage_path,
+            system_facts::get_system_facts,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
             drain_pending_broker_open_capture_results,
