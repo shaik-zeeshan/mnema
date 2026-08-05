@@ -927,6 +927,11 @@ pub struct AskAiStartRequest {
     /// IANA zone name for display in the temporal grounding. Optional.
     #[serde(default)]
     time_zone: Option<String>,
+    /// A live current-frame screenshot to answer against (round-4 G1–G3), echoed
+    /// back from `capture_current_frame`. The backend re-derives pixels-vs-text
+    /// at send time; this only carries what was captured.
+    #[serde(default)]
+    frame: Option<capture_types::CurrentFrameCapture>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -940,6 +945,9 @@ pub struct AskAiFollowupRequest {
     /// See [`AskAiStartRequest::time_zone`].
     #[serde(default)]
     time_zone: Option<String>,
+    /// See [`AskAiStartRequest::frame`]. A follow-up can carry a fresh re-grab.
+    #[serde(default)]
+    frame: Option<capture_types::CurrentFrameCapture>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1102,17 +1110,29 @@ such tools are present, the user has configured no connectors — do not mention
     preamble
 }
 
-/// Assemble the per-turn **prompt**: the temporal grounding followed by the bare
-/// question. The model gathers all capture context itself through tool calls. The
-/// system instruction lives in the preamble (see [`build_ask_ai_preamble`]);
-/// conversation history is fed separately to the agent loop, so it is NOT in the
-/// prompt.
-fn build_ask_ai_prompt(question: &str, now_ms: i64, clock: &ClientClock) -> String {
+/// Assemble the per-turn **prompt**: the temporal grounding, an optional
+/// current-frame context block, then the bare question. The model gathers all
+/// stored capture context itself through tool calls. The system instruction lives
+/// in the preamble (see [`build_ask_ai_preamble`]); conversation history is fed
+/// separately to the agent loop, so it is NOT in the prompt.
+fn build_ask_ai_prompt(
+    question: &str,
+    now_ms: i64,
+    clock: &ClientClock,
+    frame_context: Option<&str>,
+) -> String {
     let mut prompt = String::new();
 
     // Temporal grounding leads the prompt so the model anchors relative dates and
     // knows the local↔UTC relationship before reading any captures.
     prompt.push_str(&build_temporal_grounding(now_ms, clock));
+
+    // The live screen, when the user asked about it, sits between the grounding
+    // and the question: it is context for the question, not the question.
+    if let Some(frame_context) = frame_context {
+        prompt.push_str(frame_context);
+        prompt.push('\n');
+    }
 
     prompt.push_str(&format!("Question: {question}"));
     prompt
@@ -1609,6 +1629,7 @@ async fn run_ask_ai_turn(
     origin: String,
     title: String,
     clock: ClientClock,
+    frame: Option<capture_types::CurrentFrameCapture>,
     cancel: Arc<AtomicBool>,
 ) {
     // Mint this turn's unique LiveTurn ownership token. Held for the turn's life so
@@ -1686,13 +1707,16 @@ async fn run_ask_ai_turn(
             _ => None,
         }
     });
-    let config_result = crate::ai_runtime::resolve_engine_config(
+    // The resolver's vision dimension rides along: a current-frame turn needs to
+    // know whether THIS turn's model can read images before it decides between
+    // pixels and the screen's OCR text (round-4 G2).
+    let config_result = crate::ai_runtime::resolve_engine_config_with_vision(
         &settings.ai_runtime,
         pin_ref,
         settings.access.ask_ai_model.as_deref(),
     );
-    let config = match config_result {
-        Ok(config) => config,
+    let (config, vision_supported) = match config_result {
+        Ok(resolved) => resolved,
         Err(reason) => {
             // Still BEFORE the LiveTurn is registered, so emit a DIRECT terminal
             // `ask_ai_update` error (no live view exists for `emit_live_update` to
@@ -1891,7 +1915,47 @@ async fn run_ask_ai_turn(
     let tools = build_ask_ai_tools(read_ask_ai_web_fetch_enabled(&app_handle), mcp_tools);
     let max_tool_calls = read_ask_ai_max_tool_calls(&app_handle);
     let preamble = build_ask_ai_preamble(&mcp_notes);
-    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock);
+
+    // Current-frame context (round-4 G1–G3). A vision model gets the pixels; a
+    // text-only model gets the same window metadata plus the screen's OCR text,
+    // which is why the feature is never hidden on a non-vision model. OCR runs on
+    // a blocking thread — Apple Vision is synchronous.
+    let (frame_context, frame_image_base64) = match frame.as_ref() {
+        None => (None, None),
+        Some(frame) => {
+            let mut plan = crate::current_frame::plan_frame_context(frame, vision_supported);
+            let image_path = std::path::PathBuf::from(&frame.image_path);
+            let image = if plan.attach_image {
+                match crate::current_frame::read_frame_base64(&image_path) {
+                    Ok(data) => Some(data),
+                    Err(error) => {
+                        // A missing/unreadable shot degrades to text rather than
+                        // failing the turn.
+                        crate::current_frame::append_frame_text(
+                            &mut plan.prompt_block,
+                            &format!("(the screenshot could not be read: {error})"),
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            if plan.needs_ocr {
+                let ocr_path = image_path.clone();
+                let text = tauri::async_runtime::spawn_blocking(move || {
+                    crate::current_frame::ocr_current_frame(&ocr_path)
+                })
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|result| result)
+                .unwrap_or_default();
+                crate::current_frame::append_frame_text(&mut plan.prompt_block, &text);
+            }
+            (Some(plan.prompt_block), image)
+        }
+    };
+    let prompt = build_ask_ai_prompt(&question, now_ms(), &clock, frame_context.as_deref());
 
     // 7. Run the agent loop, streaming deltas and persisting throttled partials.
     let answer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
@@ -2167,6 +2231,7 @@ async fn run_ask_ai_turn(
         &config,
         &preamble,
         &prompt,
+        frame_image_base64.as_deref(),
         &history,
         tools,
         executor,
@@ -2376,6 +2441,7 @@ pub async fn ask_ai_start(
         prior_transcript: _,
         utc_offset_minutes,
         time_zone,
+        frame,
     } = request;
 
     // Register the in-flight cancel flag FIRST — before the async readiness check —
@@ -2409,6 +2475,7 @@ pub async fn ask_ai_start(
         origin,
         title,
         clock,
+        frame,
         cancel,
     ));
 
@@ -2432,6 +2499,7 @@ pub async fn ask_ai_followup(
         question,
         utc_offset_minutes,
         time_zone,
+        frame,
     } = request;
     let question = question.trim().to_string();
     if question.is_empty() {
@@ -2460,6 +2528,7 @@ pub async fn ask_ai_followup(
         ASK_AI_DEFAULT_ORIGIN.to_string(),
         String::new(),
         clock,
+        frame,
         cancel,
     ));
 
@@ -2837,7 +2906,7 @@ model believes the narrower contract: {}",
 
     #[test]
     fn prompt_is_grounding_then_question() {
-        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default());
+        let prompt = build_ask_ai_prompt("What did I do?", 0, &ClientClock::default(), None);
         // The temporal grounding leads; the bare question trails. No capture
         // context is ever injected — the model gathers it with tool calls.
         assert!(prompt.starts_with("Temporal grounding: "));

@@ -20,6 +20,8 @@ use std::collections::HashMap;
 #[cfg(target_os = "macos")]
 mod equivalence;
 
+pub mod current_frame;
+
 use std::ffi::c_void;
 #[cfg(target_os = "macos")]
 use std::ffi::CString;
@@ -1659,7 +1661,7 @@ fn save_screen_sample_as_jpeg(
 ) -> Result<(), CaptureErrorResponse> {
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
     {
-        use cidre::{cg, ut, vt};
+        use cidre::vt;
 
         let image_buf = sample_buf.image_buf().ok_or_else(|| CaptureErrorResponse {
             code: "capture_output_processing_failed".to_string(),
@@ -1676,35 +1678,47 @@ fn save_screen_sample_as_jpeg(
             }
         })?;
 
-        let output_url =
-            cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Failed to create output URL for screen frame artifact: {}",
-                    output_path.display()
-                ),
-            })?;
+        save_cg_image_as_jpeg(cg_image.as_ref(), output_path)
+    }
+}
 
-        let jpeg_type_id = ut::Type::jpeg().id();
+/// Write one `CGImage` to `output_path` as JPEG. Shared by the recording
+/// pipeline's frame export and the one-shot current-frame screenshot.
+#[cfg(target_os = "macos")]
+pub(crate) fn save_cg_image_as_jpeg(
+    cg_image: &cidre::cg::Image,
+    output_path: &Path,
+) -> Result<(), CaptureErrorResponse> {
+    use cidre::{cg, ut};
 
-        let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
-            .ok_or_else(|| CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: image_destination_creation_failure_message(output_path, "JPEG"),
-            })?;
-        destination.add_image(cg_image.as_ref(), None);
+    let output_url =
+        cidre::cf::Url::with_file_path(output_path).ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to create output URL for screen frame artifact: {}",
+                output_path.display()
+            ),
+        })?;
 
-        if destination.finalize() {
-            Ok(())
-        } else {
-            Err(CaptureErrorResponse {
-                code: "capture_output_processing_failed".to_string(),
-                message: format!(
-                    "Failed to finalize JPEG screen frame artifact: {}",
-                    output_path.display()
-                ),
-            })
-        }
+    let jpeg_type_id = ut::Type::jpeg().id();
+
+    let mut destination = cg::ImageDst::with_url(output_url.as_ref(), jpeg_type_id.as_cf(), 1)
+        .ok_or_else(|| CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: image_destination_creation_failure_message(output_path, "JPEG"),
+        })?;
+    destination.add_image(cg_image, None);
+
+    if destination.finalize() {
+        Ok(())
+    } else {
+        Err(CaptureErrorResponse {
+            code: "capture_output_processing_failed".to_string(),
+            message: format!(
+                "Failed to finalize JPEG screen frame artifact: {}",
+                output_path.display()
+            ),
+        })
     }
 }
 

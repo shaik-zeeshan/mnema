@@ -1,4 +1,5 @@
 mod conversation;
+mod current_frame;
 mod inactivity;
 mod licensing;
 mod logs;
@@ -12,6 +13,7 @@ use serde::Serialize;
 
 pub use capture_metadata::{BrowserUrlMode, ExcludedAppEntry, MetadataSettings, PrivacySettings};
 pub use conversation::*;
+pub use current_frame::*;
 pub use inactivity::*;
 pub use licensing::*;
 pub use logs::*;

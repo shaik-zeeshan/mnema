@@ -15,6 +15,10 @@ use crate::native_capture;
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
+
+/// Inner width of the collapsed current-frame bar. One plain functional width;
+/// the per-direction geometry (560 / 640 / 720…) lands in phase 2.
+const COLLAPSED_QUICK_RECALL_WIDTH: f64 = 640.0;
 // Emitted to the Quick Recall webview whenever the panel is dismissed (ordered
 // out / hidden). The webview is reused across summons rather than destroyed, so
 // the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for
@@ -1321,6 +1325,44 @@ pub fn focus_quick_recall_window(window: WebviewWindow) {
 #[tauri::command]
 pub fn quick_recall_suppress_blur_dismiss() {
     SUPPRESS_NEXT_QUICK_RECALL_BLUR_DISMISS.store(true, Ordering::SeqCst);
+}
+
+/// Collapse the Quick Recall window to the current-frame bar, or grow it back.
+///
+/// The SAME window shrinks (round-4 decision G3) — never a second window, so the
+/// panel keeps its identity, its focus, and its in-flight Ask AI turn. `height`
+/// is the collapsed inner height the bar currently needs (bar alone, or bar plus
+/// the detached answer piece); `None` restores the full launcher size.
+///
+/// Bar GEOMETRY is a per-direction choice (phase 2), which is why the height
+/// comes from the caller and only the collapsed width lives here.
+/// `min_inner_size` has to move first or AppKit clamps the shrink back to the
+/// panel's 960×600 floor.
+#[tauri::command]
+pub fn quick_recall_set_collapsed(
+    window: WebviewWindow,
+    height: Option<f64>,
+) -> Result<(), String> {
+    if window.label() != QUICK_RECALL_WINDOW_LABEL {
+        return Ok(());
+    }
+    let config = AppWindow::QuickRecall.config();
+    let (width, height) = match height {
+        Some(height) => (
+            COLLAPSED_QUICK_RECALL_WIDTH,
+            height.clamp(48.0, config.inner_size.1),
+        ),
+        None => config.inner_size,
+    };
+
+    window
+        .set_min_size(Some(tauri::LogicalSize::new(width, height)))
+        .map_err(|error| error.to_string())?;
+    window
+        .set_size(tauri::LogicalSize::new(width, height))
+        .map_err(|error| error.to_string())?;
+    let _ = window.center();
+    Ok(())
 }
 
 #[tauri::command]
