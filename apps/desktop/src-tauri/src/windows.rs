@@ -19,9 +19,10 @@ const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
 
-/// Inner width of the collapsed current-frame bar. One plain functional width;
-/// the per-direction geometry (560 / 640 / 720…) lands in phase 2.
-const COLLAPSED_QUICK_RECALL_WIDTH: f64 = 640.0;
+/// Inner width of the collapsed current-frame bar. Direction 03 (Layered Glass)
+/// specifies a 720×48 glass bar — see `docs/redesign/round4/03-layered-glass/`
+/// page 04. Bar geometry is the per-direction decision G3 left open.
+const COLLAPSED_QUICK_RECALL_WIDTH: f64 = 720.0;
 // Emitted to the Quick Recall webview whenever the panel is dismissed (ordered
 // out / hidden). The webview is reused across summons rather than destroyed, so
 // the Svelte `onDestroy` teardown never runs on dismiss; the panel listens for

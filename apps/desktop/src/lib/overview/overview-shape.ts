@@ -70,6 +70,9 @@ export function heroHours(ms: number): string {
 
 /** `13:02` local, from unix millis. */
 export function clockAt(ms: number): string {
+  // A tile whose timestamp never arrived says nothing rather than "Invalid
+  // Date" — the empty string collapses the caller's `{#if}` instead.
+  if (!Number.isFinite(ms)) return "";
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 

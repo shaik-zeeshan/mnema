@@ -139,7 +139,7 @@
       <section class="tile tile--w2 tile--h2 tile--prose">
         <div class="tile__h">
           <span class="label">Today</span>
-          {#if data.digest}
+          {#if data.digest && clockAt(data.digest.generatedAtMs)}
             <span class="meta mono">updated {clockAt(data.digest.generatedAtMs)}</span>
           {/if}
         </div>

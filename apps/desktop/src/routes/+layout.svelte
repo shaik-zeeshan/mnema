@@ -2233,7 +2233,12 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
+    /* Direction 03: sans is the default voice, mono is the MACHINE voice —
+       times, durations, counts, sizes, IDs, paths, key hints — carried by
+       `.is-mono` and the `--t-label` role. The app inherited a mono body from
+       its terminal-chrome era, which contradicted the type ramp two blocks
+       above and rendered every sentence in the app as machine output. */
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
