@@ -29,22 +29,34 @@ export function getSettingsSection(): SettingsSectionId | null {
 	return getContext<SettingsSectionId | undefined>(SECTION_KEY) ?? null;
 }
 
-class SettingsFind {
-	/** Is the filter field open? (⌘F opens + focuses it, Escape closes it.) */
-	open = $state(false);
-	/** The raw query text. */
-	query = $state("");
+// The filter state. A `$state` OBJECT (not a class with `$state` fields): the
+// class shape did not notify readers in other components when `query` changed,
+// so ⌘F filtered nothing outside the field itself. A `$state` object literal is
+// a deep proxy, so every property read anywhere subscribes and every write
+// anywhere notifies.
+const state = $state({ open: false, query: "" });
 
+export const settingsFind = {
+	/** Is the filter field open? (⌘F opens + focuses it, Escape closes it.) */
+	get open(): boolean {
+		return state.open;
+	},
+	set open(v: boolean) {
+		state.open = v;
+	},
+	/** The raw query text. */
+	get query(): string {
+		return state.query;
+	},
+	set query(v: string) {
+		state.query = v;
+	},
 	/** Filtering is only ON with the field open AND a non-empty query. */
 	get active(): boolean {
-		return this.open && this.query.trim() !== "";
-	}
-
+		return state.open && state.query.trim() !== "";
+	},
 	close(): void {
-		this.open = false;
-		this.query = "";
-	}
-}
-
-/** Module-level singleton: Settings is one route with one filter. */
-export const settingsFind = new SettingsFind();
+		state.open = false;
+		state.query = "";
+	},
+};

@@ -51,14 +51,17 @@
   <IconSearch aria-hidden="true" />
   <input
     bind:this={input}
-    bind:value={settingsFind.query}
+    value={settingsFind.query}
     type="text"
     placeholder="Search settings"
     aria-label="Search settings"
     spellcheck="false"
     autocomplete="off"
     onfocus={() => (settingsFind.open = true)}
-    oninput={() => (settingsFind.open = true)}
+    oninput={(e) => {
+      settingsFind.open = true;
+      settingsFind.query = e.currentTarget.value;
+    }}
   />
   {#if settingsFind.query}
     <button
