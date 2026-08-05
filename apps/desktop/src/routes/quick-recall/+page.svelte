@@ -44,7 +44,6 @@
     handleLauncherCaptureKeydown as captureKeydown,
   } from "$lib/quick-recall/search-keys";
   import ResultsList from "$lib/quick-recall/ResultsList.svelte";
-  import DetailPane from "$lib/quick-recall/DetailPane.svelte";
   import TimelineStrip from "$lib/quick-recall/TimelineStrip.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import SyntaxHelp from "$lib/quick-recall/SyntaxHelp.svelte";
@@ -58,19 +57,6 @@
   // mode, root/window keydown routing, focus management, and the idle-clear.
   const filters = search.filters;
 
-  // Slice 2 (list + detail split): the two-pane body shows for the skeleton
-  // and results branches of the results region; the full-width states
-  // (orientation, error, results-paused, no-matches) keep the whole width,
-  // mirroring the mockup's states gallery. The branch order below mirrors
-  // ResultsList's own state branches exactly.
-  const searchSplitVisible = $derived.by(() => {
-    if (search.belowMinimum) return false;
-    if (search.loading && !search.hasResults) return true; // first-search skeleton
-    if (search.errorMessage) return false;
-    if (search.resultsPaused) return false;
-    if (search.showEmpty) return false;
-    return true; // results branch
-  });
 
   // The window is reused across summons (hidden, not destroyed), so its state
   // persists while it's closed. Re-summoning within 5s resumes where you left
@@ -238,11 +224,6 @@
   // the search keydown routing (search-keys.ts) so it never clobbers the
   // layout's window-close handler, the picker's Escape, or ask-mode Escape.
   // ---------------------------------------------------------------------------
-
-  // Stable id for the disabled-Ask-AI reason line, referenced by the disabled
-  // button's aria-describedby so keyboard/AT users reach the reason (the native
-  // `title` tooltip is mouse-only).
-  const ASK_UNAVAILABLE_HINT_ID = "quick-recall-ask-unavailable-hint";
 
   $effect(() => {
     if (!search.syntaxHelpOpen) {
@@ -618,6 +599,14 @@
   // its `resolve_app_icons` round-trip were removed in this migration.
 
   let askAvailable = $derived(askAvailability?.available === true);
+
+  // The ranked ask row lives in the results list, so the search store owns the
+  // one roving-selection ring across it. The page still owns the probe; mirror
+  // the result down rather than teaching the store to probe.
+  $effect(() => {
+    search.askAvailable = askAvailable;
+  });
+
   let askUnavailableHint = $derived(
     askAvailability && !askAvailability.available
       ? friendlyAskReason(askAvailability.reason)
@@ -1961,28 +1950,9 @@
                to a component; its open state lives on the search store so the
                keydown routing can close it. -->
           <SyntaxHelp fadeMs={modeFadeMs} />
-          {#if askAvailable}
-            <button
-              type="button"
-              class="quick-recall__ask-button"
-              onclick={() => void activateAskAi()}
-              aria-label="Ask AI"
-              aria-keyshortcuts="Control+Enter"
-            >
-              Ask AI <span class="kbd quick-recall__ask-key" aria-hidden="true">⌃↵</span>
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="quick-recall__ask-button quick-recall__ask-button--disabled"
-              disabled
-              aria-label={askUnavailableHint ?? "Ask AI unavailable"}
-              aria-describedby={ASK_UNAVAILABLE_HINT_ID}
-              use:tip={askUnavailableHint ?? "Ask AI unavailable"}
-            >
-              Ask AI
-            </button>
-          {/if}
+          <!-- G4: the field row's "Ask AI" button is GONE. Ask is a ranked row
+               inside the results list (ResultsList), never a control competing
+               with the field for the same query. ⌃↵ stays the accelerator. -->
         </div>
 
         <!-- Slice 2: active filter chip band. A thin row under the search input
@@ -2024,15 +1994,12 @@
           <p class="quick-recall__parse-error" role="alert">{search.parseErrorMessage}</p>
         {/if}
 
-        <!-- Always-present describedby target for the disabled Ask AI button, so
-             keyboard/AT users get the reason the native `title` tooltip can't
-             surface. Rendered whenever Ask AI is unavailable (mirroring the
-             disabled button's condition) with a fallback so the reference never
-             dangles before the availability probe resolves. -->
+        <!-- With ask demoted to a ranked row, an unconfigured Ask AI has no row
+             to render — so the reason (and the way to fix it) lives here, in the
+             row's place, instead of on a disabled button's tooltip. -->
         {#if !askAvailable}
           <button
             type="button"
-            id={ASK_UNAVAILABLE_HINT_ID}
             class="quick-recall__ask-hint"
             onclick={() => void openAskAiSettings()}
           >
@@ -2040,10 +2007,10 @@
           </button>
         {/if}
 
-        <!-- Slice 2: two-pane body (mockup `.qr-body`). The results list is
-             the fixed-width left column and the detail pane fills the right
-             whenever the list shows rows (or the first-search skeleton); the
-             full-width states and the Filter Picker span the whole body. -->
+        <!-- Full-width results body. The round-4 3-up tile grid needs the whole
+             window, so the list/detail two-pane split is gone: the tile carries
+             the preview and the matched text the detail pane used to hold, and
+             Enter opens the moment in the main-window timeline for the rest. -->
         <div class="quick-recall__body">
           {#if filters.pickerOpen || filters.valueListActive}
             <!-- Filter Picker / Filter Value List: replaces the results region
@@ -2052,18 +2019,10 @@
                  by construction), preserving the original branch order. -->
             <FilterPicker />
           {:else}
-            <!-- The search results region with all its state branches
-                 (orientation / skeleton / error+Retry / results-paused /
-                 no-matches recovery / semantic hint / Screen+Audio sections),
-                 extracted to a component rendering off the search store. -->
-            <ResultsList
-              {askAvailable}
-              onAskAi={() => void activateAskAi()}
-              split={searchSplitVisible}
-            />
-            {#if searchSplitVisible}
-              <DetailPane dim={search.loading && !search.hasResults} />
-            {/if}
+            <!-- The search results region with all its state branches (ranked
+                 ask row / orientation / skeleton / error+Retry / results-paused
+                 / no-matches / semantic hint / Screen+Audio tile grid). -->
+            <ResultsList {askAvailable} onAskAi={() => void activateAskAi()} />
           {/if}
         </div>
 
@@ -2078,7 +2037,7 @@
       </div>
     {:else}
       <div
-        class="quick-recall__panel"
+        class="quick-recall__panel quick-recall__panel--ask"
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
@@ -2542,10 +2501,14 @@
         <span class="quick-recall__hint-item"><kbd>↵</kbd> select</span>
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {:else if search.resultCount > 0}
-        <!-- Mockup footer wording exactly: select=preview, Enter opens in the
-             main-window timeline, ⌘1–9 jumps selection (no longer opens). -->
+        <!-- The footer names what ⏎ will do at all times, so it follows the
+             roving selection across the ask row and the tiles (G4). -->
         <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-        <span class="quick-recall__hint-item"><kbd>↵</kbd> open in timeline</span>
+        {#if search.askRowSelected}
+          <span class="quick-recall__hint-item"><kbd>↵</kbd> ask AI</span>
+        {:else}
+          <span class="quick-recall__hint-item"><kbd>↵</kbd> open in timeline</span>
+        {/if}
         {#if search.selectedResultIsOpenable}
           <span class="quick-recall__hint-item"><kbd>⌘O</kbd> open page</span>
         {/if}
@@ -2556,6 +2519,10 @@
         <span class="quick-recall__hint-item"><kbd>⌘1-9</kbd> jump</span>
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {:else}
+        <!-- No results: the ask row is the only stop in the list, so ⏎ takes it. -->
+        {#if search.askRowSelected}
+          <span class="quick-recall__hint-item"><kbd>↵</kbd> ask AI</span>
+        {/if}
         <span class="quick-recall__hint-item"><kbd>⌘F</kbd> filter</span>
         {#if askAvailable}
           <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> ask AI</span>
@@ -2810,65 +2777,6 @@
     color: var(--app-danger-text);
   }
 
-  /* Ask AI door (mockup `.askai-btn`): the one accent-filled affordance in the
-     field row — accent text on the accent-tinted surface, glowing on hover. */
-  .quick-recall__ask-button {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
-    white-space: nowrap;
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 6px;
-    padding: 6px 10px;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-
-  .quick-recall__ask-button:hover {
-    border-color: var(--app-accent-strong);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-
-  .quick-recall__ask-button:focus-visible {
-    outline: none;
-    border-color: var(--app-accent-strong);
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__ask-button:not(:disabled):not(.quick-recall__ask-button--disabled):active {
-    background: color-mix(in srgb, var(--app-accent) 14%, var(--app-accent-bg));
-  }
-
-  /* Mockup `.askai-btn kbd`: accent key cap on a transparent ground. */
-  /* Shared `.kbd`, tinted to the accent it sits inside. */
-  .quick-recall__ask-key {
-    color: var(--app-accent);
-    background: transparent;
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-
-  .quick-recall__ask-button--disabled,
-  .quick-recall__ask-button:disabled {
-    color: var(--app-text-subtle);
-    background: var(--app-surface-subtle);
-    border-color: var(--app-border);
-    cursor: not-allowed;
-  }
-
-  .quick-recall__ask-button--disabled:hover {
-    border-color: var(--app-border);
-    color: var(--app-text-subtle);
-    box-shadow: none;
-  }
-
   /* Funnel Filter Picker trigger (mockup `.appfilter > button`): a quiet
      labeled "Filter ⌘F" button on the raised surface. The active variant marks
      it pressed while the picker overlay is open; the filtered variant turns
@@ -3070,8 +2978,18 @@
   }
 
 
+  /* G4: taking the ask row TRANSFORMS the surface, so ask must not read as a
+     second search screen. Search is a neutral field over a grid; ask is the
+     app's one accent-filled bar over a raised stage — the posture change all
+     five directions converged on, spent entirely in existing tokens. */
+  .quick-recall__panel--ask {
+    background: var(--app-surface-raised);
+  }
+
   .quick-recall__field--ask {
     gap: 12px;
+    background: var(--app-accent-bg);
+    border-bottom-color: var(--app-accent-border);
   }
 
   /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
@@ -3712,7 +3630,6 @@
       opacity: 1;
     }
 
-    .quick-recall__ask-button,
     .quick-recall__back,
     .quick-recall__copy,
     .quick-recall__retry,

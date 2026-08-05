@@ -36,6 +36,7 @@ import {
   AUDIO_VISIBLE_CAP,
   FRAME_FETCH_LIMIT,
   FRAME_VISIBLE_CAP,
+  nextSelection,
   remapSelection,
   visibleCount,
 } from "./result-sections";
@@ -46,6 +47,12 @@ export const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
 
 export const OPTION_ID_PREFIX = "qr-opt-";
+
+// The "Ask AI about ⟨query⟩" ranked row (G4). It is rank 0 of the same list the
+// results live in and occupies selection index -1 — which is exactly the index a
+// zero-result search settles on, so "promoted to selection when search returns
+// nothing" needs no special case anywhere.
+export const ASK_ROW_OPTION_ID = "qr-opt-ask";
 
 // The selected result surfaced to the detail pane: the kind discriminant plus
 // the concrete DTO (frame xor audio).
@@ -397,9 +404,6 @@ export class SearchStore {
   selectedResultIsOpenable = $derived(
     this.selectedResult?.kind === "frame" && this.selectedResult.frame.url != null,
   );
-  activeOptionId = $derived(
-    this.selectedIndex >= 0 ? `${OPTION_ID_PREFIX}${this.selectedIndex}` : undefined,
-  );
 
   // Jump selection to the visible row at `index` (click on a row, ⌘1–9).
   // Selecting only previews — it never opens anything. Refocus the input so a
@@ -493,14 +497,15 @@ export class SearchStore {
     });
   }
 
+  // One roving ring over the ask row (when visible) plus the visible results —
+  // the math lives in `nextSelection` so it is unit-testable without runes.
   moveSelection(delta: number): void {
-    if (this.resultCount === 0) {
-      return;
-    }
-    // Wrap around the ends; a first ArrowDown from -1 lands on the top result.
-    const base =
-      this.selectedIndex < 0 ? (delta > 0 ? -1 : 0) : this.selectedIndex;
-    this.selectedIndex = (base + delta + this.resultCount) % this.resultCount;
+    this.selectedIndex = nextSelection(
+      this.selectedIndex,
+      delta,
+      this.resultCount,
+      this.askRowVisible,
+    );
   }
 
   // ── Caret / app-catalog helpers ────────────────────────────────────────────
@@ -601,6 +606,21 @@ export class SearchStore {
   trimmedQuery = $derived(this.query.trim());
   belowMinimum = $derived(this.trimmedQuery.length < MIN_QUERY_LENGTH);
   hasResults = $derived(this.frames.length > 0 || this.audio.length > 0);
+
+  // Whether Ask AI is configured. Availability is probed by the page (it owns
+  // the ask surface); the store mirrors the flag so the one roving-selection
+  // ring and the aria-activedescendant mapping know whether the ask row exists.
+  askAvailable = $state(false);
+  askRowVisible = $derived(this.askAvailable && !this.belowMinimum);
+  askRowSelected = $derived(this.askRowVisible && this.selectedIndex < 0);
+
+  activeOptionId = $derived(
+    this.selectedIndex >= 0
+      ? `${OPTION_ID_PREFIX}${this.selectedIndex}`
+      : this.askRowVisible
+        ? ASK_ROW_OPTION_ID
+        : undefined,
+  );
 
   // The friendly line for the active parse error (or null when none). Drives
   // both the inline error line under the input and the paused-results branch;

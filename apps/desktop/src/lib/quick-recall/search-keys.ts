@@ -250,11 +250,16 @@ export function handleSearchKeydown(
       }
       break;
     case "Enter":
-      // Enter = open the SELECTED result in the main-window timeline + close
-      // Quick Recall (selection itself only previews in the detail pane).
+      // Enter takes whatever the roving selection is on: a result opens in the
+      // main-window timeline (closing Quick Recall), the ask row (G4, index -1)
+      // pivots into Ask mode. ⌃↵ above stays the accelerator that takes the ask
+      // row from anywhere.
       if (search.selectedIndex >= 0) {
         event.preventDefault();
         search.openResultAt(search.selectedIndex);
+      } else if (askAvailable && search.askRowVisible) {
+        event.preventDefault();
+        onAskAi();
       }
       break;
   }
