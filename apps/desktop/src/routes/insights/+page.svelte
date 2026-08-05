@@ -472,7 +472,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -483,13 +483,13 @@
   }
   .gate-title {
     margin: 0;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1.35;
     color: var(--app-text-strong);
   }
   .gate-detail {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -500,7 +500,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     color: var(--app-text-muted);
   }
@@ -525,7 +525,7 @@
     align-self: flex-start;
     margin-top: 8px;
     font: inherit;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     padding: 7px 15px;
     border: 1px solid var(--app-accent-border);
     border-radius: 7px;
@@ -548,7 +548,7 @@
   }
   .gate-note {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-faint);
   }
 

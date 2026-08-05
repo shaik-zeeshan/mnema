@@ -232,7 +232,7 @@
     margin: 0;
     padding: 10px 12px;
     border-left: 2px solid var(--app-border);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text);
   }

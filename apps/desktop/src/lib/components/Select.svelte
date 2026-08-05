@@ -368,7 +368,7 @@
     padding: 14px 10px;
     text-align: center;
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-style: italic;
     color: var(--app-text-subtle);
   }

@@ -296,7 +296,7 @@
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -323,7 +323,7 @@
     width: 100%;
     text-align: center;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-subtle);
     background: none;
@@ -361,7 +361,7 @@
   }
 
   .quick-recall__state-glyph {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     line-height: 1;
     color: var(--app-text-subtle);
   }
@@ -376,14 +376,14 @@
 
   .quick-recall__state-lead {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.4;
     color: var(--app-text-strong);
   }
 
   .quick-recall__state-sub {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -394,14 +394,14 @@
 
   .quick-recall__state-faint {
     margin: 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.5;
     color: var(--app-text-subtle);
   }
 
   .quick-recall__state-center kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface);
@@ -424,7 +424,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-raised);
@@ -482,7 +482,7 @@
     margin: 4px 0 8px;
     padding: 8px 10px;
     text-align: left;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-muted);
     background: var(--app-surface-raised);

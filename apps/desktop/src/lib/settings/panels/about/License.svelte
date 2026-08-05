@@ -391,7 +391,7 @@
   /* The one-line state summary — carries slightly more weight than the muted
      explanation beneath it so "12 days left" / "Licensed to …" reads first. */
   .license-status__lead {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
   }
 
@@ -407,7 +407,7 @@
     align-items: center;
     gap: 6px;
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-accent);
     animation: license-activated 180ms ease-out;
   }

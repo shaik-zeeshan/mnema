@@ -190,7 +190,7 @@
   }
 
   .quick-recall__picker-title {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -198,14 +198,14 @@
   }
 
   .quick-recall__picker-crumb-hint {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
   }
 
   .quick-recall__orient-cue-dot {
     color: var(--app-text-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
   }
 
@@ -272,7 +272,7 @@
     margin: 0;
     padding: 4px 9px 2px;
     flex-shrink: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-danger-text);
   }
@@ -281,7 +281,7 @@
     margin: 0;
     padding: 4px 9px 2px;
     flex-shrink: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-muted);
   }
@@ -292,7 +292,7 @@
   }
 
   .quick-recall__picker-item-label {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.3;
     color: inherit;
     white-space: nowrap;
@@ -303,7 +303,7 @@
   .quick-recall__picker-item-hint {
     flex: 1;
     min-width: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.3;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -313,7 +313,7 @@
 
   .quick-recall__picker-item-chevron {
     flex-shrink: 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-subtle);
   }
 
@@ -322,7 +322,7 @@
     padding: 5px 9px 3px;
     flex-shrink: 0;
     border-top: 1px solid var(--app-border);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
     display: flex;
@@ -332,7 +332,7 @@
 
   .quick-recall__picker-cue kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -346,7 +346,7 @@
   .quick-recall__state {
     margin: 0;
     padding: 6px 9px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-muted);
   }

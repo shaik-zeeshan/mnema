@@ -1225,7 +1225,7 @@
           <path d="m20 20-3.5-3.5" />
         </svg>
         <span class="titlebar__search-label">Search</span>
-        <kbd class="titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
+        <kbd class="kbd titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
       </button>
     </div>
 
@@ -1551,7 +1551,7 @@
                   <div class="shortcut-help__row">
                     <dt>
                       {#each formatShortcut(row.bindings[0], windowPlatform) as token}
-                        <kbd>{token}</kbd>
+                        <kbd class="kbd kbd--help">{token}</kbd>
                       {/each}
                     </dt>
                     <dd>{row.label}</dd>
@@ -1628,6 +1628,14 @@
     --app-record-glyph-start: #ff3148;
     --app-record-glyph-stop: #ff8a96;
 
+    /* system.css §1 record family — the role-named tokens the shared `.pill`
+       reads. Same values the `--app-record-start-*` trio already ships; the
+       start/stop/glyph names stay for the title-bar record control. */
+    --app-record: #ff3148;
+    --app-record-fg: #ff8a96;
+    --app-record-bg: #1a0f12;
+    --app-record-border: #3a1820;
+
     --app-icon-fg: #8a8aaa;
     --app-icon-fg-hover: #e2e2e8;
     --app-icon-bg-hover: #1a1a2a;
@@ -1639,12 +1647,18 @@
        shared bits-ui-backed controls (Switch, Select, RadioGroup, Slider).
        Keeping these centralized means each component declares the dark
        palette once via these tokens and the light theme below flips them
-       in one place — no per-component palette duplication. */
-    --app-surface: #0e0e16;
-    --app-surface-subtle: #101018;
-    --app-surface-raised: #13131a;
-    --app-surface-hover: #1a1a2a;
-    --app-surface-active: #131320;
+       in one place — no per-component palette duplication.
+
+       Dark ladder retuned 2026-08-04 (docs/redesign/system.css §1): the old
+       steps (#0c0c0e / #0e0e16 / #13131a) sat within ~7 sRGB units — a card
+       ladder, invisible at region scale. Each level now steps ~11 units, and
+       hover/active are re-seated ABOVE raised (the old hover #1a1a2a would
+       have fallen below the new raised). */
+    --app-surface: #17171f;
+    --app-surface-subtle: #1c1c26;
+    --app-surface-raised: #22222e;
+    --app-surface-hover: #2e2e40;
+    --app-surface-active: #282836;
     --app-border: #1e1e2e;
     --app-border-strong: #2a2a3a;
     --app-border-hover: #3a3a5a;
@@ -1656,9 +1670,12 @@
     /* Tertiary conveyed text / structural labels — was #44445a (~2:1, FAIL);
        #7e7e98 ≈ 4.9:1 clears AA while staying clearly dimmer than muted. */
     --app-text-subtle: #7e7e98;
-    /* Placeholder / decorative ONLY (intentionally sub-AA). Never use for text
-       a user must read. */
-    --app-text-faint: #33334a;
+    /* Faintest text step — still non-decorative: axis ticks, unit suffixes,
+       dot separators, sparkline bars. Raised 2026-08-05 from #33334a (1.59:1
+       on --app-bg, 1.28:1 on raised — invisible, not faint) to #6c6c88, which
+       measures >=3:1 across the whole bg -> raised range. Ceiling: 2.62:1 on
+       --app-surface-hover, so never put faint text on a hover fill. */
+    --app-text-faint: #6c6c88;
     --app-accent: #3dffa0;
     --app-accent-strong: #2a8a60;
     --app-accent-bg: #0d1f15;
@@ -1668,37 +1685,141 @@
        in both modes because the accent fill it sits on is bright in both. */
     --app-accent-contrast: #07120c;
 
-    /* Brand monospace face. Referenced by 20+ rules across the app via
-       `var(--app-font-mono, ...)`; defining it here makes the brand face
-       resolve everywhere instead of silently falling back. Mode-independent. */
-    --app-font-mono: "Berkeley Mono", "TX-02", "Monaspace Neon", ui-monospace,
-      monospace;
+    /* ── Type (docs/redesign/system.css §2) ─────────────────────────────
+       Six ROLES, not six sizes: a size is a consequence of what the text is,
+       so each token carries its line-height and tracking too. Replaces the
+       old --text-xs/sm/base/md/lg/xl family, which carried a size and nothing
+       else — the reason type drifted. Mode-independent.
 
-    /* Shared focus-visible rings (mode-independent; the accent-glow they key
-       off is per-mode, so the ring adapts to the active theme automatically). */
-    --app-ring: 0 0 0 3px var(--app-accent-glow);
-    --app-ring-danger: 0 0 0 3px
+         --t-label   10  mono, uppercase  machine labels, units, kbd, column heads
+         --t-meta    11  secondary metadata: timestamps, counts, captions
+         --t-ui      13  THE DEFAULT: buttons, rows, form labels, menus, chips
+         --t-read    14  PROSE ONLY: transcripts, AI answers, errors (max ~70ch)
+         --t-title   17  screen + section titles, dialog headings; one per region
+         --t-display 22  AT MOST ONE PER SCREEN: readout clock, hero number
+
+       Three weights only (400/510/590). Mono is the machine voice — times,
+       durations, counts, sizes, IDs, paths, key hints — never the default. */
+    --app-font-sans: "Hanken Grotesk", -apple-system, BlinkMacSystemFont,
+      "SF Pro Text", "Segoe UI Variable", system-ui, sans-serif;
+    --app-font-mono: "Spline Sans Mono", "Berkeley Mono", ui-monospace,
+      "SF Mono", Menlo, monospace;
+
+    --t-label: 10px;
+    --lh-label: 1.4;
+    --ls-label: 0.02em;
+    --t-meta: 11px;
+    --lh-meta: 1.35;
+    --ls-meta: 0.01em;
+    --t-ui: 13px;
+    --lh-ui: 1.25;
+    --ls-ui: -0.006em;
+    --t-read: 14px;
+    --lh-read: 1.55;
+    --ls-read: -0.008em;
+    --t-title: 17px;
+    --lh-title: 1.3;
+    --ls-title: -0.016em;
+    --t-display: 22px;
+    --lh-display: 1.2;
+    --ls-display: -0.02em;
+
+    --w-regular: 400;
+    --w-medium: 510;
+    --w-semi: 590;
+
+    /* ── Spacing (system.css §3) ────────────────────────────────────────
+       One ramp — finer under 8 (1-2px matters between an icon and its label),
+       coarser above (nobody sees 2px between sections). Layout code reaches
+       for the NAMED constants below, not raw ramp values: a relationship
+       ("section gap") stays the same number everywhere. */
+    --s-1: 1px;
+    --s-2: 2px;
+    --s-3: 3px;
+    --s-4: 4px;
+    --s-6: 6px;
+    --s-8: 8px;
+    --s-12: 12px;
+    --s-16: 16px;
+    --s-20: 20px;
+    --s-24: 24px;
+    --s-32: 32px;
+    --s-40: 40px;
+    --s-48: 48px;
+
+    --gap-inline: var(--s-6); /* icon -> its label, chip -> its count */
+    --gap-label: var(--s-4); /* a label and the value directly under it */
+    --gap-row: var(--s-8); /* between rows in a list or form */
+    --gap-group: var(--s-16); /* between related groups inside a section */
+    --gap-section: var(--s-24); /* between sections of a surface */
+    --pad-window: var(--s-16); /* a surface's outer inset */
+    --pad-control: var(--s-8); /* horizontal padding inside a control */
+    --pad-panel: var(--s-16); /* inside a panel, popover, toast, dialog */
+
+    /* DENSITY RULE: one inset per surface, used for BOTH its padding and its
+       grid gutter. One exemption: a fixed, non-resizable window whose grid
+       must divide exactly into the width. */
+    --grid-inset: var(--s-16);
+    --grid-gutter: var(--s-16);
+
+    /* ── Control metrics, radii, elevation, motion (system.css §4) ──────
+       28 is the default control height and the hit-target floor. --h-record
+       (44, Apple's recommended target) applies only where the record control
+       stands alone as the primary action — it cannot live in a 38px title
+       bar, where it is --h-md. */
+    --h-sm: 24px; /* dense, inside a row that is already >= 28 */
+    --h-md: 28px; /* DEFAULT for every button, input, select, chip */
+    --h-lg: 32px; /* primary action in a dialog or an empty state */
+    --h-row: 28px;
+    --h-titlebar: 38px;
+    --hit-min: 28px;
+    --h-record: 44px;
+
+    /* Object sizes — NOT control heights. Non-interactive boxes only. */
+    --o-badge: 20px;
+    --o-icon-sm: 14px;
+    --o-icon: 20px;
+    --o-icon-lg: 24px;
+    --o-setting-row: 40px;
+    --o-row-prose: 40px;
+
+    /* radii: 4-6 controls, 8 panels, 12 floating. The OS draws the window's
+       own 10px corner — never apply your own to the window. */
+    --r-sm: 4px;
+    --r-md: 6px;
+    --r-lg: 8px;
+    --r-xl: 12px;
+    --r-pill: 999px;
+
+    /* elevation: a surface STEP first. Shadows are for FLOATING things only —
+       popover, menu, toast, dialog. Cards do not get shadows. */
+    --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.32);
+    --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.48);
+    --ring: 0 0 0 2px var(--app-accent-glow);
+    --ring-danger: 0 0 0 2px
       color-mix(in srgb, var(--app-danger) 30%, transparent);
+    --opacity-disabled: 0.4;
+    --opacity-busy: 0.6;
 
-    /* Canonical disabled-control opacity (mode-independent) — one source of
-       truth so dimmed controls stop drifting across 0.35/0.38/0.4/0.45. */
-    --app-disabled-opacity: 0.4;
+    /* motion: two durations, that is all. Fade IN is instant. */
+    --dur-quick: 100ms;
+    --dur-regular: 250ms;
+    --dur-out: 150ms;
+    --dur-in: 0ms;
+    --ease: cubic-bezier(0.4, 0, 0.2, 1);
+    --ease-out: cubic-bezier(0, 0, 0.2, 1);
 
-    /* In-flight / saving (`cursor: progress`) controls dim less than a true
-       disabled control so the action still reads as "busy, not unavailable". */
-    --app-busy-opacity: 0.6;
+    /* Hairline (system.css §5) — the border width, halved on retina. */
+    --hairline: 1px;
 
-    /* Shared popover / tooltip elevation. Page depth is normally surface
-       lightness, but floating layers lift off with this one shadow. */
-    --app-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.22);
-
-    /* Type scale (mode-independent). 6 integer steps consumed app-wide. */
-    --text-xs: 10px;
-    --text-sm: 11px;
-    --text-base: 12px;
-    --text-md: 13px;
-    --text-lg: 16px;
-    --text-xl: 20px;
+    /* The app's pre-existing names for the five metrics §4 renamed. Aliased
+       rather than left at their old values so there is ONE number per role;
+       existing consumers pick up the design-system value untouched. */
+    --app-ring: var(--ring);
+    --app-ring-danger: var(--ring-danger);
+    --app-disabled-opacity: var(--opacity-disabled);
+    --app-busy-opacity: var(--opacity-busy);
+    --app-shadow-popover: var(--shadow-popover);
 
     --app-warn: #d6a14a;
     --app-warn-strong: #c47a30;
@@ -1828,6 +1949,11 @@
     --app-record-glyph-start: #c81d2e;
     --app-record-glyph-stop: #ffffff;
 
+    --app-record: #d62236;
+    --app-record-fg: #c81d2e;
+    --app-record-bg: #ffffff;
+    --app-record-border: #ecbcc2;
+
     --app-icon-fg: #5a5a6a;
     --app-icon-fg-hover: #14141a;
     --app-icon-bg-hover: #e2e2e0;
@@ -1946,6 +2072,245 @@
     --focus-deep: #1f7a4a;
     --focus-mid: #9a5a12;
     --focus-distracted: #c43a48;
+
+    /* Floating elevation re-tinted for light (system.css §4): pure black at
+       32%/48% reads as soot on near-white surfaces. */
+    --shadow-popover: 0 8px 24px rgba(21, 28, 38, 0.14);
+    --shadow-modal: 0 24px 64px rgba(21, 28, 38, 0.22);
+  }
+
+  /* A hairline is a physical half-pixel where the display has them. */
+  @media (min-resolution: 2dppx) {
+    :global(:root) {
+      --hairline: 0.5px;
+    }
+  }
+
+  /* ── Type roles as classes (system.css §2) ──────────────────────────────
+     Applying a role is one class; these are the only text classes that exist.
+     `.is-mono` is the machine-voice modifier — any role may take it, none may
+     change size. `.is-num` is non-negotiable on any number that changes in
+     place (clocks, durations, counts) — jittering digits are the most visible
+     cheapness in a recording app. */
+  :global(.t-label) {
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-text-muted);
+  }
+  :global(.t-meta) {
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    color: var(--app-text-muted);
+  }
+  :global(.t-ui) {
+    font: var(--w-regular) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text);
+  }
+  :global(.t-read) {
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
+    color: var(--app-text);
+    max-width: 70ch;
+  }
+  :global(.t-title) {
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
+    color: var(--app-text-strong);
+  }
+  :global(.t-display) {
+    font: var(--w-semi) var(--t-display) / var(--lh-display)
+      var(--app-font-sans);
+    letter-spacing: var(--ls-display);
+    color: var(--app-text-strong);
+  }
+  :global(.is-mono) {
+    font-family: var(--app-font-mono);
+  }
+  :global(.is-num) {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Shared primitives (system.css §6) ──────────────────────────────────
+     ONE definition each for `.btn`, `.input`, `.kbd` and `.pill`. These were
+     re-declared in 18 places (two shell-scoped CSS families plus ~15 component
+     `<style>` blocks) with different padding, radius, type and hover, which is
+     why nothing matched anything. A component may still layer a *modifier* on
+     top (`.btn--pinned`, `.btn--running`, …); the BASE comes from here.
+     Onboarding keeps its own `.ob-btn` — that surface is out of scope. */
+  :global(.btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-inline);
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    cursor: pointer;
+    transition: background-color var(--dur-quick) var(--ease);
+  }
+  :global(.btn:hover) {
+    background: var(--app-surface-hover);
+  }
+  :global(.btn:active) {
+    background: var(--app-surface-active);
+  }
+  :global(.btn:focus-visible) {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  :global(.btn[disabled]),
+  :global(.btn[aria-disabled="true"]) {
+    opacity: var(--opacity-disabled);
+    pointer-events: none;
+  }
+  :global(.btn[aria-busy="true"]) {
+    opacity: var(--opacity-busy);
+    cursor: progress;
+  }
+
+  :global(.btn--primary) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    border-color: transparent;
+  }
+  :global(.btn--primary:hover) {
+    background: var(--app-accent);
+    filter: brightness(1.08);
+  }
+  :global(.btn--primary:active) {
+    filter: brightness(0.94);
+  }
+
+  /* Not in §6, but five surfaces (Chat, Context, Overview, Subjects, the
+     timeline jumper) had independently invented the same tinted-accent
+     OUTLINE, so it is a real modifier rather than five accidents. It is the
+     quieter sibling of `--primary`: affirmative, no solid fill. */
+  :global(.btn--accent) {
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
+  }
+  :global(.btn--accent:hover) {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+
+  :global(.btn--ghost) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--app-text-muted);
+  }
+  :global(.btn--ghost:hover) {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+
+  :global(.btn--danger) {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+  :global(.btn--danger:hover) {
+    background: color-mix(in srgb, var(--app-danger) 14%, transparent);
+  }
+  :global(.btn--danger:focus-visible) {
+    box-shadow: var(--ring-danger);
+  }
+
+  /* Size modifiers carry SIZE only — never a colour. */
+  :global(.btn--sm) {
+    height: var(--h-sm);
+    padding: 0 var(--s-6);
+  }
+  :global(.btn--lg) {
+    height: var(--h-lg);
+    padding: 0 var(--s-12);
+  }
+  :global(.btn--icon) {
+    width: var(--h-md);
+    padding: 0;
+  }
+  :global(.btn--icon.btn--sm) {
+    width: var(--h-sm);
+  }
+
+  :global(.input) {
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+  }
+  :global(.input:focus-visible),
+  :global(.input:focus) {
+    outline: none;
+    border-color: var(--app-accent-border);
+    box-shadow: var(--ring);
+  }
+  :global(.input[aria-invalid="true"]) {
+    border-color: var(--app-danger-border);
+  }
+
+  :global(.kbd) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 var(--s-4);
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-muted);
+  }
+  :global(.kbd--mod) {
+    min-width: 48px;
+    justify-content: flex-start;
+    padding-left: var(--s-6);
+  }
+
+  /* Recording state pill — dot + elapsed + cost in one capsule. Recording red
+     is a STATE, never an error: transient liveness tints via `--warn`, not
+     danger. The transport popover that hangs off it is slice 5. */
+  :global(.pill) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border-radius: var(--r-pill);
+    background: var(--app-record-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+  }
+  :global(.pill__t) {
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text);
+  }
+  :global(.pill__gb) {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
+  }
+  :global(.pill--quiet) {
+    background: var(--app-surface-hover);
+    box-shadow: none;
+  }
+  :global(.pill--warn) {
+    background: var(--app-warn-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-warn-border);
   }
 
   :global(html) {
@@ -1962,7 +2327,7 @@
     background-color: var(--app-bg);
     color: var(--app-fg);
     font-family: var(--app-font-mono);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
@@ -2078,7 +2443,7 @@
     max-width: 260px;
     padding: 5px 8px 6px;
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     letter-spacing: 0.01em;
     color: var(--app-text-strong);
@@ -2216,7 +2581,7 @@
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2286,7 +2651,7 @@
   }
   .surface-toggle button {
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0.02em;
     display: inline-flex;
@@ -2353,7 +2718,7 @@
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
     font: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     cursor: pointer;
     transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
@@ -2364,16 +2729,9 @@
   .titlebar__search-label {
     letter-spacing: 0.02em;
   }
+  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
   .titlebar__search-kbd {
     flex: 0 0 auto;
-    padding: 1px 5px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface-raised);
-    color: var(--app-text-subtle);
-    font-family: var(--app-font-mono);
-    font-size: var(--text-xs);
-    line-height: 1.3;
   }
   .sr-only {
     position: absolute;
@@ -2486,7 +2844,7 @@
     background: var(--app-status-bg);
     border: 1px solid var(--app-status-border);
     border-radius: 4px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -2657,7 +3015,7 @@
     border: 1px solid var(--app-warn-border);
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2685,7 +3043,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -2720,7 +3078,7 @@
     border-radius: 4px;
     border: 1px solid transparent;
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -2887,7 +3245,7 @@
        escalate it. */
     background: var(--app-info);
     color: var(--app-bg);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     line-height: 12px;
     text-align: center;
@@ -2928,7 +3286,7 @@
     gap: 10px;
     padding: 10px 12px;
     border-bottom: 1px solid var(--app-border);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     color: var(--app-text-strong);
   }
@@ -2943,7 +3301,7 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .notification-popover__clear {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     padding: 4px 7px;
   }
@@ -3000,19 +3358,19 @@
   }
   .notification-item__title {
     color: var(--app-text-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     line-height: 1.2;
   }
   .notification-item__message {
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.35;
   }
   .notification-item__time {
     margin-top: 2px;
     color: var(--app-text-faint, var(--app-text-muted));
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
   }
@@ -3027,7 +3385,7 @@
     border: 1px solid var(--app-danger-border);
     background: var(--app-danger-bg-soft);
     color: var(--app-danger-text);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .notification-popover__error-text {
     min-width: 0;
@@ -3038,7 +3396,7 @@
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -3061,7 +3419,7 @@
     border: 1px solid var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -3085,7 +3443,7 @@
   }
   .titlebar__settings-label {
     display: block;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.08em;
     line-height: 1;
@@ -3192,7 +3550,7 @@
 
   .shortcut-help__eyebrow {
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     line-height: 1;
@@ -3202,7 +3560,7 @@
 
   .shortcut-help h2 {
     color: var(--app-text-strong);
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     line-height: 1.15;
     letter-spacing: -0.02em;
   }
@@ -3240,7 +3598,7 @@
 
   .shortcut-help__group h3 {
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     letter-spacing: 0.12em;
     line-height: 1;
@@ -3272,31 +3630,23 @@
 
   .shortcut-help__row dd {
     color: var(--app-text);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.3;
     text-align: right;
   }
 
-  .shortcut-help kbd {
+  /* The help sheet's keycaps are the shared `.kbd` with a physical-key lip —
+     this is the one surface where a keycap IS the subject, not a hint. */
+  .kbd--help {
     min-width: 24px;
-    padding: 3px 7px 4px;
-    border: 1px solid var(--app-border-strong);
-    border-bottom-color: var(--app-text-subtle);
-    border-radius: 7px;
-    background: var(--app-bg);
     color: var(--app-text-strong);
-    font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
-    font-weight: 700;
-    line-height: 1;
-    text-align: center;
     box-shadow: inset 0 -1px 0 var(--app-overlay-border);
   }
 
   .shortcut-help__note {
     margin-top: 14px;
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
   }
 </style>

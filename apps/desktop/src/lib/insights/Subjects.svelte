@@ -788,7 +788,7 @@
           {#if r.pinned}
             <span class="conv-pin" use:tip={"Pinned"}>★</span>
           {/if}
-          <span class="pill {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
+          <span class="tag {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
           <span class="conv-cc">
             · {r.conclusionCount}
             {r.conclusionCount === 1 ? "conclusion" : "conclusions"}
@@ -1195,7 +1195,7 @@
   }
   .conv-head .conv-sub {
     margin: 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     max-width: 760px;
   }
@@ -1203,7 +1203,7 @@
   /* Honest counts line — token-driven, tabular figures so it never reflows. */
   .conv-summary {
     margin: 8px 0 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -1234,7 +1234,7 @@
   /* Quiet definition of the active grouping axis (conviction / movement). */
   .axis-hint {
     margin: 0 0 14px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
@@ -1266,7 +1266,7 @@
     flex: 1 1 auto;
     min-width: 0;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     border: none;
     background: transparent;
     color: var(--app-text);
@@ -1298,7 +1298,7 @@
     align-items: center;
     gap: 6px;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.02em;
     padding: 4px 13px;
     border-radius: 999px;
@@ -1341,14 +1341,14 @@
     margin-bottom: 8px;
   }
   .section-title {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: -0.01em;
   }
   .conv-tier-note {
     margin-left: auto;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;
@@ -1369,7 +1369,7 @@
     align-self: flex-start;
     margin-top: 8px;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.02em;
     padding: 4px 10px;
     border: 1px solid var(--app-border);
@@ -1481,37 +1481,37 @@
     flex: 0 0 auto;
   }
   .conv-name {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
     letter-spacing: 0.01em;
     min-width: 0;
   }
   .conv-pin {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-accent-strong);
     flex: 0 0 auto;
   }
   .conv-cc {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .conv-headline {
     margin-top: 3px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* trend pill */
-  .pill {
+  /* trend tag */
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 1px 7px;
     border-radius: 999px;
@@ -1521,7 +1521,7 @@
     white-space: nowrap;
     flex: 0 0 auto;
   }
-  .pill.trend-up {
+  .tag.trend-up {
     color: var(--app-accent-strong);
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
@@ -1530,12 +1530,12 @@
      neutral surface) and the ▼ glyph carries the direction. This keeps the
      saturated --app-danger token reserved for destructive/contradiction states
      so the two never collide. */
-  .pill.trend-down {
+  .tag.trend-down {
     color: var(--app-text-muted);
     border-color: var(--app-border);
     background: var(--app-surface);
   }
-  .pill.trend-steady {
+  .tag.trend-steady {
     color: var(--app-text-muted);
   }
 
@@ -1556,14 +1556,14 @@
     min-width: 56px;
   }
   .conv-conf {
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     font-weight: 600;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     line-height: 1.2;
   }
   .conv-moved {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
   }
@@ -1575,7 +1575,7 @@
     width: 24px;
     height: 24px;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     padding: 0;
     border: none;
@@ -1613,7 +1613,7 @@
     padding: 12px 14px 13px;
   }
   .conv-detail-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1623,7 +1623,7 @@
     margin-top: 13px;
   }
   .ev-empty {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     margin: 0;
   }
@@ -1644,7 +1644,7 @@
     opacity: 0.55;
   }
   .conv-concl-stmt {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     min-width: 0;
     overflow: hidden;
@@ -1657,10 +1657,10 @@
   .conv-concl-pin {
     color: var(--app-accent-strong);
     margin-right: 5px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .conv-concl-pct {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     text-align: right;
@@ -1700,7 +1700,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -1740,39 +1740,8 @@
     flex-wrap: wrap;
   }
 
-  /* .btn — compact button (ported scoped). Variants: --accent, --ghost. */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: var(--text-sm);
-    padding: 3px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  /* Base `.btn` + `--accent` / `--ghost` are the shared primitive
+     (system.css §6, routes/+layout.svelte). */
   /* Busy: the acting button stays legible (no dim) while its sibling dims via
      :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
   .btn--busy:disabled {
@@ -1793,28 +1762,13 @@
       transform: rotate(360deg);
     }
   }
-  .btn--accent {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .btn--ghost {
-    border-color: transparent;
-    background: transparent;
-    color: var(--app-text-muted);
-  }
-  .btn--ghost:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: transparent;
-    color: var(--app-text-strong);
-  }
 
   /* ---- Footer ---- */
   .conv-foot {
     margin-top: 22px;
     padding-top: 12px;
     border-top: 1px solid var(--app-border);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
 
@@ -1834,12 +1788,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.6;
   }
@@ -1848,7 +1802,7 @@
     align-self: flex-start;
     margin-top: 8px;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     padding: 6px 13px;
     border: 1px solid var(--app-accent-border);
     border-radius: 7px;
@@ -1882,7 +1836,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -1904,7 +1858,7 @@
     opacity: 0.6;
   }
   .state-retry-ico {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0;
   }
@@ -1914,13 +1868,9 @@
     .conv-caret,
     .conv-refresh-pill,
     .conv-tier-more,
-    .btn {
-      transition: none;
-    }
     .conv-refresh-pill:hover {
       transform: none;
     }
-    .btn:not(:disabled):active,
     .conv-caret:not(:disabled):active,
     .conv-caret.is-open:not(:disabled):active,
     .conv-tier-more:not(:disabled):active,

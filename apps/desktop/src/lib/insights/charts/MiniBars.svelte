@@ -126,7 +126,7 @@
     border-radius: 4px;
     background: var(--app-surface);
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 800;
     line-height: 1;
   }

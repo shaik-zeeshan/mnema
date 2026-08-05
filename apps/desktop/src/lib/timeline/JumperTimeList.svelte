@@ -130,13 +130,13 @@
     border-bottom: 1px solid var(--app-border);
   }
   .timeline__picker-day {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .timeline__picker-day-count {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
@@ -172,7 +172,7 @@
     border-radius: 3px;
     color: var(--app-text);
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
     padding: 4px 8px;
     margin-bottom: 1px;
@@ -203,7 +203,7 @@
   .timeline__picker-hour-count {
     position: relative;
     margin-left: auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     letter-spacing: 0.02em;
   }
@@ -249,11 +249,11 @@
     padding: 24px 16px;
     text-align: center;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     min-height: 140px;
   }
   .timeline__picker-msg-ico {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     opacity: 0.5;
   }
   .timeline__picker-spinner {
@@ -286,53 +286,9 @@
     gap: 7px;
   }
   .timeline__picker-glyph {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
   }
 
-  /* Shared button system (local copy — `.btn` is defined per-surface in this
-     app, not in a global sheet). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
-  }
+  /* `.btn` + `--ghost` / `--sm`: shared primitive (system.css §6). */
 </style>

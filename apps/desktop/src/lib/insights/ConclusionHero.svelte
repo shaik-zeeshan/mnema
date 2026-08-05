@@ -126,11 +126,11 @@
     <div class="cd-left-top">
       <div class="cd-status">
         {#if conclusion.pinned}
-          <span class="pill pill--pinned"
+          <span class="tag tag--pinned"
             ><IconPin aria-hidden="true" /> pinned</span
           >
         {/if}
-        <span class="pill">{isFaded ? "faded" : "visible"}</span>
+        <span class="tag">{isFaded ? "faded" : "visible"}</span>
       </div>
       <!-- Full statement — NEVER truncated. -->
       <p class="cd-statement">{conclusion.statement}</p>
@@ -243,7 +243,7 @@
     height: 14px;
     flex: 0 0 auto;
   }
-  .pill :global(svg) {
+  .tag :global(svg) {
     width: 12px;
     height: 12px;
     flex: 0 0 auto;
@@ -282,7 +282,7 @@
     display: flex;
     gap: 6px;
   }
-  .pill {
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -294,14 +294,14 @@
     border: 1px solid var(--app-border);
     color: var(--app-text-muted);
   }
-  .pill--pinned {
+  .tag--pinned {
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
   }
   .cd-statement {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     color: var(--app-text-strong);
     font-weight: 500;
@@ -314,39 +314,8 @@
     flex: 1 1 0;
     justify-content: center;
   }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: var(--text-base);
-    padding: 6px 11px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  /* Base `.btn` is the shared primitive (system.css §6, routes/+layout.svelte).
+     Only the modifiers this hero actually invents live here. */
   .btn--busy:disabled {
     opacity: 1;
     cursor: progress;
@@ -356,19 +325,15 @@
     border-color: var(--app-accent-border);
     color: var(--app-accent-strong);
   }
-  .btn--pinned:hover:not(:disabled) {
+  .btn--pinned:hover {
     border-color: var(--app-accent);
     color: var(--app-accent);
     background: var(--app-accent-bg);
   }
-  .btn--ghost {
-    border-color: transparent;
-    color: var(--app-text-muted);
-  }
-  .btn--ghost:hover:not(:disabled) {
-    background: var(--app-surface-hover);
+  /* Dismiss is the one destructive action in the hero, so its ghost hover
+     goes danger-red rather than the shared strong-text. */
+  .btn--ghost:hover {
     color: var(--app-danger);
-    border-color: transparent;
   }
   .btn-spinner {
     width: 9px;
@@ -400,7 +365,7 @@
     gap: 10px;
   }
   .cd-conf-big {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     line-height: 1;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -415,7 +380,7 @@
     gap: 3px;
   }
   .cd-conf-trend {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -430,7 +395,7 @@
     color: var(--app-danger);
   }
   .cd-conf-cap {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.13em;
@@ -465,7 +430,7 @@
     stroke-width: 1.5;
   }
   .cd-traj-note {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     display: flex;
     gap: 6px;
@@ -492,12 +457,6 @@
     }
   }
   @media (prefers-reduced-motion: reduce) {
-    .btn {
-      transition: none;
-    }
-    .btn:not(:disabled):active {
-      transform: none;
-    }
     .btn-spinner {
       animation: none;
     }

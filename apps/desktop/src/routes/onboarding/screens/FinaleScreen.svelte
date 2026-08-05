@@ -345,7 +345,7 @@
     margin-top: 16px;
   }
   .reason {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.7;
     color: var(--app-danger);
     margin: 0;
@@ -444,7 +444,7 @@
     border-radius: 8px;
     padding: 14px 16px;
     background: var(--app-surface-subtle);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text);
     overflow-x: auto;
   }

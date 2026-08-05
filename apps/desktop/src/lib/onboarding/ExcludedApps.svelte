@@ -163,7 +163,7 @@
      ever inflating a line box, so icons cost zero vertical space. */
   .sentence {
     margin: 5px 0 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 2.05;
     color: var(--app-text-muted);
   }
@@ -261,14 +261,14 @@
   }
   .waiting-note {
     color: var(--app-text-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     white-space: nowrap;
   }
 
   .add {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     padding: 3px 10px;
     vertical-align: 1px;
     color: var(--app-text-subtle);
@@ -293,7 +293,7 @@
     width: 190px;
     padding: 3px 9px;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     vertical-align: 1px;
     color: var(--app-text);
     background: var(--app-surface-raised);
@@ -308,7 +308,7 @@
 
   .note {
     margin: 7px 0 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.7;
     color: var(--app-text-subtle);
   }

@@ -472,7 +472,7 @@
   }
   .ov-header h1 {
     margin: 0;
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     line-height: 1.2;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -480,7 +480,7 @@
   }
   .ov-header .subtitle {
     margin: 3px 0 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
   }
   .ov-controls {
@@ -511,7 +511,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -548,7 +548,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -567,7 +567,7 @@
     opacity: 0.6;
   }
   .re-read-ico {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0;
   }
@@ -612,13 +612,13 @@
   }
   .lede-text {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.7;
     color: var(--app-text);
   }
   .lede-error {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.7;
     color: var(--app-danger, var(--app-text-subtle));
   }
@@ -647,7 +647,7 @@
     min-width: 0;
   }
   .lede-stat-n {
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1.1;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -668,7 +668,7 @@
     border-radius: 50%;
   }
   .lede-stat-cap {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);

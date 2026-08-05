@@ -433,7 +433,7 @@
               class:bad={row.state === "dead"}
             ></span>
             <span class="addr">localhost:{row.port} · {row.name}</span>
-            {#if row.models}<span class="pill ok">{plural(row.models.length, "model")}</span>{/if}
+            {#if row.models}<span class="tag ok">{plural(row.models.length, "model")}</span>{/if}
             <span class="ms">
               {row.latencyMs != null
                 ? `${row.latencyMs} ms`
@@ -443,7 +443,7 @@
             </span>
             {#if row.models}
               {#if alreadyConnected(row.port)}
-                <span class="pill">connected</span>
+                <span class="tag">connected</span>
               {:else}
                 <button
                   class="ob-btn sm"
@@ -513,16 +513,16 @@
       <div class="prov-head">
         <span class="lamp {lampClass(provider.id)}"></span>
         <span class="name">{ai.aiProviderInstanceLabel(provider)}</span>
-        {#if isDefault(provider.id)}<span class="pill info">default</span>{/if}
+        {#if isDefault(provider.id)}<span class="tag info">default</span>{/if}
         <span
-          class="pill"
+          class="tag"
           class:ok={verificationOf(provider.id)?.status === "live"}
           class:bad={verificationOf(provider.id)?.status === "error"}
         >
           {aiVerificationWord(verificationOf(provider.id))}
         </span>
         {#if isCloudAiProviderKind(provider.kind) && ai.aiProviderKeySaved[provider.id]}
-          <span class="pill" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>
+          <span class="tag" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>
         {/if}
       </div>
 
@@ -700,11 +700,11 @@
   }
   .t {
     color: var(--app-text-strong);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
   }
   .d {
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     max-width: 48ch;
   }
   .d.gap {
@@ -735,7 +735,7 @@
   /* fields */
   .fld {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
@@ -790,7 +790,7 @@
   }
   .loud {
     padding: 17px 16px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     /* A whole-pixel line box, not a 1.4 ratio of a fractional font size —
        that pair put these two cards on 54.19px. 17 + 20 + 17 = 54. */
     line-height: 20px;
@@ -802,7 +802,7 @@
     gap: 5px;
   }
   .loss span {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     display: flex;
     gap: 9px;
@@ -818,7 +818,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     border: 1px dashed var(--app-border-strong);
     border-radius: 8px;
@@ -841,7 +841,7 @@
     background: repeating-linear-gradient(90deg, var(--app-info) 0 5px, transparent 5px 10px);
   }
 
-  /* lamps + pills */
+  /* lamps + tags */
   .lamp {
     width: 8px;
     height: 8px;
@@ -860,11 +860,11 @@
   .lamp.busy {
     background: var(--app-warn);
   }
-  .pill {
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     border: 1px solid var(--app-border);
     border-radius: 999px;
@@ -874,17 +874,17 @@
     text-transform: uppercase;
     white-space: nowrap;
   }
-  .pill.ok {
+  .tag.ok {
     color: var(--app-accent);
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
-  .pill.bad {
+  .tag.bad {
     color: var(--app-danger);
     border-color: var(--app-danger-border);
     background: var(--app-danger-bg);
   }
-  .pill.info {
+  .tag.info {
     color: var(--app-info);
     border-color: var(--app-info-border);
     background: var(--app-info-bg);
@@ -915,7 +915,7 @@
     gap: 10px;
     height: var(--ob-ctl-h);
     padding: 0 12px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .sr + .sr {
     border-top: 1px solid var(--app-border);
@@ -929,7 +929,7 @@
     white-space: nowrap;
   }
   .ms {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
@@ -953,7 +953,7 @@
   }
   .prov-head .name {
     color: var(--app-text-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     flex: 1 1 140px;
     min-width: 0;
     overflow: hidden;
@@ -968,7 +968,7 @@
   }
   .mchip {
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     border: 1px solid var(--app-border);
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
@@ -999,7 +999,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     border: 1px solid var(--app-border-strong);
     border-radius: 7px;
     height: var(--ob-ctl-h);
@@ -1037,7 +1037,7 @@
     padding: 6px;
   }
   .grp {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1054,7 +1054,7 @@
     gap: 10px;
     text-align: left;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     background: transparent;
     border: 0;
@@ -1073,7 +1073,7 @@
     color: var(--app-accent);
   }
   .opt .side {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }

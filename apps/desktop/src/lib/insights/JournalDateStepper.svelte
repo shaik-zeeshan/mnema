@@ -126,7 +126,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
   .nav {
@@ -191,7 +191,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.12em;
     text-transform: uppercase;
     cursor: pointer;

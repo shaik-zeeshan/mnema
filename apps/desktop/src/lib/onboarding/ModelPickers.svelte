@@ -408,7 +408,7 @@
     flex-wrap: wrap;
   }
   .sub-note {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     line-height: 1.5;
   }
@@ -435,7 +435,7 @@
   }
   .strip .k {
     display: block;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.1;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -444,7 +444,7 @@
   }
   .strip .v {
     display: block;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -505,7 +505,7 @@
     position: relative;
     height: 14px;
     margin-top: 2px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
   }
   .disk-line i {
@@ -531,7 +531,7 @@
     flex-wrap: wrap;
   }
   .tot-hero {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
@@ -540,7 +540,7 @@
     color: var(--app-danger);
   }
   .tot-cap {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
   }
   .tot-parts {
@@ -548,7 +548,7 @@
     display: flex;
     flex-wrap: wrap;
     gap: 4px 16px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
@@ -580,7 +580,7 @@
     flex-wrap: wrap;
   }
   .escape .msg {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-danger);
     line-height: 1.6;
     flex: 1 1 240px;

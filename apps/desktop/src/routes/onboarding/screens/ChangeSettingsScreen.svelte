@@ -244,7 +244,7 @@
   }
   .tab {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     background: transparent;
     border: 0;
@@ -268,7 +268,7 @@
   .count {
     margin-left: auto;
     align-self: center;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.14em;
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;

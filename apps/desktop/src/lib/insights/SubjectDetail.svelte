@@ -439,17 +439,17 @@
       <div class="subj-hero-main">
         <h1 class="subj-title">{subject}</h1>
         <div class="subj-meta">
-          <span class="pill">
+          <span class="tag">
             {conclusionCount}
             {conclusionCount === 1 ? "conclusion" : "conclusions"}
           </span>
           {#if fadedCount > 0}
-            <span class="pill">{fadedCount} below floor</span>
+            <span class="tag">{fadedCount} below floor</span>
           {/if}
-          <span class="pill">first seen {relativeTime(firstSeenMs)}</span>
-          <span class="pill">last evidence {relativeTime(lastEvidenceMs)}</span>
+          <span class="tag">first seen {relativeTime(firstSeenMs)}</span>
+          <span class="tag">last evidence {relativeTime(lastEvidenceMs)}</span>
           {#if linkedActivityCount > 0}
-            <span class="pill">{linkedActivityCount} linked activities</span>
+            <span class="tag">{linkedActivityCount} linked activities</span>
           {/if}
         </div>
       </div>
@@ -527,7 +527,7 @@
     flex-wrap: wrap;
     gap: 6px;
   }
-  .pill {
+  .tag {
     font-size: 10.5px;
     padding: 2px 9px;
     border-radius: 999px;

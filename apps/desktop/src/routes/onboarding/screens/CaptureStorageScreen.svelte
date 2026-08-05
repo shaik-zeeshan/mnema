@@ -229,7 +229,7 @@
     padding: 9px 12px;
     background: var(--app-surface-subtle);
     color: var(--app-text);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
   .field.bad {
     border-color: var(--app-danger-border);
@@ -242,7 +242,7 @@
   }
   .field .mark {
     color: var(--app-danger);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     white-space: nowrap;
   }
   .field.range {

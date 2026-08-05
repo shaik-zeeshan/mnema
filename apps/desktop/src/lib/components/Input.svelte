@@ -1,9 +1,9 @@
 <script lang="ts">
   // A plain text input. `value` is a RAW STRING so it flows upward unchanged
   // into raw draft fields (e.g. customWidthRaw / customHeightRaw) that parse and
-  // validate with their own integer regex. Empty string = unset. Ships its own
-  // styles (not the `.settings-shell .text-input` rules) so it renders the same
-  // inside settings and onboarding.
+  // validate with their own integer regex. Empty string = unset. Renders off
+  // the shared `.input` primitive (not the `.settings-shell .text-input` rules)
+  // so it looks the same inside settings and onboarding.
   let {
     value = $bindable(""),
     inputmode = "text",
@@ -45,21 +45,11 @@
 />
 
 <style>
+  /* `.input` is the shared primitive (system.css §6, routes/+layout.svelte).
+     Only what makes THIS an in-row form field lives here. */
   .input {
     width: 100%;
     min-width: 0;
-    height: 34px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.12s, box-shadow 0.12s, background 0.12s;
   }
 
   .input::placeholder {
@@ -68,24 +58,17 @@
     color: var(--app-text-subtle);
   }
 
-  .input:focus {
-    border-color: var(--app-accent);
-    background: var(--app-surface-raised);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), var(--app-ring);
-  }
-
   .input--invalid {
     border-color: var(--app-danger);
   }
 
   .input--invalid:focus {
     border-color: var(--app-danger);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-danger) 30%, transparent);
+    box-shadow: var(--ring-danger);
   }
 
   .input:disabled {
-    opacity: var(--app-disabled-opacity);
+    opacity: var(--opacity-disabled);
     cursor: not-allowed;
   }
 </style>

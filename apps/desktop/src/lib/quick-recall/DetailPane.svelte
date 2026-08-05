@@ -382,7 +382,7 @@
 
   .quick-recall__detail-placeholder {
     margin: auto;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-faint, var(--app-text-subtle));
     text-align: center;
   }

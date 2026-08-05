@@ -6873,11 +6873,6 @@
     margin-left: auto;
   }
 
-  /* Align bar-2 control typography with the app titlebar (10px). */
-  .timeline__bar .btn--sm {
-    font-size: var(--text-xs);
-  }
-
   /* ── Recording control cluster ─────────────────────────────
      Recording status + start/stop now live in the app-wide title bar
      (see `routes/+layout.svelte`); the previous `.timeline__capture*`
@@ -6897,57 +6892,8 @@
     }
   }
 
-  /* ── Buttons (subset used by the timeline) ─────────────────── */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-    font-size: var(--text-sm);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
-  }
+  /* `.btn` + `--ghost` / `--sm`: shared primitive (system.css §6,
+     routes/+layout.svelte). */
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
      title bar as reusable surface actions, so those local rules were removed. */
@@ -6963,7 +6909,7 @@
     background: var(--app-danger-bg-soft);
     border: 1px solid var(--app-danger-border);
     border-radius: 4px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-danger-text);
   }
 
@@ -6979,7 +6925,7 @@
   }
 
   .timeline__error-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -7019,7 +6965,7 @@
   .timeline__empty-title {
     margin: 0;
     font-family: inherit;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--app-text);
@@ -7440,7 +7386,7 @@
   }
 
   .timeline__overlay-key {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -7716,7 +7662,7 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text);
@@ -7987,7 +7933,7 @@
     display: flex;
     flex-direction: column;
     padding: 0 4px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8061,7 +8007,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8080,7 +8026,7 @@
   }
 
   .timeline-rail__audio-lane-error-label {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8230,7 +8176,7 @@
     top: 4px;
     width: fit-content;
     padding: 2px 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8412,24 +8358,6 @@
      here through the semantic-token cascade in `+layout.svelte`. */
   :global([data-theme="light"]) .timeline {
     background: var(--app-bg);
-  }
-
-  :global([data-theme="light"]) .btn {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .btn:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .btn--ghost:not(:disabled):hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
   }
 
   :global([data-theme="light"]) .timeline__stage-action-trigger {

@@ -468,7 +468,7 @@
   >
     <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
     <span class="timeline__jump-label">{triggerLabel}</span>
-    <span class="timeline__jump-kbd" aria-hidden="true">J</span>
+    <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
   </button>
 
   {#if showLatest}
@@ -542,61 +542,8 @@
 </div>
 
 <style>
-  /* Shared button system (local copy — `.btn` is defined per-surface in this
-     app, not in a global sheet; see Subjects.svelte / settings panels). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--text-sm);
-  }
-  /* Accent ghost — reserved for the global "Latest" / snap-to-now action. */
-  .btn--accent {
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-  }
-  .btn--accent:not(:disabled):hover {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
+  /* `.btn` + `--ghost` / `--sm` / `--accent`: shared primitive
+     (system.css §6, routes/+layout.svelte). */
 
   /* ── Trigger group ──────────────────────────────────────────────────────── */
   .timeline__jump {
@@ -609,9 +556,6 @@
     gap: 6px;
     font-variant-numeric: tabular-nums;
     max-width: 240px;
-    /* Typography inherits from `.btn` (uppercase, 700, 0.08em) so the readout
-       matches the LATEST/OCR/REFRESH buttons sharing the timeline bar row. */
-    font-size: var(--text-xs);
   }
   .timeline__jump-trigger--open {
     border-color: var(--app-accent-border);
@@ -619,9 +563,6 @@
   }
   .timeline__jump-latest {
     flex: 0 0 auto;
-    /* Match the bar-2 control size (10px) used by the OCR/refresh buttons,
-       which the `.timeline__bar .btn--sm` override shrinks app-side. */
-    font-size: var(--text-xs);
   }
   .timeline__jump-icon {
     display: inline-flex;
@@ -637,16 +578,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
   .timeline__jump-kbd {
     flex: 0 0 auto;
-    font-size: var(--text-xs);
-    color: var(--app-text-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
-    padding: 1px 5px;
     margin-left: 2px;
-    text-transform: none;
-    letter-spacing: 0;
   }
 
   /* ── Popover shell ──────────────────────────────────────────────────────── */
@@ -674,7 +609,7 @@
   }
   .timeline__picker-title {
     flex: 1;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -685,7 +620,7 @@
     gap: 6px;
   }
   .timeline__picker-glyph {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
   }
   .timeline__picker-panes {
@@ -709,7 +644,7 @@
     padding: 8px 12px;
     border-top: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     min-height: 32px;
   }
   .timeline__picker-foot-span {

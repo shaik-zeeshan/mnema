@@ -1998,7 +1998,7 @@
   }
   .ov-header h1 {
     margin: 0;
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     line-height: 1.2;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -2006,7 +2006,7 @@
   }
   .ov-header .subtitle {
     margin: 3px 0 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-muted);
     text-transform: capitalize;
   }
@@ -2021,7 +2021,7 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
   .date-stepper .nav {
@@ -2063,7 +2063,7 @@
   .date-stepper .range-today {
     margin-left: 2px;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 3px 9px;
     border: 1px solid var(--app-accent-border);
@@ -2158,7 +2158,7 @@
     margin-bottom: 9px;
   }
   .exhibit-title {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.07em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2176,7 +2176,7 @@
 
   .tile-note {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
@@ -2195,7 +2195,7 @@
   }
   .tile-retry {
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 1px 7px;
@@ -2228,7 +2228,7 @@
     margin-top: auto;
     padding-top: 12px;
     align-self: flex-start;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     border-bottom: 1px dotted var(--app-border-strong);
     line-height: 1.3;
@@ -2356,14 +2356,14 @@
   }
   .ask-entry .glyph {
     color: var(--app-accent-strong);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
   }
   .ask-entry .label {
     flex: 1 1 auto;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
   }
   .ask-entry .hint {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2392,7 +2392,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2431,7 +2431,7 @@
     background: transparent;
     color: var(--app-text-subtle);
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.18em;
     text-transform: uppercase;
     cursor: pointer;
@@ -2459,7 +2459,7 @@
     transform: translateY(1px);
   }
   .re-read-ico {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0;
   }
@@ -2483,7 +2483,7 @@
      tinted toward the app's danger register without shouting. */
   .lede-error {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.7;
     color: var(--app-danger, var(--app-text-subtle));
   }
@@ -2531,7 +2531,7 @@
   }
   .lede-text {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.7;
     color: var(--app-text);
   }
@@ -2560,7 +2560,7 @@
     gap: 8px;
   }
   .lede-stat-n {
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1.1;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -2583,7 +2583,7 @@
     border-radius: 50%;
   }
   .lede-stat-cap {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -2597,7 +2597,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-variant-numeric: tabular-nums;
     color: var(--app-text-muted);
   }
@@ -2635,7 +2635,7 @@
     flex: 1 1 240px;
     min-width: 0;
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.6;
     color: var(--app-text-muted);
   }
@@ -2652,7 +2652,7 @@
   }
   .delta-group-head {
     margin: 0 0 2px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2660,7 +2660,7 @@
   /* Quiet one-line explainer for first-time readers, under a section eyebrow. */
   .section-explainer {
     margin: -2px 0 12px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.5;
   }
@@ -2677,7 +2677,7 @@
     border-top: 1px dashed var(--app-border);
   }
   .delta-overflow-count {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
   }
   .delta-row {
@@ -2699,7 +2699,7 @@
     gap: 12px;
   }
   .dismissed-note {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     font-style: italic;
     overflow: hidden;
@@ -2710,7 +2710,7 @@
   .dismissed-undo {
     flex: 0 0 auto;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     padding: 0 0 1px;
     border: 0;
     border-bottom: 1px dotted var(--app-accent-border);
@@ -2737,7 +2737,7 @@
   }
   .delta-statement {
     min-width: 0;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.45;
     color: var(--app-text-strong);
     display: -webkit-box;
@@ -2756,7 +2756,7 @@
        the left and only ellipsises if the subject is very long. */
     margin-left: auto;
     flex: 0 0 auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -2771,7 +2771,7 @@
     align-items: center;
     justify-content: center;
     font: inherit;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
     border: none;
     border-radius: 5px;
@@ -2812,7 +2812,7 @@
     align-items: center;
     gap: 5px;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -2840,7 +2840,7 @@
   }
   .gentle-btn {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     padding: 3px 9px;
     border: 1px solid transparent;
     border-radius: 6px;
@@ -2865,7 +2865,7 @@
 
   .evidence-link {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     background: transparent;
     border: none;
@@ -2895,11 +2895,11 @@
     align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
   }
   .ev-stance {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     padding: 1px 6px;
@@ -2918,18 +2918,18 @@
     color: var(--app-text-strong);
   }
   .ev-time {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
   .evidence-empty {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
 
   .fade-note {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
     font-style: italic;
   }
@@ -2963,14 +2963,14 @@
     flex: 1 1 auto;
   }
   .attn-title {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
   .attn-time {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
   }
@@ -2981,7 +2981,7 @@
     flex: 0 0 auto;
   }
   .attn-pick-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -2997,55 +2997,14 @@
   .feed-end {
     text-align: center;
     padding: 6px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-faint);
   }
 
   /* ---- Free-tier enable-engine CTA button ---- */
-  .btn {
-    font: inherit;
-    font-size: var(--text-sm);
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 12px;
-    height: 28px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease,
-      transform 0.06s ease;
-  }
-  .btn:hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn--accent {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .btn--accent:hover {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
+  /* `.btn` + `--accent`: shared primitive (system.css §6, +layout.svelte). */
 
   /* ---- States ---- */
   .state {
@@ -3066,12 +3025,12 @@
   }
   .state-title {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .state-detail {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.6;
   }
