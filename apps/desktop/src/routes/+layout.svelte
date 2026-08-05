@@ -60,6 +60,10 @@
     type ShortcutDefinition,
   } from "$lib/keyboard";
   import { keyboardHelp, type KeyboardHelpGroup } from "$lib/keyboard-help.svelte";
+  // Direction 01 — Bento Native. Adds the tile grid, tile chrome and macOS
+  // materials on top of the phase-1 tokens/primitives this file's style block
+  // already defines. Imported here so every route gets it.
+  import "$lib/bento/bento.css";
   interface Props {
     children: Snippet;
   }

@@ -1,0 +1,695 @@
+/* ==========================================================================
+   MNEMA · direction 01 — BENTO NATIVE
+   The direction layer. Imported once from `routes/+layout.svelte`, so every
+   surface can use it.
+
+   What this file is NOT: a fork of the phase-1 design system. The type ramp
+   (`.t-label` … `.t-display`), `.btn`, `.input`, `.kbd`, `.pill` and the whole
+   `--app-*` palette already live in `+layout.svelte` and stay the source of
+   truth. This file only adds what the BENTO IDIOM needs on top:
+
+     1. direction tokens  — the tile surface system + macOS materials
+     2. the bento grid    — one cell unit, one gutter, four legal footprints
+     3. tile chrome       — the constant 18px header row every tile opens with
+     4. native chrome     — segmented control, menu, chip, thumb, filmstrip
+
+   THEMING RULE (inherited from the mockup): only TOKENS are themed. No rule
+   below may branch on the theme — if a component needs a different value in
+   light, it gets a token. Light values are injected in exactly one place,
+   `[data-theme="light"]`, matching how `+layout.svelte` themes the app.
+
+   Source: docs/redesign/round4/01-bento-native/ (shared stylesheet, ll. 61-597)
+   ========================================================================== */
+
+:root {
+  /* ── the bento surface system ───────────────────────────────────────────
+     A tile is a grouped borderless FILL (the System Settings idiom), never a
+     bordered card. Elevation is a surface step, never a shadow — shadows are
+     reserved for things that genuinely float (menus, popovers, HUDs). */
+  --tile-fill: #17171f;
+  --tile-fill-hover: #1d1d27;
+  --tile-sep: #22222e;
+  --tile-live: rgba(255, 49, 72, 0.07); /* the ONE tinted tile per screen */
+  --media-void: #0b0b10; /* what sits behind a frame that has not loaded */
+
+  /* ── materials + bezels — CHROME ONLY, content surfaces stay opaque ──── */
+  --mat-toolbar: rgba(12, 12, 14, 0.76);
+  --mat-menu: rgba(26, 26, 32, 0.85);
+  --mat-pop: rgba(28, 28, 34, 0.96); /* a popover over CONTENT stays opaque */
+  --mat-dim: rgba(0, 0, 0, 0.34);
+  --mat-hud: rgba(22, 22, 28, 0.88);
+  --menu-edge: rgba(255, 255, 255, 0.1);
+  --push-grad: linear-gradient(to bottom, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0));
+  --scrim: linear-gradient(to top, rgba(6, 6, 10, 0.74), rgba(6, 6, 10, 0) 44%);
+  --hud-shadow: 0 12px 40px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.1);
+  --seg-on-bg: #22222e;
+  --seg-on-shadow: 0 1px 2.5px rgba(0, 0, 0, 0.35), inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
+
+  /* ── capture-source identity (screen / mic / system audio) ───────────── */
+  --app-src-screen: #c0b0ff;
+  --app-src-screen-bg: #1a1a3a;
+  --app-src-mic: #80d0a8;
+  --app-src-mic-bg: #0f2e1f;
+  --app-src-sys: #b0c080;
+  --app-src-sys-bg: #2a2010;
+
+  /* ── THE BENTO GRID — the numbers the whole app is laid out on ──────── */
+  --cell-gutter: 16px;
+  --tile-pad: 14px; /* 16 outer margin − 2 optical, held on EVERY tile */
+  --tile-r: 12px;
+  --tile-r-in: 6px; /* derived: 12 − 6 inset. Never hand-picked. */
+  --tile-hd: 18px; /* the constant tile header row height (one baseline) */
+}
+
+[data-theme="light"] {
+  --tile-fill: #ffffff;
+  --tile-fill-hover: #f2f2f0;
+  --tile-sep: #e6e6e2;
+  --tile-live: rgba(214, 34, 54, 0.05);
+  --media-void: #e9e9e6;
+
+  --mat-toolbar: rgba(246, 246, 244, 0.8);
+  --mat-menu: rgba(250, 250, 248, 0.86);
+  --mat-pop: rgba(252, 252, 250, 0.97);
+  --mat-dim: rgba(30, 30, 34, 0.18);
+  --mat-hud: rgba(250, 250, 248, 0.9);
+  --menu-edge: rgba(0, 0, 0, 0.12);
+  --push-grad: linear-gradient(to bottom, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0));
+  --scrim: linear-gradient(to top, rgba(10, 10, 14, 0.8), rgba(10, 10, 14, 0) 46%);
+  --hud-shadow: 0 12px 40px rgba(21, 28, 38, 0.28), 0 0 0 1px rgba(0, 0, 0, 0.1);
+  --seg-on-bg: #ffffff;
+  --seg-on-shadow: 0 1px 2.5px rgba(21, 28, 38, 0.22);
+
+  --app-src-screen: #6f5ed1;
+  --app-src-screen-bg: #f1edff;
+  --app-src-mic: #2f8e59;
+  --app-src-mic-bg: #e8f5ec;
+  --app-src-sys: #8b7a2c;
+  --app-src-sys-bg: #faf4df;
+}
+
+/* ══ THE BENTO ═══════════════════════════════════════════════════════════
+   Four legal footprints and nothing else: 1×1, 2×1, 2×2, 4×1. A fifth
+   footprint is the moment the grid stops being a grid.
+   ====================================================================== */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--cell-gutter);
+}
+.bento--2 {
+  grid-template-columns: repeat(2, 1fr);
+}
+.bento--3 {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--tile-pad);
+  border-radius: var(--tile-r);
+  background: var(--tile-fill);
+  overflow: hidden;
+  transition: background-color var(--dur-quick) var(--ease);
+}
+.tile--w2 {
+  grid-column: span 2;
+}
+.tile--w3 {
+  grid-column: span 3;
+}
+.tile--w4 {
+  grid-column: 1 / -1;
+}
+.tile--h2 {
+  grid-row: span 2;
+}
+/* the ONE tinted tile per screen: whatever is live right now */
+.tile--live {
+  background: linear-gradient(to bottom, var(--tile-live), transparent 62%), var(--tile-fill);
+}
+.tile--acc {
+  background: linear-gradient(to bottom, var(--app-accent-glow), transparent 58%), var(--tile-fill);
+}
+.tile:hover {
+  background-color: var(--tile-fill-hover);
+}
+/* a tile you cannot act on does not light up under the pointer */
+.tile--static:hover {
+  background-color: var(--tile-fill);
+}
+.tile--live:hover,
+.tile--acc:hover {
+  background-color: transparent;
+}
+
+/* ── the constant header row ────────────────────────────────────────────
+   Every tile opens with this, at the same height, on the same baseline:
+   mono eyebrow left, meta right. That constant is what lets the payload
+   below be completely free without the grid falling apart. */
+.tile__h {
+  flex: 0 0 var(--tile-hd);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-inline, 6px);
+  margin-bottom: var(--s-8);
+}
+.tile__h .t-label {
+  color: var(--app-text-subtle);
+}
+.tile__h .tile__more {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+  color: var(--app-text-subtle);
+}
+.tile__h .tile__more svg {
+  width: 8px;
+  height: 12px;
+}
+.tile__h .tile__glyph {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  color: var(--app-text-subtle);
+}
+
+/* ── the payload zone ───────────────────────────────────────────────────
+   Everything under the header. `--bleed` pulls it back out to the tile edge
+   so media clips on the tile radius — that bleed is what stops a bento
+   reading as a form. */
+.pay {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.pay--bleed {
+  margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1);
+}
+.pay--bleedr {
+  margin-right: calc(var(--tile-pad) * -1);
+}
+.pay--bleedb {
+  margin-bottom: calc(var(--tile-pad) * -1);
+}
+/* a tile whose payload IS a row list: rows bleed to both edges */
+.pay--rows {
+  margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1);
+}
+.pay--rows .row:last-child {
+  padding-bottom: var(--s-8);
+}
+
+.trow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+  min-height: var(--h-row, 28px);
+}
+.trow--sep + .trow--sep {
+  box-shadow: 0 -1px 0 var(--tile-sep);
+}
+
+/* ── rows inside a tile (conversations, subjects, settings) ────────────
+   Separators are INSET from the left by the tile pad — the System Settings
+   rule — so the list reads as one group, not a stack of boxes. */
+.row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s-12);
+  min-height: var(--o-setting-row, 40px);
+  padding: var(--s-6) var(--tile-pad);
+}
+.row + .row::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: var(--tile-pad);
+  right: 0;
+  height: var(--hairline);
+  background: var(--tile-sep);
+}
+.row:hover {
+  background: var(--tile-fill-hover);
+}
+.row--static:hover {
+  background: transparent;
+}
+.row__txt {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.row__lbl {
+  display: block;
+  font: var(--w-regular) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row__sub {
+  display: block;
+  margin-top: 2px;
+  font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+  letter-spacing: var(--ls-meta);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row__val {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-8);
+  font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+  color: var(--app-text-muted);
+}
+/* full-row accent selection — the native rule. Never an underline. */
+.row.is-sel {
+  background: var(--app-accent);
+}
+.row.is-sel .row__lbl,
+.row.is-sel .row__sub,
+.row.is-sel .row__val {
+  color: var(--app-accent-contrast);
+}
+
+/* ══ NATIVE CHROME ═══════════════════════════════════════════════════════ */
+
+/* NSSegmentedControl — the one mode switch idiom in the app */
+.seg {
+  display: inline-flex;
+  align-items: center;
+  height: var(--h-md);
+  padding: 2px;
+  border-radius: calc(var(--r-md) + 1px);
+  background: color-mix(in srgb, var(--app-text-strong) 7%, transparent);
+}
+.seg__i {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-inline, 6px);
+  height: 100%;
+  padding: 0 var(--s-12);
+  border-radius: var(--r-md);
+  font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+  transition: color var(--dur-quick) var(--ease);
+}
+.seg__i:hover {
+  color: var(--app-text-strong);
+}
+.seg__i.on {
+  background: var(--seg-on-bg);
+  color: var(--app-text-strong);
+  box-shadow: var(--seg-on-shadow);
+}
+.seg__i:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--app-accent-glow);
+}
+.seg__i .kbd {
+  height: 16px;
+  min-width: 16px;
+  padding: 0;
+  background: transparent;
+  color: var(--app-text-subtle);
+}
+.seg--sm {
+  height: var(--h-sm);
+}
+.seg--sm .seg__i {
+  padding: 0 var(--s-8);
+}
+
+/* NSMenu — 24px rows, 20px checkmark gutter, right-aligned ⌘ column */
+.menu {
+  min-width: 210px;
+  padding: 5px;
+  border-radius: var(--r-md);
+  background: var(--mat-menu);
+  backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge);
+}
+.menu__i {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  height: 24px;
+  padding: 0 var(--s-8) 0 0;
+  border-radius: 5px;
+  font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+  letter-spacing: var(--ls-ui);
+  color: var(--app-text-strong);
+  white-space: nowrap;
+  text-align: left;
+}
+.menu__i:hover:not(.is-dis),
+.menu__i.is-hl {
+  background: var(--app-accent);
+  color: var(--app-accent-contrast);
+}
+.menu__i.is-dis {
+  color: var(--app-text-subtle);
+  pointer-events: none;
+}
+.menu__ck {
+  flex: 0 0 auto;
+  width: 20px;
+  display: inline-flex;
+  justify-content: center;
+}
+.menu__ck svg {
+  width: 10px;
+  height: 10px;
+}
+.menu__gl {
+  flex: 0 0 auto;
+  width: 18px;
+  margin-right: var(--s-4);
+  display: inline-flex;
+  justify-content: center;
+}
+.menu__gl svg {
+  width: 13px;
+  height: 13px;
+  opacity: 0.85;
+}
+.menu__kbd {
+  margin-left: auto;
+  padding-left: var(--s-16);
+  font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+  color: var(--app-text-subtle);
+}
+.menu__i:hover:not(.is-dis) .menu__kbd,
+.menu__i.is-hl .menu__kbd {
+  color: var(--app-accent-contrast);
+  opacity: 0.8;
+}
+.menu__sep {
+  height: var(--hairline);
+  margin: 5px var(--s-8);
+  background: var(--app-border-strong);
+}
+.menu__hd {
+  padding: var(--s-4) var(--s-8) var(--s-4) 20px;
+  font: var(--w-medium) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+  color: var(--app-text-subtle);
+}
+
+/* NSPopUpButton */
+.pop {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-6);
+  height: var(--h-sm);
+  padding: 0 3px 0 var(--s-8);
+  border: var(--hairline) solid var(--app-border-strong);
+  border-radius: var(--r-md);
+  background: var(--app-surface-raised) var(--push-grad);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
+  font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+  color: var(--app-text-strong);
+  white-space: nowrap;
+}
+.pop__chev {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  border-radius: var(--r-sm);
+  background: var(--app-accent);
+  color: var(--app-accent-contrast);
+}
+.pop__chev svg {
+  width: 9px;
+  height: 9px;
+}
+
+/* push-bezel variant of the shared `.btn` — the AppKit top-light gradient */
+.btn--push {
+  background-image: var(--push-grad);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
+}
+
+/* chips: scope chips, verdict badges, context chips */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-inline, 6px);
+  height: var(--h-sm);
+  padding: 0 var(--s-8);
+  border-radius: var(--r-pill);
+  background: var(--app-surface);
+  font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+  color: var(--app-text-muted);
+  white-space: nowrap;
+}
+.chip.on {
+  background: var(--app-accent);
+  color: var(--app-accent-contrast);
+}
+.chip--verdict {
+  height: var(--o-badge);
+  padding: 0 var(--s-6);
+  border-radius: var(--r-sm);
+  font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+}
+.chip--ok {
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+}
+.chip--warn {
+  background: var(--app-warn-bg);
+  color: var(--app-warn);
+}
+.chip--bad {
+  background: var(--app-danger-bg);
+  color: var(--app-danger);
+}
+.chip--flat {
+  background: var(--app-surface-hover);
+  color: var(--app-text-muted);
+}
+
+.chev {
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+}
+.chev svg {
+  width: 8px;
+  height: 12px;
+}
+
+/* ── media payloads ─────────────────────────────────────────────────────
+   A frame thumb, the moments filmstrip and an inline citation chip are the
+   same object at three sizes; all three sit on `--media-void` so a frame
+   that has not decoded yet reads as a hole in the tile, not a flash. */
+.thumb {
+  position: relative;
+  flex: 0 0 auto;
+  width: 50px;
+  height: 28px;
+  border-radius: var(--tile-r-in);
+  background: var(--media-void);
+  overflow: hidden;
+}
+.thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.strip {
+  display: flex;
+  gap: 2px;
+  height: 100%;
+  background: var(--media-void);
+}
+.strip__i {
+  position: relative;
+  flex: 1 1 0;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+}
+.strip__i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--scrim);
+}
+.strip__i img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.strip__t {
+  position: absolute;
+  left: var(--s-8);
+  bottom: var(--s-6);
+  z-index: 2;
+  font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+  letter-spacing: var(--ls-label);
+  font-variant-numeric: tabular-nums;
+  color: #f2f2f5;
+}
+.strip__c {
+  position: absolute;
+  left: var(--s-8);
+  bottom: 20px;
+  z-index: 2;
+  max-width: 84%;
+  font: var(--w-medium) var(--t-meta) / 1.2 var(--app-font-sans);
+  color: #f2f2f5;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* an inline citation chip, sized to sit INSIDE digest prose */
+.cite {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  height: var(--o-badge);
+  padding: 0 var(--s-6) 0 var(--s-2);
+  border-radius: var(--r-sm);
+  background: var(--app-surface-hover);
+  font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted);
+  vertical-align: -5px;
+}
+.cite__f {
+  position: relative;
+  display: inline-block;
+  width: 24px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--media-void);
+  overflow: hidden;
+}
+.cite__f img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ── small data marks ─────────────────────────────────────────────────── */
+.spark {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.spark span {
+  flex: 1 1 0;
+  display: flex;
+  align-items: flex-end;
+  height: 100%;
+}
+.spark i {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  background: var(--app-accent);
+  opacity: 0.34;
+}
+.spark i.on {
+  opacity: 1;
+}
+
+.conv {
+  display: inline-flex;
+  gap: 3px;
+}
+.conv i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--app-border-strong);
+}
+.conv i.on {
+  background: var(--app-accent);
+}
+
+/* app icon stand-in — a letter tile when we have no real icon */
+.aicon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--o-icon, 20px);
+  height: var(--o-icon, 20px);
+  border-radius: 5px;
+  font: var(--w-semi) var(--t-label) / 1 var(--app-font-mono);
+  color: #fff;
+}
+.aicon--lg {
+  width: var(--o-icon-lg, 24px);
+  height: var(--o-icon-lg, 24px);
+  border-radius: var(--r-md);
+}
+
+/* ── source glyphs (screen / mic / system audio) ───────────────────────── */
+.srcg {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+.srcg svg {
+  width: 12px;
+  height: 12px;
+}
+.srcg--screen {
+  color: var(--app-src-screen);
+}
+.srcg--mic {
+  color: var(--app-src-mic);
+}
+.srcg--sys {
+  color: var(--app-src-sys);
+}
+.srcg--off {
+  color: var(--app-text-faint);
+}
+
+/* ── overlay scrollbars — macOS never reserves a gutter ────────────────── */
+.scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--app-text-subtle) 45%, transparent);
+  background-clip: content-box;
+}
+.scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile,
+  .seg__i {
+    transition: none;
+  }
+}
