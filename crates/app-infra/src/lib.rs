@@ -13,6 +13,7 @@ mod frame_batch_artifact_cleanup;
 mod frame_batch_runtime;
 mod frame_batch_store;
 mod hidden_segment_workspace;
+pub mod highlights;
 pub mod jobs;
 mod lexical;
 mod license_token_store;
@@ -130,6 +131,7 @@ pub use search::{
 };
 pub use semantic_search::{AnchorMissingVector, SemanticSearchStore};
 pub use status::AppInfraStatus;
+pub use highlights::{HighlightsStore, CONVERSATION_MIN_OVERLAP_MS, DEFAULT_MOMENTS_LIMIT};
 pub use usage_charts::{UsageChartsStore, MAX_FRAME_GAP_MS};
 pub use user_context::SubjectVectorStore;
 pub use user_context::{
@@ -316,6 +318,7 @@ pub struct AppInfra {
     search: SearchStore,
     semantic_search: SemanticSearchStore,
     usage_charts: UsageChartsStore,
+    highlights: HighlightsStore,
     user_context: UserContextStore,
     system_audio_evidence: system_audio_evidence::SystemAudioEvidenceStore,
     subject_vectors: SubjectVectorStore,
@@ -398,6 +401,7 @@ impl AppInfra {
         let search = SearchStore::new(database.handle().clone());
         let semantic_search = SemanticSearchStore::new(database.handle().clone());
         let usage_charts = UsageChartsStore::new(database.handle().clone());
+        let highlights = HighlightsStore::new(database.handle().clone());
         let user_context = UserContextStore::new(database.handle().clone());
         let system_audio_evidence =
             system_audio_evidence::SystemAudioEvidenceStore::new(database.handle().clone());
@@ -428,6 +432,7 @@ impl AppInfra {
             search,
             semantic_search,
             usage_charts,
+            highlights,
             user_context,
             system_audio_evidence,
             subject_vectors,
@@ -560,6 +565,12 @@ impl AppInfra {
 
     pub fn usage_charts(&self) -> &UsageChartsStore {
         &self.usage_charts
+    }
+
+    /// Read-time day highlights: conversations (Activity × speaker-turn join)
+    /// and moments (headline frames ranked by focus + duration).
+    pub fn highlights(&self) -> &HighlightsStore {
+        &self.highlights
     }
 
     /// The **Semantic Index Backfill** store seam: the query that finds **Search
