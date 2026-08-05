@@ -26,6 +26,7 @@
   import { developerOptions } from "$lib/developer-options.svelte";
   import ActionSelect from "$lib/components/ActionSelect.svelte";
   import TimelineJumper from "$lib/timeline/TimelineJumper.svelte";
+  import FrameInspector from "$lib/timeline/FrameInspector.svelte";
   import { takePendingTimelineFocus } from "$lib/timeline/pending-focus";
   import { parseCapturedAt, formatTimestampCompact } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
@@ -6098,6 +6099,34 @@
       clearInterval(driftTimer);
     };
   });
+
+  // ── Inspector (direction 02) ──────────────────────────────────────────────
+  // The 256px right panel. Open by default — it is structural chrome, not a
+  // disclosure — with a tool-strip toggle for when the stage wants the width.
+  // Every value it shows is already resolved above; the panel only renders.
+  let inspectorOpen = $state(true);
+
+  const inspectorAudio = $derived.by(() => {
+    const seg = selectedAudioSegment;
+    if (!seg) return null;
+    // G8: the speaker count ships only once diarization has actually produced
+    // clusters for this segment — otherwise the row is absent, not zero.
+    const speakers = selectedAudioSpeakerClusters.length;
+    return {
+      sourceLabel: audioSourceLabel(seg.source),
+      rangeLabel: `${formatTimeOfDay(seg.startUnixMs)} – ${formatTimeOfDay(seg.endUnixMs)}`,
+      durationLabel: formatDurationSeconds(seg.durationSeconds),
+      speakerLabel: speakers > 0 ? `${speakers}` : null,
+    };
+  });
+
+  const inspectorCopyTextAvailable = $derived(
+    ocrVisible &&
+      ocrStatus === "success" &&
+      !!timelineActive &&
+      ocrFrameId === timelineActive.id &&
+      ocrObservations.length > 0,
+  );
 </script>
 
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
@@ -6110,23 +6139,14 @@
   onwheel={onTimelineWheel}
   style="--timeline-slot-w: {timelineSlotWidth}px"
 >
-  <header class="timeline__bar">
-    <div class="timeline__bar-group timeline__bar-group--primary">
-      <!-- Recording status indicator and start/stop controls now live in
-           the app-wide title bar (see `routes/+layout.svelte`) so the
-           recording affordance is visible regardless of which route is
-           active. The timeline header retains only timeline-specific
-           controls below (jump, OCR toggle, refresh). -->
-      <TimelineJumper
-        bind:this={jumperRef}
-        bind:open={pickerOpen}
-        bind:jumping={pickerJumping}
-        activeFrame={timelineActive}
-        timelineBusy={timelineLoading || timelineLoadingMore}
-        showLatest={showJumpToLatestButton}
-        onJump={onJumperJump}
-        onJumpToLatest={jumpToLatestFrame}
-      />
+  <!-- The 30px contextual tool strip — direction 02's second fixed piece.
+       Only Timeline controls live here; the recording pill and start/stop are
+       in the app-wide title bar above (`routes/+layout.svelte`), and live
+       capture state is in the status strip welded to the bottom edge. The
+       position pill is NOT here: it rides the playhead down on the rail,
+       because it answers "where am I", not "how wide is the view". -->
+  <div class="ss-tstrip timeline__tstrip">
+    <div class="ss-tstrip__g">
       <!-- Zoom owns SPAN only (G5): Hour / Day / Week, no Month level — the
            jump menu's month grid covers month-scale navigation. The readout
            next to it states what is really on screen, since the rail's frame
@@ -6141,11 +6161,34 @@
       <span class="timeline__span-readout">{timelineSpanReadout}</span>
     </div>
 
-    <div class="timeline__bar-group timeline__bar-group--secondary">
-      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
-        {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
+    <span class="ss-tstrip__sep" aria-hidden="true"></span>
+
+    <!-- The four OCR controls used to float loose on the bar; they now read as
+         ONE group with a machine-voice label: the engine that produced the
+         text, the count it found, and the verb that redoes it. -->
+    <div class="ss-tstrip__g timeline__ocr-group" role="group" aria-label="Recognised text">
+      <span class="t-label timeline__ocr-group-label">OCR</span>
+      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id && ocrProviderLabel}
+        <span class="ss-chip ss-chip--sq" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
+      {/if}
+      <button
+        class="btn btn--ghost btn--sm timeline__ocr-btn"
+        class:timeline__ocr-btn--running={ocrStatus === "running"}
+        class:timeline__ocr-btn--error={ocrStatus === "error"}
+        class:timeline__ocr-btn--success={ocrStatus === "success"}
+        onclick={toggleOcrForActiveFrame}
+        disabled={!timelineActive}
+        use:tip={ocrToggleTitle}
+        aria-label={ocrButtonLabel}
+        aria-pressed={ocrVisible}
+      >
+        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
+        <span>Text</span>
+        {#if ocrStatus === "success" && ocrObservations.length > 0}
+          <span class="timeline__ocr-count is-mono">{ocrCountLabel(ocrObservations.length)}</span>
         {/if}
+      </button>
+      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
         <button
           type="button"
           class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
@@ -6160,33 +6203,31 @@
               : "Rerun OCR for the active frame with current settings"}
         >{ocrRerunButtonLabel}</button>
       {/if}
-      <button
-        class="btn btn--ghost btn--sm timeline__ocr-btn"
-        class:timeline__ocr-btn--running={ocrStatus === "running"}
-        class:timeline__ocr-btn--error={ocrStatus === "error"}
-        class:timeline__ocr-btn--success={ocrStatus === "success"}
-        onclick={toggleOcrForActiveFrame}
-        disabled={!timelineActive}
-        use:tip={ocrToggleTitle}
-        aria-label={ocrVisible
-          ? "Hide OCR data for active frame"
-          : "Show OCR data for active frame"}
-        aria-pressed={ocrVisible}
-      >
-        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
-        <span>{ocrButtonLabel}</span>
-        {#if ocrStatus === "success" && ocrObservations.length > 0}
-          <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
-        {/if}
-      </button>
+    </div>
+
+    <span class="ss-tstrip__spacer"></span>
+
+    <div class="ss-tstrip__g">
       <button
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
         use:tip={"Refresh dashboard timeline (R)"}
-      >refresh</button>
+      >Refresh</button>
+      <span class="ss-tstrip__sep" aria-hidden="true"></span>
+      <button
+        type="button"
+        class="btn btn--sm timeline__insp-toggle"
+        class:is-on={inspectorOpen}
+        aria-pressed={inspectorOpen}
+        use:tip={inspectorOpen ? "Hide the inspector" : "Show the inspector"}
+        onclick={() => (inspectorOpen = !inspectorOpen)}
+      >Inspector</button>
     </div>
-  </header>
+  </div>
+
+  <div class="ss-body">
+  <div class="ss-main timeline__pane">
 
   {#if timelineError}
     <div class="timeline__error" role="alert">
@@ -6591,6 +6632,66 @@
     class="timeline__rail-wrap"
     bind:this={timelineRailWrap}
   >
+    <!-- The readout: the clock is the biggest thing on it. It follows the
+         pointer's frame while hovering the rail and falls back to the frame
+         under the playhead otherwise, so there is always a legible answer to
+         "what am I looking at". Keeps the `timeline-rail-readout` id the rail's
+         `aria-describedby` points at. -->
+    {#if tooltipFrame}
+      {@const readoutAppLabel = timelineFrameAppLabel(tooltipFrame)}
+      {@const readoutAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
+      <div class="ss-readout timeline__readout" id="timeline-rail-readout">
+        {#if readoutAppLabel}
+          <span
+            class="timeline__readout-icon"
+            class:timeline__readout-icon--image={!!readoutAppIconSrc}
+            aria-hidden="true"
+          >
+            {#key tooltipAppKey}
+              <span
+                class="timeline__readout-icon-inner"
+                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+              >
+                {#if readoutAppIconSrc}
+                  <img src={readoutAppIconSrc} alt="" loading="lazy" />
+                {:else}
+                  <span>{timelineFrameAppFallback(tooltipFrame)}</span>
+                {/if}
+              </span>
+            {/key}
+          </span>
+          <span class="timeline__readout-name-stack">
+            {#key tooltipAppKey}
+              <span
+                class="ss-readout__app"
+                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+              >{readoutAppLabel}</span>
+            {/key}
+          </span>
+        {/if}
+        <span class="ss-readout__time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+        <span class="ss-readout__date timeline__readout-date">
+          {formatCapturedDateOnly(tooltipFrame.capturedAt)}{tooltipFrame.windowTitle
+            ? ` · ${tooltipFrame.windowTitle}`
+            : ""}
+        </span>
+        <span class="timeline__readout-spacer"></span>
+        {#if !tooltipIsHovered}
+          <!-- The index describes the playhead, so it is suppressed while the
+               pointer is reading a different frame rather than quietly lying. -->
+          <span class="t-meta is-mono timeline__readout-index"
+            >frame {timelineActiveIndex + 1} / {timelineFrames.length}{timelineHasMore ? "+" : ""}</span
+          >
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Rail box: the rail plus everything anchored to a position on it — the
+         playhead, the position pill riding it, and the hover ghost + time
+         bubble that preview a click before it commits. -->
+    <div class="timeline__railbox">
     {#if timelineFrames.length > 0}
       <div
         class="timeline-rail"
@@ -6661,6 +6762,41 @@
           {/each}
         </div>
       </div>
+    {:else}
+      <!-- Empty placeholder reserves the rail's height so removing/adding the
+           rail does not resize the stage. -->
+      <div class="timeline-rail timeline-rail--placeholder" aria-hidden="true"></div>
+    {/if}
+
+      <!-- The playhead: the fixed centre of the rail, which is what the track
+           scrolls under. -->
+      <span class="timeline__playhead" aria-hidden="true"></span>
+
+      {#if tooltipIsHovered && hoveredX != null && tooltipFrame}
+        <span class="ss-ghost timeline__ghost" style="left: {hoveredX}px" aria-hidden="true"></span>
+        <span class="ss-bubble timeline__bubble" style="left: {hoveredX}px" aria-hidden="true"
+          >{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span
+        >
+      {/if}
+
+      <!-- The position pill (G6), anchored to the playhead: it reads out where
+           you are AND is the jump control. Never span — that is the zoom
+           segmented control up in the tool strip. -->
+      <div class="timeline__nowpill-anchor">
+        <TimelineJumper
+          bind:this={jumperRef}
+          bind:open={pickerOpen}
+          bind:jumping={pickerJumping}
+          activeFrame={timelineActive}
+          timelineBusy={timelineLoading || timelineLoadingMore}
+          showLatest={showJumpToLatestButton}
+          onJump={onJumperJump}
+          onJumpToLatest={jumpToLatestFrame}
+        />
+      </div>
+    </div>
+
+    {#if timelineFrames.length > 0}
       <!-- Audio segment lane. Lives as a sibling of the slider rail (not
            inside it, and not on top of it) so:
              1. Interactive segment buttons aren't nested inside an element
@@ -6751,11 +6887,9 @@
         </div>
       </div>
     {:else}
-      <!-- Empty placeholder reserves the rail's height so removing/adding
-           the rail does not resize the stage. The audio lane shell stays
-           visible so users always have a clear audio surface — it just
-           shows an empty/instructional state until segments arrive. -->
-      <div class="timeline-rail timeline-rail--placeholder" aria-hidden="true"></div>
+      <!-- The audio lane shell stays visible so users always have a clear
+           audio surface — it just shows an empty/instructional state until
+           segments arrive. -->
       <div
         class="timeline-rail__audio-lane-wrap"
         aria-label="Audio segments"
@@ -6786,61 +6920,33 @@
     {#if timelineLoadingMore}
       <div class="timeline-rail__loading">loading…</div>
     {/if}
-    {#if timelineFrames.length > 0 && tooltipFrame}
-      {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrame)}
-      {@const tooltipAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
-      <div
-        id="timeline-rail-readout"
-        class="timeline-rail__tooltip"
-        class:timeline-rail__tooltip--pinned={!tooltipIsHovered}
-        style={tooltipIsHovered && hoveredX != null
-          ? `left: ${hoveredX}px; transform: translate(-50%, -100%);`
-          : "left: 50%; transform: translate(-50%, -100%);"}
-        role="tooltip"
-      >
-        {#if tooltipAppLabel}
-          <span
-            class="timeline-rail__tooltip-icon"
-            class:timeline-rail__tooltip-icon--image={!!tooltipAppIconSrc}
-            aria-hidden="true"
-          >
-            {#key tooltipAppKey}
-              <span
-                class="timeline-rail__tooltip-icon-inner"
-                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-              >
-                {#if tooltipAppIconSrc}
-                  <img src={tooltipAppIconSrc} alt="" loading="lazy" />
-                {:else}
-                  <span>{timelineFrameAppFallback(tooltipFrame)}</span>
-                {/if}
-              </span>
-            {/key}
-          </span>
-          <span class="timeline-rail__tooltip-copy">
-            <span class="timeline-rail__tooltip-name-stack">
-              {#key tooltipAppKey}
-                <span
-                  class="timeline-rail__tooltip-app-name"
-                  in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-                  out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-                >{tooltipAppLabel}</span>
-              {/key}
-            </span>
-            <span class="timeline-rail__tooltip-meta">
-              <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-              <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
-            </span>
-          </span>
-        {:else}
-          <span class="timeline-rail__tooltip-copy timeline-rail__tooltip-copy--solo">
-            <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-            <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
-          </span>
-        {/if}
-      </div>
-    {/if}
+  </div>
+
+  </div>
+
+  {#if inspectorOpen}
+    <!-- One panel, one subject: whatever the playhead is parked on. -->
+    <FrameInspector
+      frame={timelineActive}
+      index={timelineActiveIndex + 1}
+      total={timelineFrames.length}
+      hasMore={timelineHasMore}
+      capturedLabel={timelineActive ? formatCapturedAt(timelineActive.capturedAt) : ""}
+      {ocrStatus}
+      ocrIsForFrame={!!timelineActive && ocrFrameId === timelineActive.id}
+      {ocrProviderLabel}
+      ocrRegionCount={ocrObservations.length}
+      ocrCharCount={ocrSourceFrame?.ocrText?.length ?? null}
+      audio={inspectorAudio}
+      copyImageDisabled={!timelineActive ||
+        !previewCache.has(timelineActive.id) ||
+        frameImageActionBusy !== null}
+      copyTextAvailable={inspectorCopyTextAvailable}
+      copyTextDisabled={ocrCopyAllBusy}
+      onCopyImage={copyActiveFrameImage}
+      onCopyText={copyAllRecognizedText}
+    />
+  {/if}
   </div>
 </section>
 
@@ -6851,6 +6957,14 @@
      reader covers the timeline — accepted tradeoff, see the component header.
      `selectedAudioSegmentId` is the open/closed signal. -->
 {#if selectedAudioSegment}
+  <!-- The drawer is `position: fixed`, so it cannot inherit the main column's
+       width. This host carries the inset as custom properties instead: clear of
+       the inspector on the right, clear of the bottom status strip. A plain
+       wrapper — the drawer's own positioning is unchanged. -->
+  <div
+    class="timeline__drawer-host"
+    style={inspectorOpen ? "--timeline-drawer-right: calc(var(--w-insp) + 12px)" : ""}
+  >
   <AudioDrawer
       bind:drawerEl={audioDrawerEl}
       segment={selectedAudioSegment}
@@ -6903,6 +7017,7 @@
       bind:repairIndex={audioDrawerRepairIndex}
       bind:transcriptContainerEl={selectedAudioTranscriptContainerEl}
   />
+  </div>
 {/if}
 
 <style>
@@ -6915,8 +7030,10 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 8px 6px;
+    /* The tool strip is full-bleed chrome; the 12px pane inset lives on
+       `.timeline__pane` inside the body row instead. */
+    gap: 0;
+    padding: 0;
     background: var(--app-bg);
     /* Allow the stage child (flex: 1, min-height: 0) to actually shrink so
        the bottom rail stays in view regardless of preview intrinsic size. */
@@ -6924,34 +7041,49 @@
     overflow: hidden;
   }
 
-  .timeline__bar,
   .timeline__error,
   .timeline__rail-wrap {
     flex: 0 0 auto;
     position: relative;
   }
 
-  /* Header bar: two clearly-separated control groups (recording + jump on
-     the left, frame actions + menu on the right) that wrap onto a second
-     row on narrow viewports instead of cramming together. */
-  .timeline__bar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 10px 16px;
+  /* ── The tool strip ────────────────────────────────────────────
+     `.ss-tstrip*` gives the 30px band, the surface, the hairline and the
+     separators (studio-shell.css). Everything below is the Timeline's own
+     content inside it. */
+  .timeline__tstrip {
+    /* The strip must never wrap: it is a fixed piece, and a second row would
+       push the stage. Groups shrink instead. */
+    flex-wrap: nowrap;
+    overflow: hidden;
   }
 
-  .timeline__bar-group {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 10px;
-    min-width: 0;
+  /* 22px is the tool-strip control height (`--h-sm`); the shared `.btn--sm`
+     already matches, but the segmented control and the ghost buttons need the
+     kit's tighter type and radius to sit level with them. */
+  .timeline__tstrip :global(.segmented) {
+    gap: 1px;
+    padding: 1px;
+    border-radius: var(--r-md);
+    border-color: var(--app-border);
+    background: var(--app-surface-subtle);
   }
 
-  .timeline__bar-group--secondary {
-    margin-left: auto;
+  .timeline__tstrip :global(.segmented .seg) {
+    height: 20px;
+    padding: 0 var(--s-8);
+    border-radius: 4px;
+    font-size: var(--t-meta);
+    font-weight: var(--w-medium, 510);
+    color: var(--app-text-muted);
+  }
+
+  .timeline__tstrip :global(.segmented .seg--active) {
+    background: var(--app-surface);
+    color: var(--app-text-strong);
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.1),
+      0 0 0 var(--hairline) var(--app-border-strong);
   }
 
   /* Machine-units truth next to the zoom control: what is actually on screen,
@@ -6962,6 +7094,32 @@
     font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .timeline__ocr-group {
+    min-width: 0;
+  }
+
+  .timeline__ocr-group-label {
+    color: var(--app-text-subtle);
+    flex: 0 0 auto;
+  }
+
+  .timeline__insp-toggle.is-on {
+    background: var(--app-surface-active);
+    border-color: var(--app-accent-border);
+    color: var(--app-text-strong);
+  }
+
+  /* ── Body row: the pane, and the inspector welded to its right ── */
+  /* The kit's grid rule: a container's inset equals its gutter, at 12 — with
+     10px between stage / rail / drawer. */
+  .timeline__pane {
+    gap: 10px;
+    padding: var(--pad-panel) var(--pad-panel) 0;
+    min-width: 0;
   }
 
   /* ── Recording control cluster ─────────────────────────────
@@ -7134,13 +7292,18 @@
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
+  /* The viewer. Hairline + a soft lift instead of a card edge, so the frame
+     reads as the thing on the stage rather than as a panel. */
   .timeline__stage {
     position: relative;
     flex: 1 1 0;
     min-height: 0; /* allow the flex child to actually shrink as needed */
-    background: linear-gradient(135deg, var(--app-surface-raised) 0%, var(--app-surface) 100%);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-md);
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-border-strong),
+      0 6px 20px rgba(0, 0, 0, 0.18);
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -7831,33 +7994,151 @@
     gap: 4px;
   }
 
-  /* Persistent center playhead: a pair of neutral carets framing the rail's
-     midpoint so the relationship "center = currently shown frame" is
-     self-evident without reading the floating tooltip. Carets sit over the
-     rail's top/bottom edges (rail height = 36px), never covering the active
-     tick body, and stay non-interactive. */
-  .timeline__rail-wrap::before,
-  .timeline__rail-wrap::after {
-    content: "";
+  /* ── Readout ──────────────────────────────────────────────────
+     `.ss-readout*` (studio-shell.css) sizes the type: the clock is the
+     biggest thing on the row, the app name is the only 13px item. */
+  .timeline__readout {
+    flex: 0 0 auto;
+    min-width: 0;
+    padding: 0 2px;
+  }
+
+  .timeline__readout-icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border-radius: 4px;
+    color: var(--app-text);
+    background: var(--app-surface-raised);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .timeline__readout-icon--image {
+    padding: 2px;
+  }
+
+  .timeline__readout-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 3px;
+    object-fit: contain;
+  }
+
+  /* Outgoing and incoming copies share one grid cell so the app-change
+     cross-slide happens in place instead of stacking into two rows. */
+  .timeline__readout-icon-inner {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+
+  /* The app name holds its size; the date + window title is the elastic part
+     of the row, so a narrow window eats the title before the identity. */
+  .timeline__readout-name-stack {
+    min-width: 0;
+    max-width: 34%;
+    display: grid;
+    overflow: hidden;
+    flex: 0 0 auto;
+  }
+
+  .timeline__readout-name-stack .ss-readout__app {
+    grid-area: 1 / 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The clock is the hero of the row: it never wraps and never shrinks. When
+     the row runs out of width (800px, with the inspector taking 256 of it) the
+     date + window title is what ellipsises. */
+  .timeline__readout .ss-readout__time {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .timeline__readout-date {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .timeline__readout-spacer {
+    margin-left: auto;
+  }
+
+  .timeline__readout-index {
+    flex: 0 0 auto;
+    color: var(--app-text-subtle);
+  }
+
+  /* ── Rail box: the rail and everything anchored to a position on it ── */
+  .timeline__railbox {
+    position: relative;
+    flex: 0 0 auto;
+    /* Room above the rail for the position pill and the hover time bubble. */
+    padding-top: 22px;
+  }
+
+  /* The playhead: a single line at the rail's fixed centre, which is what the
+     track scrolls under. Replaces the old pair of carets — one continuous
+     line reads as a position, two carets read as a bracket. */
+  .timeline__playhead {
     position: absolute;
     left: 50%;
+    top: 16px;
+    bottom: 0;
+    width: 1.5px;
     transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
+    background: var(--app-text-strong);
+    opacity: 0.75;
     pointer-events: none;
     z-index: 4;
   }
 
-  .timeline__rail-wrap::before {
-    top: 0;
-    border-top: 5px solid var(--app-text-subtle);
+  /* `.ss-ghost` / `.ss-bubble` carry the look; the rail box supplies the
+     vertical extent and the horizontal anchor. */
+  .timeline__ghost {
+    top: 16px;
+    bottom: 0;
   }
 
-  .timeline__rail-wrap::after {
-    top: 31px;
-    border-bottom: 5px solid var(--app-text-subtle);
+  .timeline__bubble {
+    top: -2px;
+  }
+
+  /* Centred with flexbox, NOT `translateX(-50%)`: a transform on this element
+     would make it the containing block for the jump popover's `position:
+     fixed`, and the menu would open hundreds of pixels off. */
+  .timeline__nowpill-anchor {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    z-index: 6;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    /* The band spans the rail's full width so the pill can centre in it; only
+       the controls inside it may take the pointer. */
+    pointer-events: none;
+  }
+
+  .timeline__nowpill-anchor > :global(*) {
+    pointer-events: auto;
   }
 
   .timeline-rail {
@@ -7886,8 +8167,8 @@
        `maxScrollLeft`). The rail stays in normal LTR direction so all
        scrollLeft math is straightforward and browser-portable. */
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border: var(--hairline) solid var(--app-border);
+    border-radius: var(--r-sm);
     padding: 0;
     scrollbar-width: none;
     /* Establish a containment context so the track's spacer margins can be
@@ -7925,18 +8206,28 @@
     margin-right: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
   }
 
+  /* App bands: the run of frames one app owned, drawn as a filled block that
+     spans the rail's full height with its icon centred — the direction's
+     signature rail. Single-frame runs get the brighter fill so a one-frame
+     visit is still findable. */
   .timeline-rail__app-group {
     position: absolute;
-    top: 8px;
+    top: 0;
     z-index: 1;
-    height: 20px;
+    height: 34px;
+    border-radius: 2px;
+    background: var(--app-surface-hover);
     overflow: visible;
     pointer-events: none;
   }
 
+  .timeline-rail__app-group--single {
+    background: var(--app-surface-active);
+  }
+
   .timeline-rail__app-group-icon {
     position: absolute;
-    top: 0;
+    top: 7px;
     left: var(--timeline-app-icon-left);
     width: 20px;
     height: 20px;
@@ -8279,167 +8570,6 @@
     pointer-events: none;
   }
 
-  /* Custom hover/active tooltip for the rail. Anchored to the rail-wrap (not
-     the scrolling rail) so it never scrolls horizontally with the track.
-     Positioned via inline `left`/`transform` from script: when the user is
-     hovering a slot it follows the cursor; otherwise it pins above the center
-     caret to surface the active frame's timestamp without a hover gesture. */
-  .timeline-rail__tooltip {
-    position: absolute;
-    top: -6px;
-    z-index: 2;
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr);
-    align-items: center;
-    column-gap: 9px;
-    min-width: 204px;
-    max-width: min(340px, calc(100vw - 24px));
-    min-height: 40px;
-    padding: 7px 10px 7px 7px;
-    box-sizing: border-box;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0;
-    color: var(--app-text-strong);
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-    pointer-events: none;
-    /* Subtle pointer hint below the bubble. */
-  }
-
-  .timeline-rail__tooltip-icon {
-    width: 24px;
-    height: 24px;
-    box-sizing: border-box;
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-    align-self: center;
-    border-radius: 4px;
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    font-size: 10px;
-    font-weight: 800;
-    line-height: 1;
-  }
-
-  .timeline-rail__tooltip-icon--image {
-    padding: 3px;
-  }
-
-  .timeline-rail__tooltip-icon img {
-    width: 100%;
-    height: 100%;
-    display: block;
-    border-radius: 3px;
-    object-fit: contain;
-  }
-
-  /* Both the outgoing and incoming icon (during an app-change transition) are
-     pinned to the same grid cell so they cross-slide in place instead of
-     stacking into two rows; the icon container's `overflow: hidden` clips the
-     slide. */
-  .timeline-rail__tooltip-icon-inner {
-    grid-area: 1 / 1;
-    width: 100%;
-    height: 100%;
-    display: grid;
-    place-items: center;
-  }
-
-  .timeline-rail__tooltip-copy {
-    min-width: 0;
-    display: grid;
-    gap: 4px;
-  }
-
-  /* When no app label is known there's no icon column, so the copy spans the
-     full bubble width instead of being squeezed into the 24px icon track. */
-  .timeline-rail__tooltip-copy--solo {
-    grid-column: 1 / -1;
-  }
-
-  .timeline-rail__tooltip-app-name,
-  .timeline-rail__tooltip-date {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Overlap container for the keyed app name so the cross-slide copies share
-     one grid cell — the cell auto-sizes to the wider name (no width collapse)
-     and clips the horizontal slide. */
-  .timeline-rail__tooltip-name-stack {
-    min-width: 0;
-    display: grid;
-    overflow: hidden;
-  }
-
-  .timeline-rail__tooltip-app-name {
-    grid-area: 1 / 1;
-    color: var(--app-text-strong);
-    font-size: 11px;
-    font-weight: 760;
-    line-height: 1.05;
-  }
-
-  /* Time leads, date trails on the same baseline so the readout answers
-     "when" at a glance without a second wrapped line. */
-  .timeline-rail__tooltip-meta {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-  }
-
-  .timeline-rail__tooltip-time {
-    flex: 0 0 auto;
-    color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 720;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-    font-size: 9px;
-    font-variant-numeric: tabular-nums;
-    font-weight: 680;
-    line-height: 1;
-  }
-
-  .timeline-rail__tooltip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid var(--app-status-bg);
-  }
-
-  .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-  }
-
-  .timeline-rail__tooltip--pinned::after {
-    border-top-color: var(--app-status-bg);
-  }
-
   /* ── Light theme overrides ──────────────────────────────────
      The dark palette above is the source of truth; this block flips the
      dashboard's major surfaces, borders, and text colors when
@@ -8596,35 +8726,5 @@
   }
   :global([data-theme="light"]) .timeline-rail__loading {
     color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip {
-    background: var(--app-status-bg);
-    border-color: var(--app-status-border);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-icon {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-time {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip::after {
-    border-top-color: var(--app-status-bg);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 </style>

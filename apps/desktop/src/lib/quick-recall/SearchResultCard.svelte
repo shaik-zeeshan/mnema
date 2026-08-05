@@ -1,10 +1,9 @@
-<!-- Quick Recall search result TILE — the round-4 3-up grid cell (349 wide,
-     196-tall media). One anatomy for both modalities: a header row (app / source
-     eyebrow left, time right), one title line, one marked caption line, then the
-     media bleeding to the tile's bottom radius (screenshot for screen results,
-     source-coloured waveform for audio) with the match/meaning/redacted badges
-     floating over its bottom edge. The list/detail split is gone with the grid,
-     so the tile carries the accessories the detail pane used to duplicate. -->
+<!-- Quick Recall search result CELL — direction 02's `.ss-qcell`: the 16:9 frame
+     first, then one identity line (app + title) and one mono meta line. There is
+     no card: no border, no fill, no padding — the picture is the object and the
+     2px accent ring on the frame is the selection. Everything the old tile's
+     third line carried (the matched snippet, the URL, the score) is the
+     inspector's job now, which is why the inspector is always on screen. -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import type {
@@ -102,35 +101,15 @@
 
 {#if kind === "frame" && frame}
   <button
-    class="search-card"
-    class:search-card--selected={selected}
+    class="search-card ss-qcell"
+    class:is-sel={selected}
     {id}
     role="option"
     aria-selected={selected}
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
-        <img
-          class="search-card__appicon"
-          src={appIcons.src(frame.appBundleId ?? frame.appName)}
-          alt=""
-          aria-hidden="true"
-        />
-      {/if}
-      <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
-      <span class="search-card__time">{formatRelativeTime(frame.groupEndAt)}</span>
-    </span>
-    <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
-      {frame.windowTitle ?? frame.appName ?? "Screen"}
-    </span>
-    <span class="search-card__caption">
-      {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}
-    </span>
-    <span class="search-card__media">
+    <span class="search-card__media ss-qcell__f">
       <svg
         class="search-card__media-glyph"
         width="22"
@@ -163,39 +142,46 @@
         frame.hasSecretRedactions,
       )}
     </span>
+    <span class="ss-qcell__l1">
+      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
+        <img
+          class="search-card__appicon"
+          src={appIcons.src(frame.appBundleId ?? frame.appName)}
+          alt=""
+          aria-hidden="true"
+        />
+      {/if}
+      <span class="ss-qcell__app">{frame.appName ?? "Unknown app"}</span>
+      <span class="ss-qcell__ttl" use:tip={frame.windowTitle ?? undefined}
+        >{frame.windowTitle ?? frame.appName ?? "Screen"}</span
+      >
+    </span>
+    <span class="ss-qcell__l2">
+      <span>{formatRelativeTime(frame.groupEndAt)}</span>
+      {#if frame.matchCount > 0}
+        <span aria-hidden="true">·</span>
+        <span>{frame.matchCount} {frame.matchCount === 1 ? "hit" : "hits"}</span>
+      {/if}
+      {#if frame.url}
+        <span aria-hidden="true">·</span>
+        <span class="search-card__host">{frame.url}</span>
+      {/if}
+    </span>
   </button>
 {/if}
 
 {#if kind === "audio" && audio}
   <button
-    class="search-card"
-    class:search-card--selected={selected}
+    class="search-card ss-qcell"
+    class:is-sel={selected}
     {id}
     role="option"
     aria-selected={selected}
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      <span class="search-card__app"
-        >{audio.sourceKind === "microphone" ? "Microphone" : "System audio"}</span
-      >
-      <span class="search-card__time"
-        >{formatRelativeTime(audio.absoluteStartAt)}</span
-      >
-    </span>
-    <span class="search-card__title">
-      “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}”
-    </span>
-    <span class="search-card__caption"
-      >{formatDuration(
-        Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
-      )} of speech</span
-    >
     <span
-      class="search-card__media search-card__media--wave"
+      class="search-card__media search-card__media--wave ss-qcell__f"
       class:search-card__media--mic={audio.sourceKind === "microphone"}
       class:search-card__media--sys={audio.sourceKind !== "microphone"}
     >
@@ -216,6 +202,11 @@
           />
         {/each}
       </svg>
+      <span class="ss-qcell__dur"
+        >{formatDuration(
+          Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
+        )}</span
+      >
       {@render badges(
         audio.matchCount,
         "adjacent",
@@ -223,113 +214,65 @@
         audio.hasSecretRedactions,
       )}
     </span>
+    <span class="ss-qcell__l1">
+      <span class="ss-qcell__app"
+        >{audio.sourceKind === "microphone" ? "Mic" : "System"}</span
+      >
+      <span class="ss-qcell__ttl">
+        “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
+              >{segment.text}</mark
+            >{:else}{segment.text}{/if}{/each}”
+      </span>
+    </span>
+    <span class="ss-qcell__l2">
+      <span>{formatRelativeTime(audio.absoluteStartAt)}</span>
+      <span aria-hidden="true">·</span>
+      <span>speech</span>
+    </span>
   </button>
 {/if}
 
 <style>
-  /* One grid cell. The tile is a column: header / title / caption / media, with
-     the media bleeding to the left, right and bottom edges (negative margins
-     against the tile's padding) so it meets the bottom radius. */
+  /* The cell is `.ss-qcell` (kit): frame / identity line / meta line. This
+     block only strips the <button> chrome and states the parts the kit leaves
+     to the surface — the kit owns the geometry and the selection ring. */
   .search-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
-    width: 100%;
-    min-width: 0;
-    padding: var(--s-12);
-    overflow: hidden;
+    padding: 0;
+    border: 0;
+    background: none;
     text-align: left;
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .search-card {
-      transition:
-        background var(--dur-quick) var(--ease),
-        border-color var(--dur-quick) var(--ease),
-        box-shadow var(--dur-quick) var(--ease);
-    }
-  }
-
-  .search-card:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  /* Selected is the roving highlight: the accent ring the mockups settle on. */
-  .search-card:focus-visible,
-  .search-card--selected,
-  .search-card--selected:hover {
+  .search-card:focus-visible {
     outline: none;
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  /* Header: app / source eyebrow left, time hard right. */
-  .search-card__head {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-inline);
-    min-width: 0;
+  /* Hover and keyboard focus warm the frame's hairline; the 2px accent ring on
+     `.is-sel` (kit) stays the one selection signal. */
+  .search-card:hover .search-card__media,
+  .search-card:focus-visible .search-card__media {
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-hover);
+  }
+
+  .search-card:focus-visible .ss-qcell__ttl {
+    color: var(--app-accent-strong);
   }
 
   .search-card__appicon {
     flex: none;
-    width: 14px;
-    height: 14px;
+    width: 13px;
+    height: 13px;
     object-fit: contain;
+    align-self: center;
   }
 
-  .search-card__app {
-    flex: 1;
+  /* The guarded host, mono like the rest of the meta line but allowed to
+     ellipsize before the timestamp does. */
+  .search-card__host {
     min-width: 0;
-    font-size: var(--t-label);
-    line-height: 1;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .search-card__time {
-    flex: none;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* One title line — the window title (screen) or the quoted transcript
-     (audio). Never wraps: the tile's height is fixed by the media block. */
-  .search-card__title {
-    display: block;
-    min-width: 0;
-    font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
-    color: var(--app-text-strong);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* The matched text, so "why did this hit?" is answered on the tile itself —
-     the detail pane that used to carry it is gone with the grid. */
-  .search-card__caption {
-    display: block;
-    min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1.3;
-    color: var(--app-text-muted);
-    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
@@ -341,16 +284,12 @@
     padding: 0 1px;
   }
 
-  /* 196px media, full-bleed to the tile's bottom radius. The backing stays dark
-     in both themes (it holds a screenshot); the glyph is a fixed mid-gray
-     legible on that backing while the image loads or when no preview exists. */
+  /* The 16:9 frame is `.ss-qcell__f`; this only adds the placeholder backing.
+     It stays dark in both themes (it holds a screenshot) and the glyph is a
+     fixed mid-gray legible on it while the image loads or when none exists. */
   .search-card__media {
-    position: relative;
     display: grid;
     place-items: center;
-    height: 196px;
-    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
-    overflow: hidden;
     background: #101014;
     color: #6a6a74;
   }
@@ -391,9 +330,10 @@
     color: var(--app-source-sysaudio);
   }
 
+  /* The mockup's audio cell spends 54% of the frame's height on the waveform. */
   .search-card__wave {
     width: calc(100% - var(--s-24));
-    height: 56px;
+    height: 54%;
   }
 
   .search-card__wave .wb {
@@ -408,12 +348,14 @@
      row — the tile's vertical budget is spent on the picture. */
   .search-card__badges {
     position: absolute;
-    left: var(--s-8);
-    right: var(--s-8);
-    bottom: var(--s-8);
+    left: var(--s-6);
+    bottom: var(--s-6);
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-4);
+    /* Anchored left only, so the duration chip keeps the bottom-right corner
+       the kit gives it. */
+    max-width: calc(100% - 64px);
   }
 
   .search-card__badge {

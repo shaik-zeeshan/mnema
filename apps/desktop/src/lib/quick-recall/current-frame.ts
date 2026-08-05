@@ -37,11 +37,16 @@ export function setQuickRecallCollapsed(height: number | null): Promise<void> {
   return invoke<void>("quick_recall_set_collapsed", { height });
 }
 
-/** Collapsed heights. Bar alone, and bar plus the detached answer piece. */
-export const CURRENT_FRAME_BAR_HEIGHT = 96;
-/** Extra height for the non-vision disclosure line, which sits under the bar. */
-export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 30;
-export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
+/**
+ * Collapsed heights. Direction 02's bar is three floating objects stacked in a
+ * 640-wide transparent window: the 30px control pill, a 12px gap, and the 560px
+ * bar (context line + input row), with 10px of breathing room top and bottom.
+ * The answer panel is a fourth object below them.
+ */
+export const CURRENT_FRAME_BAR_HEIGHT = 132;
+/** Extra height for the non-vision disclosure line, which sits inside the bar. */
+export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 26;
+export const CURRENT_FRAME_ANSWER_HEIGHT = 480;
 
 /** The chip's primary label: what the shot is of. */
 export function frameChipLabel(frame: CurrentFrameCapture): string {

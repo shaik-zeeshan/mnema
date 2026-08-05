@@ -71,19 +71,21 @@
     <button
       type="button"
       id={ASK_ROW_OPTION_ID}
-      class="quick-recall__ask-row"
-      class:quick-recall__ask-row--selected={search.askRowSelected}
+      class="quick-recall__ask-row ss-row"
+      class:ss-row--sel={search.askRowSelected}
       role="option"
       aria-selected={search.askRowSelected}
       tabindex="-1"
       onclick={onAskAi}
     >
       <span class="quick-recall__ask-row-glyph" aria-hidden="true">✦</span>
-      <span class="quick-recall__ask-row-label"
-        >Ask AI about “{search.trimmedQuery}”</span
-      >
-      <span class="quick-recall__ask-row-hint">{askRowHint}</span>
-      <span class="kbd quick-recall__ask-row-key" aria-hidden="true">⌃↵</span>
+      <span class="ss-row__txt">
+        <span class="ss-row__lbl">Ask AI about “{search.trimmedQuery}”</span>
+        <span class="ss-row__sub">{askRowHint}</span>
+      </span>
+      <span class="ss-row__val">
+        <span class="kbd quick-recall__ask-row-key" aria-hidden="true">⌃↵</span>
+      </span>
     </button>
   {/if}
 
@@ -109,14 +111,18 @@
          surface doesn't flash empty between keystrokes. -->
     <div class="quick-recall__section" aria-hidden="true">
       <div class="quick-recall__sk quick-recall__sk-label"></div>
-      <div class="quick-recall__grid">
-        {#each [70, 58, 76] as width, i (i)}
+      <div class="quick-recall__grid ss-qgrid ss-qgrid--2">
+        {#each [70, 58] as width, i (i)}
           <div class="quick-recall__skeleton-tile">
+            <div class="quick-recall__sk quick-recall__skeleton-media"></div>
             <span
               class="quick-recall__sk quick-recall__skeleton-line"
               style={`width:${width}%`}
             ></span>
-            <div class="quick-recall__sk quick-recall__skeleton-media"></div>
+            <span
+              class="quick-recall__sk quick-recall__skeleton-line"
+              style={`width:${width - 26}%`}
+            ></span>
           </div>
         {/each}
       </div>
@@ -199,7 +205,7 @@
             >{search.frames.length}</span
           ></span
         >
-        <div class="quick-recall__grid" role="presentation">
+        <div class="quick-recall__grid ss-qgrid ss-qgrid--2" role="presentation">
           {#each search.visibleFrames as result, i (result.groupKey)}
             <SearchResultCard
               kind="frame"
@@ -237,7 +243,7 @@
             >{search.audio.length}</span
           ></span
         >
-        <div class="quick-recall__grid" role="presentation">
+        <div class="quick-recall__grid ss-qgrid ss-qgrid--2" role="presentation">
           {#each search.visibleAudio as result, i (result.groupKey)}
             <SearchResultCard
               kind="audio"
@@ -269,82 +275,72 @@
 </div>
 
 <style>
+  /* The scrolling main region of the Quick Access shell (`.ss-qmain` metrics). */
   .quick-recall__results {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--s-12) var(--grid-inset);
+    padding: 12px 16px;
     display: flex;
     flex-direction: column;
     gap: var(--gap-group);
   }
 
-  /* G4's ranked ask row: rank 0 of this list, a full-width row so it reads as
-     the list's first entry rather than a second control. Accent-tinted because
-     it is the one escalation on the surface that costs a model call; the ring
-     only appears when the roving selection is actually on it. */
+  /* G4's ranked ask row: rank 0 of this list, so it is drawn as a LIST ROW
+     (`.ss-row`) on the quiet surface, not an accent band competing with the
+     grid — page 03 draws it exactly this way. Accent is spent on the ✦ mark
+     and, when the roving selection lands here, on the kit's full-row accent
+     selection (`.ss-row--sel`), which is this direction's native highlight. */
   .quick-recall__ask-row {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-inline);
     width: 100%;
-    min-width: 0;
-    padding: var(--s-8) var(--s-12);
+    border: 0;
+    border-radius: 5px;
+    background: var(--app-surface);
     text-align: left;
     font: inherit;
-    color: var(--app-accent-strong);
-    background: var(--app-accent-bg);
-    border: var(--hairline) solid var(--app-accent-border);
-    border-radius: var(--r-md);
     cursor: pointer;
+    margin-bottom: 4px;
   }
 
-  .quick-recall__ask-row:hover {
-    border-color: var(--app-accent);
-  }
-
-  .quick-recall__ask-row--selected,
   .quick-recall__ask-row:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: 0 0 0 2px var(--app-accent);
+  }
+
+  /* Scoped rules outrank the kit's global `.ss-row--sel`, so the selected fill
+     has to be restated here or the row paints contrast text on white. */
+  .quick-recall__ask-row.ss-row--sel {
+    background: var(--app-accent);
   }
 
   .quick-recall__ask-row-glyph {
+    display: grid;
+    place-items: center;
     flex: none;
-    font-size: var(--t-ui);
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    font-size: 10px;
     line-height: 1;
+    color: var(--app-accent-contrast);
+    background: var(--app-accent-strong);
+  }
+
+  /* On the accent-filled selected row the mark inverts so it stays a mark. */
+  .quick-recall__ask-row.ss-row--sel .quick-recall__ask-row-glyph {
     color: var(--app-accent);
-  }
-
-  .quick-recall__ask-row-label {
-    flex: none;
-    max-width: 55%;
-    font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
-    color: var(--app-accent-strong);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .quick-recall__ask-row-hint {
-    flex: 1;
-    min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1.3;
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    background: var(--app-accent-contrast);
   }
 
   .quick-recall__ask-row-key {
     flex: none;
-    color: var(--app-accent);
-    background: transparent;
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+  }
+
+  /* On the accent-filled row the key cap needs its own contrast; the global
+     `.kbd` is built for quiet surfaces and would read as a white blob. */
+  .quick-recall__ask-row.ss-row--sel .quick-recall__ask-row-key {
+    background: color-mix(in srgb, var(--app-accent-contrast) 22%, transparent);
+    color: var(--app-accent-contrast);
   }
 
   /* Refetch-in-flight: prior results stay on screen but dim slightly so the
@@ -361,34 +357,32 @@
     gap: 8px;
   }
 
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
+  /* Section head, `.ss-qsec` metrics: the mono 10px label left, the count right
+     in tabular mono — the studio "N results" readout, not a badge. */
   .quick-recall__section-label {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: var(--t-meta);
-    line-height: 1;
+    height: 20px;
+    font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-    padding: 0 2px;
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-muted);
   }
 
   .quick-recall__section-count {
+    font-family: var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     text-transform: none;
     letter-spacing: 0;
-    color: var(--app-text-subtle);
+    color: var(--app-text-faint);
   }
 
-  /* Round-4 result grid: 3-up tiles on the Overview's cell unit (349 wide,
-     16px gutter). The tracks cap at 349px and shrink evenly below it, so the
-     window's 960px minimum width still shows three columns instead of
-     overflowing or dropping to two. */
+  /* The kit's `.ss-qgrid--2` owns the tracks. Two columns, not three: the
+     inspector takes 280px of the 1120, and page 03 draws the remainder as 2-up
+     398×224 cells (its own "2-up under 1000px of content" rule). */
   .quick-recall__grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 349px));
-    gap: var(--grid-gutter);
+    align-items: start;
   }
 
   /* Section show-more/show-less toggle (mockup `.more-row`): a quiet full-
@@ -420,25 +414,37 @@
     background: var(--app-surface-active);
   }
 
-  /* Shared centered state pattern (mockup `.sp-center`): glyph / lead / sub /
-     faint stack with an optional actions row, used by orientation, error,
-     results-paused, and no-matches. */
+  /* Page 03's empty/no-match panel is a LEFT-ALIGNED typographic block, not a
+     centered glyph stack: a display-size sentence, then one reading-size
+     paragraph that names what was and wasn't searched. The block is centred in
+     the region, its text is not. */
   .quick-recall__state-center {
     flex: 1;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: flex-start;
     justify-content: center;
     gap: 8px;
-    text-align: center;
-    padding: 8px 40px 18px;
+    text-align: left;
+    width: 100%;
+    max-width: 460px;
+    margin: 0 auto;
+    padding: 8px 0 40px;
   }
 
+  /* The glyph only earns its place where it carries a state (⚠); in the neutral
+     states the display-size sentence is the anchor. */
   .quick-recall__state-glyph {
+    display: none;
     font-size: var(--t-display);
     line-height: 1;
     color: var(--app-text-subtle);
+  }
+
+  .quick-recall__state-glyph--danger,
+  .quick-recall__state-glyph--warn {
+    display: block;
   }
 
   .quick-recall__state-glyph--danger {
@@ -451,15 +457,16 @@
 
   .quick-recall__state-lead {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.4;
+    font: var(--w-semi) var(--t-display) / var(--lh-display) var(--app-font-sans);
+    letter-spacing: var(--ls-display);
     color: var(--app-text-strong);
   }
 
   .quick-recall__state-sub {
     margin: 0;
-    font-size: var(--t-meta);
-    line-height: 1.5;
+    max-width: 70ch;
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
     color: var(--app-text-muted);
   }
 
@@ -599,20 +606,16 @@
     width: 56px;
   }
 
-  /* One skeleton tile per grid cell: a caption line over the 196px media block,
-     the same shape a real tile settles into. */
+  /* One skeleton cell: the 16:9 frame over two text lines — the shape a real
+     `.ss-qcell` settles into, so the swap doesn't jump. */
   .quick-recall__skeleton-tile {
     display: flex;
     flex-direction: column;
-    gap: var(--s-8);
-    padding: var(--s-12);
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    gap: 6px;
   }
 
   .quick-recall__skeleton-media {
-    height: 196px;
+    aspect-ratio: 16 / 9;
     border-radius: var(--r-md);
   }
 

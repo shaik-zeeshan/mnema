@@ -14,7 +14,7 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { retentionConsequence } from "$lib/settings/state/system-facts";
+  import { retentionConsequence, retentionFootprint } from "$lib/settings/state/system-facts";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -28,6 +28,13 @@
   void systemFacts.ensureLoaded();
   const retentionHint = $derived(
     retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
+  );
+
+  // Direction 02's retention ladder marks YOUR footprint on the ladder's own
+  // axis — the window is otherwise a number with nothing to be a number of.
+  // Null (nothing measured yet, or "keep forever") draws no axis at all.
+  const retentionAxis = $derived(
+    retentionFootprint(systemFacts.value, rec.draftRetentionPolicy),
   );
 
   // A cleanup changes what is on disk, so the measured rate is re-read after it.
@@ -185,6 +192,15 @@
     {#snippet control()}
       <div class="retention-control">
         <RetentionPicker bind:value={rec.draftRetentionPolicy} />
+        {#if retentionAxis}
+          <div class="ss-axis" aria-hidden="true">
+            <span class="ss-axis__l"></span>
+            <span class="ss-axis__f" style={`width: ${retentionAxis.percent}%`}></span>
+            <span class="ss-axis__m" style={`left: ${retentionAxis.percent}%`}>
+              <b>{retentionAxis.marker}</b>
+            </span>
+          </div>
+        {/if}
         {#if retentionHint}
           <p class="group-hint">{retentionHint}</p>
         {/if}

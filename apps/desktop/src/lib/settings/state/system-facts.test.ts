@@ -5,9 +5,11 @@ import {
   backlogPhrase,
   captureRateConsequence,
   coarseRuntime,
+  modelFitVerdict,
   modelFootprint,
   projectedBytesPerDay,
   retentionConsequence,
+  retentionFootprint,
   semanticCoverage,
   semanticIndexPrice,
 } from "./system-facts";
@@ -183,5 +185,43 @@ describe("semanticCoverage", () => {
     expect(semanticCoverage(facts({ semanticVectorCount: null }))).toBeNull();
     expect(semanticCoverage(facts({ semanticPendingCount: null }))).toBeNull();
     expect(semanticCoverage(facts())).toBeNull();
+  });
+});
+
+describe("modelFitVerdict", () => {
+  // 16 GiB of RAM: a quarter is ~4.3 GB, a half ~8.6 GB.
+  it("grades the download against this machine's memory", () => {
+    expect(modelFitVerdict(facts(), 1 * GB)?.tone).toBe("ok");
+    expect(modelFitVerdict(facts(), 6 * GB)?.tone).toBe("warn");
+    expect(modelFitVerdict(facts(), 12 * GB)?.tone).toBe("bad");
+  });
+
+  it("free disk bites first — an undownloadable model is a fact, not a judgement", () => {
+    const v = modelFitVerdict(facts({ diskFreeBytes: 2 * GB }), 3 * GB);
+    expect(v?.tone).toBe("bad");
+    expect(v?.label).toContain("free");
+  });
+
+  it("claims nothing without a real denominator (G8)", () => {
+    expect(modelFitVerdict(facts(), null)).toBeNull();
+    expect(modelFitVerdict(facts(), 0)).toBeNull();
+    expect(modelFitVerdict(null, 1 * GB)).toBeNull();
+    expect(modelFitVerdict(facts({ totalRamBytes: null, diskFreeBytes: null }), 1 * GB)).toBeNull();
+  });
+});
+
+describe("retentionFootprint", () => {
+  it("places the marker on the kept-vs-free axis", () => {
+    // 10 GB/day over 30 days = 300 GB kept, against 200 GB free -> 300/500.
+    const a = retentionFootprint(facts(), "days_30");
+    expect(a?.percent).toBe(60);
+    expect(a?.marker).toContain("you are here");
+  });
+
+  it("draws no axis for a window with no ceiling, or with nothing measured", () => {
+    expect(retentionFootprint(facts(), "never")).toBeNull();
+    expect(retentionFootprint(facts({ measuredBytesPerDay: null }), "days_30")).toBeNull();
+    expect(retentionFootprint(facts({ diskFreeBytes: null }), "days_30")).toBeNull();
+    expect(retentionFootprint(null, "days_30")).toBeNull();
   });
 });

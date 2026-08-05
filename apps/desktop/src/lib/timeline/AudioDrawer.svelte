@@ -625,8 +625,12 @@
   .audio-drawer {
     position: fixed;
     left: 12px;
-    right: 12px;
-    bottom: 12px;
+    /* Direction 02: the inspector is welded to the right edge and the status
+       strip to the bottom, so the drawer's fixed inset is handed to it by the
+       timeline's drawer host (`routes/+page.svelte`). Defaults keep the old
+       12px inset when no host var is set. */
+    right: var(--timeline-drawer-right, 12px);
+    bottom: calc(var(--h-status, 0px) + 10px);
     z-index: 30;
     display: flex;
     flex-direction: column;

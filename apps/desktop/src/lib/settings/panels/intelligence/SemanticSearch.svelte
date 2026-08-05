@@ -121,19 +121,25 @@
             <p class="group-hint">{semanticPrice}</p>
           {/if}
         {:else if coverage}
+          <!-- The kit's gauge: bar plus its number, read as one object. The
+               meter renders ONLY in the on state (G10); the off state above is
+               the price-before-enable copy instead. -->
           <div class="download-progress" aria-live="polite">
-            <div
-              class="download-progress__bar"
-              role="progressbar"
-              aria-label="Semantic index coverage"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={coverage.percent}
-              aria-valuetext={coverage.phrase}
-            >
-              {#if coverage.percent > 0}
-                <span style={`width: ${coverage.percent}%`}></span>
-              {/if}
+            <div class="ss-gauge">
+              <div
+                class="download-progress__bar ss-gauge__b"
+                role="progressbar"
+                aria-label="Semantic index coverage"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={coverage.percent}
+                aria-valuetext={coverage.phrase}
+              >
+                {#if coverage.percent > 0}
+                  <span style={`width: ${coverage.percent}%`}></span>
+                {/if}
+              </div>
+              <span class="ss-gauge__n">{coverage.percent}%</span>
             </div>
             <p class="group-hint">{coverage.phrase}</p>
           </div>

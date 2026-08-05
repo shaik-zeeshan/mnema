@@ -3,6 +3,7 @@
   import IconCheck from "~icons/lucide/check";
   import { claimRowId, isRowEchoing, noteRowEdit } from "../state/row-echo.svelte";
   import { getSettingsSection, settingsFind } from "$lib/settings/state/settings-find.svelte";
+  import { settingsInspector } from "../state/inspector.svelte";
   import { rowMatchesQuery, sectionBreadcrumb } from "../settings-index";
 
   interface Props {
@@ -62,76 +63,70 @@
   const crumb = $derived(
     settingsFind.active && !miss && section ? sectionBreadcrumb(section) : null,
   );
+
+  // Direction 02's inspector shows the FOCUSED setting (the rail it replaced was
+  // navigation; this is not). A row becomes the subject when the user reaches
+  // it — pointer or keyboard — and the accent inset bar marks which one that is.
+  const focused = $derived(
+    settingsInspector.subject?.label === label &&
+      settingsInspector.subject?.section === section,
+  );
+
+  function inspect() {
+    settingsInspector.focus({ label, description: description ?? null, section });
+  }
+
+  // The echo firing is the one moment we know a save is attributable to THIS
+  // row, so it is also where the inspector's session history is written.
+  $effect(() => {
+    if (echoing) settingsInspector.noteChange(label);
+  });
 </script>
 
 <div
-  class="setting-row"
+  class="setting-row ss-srow"
   class:setting-row--full={full}
+  class:ss-srow--wide={full}
   class:setting-row--warn={warn}
   class:setting-row--disabled={disabled}
   class:setting-row--no-divider={!divider}
   class:setting-row--miss={miss}
+  class:is-focus={focused}
   {id}
   oninputcapture={() => noteRowEdit(rowId)}
   onchangecapture={() => noteRowEdit(rowId)}
-  onclickcapture={() => noteRowEdit(rowId)}
+  onclickcapture={() => { noteRowEdit(rowId); inspect(); }}
+  onfocusincapture={inspect}
 >
   <div class="setting-row__main">
-    <div class="setting-row__text">
+    <div class="setting-row__text ss-srow__t">
       {#if crumb}
         <span class="setting-row__crumb">{crumb.group} › {crumb.section}</span>
       {/if}
-      <span class="setting-row__label">{label}</span>
+      <span class="setting-row__label ss-srow__l">{label}</span>
       {#if description}
-        <span class="setting-row__description">{description}</span>
+        <span class="setting-row__description ss-srow__s">{description}</span>
       {/if}
     </div>
     {#if echoing}
-      <span class="setting-row__echo" role="status"><IconCheck aria-hidden="true" />Saved</span>
+      <span class="setting-row__echo ss-echo" role="status"><IconCheck aria-hidden="true" />Saved</span>
     {/if}
     {#if aside}
       <div class="setting-row__aside">{@render aside()}</div>
     {/if}
   </div>
-  <div class="setting-row__control">
+  <div class="setting-row__control ss-srow__v">
     {@render control()}
   </div>
 </div>
 
 <style>
-  /* Rows are direct children of the card and sit flush; the card's padding
-     comes from these rows. */
+  /* Row geometry is the direction skin's (`.ss-srow`, 34px floor, 6px/10px
+     inset, hairline separations). Only what the skin has no opinion about
+     lives here: the miss/warn/disabled states and the ⌘F breadcrumb. */
   .setting-row {
     position: relative;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    padding: 16px 20px;
     min-width: 0;
-  }
-
-  /* Inset divider between consecutive rows — a 1px line at the top of each
-     non-first row, inset L/R so it doesn't touch the card edges.
-     `:global` on the sibling pair is required: each row is a separate
-     <SettingRow> instance, so Svelte's scoper can't see them as adjacent and
-     would prune (and strip) a purely-scoped `+` selector. The `.setting-row`
-     class is unique to this component, so the global match is safe. */
-  :global(.setting-row + .setting-row)::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 20px;
-    right: 20px;
-    height: 1px;
-    background: var(--app-border);
-    pointer-events: none;
-  }
-
-  /* `divider={false}` suppresses the divider that would otherwise sit above
-     this row. */
-  :global(.setting-row--no-divider)::before {
-    display: none;
   }
 
   .setting-row--disabled {
@@ -142,13 +137,11 @@
   /* Header line: label/description column on the left, optional compact
      `aside` control (a Switch) on the right. In a `full` row this is the row's
      top line and the wide `control` content drops below it; in a normal row it
-     sits opposite the `control` and is the only thing left of it. Either way
-     the `flex: 1 1 auto` text + `flex-shrink: 0` aside split bounds the
-     description against the control beside it. */
+     sits opposite the `control` and is the only thing left of it. */
   .setting-row__main {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -156,32 +149,19 @@
   .setting-row__text {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
     flex: 1 1 auto;
   }
 
-  /* Transient "Saved ✓" echo — locality tells you WHICH row saved (the chip in
-     the top strip tells you whether). Accent pill, matching the chip's weight. */
   .setting-row__echo {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
     flex: 0 0 auto;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
-    color: var(--app-accent);
-    font-size: var(--t-meta);
-    font-weight: 550;
     white-space: nowrap;
   }
 
   .setting-row__echo :global(svg) {
-    width: 10px;
-    height: 10px;
+    width: 11px;
+    height: 11px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2.4;
@@ -202,61 +182,29 @@
     font-size: var(--t-label);
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .setting-row__label {
-    font-size: var(--t-ui);
-    font-weight: 550;
-    letter-spacing: 0.01em;
-    color: var(--app-text-strong);
-    line-height: 1.3;
+    color: var(--app-text-subtle);
   }
 
   .setting-row--warn .setting-row__label {
     color: var(--app-warn);
   }
 
-  .setting-row__description {
-    font-size: 11px;
-    color: var(--app-text-muted);
-    letter-spacing: 0.01em;
-    line-height: 1.45;
-    /* Fill the text column. The flex split (`.setting-row__text` is
-       `flex: 1 1 auto`, `.setting-row__control` is `flex-shrink: 0`) already
-       reserves room for a beside control, so 100% wraps against the toggle —
-       not the card edge — when the toggle sits inline. */
-    max-width: 100%;
-  }
-
   .setting-row__control {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 8px;
-    flex-shrink: 0;
     min-width: 0;
     max-width: 100%;
   }
 
-  /* Wide controls (mockup `.row.stack`): drop the control onto its own
-     full-width line below the label. */
-  .setting-row--full {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 12px;
-  }
-
-  /* In a `full` row the header can be tall (multi-line description), so pin the
-     aside control to the top — aligned with the label, not floating against the
-     middle of the paragraph. */
+  /* Wide controls: the skin's `--wide` stacks the row; the control slot then
+     fills the line beneath the label. */
   .setting-row--full .setting-row__main {
     align-items: flex-start;
+    width: 100%;
   }
 
   .setting-row--full .setting-row__control {
     justify-content: stretch;
     flex-shrink: 1;
     width: 100%;
+    margin-left: 0;
   }
 </style>

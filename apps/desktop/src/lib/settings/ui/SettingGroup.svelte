@@ -44,10 +44,15 @@
   let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, bare = false, nested = false, children }: Props = $props();
 </script>
 
-<!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
-     scrollable <section>, never on the inner card. -->
+<!-- `id` is the deeplink anchor — it MUST stay on this outer scrollable
+     <section>, never on the inner card.
+
+     Direction 02: the section title is the skin's `.ss-subh` (10px mono
+     uppercase) and the rows below it are one hairline-separated `.ss-setgrp`
+     block, not a bordered card. The group's own structure is unchanged — only
+     which classes it wears. -->
 <section class="setting-group" {id}>
-  <header class="setting-group__header" class:setting-group__header--inline={hintInline}>
+  <header class="setting-group__header ss-subh" class:setting-group__header--inline={hintInline}>
     <div class="setting-group__heading">
       <!-- The title and anything inline after it share one row so a trailing
            badge sits beside the title rather than under it. With no
@@ -76,7 +81,7 @@
     {/if}
   </header>
 
-  <div class="setting-group__card {cardClass ?? ''}" class:setting-group__card--bare={bare}>
+  <div class="setting-group__card ss-setgrp ss-grp {cardClass ?? ''}" class:setting-group__card--bare={bare}>
     {@render children()}
   </div>
 </section>
@@ -85,22 +90,21 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 12px;
   }
 
-  /* ── Section head (above the card) ─────────────────────────── */
+  /* ── Section head (above the rows) ─────────────────────────────
+     `.ss-subh` supplies the type + the 14px/16px/6px inset; this only splits
+     the heading from the trailing actions. */
   .setting-group__header {
-    display: flex;
-    align-items: flex-start;
     justify-content: space-between;
+    align-items: flex-start;
     gap: 12px;
-    padding: 0 4px;
   }
 
   .setting-group__heading {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 3px;
     min-width: 0;
   }
 
@@ -142,10 +146,11 @@
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.13em;
+    font-weight: 510;
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    color: var(--app-text-strong);
+    color: var(--app-text-subtle);
+    white-space: nowrap;
   }
 
   /* Drill-in title: same type as the inert one, plus a hit target and a
@@ -205,46 +210,20 @@
     flex-shrink: 0;
   }
 
-  /* ── Card (wraps the rows) ─────────────────────────────────── */
-  /* NB: no `overflow: hidden` here. Controls that open a dropdown/popover
-     anchored inside a row (e.g. the app-exclusion combobox, which is
-     positioned, not portaled) must be able to overflow the card; clipping
-     them was cutting the menu at the card's bottom edge. The rows are
-     transparent and the accent hairline below is inset within the card
-     bounds, so nothing relies on clipping for the rounded-corner look. */
+  /* ── The rows block ────────────────────────────────────────────
+     Hairlines instead of card edges is the direction's de-boxing rule, so the
+     card frame and its accent hairline are gone; `.ss-grp` supplies the flat
+     surface + radius and `.ss-setgrp` the 16px page inset.
+
+     NB: still no `overflow: hidden`. Controls that open a dropdown anchored
+     inside a row (the app-exclusion combobox is positioned, not portaled) must
+     be able to overflow this block. */
   .setting-group__card {
     position: relative;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
   }
 
-  /* Bare: no frame — children (which carry their own borders) sit flush. */
+  /* Bare: no surface at all — children carry their own separations. */
   .setting-group__card--bare {
     background: none;
-    border: 0;
-    border-radius: 0;
-  }
-
-  .setting-group__card--bare::before {
-    display: none;
-  }
-
-  /* Faint top-edge accent hairline — Mnema signature, inset L/R. */
-  .setting-group__card::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 14px;
-    right: 14px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
-      transparent
-    );
-    pointer-events: none;
   }
 </style>

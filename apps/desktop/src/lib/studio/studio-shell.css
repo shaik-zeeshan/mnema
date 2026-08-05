@@ -24,9 +24,17 @@
 
 /* ── Token overrides — the density dial ─────────────────────────────────── */
 :root {
+	/* The app's spacing ramp deliberately skips 10 ("finer under 8, coarser
+	   above"). This direction genuinely uses a 10 step — chrome padding, the
+	   inspector's row inset — so it names one rather than hard-coding 10px in
+	   forty places. */
+	--s-10: 10px;
+
 	/* The kit's grid rule: a container's inset equals its gutter, at 12. */
 	--gap-group: 12px;
 	--pad-panel: 12px;
+	--grid-inset: 12px;
+	--grid-gutter: 12px;
 
 	/* Chrome geometry. Named so a surface never hard-codes 38/30/24/256. */
 	--h-titlebar: 38px;

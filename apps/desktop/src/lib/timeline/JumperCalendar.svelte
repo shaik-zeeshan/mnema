@@ -73,9 +73,13 @@
 </div>
 
 <style>
+  /* The month grid, in the kit's `.ss-cal` vocabulary (studio-shell.css):
+     22px mono cells, a dot under every day that holds recording, accent fill
+     on the previewed day. Days with no capture stay disabled — G6's rule that
+     you can never land on an empty day. */
   .timeline__picker-cal {
-    padding: 12px;
-    border-top: 1px solid var(--app-border);
+    padding: 4px 6px 6px;
+    border-top: var(--hairline) solid var(--app-border);
     /* Top-align the calendar so its nav row sits level with the time pane
        header — no dead space above it. The grid's square cells fill the width. */
     display: flex;
@@ -162,52 +166,61 @@
     min-height: 0;
   }
   :global(.cal__weekday) {
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font: var(--w-medium, 510) var(--t-label) / 18px var(--app-font-mono);
     text-transform: uppercase;
-    color: var(--app-text-subtle);
+    color: var(--app-text-faint);
     text-align: center;
-    padding: 4px 0;
   }
   :global(.cal__cell) {
-    padding: 1px;
+    padding: 0.5px;
   }
   :global(.cal__day) {
     position: relative;
     width: 100%;
     height: 100%;
-    min-height: 26px;
+    min-height: 22px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border-radius: 3px;
+    border-radius: var(--r-sm);
     font-family: var(--app-font-mono);
     font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
-    color: var(--app-text);
+    color: var(--app-text-strong);
     background: transparent;
-    border: 1px solid transparent;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    border: 0;
+    cursor: default;
+    transition: background 0.12s, color 0.12s;
+  }
+  /* The dot IS "this day holds recording" — `isDateDisabled` is the same
+     coverage query the day rows use, so the two signals can never disagree. */
+  :global(.cal__day:not([data-disabled]):not([data-outside-month])::after) {
+    content: "";
+    position: absolute;
+    bottom: 2px;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    background: var(--app-accent);
   }
   :global(.cal__day:hover:not([data-disabled])) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
   }
   :global(.cal__day[data-disabled]),
   :global(.cal__day[data-outside-month]) {
     color: var(--app-text-faint);
     cursor: not-allowed;
   }
-  /* Previewing / selected — accent FILL recipe (matches shipped calendar). */
+  /* Previewing / selected — accent FILL, the kit's `.ss-cal .is-on`. */
   :global(.cal__day[data-selected]) {
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    border-color: color-mix(in srgb, var(--app-accent) 50%, transparent);
-    color: var(--app-accent);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  :global(.cal__day[data-selected]::after) {
+    background: var(--app-accent-contrast);
   }
   :global(.cal__day[data-today]:not([data-selected])) {
-    border-color: var(--app-border-strong);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text-strong);
   }
   /* "You are here" — accent LEFT BAR; layers atop the fill on the committed

@@ -103,6 +103,80 @@ export function modelFootprint(facts: SystemFacts | null, byteSize: number | nul
 	return `${formatBytes(byteSize)} to download · ${parts.join(" · ")}`;
 }
 
+/** Where the chosen retention window puts you on the disk you actually have. */
+export interface RetentionFootprint {
+	/** 0–100: the kept bytes as a share of (kept + free) — the axis position. */
+	percent: number;
+	/** "you are here · 34.2 GB" — the axis marker's own label. */
+	marker: string;
+	/** What is left after it, for the far end of the axis. */
+	free: string;
+}
+
+/**
+ * The retention ladder's axis: your real footprint marked on the ladder's own
+ * scale, so the window is chosen against the disk rather than in the abstract.
+ *
+ * The axis spans what this window would hold PLUS what is still free — the only
+ * two figures Mnema can actually measure. `null` when either is missing (G8),
+ * or for "keep forever", which has no ceiling to mark.
+ */
+export function retentionFootprint(
+	facts: SystemFacts | null,
+	policy: RetentionPolicy,
+): RetentionFootprint | null {
+	if (!facts || facts.measuredBytesPerDay === null || facts.diskFreeBytes === null) return null;
+	const days = retentionToDays(policy);
+	if (days === null) return null;
+	const kept = facts.measuredBytesPerDay * days;
+	const span = kept + facts.diskFreeBytes;
+	if (span <= 0) return null;
+	return {
+		percent: Math.min(100, Math.round((kept / span) * 100)),
+		marker: `you are here · ${formatBytes(kept)}`,
+		free: `${formatBytes(facts.diskFreeBytes)} free`,
+	};
+}
+
+/** A model's fit against THIS machine — the verdict, not the gigabytes. */
+export interface ModelFitVerdict {
+	tone: "ok" | "warn" | "bad";
+	label: string;
+}
+
+/**
+ * Does this model fit on this Mac?
+ *
+ * Direction 02's model rows carry `size · fit verdict computed against this
+ * Mac`, and the verdict — not the byte count — is the output. Two real limits
+ * decide it, in order of how hard they bite:
+ *
+ *  1. Free disk. A model larger than the space left cannot be downloaded at
+ *     all; that is a fact, not a judgement.
+ *  2. Physical RAM. A weights file is resident while the model runs, so the
+ *     download size is a floor on the memory it needs. Under a quarter of RAM
+ *     is comfortable; up to a half is workable; past that it competes with
+ *     everything else on the machine.
+ *
+ * `null` when either the size or both machine limits are unmeasurable — G8: no
+ * denominator, no claim.
+ */
+export function modelFitVerdict(
+	facts: SystemFacts | null,
+	byteSize: number | null,
+): ModelFitVerdict | null {
+	if (byteSize === null || byteSize <= 0) return null;
+	if (facts?.diskFreeBytes != null && byteSize > facts.diskFreeBytes) {
+		return { tone: "bad", label: `needs more than the ${formatBytes(facts.diskFreeBytes)} free` };
+	}
+	const ram = facts?.totalRamBytes ?? null;
+	if (ram === null || ram <= 0) return null;
+	const share = byteSize / ram;
+	if (share <= 0.25) return { tone: "ok", label: `fits in ${formatBytes(ram)} RAM` };
+	if (share <= 0.5) return { tone: "warn", label: `tight for ${formatBytes(ram)} RAM` };
+	return { tone: "bad", label: `too large for ${formatBytes(ram)} RAM` };
+}
+
 /**
  * A processing queue depth, in the units the user recognises. Zero is a real
  * measurement and says so; `null` (the query failed) renders nothing.

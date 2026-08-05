@@ -1,14 +1,15 @@
 <script lang="ts">
-  // ⌘F settings row filter (DECISIONS.md G7).
+  // ⌘F settings row filter (DECISIONS.md G7), rehomed into the tool strip.
   //
-  // Nav-agnostic by design: this is a strip over the CONTENT pane, not a nav —
-  // the settings navigation shape is a per-direction phase-2 decision, and the
-  // rail's own search filters the nav, not the rows. Typing here filters the
-  // whole settings surface down to matching ROWS, each rendered in place with
-  // its breadcrumb and its real, live control (autosave + row echo unchanged).
+  // Direction 02 deletes the settings rail: THE FILTER IS THE NAVIGATION, so it
+  // is a permanent 22px field in the 30px tool strip rather than a panel that
+  // ⌘F reveals. Only the surface moved — the index, the matcher and the
+  // hide-don't-unmount behaviour are phase-1 machinery and untouched. Typing
+  // here still filters the whole settings surface down to matching ROWS, each
+  // rendered in place with its breadcrumb and its real, live control.
   //
-  // Mounted for the whole /settings route (it renders nothing while closed), so
-  // the ⌘F listener is route-scoped and never shadows search on other surfaces.
+  // ⌘F now focuses + selects the field (there is nothing to open), and Escape
+  // clears the query rather than closing a strip that has no closed state.
 
   import IconSearch from "~icons/lucide/search";
   import IconClear from "~icons/lucide/x";
@@ -19,6 +20,14 @@
 
   let input = $state<HTMLInputElement | null>(null);
 
+  // The field is always present, so `open` — which `active` gates on — is a
+  // property of the route being mounted, not of a disclosure. Clear it on the
+  // way out so a stale query can never survive into the next visit.
+  $effect(() => {
+    settingsFind.open = true;
+    return () => settingsFind.close();
+  });
+
   // The keybinding rows capture keys on a window CAPTURE-phase listener and
   // `stopImmediatePropagation()` everything while a rebind is listening, so a
   // bubble-phase listener here already cannot fire mid-capture. The explicit
@@ -27,14 +36,8 @@
     if (c.keyboard.shortcutCaptureActionId !== null) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
       event.preventDefault();
-      settingsFind.open = true;
-      // Re-pressing ⌘F while open re-focuses + selects instead of closing.
-      queueMicrotask(() => input?.select());
-      return;
-    }
-    if (event.key === "Escape" && settingsFind.open) {
-      event.preventDefault();
-      settingsFind.close();
+      input?.focus();
+      input?.select();
     }
   }
 
@@ -43,71 +46,69 @@
     return () => window.removeEventListener("keydown", onKeydown);
   });
 
-
-  // Focus on open (the field only exists once opened).
-  $effect(() => {
-    if (settingsFind.open) input?.focus();
-  });
+  function onFieldKeydown(event: KeyboardEvent) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (settingsFind.query) {
+      settingsFind.query = "";
+      return;
+    }
+    input?.blur();
+  }
 </script>
 
-{#if settingsFind.open}
-  <div class="find-strip">
-    <div class="find-field">
-      <IconSearch aria-hidden="true" />
-      <input
-        bind:this={input}
-        bind:value={settingsFind.query}
-        type="text"
-        placeholder="Filter settings…"
-        aria-label="Filter settings"
-        spellcheck="false"
-        autocomplete="off"
-      />
-      {#if settingsFind.query}
-        <button
-          class="find-field__clear"
-          type="button"
-          aria-label="Clear filter"
-          onclick={() => {
-            settingsFind.query = "";
-            input?.focus();
-          }}
-        >
-          <IconClear aria-hidden="true" />
-        </button>
-      {/if}
-    </div>
-    <span class="find-count">Filtering every section</span>
-    <button class="find-close" type="button" onclick={() => settingsFind.close()}>
-      Esc
+<div class="find-field input" class:is-focused={settingsFind.query !== ""}>
+  <IconSearch aria-hidden="true" />
+  <input
+    bind:this={input}
+    bind:value={settingsFind.query}
+    type="text"
+    placeholder="Filter settings…"
+    aria-label="Filter settings"
+    spellcheck="false"
+    autocomplete="off"
+    onkeydown={onFieldKeydown}
+  />
+  {#if settingsFind.query}
+    <button
+      class="find-field__clear"
+      type="button"
+      aria-label="Clear filter"
+      onclick={() => {
+        settingsFind.query = "";
+        input?.focus();
+      }}
+    >
+      <IconClear aria-hidden="true" />
     </button>
-  </div>
-{/if}
+  {:else}
+    <kbd class="kbd find-field__kbd">⌘F</kbd>
+  {/if}
+</div>
 
 <style>
-  .find-strip {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
+  /* A 22px tool-strip control: the phase-1 `.input` primitive supplies the
+     frame; this only sets the strip's height/width and lays out the glyph,
+     field and trailing affordance inside it. */
   .find-field {
-    position: relative;
-    display: flex;
-    align-items: center;
-    flex: 1 1 auto;
-    min-width: 0;
-    max-width: 420px;
+    flex: 0 0 auto;
+    /* `nowrap` is load-bearing: the shared `.input` primitive wraps, and a
+       long query pushed the clear button onto a second line below the strip. */
+    flex-wrap: nowrap;
+    width: 260px;
+    height: 22px;
+    gap: 6px;
+    padding: 0 4px 0 7px;
+    overflow: hidden;
   }
 
   .find-field :global(svg) {
-    position: absolute;
-    left: 9px;
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
     fill: none;
-    stroke: var(--app-text-muted);
+    stroke: var(--app-text-subtle);
     stroke-width: 2;
     stroke-linecap: round;
     stroke-linejoin: round;
@@ -115,72 +116,53 @@
   }
 
   .find-field input {
-    width: 100%;
-    height: 28px;
-    padding: 0 28px 0 28px;
-    border: 1px solid var(--app-border);
-    border-radius: var(--r-pill);
-    background: var(--app-surface);
-    color: var(--app-text);
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--app-text-strong);
     font-family: inherit;
-    font-size: var(--t-ui);
+    font-size: var(--t-meta);
     outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
   }
 
-  .find-field input:focus {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+  .find-field input::placeholder {
+    color: var(--app-text-subtle);
+  }
+
+  .find-field__kbd {
+    flex: 0 0 auto;
+    height: 16px;
+    min-width: 24px;
+    pointer-events: none;
   }
 
   .find-field__clear {
-    position: absolute;
-    right: 6px;
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
     padding: 0;
     border: 0;
     border-radius: 50%;
     background: none;
     color: var(--app-text-muted);
     cursor: pointer;
+    flex: 0 0 auto;
   }
 
   .find-field__clear:hover {
     color: var(--app-text-strong);
+    background: var(--app-surface-hover);
   }
 
   .find-field__clear :global(svg) {
-    position: static;
-    width: 11px;
-    height: 11px;
+    width: 10px;
+    height: 10px;
     stroke: currentColor;
-  }
-
-  .find-count {
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    white-space: nowrap;
-  }
-
-  .find-close {
-    margin-left: auto;
-    height: 22px;
-    padding: 0 8px;
-    border: 1px solid var(--app-border);
-    border-radius: var(--r-pill);
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--t-meta);
-    cursor: pointer;
-  }
-
-  .find-close:hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
+    pointer-events: none;
   }
 </style>

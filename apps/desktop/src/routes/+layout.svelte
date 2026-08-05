@@ -2152,7 +2152,13 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
+    /* Sans is the app's voice; mono is the MACHINE voice, applied per element
+       via `.is-mono` / `.is-num` (system.css §2). The body defaulted to mono,
+       which silently set every unstyled string in the app in monospace —
+       including running prose. Direction 02 leans hard on the sans/mono
+       contrast (mono labels and tabular numbers against sans rows), so the
+       default has to be right for the contrast to read at all. */
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;

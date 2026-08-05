@@ -1,11 +1,17 @@
 <script lang="ts">
   // The one settings save-state surface (DECISIONS.md G7).
   //
-  // "No bottom save bar, ever": this chip sits in a top-anchored strip ABOVE the
-  // scroll region, so it can never clip off the bottom of a short window. It is
-  // the whole at-rest story — idle / saving / saved / blocked / failed — and it
-  // owns the failure toasts too, so the persistent chip state and the toast that
-  // carries the message + Retry can never disagree.
+  // "No bottom save bar, ever": this chip rides in the 30px tool strip ABOVE the
+  // scroll region, so it can never clip off a short window, and the same state
+  // is published to the window-edge status strip (direction 02's "whether" half
+  // of autosave). It is the whole at-rest story — idle / saving / saved /
+  // blocked / failed — and it owns the failure toasts too, so the persistent
+  // chip state and the toast that carries the message + Retry can never
+  // disagree.
+  //
+  // NOT here, deliberately: an Undo next to the chip. Both mockups draw one;
+  // G7 rules Settings-Undo OUT for v1 — the chip plus the row echo answer the
+  // anxiety, and an undo stack is speculative machinery.
   //
   // The row-level "Saved ✓" echo (which row saved) is driven from here: entering
   // the "ok" state calls `noteSaved()`, and `SettingRow` renders the echo on
@@ -43,23 +49,28 @@
   // Direction 02 puts the "whether" half of autosave in the status strip, which
   // the root layout owns. Publish this chip's state there while Settings is
   // mounted, and clear it on the way out so the strip never shows a stale save
-  // state on Timeline.
+  // state on Timeline. Verified by driving a real save and watching the chip and
+  // the strip step through saving \u2192 saved together.
   $effect(() => {
+    const s = status;
     statusSave.set({
-      tone: status === "error" || status === "blocked" ? "bad" : status === "saving" ? "busy" : "ok",
+      tone: s === "error" || s === "blocked" ? "bad" : s === "saving" ? "busy" : "ok",
       label:
-        status === "error"
+        s === "error"
           ? "Not saved"
-          : status === "blocked"
+          : s === "blocked"
             ? "Resolve issues to save"
-            : status === "saving"
-              ? "Saving…"
-              : status === "ok"
+            : s === "saving"
+              ? "Saving\u2026"
+              : s === "ok"
                 ? "Saved"
                 : "All changes saved",
     });
-    return () => statusSave.set(null);
   });
+
+  // Clearing is an unmount concern only. Putting it in the publish effect's
+  // teardown makes every re-publish a null-then-value pair for no reason.
+  $effect(() => () => statusSave.set(null));
 
   // Autosave failures are the one persistent settings state, and they also raise
   // a toast that never auto-dismisses (G7). The stable ids replace rather than
@@ -109,56 +120,42 @@
   });
 </script>
 
-<div class="save-strip">
-  <span class="savechip savechip--{status}" role="status" aria-live="polite">
-    {#if status === "error"}
-      <IconWarn aria-hidden="true" />
-      Not saved
-    {:else if status === "blocked"}
-      <IconWarn aria-hidden="true" />
-      Resolve issues to save
-    {:else if status === "saving"}
-      <span class="savechip__dot" aria-hidden="true"></span>
-      Saving…
-    {:else if status === "ok"}
-      <IconCheck aria-hidden="true" />
-      Saved
-    {:else}
-      <IconCheck aria-hidden="true" />
-      All changes saved
-    {/if}
-  </span>
-</div>
+<span
+  class="ss-save savechip"
+  class:ss-save--busy={status === "saving"}
+  class:ss-save--bad={status === "error" || status === "blocked"}
+  role="status"
+  aria-live="polite"
+>
+  {#if status === "error"}
+    <IconWarn aria-hidden="true" />
+    Not saved
+  {:else if status === "blocked"}
+    <IconWarn aria-hidden="true" />
+    Resolve issues to save
+  {:else if status === "saving"}
+    <span class="savechip__dot" aria-hidden="true"></span>
+    Saving…
+  {:else if status === "ok"}
+    <IconCheck aria-hidden="true" />
+    Saved
+  {:else}
+    <IconCheck aria-hidden="true" />
+    All changes saved
+  {/if}
+</span>
 
 <style>
-  /* Top-anchored, outside the scroll region — the chip's whole point is that it
-     cannot clip. Right-aligned so it reads as chrome, not as content. */
-  .save-strip {
-    flex: 0 0 auto;
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    min-height: 24px;
-  }
-
+  /* The chip's shape is the skin's `.ss-save`, so the strip and this one read as
+     the same object in two places. Only the icon sizing + the saving pulse are
+     local. */
   .savechip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 10px;
-    border-radius: var(--r-pill);
-    background: var(--app-surface);
-    box-shadow: inset 0 0 0 1px var(--app-border);
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    transition: color 0.15s ease, background 0.15s ease;
+    flex: 0 0 auto;
   }
 
   .savechip :global(svg) {
-    width: 11px;
-    height: 11px;
+    width: 10px;
+    height: 10px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2.4;
@@ -166,27 +163,11 @@
     stroke-linejoin: round;
   }
 
-  .savechip--ok {
-    color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-surface));
-  }
-  .savechip--saving {
-    color: var(--app-accent);
-  }
-  .savechip--blocked {
-    color: var(--app-warn-strong);
-  }
-  .savechip--error {
-    color: var(--app-danger-text);
-    background: color-mix(in srgb, var(--app-danger) 12%, var(--app-surface));
-    box-shadow: inset 0 0 0 1px var(--app-danger);
-  }
-
   .savechip__dot {
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--app-accent);
+    background: currentColor;
     animation: chip-pulse 1.1s ease-in-out infinite;
   }
 

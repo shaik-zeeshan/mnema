@@ -61,29 +61,25 @@
 
   {#if rate !== null}
     <span class="ss-sstrip__dot" aria-hidden="true"></span>
-    <span class="ss-sstrip__g"><span class="ss-num">{rate}</span> fps</span>
+    <span class="ss-sstrip__g"><span class="ss-num">{rate}</span>&nbsp;fps</span>
   {/if}
 
   {#if perDay !== null}
     <span class="ss-sstrip__dot" aria-hidden="true"></span>
-    <span class="ss-sstrip__g">
-      <span class="ss-num">{formatBytes(perDay)}</span>/day
-    </span>
+    <span class="ss-sstrip__g"><span class="ss-num">{formatBytes(perDay)}</span>&nbsp;/day</span>
     <span class="ss-sstrip__dot" aria-hidden="true"></span>
-    <span class="ss-sstrip__g">
-      ~<span class="ss-num">{formatBytes(perMonth ?? 0)}</span>/month
-    </span>
+    <span class="ss-sstrip__g">~<span class="ss-num">{formatBytes(perMonth ?? 0)}</span>&nbsp;/month</span>
   {/if}
 
   {#if queued !== null && queued > 0}
     <span class="ss-sstrip__dot" aria-hidden="true"></span>
-    <span class="ss-sstrip__g"><span class="ss-num">{queued}</span> queued</span>
+    <span class="ss-sstrip__g"><span class="ss-num">{queued}</span>&nbsp;queued</span>
   {/if}
 
   {#if facts?.diskFreeBytes != null}
     <span class="ss-sstrip__dot" aria-hidden="true"></span>
     <span class="ss-sstrip__g ss-sstrip__g--shrink">
-      <span class="ss-num">{formatBytes(facts.diskFreeBytes)}</span> free
+      <span class="ss-num">{formatBytes(facts.diskFreeBytes)}</span>&nbsp;free
     </span>
   {/if}
 

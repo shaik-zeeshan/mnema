@@ -441,3 +441,232 @@
     border-color: var(--app-danger);
   }
 
+  /* ── Re-seating the pre-existing furniture into the dense skin ──────────
+     Everything below is the same markup wearing the direction's metrics: 22px
+     chrome controls, 28–30px content controls, hairlines instead of card
+     edges, and the type roles the kit names. No structure moved. */
+
+  /* A section's explanatory sentence is PROSE. `.ss-subh` sets 10px uppercase
+     mono for the short label beside it (VIDEO, STARTUP, PRIVACY) — a full
+     sentence in that face is unreadable, and the mockup never does it. */
+  .settings-shell .ss-subh .setting-group__hint {
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
+    font-weight: var(--w-regular);
+    line-height: 1.45;
+    letter-spacing: var(--ls-meta);
+    text-transform: none;
+    color: var(--app-text-muted);
+    max-width: 92ch;
+  }
+
+  /* The sub-header's own row: label and (when short) its hint on one line,
+     wrapping to two only when the prose is long. */
+  .settings-shell .ss-subh {
+    align-items: baseline;
+  }
+
+  /* Consequence lines — "2 fps → ~1.4 GB/day". The kit's `.ss-conseq` rule:
+     sans prose, with the NUMBERS in tabular mono so a changed figure moves in
+     place instead of reflowing the sentence. */
+  .settings-shell .group-hint {
+    font: var(--w-regular) var(--t-meta) / 1.45 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    color: var(--app-text-muted);
+  }
+  .settings-shell .group-hint strong,
+  .settings-shell .group-hint b {
+    font-family: var(--app-font-mono);
+    font-weight: var(--w-medium);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-strong);
+  }
+  /* A caveat is not an alarm: keep it in the warn hue but drop the bold, which
+     made every model picker shout. */
+  .settings-shell .group-hint--warn {
+    color: var(--app-warn);
+    font-weight: var(--w-regular);
+  }
+
+  /* Progress + coverage meters are the kit's gauge: 8px, rounded, inset
+     hairline. Used by the semantic-search coverage meter (G10) and by every
+     model download. */
+  .settings-shell .download-progress {
+    gap: 6px;
+  }
+  .settings-shell .download-progress__bar {
+    position: relative;
+    height: 8px;
+    border: 0;
+    border-radius: 4px;
+    background: var(--app-surface-hover);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+  }
+  .settings-shell .download-progress__bar span {
+    border-radius: 4px;
+  }
+
+  /* ── Shortcut editor: rows, not cards ─────────────────────────────────
+     The recorder is one of the direction's six custom inputs; the rows around
+     it drop their frames so the recorder is the only bordered thing on the
+     line. */
+  .settings-shell .shortcut-editor-list {
+    gap: 0;
+  }
+  .settings-shell .shortcut-editor-row {
+    gap: 8px 12px;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 0;
+    border-top: var(--hairline) solid var(--app-border);
+    border-radius: 0;
+    background: transparent;
+  }
+  .settings-shell .shortcut-editor-row:first-child {
+    border-top: 0;
+  }
+  .settings-shell .shortcut-editor-row:hover {
+    background: var(--app-surface-hover);
+  }
+  .settings-shell .shortcut-editor-row--error {
+    box-shadow: inset 2px 0 0 var(--app-danger);
+  }
+  .settings-shell .shortcut-editor-row--listening {
+    background: var(--app-surface-active);
+    box-shadow: inset 2px 0 0 var(--app-accent);
+  }
+  .settings-shell .shortcut-editor-row__title {
+    font-weight: var(--w-regular);
+    color: var(--app-text-strong);
+  }
+  .settings-shell .shortcut-editor-row__description {
+    font-size: var(--t-meta);
+    color: var(--app-text-muted);
+  }
+  .settings-shell .shortcut-editor-row__controls {
+    gap: 4px;
+    flex-wrap: nowrap;
+  }
+
+  /* `.ss-recorder`: 28px, hairline, and — armed — the accent ring plus the
+     prompt in quiet sans. The conflict copy itself is phase-1 machinery and
+     honours G9 (an in-app conflict names its owner; an external one never
+     names an app, because macOS has no API to know). */
+  .settings-shell .shortcut-capture {
+    gap: 4px;
+    min-width: 96px;
+    min-height: var(--h-md);
+    padding: 0 6px;
+    border-radius: var(--r-md);
+    background: var(--app-surface);
+    font-weight: var(--w-regular);
+  }
+  .settings-shell .shortcut-capture--recording,
+  .settings-shell .shortcut-capture--recording:hover {
+    padding: 0 10px;
+    border-color: var(--app-accent-border);
+    background: var(--app-surface);
+    color: var(--app-text-subtle);
+    box-shadow: var(--ring);
+  }
+  .settings-shell .shortcut-cap {
+    min-width: 22px;
+    height: 22px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
+    font-weight: var(--w-medium);
+  }
+
+  /* Chrome icon buttons drop to the tool-strip size. */
+  .settings-shell .settings-icon-btn {
+    width: var(--h-sm);
+    height: var(--h-sm);
+    border-color: var(--app-border-strong);
+    border-radius: var(--r-md);
+    background: var(--app-surface-raised);
+  }
+  .settings-shell .settings-icon-btn svg {
+    width: 13px;
+    height: 13px;
+  }
+
+  /* A group's trailing actions sit on the sub-header's baseline, at chrome size. */
+  .settings-shell .ss-subh .setting-group__actions {
+    gap: 4px;
+    align-self: center;
+  }
+
+  /* Text fields + badges: 28px content height, square-ish mono badges — the
+     kit's `.ss-chip--sq`. */
+  .settings-shell .text-input {
+    min-height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border-radius: var(--r-md);
+  }
+  .settings-shell .badge {
+    height: 18px;
+    padding: 0 5px;
+    border-radius: var(--r-sm);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  /* Bordered sub-blocks (picked model, device lists, callouts) keep their
+     frame but lose the heavy radius so they read as part of the row. */
+  .settings-shell .settings-stack,
+  .settings-shell .ss-picked,
+  .settings-shell .model-status,
+  .settings-shell .device-item,
+  .settings-shell .cleanup-result {
+    border-radius: var(--r-md);
+  }
+
+  /* ── Type: sans is the voice, mono is the machine ──────────────────────
+     `:global(body)` defaults the whole app to mono, so on this surface every
+     line of PROSE had to opt back into sans one class at a time — and most
+     never did (row labels, shortcut names, hints all rendered monospaced).
+     Set the sans face once at the shell root instead: anything that genuinely
+     is a machine value declares mono on itself and still wins, because a
+     direct declaration always beats an inherited one. */
+  .settings-shell {
+    font-family: var(--app-font-sans);
+  }
+
+  /* …and the machine values that were relying on inheriting mono, restated. */
+  .settings-shell .about-meta dd,
+  .settings-shell .about-id__version,
+  .settings-shell .notice-item__license,
+  .settings-shell .cli-command,
+  .settings-shell .storage-path {
+    font-family: var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The recorder hugs its keys — a fixed 96px well left a wide empty box beside
+     a two-key binding. It still reserves enough width that swapping a shortcut
+     does not shift the reset/clear buttons beside it. */
+  .settings-shell .shortcut-capture {
+    min-width: 68px;
+    justify-content: flex-end;
+  }
+
+  /* The coverage/budget gauge reads as one object: bar plus its number. */
+  .settings-shell .ss-gauge {
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+  }
+  .settings-shell .ss-gauge__n {
+    flex: 0 0 auto;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted);
+  }

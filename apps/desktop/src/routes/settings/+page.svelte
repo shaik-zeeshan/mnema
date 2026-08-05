@@ -1,16 +1,20 @@
 <script lang="ts">
-  // Settings shell — Slice-5 shell-ification.
+  // Settings shell — direction 02, Studio Shell.
   //
-  // The 12 legacy `{#if activeTab === ...}` panels were split into per-section
-  // panel components grouped into 5 navigation groups (see lib/settings/groups.ts).
-  // This shell is thin: it builds the single SettingsController (shared with every
-  // panel via context), resolves `?tab`/`?focus` deeplinks to a (group, section
-  // anchor) via groups.ts, runs the mount/autosave/validation/realtime effects,
-  // and renders the rail + the active group's panel. All draft state, loaders,
-  // helpers, and derivations live in the controller + the domain stores it owns;
-  // the panels are dumb markup that read the controller.
+  // THE RAIL IS DELETED. Settings is ONE scrolling page: all five group panels
+  // are mounted at once, each preceded by a sticky header that carries the
+  // group's name and its position in the total ("9 – 21 of 48"). Navigation is
+  // typing — a permanent filter field in the 30px tool strip (the phase-1 ⌘F
+  // index, rehomed) — plus the 256px inspector on the right, which shows the
+  // focused SETTING's detail rather than being a second nav.
   //
-  // INVARIANTS preserved verbatim from the legacy page:
+  // What that deletes: the group-switching state, the scroll-to-top-on-group
+  // effect, and the whole IntersectionObserver scroll-spy. Nothing observes
+  // "which section is active" any more — `position: sticky` answers it in CSS,
+  // for free, and every anchor is always mounted so a deeplink is one
+  // `scrollIntoView`.
+  //
+  // INVARIANTS preserved verbatim:
   //  • the mount `untrack(() => { ... })` block (see settings-mount-untrack.test),
   //  • the single debounced autosave driver $effect → engine.tick(),
   //  • the recording-validation coercion effects,
@@ -29,22 +33,13 @@
     setSettingsController,
   } from "$lib/settings/state/controller.svelte";
   import {
-    groupForSection,
     resolveTabDeeplink,
     resolveFocusDeeplink,
     sectionForFocus,
     sectionAnchor,
-    DEFAULT_SETTINGS_GROUP,
-    DEFAULT_SETTINGS_SECTION,
-    type SettingsGroupId,
     type SettingsSectionId,
   } from "$lib/settings/groups";
-  import {
-    isAtScrollTarget,
-    isScrollable,
-    isScrolledToBottom,
-    lastSectionOfGroup,
-  } from "$lib/settings/scroll-spy";
+  import { settingsCensus } from "$lib/settings/row-census";
   // Shared `.settings-shell` styles, split per concern (≤800 lines each),
   // imported in SOURCE ORDER (cascade-critical; theme last). Map: settings-layout.css.
   import "$lib/settings/settings-layout.css";
@@ -53,10 +48,12 @@
   import "$lib/settings/settings-controls-fields.css";
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
-  import SettingsRail from "$lib/settings/SettingsRail.svelte";
   import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
   import SettingsFindBar from "$lib/settings/ui/SettingsFindBar.svelte";
+  import SettingsInspector from "$lib/settings/ui/SettingsInspector.svelte";
   import { settingsFind } from "$lib/settings/state/settings-find.svelte";
+  import { settingsInspector } from "$lib/settings/state/inspector.svelte";
+  import IconPanel from "~icons/lucide/panel-right";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
@@ -110,70 +107,24 @@
   const loadAskAiAvailability = () => c.askAi.loadAskAiAvailability();
   const loadSettingsModels = () => c.loadSettingsModels();
 
-  // ─── Active group + sub-section + deeplink routing (driven by groups.ts) ─────
-  let activeGroup = $state<SettingsGroupId>(DEFAULT_SETTINGS_GROUP);
-  // The currently-active sub-section (drives the rail's active item + scroll-spy).
-  // Defaults to the first section of the default group.
-  let activeSection = $state<SettingsSectionId>(DEFAULT_SETTINGS_SECTION);
+  // ─── Deeplink routing (driven by groups.ts) ─────────────────────────────────
+  // Every panel is mounted, so a deeplink is a plain scroll to its anchor. No
+  // group state, no spy, no suppression window — those existed only to keep a
+  // rail highlight honest, and there is no rail.
   let scrollRegion = $state<HTMLDivElement | null>(null);
   let scrollRegionScrolling = $state(false);
   let scrollRegionScrollTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // Scroll-spy suppression: while a programmatic scroll (deeplink / rail click)
-  // is in flight, the IntersectionObserver must NOT fight it by re-deriving
-  // `activeSection` from intersection ratios mid-animation. The flag is raised
-  // by `focusSettingsSection` and cleared on a scroll-SETTLE signal — once the
-  // region's `scrollTop` reaches the target anchor (`spySuppressTarget`) — with
-  // the timer only an UPPER bound so suppression can never get stuck (a long
-  // smooth jump can outlast a fixed timeout, so a blind timer would clear
-  // suppression mid-animation and flicker the rail highlight).
-  let spySuppressed = $state(false);
-  let spySuppressTimer: ReturnType<typeof setTimeout> | null = null;
-  // The scroll region's expected `scrollTop` once the in-flight programmatic
-  // scroll settles, or null when none is in flight / the target is unknown.
-  let spySuppressTarget: number | null = null;
+  // The census answers both the sticky headers ("9 – 21 of 48") and the tool
+  // strip's count, from the same enumeration the \u2318F index is tested against.
+  const census = $derived(settingsCensus(settingsFind.active ? settingsFind.query : ""));
 
-  function clearSpySuppression() {
-    spySuppressed = false;
-    spySuppressTarget = null;
-    if (spySuppressTimer !== null) {
-      clearTimeout(spySuppressTimer);
-      spySuppressTimer = null;
-    }
-  }
-
-  function suppressSpy() {
-    spySuppressed = true;
-    spySuppressTarget = null;
-    if (spySuppressTimer !== null) clearTimeout(spySuppressTimer);
-    // Safety upper bound only — settle normally clears via the scroll handler.
-    spySuppressTimer = setTimeout(clearSpySuppression, 700);
-  }
-
-  // Both scroll-spy timers are armed from event handlers (suppress-on-navigate
-  // and the onscroll is-scrolling flag), not from the IntersectionObserver
-  // $effect, so that effect's cleanup never clears them. Clear on destroy so a
-  // navigate-away mid-settle (e.g. "← Back to app" within the 700ms suppression
-  // window) leaves no timer firing into a torn-down shell.
   onDestroy(() => {
-    if (spySuppressTimer !== null) {
-      clearTimeout(spySuppressTimer);
-      spySuppressTimer = null;
-    }
     if (scrollRegionScrollTimer !== null) {
       clearTimeout(scrollRegionScrollTimer);
       scrollRegionScrollTimer = null;
     }
   });
-
-  // Record where the in-flight programmatic scroll is heading (the anchor's
-  // offset, clamped to the region's max scrollTop) so the scroll handler can
-  // detect settle. Called after `scrollIntoView` requests the scroll.
-  function setSpyTarget(el: HTMLElement) {
-    if (!scrollRegion) return;
-    const maxTop = scrollRegion.scrollHeight - scrollRegion.clientHeight;
-    spySuppressTarget = Math.max(0, Math.min(el.offsetTop, maxTop));
-  }
 
   function handleScrollRegionScroll() {
     scrollRegionScrolling = true;
@@ -182,63 +133,20 @@
       scrollRegionScrolling = false;
       scrollRegionScrollTimer = null;
     }, 800);
-
-    // Clear scroll-spy suppression on a settle signal: once the programmatic
-    // scroll has carried `scrollTop` to its target anchor, the observer is safe
-    // to drive `activeSection` again. This beats a blind timer for long smooth
-    // jumps (which can outlast the upper-bound timeout). Done before the tail
-    // short-circuit below so the freshly-settled section can be force-selected.
-    if (
-      spySuppressed &&
-      scrollRegion &&
-      isAtScrollTarget(scrollRegion.scrollTop, spySuppressTarget)
-    ) {
-      clearSpySuppression();
-    }
-
-    // Scroll-spy tail fix: when the region bottoms out, the last section's
-    // anchor can't reach the top detection band, so the IntersectionObserver
-    // leaves the highlight stuck on the second-to-last section. Force-select
-    // the tail here (unless a programmatic scroll is in flight).
-    if (
-      !spySuppressed &&
-      scrollRegion &&
-      isScrolledToBottom({
-        scrollHeight: scrollRegion.scrollHeight,
-        scrollTop: scrollRegion.scrollTop,
-        clientHeight: scrollRegion.clientHeight,
-      })
-    ) {
-      const last = lastSectionOfGroup(activeGroup);
-      if (last && last !== activeSection) activeSection = last;
-    }
   }
 
-  // Scroll a section's anchor into view after the group panel has mounted, and
-  // record the settle target so suppression clears on arrival (not a blind timer).
-  function scrollToSection(section: SettingsSectionId, smooth: boolean) {
+  // Scroll a section's anchor into view once its panel has painted. The sticky
+  // header sits at the top of the scroll region, so land the anchor just under
+  // it rather than behind it.
+  function focusSettingsSection(section: SettingsSectionId, smooth = true) {
     void tick().then(() => {
       const el = document.getElementById(sectionAnchor(section));
       el?.scrollIntoView({ block: "start", behavior: smooth ? "smooth" : "auto" });
-      if (el) setSpyTarget(el);
     });
   }
 
-  // Select a section's group + sub-section and scroll to it. Used by both the
-  // rail (onNavigate) and deeplink resolution. Suppresses scroll-spy so it does
-  // not fight the programmatic scroll. The scroll-to-top on a group change is
-  // owned solely by the dedicated `activeGroup` $effect below (setting
-  // `activeGroup` here triggers it); the deferred `scrollToSection` then wins.
-  function focusSettingsSection(section: SettingsSectionId, smooth = true) {
-    const group = groupForSection(section);
-    activeGroup = group;
-    activeSection = section;
-    suppressSpy();
-    scrollToSection(section, smooth);
-  }
-
   // `$page.url`-reactive deeplink effect: resolve `?tab`/`?focus` to a section
-  // (via groups.ts) and route there. A focus deeplink (cliAccess) also pops the
+  // (via groups.ts) and scroll there. A focus deeplink (cliAccess) also pops the
   // broker-authorization prompt, matching the legacy behavior.
   $effect(() => {
     const requestedTab = $page.url.searchParams.get("tab");
@@ -248,113 +156,13 @@
     }
     const focus = resolveFocusDeeplink($page.url.searchParams.get("focus"));
     if (focus) {
-      const focusSection = sectionForFocus(focus);
+      void sectionForFocus(focus);
       c.brokerAuthorizationPromptVisible = true;
-      activeGroup = groupForSection(focusSection);
-      activeSection = focusSection;
-      suppressSpy();
       void tick().then(() => {
         c.agentAccessSection?.scrollIntoView({ block: "start", behavior: "smooth" });
         c.agentAccessSection?.focus({ preventScroll: true });
-        if (c.agentAccessSection) setSpyTarget(c.agentAccessSection);
       });
     }
-  });
-
-  // Reset scroll to top when the active group changes (matches legacy tabbed
-  // settings: a fresh group starts at the top unless a deeplink scrolled it).
-  $effect(() => {
-    activeGroup;
-    untrack(() => scrollRegion?.scrollTo({ top: 0, behavior: "auto" }));
-  });
-
-  // ─── Scroll-spy ─────────────────────────────────────────────────────────────
-  // Observe the `#settings-section-*` anchors inside the scroll region and set
-  // `activeSection` to the top-most visible one as the user scrolls. Re-armed on
-  // group change (only the active group's panel is mounted, so spy only moves
-  // `activeSection` within the current group). No-ops while suppression is active
-  // so it never fights a programmatic deeplink / rail-click scroll.
-  $effect(() => {
-    // Re-run when the group changes (its anchors mount) or the scroll region
-    // (re)attaches. Read both so the effect tracks them.
-    activeGroup;
-    const root = scrollRegion;
-    if (!root || typeof IntersectionObserver === "undefined") return;
-    // While ⌘F filtering, every group's panel is mounted and most anchors are
-    // hidden — intersections would drag the rail highlight somewhere arbitrary.
-    if (settingsFind.active) return;
-
-    let frame = 0;
-    // Each callback reports only the entries that changed, so accumulate the
-    // latest intersection state per element and re-derive the top-most one.
-    const intersecting = new Set<HTMLElement>();
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          const el = e.target as HTMLElement;
-          if (e.isIntersecting) intersecting.add(el);
-          else intersecting.delete(el);
-        }
-        if (spySuppressed) return;
-        // Coalesce to the next frame: pick the top-most intersecting section.
-        cancelAnimationFrame(frame);
-        frame = requestAnimationFrame(() => {
-          if (spySuppressed || intersecting.size === 0) return;
-          // At the bottom, the tail section can't reach the top detection band;
-          // the scroll handler force-selects it, so don't override it back to a
-          // mid-band section here. Only short-circuit when the region is actually
-          // scrollable — a short group that fits the viewport is permanently
-          // "bottomed out", which would freeze the highlight on the entry
-          // section; let it fall through to the top-most-intersecting selection.
-          if (
-            isScrollable({
-              scrollHeight: root.scrollHeight,
-              clientHeight: root.clientHeight,
-            }) &&
-            isScrolledToBottom({
-              scrollHeight: root.scrollHeight,
-              scrollTop: root.scrollTop,
-              clientHeight: root.clientHeight,
-            })
-          )
-            return;
-          // Top-most = smallest top offset relative to the root.
-          const rootTop = root.getBoundingClientRect().top;
-          let top: HTMLElement | null = null;
-          let topDelta = Infinity;
-          for (const el of intersecting) {
-            const delta = el.getBoundingClientRect().top - rootTop;
-            if (delta < topDelta) {
-              topDelta = delta;
-              top = el;
-            }
-          }
-          const id = top?.id?.replace(/^settings-section-/, "") as
-            | SettingsSectionId
-            | undefined;
-          if (id && id !== activeSection && groupForSection(id) === activeGroup) {
-            activeSection = id;
-          }
-        });
-      },
-      // Bias toward the top of the viewport so a section is "active" once its
-      // head clears the top edge — matches the deeplink scroll target.
-      { root, rootMargin: "0px 0px -70% 0px", threshold: [0, 0.1, 0.5, 1] },
-    );
-
-    // The anchors live inside the just-mounted group panel; observe after tick.
-    void tick().then(() => {
-      for (const el of root.querySelectorAll<HTMLElement>(
-        '[id^="settings-section-"]',
-      )) {
-        observer.observe(el);
-      }
-    });
-
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-    };
   });
 
   // ─── Auto-save (shared engine) ──────────────────────────────────────────────
@@ -588,64 +396,99 @@
   });
 </script>
 
-<!-- ── Settings shell ──────────────────────────────────────────────────────
-     A fixed left rail lists the 5 groups; only the right-hand content pane
-     scrolls. One group panel is mounted at a time, so the rail and window
-     chrome stay pinned. -->
+<!-- ── Settings shell — direction 02 ───────────────────────────────────────
+     Four fixed pieces, one scrolling region. The 38px title bar and the 24px
+     status strip are the root layout's; this surface owns the 30px tool strip
+     (filter · count · save chip · inspector toggle), the scroll, and the 256px
+     inspector. There is no rail. -->
 <div class="settings-shell" class:is-finding={settingsFind.active}>
   <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
        <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the rail's grouped sections. -->
+       the visible title is the window chrome + the sticky section headers. -->
   <h1 class="settings-page-title">Settings</h1>
-  <SettingsRail
-    {activeGroup}
-    {activeSection}
-    onNavigate={(section) => focusSettingsSection(section)}
-  />
 
-  <!-- ── Content pane — only this column scrolls. -->
-  <div class="settings-content">
-    <!-- Top-anchored, outside the scroll region: the autosave chip can never
-         clip off a short window (G7 — no bottom save bar, ever). -->
-    <SettingsSaveChip />
-
-    <!-- ⌘F row filter (G7) — a state over the content pane, not a nav. Renders
-         nothing until ⌘F opens it. -->
+  <!-- ── Tool strip. THE FILTER IS THE NAVIGATION (the rail it replaced could
+       not find a setting whose section you have forgotten). -->
+  <div class="ss-tstrip">
     <SettingsFindBar />
-
-    <AppPrivacyExclusionPrompt
-      controller={c.appPrivacyExclusion}
-      onReview={() => focusSettingsSection("privacy")}
-    />
-
-    <div
-      class="settings-scroll"
-      class:is-scrolling={scrollRegionScrolling}
-      bind:this={scrollRegion}
-      onscroll={handleScrollRegionScroll}
-      data-find-query={settingsFind.query}
-    >
+    <div class="ss-tstrip__sep"></div>
+    <span class="t-meta is-mono settings-count">
       {#if settingsFind.active}
-        <!-- ⌘F: every group's panel is mounted so a hit in any section can
-             render WITH ITS LIVE CONTROL; the rows/groups that don't match hide
-             themselves (see `.is-finding` in settings-layout.css). -->
-        <GeneralPanel />
-        <CapturePanel />
-        <IntelligencePanel />
-        <DataPanel />
-        <AboutPanel />
-      {:else if activeGroup === "general"}
-        <GeneralPanel />
-      {:else if activeGroup === "capture"}
-        <CapturePanel />
-      {:else if activeGroup === "intelligence"}
-        <IntelligencePanel />
-      {:else if activeGroup === "data"}
-        <DataPanel />
-      {:else if activeGroup === "about"}
-        <AboutPanel />
+        {census.matched} of {census.total} · {census.matchedGroups}
+        {census.matchedGroups === 1 ? "section" : "sections"}
+      {:else}
+        {census.total} settings · {census.groups.length} sections
       {/if}
+    </span>
+    <span class="ss-tstrip__spacer"></span>
+    <!-- Autosave, top-anchored and unclippable (G7). The same state is mirrored
+         into the window-edge status strip; there is no Undo beside it (G7). -->
+    <SettingsSaveChip />
+    <div class="ss-tstrip__sep"></div>
+    <button
+      class="btn btn--sm btn--icon"
+      class:is-on={settingsInspector.open}
+      type="button"
+      aria-pressed={settingsInspector.open}
+      aria-label={settingsInspector.open ? "Hide setting detail" : "Show setting detail"}
+      onclick={() => settingsInspector.toggle()}
+    >
+      <IconPanel aria-hidden="true" />
+    </button>
+  </div>
+
+  <!-- ── Body: the one scrolling region + the inspector welded to its right. -->
+  <div class="ss-body">
+    <div class="ss-main">
+      <AppPrivacyExclusionPrompt
+        controller={c.appPrivacyExclusion}
+        onReview={() => focusSettingsSection("privacy")}
+      />
+
+      <div
+        class="settings-scroll ss-setscroll"
+        class:is-scrolling={scrollRegionScrolling}
+        bind:this={scrollRegion}
+        onscroll={handleScrollRegionScroll}
+        data-find-query={settingsFind.query}
+      >
+        <!-- ONE page. Every group's panel is mounted at all times: that is what
+             makes the scroll continuous, what lets ⌘F show a hit in any section
+             WITH ITS LIVE CONTROL, and what makes a deeplink a plain scroll.
+             Each group is introduced by a sticky header carrying its name and
+             its position in the total — the address the rail used to hold. -->
+        {#each census.groups as group (group.id)}
+          {#if group.matches > 0}
+            <div class="ss-stick">
+              <span class="ss-stick__n">{group.label}</span>
+              <span class="t-meta ss-stick__sub">{group.sections}</span>
+              <span class="ss-stick__c">
+                {#if settingsFind.active}
+                  {group.matches} {group.matches === 1 ? "match" : "matches"}
+                {:else}
+                  {group.first} – {group.last} of {census.total}
+                {/if}
+              </span>
+            </div>
+          {/if}
+          {#if group.id === "general"}
+            <GeneralPanel />
+          {:else if group.id === "capture"}
+            <CapturePanel />
+          {:else if group.id === "intelligence"}
+            <IntelligencePanel />
+          {:else if group.id === "data"}
+            <DataPanel />
+          {:else if group.id === "about"}
+            <AboutPanel />
+          {/if}
+        {/each}
+      </div>
     </div>
+
+    {#if settingsInspector.open}
+      <SettingsInspector />
+    {/if}
   </div>
 </div>
 
@@ -657,7 +500,18 @@
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    gap: 18px;
+    flex-direction: column;
+    /* The Studio Shell's chrome is full-bleed: cancel the 8px/20px gutter the
+       root layout puts on `.app-content--settings` so the tool strip, the
+       sticky headers and the inspector reach the window edges. The layout is
+       another agent's file, so this is the seam that does not touch it. */
+    margin: -8px -20px 0;
+  }
+
+  /* The strip's own count, right of the filter — mono so it reads as a
+     measurement, not a label. */
+  .settings-count {
+    white-space: nowrap;
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

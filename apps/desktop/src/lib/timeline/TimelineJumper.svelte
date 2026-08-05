@@ -157,10 +157,21 @@
   }
 
   // ── Trigger readout + committed marker ──────────────────────────────────────
+  // `Mon, Aug 3 · 14:32` — the pill states its position in the same shape the
+  // readout above the rail does, since they describe the same moment.
   function formatTriggerLabel(ts: string): string {
     const d = parseCapturedAt(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString();
+    const day = d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+    const time = d.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    return `${day} · ${time}`;
   }
   const triggerLabel = $derived(
     activeFrame ? formatTriggerLabel(activeFrame.capturedAt) : "no active frame",
@@ -408,7 +419,10 @@
       160,
       triggerRect.top - triggerGap - viewportMargin,
     );
-    const maxHeight = Math.min(420, Math.max(availableBelow, availableAbove));
+    // 500, not 420: the pill now sits on the playhead near the bottom of the
+    // window, so the menu opens upward — and G6's contents (quick targets,
+    // seven day rows, the month grid) only all fit above the fold at 500.
+    const maxHeight = Math.min(500, Math.max(availableBelow, availableAbove));
     const openAbove = availableBelow < 260 && availableAbove > availableBelow;
     const top = openAbove
       ? Math.max(
@@ -532,7 +546,7 @@
        One control owns both jobs — there is no second date input and no from/to
        pair anywhere on the timeline. -->
   <button
-    class="pill pill--quiet timeline__jump-trigger"
+    class="ss-nowpill timeline__jump-trigger"
     class:timeline__jump-trigger--open={open}
     onclick={toggle}
     bind:this={pickerTriggerEl}
@@ -542,8 +556,7 @@
     use:tip={"Jump to date and time (J)"}
   >
     <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
-    <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
+    <span class="ss-num timeline__jump-label">{triggerLabel}</span>
     <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
   </button>
 
@@ -633,7 +646,8 @@
 
 <style>
   /* `.btn` + `--ghost` / `--sm` / `--accent`: shared primitive
-     (system.css §6, routes/+layout.svelte). */
+     (system.css §6, routes/+layout.svelte). `.ss-nowpill` / `.ss-menu*`:
+     direction 02's kit (lib/studio/studio-shell.css). */
 
   /* ── Trigger group ──────────────────────────────────────────────────────── */
   .timeline__jump {
@@ -642,19 +656,20 @@
     gap: 6px;
     position: relative;
   }
-  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
-     reset and the open ring are local. */
+  /* The position pill. `.ss-nowpill` carries the shape; only the button reset,
+     the truncation and the open ring are local. */
   .timeline__jump-trigger {
-    border: 0;
     cursor: pointer;
-    font-variant-numeric: tabular-nums;
     max-width: 260px;
   }
   .timeline__jump-trigger:hover {
-    background: var(--app-surface-active);
+    background: var(--app-surface-hover);
   }
   .timeline__jump-trigger--open {
-    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+    box-shadow:
+      0 1px 3px rgb(0 0 0 / 20%),
+      0 0 0 var(--hairline) var(--app-accent-border),
+      var(--app-ring);
   }
   .timeline__jump-chevron {
     display: inline-flex;
@@ -674,21 +689,19 @@
     color: var(--app-accent);
   }
   .timeline__jump-icon :global(svg) {
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
   }
   .timeline__jump-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
-  .timeline__jump-kbd {
-    flex: 0 0 auto;
-    margin-left: 2px;
-  }
 
   /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* NSMenu anatomy: a raised sheet on a hairline ring, no card border. It is
+     wider than the kit's 264px menu because it keeps the hour pane the app has
+     always had beside the day rows + month grid. */
   .timeline__picker {
     position: fixed;
     z-index: 20;
@@ -697,25 +710,27 @@
     width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow:
+      var(--shadow-popover, var(--app-shadow-popover)),
+      0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text);
   }
   .timeline__picker-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    height: 26px;
+    flex: 0 0 auto;
+    padding: 0 8px 0 10px;
+    border-bottom: var(--hairline) solid var(--app-border);
   }
   .timeline__picker-title {
     flex: 1;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font: var(--w-medium, 510) var(--t-label) / 1.4 var(--app-font-mono);
+    letter-spacing: var(--ls-label, 0.02em);
     text-transform: uppercase;
     color: var(--app-text-subtle);
   }
@@ -735,7 +750,7 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid var(--app-border);
+    border-right: var(--hairline) solid var(--app-border);
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
   }
@@ -757,11 +772,10 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    padding: 0 10px;
+    border-top: var(--hairline) solid var(--app-border);
     font-size: var(--t-label);
-    min-height: 32px;
+    min-height: 24px;
   }
   .timeline__picker-foot-span {
     color: var(--app-text-subtle);
