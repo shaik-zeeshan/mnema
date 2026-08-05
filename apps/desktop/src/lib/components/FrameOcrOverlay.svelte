@@ -180,17 +180,17 @@
     position: absolute;
     right: 4px;
     bottom: 4px;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: var(--app-ocr-chip-bg);
-    color: var(--app-ocr-chip-text);
-    border: 1px solid var(--app-ocr-chip-border);
-    font-family: var(--app-font-mono);
-    font-size: 10px;
+    padding: 3px 9px;
+    border-radius: var(--r-pill);
+    background: rgba(12, 12, 16, 0.58);
+    color: #fff;
+    border: 0;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    font-size: var(--t-meta);
     letter-spacing: 0.02em;
     line-height: 1.2;
     white-space: nowrap;
-    opacity: 0.72;
     pointer-events: none;
   }
 
@@ -203,10 +203,12 @@
     align-items: center;
     gap: 8px;
     padding: 5px 10px;
-    background: var(--app-overlay-bg);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    backdrop-filter: blur(4px);
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
     font-size: 10px;
     letter-spacing: 0.08em;
     text-transform: uppercase;

@@ -75,8 +75,8 @@
     align-items: center;
     gap: 12px;
     padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
+    /* Chrome of the drawer: it stays on the shell's material, edgeless. */
+    background: transparent;
   }
 
   .playbtn {
@@ -85,9 +85,10 @@
     flex: none;
     display: grid;
     place-items: center;
-    border: 1px solid var(--app-status-running-border);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--app-record-glyph-start) 10%, transparent);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: color-mix(in srgb, var(--app-record-glyph-start) 16%, transparent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-status-running-border);
     color: var(--app-status-running-fg);
     cursor: pointer;
     transition:

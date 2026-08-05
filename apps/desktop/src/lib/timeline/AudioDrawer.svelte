@@ -632,12 +632,16 @@
     flex-direction: column;
     max-height: 50vh;
     overflow: hidden;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
+    /* Direction 03: the drawer is a floating sheet — a material SHELL whose
+       only edge is its own rim (one of this page's two bordered containers).
+       Everything read inside it lands on an opaque plate. */
+    background: var(--glass-hud);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
+    border-radius: var(--r-panel);
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 0 1px 0 var(--glass-hi);
     animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
     outline: none;
   }
@@ -653,25 +657,8 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  /* The dark lift is far too heavy on paper. */
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-
-  :global([data-theme="light"]) .audio-drawer:focus-visible {
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      var(--app-ring);
+    box-shadow: var(--app-ring), var(--sh-hud),
+      inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   @keyframes audio-drawer-rise {
@@ -704,10 +691,12 @@
     padding-right: 342px;
   }
 
+  /* Read text, so it sits on the drawer's plate rather than on its material. */
   .stage__note,
   .stage__error {
-    margin: 0;
-    padding: 4px 14px 8px;
+    margin: 0 10px;
+    padding: 6px 12px 8px;
+    background: var(--app-surface);
     font-size: 11px;
     line-height: 1.5;
   }
@@ -729,10 +718,12 @@
     right: 14px;
     bottom: 52px;
     padding: 4px 10px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-surface-raised);
-    box-shadow: var(--app-shadow-popover);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-strong);
     font: inherit;
     font-size: 10px;
@@ -743,8 +734,8 @@
 
   .expand-cta:hover,
   .expand-cta:focus-visible {
-    background: var(--app-surface-hover);
     outline: none;
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .drawer-error {
@@ -753,9 +744,10 @@
     gap: 10px;
     margin: 8px 12px 0;
     padding: 8px 10px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
-    background: var(--app-danger-bg-soft, transparent);
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-danger-bg-soft, var(--app-surface));
+    box-shadow: var(--sh-tile);
     font-size: 11px;
     color: var(--app-danger-text, var(--app-danger));
   }

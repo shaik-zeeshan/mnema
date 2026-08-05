@@ -60,6 +60,7 @@
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
   import IconClapperboard from "~icons/lucide/clapperboard";
   import IconHeadphones from "~icons/lucide/headphones";
+  import IconRefreshCw from "~icons/lucide/refresh-cw";
   import {
     activeExactPreviewDelayMs,
     scrubPreviewResponseShouldApply,
@@ -2256,14 +2257,16 @@
     hoveredFrameId != null && hoveredX != null,
   );
 
-  // App identity of the frame shown in the centered readout. Keying the icon
-  // and app-name on this makes them animate only when the *app* changes as the
-  // user scrubs across an app boundary — not on every frame within one app
-  // (the time/date update live inside the same DOM node).
+  // App identity of the frame shown in the jump capsule. The capsule reads out
+  // the COMMITTED position (the active frame), never the hovered one — hovering
+  // gets its own uncommitted ghost bubble — so this keys off `timelineActive`.
+  // Keying the icon and app-name on it makes them animate only when the *app*
+  // changes as the user scrubs across an app boundary, not on every frame
+  // within one app (the time/date update live inside the same DOM node).
   const tooltipAppKey = $derived(
     timelineAppIdentity(
-      normalizedTimelineAppBundleId(tooltipFrame ?? ({} as FrameDto)),
-      normalizedTimelineAppName(tooltipFrame ?? ({} as FrameDto)),
+      normalizedTimelineAppBundleId(timelineActive ?? ({} as FrameDto)),
+      normalizedTimelineAppName(timelineActive ?? ({} as FrameDto)),
     ) ?? "__none__",
   );
   // Scrub direction (+1 = scrubbing toward older frames / "backward" in time,
@@ -6110,23 +6113,15 @@
   onwheel={onTimelineWheel}
   style="--timeline-slot-w: {timelineSlotWidth}px"
 >
-  <header class="timeline__bar">
+  <!-- Direction 03: the timeline's toolbar is the second row of the SAME
+       material block as the app title bar (`.glass-chrome`), so chrome reads as
+       one continuous piece of glass and the frozen surface below it is opaque.
+       Recording status and start/stop live in that title bar; this row holds
+       only timeline-specific controls. The jump control is no longer here — it
+       merged into the readout capsule that rides the playhead (see the rail
+       wrap below). -->
+  <header class="timeline__bar glass-chrome">
     <div class="timeline__bar-group timeline__bar-group--primary">
-      <!-- Recording status indicator and start/stop controls now live in
-           the app-wide title bar (see `routes/+layout.svelte`) so the
-           recording affordance is visible regardless of which route is
-           active. The timeline header retains only timeline-specific
-           controls below (jump, OCR toggle, refresh). -->
-      <TimelineJumper
-        bind:this={jumperRef}
-        bind:open={pickerOpen}
-        bind:jumping={pickerJumping}
-        activeFrame={timelineActive}
-        timelineBusy={timelineLoading || timelineLoadingMore}
-        showLatest={showJumpToLatestButton}
-        onJump={onJumperJump}
-        onJumpToLatest={jumpToLatestFrame}
-      />
       <!-- Zoom owns SPAN only (G5): Hour / Day / Week, no Month level — the
            jump menu's month grid covers month-scale navigation. The readout
            next to it states what is really on screen, since the rail's frame
@@ -6142,49 +6137,72 @@
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
-      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
-        {#if ocrProviderLabel}
-          <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
+      {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id && ocrProviderLabel}
+        <span class="timeline__ocr-provider-chip" use:tip={ocrProviderLabel}>{ocrProviderLabel}</span>
+      {/if}
+      <!-- One labelled utility cluster instead of three loose thin-bar buttons:
+           same commands, same handlers, grouped so each verb stays legible. -->
+      <div class="timeline__util">
+        <button
+          class="btn btn--ghost btn--sm timeline__ocr-btn"
+          class:timeline__ocr-btn--running={ocrStatus === "running"}
+          class:timeline__ocr-btn--error={ocrStatus === "error"}
+          class:timeline__ocr-btn--success={ocrStatus === "success"}
+          onclick={toggleOcrForActiveFrame}
+          disabled={!timelineActive}
+          use:tip={ocrToggleTitle}
+          aria-label={ocrVisible
+            ? "Hide OCR data for active frame"
+            : "Show OCR data for active frame"}
+          aria-pressed={ocrVisible}
+          aria-busy={ocrStatus === "running"}
+        >
+          {#if ocrStatus === "running"}
+            <span class="timeline__util-spinner" aria-hidden="true"></span>
+          {:else}
+            <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
+          {/if}
+          <span>{ocrButtonLabel}</span>
+          {#if ocrStatus === "success" && ocrObservations.length > 0}
+            <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
+          {/if}
+        </button>
+        {#if ocrVisible && timelineActive && ocrFrameId === timelineActive.id}
+          <button
+            type="button"
+            class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
+            onclick={reprocessOcrForActiveFrame}
+            disabled={ocrRerunDisabled}
+            aria-busy={ocrRerunLoading}
+            use:tip={!ocrEnabled
+              ? ocrRunDisabledTooltip
+              : ocrStatus === "running"
+              ? "OCR is queued or still processing"
+              : ocrStatus === "missing"
+                ? "Run OCR for the active frame with current settings"
+                : "Rerun OCR for the active frame with current settings"}
+          >
+            {#if ocrRerunLoading}
+              <span class="timeline__util-spinner" aria-hidden="true"></span>
+            {/if}
+            <span>{ocrRerunButtonLabel}</span>
+          </button>
         {/if}
         <button
-          type="button"
-          class="btn btn--ghost btn--sm timeline__ocr-rerun-btn"
-          onclick={reprocessOcrForActiveFrame}
-          disabled={ocrRerunDisabled}
-          use:tip={!ocrEnabled
-            ? ocrRunDisabledTooltip
-            : ocrStatus === "running"
-            ? "OCR is queued or still processing"
-            : ocrStatus === "missing"
-              ? "Run OCR for the active frame with current settings"
-              : "Rerun OCR for the active frame with current settings"}
-        >{ocrRerunButtonLabel}</button>
-      {/if}
-      <button
-        class="btn btn--ghost btn--sm timeline__ocr-btn"
-        class:timeline__ocr-btn--running={ocrStatus === "running"}
-        class:timeline__ocr-btn--error={ocrStatus === "error"}
-        class:timeline__ocr-btn--success={ocrStatus === "success"}
-        onclick={toggleOcrForActiveFrame}
-        disabled={!timelineActive}
-        use:tip={ocrToggleTitle}
-        aria-label={ocrVisible
-          ? "Hide OCR data for active frame"
-          : "Show OCR data for active frame"}
-        aria-pressed={ocrVisible}
-      >
-        <span class="timeline__ocr-glyph" aria-hidden="true"><IconScanText /></span>
-        <span>{ocrButtonLabel}</span>
-        {#if ocrStatus === "success" && ocrObservations.length > 0}
-          <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
-        {/if}
-      </button>
-      <button
-        class="btn btn--ghost btn--sm"
-        onclick={refreshTimelineAndDashboard}
-        disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
-        use:tip={"Refresh dashboard timeline (R)"}
-      >refresh</button>
+          class="btn btn--ghost btn--sm btn--icon timeline__util-refresh"
+          onclick={refreshTimelineAndDashboard}
+          disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
+          aria-busy={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
+          aria-label="Refresh dashboard timeline"
+          use:tip={"Refresh dashboard timeline (R)"}
+        >
+          {#if timelineLoading || timelineLoadingMore || audioSegmentsLoading}
+            <span class="timeline__util-spinner" aria-hidden="true"></span>
+          {:else}
+            <span class="timeline__ocr-glyph" aria-hidden="true"><IconRefreshCw /></span>
+          {/if}
+        </button>
+      </div>
     </div>
   </header>
 
@@ -6786,16 +6804,29 @@
     {#if timelineLoadingMore}
       <div class="timeline-rail__loading">loading…</div>
     {/if}
-    {#if timelineFrames.length > 0 && tooltipFrame}
-      {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrame)}
-      {@const tooltipAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
+    <!-- Ghost readout: while the pointer is over the rail, a dashed ghost
+         playhead and a small material time bubble preview the moment you'd land
+         on — BEFORE the click commits. The committed capsule below never moves,
+         so "where am I" and "where would I go" are never confused. Both render
+         from the hover state the rail already tracks. -->
+    {#if timelineFrames.length > 0 && tooltipIsHovered && hoveredX != null && tooltipFrame}
+      {@const ghostAppLabel = timelineFrameAppLabel(tooltipFrame)}
+      <span class="timeline-rail__ghost-head" style="left: {hoveredX}px" aria-hidden="true"></span>
+      <div class="timeline-rail__ghost glass-pop" style="left: {hoveredX}px" aria-hidden="true">
+        {formatCapturedTimeOnly(tooltipFrame.capturedAt)}{ghostAppLabel ? ` · ${ghostAppLabel}` : ""}
+      </div>
+    {/if}
+    <!-- The jump capsule: one piece of glass anchored over the playhead that
+         both READS OUT the moment you are parked on and OPENS the jump menu
+         (its chevron is `TimelineJumper`). The row it floats in has a fixed
+         height, so no amount of data can resize the stage. -->
+    {#if timelineFrames.length > 0 && timelineActive}
+      {@const tooltipFrameForCapsule = timelineActive}
+      {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrameForCapsule)}
+      {@const tooltipAppIconSrc = timelineFrameAppIconSrc(tooltipFrameForCapsule)}
       <div
         id="timeline-rail-readout"
         class="timeline-rail__tooltip"
-        class:timeline-rail__tooltip--pinned={!tooltipIsHovered}
-        style={tooltipIsHovered && hoveredX != null
-          ? `left: ${hoveredX}px; transform: translate(-50%, -100%);`
-          : "left: 50%; transform: translate(-50%, -100%);"}
         role="tooltip"
       >
         {#if tooltipAppLabel}
@@ -6813,7 +6844,7 @@
                 {#if tooltipAppIconSrc}
                   <img src={tooltipAppIconSrc} alt="" loading="lazy" />
                 {:else}
-                  <span>{timelineFrameAppFallback(tooltipFrame)}</span>
+                  <span>{timelineFrameAppFallback(tooltipFrameForCapsule)}</span>
                 {/if}
               </span>
             {/key}
@@ -6828,17 +6859,23 @@
                 >{tooltipAppLabel}</span>
               {/key}
             </span>
-            <span class="timeline-rail__tooltip-meta">
-              <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-              <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
-            </span>
           </span>
+          <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrameForCapsule.capturedAt)}</span>
+          <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrameForCapsule.capturedAt)}</span>
         {:else}
-          <span class="timeline-rail__tooltip-copy timeline-rail__tooltip-copy--solo">
-            <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-            <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
-          </span>
+          <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrameForCapsule.capturedAt)}</span>
+          <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrameForCapsule.capturedAt)}</span>
         {/if}
+        <TimelineJumper
+          bind:this={jumperRef}
+          bind:open={pickerOpen}
+          bind:jumping={pickerJumping}
+          activeFrame={timelineActive}
+          timelineBusy={timelineLoading || timelineLoadingMore}
+          showLatest={showJumpToLatestButton}
+          onJump={onJumperJump}
+          onJumpToLatest={jumpToLatestFrame}
+        />
       </div>
     {/if}
   </div>
@@ -6915,8 +6952,10 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 8px 6px;
+    gap: 6px;
+    /* No top padding: the toolbar is chrome and butts straight up against the
+       title bar so the two read as one continuous material block. */
+    padding: 0 8px 6px;
     background: var(--app-bg);
     /* Allow the stage child (flex: 1, min-height: 0) to actually shrink so
        the bottom rail stays in view regardless of preview intrinsic size. */
@@ -6931,15 +6970,22 @@
     position: relative;
   }
 
-  /* Header bar: two clearly-separated control groups (recording + jump on
-     the left, frame actions + menu on the right) that wrap onto a second
-     row on narrow viewports instead of cramming together. */
+  /* Header bar: two clearly-separated control groups (zoom + span readout on
+     the left, the OCR/refresh utility cluster on the right) that wrap onto a
+     second row on narrow viewports instead of cramming together.
+
+     Direction 03: this row is the second row of the title bar's material, so it
+     bleeds past the timeline's own horizontal padding and carries `.glass-chrome`
+     (its only edge is that material's rim — one of the page's two bordered
+     containers, the other being the audio drawer). */
   .timeline__bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 10px 16px;
+    margin: 0 -8px;
+    padding: 5px 10px;
   }
 
   .timeline__bar-group {
@@ -6952,6 +6998,35 @@
 
   .timeline__bar-group--secondary {
     margin-left: auto;
+  }
+
+  /* The utility cluster: one tinted group holding the OCR toggle, the OCR
+     re-run and refresh. Grouping only — the buttons are the shared `.btn`
+     primitives and keep their own commands and handlers. */
+  .timeline__util {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+  }
+
+  .timeline__util-refresh :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+
+  /* Busy echo for any cluster verb (`aria-busy` carries it for AT). */
+  .timeline__util-spinner {
+    width: 11px;
+    height: 11px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    border: 1.5px solid color-mix(in srgb, var(--app-text-muted) 34%, transparent);
+    border-top-color: var(--app-accent);
+    animation: timeline-ocr-spin 0.9s linear infinite;
   }
 
   /* Machine-units truth next to the zoom control: what is actually on screen,
@@ -6973,6 +7048,10 @@
      children; only the reduced-motion rules for the timeline's own animations
      stay here. */
   @media (prefers-reduced-motion: reduce) {
+    .timeline__util-spinner {
+      animation-duration: 1.4s;
+    }
+
     .timeline__ocr-btn--running .timeline__ocr-glyph {
       animation: none;
     }
@@ -6997,9 +7076,11 @@
     gap: 8px 12px;
     flex-wrap: wrap;
     padding: 10px 12px;
+    /* A tinted plate, not a bordered box: the shadow IS the edge here. */
     background: var(--app-danger-bg-soft);
-    border: 1px solid var(--app-danger-border);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-tile);
     font-size: var(--t-meta);
     color: var(--app-danger-text);
   }
@@ -7138,9 +7219,11 @@
     position: relative;
     flex: 1 1 0;
     min-height: 0; /* allow the flex child to actually shrink as needed */
-    background: linear-gradient(135deg, var(--app-surface-raised) 0%, var(--app-surface) 100%);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    /* The stage is the frozen surface, so it is OPAQUE and edgeless: a surface
+       step off `--app-bg` replaces the hairline it used to carry. */
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-lg);
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -7204,12 +7287,11 @@
     min-width: 28px;
     min-height: 28px;
     padding: 0;
-    background: color-mix(in srgb, var(--app-surface-raised) 82%, transparent);
-    border: 1px solid color-mix(in srgb, var(--app-border-strong) 88%, transparent);
-    border-radius: 999px;
-    box-shadow:
-      0 8px 20px rgba(0, 0, 0, 0.22),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    /* Floats over the frame, so it wears the densest material (level 5). */
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-pill);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     list-style: none;
     font-size: 18px;
@@ -7217,11 +7299,10 @@
     line-height: 1;
     letter-spacing: 0;
     user-select: none;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     transition:
       background 0.12s,
-      border-color 0.12s,
       color 0.12s,
       box-shadow 0.12s,
       transform 0.12s;
@@ -7239,27 +7320,18 @@
   }
 
   .timeline__stage-action-trigger:hover {
-    background: color-mix(in srgb, var(--app-surface-hover) 88%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow:
-      0 10px 24px rgba(0, 0, 0, 0.26),
-      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    color: var(--app-text-strong);
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .timeline__stage-action-trigger:focus-visible {
     outline: none;
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow:
-      0 0 0 2px color-mix(in srgb, var(--app-border-hover) 48%, transparent),
-      0 10px 24px rgba(0, 0, 0, 0.26);
+    color: var(--app-text-strong);
+    box-shadow: var(--app-ring), var(--sh-float);
   }
 
   .timeline__stage-actions--open > .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface-hover) 92%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
+    color: var(--app-text-strong);
     transform: translateY(1px);
   }
 
@@ -7270,15 +7342,14 @@
     display: grid;
     min-width: 112px;
     gap: 2px;
-    padding: 6px;
-    background: color-mix(in srgb, var(--app-surface) 94%, transparent);
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.28),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+    padding: 5px;
+    /* NSMenu anatomy: level-5 material, rim only, no container border. */
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
   }
 
   .timeline__stage-action-menu-item {
@@ -7300,17 +7371,15 @@
   }
 
   .timeline__stage-action-menu-item:hover {
-    background: var(--app-surface-hover);
-    border-color: color-mix(in srgb, var(--app-border-hover) 70%, transparent);
-    color: var(--app-text);
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
   }
 
   .timeline__stage-action-menu-item:focus-visible {
     outline: none;
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
+    box-shadow: var(--app-ring);
   }
 
   /* Disabled menu item (preview-not-ready, or an open already in flight): dim it
@@ -7357,15 +7426,16 @@
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    background: var(--app-overlay-bg-strong);
-    border: 1px solid var(--app-overlay-border);
-    border-radius: 8px;
+    /* Floats over the frame → material + shadow, rim instead of a border. */
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-lg);
     color: var(--app-text);
     font-size: 10px;
     line-height: 1.35;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    box-shadow: 0 10px 24px color-mix(in srgb, var(--app-bg) 28%, transparent);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
   }
 
   .timeline__stage-status-body {
@@ -7378,11 +7448,14 @@
     font-weight: 700;
   }
 
+  /* The detail is read, not glanced at — so it lands on an opaque plate rather
+     than on the toast's material. */
   .timeline__stage-status-detail {
     max-height: 8.2em;
     overflow: auto;
-    padding-top: 3px;
-    border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+    padding: 4px 6px;
+    background: var(--app-surface);
+    border-radius: var(--r-sm);
     color: var(--app-text-subtle);
     font-family: var(--app-font-mono);
     font-size: 9px;
@@ -7395,7 +7468,6 @@
      the transient neutral acks and carry a close affordance. */
   .timeline__stage-status--error {
     color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text) 28%);
-    border-color: color-mix(in srgb, var(--app-danger) 40%, var(--app-overlay-border));
     font-size: 11px;
     line-height: 1.4;
   }
@@ -7454,8 +7526,8 @@
   }
 
   /* Compact metadata pinned to the corner of the stage so the preview
-     remains the visual anchor. Translucent panel with backdrop blur keeps
-     it legible across both light and dark frames. */
+     remains the visual anchor. It is read line by line, so it is an OPAQUE
+     plate — its contrast never depends on the frame behind it. */
   .timeline__overlay {
     position: absolute;
     top: 10px;
@@ -7465,11 +7537,10 @@
     grid-template-columns: auto 1fr;
     gap: 2px 10px;
     padding: 8px 10px;
-    background: var(--app-overlay-bg);
-    border: 1px solid var(--app-overlay-border);
-    border-radius: 4px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-tile);
   }
 
   .timeline__overlay-row {
@@ -7572,13 +7643,15 @@
   .timeline__ocr-provider-chip {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
+    min-height: 22px;
     max-width: 240px;
-    padding: 0 8px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono);
     font-size: 10px;
     letter-spacing: 0.04em;
     white-space: nowrap;
@@ -7646,17 +7719,17 @@
     position: absolute;
     right: 4px;
     bottom: 4px;
-    padding: 2px 6px;
-    border-radius: 3px;
-    background: var(--app-ocr-chip-bg);
-    color: var(--app-ocr-chip-text);
-    border: 1px solid var(--app-ocr-chip-border);
-    font-family: var(--app-font-mono);
-    font-size: 10px;
+    padding: 3px 9px;
+    border-radius: var(--r-pill);
+    background: rgba(12, 12, 16, 0.58);
+    color: #fff;
+    border: 0;
+    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(10px);
+    font-size: var(--t-meta);
     letter-spacing: 0.02em;
     line-height: 1.2;
     white-space: nowrap;
-    opacity: 0.72;
     pointer-events: none;
   }
 
@@ -7748,11 +7821,12 @@
     align-items: center;
     gap: 8px;
     padding: 5px 10px;
-    background: var(--app-overlay-bg-strong);
-    border: 1px solid var(--app-overlay-border);
-    border-radius: 4px;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
     font-size: var(--t-meta);
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -7885,9 +7959,10 @@
        frames the user scrolls leftward (scrollLeft decreases from
        `maxScrollLeft`). The rail stays in normal LTR direction so all
        scrollLeft math is straightforward and browser-portable. */
+    /* Dense but low-contrast: a surface step off `--app-bg`, no hairline. */
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-md);
     padding: 0;
     scrollbar-width: none;
     /* Establish a containment context so the track's spacer margins can be
@@ -7904,7 +7979,6 @@
 
   .timeline-rail:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
 
@@ -8007,17 +8081,9 @@
     gap: 6px;
     width: 100%;
     min-width: 0;
-    /* Subtle inset background so the lane reads as a distinct surface
-       from the rail above without drawing a hard border. */
-    padding: 4px 0 4px 0;
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 0%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 30%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 70%,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 100%
-    );
-    border-radius: 4px;
+    /* The lane is a sibling row on the same frozen surface: no wrapper fill,
+       the track itself is the surface step (see the viewport below). */
+    padding: 0;
   }
 
   .timeline-rail__audio-lane-labels {
@@ -8061,9 +8127,11 @@
        `cqi` margins resolve to the same pixel width and bars line up
        with the in-rail ticks. */
     container-type: inline-size;
-    border-radius: 3px;
-    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
-    box-shadow: inset 0 0 0 1px var(--app-border);
+    border-radius: var(--r-sm);
+    /* Opaque track, no inset hairline — the surface step is the edge.
+       `--app-surface`, not `--app-surface-subtle`: the latter is the same value
+       as `--app-bg` in the light theme, which would erase the step entirely. */
+    background: var(--app-surface);
   }
 
   .timeline-rail__audio-lane-track {
@@ -8144,8 +8212,8 @@
     cursor: pointer;
     /* Larger hit area than the visual rectangle: a transparent ::before
        extends 3px above and below so even narrow bars are easy to grab,
-       without shifting visual layout. */
-    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5);
+       without shifting visual layout. Bars carry no ring of their own — they
+       are a fill on an opaque track. */
     transition:
       filter 90ms ease,
       box-shadow 90ms ease,
@@ -8159,42 +8227,30 @@
   }
 
   .timeline-rail__audio-bar:hover {
-    filter: brightness(1.15);
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.55),
-      0 0 0 1px var(--app-border-hover);
+    filter: brightness(1.18) saturate(1.2);
   }
 
   .timeline-rail__audio-bar:focus-visible {
     outline: none;
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      var(--app-ring);
+    box-shadow: var(--app-ring);
     z-index: 2;
   }
 
+  /* Recording red is reserved for the playhead and the SELECTED segment. */
   .timeline-rail__audio-bar--selected {
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 1.5px var(--app-record-glyph-start),
-      0 0 8px color-mix(in srgb, var(--app-record-glyph-start) 45%, transparent);
+    background: var(--app-record-glyph-start);
+    opacity: 1;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-record-glyph-start) 40%, transparent);
     z-index: 1;
   }
 
+  /* Source identity at ~55% mix so the lane stays quiet next to the rail. */
   .timeline-rail__audio-bar--microphone {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-mic),
-      var(--app-source-mic-strong)
-    );
+    background: color-mix(in srgb, var(--app-source-mic) 55%, transparent);
   }
 
   .timeline-rail__audio-bar--systemAudio {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-sysaudio),
-      var(--app-source-sysaudio-strong)
-    );
+    background: color-mix(in srgb, var(--app-source-sysaudio) 55%, transparent);
   }
 
   /* Extend the pointer hit area beyond the visual 8px tick so dense ticks
@@ -8273,64 +8329,91 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
-    background: color-mix(in srgb, var(--app-surface-raised) 90%, transparent);
-    border: 1px solid var(--app-border);
-    border-radius: 3px;
+    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--r-sm);
     pointer-events: none;
   }
 
-  /* Custom hover/active tooltip for the rail. Anchored to the rail-wrap (not
-     the scrolling rail) so it never scrolls horizontally with the track.
-     Positioned via inline `left`/`transform` from script: when the user is
-     hovering a slot it follows the cursor; otherwise it pins above the center
-     caret to surface the active frame's timestamp without a hover gesture. */
+  /* ── The jump capsule ──────────────────────────────────────────
+     One piece of level-5 material anchored over the playhead. It reads out the
+     committed position (app icon · app · time · date) AND carries the jump
+     menu's chevron, so "where am I" and "take me somewhere else" are finally
+     the same control. It is anchored to the rail-wrap (not the scrolling rail)
+     so it never scrolls with the track, and it never moves with the pointer —
+     the uncommitted preview is the ghost bubble below.
+
+     The capsule stays pointer-transparent so it can float over the stage
+     without swallowing clicks; only the chevron opts back in.
+
+     Its material lives on a ::before layer, NOT on the capsule itself: a
+     `backdrop-filter` (or a transform) makes an element the containing block
+     for `position: fixed` descendants, which would trap the jump menu inside
+     the capsule and clip it against `.timeline`'s `overflow: hidden`. Centering
+     is auto-margins for the same reason — no transform on this box. */
   .timeline-rail__tooltip {
     position: absolute;
-    top: -6px;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 6px);
+    margin: 0 auto;
+    width: fit-content;
     z-index: 2;
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr);
+    display: flex;
     align-items: center;
-    column-gap: 9px;
-    min-width: 204px;
-    max-width: min(340px, calc(100vw - 24px));
-    min-height: 40px;
-    padding: 7px 10px 7px 7px;
+    gap: 8px;
+    max-width: min(420px, calc(100vw - 24px));
+    height: 30px;
+    padding: 0 6px 0 7px;
     box-sizing: border-box;
-    font-size: 10px;
-    font-weight: 600;
+    font-size: var(--t-ui);
     line-height: 1;
     letter-spacing: 0;
+    white-space: nowrap;
     color: var(--app-text-strong);
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
+    border: 0;
+    border-radius: var(--r-pill);
     pointer-events: none;
-    /* Subtle pointer hint below the bubble. */
+  }
+
+  .timeline-rail__tooltip::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+  }
+
+  .timeline-rail__tooltip :global(.timeline__jump),
+  .timeline-rail__tooltip :global(.timeline__jump-trigger),
+  .timeline-rail__tooltip :global(.timeline__jump-latest) {
+    pointer-events: auto;
   }
 
   .timeline-rail__tooltip-icon {
-    width: 24px;
-    height: 24px;
+    width: 18px;
+    height: 18px;
     box-sizing: border-box;
     display: grid;
     place-items: center;
     overflow: hidden;
     align-self: center;
-    border-radius: 4px;
+    flex: 0 0 auto;
+    border-radius: 5px;
     color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    font-size: 10px;
+    background: var(--glass-tint);
+    border: 0;
+    font-size: 9px;
     font-weight: 800;
     line-height: 1;
   }
 
   .timeline-rail__tooltip-icon--image {
-    padding: 3px;
+    padding: 2px;
   }
 
   .timeline-rail__tooltip-icon img {
@@ -8355,14 +8438,8 @@
 
   .timeline-rail__tooltip-copy {
     min-width: 0;
-    display: grid;
-    gap: 4px;
-  }
-
-  /* When no app label is known there's no icon column, so the copy spans the
-     full bubble width instead of being squeezed into the 24px icon track. */
-  .timeline-rail__tooltip-copy--solo {
-    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
   }
 
   .timeline-rail__tooltip-app-name,
@@ -8385,59 +8462,86 @@
   .timeline-rail__tooltip-app-name {
     grid-area: 1 / 1;
     color: var(--app-text-strong);
-    font-size: 11px;
-    font-weight: 760;
-    line-height: 1.05;
+    font-size: var(--t-ui);
+    font-weight: 590;
+    line-height: 1;
   }
 
-  /* Time leads, date trails on the same baseline so the readout answers
-     "when" at a glance without a second wrapped line. */
-  .timeline-rail__tooltip-meta {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-  }
-
+  /* The playhead clock — the page's typographic anchor: mono, tabular, in the
+     strong text colour so it reads first inside the capsule. */
   .timeline-rail__tooltip-time {
     flex: 0 0 auto;
     color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 720;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-ui);
+    font-weight: 400;
     font-variant-numeric: tabular-nums;
     line-height: 1;
     white-space: nowrap;
   }
 
   .timeline-rail__tooltip-date {
+    flex: 0 0 auto;
     color: var(--app-text-muted);
-    font-size: 9px;
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
-    font-weight: 680;
     line-height: 1;
   }
 
+  /* The capsule's tail, pointing down at the playhead it is anchored to. */
   .timeline-rail__tooltip::after {
     content: "";
     position: absolute;
-    top: 100%;
     left: 50%;
+    bottom: -4px;
+    width: 8px;
+    height: 8px;
+    margin-left: -4px;
+    transform: rotate(45deg);
+    border-radius: 1px;
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+  }
+
+  /* ── The ghost readout ─────────────────────────────────────────
+     While the pointer is over the rail, a dashed ghost playhead + a small
+     material time bubble preview the moment a click would commit to. Both are
+     non-interactive; the committed capsule above never moves. */
+  .timeline-rail__ghost {
+    position: absolute;
+    /* Clears the capsule's top edge, so a hover next to the playhead layers
+       instead of colliding. */
+    bottom: calc(100% + 40px);
+    z-index: 2;
     transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid var(--app-status-bg);
+    display: inline-flex;
+    align-items: center;
+    height: 22px;
+    padding: 0 8px;
+    border-radius: var(--r-pill);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    white-space: nowrap;
+    color: var(--app-text-muted);
+    pointer-events: none;
   }
 
-  .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-  }
-
-  .timeline-rail__tooltip--pinned::after {
-    border-top-color: var(--app-status-bg);
+  .timeline-rail__ghost-head {
+    position: absolute;
+    top: 0;
+    height: 36px;
+    width: 1px;
+    z-index: 3;
+    transform: translateX(-50%);
+    background: repeating-linear-gradient(
+      180deg,
+      var(--app-text-subtle) 0 3px,
+      transparent 3px 6px
+    );
+    pointer-events: none;
   }
 
   /* ── Light theme overrides ──────────────────────────────────
@@ -8450,34 +8554,6 @@
      here through the semantic-token cascade in `+layout.svelte`. */
   :global([data-theme="light"]) .timeline {
     background: var(--app-bg);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface) 90%, transparent);
-    border-color: color-mix(in srgb, var(--app-border-strong) 92%, transparent);
-    box-shadow:
-      0 10px 24px rgba(20, 28, 40, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-    color: var(--app-text-muted);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-trigger:hover,
-  :global([data-theme="light"]) .timeline__stage-action-trigger:focus-visible,
-  :global([data-theme="light"]) .timeline__stage-actions--open > .timeline__stage-action-trigger {
-    background: color-mix(in srgb, var(--app-surface-hover) 94%, transparent);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 12px 28px rgba(20, 28, 40, 0.16),
-      inset 0 1px 0 rgba(255, 255, 255, 0.84);
-  }
-
-  :global([data-theme="light"]) .timeline__stage-action-menu {
-    background: color-mix(in srgb, var(--app-surface) 96%, white 4%);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 36px rgba(20, 28, 40, 0.14),
-      inset 0 1px 0 rgba(255, 255, 255, 0.86);
   }
 
   :global([data-theme="light"]) .timeline__error {
@@ -8501,23 +8577,10 @@
     color: var(--app-text-muted);
   }
 
-  :global([data-theme="light"]) .timeline__stage {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
   :global([data-theme="light"]) .timeline__preview-pending {
     color: var(--app-text-muted);
   }
-  :global([data-theme="light"]) .timeline__stage-status {
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
 
-  :global([data-theme="light"]) .timeline__overlay {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
   :global([data-theme="light"]) .timeline__overlay-key {
     color: var(--app-text-subtle);
   }
@@ -8565,66 +8628,13 @@
     color: var(--app-text-muted);
   }
 
-  :global([data-theme="light"]) .timeline__rail-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail {
-    background: var(--app-surface-raised);
-  }
-  :global([data-theme="light"]) .timeline-rail__track {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail__slot {
-    background: transparent;
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__audio-lane-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
   :global([data-theme="light"]) .timeline-rail__audio-lane-labels {
     color: var(--app-text-subtle);
   }
   :global([data-theme="light"]) .timeline-rail__audio-lane-empty {
     color: var(--app-text-subtle);
   }
-  :global([data-theme="light"]) .timeline-rail--placeholder {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
   :global([data-theme="light"]) .timeline-rail__loading {
     color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip {
-    background: var(--app-status-bg);
-    border-color: var(--app-status-border);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-icon {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-time {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip::after {
-    border-top-color: var(--app-status-bg);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 </style>

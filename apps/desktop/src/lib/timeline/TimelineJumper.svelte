@@ -33,7 +33,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
-  import IconCalendar from "~icons/lucide/calendar";
   import IconChevronDown from "~icons/lucide/chevron-down";
   import type {
     DayCoverage,
@@ -528,22 +527,22 @@
 <svelte:window onpointerdown={onWindowPointerDown} />
 
 <div class="timeline__jump">
-  <!-- Position pill (G6): the label IS your position, the chevron is the jump.
-       One control owns both jobs — there is no second date input and no from/to
-       pair anywhere on the timeline. -->
+  <!-- The chevron of the jump capsule (G6): the capsule's own icon/app/time/date
+       IS your position readout, this button is the jump. One control owns both
+       jobs — there is no second date input and no from/to pair anywhere on the
+       timeline. The readout markup lives in the dashboard because it is the
+       rail's live position; only the menu is owned here. -->
   <button
-    class="pill pill--quiet timeline__jump-trigger"
+    class="timeline__jump-trigger"
     class:timeline__jump-trigger--open={open}
     onclick={toggle}
     bind:this={pickerTriggerEl}
     aria-haspopup="dialog"
     aria-expanded={open}
     aria-controls="timeline-jump-picker"
+    aria-label={`Jump to date and time — currently ${triggerLabel}`}
     use:tip={"Jump to date and time (J)"}
   >
-    <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
-    <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
     <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
   </button>
 
@@ -635,60 +634,52 @@
   /* `.btn` + `--ghost` / `--sm` / `--accent`: shared primitive
      (system.css §6, routes/+layout.svelte). */
 
-  /* ── Trigger group ──────────────────────────────────────────────────────── */
+  /* ── Trigger (the jump capsule's chevron) ───────────────────────────────── */
   .timeline__jump {
     display: flex;
     align-items: center;
     gap: 6px;
     position: relative;
   }
-  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
-     reset and the open ring are local. */
+  /* Direction 03: the chevron is a tinted square inside the capsule's glass —
+     no border of its own, because the capsule is already a piece of glass. */
   .timeline__jump-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
     border: 0;
+    border-radius: var(--r-sm);
+    background: var(--glass-tint);
+    color: var(--app-text-muted);
     cursor: pointer;
-    font-variant-numeric: tabular-nums;
-    max-width: 260px;
   }
   .timeline__jump-trigger:hover {
-    background: var(--app-surface-active);
+    color: var(--app-text-strong);
   }
   .timeline__jump-trigger--open {
-    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  .timeline__jump-trigger:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
   .timeline__jump-chevron {
     display: inline-flex;
     align-items: center;
-    color: var(--app-text-muted);
   }
   .timeline__jump-chevron :global(svg) {
-    width: 11px;
-    height: 11px;
+    width: 10px;
+    height: 10px;
   }
   .timeline__jump-latest {
     flex: 0 0 auto;
   }
-  .timeline__jump-icon {
-    display: inline-flex;
-    align-items: center;
-    color: var(--app-accent);
-  }
-  .timeline__jump-icon :global(svg) {
-    width: 13px;
-    height: 13px;
-  }
-  .timeline__jump-label {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
-  .timeline__jump-kbd {
-    flex: 0 0 auto;
-    margin-left: 2px;
-  }
 
-  /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* ── Popover shell — level 5 material (NSMenu), see `.glass-pop` ─────────── */
   .timeline__picker {
     position: fixed;
     z-index: 20;
@@ -697,10 +688,12 @@
     width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    border: 0;
+    border-radius: var(--r-xl);
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text);
   }
   .timeline__picker-head {
@@ -708,8 +701,7 @@
     align-items: center;
     gap: 10px;
     padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
   .timeline__picker-title {
     flex: 1;
@@ -735,7 +727,7 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid var(--app-border);
+    box-shadow: inset -1px 0 0 var(--glass-line);
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
   }
@@ -758,8 +750,7 @@
     align-items: center;
     gap: 8px;
     padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 1px 0 var(--glass-line);
     font-size: var(--t-label);
     min-height: 32px;
   }
@@ -781,8 +772,7 @@
       width: min(320px, calc(100vw - 24px));
     }
     .timeline__picker-days {
-      border-right: none;
-      border-bottom: 1px solid var(--app-border);
+      box-shadow: inset 0 -1px 0 var(--glass-line);
       overflow-y: visible;
     }
     .timeline__picker-panes {

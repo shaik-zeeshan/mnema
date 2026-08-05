@@ -98,7 +98,7 @@
     display: flex;
     gap: 4px;
     padding: 8px 8px 6px;
-    border-bottom: 1px solid var(--app-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
   .jrows__target {
     flex: 1 1 0;
@@ -128,9 +128,10 @@
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
+  /* On material, a row highlight is a tint — not another edge. */
   .jrows__row:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
   }
   .jrows__row:disabled {
     color: var(--app-text-faint);
@@ -178,8 +179,10 @@
     background: var(--app-text-faint);
     opacity: 0.5;
   }
+  /* Coverage is a quantity, not a state: neutral, so full-strength accent
+     stays reserved for the playhead and the you-are-here bar. */
   .jrows__bar i.jrows__cell--on {
-    background: var(--app-accent);
+    background: var(--app-text-subtle);
     opacity: 1;
   }
   .jrows__row--here .jrows__bar i.jrows__cell--on {

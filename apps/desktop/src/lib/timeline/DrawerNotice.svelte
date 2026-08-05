@@ -44,6 +44,7 @@
 {/if}
 
 <style>
+  /* Read copy, so it lands on an opaque plate inside the drawer's glass. */
   .notice {
     flex: 1 1 auto;
     min-height: 0;
@@ -52,7 +53,10 @@
     align-items: center;
     justify-content: center;
     gap: 8px;
+    margin: 0 10px;
     padding: 24px;
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
     text-align: center;
   }
 
@@ -91,7 +95,10 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow: hidden;
+    margin: 0 10px;
     padding: 16px 24px;
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
   }
 
   .skel__row {

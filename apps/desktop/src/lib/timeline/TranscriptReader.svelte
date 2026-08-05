@@ -280,12 +280,19 @@
 </div>
 
 <style>
+  /* Direction 03: prose NEVER sits on material. The reader is an opaque plate
+     inside the drawer's glass shell, so a transcript's contrast never depends
+     on whatever is behind the window. */
   .reader {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
+    margin: 0 10px;
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    overflow: hidden;
   }
 
   .reader__scroll {
@@ -314,8 +321,9 @@
     background-clip: padding-box;
   }
 
+  /* A readable measure, not a percentage of however wide the window got. */
   .doc {
-    max-width: 97%;
+    max-width: min(97%, 70ch);
     margin: 0 auto;
     padding: 0 16px;
   }
@@ -515,22 +523,23 @@
   }
 
   /* ── the prose: the one house-style break, taken deliberately ───────────── */
+  /* The `.t-read` role: 14 / 1.55 / -.008em — prose, and only prose. */
   .para {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.62;
+    font-size: var(--t-read);
+    line-height: 1.55;
     color: var(--app-text);
-    letter-spacing: 0.005em;
+    letter-spacing: -0.008em;
     text-wrap: pretty;
   }
 
   .reader--expanded .para {
     font-size: 15px;
-    line-height: 1.72;
+    line-height: 1.62;
   }
 
   .turn--overlap .para {
-    border-left: 2px solid var(--app-warn-border);
+    box-shadow: inset 2px 0 0 var(--app-warn-border);
     padding-left: 14px;
     margin-left: -16px;
   }
@@ -633,10 +642,12 @@
     align-items: center;
     gap: 8px;
     padding: 5px 12px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-surface-raised);
-    box-shadow: var(--app-shadow-popover);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-strong);
     font-size: 10px;
     text-transform: uppercase;
@@ -668,8 +679,10 @@
 
   .jump kbd {
     padding: 0 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 3px;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-subtle);
     font-family: var(--app-font-mono);
     text-transform: none;

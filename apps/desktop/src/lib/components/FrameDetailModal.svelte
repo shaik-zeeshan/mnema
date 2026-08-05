@@ -558,10 +558,12 @@
     max-height: min(calc(100vh - 100px), calc(100vh - 48px));
     display: flex;
     flex-direction: column;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 18px;
+    /* The shell FLOATS, so it is a shadow, not an edge; the panel itself stays
+       opaque because everything inside it is read. */
+    border: 0;
+    border-radius: var(--r-panel);
     background: var(--app-surface);
-    box-shadow: var(--app-shadow-popover);
+    box-shadow: var(--shadow-modal);
     overflow: hidden;
   }
 
@@ -630,8 +632,8 @@
     position: relative;
     flex: 1 1 auto;
     min-width: 0;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
+    border: 0;
+    border-radius: var(--r-lg);
     overflow: hidden;
     background: var(--app-bg);
   }
@@ -661,13 +663,15 @@
     display: flex;
     align-items: center;
     gap: 5px;
-    padding: 3px 7px;
+    padding: 3px 9px;
     font-size: 10px;
     color: var(--app-warn);
-    background: var(--app-overlay-bg);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    backdrop-filter: blur(4px);
+    background: var(--glass-pop);
+    border: 0;
+    border-radius: var(--r-pill);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
   }
   .frame-hero__redactions::before {
     content: "";

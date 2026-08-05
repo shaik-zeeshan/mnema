@@ -75,7 +75,7 @@
 <style>
   .timeline__picker-cal {
     padding: 12px;
-    border-top: 1px solid var(--app-border);
+    box-shadow: inset 0 1px 0 var(--glass-line);
     /* Top-align the calendar so its nav row sits level with the time pane
        header — no dead space above it. The grid's square cells fill the width. */
     display: flex;
@@ -104,19 +104,18 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 3px;
+    background: transparent;
+    border: 0;
+    border-radius: var(--r-sm);
     color: var(--app-text-muted);
     cursor: pointer;
     font-size: var(--t-ui);
     line-height: 1;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
   :global(.cal__nav:hover:not([data-disabled])) {
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
   :global(.cal__nav[data-disabled]) {
     opacity: var(--app-disabled-opacity);
@@ -192,8 +191,8 @@
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   :global(.cal__day:hover:not([data-disabled])) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
   }
   :global(.cal__day[data-disabled]),
   :global(.cal__day[data-outside-month]) {

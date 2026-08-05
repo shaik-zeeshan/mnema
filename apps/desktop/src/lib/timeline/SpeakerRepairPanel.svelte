@@ -309,9 +309,11 @@
     width: min(330px, 92%);
     display: flex;
     flex-direction: column;
+    /* Floats over the reader, so it is a shadow — not an edge. Opaque, because
+       everything in it is read. */
     background: var(--app-surface-raised);
-    border-left: 1px solid var(--app-border-strong);
-    box-shadow: var(--app-shadow-popover);
+    border: 0;
+    box-shadow: var(--sh-hud);
     animation: so-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
   }
 
@@ -333,7 +335,6 @@
     align-items: center;
     gap: 8px;
     padding: 11px 14px;
-    border-bottom: 1px solid var(--app-border);
   }
 
   .so__t {
@@ -471,14 +472,14 @@
 
   .card {
     padding: 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle, var(--app-surface));
+    border: 0;
+    border-radius: var(--r-lg);
+    background: var(--app-surface);
+    box-shadow: var(--sh-tile);
   }
 
   .card--warn {
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 10%, transparent);
+    background: color-mix(in srgb, var(--app-warn) 12%, var(--app-surface));
   }
 
   .card__h {
@@ -506,7 +507,6 @@
 
   .row--commit {
     padding-top: 12px;
-    border-top: 1px solid var(--app-border);
   }
 
   /* `.btn` + `--primary` / `--danger`: shared primitive (system.css §6). */

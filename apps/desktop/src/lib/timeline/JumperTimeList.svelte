@@ -127,7 +127,7 @@
     justify-content: space-between;
     gap: 8px;
     padding: 8px 12px 6px;
-    border-bottom: 1px solid var(--app-border);
+    box-shadow: inset 0 -1px 0 var(--glass-line);
   }
   .timeline__picker-day {
     font-size: var(--t-ui);
@@ -208,8 +208,8 @@
     letter-spacing: 0.02em;
   }
   .timeline__picker-hour:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--glass-tint);
+    color: var(--app-text-strong);
   }
   .timeline__picker-hour:disabled {
     color: var(--app-text-faint);
@@ -277,8 +277,7 @@
 
   .timeline__picker-time-foot {
     padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    box-shadow: inset 0 1px 0 var(--glass-line);
   }
   .timeline__picker-day-latest {
     width: 100%;

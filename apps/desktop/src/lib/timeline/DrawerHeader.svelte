@@ -124,8 +124,9 @@
     gap: 8px;
     flex-wrap: wrap;
     padding: 8px 12px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
+    /* The header IS the drawer's chrome, so it stays on the shell's material —
+       no divider needed once the content below is on its own plate. */
+    background: transparent;
     font-size: 11px;
     color: var(--app-text-muted);
   }
@@ -139,8 +140,10 @@
     align-items: center;
     gap: 6px;
     padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -195,9 +198,10 @@
     align-items: center;
     gap: 5px;
     padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-neutral-bg, transparent);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font-size: 10px;
     text-transform: uppercase;
@@ -251,8 +255,7 @@
 
   .ghost:hover:not(:disabled),
   .ghost:focus-visible:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
+    background: var(--glass-tint);
     color: var(--app-text-strong);
     outline: none;
   }
@@ -274,9 +277,9 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: transparent;
+    border: 0;
+    border-radius: var(--r-sm);
+    background: var(--glass-tint);
     color: var(--app-text-muted);
     cursor: pointer;
   }
@@ -284,8 +287,7 @@
   .rhead__close:hover,
   .rhead__close:focus-visible {
     color: var(--app-danger);
-    border-color: var(--app-danger-strong);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
+    background: color-mix(in srgb, var(--app-danger-strong) 12%, transparent);
     outline: none;
   }
 
