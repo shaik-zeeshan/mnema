@@ -37,6 +37,11 @@
     reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
+  // Direction 05 "Tactile Instruments" — the app-wide skin. Imported once here
+  // so every `ti-*` class is global on every surface. Read tactile.css's header
+  // for the direction rules (the six instruments and the rule they must pass).
+  import "$lib/styles/tactile.css";
+  import "$lib/styles/tactile-surfaces.css";
   import Toasts from "$lib/Toasts.svelte";
   import { clearArchivedToast, clearToastArchive, toasts } from "$lib/toast.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
