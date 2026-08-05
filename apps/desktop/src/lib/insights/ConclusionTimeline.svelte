@@ -407,13 +407,13 @@
     margin: 0 0 4px;
   }
   .story-title {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     letter-spacing: -0.01em;
     color: var(--app-text-strong);
   }
   .story-sub {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     color: var(--app-text-muted);
     margin: 0 0 14px;
@@ -422,7 +422,7 @@
     display: flex;
     gap: 16px;
     margin: 0 0 14px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     flex-wrap: wrap;
   }
@@ -522,12 +522,12 @@
     gap: 2px;
   }
   .tl-time .rel {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     font-variant-numeric: tabular-nums;
   }
   .tl-time .clock {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
   }
@@ -615,7 +615,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     margin-bottom: 5px;
   }
@@ -637,7 +637,7 @@
   }
   /* Evidence title clamped to ONE line to keep cards scannable and compact. */
   .ev-title {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.4;
     color: var(--app-text-strong);
     margin-bottom: 7px;
@@ -668,7 +668,7 @@
   }
   .ev-link {
     margin-left: auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     border-bottom: 1px dotted var(--app-border-strong);
   }
@@ -687,13 +687,13 @@
     border-radius: 999px;
     align-self: center;
     width: fit-content;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     border: 1px solid var(--app-accent-border);
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
   }
   .mk .g {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
   .mk b {
     font-weight: 700;
@@ -757,7 +757,7 @@
   }
   .rp-old {
     margin: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-muted);
     overflow: hidden;
@@ -782,7 +782,7 @@
     align-items: center;
     gap: 6px;
     width: fit-content;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -793,12 +793,12 @@
     color: var(--app-accent-strong);
   }
   .origin-title {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     font-weight: 600;
   }
   .origin-text {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     line-height: 1.5;
   }

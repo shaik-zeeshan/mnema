@@ -130,13 +130,13 @@
     border-bottom: 1px solid var(--app-border);
   }
   .timeline__picker-day {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .timeline__picker-day-count {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     letter-spacing: 0.04em;
     font-variant-numeric: tabular-nums;
@@ -172,7 +172,7 @@
     border-radius: 3px;
     color: var(--app-text);
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
     padding: 4px 8px;
     margin-bottom: 1px;
@@ -203,7 +203,7 @@
   .timeline__picker-hour-count {
     position: relative;
     margin-left: auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     letter-spacing: 0.02em;
   }
@@ -249,11 +249,11 @@
     padding: 24px 16px;
     text-align: center;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     min-height: 140px;
   }
   .timeline__picker-msg-ico {
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     opacity: 0.5;
   }
   .timeline__picker-spinner {
@@ -286,7 +286,7 @@
     gap: 7px;
   }
   .timeline__picker-glyph {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1;
   }
 
@@ -299,7 +299,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -333,6 +333,6 @@
   }
   .btn--sm {
     padding: 3px 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 </style>

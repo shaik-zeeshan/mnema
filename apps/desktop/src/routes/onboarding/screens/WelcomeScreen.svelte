@@ -295,7 +295,7 @@
     transform: translateX(-50%);
     height: 16px;
     overflow: hidden;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.04em;
@@ -332,7 +332,7 @@
     position: absolute;
     left: 0;
     top: 11px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.2em;
     text-transform: uppercase;
     color: var(--app-accent);
@@ -357,7 +357,7 @@
     position: absolute;
     right: 0;
     top: 11px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     opacity: 0;
     animation: rw-read 10s ease infinite;

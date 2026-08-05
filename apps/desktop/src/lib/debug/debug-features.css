@@ -59,7 +59,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: var(--text-xs);
+  font-size: var(--t-label);
   font-weight: 600;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -67,7 +67,7 @@
 }
 
 .debug-shell .debug-stat__v {
-  font-size: var(--text-lg);
+  font-size: var(--t-title);
   font-weight: 600;
   color: var(--app-text-strong);
   line-height: 1.3;
@@ -76,7 +76,7 @@
 }
 
 .debug-shell .debug-stat__v small {
-  font-size: var(--text-sm);
+  font-size: var(--t-meta);
   font-weight: 500;
   color: var(--app-text-muted);
   margin-left: 2px;
@@ -89,7 +89,7 @@
 .debug-shell .debug-stat__v--err { color: var(--app-danger); }
 
 .debug-shell .debug-stat__sub {
-  font-size: var(--text-xs);
+  font-size: var(--t-label);
   color: var(--app-text-subtle);
   line-height: 1.4;
   margin-top: 1px;
@@ -113,7 +113,7 @@
   gap: 3px;
   margin: 0;
   padding: 9px 12px;
-  font-size: var(--text-sm);
+  font-size: var(--t-meta);
   line-height: 1.5;
   border-radius: 6px;
   overflow-wrap: anywhere;
@@ -142,7 +142,7 @@
 
 .debug-shell .debug-errline__meta {
   color: var(--app-text-subtle);
-  font-size: var(--text-xs);
+  font-size: var(--t-label);
 }
 
 /* A neutral counterpart for a successful action result (test connection, run

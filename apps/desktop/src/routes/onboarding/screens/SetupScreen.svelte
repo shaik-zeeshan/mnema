@@ -411,7 +411,7 @@
   }
   .line {
     margin: 10px 0 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.7;
     color: var(--app-text);
   }
@@ -449,7 +449,7 @@
     gap: 16px;
   }
   .t {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .t.dim {
@@ -457,7 +457,7 @@
   }
   .st {
     margin-left: auto;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     display: flex;
     align-items: center;
     gap: 12px;

@@ -417,11 +417,11 @@
     padding: 7px 0;
   }
   .row .t {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .row .d {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-subtle);
     margin-top: 2px;
@@ -443,7 +443,7 @@
   }
 
   .cost {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     font-variant-numeric: tabular-nums;
     text-align: right;
@@ -510,7 +510,7 @@
 
   /* ── tags ───────────────────────────────────────────────────────────────── */
   .carry {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -550,7 +550,7 @@
     align-items: center;
     gap: 10px;
     flex-wrap: wrap;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .gate {
     color: var(--app-warn);
@@ -581,7 +581,7 @@
     justify-content: space-between;
     align-items: baseline;
     gap: 12px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
   }
   .kv.second {

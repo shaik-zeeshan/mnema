@@ -174,7 +174,7 @@
   }
 
   .rg-item-label {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 500;
     color: var(--app-text);
     letter-spacing: 0.02em;
@@ -235,7 +235,7 @@
   }
 
   :global(.rg-item--card) .rg-item-label {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
   }

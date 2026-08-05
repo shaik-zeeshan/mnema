@@ -225,7 +225,7 @@
     border-radius: 999px;
     background: var(--app-surface);
     color: var(--app-text-strong);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
     box-shadow: var(--app-shadow-popover);

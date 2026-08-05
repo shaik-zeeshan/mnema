@@ -343,7 +343,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1;
     border: 1px solid var(--app-border);
     border-radius: 8px;

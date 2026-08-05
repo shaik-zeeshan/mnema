@@ -700,11 +700,11 @@
   }
   .t {
     color: var(--app-text-strong);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
   }
   .d {
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     max-width: 48ch;
   }
   .d.gap {
@@ -735,7 +735,7 @@
   /* fields */
   .fld {
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     background: var(--app-surface-raised);
     border: 1px solid var(--app-border-strong);
@@ -790,7 +790,7 @@
   }
   .loud {
     padding: 17px 16px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     /* A whole-pixel line box, not a 1.4 ratio of a fractional font size —
        that pair put these two cards on 54.19px. 17 + 20 + 17 = 54. */
     line-height: 20px;
@@ -802,7 +802,7 @@
     gap: 5px;
   }
   .loss span {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     display: flex;
     gap: 9px;
@@ -818,7 +818,7 @@
     display: flex;
     align-items: center;
     gap: 9px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-muted);
     border: 1px dashed var(--app-border-strong);
     border-radius: 8px;
@@ -864,7 +864,7 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.06em;
     border: 1px solid var(--app-border);
     border-radius: 999px;
@@ -915,7 +915,7 @@
     gap: 10px;
     height: var(--ob-ctl-h);
     padding: 0 12px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
   .sr + .sr {
     border-top: 1px solid var(--app-border);
@@ -929,7 +929,7 @@
     white-space: nowrap;
   }
   .ms {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
@@ -953,7 +953,7 @@
   }
   .prov-head .name {
     color: var(--app-text-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     flex: 1 1 140px;
     min-width: 0;
     overflow: hidden;
@@ -968,7 +968,7 @@
   }
   .mchip {
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     border: 1px solid var(--app-border);
     background: var(--app-surface-raised);
     color: var(--app-text-muted);
@@ -999,7 +999,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     border: 1px solid var(--app-border-strong);
     border-radius: 7px;
     height: var(--ob-ctl-h);
@@ -1037,7 +1037,7 @@
     padding: 6px;
   }
   .grp {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--app-text-subtle);
@@ -1054,7 +1054,7 @@
     gap: 10px;
     text-align: left;
     font: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
     background: transparent;
     border: 0;
@@ -1073,7 +1073,7 @@
     color: var(--app-accent);
   }
   .opt .side {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }

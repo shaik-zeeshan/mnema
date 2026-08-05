@@ -312,7 +312,7 @@
   }
 
   .about-hero__name {
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     font-weight: 700;
     letter-spacing: 0.01em;
     line-height: 1.1;
@@ -322,7 +322,7 @@
   .about-hero__tagline {
     margin: 0;
     max-width: 52ch;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
   }

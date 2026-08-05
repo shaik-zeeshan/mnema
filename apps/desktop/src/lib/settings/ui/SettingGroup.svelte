@@ -141,7 +141,7 @@
      as the faintest line on the page. */
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.13em;
     text-transform: uppercase;
@@ -189,8 +189,8 @@
   }
 
   .setting-group__hint {
-    /* --text-sm is 11px — same value the mockup's `.group__hint` names. */
-    font-size: var(--text-sm);
+    /* --t-meta is 11px — same value the mockup's `.group__hint` names. */
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     letter-spacing: 0.01em;
     line-height: 1.5;

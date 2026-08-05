@@ -133,7 +133,7 @@
   }
 
   .setting-row__label {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 550;
     letter-spacing: 0.01em;
     color: var(--app-text-strong);

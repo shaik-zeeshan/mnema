@@ -177,14 +177,14 @@
     margin-bottom: 10px;
   }
   .strip-eyebrow {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.13em;
     color: var(--app-text-subtle);
   }
   .strip-count {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-faint);
     font-variant-numeric: tabular-nums;
   }
@@ -195,7 +195,7 @@
     gap: 8px;
   }
   .sort-lbl {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.13em;
@@ -301,7 +301,7 @@
   .cs-pin {
     padding: 0;
     font: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     border: none;
     background: transparent;
@@ -322,7 +322,7 @@
   }
   .cs-snap {
     margin-left: auto;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.12em;
@@ -331,7 +331,7 @@
   }
 
   .cs-stmt {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     color: var(--app-text);
     display: -webkit-box;
@@ -377,7 +377,7 @@
     background: var(--app-text-faint);
   }
   .cs-pct {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     font-weight: 600;
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
@@ -388,7 +388,7 @@
     color: var(--app-text-subtle);
   }
   .cs-trend {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     width: 11px;
     text-align: center;
     flex: 0 0 auto;
@@ -405,7 +405,7 @@
   }
 
   .cs-delta {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.02em;

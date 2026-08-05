@@ -373,7 +373,7 @@
 <style>
   .sentence {
     margin: 0;
-    font-size: var(--text-xl);
+    font-size: var(--t-title);
     line-height: 2.1;
     color: var(--app-text);
     overflow-wrap: break-word;
@@ -441,7 +441,7 @@
   }
   .ghost {
     font: inherit;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-faint);
     background: transparent;
     border: 0;
@@ -473,7 +473,7 @@
     margin-top: 20px;
     padding-top: 16px;
     border-top: 1px solid var(--app-border);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.85;
     color: var(--app-text-muted);
   }
@@ -508,7 +508,7 @@
     color: var(--app-accent);
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     margin-right: 8px;
   }
   .repair {
@@ -520,7 +520,7 @@
   }
   .hint {
     margin: 14px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-faint);
     letter-spacing: 0.06em;
   }

@@ -162,14 +162,14 @@
 <style>
   .claim {
     margin: 0;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1.35;
     color: var(--app-text-strong);
     letter-spacing: -0.01em;
   }
   .claim-sub {
     margin: 6px 0 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.6;
     color: var(--app-text-muted);
     max-width: 56ch;
@@ -185,7 +185,7 @@
     border-top: 1px solid var(--app-border);
   }
   .pv-head .t {
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
 
@@ -226,27 +226,27 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 6px;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
   }
   .card[aria-checked="true"] .cn {
     color: var(--app-accent);
   }
   .badge {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.1em;
     text-transform: uppercase;
     color: var(--app-accent);
     white-space: nowrap;
   }
   .card .cr {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-subtle);
     flex: 1;
   }
   .card .cf {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.5;
     color: var(--app-text-subtle);
   }
@@ -261,7 +261,7 @@
     display: flex;
     justify-content: space-between;
     gap: 8px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
@@ -319,7 +319,7 @@
     min-height: 26px;
   }
   .delta .dt {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
@@ -341,7 +341,7 @@
   .axn {
     grid-column: 1 / -1;
     margin: 4px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1.65;
     color: var(--app-text-subtle);
   }
@@ -359,7 +359,7 @@
   .cloud summary {
     padding: 8px 11px;
     cursor: pointer;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
   .cloud summary:hover {
@@ -373,7 +373,7 @@
   .cloud p {
     margin: 0;
     padding: 0 11px 10px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.6;
     color: var(--app-text-subtle);
     max-width: 62ch;
