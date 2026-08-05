@@ -450,6 +450,9 @@
               <p class="group-hint group-hint--warn" role="alert">Download failed: {transcriptionDownloadError}</p>
             {/if}
           {:else if rec.draftTranscriptionProvider === "deepgram"}
+            <!-- Where the work happens, stated as a chip: a fact, not an
+                 endorsement (the mockup's `.v-cloud`, info-blue). -->
+            <span class="badge badge--info badge--sm">Audio leaves this Mac</span>
             <p class="group-hint">Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.</p>
           {:else}
             <p class="group-hint">This provider is managed by macOS. There is no app-managed model download.</p>

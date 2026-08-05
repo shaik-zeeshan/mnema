@@ -34,7 +34,7 @@
     flex-direction: column;
     gap: 4px;
     padding: 8px 12px;
-    border: 1px solid var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
     border-radius: 6px;
     background: var(--app-surface);
   }
@@ -55,7 +55,7 @@
 
   .settings-shell .notice-item__license {
     padding: 1px 7px;
-    border: 1px solid var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     border-radius: 999px;
     background: var(--app-accent-bg);
     color: var(--app-accent);
@@ -95,7 +95,7 @@
     justify-content: space-between;
     gap: 12px;
     padding: 12px;
-    border: 1px solid var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-warn) 8%, transparent);
   }
@@ -118,13 +118,13 @@
     justify-content: space-between;
     gap: 14px;
     padding: 12px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 28%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 28%, var(--app-border));
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-accent) 6%, transparent);
   }
 
   .settings-shell .update-status-panel--error {
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     background: color-mix(in srgb, var(--app-warn) 7%, transparent);
   }
 
@@ -169,7 +169,7 @@
     flex-direction: column;
     gap: 6px;
     padding: 10px 12px;
-    border: 1px solid var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
     border-radius: 6px;
     background: var(--app-surface);
   }
@@ -204,7 +204,7 @@
     gap: 16px;
     align-items: start;
     padding: 16px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 20%, var(--app-border));
     border-radius: 10px;
     background:
       radial-gradient(circle at 18% 20%, color-mix(in srgb, var(--app-warn) 12%, transparent), transparent 38%),
@@ -257,13 +257,13 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border: 1px solid var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-warn) 8%, transparent);
   }
 
   .settings-shell .model-status--available {
-    border-color: color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 42%, var(--app-border));
     background: color-mix(in srgb, var(--app-accent) 8%, transparent);
   }
 
@@ -287,7 +287,7 @@
     flex-shrink: 0;
     padding: 2px 8px;
     border-radius: 999px;
-    border: 1px solid var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     background: var(--app-warn-bg);
     font-size: var(--t-label);
     font-weight: 700;
@@ -297,7 +297,7 @@
   }
 
   .settings-shell .model-status__pill--ok {
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     background: var(--app-accent-bg);
     color: var(--app-accent);
   }
@@ -308,13 +308,13 @@
     justify-content: space-between;
     gap: 14px;
     padding: 12px;
-    border: 1px dashed var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-warn) 6%, transparent);
   }
 
   .settings-shell .permission-callout--ok {
-    border-color: color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
     background: color-mix(in srgb, var(--app-accent) 6%, transparent);
   }
 
@@ -356,7 +356,7 @@
     overflow: hidden;
     border-radius: 999px;
     background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   .settings-shell .download-progress__bar span {
@@ -373,7 +373,7 @@
     flex-direction: column;
     gap: 6px;
     padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 34%, var(--app-border));
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-accent) 7%, transparent);
     color: var(--app-text);
@@ -422,7 +422,7 @@
   .settings-shell .ai-runtime-raw {
     margin: 0;
     padding: 8px 10px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 24%, var(--app-border));
     border-radius: 6px;
     background: color-mix(in srgb, var(--app-accent) 4%, transparent);
     color: var(--app-text-muted);

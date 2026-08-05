@@ -41,7 +41,8 @@
     width: 16px;
     height: 16px;
     margin-top: 0.5px;
-    border: 1px solid var(--app-danger-border);
+    border: 0;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
     border-radius: 50%;
     background: var(--app-danger-bg);
     color: var(--app-danger);

@@ -112,7 +112,7 @@
     gap: 6px;
     padding: 3px 9px;
     border-radius: 999px;
-    border: 1px solid var(--app-border-strong);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     background: var(--app-surface);
     color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
@@ -125,25 +125,34 @@
   .settings-shell .badge--ok {
     background: var(--app-accent-bg);
     color: var(--app-accent);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .settings-shell .badge--neutral {
     background: var(--app-neutral-bg);
     color: var(--app-neutral-text);
-    border-color: var(--app-neutral-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-neutral-border);
   }
 
   .settings-shell .badge--warn {
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
 
   .settings-shell .badge--danger {
     background: var(--app-danger-bg);
     color: var(--app-danger);
-    border-color: var(--app-danger-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
+  }
+
+  /* Info-blue (mockup `.v-cloud`). A cloud model is a FACT about where the work
+     happens, never a verdict on it — so it gets its own neutral-informational
+     tone rather than borrowing ok-green or warn-amber. */
+  .settings-shell .badge--info {
+    background: var(--app-info-bg);
+    color: var(--app-info);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border);
   }
 
   .settings-shell .badge--sm {
@@ -157,7 +166,7 @@
   .settings-shell .badge--muted {
     background: var(--app-surface);
     color: var(--app-text-subtle);
-    border-color: var(--app-border-strong);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     text-transform: none;
     letter-spacing: 0.02em;
   }
@@ -169,14 +178,14 @@
     gap: 10px;
     padding: 10px 14px;
     background: var(--app-source-mic-bg);
-    border: 1px solid var(--app-source-mic-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-source-mic-border);
     border-radius: 5px;
-    transition: background 0.2s, border-color 0.2s;
+    transition: background 0.2s, box-shadow 0.2s;
   }
 
   .settings-shell .effective-device--none {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   .settings-shell .effective-device__dot {
@@ -216,12 +225,12 @@
     padding: 6px 10px;
     border-radius: 4px;
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    transition: border-color 0.12s;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+    transition: box-shadow 0.12s;
   }
 
   .settings-shell .device-item--active {
-    border-color: var(--app-source-mic-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-source-mic-border);
     background: var(--app-source-mic-bg);
   }
 
@@ -260,7 +269,7 @@
     gap: 11px;
     padding: 12px 14px;
     background: var(--app-danger-bg);
-    border: 1px solid var(--app-danger-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
     border-radius: 6px;
   }
 
@@ -311,7 +320,7 @@
     gap: 5px;
     padding: 12px 14px;
     background: var(--app-warn-bg);
-    border: 1px solid var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     border-radius: 6px;
   }
 

@@ -118,19 +118,19 @@
     width: 100%;
     height: 28px;
     padding: 0 28px 0 28px;
-    border: 1px solid var(--app-border);
+    border: 0;
     border-radius: var(--r-pill);
     background: var(--app-surface);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text);
     font-family: inherit;
     font-size: var(--t-ui);
     outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: box-shadow 0.15s;
   }
 
   .find-field input:focus {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
   }
 
   .find-field__clear {
@@ -170,9 +170,10 @@
     margin-left: auto;
     height: 22px;
     padding: 0 8px;
-    border: 1px solid var(--app-border);
+    border: 0;
     border-radius: var(--r-pill);
-    background: var(--app-surface);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-meta);
@@ -181,6 +182,5 @@
 
   .find-close:hover {
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
   }
 </style>

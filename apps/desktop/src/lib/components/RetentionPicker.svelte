@@ -107,13 +107,15 @@
 </div>
 
 <style>
-  /* A duration-preset picker over the four supported RetentionPolicy values,
-     styled in the gallery's preset-chip / segmented language. Chips wrap so the
-     control stays readable inside the full-width settings row. */
+  /* Direction 03: a LADDER, not a row of loose chips — one continuous axis of
+     equal rungs, so the durations read as positions on a scale rather than as
+     four unrelated buttons. Each rung is a surface step with the material's
+     rim; the chosen one is a full accent fill. */
   .retention-picker {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    gap: 3px;
+    width: 100%;
+    min-width: 0;
   }
 
   .retention-picker--disabled {
@@ -123,12 +125,16 @@
 
   .preset {
     display: inline-flex;
+    flex: 1 1 0;
+    min-width: 0;
     align-items: center;
     justify-content: center;
-    padding: 7px 14px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    height: 28px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     color: var(--app-text-muted);
     font: inherit;
     font-size: var(--t-ui);
@@ -138,12 +144,11 @@
     cursor: pointer;
     user-select: none;
     outline: none;
-    transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
   }
 
   .preset:hover:not(.preset--active) {
     color: var(--app-text);
-    border-color: var(--app-border-hover);
     background: var(--app-surface-hover);
   }
 
@@ -158,11 +163,9 @@
   }
 
   .preset--active {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border),
-      0 0 10px color-mix(in srgb, var(--app-accent) 18%, transparent);
+    color: var(--app-accent-contrast);
+    background: var(--app-accent);
+    box-shadow: none;
   }
 
   .preset:disabled {
@@ -171,5 +174,8 @@
 
   .preset__label {
     display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

@@ -17,8 +17,17 @@
   // carries NO save state: G7 puts the whole autosave story in the top-anchored
   // chip (`ui/SettingsSaveChip.svelte`) — a pinned footer is a bottom strip, and
   // there is no bottom save bar, ever.
+  //
+  // Direction 03 pins one thing to the rail's bottom instead: the LIVE COST of
+  // what you enabled, in the same surface as the controls that caused it. It
+  // reads only stores that already exist (`captureControls` for the session,
+  // `systemFacts` for the machine) — no new data flow — and it is bound by G8:
+  // a figure with no real source renders as nothing, never as a placeholder.
 
   import { goto } from "$app/navigation";
+  import { captureControls, sourceSelection } from "$lib/capture-controls.svelte";
+  import { systemFacts } from "./state/system-facts.svelte";
+  import { formatBytes } from "./state/format";
   import IconBack from "~icons/lucide/chevron-left";
   import IconSearch from "~icons/lucide/search";
   import IconClear from "~icons/lucide/x";
@@ -106,6 +115,50 @@
       searchInput?.blur();
     }
   }
+
+  // ─── The rail footer: the cost of what you enabled ────────────────────────
+  // Line 1 — what is recording right now. `requestedSources` minus
+  // `maskedSources` is what is ACTUALLY capturing (a masked source is a
+  // user-scoped pause on one source), so the list never over-claims.
+  void systemFacts.ensureLoaded();
+
+  // `sourceSelection.isSelected` already IS this answer ("live sources while
+  // recording, settings while idle") — reuse it rather than re-deriving the
+  // requested-minus-masked arithmetic a second time.
+  const activeSources = $derived(
+    (
+      [
+        ["screen", "screen"],
+        ["microphone", "microphone"],
+        ["systemAudio", "system audio"],
+      ] as const
+    )
+      .filter(([key]) => sourceSelection.isSelected(key))
+      .map(([, label]) => label),
+  );
+
+  // "Recording · all three sources" only when all three genuinely are.
+  const sessionPhrase = $derived.by(() => {
+    if (!captureControls.isRunning) return "Not recording";
+    const verb = captureControls.paused ? "Paused" : "Recording";
+    if (activeSources.length === 0) return verb;
+    if (activeSources.length === 3) return `${verb} · all three sources`;
+    return `${verb} · ${activeSources.join(" + ")}`;
+  });
+
+  // Line 2 — the two figures this machine can actually produce. The mockup's
+  // "270 MB today / 34.2 GB kept" has no honest source (`SystemFacts` measures
+  // a per-day AVERAGE over complete capture days and free space; it carries no
+  // partial-day total and no total-kept figure), so G8 substitutes the two real
+  // ones and drops whichever is null.
+  const dailyRate = $derived.by(() => {
+    const bytes = systemFacts.value?.measuredBytesPerDay;
+    return bytes == null ? null : `${formatBytes(bytes)} a day`;
+  });
+  const freeSpace = $derived.by(() => {
+    const bytes = systemFacts.value?.diskFreeBytes;
+    return bytes == null ? null : `${formatBytes(bytes)} free`;
+  });
 
   // "← Back to app" — Settings is the `/settings` route inside the Main window,
   // so leaving it is a plain in-window navigation back to the last main surface
@@ -237,6 +290,27 @@
     </div>
   </nav>
 
+  <!-- The cost of what you enabled. Not save state (G7 owns that in the top
+       strip) — a standing readout of the session and the machine. -->
+  <div class="rail-foot">
+    <p class="rail-foot__line">
+      <span
+        class="rail-foot__dot"
+        class:rail-foot__dot--on={captureControls.isRunning && !captureControls.paused}
+        class:rail-foot__dot--paused={captureControls.isRunning && captureControls.paused}
+        aria-hidden="true"
+      ></span>
+      {sessionPhrase}
+    </p>
+    {#if dailyRate || freeSpace}
+      <p class="rail-foot__line">
+        {#if dailyRate}<span class="rail-foot__num">{dailyRate}</span>{/if}
+        {#if freeSpace}
+          <span class="rail-foot__num" class:rail-foot__num--trail={dailyRate}>{freeSpace}</span>
+        {/if}
+      </p>
+    {/if}
+  </div>
 </aside>
 
 <style>

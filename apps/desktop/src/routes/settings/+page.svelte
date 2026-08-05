@@ -652,12 +652,43 @@
 <style>
   /* The shell root rule lives here (its element is in this template); all other
      settings CSS is the shared, `.settings-shell`-namespaced
-     lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
+     lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above.
+
+     Direction 03 — LAYERED GLASS. The rail no longer occupies a flex column
+     welded to the content: it FLOATS, inset from every edge, over one opaque
+     scroll pane. Both children are absolutely positioned inside this
+     definite-height box (`.app-content` is a flex column with `min-height: 0`,
+     so `flex: 1 1 0` resolves to a real height). */
   .settings-shell {
+    position: relative;
     flex: 1 1 0;
     min-height: 0;
-    display: flex;
-    gap: 18px;
+    overflow: hidden;
+    background: var(--app-bg);
+  }
+
+  /* The wash exists so the floating rail has something to be translucent
+     ABOUT. It sits UNDER the pane's opaque plates and never under text: the
+     scroll pane's own background is `--app-bg`… except where the rail floats
+     over it, which is the point. Purely decorative, so `pointer-events: none`
+     and the accent/screen-purple pair from the mockup, at the mockup's
+     opacities. */
+  .settings-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(
+        420px 300px at 6% 4%,
+        color-mix(in srgb, var(--app-accent) 16%, transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        360px 380px at 2% 92%,
+        color-mix(in srgb, var(--app-source-screen) 18%, transparent),
+        transparent 72%
+      );
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

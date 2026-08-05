@@ -92,6 +92,14 @@
     {#if status === "error"}
       <IconWarn aria-hidden="true" />
       Not saved
+      {#if c.lastFailedSaveDomain}
+        <!-- Failure is the one persistent state, so its recovery lives in the
+             persistent surface too — the same `retryFailedSave` the toast's
+             action calls, reachable without hunting for the toast. -->
+        <button class="savechip__retry" type="button" onclick={() => void c.retryFailedSave()}>
+          Retry
+        </button>
+      {/if}
     {:else if status === "blocked"}
       <IconWarn aria-hidden="true" />
       Resolve issues to save
@@ -119,6 +127,8 @@
     min-height: 24px;
   }
 
+  /* A chip in the chrome, so it wears the chrome's vocabulary: a tint plus a
+     material rim, never a container border. */
   .savechip {
     display: inline-flex;
     align-items: center;
@@ -126,8 +136,8 @@
     height: 24px;
     padding: 0 10px;
     border-radius: var(--r-pill);
-    background: var(--app-surface);
-    box-shadow: inset 0 0 0 1px var(--app-border);
+    background: var(--glass-tint);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     font-size: var(--t-meta);
     color: var(--app-text-muted);
     white-space: nowrap;
@@ -146,18 +156,44 @@
 
   .savechip--ok {
     color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-surface));
+    background: var(--app-accent-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   .savechip--saving {
     color: var(--app-accent);
   }
   .savechip--blocked {
     color: var(--app-warn-strong);
+    background: var(--app-warn-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
   .savechip--error {
     color: var(--app-danger-text);
-    background: color-mix(in srgb, var(--app-danger) 12%, var(--app-surface));
-    box-shadow: inset 0 0 0 1px var(--app-danger);
+    background: var(--app-danger-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
+  }
+
+  /* Ghost button inside the chip — inherits the chip's danger tone rather than
+     bringing its own. */
+  .savechip__retry {
+    height: 18px;
+    margin-right: -4px;
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: transparent;
+    color: inherit;
+    font-family: inherit;
+    font-size: inherit;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .savechip__retry:hover {
+    background: color-mix(in srgb, var(--app-danger) 16%, transparent);
+  }
+  .savechip__retry:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring);
   }
 
   .savechip__dot {

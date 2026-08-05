@@ -85,16 +85,28 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 8px;
   }
 
   /* ── Section head (above the card) ─────────────────────────── */
+  /* Sticky within its own section: each `.setting-group` is a separate sticky
+     containing block, so a header pins only while its own section is on
+     screen and hands off to the next one — the direction's "one opaque scroll
+     pane with sticky section headers". It needs the pane's own opaque
+     background so rows scroll UNDER it rather than through it, and it must
+     out-stack the rows (which carry no z-index) without out-stacking the
+     floating rail (z-index 4). Scroll-spy is unaffected: `position: sticky`
+     does not change `offsetTop`. */
   .setting-group__header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
-    padding: 0 4px;
+    padding: 8px 4px 6px;
+    background: var(--app-bg);
   }
 
   .setting-group__heading {
@@ -212,39 +224,24 @@
      them was cutting the menu at the card's bottom edge. The rows are
      transparent and the accent hairline below is inset within the card
      bounds, so nothing relies on clipping for the rounded-corner look. */
+  /* An opaque PLATE (material ladder level 2): a surface step plus `--sh-tile`
+     where the border used to be. In this direction the plate's shadow IS the
+     border it replaces — do not add one back. 12px inner padding, so the rows
+     inside carry only their vertical rhythm. */
   .setting-group__card {
     position: relative;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
-  }
-
-  /* Bare: no frame — children (which carry their own borders) sit flush. */
-  .setting-group__card--bare {
-    background: none;
+    padding: 0 12px;
+    background: var(--app-surface);
     border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-tile);
+  }
+
+  /* Bare: no plate — children (which carry their own surfaces) sit flush. */
+  .setting-group__card--bare {
+    padding: 0;
+    background: none;
+    box-shadow: none;
     border-radius: 0;
-  }
-
-  .setting-group__card--bare::before {
-    display: none;
-  }
-
-  /* Faint top-edge accent hairline — Mnema signature, inset L/R. */
-  .setting-group__card::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 14px;
-    right: 14px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
-      transparent
-    );
-    pointer-events: none;
   }
 </style>

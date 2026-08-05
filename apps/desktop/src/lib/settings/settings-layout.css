@@ -20,59 +20,41 @@
  * names. @keyframes stay global (referenced by name). The `.settings-shell`
  * root rule itself lives on the shell component's own <style>.
  *
- * Rail design (mockup-2b "Codex rail"): a fixed top zone (← Back to app + a
- * search field), a scrolling nav of category headers (`.nav-cat`) + bare
- * sub-section items (`.nav-item`). The rail is always expanded (the old
- * collapse-to-icons feature, capture-summary pills, and ⌘B toggle are gone), and
- * it carries no save state — G7's autosave chip is a top-anchored strip in the
- * content pane (`.save-strip`), never a bottom bar. */
+ * Rail design — direction 03, LAYERED GLASS. The rail is the settings
+ * navigation shape for this direction, and it FLOATS: inset 10px from every
+ * edge of the shell, 208px wide, `--r-panel`, `.glass-chrome` material plus
+ * `--sh-float`. Top to bottom it carries a search field, four labelled groups
+ * of 28px nav rows (full-row accent fill when selected — never an underline),
+ * and, pinned above a `--glass-line` rule, the live cost of what you enabled.
+ * Under it is ONE opaque scroll pane whose group cards are opaque plates.
+ *
+ * It still carries no save state — G7's autosave chip is a top-anchored strip
+ * in the content pane (`.save-strip`), never a bottom bar. */
 
-  /* ── Settings shell ───────────────────────────────────────────────────
-     Two columns: a fixed nav rail on the left, one scrolling content pane
-     on the right. The shell is the sole child of `.app-content` (a flex
-     column with `min-height: 0`), so `flex: 1` + `min-height: 0` hand the
-     leftover height down to `.settings-scroll`, which owns the overflow —
-     the window and rail never scroll. */
-
-
-  /* ── Left rail (Codex-style) ──────────────────────────────────────── */
+  /* ── The floating rail ────────────────────────────────────────────────
+     Absolutely positioned so the pane scrolls UNDER it — that is what makes
+     the material read as material. Never `overflow: hidden` on the rail
+     itself: the nav zone owns its own scroll. */
   .settings-shell .settings-rail {
-    position: relative;
-    flex: 0 0 232px;
+    position: absolute;
+    left: 10px;
+    top: 10px;
+    bottom: 10px;
+    width: 208px;
+    z-index: 4;
     display: flex;
     flex-direction: column;
+    gap: 2px;
     min-height: 0;
-    padding-right: 18px;
-  }
-
-  /* Rail divider: a dashed hairline that fades toward the top and bottom
-     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
-  .settings-shell .settings-rail::after {
-    content: "";
-    position: absolute;
-    inset: 0 0 0 auto;
-    width: 1px;
-    background: repeating-linear-gradient(
-      to bottom,
-      transparent 0px,
-      transparent 3px,
-      var(--app-border-strong) 3px,
-      var(--app-border-strong) 8px
-    );
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
+    padding: 8px;
+    border-radius: var(--r-panel);
+    background: var(--glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    /* The rail's rim is one of this page's two bordered containers (the other
+       is the window chrome). Everything else is a surface step or a shadow. */
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 0 1px 0 var(--glass-hi);
   }
 
   /* ── Fixed top zone: back link + search ───────────────────────────── */
@@ -80,8 +62,8 @@
     flex: 0 0 auto;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 2px 2px 12px 2px;
+    gap: 8px;
+    padding: 0 0 6px;
   }
 
   .settings-shell .rail-back {
@@ -89,29 +71,29 @@
     align-items: center;
     gap: 5px;
     width: fit-content;
-    padding: 3px 5px;
-    margin-left: -5px;
+    height: 22px;
+    padding: 0 6px;
+    margin-left: -4px;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
+    border: 0;
+    border-radius: var(--r-md);
     color: var(--app-text-muted);
     font-family: inherit;
-    font-size: var(--t-ui);
+    font-size: var(--t-meta);
     cursor: pointer;
     user-select: none;
     transition: color 0.15s, background 0.15s;
   }
   .settings-shell .rail-back:hover {
     color: var(--app-text-strong);
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
   }
   .settings-shell .rail-back:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
   .settings-shell .rail-back:active {
-    background: var(--app-surface-active);
+    background: var(--glass-tint);
     transform: translateY(0.5px);
   }
   .settings-shell .rail-back svg {
@@ -133,10 +115,10 @@
      its own svg and styles it itself. */
   .settings-shell .rail-search > svg {
     position: absolute;
-    left: 10px;
-    width: 14px;
-    height: 14px;
-    color: var(--app-text-muted);
+    left: 8px;
+    width: 12px;
+    height: 12px;
+    color: var(--app-text-subtle);
     pointer-events: none;
     fill: none;
     stroke: currentColor;
@@ -144,25 +126,28 @@
     stroke-linecap: round;
     stroke-linejoin: round;
   }
+  /* Recessed into the material rather than sitting on it: a tint plus the
+     material's own rim, never a container border. */
   .settings-shell .rail-search input {
     width: 100%;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    height: 26px;
+    background: var(--glass-tint);
+    border: 0;
+    border-radius: var(--r-md);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     /* Right padding reserves room for the in-field clear (X) button. */
-    padding: 8px 32px 8px 32px;
-    color: var(--app-text);
+    padding: 0 28px 0 26px;
+    color: var(--app-text-strong);
     font-family: inherit;
-    font-size: var(--t-ui);
+    font-size: var(--t-meta);
     outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
+    transition: box-shadow 0.15s;
   }
   .settings-shell .rail-search input::placeholder {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
   .settings-shell .rail-search input:focus {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
   }
 
   /* ── Scrolling nav zone ───────────────────────────────────────────── */
@@ -170,9 +155,7 @@
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    /* Right gutter keeps items clear of the scrollbar; left aligns the active
-       edge bar against the rail edge. */
-    padding: 2px 6px 8px 0;
+    padding: 0 0 4px;
   }
 
   .settings-shell .rail-nav__list {
@@ -181,44 +164,47 @@
   }
 
   .settings-shell .nav-group {
-    margin-top: 14px;
-  }
-  .settings-shell .nav-group:first-child {
-    margin-top: 2px;
+    margin-top: 0;
   }
 
+  /* Group eyebrow — mono, faint, the mockup's `.srail__g`. */
   .settings-shell .nav-cat {
-    margin: 0 0 5px 8px;
+    margin: 0;
+    padding: 9px 8px 3px;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-label);
-    font-weight: 600;
-    letter-spacing: 0.12em;
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--app-text-muted);
+    color: var(--app-text-faint);
   }
 
+  /* 28px rows, 6px radius, and the selected state is a FULL-ROW accent fill —
+     never an underline, never an edge bar. */
   .settings-shell .nav-item {
     position: relative;
     display: flex;
     align-items: center;
     gap: 9px;
     width: 100%;
-    height: 32px;
-    padding: 6px 10px;
+    height: 28px;
+    padding: 0 8px;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
+    border: 0;
+    border-radius: var(--r-md);
     cursor: pointer;
     user-select: none;
     font-family: inherit;
     text-align: left;
-    color: var(--app-text-muted);
+    color: var(--app-text);
     transition: background 0.15s, color 0.15s;
   }
   .settings-shell .nav-item svg {
-    flex: 0 0 16px;
-    width: 16px;
-    height: 16px;
-    color: inherit;
+    flex: 0 0 15px;
+    width: 15px;
+    height: 15px;
+    color: var(--app-text-muted);
     fill: none;
     stroke: currentColor;
     stroke-width: 1.7;
@@ -235,52 +221,87 @@
     text-overflow: ellipsis;
   }
   .settings-shell .nav-item:hover {
-    background: var(--app-surface-hover);
+    background: var(--glass-tint);
     color: var(--app-text-strong);
   }
   .settings-shell .nav-item:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
     box-shadow: var(--app-ring);
   }
   /* Momentary press cue so a click registers before a slow section switch. */
   .settings-shell .nav-item:active {
-    background: var(--app-surface-active);
+    background: var(--glass-tint);
   }
 
-  /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
-     left edge bar, accent-tinted icon, strong label. */
   .settings-shell .nav-item--active,
-  .settings-shell .nav-item--active:hover {
-    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-    color: var(--app-text-strong);
-  }
-  .settings-shell .nav-item--active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 2px;
+  .settings-shell .nav-item--active:hover,
+  .settings-shell .nav-item--active:active {
     background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
+    color: var(--app-accent-contrast);
   }
-  .settings-shell .nav-item--active svg {
-    color: var(--app-accent);
-  }
+  .settings-shell .nav-item--active svg,
   .settings-shell .nav-item--active span {
-    color: var(--app-text-strong);
+    color: inherit;
+  }
+
+  /* ── The cost of what you enabled, pinned to the rail's bottom ───────
+     Above a `--glass-line` rule, in the same surface as the controls that
+     caused it. Every figure is real or absent (G8) — the component renders no
+     line at all where the machine has nothing measured to say. */
+  .settings-shell .rail-foot {
+    flex: 0 0 auto;
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 8px 8px 4px;
+    box-shadow: inset 0 1px 0 var(--glass-line);
+  }
+  .settings-shell .rail-foot__line {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--t-meta);
+    line-height: 1.3;
+    color: var(--app-text-muted);
+  }
+  .settings-shell .rail-foot__num {
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-variant-numeric: tabular-nums;
+  }
+  .settings-shell .rail-foot__num--trail {
+    margin-left: auto;
+    color: var(--app-text-subtle);
+  }
+  .settings-shell .rail-foot__dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-text-subtle);
+  }
+  .settings-shell .rail-foot__dot--on {
+    background: var(--app-record);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-record) 18%, transparent);
+  }
+  .settings-shell .rail-foot__dot--paused {
+    background: var(--app-warn);
   }
 
   /* ── Content pane + scroll region ─────────────────────────────────── */
+  /* ONE opaque scroll pane, running the full width of the shell — the rail
+     floats over its left edge, so the pane reserves that width as padding
+     rather than as a column. */
   .settings-shell .settings-content {
-    flex: 1 1 0;
+    position: absolute;
+    inset: 0;
     min-width: 0;
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 14px;
+    gap: 10px;
+    padding: 14px 4px 0 228px;
   }
 
   /* A plain BLOCK scroll container — deliberately not flex. One tab panel
@@ -294,7 +315,7 @@
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 24px 0;
+    padding: 0 20px 0;
   }
 
   /* The centered content column: capped to a comfortable reading width and
@@ -309,7 +330,8 @@
   .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 24px;
+    /* Groups sit 22px apart (mockup `.gsec`). */
+    gap: 22px;
     width: 100%;
     max-width: 640px;
     margin: 0 auto;

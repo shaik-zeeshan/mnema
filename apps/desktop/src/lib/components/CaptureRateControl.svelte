@@ -164,12 +164,15 @@
     font-weight: 600;
   }
 
+  /* The one-minute strip is a recess in the plate, not a framed box: a surface
+     step plus the material's own rim. */
   .capture-rate__strip {
     position: relative;
     height: 34px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line);
     overflow: hidden;
   }
 
@@ -214,7 +217,7 @@
   .capture-rate__storage-bar {
     height: 4px;
     border-radius: 999px;
-    background: var(--app-border);
+    background: var(--app-surface-hover);
     margin-top: 8px;
     overflow: hidden;
   }

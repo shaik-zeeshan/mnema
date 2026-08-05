@@ -15,7 +15,7 @@
   }
   [data-theme="light"] .settings-shell .settings-stack {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   [data-theme="light"] .settings-shell .group-hint {
     color: var(--app-text-muted);
@@ -43,12 +43,12 @@
   [data-theme="light"] .settings-shell .badge--ok {
     background: var(--app-accent-bg);
     color: var(--app-accent-strong);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   [data-theme="light"] .settings-shell .badge--neutral {
     background: var(--app-surface-hover);
     color: var(--app-text-muted);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   [data-theme="light"] .settings-shell .about-id__version {
@@ -57,11 +57,11 @@
 
   [data-theme="light"] .settings-shell .effective-device {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   [data-theme="light"] .settings-shell .effective-device--none {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   [data-theme="light"] .settings-shell .effective-device__dot {
     background: var(--app-text-faint);
@@ -75,11 +75,11 @@
 
   [data-theme="light"] .settings-shell .device-item {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   [data-theme="light"] .settings-shell .device-item--active {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   [data-theme="light"] .settings-shell .device-item__dot {
     background: var(--app-text-faint);
@@ -93,11 +93,11 @@
 
   [data-theme="light"] .settings-shell .resolution-unsupported-notice, [data-theme="light"] .settings-shell .resolution-locked-notice, [data-theme="light"] .settings-shell .resolution-pending-notice, [data-theme="light"] .settings-shell .resolution-warn-notice, [data-theme="light"] .settings-shell .resolution-supported-notice, [data-theme="light"] .settings-shell .bitrate-compat-notice, [data-theme="light"] .settings-shell .audio-activity-notice {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   [data-theme="light"] .settings-shell .resolution-supported-notice {
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
   [data-theme="light"] .settings-shell .resolution-supported-notice__icon, [data-theme="light"] .settings-shell .audio-activity-notice__icon {
     color: var(--app-accent-strong);
@@ -121,7 +121,7 @@
 
   [data-theme="light"] .settings-shell .inline-validation {
     background: var(--app-warn-bg);
-    border-color: var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
   [data-theme="light"] .settings-shell .inline-validation__item {
     color: var(--app-warn);
@@ -132,7 +132,7 @@
 
   [data-theme="light"] .settings-shell .inline-error {
     background: var(--app-danger-bg-soft);
-    border-color: var(--app-danger-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
   [data-theme="light"] .settings-shell .inline-error__icon {
     color: var(--app-danger-strong);
@@ -147,7 +147,7 @@
 
   [data-theme="light"] .settings-shell .debug-log-status {
     background: var(--app-surface-raised);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
   [data-theme="light"] .settings-shell .debug-log-status__label {
     color: var(--app-text-muted);
@@ -169,7 +169,7 @@
     display: grid;
     gap: 6px;
     padding: 10px 12px;
-    border: 1px solid var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
     border-radius: 4px;
     background: var(--app-surface-subtle);
   }
@@ -190,7 +190,7 @@
     gap: 8px;
     align-items: flex-start;
     padding: 10px 12px;
-    border: 1px solid var(--app-warn-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     border-radius: 4px;
     background: color-mix(in srgb, var(--app-warn) 8%, transparent);
   }
@@ -230,7 +230,7 @@
     display: grid;
     gap: 4px;
     padding: 10px 12px;
-    border: 1px solid color-mix(in srgb, var(--app-accent) 35%, var(--app-border));
+    box-shadow: inset 0 0 0 var(--hairline) color-mix(in srgb, var(--app-accent) 35%, var(--app-border));
     border-radius: 4px;
     background: color-mix(in srgb, var(--app-accent) 12%, var(--app-surface));
   }

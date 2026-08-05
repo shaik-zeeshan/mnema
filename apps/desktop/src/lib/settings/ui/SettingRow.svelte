@@ -101,13 +101,16 @@
 <style>
   /* Rows are direct children of the card and sit flush; the card's padding
      comes from these rows. */
+  /* The plate owns the horizontal padding (12px); the row owns its own
+     vertical rhythm and a ≥40px minimum. */
   .setting-row {
     position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    padding: 16px 20px;
+    padding: 10px 0;
+    min-height: 40px;
     min-width: 0;
   }
 
@@ -117,14 +120,17 @@
      <SettingRow> instance, so Svelte's scoper can't see them as adjacent and
      would prune (and strip) a purely-scoped `+` selector. The `.setting-row`
      class is unique to this component, so the global match is safe. */
+  /* A hairline is only ever a rim in this direction: this one is the plate's
+     internal rule, so it takes `--glass-line` and runs edge to edge of the
+     plate's padding box (the plate, not the row, owns the L/R inset now). */
   :global(.setting-row + .setting-row)::before {
     content: "";
     position: absolute;
     top: 0;
-    left: 20px;
-    right: 20px;
-    height: 1px;
-    background: var(--app-border);
+    left: 0;
+    right: 0;
+    height: var(--hairline);
+    background: var(--glass-line);
     pointer-events: none;
   }
 
@@ -163,6 +169,7 @@
 
   /* Transient "Saved ✓" echo — locality tells you WHICH row saved (the chip in
      the top strip tells you whether). Accent pill, matching the chip's weight. */
+  /* The mockup's `.saved`: accent-tinted pill with an accent rim. */
   .setting-row__echo {
     display: inline-flex;
     align-items: center;
@@ -171,8 +178,8 @@
     height: 20px;
     padding: 0 8px;
     border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
+    background: var(--app-accent-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     color: var(--app-accent);
     font-size: var(--t-meta);
     font-weight: 550;
