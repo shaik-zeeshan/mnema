@@ -5,6 +5,7 @@ import {
   AUDIO_VISIBLE_CAP,
   FRAME_VISIBLE_CAP,
   moreRowLabel,
+  nextSelection,
   remapSelection,
   visibleCount,
 } from "./result-sections";
@@ -94,5 +95,44 @@ describe("remapSelection", () => {
 
   test("out-of-range selection clamps into the new space", () => {
     expect(remapSelection(50, { frames: 8, audio: 3 }, { frames: 8, audio: 3 })).toBe(10);
+  });
+});
+
+describe("nextSelection", () => {
+  // With the ask row, index -1 IS the ask row: it is stop 0 of the ring.
+  test("ArrowDown from the ask row lands on the first result", () => {
+    expect(nextSelection(-1, 1, 3, true)).toBe(0);
+  });
+
+  test("ArrowUp from the first result lands back on the ask row", () => {
+    expect(nextSelection(0, -1, 3, true)).toBe(-1);
+  });
+
+  test("ArrowUp from the ask row wraps to the last result", () => {
+    expect(nextSelection(-1, -1, 3, true)).toBe(2);
+  });
+
+  test("ArrowDown from the last result wraps to the ask row", () => {
+    expect(nextSelection(2, 1, 3, true)).toBe(-1);
+  });
+
+  // Zero results: the ask row is the only stop, so it stays selected — this is
+  // the G4 "promoted on zero results" case with no special casing.
+  test("zero results with an ask row stays on the ask row", () => {
+    expect(nextSelection(-1, 1, 0, true)).toBe(-1);
+    expect(nextSelection(-1, -1, 0, true)).toBe(-1);
+  });
+
+  // Without an ask row the pre-G4 behaviour is unchanged.
+  test("no ask row: first ArrowDown from nothing lands on result 0", () => {
+    expect(nextSelection(-1, 1, 3, false)).toBe(0);
+  });
+
+  test("no ask row: first ArrowUp from nothing wraps to the last result", () => {
+    expect(nextSelection(-1, -1, 3, false)).toBe(2);
+  });
+
+  test("no ask row and no results is a no-op", () => {
+    expect(nextSelection(-1, 1, 0, false)).toBe(-1);
   });
 });

@@ -1,12 +1,10 @@
-<!-- Quick Recall search result row, per the signed-off mockup
-     docs/quick-recall/mockups/search-redesign.html (Raycast row anatomy):
-     visual (150×94 thumb / source-colored waveform tile) | title + one snippet
-     line | right-aligned accessory column (relative time, match count, pills).
-     Accessories the detail pane duplicates (match count, meaning/redacted
-     pills) are stripped from the SELECTED row — the Raycast rule — while the
-     relative time stays. The old hover "open in browser" host chip is gone;
-     the URL lives in the detail pane and ⌘O (search-keys.ts → store) remains
-     the open-page path. -->
+<!-- Quick Recall search result TILE — the round-4 3-up grid cell (349 wide,
+     196-tall media). One anatomy for both modalities: a header row (app / source
+     eyebrow left, time right), one title line, one marked caption line, then the
+     media bleeding to the tile's bottom radius (screenshot for screen results,
+     source-coloured waveform for audio) with the match/meaning/redacted badges
+     floating over its bottom edge. The list/detail split is gone with the grid,
+     so the tile carries the accessories the detail pane used to duplicate. -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import type {
@@ -55,7 +53,7 @@
   // Deterministic waveform bars for the audio tile, ported from the mockup's
   // renderWave (64 bars, 16807 Lehmer PRNG, a ±2-bar highlight cluster).
   // ponytail: the highlight position is decorative — search results carry no
-  // in-span match offset; the detail pane (slice 5) owns the real match marker.
+  // in-span match offset.
   const WAVE_BARS = 64;
 
   function waveBars(
@@ -79,9 +77,32 @@
   );
 </script>
 
+<!-- The badge strip is identical for both modalities, so it lives in one
+     snippet taking the three flags the two DTOs share. -->
+{#snippet badges(
+  matchCount: number,
+  matchWord: string,
+  foundByMeaning: boolean,
+  redacted: boolean,
+)}
+  {#if matchCount > 1 || foundByMeaning || redacted}
+    <span class="search-card__badges">
+      {#if matchCount > 1}
+        <span class="search-card__badge">{matchCount} {matchWord}</span>
+      {/if}
+      {#if foundByMeaning}
+        <span class="search-card__badge search-card__badge--meaning">meaning</span>
+      {/if}
+      {#if redacted}
+        <span class="search-card__badge search-card__badge--redacted">redacted</span>
+      {/if}
+    </span>
+  {/if}
+{/snippet}
+
 {#if kind === "frame" && frame}
   <button
-    class="search-card search-card--frame"
+    class="search-card"
     class:search-card--selected={selected}
     {id}
     role="option"
@@ -89,11 +110,31 @@
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__thumb">
+    <span class="search-card__head">
+      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
+        <img
+          class="search-card__appicon"
+          src={appIcons.src(frame.appBundleId ?? frame.appName)}
+          alt=""
+          aria-hidden="true"
+        />
+      {/if}
+      <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
+      <span class="search-card__time">{formatRelativeTime(frame.groupEndAt)}</span>
+    </span>
+    <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
+      {frame.windowTitle ?? frame.appName ?? "Screen"}
+    </span>
+    <span class="search-card__caption">
+      {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
+            >{segment.text}</mark
+          >{:else}{segment.text}{/if}{/each}
+    </span>
+    <span class="search-card__media">
       <svg
-        class="search-card__thumb-glyph"
-        width="20"
-        height="20"
+        class="search-card__media-glyph"
+        width="22"
+        height="22"
         viewBox="0 0 14 14"
         fill="none"
         stroke="currentColor"
@@ -115,54 +156,19 @@
           onload={() => (imgLoaded = true)}
         />
       {/if}
-    </span>
-    <span class="search-card__meta">
-      <span class="search-card__line1">
-        {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
-          <img
-            class="search-card__appicon"
-            src={appIcons.src(frame.appBundleId ?? frame.appName)}
-            alt=""
-            aria-hidden="true"
-          />
-        {/if}
-        <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
-        {#if frame.windowTitle}
-          <span class="search-card__win" use:tip={frame.windowTitle}
-            >{frame.windowTitle}</span
-          >
-        {/if}
-      </span>
-      <span class="search-card__snippet">
-        {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
-              >{segment.text}</mark
-            >{:else}{segment.text}{/if}{/each}
-      </span>
-    </span>
-    <span class="search-card__acc">
-      <span class="search-card__time">{formatRelativeTime(frame.groupEndAt)}</span>
-      {#if !selected}
-        {#if frame.matchCount > 1}
-          <span class="search-card__count">{frame.matchCount} matches</span>
-        {/if}
-        {#if frame.foundByMeaning}
-          <span class="search-card__pill search-card__pill--meaning"
-            >found by meaning</span
-          >
-        {/if}
-        {#if frame.hasSecretRedactions}
-          <span class="search-card__pill search-card__pill--redacted"
-            >redacted</span
-          >
-        {/if}
-      {/if}
+      {@render badges(
+        frame.matchCount,
+        "matches",
+        frame.foundByMeaning,
+        frame.hasSecretRedactions,
+      )}
     </span>
   </button>
 {/if}
 
 {#if kind === "audio" && audio}
   <button
-    class="search-card search-card--audio"
+    class="search-card"
     class:search-card--selected={selected}
     {id}
     role="option"
@@ -170,10 +176,28 @@
     tabindex="-1"
     onclick={onselect}
   >
+    <span class="search-card__head">
+      <span class="search-card__app"
+        >{audio.sourceKind === "microphone" ? "Microphone" : "System audio"}</span
+      >
+      <span class="search-card__time"
+        >{formatRelativeTime(audio.absoluteStartAt)}</span
+      >
+    </span>
+    <span class="search-card__title">
+      “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
+            >{segment.text}</mark
+          >{:else}{segment.text}{/if}{/each}”
+    </span>
+    <span class="search-card__caption"
+      >{formatDuration(
+        Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
+      )} of speech</span
+    >
     <span
-      class="search-card__wavetile"
-      class:search-card__wavetile--mic={audio.sourceKind === "microphone"}
-      class:search-card__wavetile--sys={audio.sourceKind !== "microphone"}
+      class="search-card__media search-card__media--wave"
+      class:search-card__media--mic={audio.sourceKind === "microphone"}
+      class:search-card__media--sys={audio.sourceKind !== "microphone"}
     >
       <svg
         class="search-card__wave"
@@ -192,58 +216,32 @@
           />
         {/each}
       </svg>
-    </span>
-    <span class="search-card__meta">
-      <span class="search-card__quote"
-        >“{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
-              >{segment.text}</mark
-            >{:else}{segment.text}{/if}{/each}”</span
-      >
-      <span class="search-card__srcline"
-        >{audio.sourceKind === "microphone" ? "microphone" : "system audio"} · {formatDuration(
-          Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
-        )}</span
-      >
-    </span>
-    <span class="search-card__acc">
-      <span class="search-card__time"
-        >{formatRelativeTime(audio.absoluteStartAt)}</span
-      >
-      {#if !selected}
-        {#if audio.matchCount > 1}
-          <span class="search-card__count">{audio.matchCount} adjacent</span>
-        {/if}
-        {#if audio.foundByMeaning}
-          <span class="search-card__pill search-card__pill--meaning"
-            >found by meaning</span
-          >
-        {/if}
-        {#if audio.hasSecretRedactions}
-          <span class="search-card__pill search-card__pill--redacted"
-            >redacted</span
-          >
-        {/if}
-      {/if}
+      {@render badges(
+        audio.matchCount,
+        "adjacent",
+        audio.foundByMeaning,
+        audio.hasSecretRedactions,
+      )}
     </span>
   </button>
 {/if}
 
 <style>
-  /* Raycast-style row: visual | title+snippet | right accessories. Values
-     mirror the mockup's .row rules; vertical rhythm (8px between rows) comes
-     from the results list's flex gap, not a margin here. */
+  /* One grid cell. The tile is a column: header / title / caption / media, with
+     the media bleeding to the left, right and bottom edges (negative margins
+     against the tile's padding) so it meets the bottom radius. */
   .search-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
     width: 100%;
     min-width: 0;
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    padding: 8px 12px;
+    padding: var(--s-12);
     overflow: hidden;
     text-align: left;
-    border: 1px solid transparent;
-    border-radius: 9px;
-    background: transparent;
+    border: var(--hairline) solid var(--app-border);
+    border-radius: var(--r-lg);
+    background: var(--app-surface-subtle);
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
@@ -252,158 +250,84 @@
   @media (prefers-reduced-motion: no-preference) {
     .search-card {
       transition:
-        background 0.12s ease,
-        border-color 0.12s ease,
-        box-shadow 0.12s ease;
+        background var(--dur-quick) var(--ease),
+        border-color var(--dur-quick) var(--ease),
+        box-shadow var(--dur-quick) var(--ease);
     }
   }
 
   .search-card:hover {
     background: var(--app-surface-hover);
+    border-color: var(--app-border-hover);
   }
 
-  /* Selected is the roving highlight: green-tinted active surface plus the
-     accent border and soft ring, so it reads clearly above a plain hover. */
+  /* Selected is the roving highlight: the accent ring the mockups settle on. */
   .search-card:focus-visible,
   .search-card--selected,
   .search-card--selected:hover {
     outline: none;
     background: var(--app-surface-active);
-    border-color: var(--app-accent-border);
-    box-shadow:
-      0 0 0 1px var(--app-accent-border),
-      0 0 0 4px color-mix(in srgb, var(--app-accent) 12%, transparent);
+    border-color: var(--app-accent);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  /* 150×94 thumbnail — large enough to recognize the app and content. The
-     backing stays dark in both themes (it holds a screenshot); the glyph is a
-     fixed mid-gray legible on that backing while the image loads or when no
-     preview exists. */
-  .search-card__thumb {
-    position: relative;
-    flex: none;
-    width: 150px;
-    height: 94px;
-    display: inline-grid;
-    place-items: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    overflow: hidden;
-    background: #101014;
-    color: #6a6a74;
-  }
-
-  /* The image sits above the always-present glyph placeholder and fades in once
-     decoded, so the reserved box never flashes from a void and never reflows. */
-  .search-card__thumb-img {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    opacity: 0;
-  }
-
-  .search-card__thumb-img--loaded {
-    opacity: 1;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .search-card__thumb-img {
-      transition: opacity 0.18s ease;
-    }
-  }
-
-  /* Audio visual: a source-colored waveform glyph tile — deliberately NOT a
-     screenshot (the words are the content; alignedFrame is not the hero).
-     mic = green, sys = olive, matching the capture-source tokens. */
-  .search-card__wavetile {
-    position: relative;
-    flex: none;
-    width: 150px;
-    height: 48px;
-    border: 1px solid;
-    border-radius: 6px;
-    overflow: hidden;
-  }
-
-  .search-card__wavetile--mic {
-    background: var(--app-source-mic-bg);
-    border-color: var(--app-source-mic-border);
-    color: var(--app-source-mic);
-  }
-
-  .search-card__wavetile--sys {
-    background: var(--app-source-sysaudio-bg);
-    border-color: var(--app-source-sysaudio-border);
-    color: var(--app-source-sysaudio);
-  }
-
-  .search-card__wave {
-    position: absolute;
-    inset: 10px 8px;
-    width: calc(100% - 16px);
-    height: calc(100% - 20px);
-  }
-
-  .search-card__wave .wb {
-    fill: color-mix(in srgb, currentColor 45%, transparent);
-  }
-
-  .search-card__wave .wb-on {
-    fill: currentColor;
-  }
-
-  /* Middle column: title line + one snippet line. Screen rows top-align it
-     beside the tall thumb; audio rows center it beside the short tile. */
-  .search-card__meta {
-    flex: 1;
-    min-width: 0;
-    display: block;
-  }
-
-  .search-card--frame .search-card__meta {
-    align-self: flex-start;
-    padding-top: 4px;
-  }
-
-  .search-card__line1 {
+  /* Header: app / source eyebrow left, time hard right. */
+  .search-card__head {
     display: flex;
-    align-items: baseline;
-    gap: 7px;
+    align-items: center;
+    gap: var(--gap-inline);
     min-width: 0;
-    font-size: 12px;
   }
 
-  /* Real app icon before the app name. line1 is baseline-aligned for the
-     text; the icon centers itself against the row instead. */
   .search-card__appicon {
     flex: none;
-    align-self: center;
     width: 14px;
     height: 14px;
     object-fit: contain;
   }
 
   .search-card__app {
-    flex: none;
-    color: var(--app-text-strong);
-    font-weight: 600;
-  }
-
-  .search-card__win {
-    color: var(--app-text-muted);
+    flex: 1;
+    min-width: 0;
+    font-size: var(--t-label);
+    line-height: 1;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    min-width: 0;
   }
 
-  /* One marked snippet line (span needs block for ellipsis to apply). */
-  .search-card__snippet {
+  .search-card__time {
+    flex: none;
+    font-size: var(--t-label);
+    line-height: 1;
+    color: var(--app-text-subtle);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* One title line — the window title (screen) or the quoted transcript
+     (audio). Never wraps: the tile's height is fixed by the media block. */
+  .search-card__title {
     display: block;
-    margin-top: 4px;
-    font-size: 11px;
+    min-width: 0;
+    font-size: var(--t-ui);
+    line-height: 1.3;
+    font-weight: var(--w-medium);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* The matched text, so "why did this hit?" is answered on the tile itself —
+     the detail pane that used to carry it is gone with the grid. */
+  .search-card__caption {
+    display: block;
+    min-width: 0;
+    font-size: var(--t-meta);
+    line-height: 1.3;
     color: var(--app-text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -417,72 +341,103 @@
     padding: 0 1px;
   }
 
-  /* Audio title line: the quoted transcript snippet IS the title. */
-  .search-card__quote {
-    color: var(--app-text-strong);
-    font-size: 12px;
-    line-height: 1.4;
-    display: -webkit-box;
-    -webkit-line-clamp: 1;
-    line-clamp: 1;
-    -webkit-box-orient: vertical;
+  /* 196px media, full-bleed to the tile's bottom radius. The backing stays dark
+     in both themes (it holds a screenshot); the glyph is a fixed mid-gray
+     legible on that backing while the image loads or when no preview exists. */
+  .search-card__media {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: 196px;
+    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
     overflow: hidden;
+    background: #101014;
+    color: #6a6a74;
   }
 
-  .search-card__srcline {
-    display: block;
-    margin-top: 4px;
-    font-size: 11px;
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .search-card__media-glyph {
+    position: relative;
   }
 
-  /* Right accessory column. Screen rows top-align it with the meta column;
-     audio rows center it. Selected rows keep only the time (the detail pane
-     duplicates the rest). */
-  .search-card__acc {
-    flex: none;
+  .search-card__thumb-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top center;
+    opacity: 0;
+  }
+
+  .search-card__thumb-img--loaded {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .search-card__thumb-img {
+      transition: opacity 0.18s ease;
+    }
+  }
+
+  /* Audio media: a source-coloured waveform field — deliberately NOT a
+     screenshot (the words are the content). mic = green, sys = olive. */
+  .search-card__media--mic {
+    background: var(--app-source-mic-bg);
+    color: var(--app-source-mic);
+  }
+
+  .search-card__media--sys {
+    background: var(--app-source-sysaudio-bg);
+    color: var(--app-source-sysaudio);
+  }
+
+  .search-card__wave {
+    width: calc(100% - var(--s-24));
+    height: 56px;
+  }
+
+  .search-card__wave .wb {
+    fill: color-mix(in srgb, currentColor 45%, transparent);
+  }
+
+  .search-card__wave .wb-on {
+    fill: currentColor;
+  }
+
+  /* Accessories float over the media's bottom edge rather than stealing a text
+     row — the tile's vertical budget is spent on the picture. */
+  .search-card__badges {
+    position: absolute;
+    left: var(--s-8);
+    right: var(--s-8);
+    bottom: var(--s-8);
     display: flex;
-    flex-direction: column;
-    align-items: flex-end;
-    gap: 4px;
-    max-width: 120px;
+    flex-wrap: wrap;
+    gap: var(--s-4);
   }
 
-  .search-card--frame .search-card__acc {
-    align-self: flex-start;
-    padding-top: 4px;
-  }
-
-  .search-card__time,
-  .search-card__count {
-    font-size: 10px;
-    color: var(--app-text-subtle);
-    white-space: nowrap;
-  }
-
-  .search-card__pill {
+  .search-card__badge {
     display: inline-flex;
     align-items: center;
-    font-size: 10px;
+    font-size: var(--t-label);
     line-height: 1;
     padding: 3px 6px;
-    border-radius: 4px;
-    border: 1px solid;
+    border-radius: var(--r-sm);
+    border: var(--hairline) solid var(--app-border-strong);
+    background: var(--app-surface-raised);
+    color: var(--app-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     white-space: nowrap;
   }
 
-  .search-card__pill--meaning {
+  .search-card__badge--meaning {
     color: var(--app-accent);
     background: var(--app-accent-bg);
     border-color: var(--app-accent-border);
   }
 
-  .search-card__pill--redacted {
+  .search-card__badge--redacted {
     color: var(--app-warn);
     background: var(--app-warn-bg);
     border-color: var(--app-warn-border);

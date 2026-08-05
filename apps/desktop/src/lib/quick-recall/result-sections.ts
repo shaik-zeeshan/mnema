@@ -64,3 +64,25 @@ export function remapSelection(
   // Hidden (or out-of-range) audio row: nearest visible is the last row.
   return nextTotal - 1;
 }
+
+// The roving-selection ring, including G4's ranked ask row. Stops are the ask
+// row (when shown) followed by the `resultCount` visible results; the ask row
+// carries selection index -1, so `hasAskRow` is a one-slot offset between the
+// stop space and the selection space. -1 with no ask row keeps its old meaning
+// ("nothing highlighted"), from which a first ArrowDown lands on result 0.
+// Returns the ring-wrapped next selection index (-1 = the ask row / nothing).
+export function nextSelection(
+  selected: number,
+  delta: number,
+  resultCount: number,
+  hasAskRow: boolean,
+): number {
+  const offset = hasAskRow ? 1 : 0;
+  const stops = resultCount + offset;
+  if (stops === 0) {
+    return selected;
+  }
+  const shifted = selected + offset;
+  const base = shifted < 0 ? (delta > 0 ? -1 : 0) : shifted;
+  return ((base + delta + stops) % stops) - offset;
+}
