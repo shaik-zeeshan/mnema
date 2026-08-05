@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  The "Mnema is reading this screen" outline (round-4 decision G3).
+
+  Deliberately a static page, not a SvelteKit route: the overlay runs in a
+  transparent, click-through window that must never take focus, never talk to the
+  backend, and never boot the app shell (the root +layout does licensing checks,
+  event listeners and IPC — none of which belong in a decoration). Zero JS, zero
+  IPC, so it also needs no entry in `capabilities/default.json`.
+
+  Colors are the app's accent tokens inlined as literals: this page draws over
+  arbitrary screen content, so it is fixed chrome rather than a themed surface.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>mnema · reading this screen</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: transparent;
+        /* Belt to the window-level braces (`set_ignore_cursor_events`): nothing
+           in here is interactive, so nothing may swallow a click. */
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+        font-family:
+          ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      }
+
+      /* The outline itself. Inset by a hair so the whole stroke is on screen
+         rather than half-clipped by the display edge. */
+      .outline {
+        position: fixed;
+        inset: 3px;
+        border: 3px solid rgba(61, 255, 160, 0.85);
+        border-radius: 12px;
+        box-shadow:
+          inset 0 0 0 1px rgba(0, 0, 0, 0.45),
+          0 0 0 1px rgba(0, 0, 0, 0.45),
+          inset 0 0 22px rgba(61, 255, 160, 0.18);
+      }
+
+      .label {
+        position: fixed;
+        left: 50%;
+        bottom: 22px;
+        transform: translateX(-50%);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(61, 255, 160, 0.35);
+        background: rgba(7, 18, 12, 0.86);
+        color: #3dffa0;
+        font-size: 12px;
+        line-height: 1;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+        box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #3dffa0;
+        animation: pulse 2s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.35;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .dot {
+          animation: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="outline"></div>
+    <div class="label"><span class="dot"></span>Mnema is reading this screen</div>
+  </body>
+</html>

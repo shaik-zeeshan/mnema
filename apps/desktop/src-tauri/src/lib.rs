@@ -20,6 +20,7 @@ mod ocr_budget;
 mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
+mod reading_overlay;
 mod semantic_search_models;
 mod semantic_search_query;
 mod semantic_search_worker;
