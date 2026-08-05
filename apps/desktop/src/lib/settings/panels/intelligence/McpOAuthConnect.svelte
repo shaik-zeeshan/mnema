@@ -33,7 +33,7 @@
 <div class="oauth">
   {#if stage === "idle"}
     <div class="oauth__stage">
-      <button class="btn btn--primary oauth__connect" type="button" onclick={onConnect}>
+      <button class="btn btn--primary btn--lg oauth__connect" type="button" onclick={onConnect}>
         {verb}{label.trim() ? ` ${label.trim()}` : " with OAuth"}
       </button>
       <p class="oauth__reassure">
@@ -84,11 +84,6 @@
     text-align: center;
     gap: 12px;
     padding: 26px 8px 12px;
-  }
-  .oauth__connect.btn {
-    padding: 11px 24px;
-    font-size: 12px;
-    letter-spacing: 0.06em;
   }
   .oauth__reassure {
     margin: 0;

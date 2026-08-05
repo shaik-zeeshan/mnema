@@ -110,39 +110,4 @@
   </DrawerNotice>
 {/if}
 
-<style>
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 6px 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 5px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-  }
-
-  .btn:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn--primary {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-  }
-</style>
+<!-- `.btn` / `.btn--primary` come from the global design system (+layout.svelte). -->

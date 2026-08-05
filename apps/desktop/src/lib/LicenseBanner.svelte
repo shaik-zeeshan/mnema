@@ -67,10 +67,10 @@
       license to resume recording.
     </p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--primary license-banner__btn--primary" onclick={openCheckout}>
         Buy a license
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -83,10 +83,10 @@
       license to resume recording.
     </p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--primary license-banner__btn--primary" onclick={openCheckout}>
         Buy a license
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -101,13 +101,13 @@
     <div class="license-banner__actions">
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--primary"
+        class="btn btn--sm btn--primary license-banner__btn--primary"
         disabled={rechecking}
         onclick={() => void recheck()}
       >
         {rechecking ? "Checking…" : "Re-check license"}
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -122,7 +122,7 @@
     <div class="license-banner__actions">
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--dismiss"
+        class="btn btn--ghost btn--sm"
         aria-label="Dismiss"
         onclick={dismiss}
       >
@@ -135,12 +135,12 @@
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">{banner.message}</p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--primary license-banner__btn--primary" onclick={openCheckout}>
         Buy Mnema
       </button>
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--dismiss"
+        class="btn btn--ghost btn--sm"
         aria-label="Dismiss"
         onclick={dismiss}
       >
@@ -158,7 +158,7 @@
     padding: 7px 14px;
     border-bottom: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text);
   }
 
@@ -184,41 +184,16 @@
     gap: 6px;
   }
 
-  .license-banner__btn {
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--text-xs);
-    padding: 4px 10px;
-    border-radius: 6px;
-    border: 1px solid var(--app-border-strong);
-    background: transparent;
-    color: var(--app-text);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .license-banner__btn:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
+  /* Buttons ride the global `.btn` system; the only local bit is the primary
+     action picking up the banner's tone ramp instead of the app accent. */
   .license-banner__btn--primary {
     background: var(--tone-accent);
     border-color: var(--tone-accent);
-    color: var(--app-accent-contrast);
   }
 
   .license-banner__btn--primary:hover {
     background: var(--tone-accent);
     filter: brightness(1.08);
-  }
-
-  .license-banner__btn--dismiss {
-    color: var(--app-text-muted);
-  }
-
-  .license-banner__btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
   }
 
   /* Tone ramp — info → warn → urgent → the firm Read-Only end. */

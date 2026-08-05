@@ -658,7 +658,7 @@
   .eyebrow {
     margin: 0 0 4px;
     color: var(--app-text-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -668,7 +668,7 @@
   h1 {
     margin: 0;
     color: var(--app-text-strong);
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     font-weight: 700;
     letter-spacing: 0.02em;
     line-height: 1.2;
@@ -677,7 +677,7 @@
   .lede {
     margin: 4px 0 0;
     color: var(--app-text-muted);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.45;
   }
 
@@ -704,7 +704,7 @@
   .requester__label {
     min-width: 0;
     color: var(--app-text-strong);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 700;
     letter-spacing: 0.01em;
     line-height: 1.25;
@@ -717,7 +717,7 @@
     border: 1px solid var(--app-border-strong);
     border-radius: 999px;
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
@@ -737,14 +737,14 @@
   .requester__trigger {
     margin: 0;
     color: var(--app-text-muted);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.55;
   }
 
   .requester__age {
     margin: 0;
     color: var(--app-text-subtle);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
   }
 
@@ -754,7 +754,7 @@
     background: var(--app-surface-hover);
     color: var(--app-text);
     font-family: var(--app-font-mono);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   /* Verification caveat sits directly under the identity it qualifies, in a
@@ -773,7 +773,7 @@
 
   .trust-note > span:last-child {
     color: var(--app-warn);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     line-height: 1.45;
   }
@@ -815,7 +815,7 @@
     /* Load-bearing scope/duration legends on a consent screen — must clear the
        contrast floor, so use the legible muted token, not faint subtle. */
     color: var(--app-text-muted);
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.12em;
     text-transform: uppercase;
@@ -827,7 +827,7 @@
     align-items: flex-start;
     margin: 0;
     color: var(--app-text-muted);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.4;
   }
 
@@ -841,7 +841,7 @@
     border-radius: 6px;
     background: var(--app-warn-bg);
     color: var(--app-warn);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
   }
 
   .choice-hint--warn strong {
@@ -930,7 +930,7 @@
   .empty__title {
     margin: 0;
     color: var(--app-text);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 700;
   }
 
@@ -938,7 +938,7 @@
     margin: 0;
     max-width: 34ch;
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
   }
 
@@ -977,7 +977,7 @@
   .receipt__title {
     margin: 0;
     color: var(--app-text-strong);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 700;
   }
 
@@ -985,7 +985,7 @@
     margin: 0;
     max-width: 38ch;
     color: var(--app-text-muted);
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
   }
 
@@ -998,7 +998,7 @@
     margin: 0;
     max-width: 36ch;
     color: var(--app-text-subtle);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
   }
 
@@ -1045,7 +1045,7 @@
   .load-error__title {
     margin: 0;
     color: var(--app-text);
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     font-weight: 700;
   }
 
@@ -1053,7 +1053,7 @@
     margin: 0;
     max-width: 34ch;
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.45;
     word-break: break-word;
   }
@@ -1093,58 +1093,13 @@
   .inline-error__msg {
     flex: 1;
     color: var(--app-danger-text);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     word-break: break-word;
   }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    min-height: 30px;
-    padding: 7px 12px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--text-base);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s, transform 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  /* One focus-ring treatment for BOTH footer buttons (accent border + glow) so
-     keyboard focus reads identically as the user tabs Deny ↔ Allow. */
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:active:not(:disabled) {
-    transform: translateY(0.5px);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
+  /* `.btn` / `.btn--ghost` come from the global design system
+     (+layout.svelte); only the Allow treatment and spinner are local. */
 
   /* Allow GRANTS irreversible access, so it does NOT get a go-green solid fill
      that reads as "the safe path". It's an accent-tinted OUTLINE: clearly the
@@ -1193,10 +1148,6 @@
 
     .btn__spinner {
       animation-duration: 2.4s;
-    }
-
-    .btn:active:not(:disabled) {
-      transform: none;
     }
   }
 

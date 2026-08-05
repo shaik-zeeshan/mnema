@@ -1270,13 +1270,13 @@
       charts.
     </p>
     {#if askAvailable}
-      <button type="button" class="btn btn--accent" onclick={() => startNewChat()}>
+      <button type="button" class="btn btn--primary" onclick={() => startNewChat()}>
         ＋ New chat
       </button>
     {:else}
       <!-- Engine-off + no conversation: surface the same enable affordance the
            composer's engine-off card shows, so the empty pane isn't a dead end. -->
-      <button type="button" class="btn btn--accent" onclick={enableEngine}>
+      <button type="button" class="btn btn--primary" onclick={enableEngine}>
         Enable engine
       </button>
     {/if}
@@ -1302,7 +1302,7 @@
           <p class="thread-empty-detail">{conversationLoadError}</p>
           <button
             type="button"
-            class="btn btn--accent thread-retry"
+            class="btn btn--primary thread-retry"
             onclick={() => {
               const id = activeConversationId;
               if (id !== null) void loadConversationById(id);
@@ -2468,37 +2468,5 @@
     transform: translateY(1px);
   }
 
-  /* Shared accent button (mirrors Overview's .btn--accent). */
-  .btn {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 7px 14px;
-    border-radius: 7px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition:
-      border-color 0.12s ease,
-      background 0.12s ease,
-      box-shadow 0.12s ease,
-      filter 0.12s ease,
-      transform 0.06s ease;
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn--accent {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-  .btn--accent:hover {
-    border-color: var(--app-accent);
-  }
-  .btn--accent:not(:disabled):active {
-    filter: brightness(0.95);
-  }
+  /* `.btn` / `.btn--primary` come from the global design system (+layout.svelte). */
 </style>

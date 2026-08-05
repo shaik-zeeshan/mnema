@@ -6,6 +6,7 @@
   // timeline track) and under the source-size ceiling. Ports the mockup's
   // .cd-card / .cd-left / .cd-right / .cd-spark CSS against the app tokens.
 
+  import Button from "$lib/components/Button.svelte";
   import type { Conclusion, SubjectTrajectory } from "$lib/types/recording";
   import { humanizeHours } from "$lib/insights/activity-helpers";
   import IconPin from "~icons/lucide/pin";
@@ -136,37 +137,32 @@
       <p class="cd-statement">{conclusion.statement}</p>
     </div>
     <div class="cd-actions">
-      <button
-        type="button"
-        class="btn"
-        class:btn--pinned={conclusion.pinned}
-        class:btn--busy={busyPin}
+      <Button
+        variant={conclusion.pinned ? "primary" : "default"}
+        busy={busyPin}
         disabled={actionId !== null}
         onclick={() => onTogglePin(conclusion.id, !conclusion.pinned)}
       >
         {#if busyPin}
-          <span class="btn-spinner" aria-hidden="true"></span>
           {conclusion.pinned ? "Unpinning…" : "Pinning…"}
         {:else if conclusion.pinned}
           <IconPin aria-hidden="true" /> Pinned — protected from decay
         {:else}
           <IconPin aria-hidden="true" /> Pin
         {/if}
-      </button>
-      <button
-        type="button"
-        class="btn btn--ghost"
-        class:btn--busy={busyDismiss}
+      </Button>
+      <Button
+        variant="ghost"
+        busy={busyDismiss}
         disabled={actionId !== null}
         onclick={() => onDismiss(conclusion.id)}
       >
         {#if busyDismiss}
-          <span class="btn-spinner" aria-hidden="true"></span>
           Dismissing…
         {:else}
           <IconDismiss aria-hidden="true" /> Dismiss
         {/if}
-      </button>
+      </Button>
     </div>
   </div>
 
@@ -237,7 +233,7 @@
     font-variant-numeric: tabular-nums;
   }
   /* Inline lucide icons: inherit color (currentColor), sit centered with text. */
-  .cd-actions .btn :global(svg),
+  .cd-actions :global(.btn svg),
   .cd-conf-trend :global(svg) {
     width: 14px;
     height: 14px;
@@ -301,7 +297,7 @@
   }
   .cd-statement {
     margin: 0;
-    font-size: var(--text-md);
+    font-size: var(--t-ui);
     line-height: 1.55;
     color: var(--app-text-strong);
     font-weight: 500;
@@ -310,79 +306,14 @@
     display: flex;
     gap: 8px;
   }
-  .cd-actions .btn {
+  /* `.btn` + variants come from the global design system (shared Button
+     component); local rules only lay the pair out and keep the dismiss
+     ghost's danger-on-hover cue. */
+  .cd-actions :global(.btn) {
     flex: 1 1 0;
-    justify-content: center;
   }
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: var(--text-base);
-    padding: 6px 11px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn--busy:disabled {
-    opacity: 1;
-    cursor: progress;
-  }
-  .btn--pinned {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-  .btn--pinned:hover:not(:disabled) {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-  }
-  .btn--ghost {
-    border-color: transparent;
-    color: var(--app-text-muted);
-  }
-  .btn--ghost:hover:not(:disabled) {
-    background: var(--app-surface-hover);
+  .cd-actions :global(.btn--ghost:hover:not(:disabled)) {
     color: var(--app-danger);
-    border-color: transparent;
-  }
-  .btn-spinner {
-    width: 9px;
-    height: 9px;
-    border-radius: 50%;
-    border: 1.5px solid var(--app-border-hover);
-    border-top-color: var(--app-text-strong);
-    animation: btn-spin 0.6s linear infinite;
-    flex: 0 0 auto;
-  }
-  @keyframes btn-spin {
-    to {
-      transform: rotate(360deg);
-    }
   }
 
   .cd-right {
@@ -400,7 +331,7 @@
     gap: 10px;
   }
   .cd-conf-big {
-    font-size: var(--text-xl);
+    font-size: var(--t-display);
     line-height: 1;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -415,7 +346,7 @@
     gap: 3px;
   }
   .cd-conf-trend {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     display: inline-flex;
     align-items: center;
     gap: 5px;
@@ -430,7 +361,7 @@
     color: var(--app-danger);
   }
   .cd-conf-cap {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.13em;
@@ -465,7 +396,7 @@
     stroke-width: 1.5;
   }
   .cd-traj-note {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     display: flex;
     gap: 6px;
@@ -489,17 +420,6 @@
     }
     .cd-spark svg {
       height: 56px;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .btn {
-      transition: none;
-    }
-    .btn:not(:disabled):active {
-      transform: none;
-    }
-    .btn-spinner {
-      animation: none;
     }
   }
 </style>
