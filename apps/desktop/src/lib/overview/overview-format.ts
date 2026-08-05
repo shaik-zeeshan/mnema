@@ -53,6 +53,10 @@ export function elapsedClock(startMs: number, nowMs: number): string {
 
 /** "13:02" local, from unix ms. */
 export function clock(ms: number): string {
+  // A missing or malformed timestamp prints "" and the caller drops the label,
+  // rather than rendering "NaN:NaN" as though it were a time. Same G8 rule the
+  // tiles follow for every other number: no value, no claim.
+  if (!Number.isFinite(ms)) return "";
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}`;

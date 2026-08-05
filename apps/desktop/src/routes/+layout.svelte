@@ -2174,13 +2174,23 @@
     background: transparent;
   }
 
+  /* Bento Native's type rule: sans is the human voice, mono is the machine's.
+     The body default is therefore SANS — prose, labels, descriptions and empty
+     states are all human. Mono is applied deliberately, via `.is-mono`, the
+     `.t-label` eyebrow, and anything that reads as a measurement.
+
+     The old default was mono at line-height 1.6, which put the machine voice on
+     every sentence in the app and broke the direction's own native audit ("no
+     1.5 line-height on UI text"). --lh-ui is the UI line-height; prose that
+     wants breathing room asks for it with `.t-read`. */
   :global(body) {
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
-    line-height: 1.6;
+    line-height: var(--lh-ui);
+    letter-spacing: var(--ls-ui);
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
     /* Native-app selection model: the chrome (icons, buttons, decorative
@@ -2294,9 +2304,9 @@
     z-index: 9999;
     max-width: 260px;
     padding: 5px 8px 6px;
-    font-family: var(--app-font-mono);
+    font-family: var(--app-font-sans);
     font-size: var(--t-meta);
-    line-height: 1.45;
+    line-height: var(--lh-meta);
     letter-spacing: 0.01em;
     color: var(--app-text-strong);
     background: var(--app-surface-raised);

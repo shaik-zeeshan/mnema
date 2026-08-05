@@ -29,9 +29,8 @@
   // Three states, in precedence order: no engine (nothing will ever arrive
   // until one is configured) → no digest yet → the digest.
   const engineOff = $derived(loaded && status !== null && !status.engineAvailable);
-  const meta = $derived(
-    digest ? `updated ${clock(digest.generatedAtMs)}` : engineOff ? "unavailable" : "",
-  );
+  const stamp = $derived(digest ? clock(digest.generatedAtMs) : "");
+  const meta = $derived(stamp ? `updated ${stamp}` : engineOff ? "unavailable" : "");
 </script>
 
 <div class="tile tile--w2 tile--static">
