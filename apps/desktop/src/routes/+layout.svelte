@@ -2145,9 +2145,15 @@
     min-height: 100%;
     background-color: var(--app-bg);
     color: var(--app-fg);
-    font-family: var(--app-font-mono);
+    /* Direction 05 "Tactile Instruments": the default voice is SANS, because
+       the whole direction is System-Settings bones. Monospace is the machine
+       voice — it belongs to numbers, labels and readouts (`.is-mono`,
+       `.is-num`, `.t-label`), and to the instruments. A mono body is what made
+       every surface read as a terminal instead of a native app. */
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
-    line-height: 1.6;
+    line-height: var(--lh-ui);
+    letter-spacing: var(--ls-ui);
     -webkit-font-smoothing: antialiased;
     overscroll-behavior: none;
     /* Native-app selection model: the chrome (icons, buttons, decorative

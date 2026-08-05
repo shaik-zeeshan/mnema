@@ -20,6 +20,7 @@
     "release": "./scripts/release.sh"
   },
   "devDependencies": {
+    "playwright": "^1.62.1",
     "turbo": "^2.0.0"
   }
 }
