@@ -6873,11 +6873,6 @@
     margin-left: auto;
   }
 
-  /* Align bar-2 control typography with the app titlebar (10px). */
-  .timeline__bar .btn--sm {
-    font-size: var(--t-label);
-  }
-
   /* ── Recording control cluster ─────────────────────────────
      Recording status + start/stop now live in the app-wide title bar
      (see `routes/+layout.svelte`); the previous `.timeline__capture*`
@@ -6897,57 +6892,8 @@
     }
   }
 
-  /* ── Buttons (subset used by the timeline) ─────────────────── */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--t-meta);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-    font-size: var(--t-meta);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--t-meta);
-  }
+  /* `.btn` + `--ghost` / `--sm`: shared primitive (system.css §6,
+     routes/+layout.svelte). */
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
      title bar as reusable surface actions, so those local rules were removed. */
@@ -8412,24 +8358,6 @@
      here through the semantic-token cascade in `+layout.svelte`. */
   :global([data-theme="light"]) .timeline {
     background: var(--app-bg);
-  }
-
-  :global([data-theme="light"]) .btn {
-    background: var(--app-surface);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .btn:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-  :global([data-theme="light"]) .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .btn--ghost:not(:disabled):hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
   }
 
   :global([data-theme="light"]) .timeline__stage-action-trigger {

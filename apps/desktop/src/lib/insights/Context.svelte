@@ -387,7 +387,7 @@
       <!-- LIST HEADER -->
       <div class="list-head">
         <span class="section-title">Standing context</span>
-        <span class="pill count-pill">{countLabel}</span>
+        <span class="tag count-pill">{countLabel}</span>
       </div>
 
       <!-- LIST / STATES -->
@@ -505,7 +505,7 @@
       {#if dismissedCount > 0 || dismissedError}
         <div class="list-head dismissed-head">
           <span class="section-title">Dismissed</span>
-          <span class="pill count-pill">{dismissedCount}</span>
+          <span class="tag count-pill">{dismissedCount}</span>
           <span class="spacer"></span>
           <button
             type="button"
@@ -720,7 +720,7 @@
     text-transform: uppercase;
     color: var(--app-text-muted);
   }
-  .pill {
+  .tag {
     display: inline-flex;
     align-items: center;
     font-size: var(--t-meta);
@@ -731,56 +731,9 @@
     color: var(--app-text-muted);
   }
 
-  .btn {
-    font: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 11px;
-    height: 26px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn--accent {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .btn--accent:hover:not(:disabled) {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
-  .btn--ghost {
-    border-color: transparent;
-    background: transparent;
-    padding: 0 8px;
-    height: 22px;
-  }
-  .btn--ghost:hover {
-    background: var(--app-surface-hover);
-    border-color: transparent;
-  }
+  /* Base `.btn` + `--accent` / `--ghost` are the shared primitive
+     (system.css §6, routes/+layout.svelte). */
+  /* Removing a context entry is destructive, so this ghost hovers danger. */
   .btn--danger-hover:hover {
     color: var(--app-danger);
     background: var(--app-danger-bg);
@@ -1433,7 +1386,6 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .btn:not(:disabled):active,
     .chip--suggest:not(:disabled):active,
     .state-retry:not(:disabled):active {
       transform: none;

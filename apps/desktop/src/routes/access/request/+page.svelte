@@ -1098,74 +1098,23 @@
     word-break: break-word;
   }
 
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    min-height: 30px;
-    padding: 7px 12px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--t-ui);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s, transform 0.12s;
-    outline: none;
-  }
-
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-
-  /* One focus-ring treatment for BOTH footer buttons (accent border + glow) so
-     keyboard focus reads identically as the user tabs Deny ↔ Allow. */
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .btn:active:not(:disabled) {
-    transform: translateY(0.5px);
-  }
-
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-
-  /* Allow GRANTS irreversible access, so it does NOT get a go-green solid fill
+  /* `.btn` + `--ghost`: shared primitive (system.css §6, +layout.svelte).
+     Allow GRANTS irreversible access, so it does NOT get a go-green solid fill
      that reads as "the safe path". It's an accent-tinted OUTLINE: clearly the
-     affirmative action, but with no more visual pull than Deny encourages a
-     deliberate choice rather than a reflexive grant. */
+     affirmative action, but with no more visual pull than Deny — which
+     encourages a deliberate choice rather than a reflexive grant. */
   .btn--allow {
     background: var(--app-accent-bg);
     color: var(--app-accent);
     border-color: var(--app-accent-border);
   }
 
-  /* Multi-property hover (subtle bg lift + brighter border) so the affirmative
-     action gives the same depth of feedback as Deny, while the resting state
-     stays a restrained outline (no go-green solid fill). */
-  .btn--allow:not(:disabled):hover {
+  .btn--allow:hover {
     background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
     color: var(--app-accent);
     border-color: var(--app-accent);
   }
 
-  /* In-flight spinner reuses the file's keyframes vocabulary (see @keyframes spin). */
   .btn__spinner {
     width: 12px;
     height: 12px;
@@ -1193,10 +1142,6 @@
 
     .btn__spinner {
       animation-duration: 2.4s;
-    }
-
-    .btn:active:not(:disabled) {
-      transform: none;
     }
   }
 

@@ -265,16 +265,13 @@
 
   /* A reload icon shares a row with .btn--sm text pills here (Providers
      "Test connection", Access "Install CLI"). Standalone in a section header
-     the icon is a 30px square, but the pills render shorter with a softer 8px
-     radius, leaving the square looking oversized and mismatched. Level the
-     pair inside a row: lift the pills to the icon's control height and round
-     the icon to the pills' radius so they read as peers. */
-  .settings-shell .row-actions .btn--sm {
-    min-height: 30px;
-  }
-
+     the icon is a 30px square, which now towers over the shared `.btn--sm`
+     height. Level the pair inside a row by pulling the ICON down onto the
+     primitive's number — the button keeps the one shared height. */
   .settings-shell .row-actions .settings-icon-btn {
-    border-radius: 8px;
+    width: var(--h-sm);
+    height: var(--h-sm);
+    border-radius: var(--r-md);
   }
 
   .settings-shell .error-text {

@@ -788,7 +788,7 @@
           {#if r.pinned}
             <span class="conv-pin" use:tip={"Pinned"}>★</span>
           {/if}
-          <span class="pill {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
+          <span class="tag {trendPillClass(r.trend)}">{trendLabel(r.trend)}</span>
           <span class="conv-cc">
             · {r.conclusionCount}
             {r.conclusionCount === 1 ? "conclusion" : "conclusions"}
@@ -1506,8 +1506,8 @@
     text-overflow: ellipsis;
   }
 
-  /* trend pill */
-  .pill {
+  /* trend tag */
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -1521,7 +1521,7 @@
     white-space: nowrap;
     flex: 0 0 auto;
   }
-  .pill.trend-up {
+  .tag.trend-up {
     color: var(--app-accent-strong);
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
@@ -1530,12 +1530,12 @@
      neutral surface) and the ▼ glyph carries the direction. This keeps the
      saturated --app-danger token reserved for destructive/contradiction states
      so the two never collide. */
-  .pill.trend-down {
+  .tag.trend-down {
     color: var(--app-text-muted);
     border-color: var(--app-border);
     background: var(--app-surface);
   }
-  .pill.trend-steady {
+  .tag.trend-steady {
     color: var(--app-text-muted);
   }
 
@@ -1740,39 +1740,8 @@
     flex-wrap: wrap;
   }
 
-  /* .btn — compact button (ported scoped). Variants: --accent, --ghost. */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font: inherit;
-    font-size: var(--t-meta);
-    padding: 3px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease;
-  }
-  .btn:hover:not(:disabled) {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
+  /* Base `.btn` + `--accent` / `--ghost` are the shared primitive
+     (system.css §6, routes/+layout.svelte). */
   /* Busy: the acting button stays legible (no dim) while its sibling dims via
      :disabled, so the spinner + "Pinning…/Dismissing…" label reads clearly. */
   .btn--busy:disabled {
@@ -1792,21 +1761,6 @@
     to {
       transform: rotate(360deg);
     }
-  }
-  .btn--accent {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .btn--ghost {
-    border-color: transparent;
-    background: transparent;
-    color: var(--app-text-muted);
-  }
-  .btn--ghost:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-    border-color: transparent;
-    color: var(--app-text-strong);
   }
 
   /* ---- Footer ---- */
@@ -1914,13 +1868,9 @@
     .conv-caret,
     .conv-refresh-pill,
     .conv-tier-more,
-    .btn {
-      transition: none;
-    }
     .conv-refresh-pill:hover {
       transform: none;
     }
-    .btn:not(:disabled):active,
     .conv-caret:not(:disabled):active,
     .conv-caret.is-open:not(:disabled):active,
     .conv-tier-more:not(:disabled):active,

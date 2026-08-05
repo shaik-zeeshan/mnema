@@ -1969,7 +1969,7 @@
               aria-label="Ask AI"
               aria-keyshortcuts="Control+Enter"
             >
-              Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
+              Ask AI <span class="kbd quick-recall__ask-key" aria-hidden="true">⌃↵</span>
             </button>
           {:else}
             <button
@@ -2848,14 +2848,11 @@
   }
 
   /* Mockup `.askai-btn kbd`: accent key cap on a transparent ground. */
+  /* Shared `.kbd`, tinted to the accent it sits inside. */
   .quick-recall__ask-key {
-    font-size: var(--t-label);
-    line-height: 1;
     color: var(--app-accent);
     background: transparent;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 4px;
-    padding: 2px 4px;
+    box-shadow: inset 0 0 0 1px var(--app-accent-border);
   }
 
   .quick-recall__ask-button--disabled,

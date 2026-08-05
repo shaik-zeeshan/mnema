@@ -1225,7 +1225,7 @@
           <path d="m20 20-3.5-3.5" />
         </svg>
         <span class="titlebar__search-label">Search</span>
-        <kbd class="titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
+        <kbd class="kbd titlebar__search-kbd" aria-hidden="true">{shortcutDisplay("toggleQuickRecall")}</kbd>
       </button>
     </div>
 
@@ -1551,7 +1551,7 @@
                   <div class="shortcut-help__row">
                     <dt>
                       {#each formatShortcut(row.bindings[0], windowPlatform) as token}
-                        <kbd>{token}</kbd>
+                        <kbd class="kbd kbd--help">{token}</kbd>
                       {/each}
                     </dt>
                     <dd>{row.label}</dd>
@@ -1627,6 +1627,14 @@
 
     --app-record-glyph-start: #ff3148;
     --app-record-glyph-stop: #ff8a96;
+
+    /* system.css §1 record family — the role-named tokens the shared `.pill`
+       reads. Same values the `--app-record-start-*` trio already ships; the
+       start/stop/glyph names stay for the title-bar record control. */
+    --app-record: #ff3148;
+    --app-record-fg: #ff8a96;
+    --app-record-bg: #1a0f12;
+    --app-record-border: #3a1820;
 
     --app-icon-fg: #8a8aaa;
     --app-icon-fg-hover: #e2e2e8;
@@ -1941,6 +1949,11 @@
     --app-record-glyph-start: #c81d2e;
     --app-record-glyph-stop: #ffffff;
 
+    --app-record: #d62236;
+    --app-record-fg: #c81d2e;
+    --app-record-bg: #ffffff;
+    --app-record-border: #ecbcc2;
+
     --app-icon-fg: #5a5a6a;
     --app-icon-fg-hover: #14141a;
     --app-icon-bg-hover: #e2e2e0;
@@ -2117,6 +2130,187 @@
   }
   :global(.is-num) {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Shared primitives (system.css §6) ──────────────────────────────────
+     ONE definition each for `.btn`, `.input`, `.kbd` and `.pill`. These were
+     re-declared in 18 places (two shell-scoped CSS families plus ~15 component
+     `<style>` blocks) with different padding, radius, type and hover, which is
+     why nothing matched anything. A component may still layer a *modifier* on
+     top (`.btn--pinned`, `.btn--running`, …); the BASE comes from here.
+     Onboarding keeps its own `.ob-btn` — that surface is out of scope. */
+  :global(.btn) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-inline);
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    cursor: pointer;
+    transition: background-color var(--dur-quick) var(--ease);
+  }
+  :global(.btn:hover) {
+    background: var(--app-surface-hover);
+  }
+  :global(.btn:active) {
+    background: var(--app-surface-active);
+  }
+  :global(.btn:focus-visible) {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  :global(.btn[disabled]),
+  :global(.btn[aria-disabled="true"]) {
+    opacity: var(--opacity-disabled);
+    pointer-events: none;
+  }
+  :global(.btn[aria-busy="true"]) {
+    opacity: var(--opacity-busy);
+    cursor: progress;
+  }
+
+  :global(.btn--primary) {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    border-color: transparent;
+  }
+  :global(.btn--primary:hover) {
+    background: var(--app-accent);
+    filter: brightness(1.08);
+  }
+  :global(.btn--primary:active) {
+    filter: brightness(0.94);
+  }
+
+  /* Not in §6, but five surfaces (Chat, Context, Overview, Subjects, the
+     timeline jumper) had independently invented the same tinted-accent
+     OUTLINE, so it is a real modifier rather than five accidents. It is the
+     quieter sibling of `--primary`: affirmative, no solid fill. */
+  :global(.btn--accent) {
+    background: var(--app-accent-bg);
+    color: var(--app-accent-strong);
+    border-color: var(--app-accent-border);
+  }
+  :global(.btn--accent:hover) {
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    border-color: var(--app-accent);
+  }
+
+  :global(.btn--ghost) {
+    background: transparent;
+    border-color: transparent;
+    color: var(--app-text-muted);
+  }
+  :global(.btn--ghost:hover) {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+
+  :global(.btn--danger) {
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    border-color: var(--app-danger-border);
+  }
+  :global(.btn--danger:hover) {
+    background: color-mix(in srgb, var(--app-danger) 14%, transparent);
+  }
+  :global(.btn--danger:focus-visible) {
+    box-shadow: var(--ring-danger);
+  }
+
+  /* Size modifiers carry SIZE only — never a colour. */
+  :global(.btn--sm) {
+    height: var(--h-sm);
+    padding: 0 var(--s-6);
+  }
+  :global(.btn--lg) {
+    height: var(--h-lg);
+    padding: 0 var(--s-12);
+  }
+  :global(.btn--icon) {
+    width: var(--h-md);
+    padding: 0;
+  }
+  :global(.btn--icon.btn--sm) {
+    width: var(--h-sm);
+  }
+
+  :global(.input) {
+    height: var(--h-md);
+    padding: 0 var(--pad-control);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+  }
+  :global(.input:focus-visible),
+  :global(.input:focus) {
+    outline: none;
+    border-color: var(--app-accent-border);
+    box-shadow: var(--ring);
+  }
+  :global(.input[aria-invalid="true"]) {
+    border-color: var(--app-danger-border);
+  }
+
+  :global(.kbd) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 var(--s-4);
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-muted);
+  }
+  :global(.kbd--mod) {
+    min-width: 48px;
+    justify-content: flex-start;
+    padding-left: var(--s-6);
+  }
+
+  /* Recording state pill — dot + elapsed + cost in one capsule. Recording red
+     is a STATE, never an error: transient liveness tints via `--warn`, not
+     danger. The transport popover that hangs off it is slice 5. */
+  :global(.pill) {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border-radius: var(--r-pill);
+    background: var(--app-record-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+  }
+  :global(.pill__t) {
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text);
+  }
+  :global(.pill__gb) {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
+  }
+  :global(.pill--quiet) {
+    background: var(--app-surface-hover);
+    box-shadow: none;
+  }
+  :global(.pill--warn) {
+    background: var(--app-warn-bg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-warn-border);
   }
 
   :global(html) {
@@ -2535,16 +2729,9 @@
   .titlebar__search-label {
     letter-spacing: 0.02em;
   }
+  /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
   .titlebar__search-kbd {
     flex: 0 0 auto;
-    padding: 1px 5px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface-raised);
-    color: var(--app-text-subtle);
-    font-family: var(--app-font-mono);
-    font-size: var(--t-label);
-    line-height: 1.3;
   }
   .sr-only {
     position: absolute;
@@ -3448,19 +3635,11 @@
     text-align: right;
   }
 
-  .shortcut-help kbd {
+  /* The help sheet's keycaps are the shared `.kbd` with a physical-key lip —
+     this is the one surface where a keycap IS the subject, not a hint. */
+  .kbd--help {
     min-width: 24px;
-    padding: 3px 7px 4px;
-    border: 1px solid var(--app-border-strong);
-    border-bottom-color: var(--app-text-subtle);
-    border-radius: 7px;
-    background: var(--app-bg);
     color: var(--app-text-strong);
-    font-family: var(--app-font-mono);
-    font-size: var(--t-meta);
-    font-weight: 700;
-    line-height: 1;
-    text-align: center;
     box-shadow: inset 0 -1px 0 var(--app-overlay-border);
   }
 

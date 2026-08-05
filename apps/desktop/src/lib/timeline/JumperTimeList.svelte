@@ -290,49 +290,5 @@
     line-height: 1;
   }
 
-  /* Shared button system (local copy — `.btn` is defined per-surface in this
-     app, not in a global sheet). */
-  .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 8px 16px;
-    border-radius: 4px;
-    font-family: inherit;
-    font-size: var(--t-meta);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s;
-    outline: none;
-  }
-  .btn:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .btn--ghost {
-    background: transparent;
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-  }
-  .btn--sm {
-    padding: 3px 8px;
-    font-size: var(--t-meta);
-  }
+  /* `.btn` + `--ghost` / `--sm`: shared primitive (system.css §6). */
 </style>

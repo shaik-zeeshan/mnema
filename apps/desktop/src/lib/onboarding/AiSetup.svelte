@@ -433,7 +433,7 @@
               class:bad={row.state === "dead"}
             ></span>
             <span class="addr">localhost:{row.port} · {row.name}</span>
-            {#if row.models}<span class="pill ok">{plural(row.models.length, "model")}</span>{/if}
+            {#if row.models}<span class="tag ok">{plural(row.models.length, "model")}</span>{/if}
             <span class="ms">
               {row.latencyMs != null
                 ? `${row.latencyMs} ms`
@@ -443,7 +443,7 @@
             </span>
             {#if row.models}
               {#if alreadyConnected(row.port)}
-                <span class="pill">connected</span>
+                <span class="tag">connected</span>
               {:else}
                 <button
                   class="ob-btn sm"
@@ -513,16 +513,16 @@
       <div class="prov-head">
         <span class="lamp {lampClass(provider.id)}"></span>
         <span class="name">{ai.aiProviderInstanceLabel(provider)}</span>
-        {#if isDefault(provider.id)}<span class="pill info">default</span>{/if}
+        {#if isDefault(provider.id)}<span class="tag info">default</span>{/if}
         <span
-          class="pill"
+          class="tag"
           class:ok={verificationOf(provider.id)?.status === "live"}
           class:bad={verificationOf(provider.id)?.status === "error"}
         >
           {aiVerificationWord(verificationOf(provider.id))}
         </span>
         {#if isCloudAiProviderKind(provider.kind) && ai.aiProviderKeySaved[provider.id]}
-          <span class="pill" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>
+          <span class="tag" title="stored in the app vault, day.mnema.vault">✓ key in vault</span>
         {/if}
       </div>
 
@@ -841,7 +841,7 @@
     background: repeating-linear-gradient(90deg, var(--app-info) 0 5px, transparent 5px 10px);
   }
 
-  /* lamps + pills */
+  /* lamps + tags */
   .lamp {
     width: 8px;
     height: 8px;
@@ -860,7 +860,7 @@
   .lamp.busy {
     background: var(--app-warn);
   }
-  .pill {
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -874,17 +874,17 @@
     text-transform: uppercase;
     white-space: nowrap;
   }
-  .pill.ok {
+  .tag.ok {
     color: var(--app-accent);
     border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
   }
-  .pill.bad {
+  .tag.bad {
     color: var(--app-danger);
     border-color: var(--app-danger-border);
     background: var(--app-danger-bg);
   }
-  .pill.info {
+  .tag.info {
     color: var(--app-info);
     border-color: var(--app-info-border);
     background: var(--app-info-bg);

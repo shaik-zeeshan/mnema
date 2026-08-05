@@ -36,15 +36,6 @@
     color: var(--app-text-faint);
   }
 
-  [data-theme="light"] .settings-shell .btn--ghost {
-    color: var(--app-text-muted);
-    border-color: var(--app-border-strong);
-  }
-  [data-theme="light"] .settings-shell .btn--ghost:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
   [data-theme="light"] .settings-shell .saved-badge {
     color: var(--app-accent-strong);
   }
@@ -172,16 +163,6 @@
   }
   [data-theme="light"] .settings-shell .debug-log-status__dot--on {
     background: var(--app-accent);
-  }
-
-  [data-theme="light"] .settings-shell .btn--danger {
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger);
-    border-color: var(--app-danger-border);
-  }
-  [data-theme="light"] .settings-shell .btn--danger:not(:disabled):hover {
-    background: var(--app-danger-bg);
-    border-color: var(--app-danger-strong);
   }
 
   .settings-shell .privacy-disclosure {

@@ -2468,37 +2468,5 @@
     transform: translateY(1px);
   }
 
-  /* Shared accent button (mirrors Overview's .btn--accent). */
-  .btn {
-    font: inherit;
-    font-size: 11.5px;
-    padding: 7px 14px;
-    border-radius: 7px;
-    cursor: pointer;
-    border: 1px solid transparent;
-    transition:
-      border-color 0.12s ease,
-      background 0.12s ease,
-      box-shadow 0.12s ease,
-      filter 0.12s ease,
-      transform 0.06s ease;
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn--accent {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
-  }
-  .btn--accent:hover {
-    border-color: var(--app-accent);
-  }
-  .btn--accent:not(:disabled):active {
-    filter: brightness(0.95);
-  }
+  /* `.btn` + `--accent`: shared primitive (system.css §6, +layout.svelte). */
 </style>

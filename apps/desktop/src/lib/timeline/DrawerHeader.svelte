@@ -48,8 +48,8 @@
 </script>
 
 <header class="rhead">
-  <span class="pill pill--{segment.source}">
-    <span class="pill__swatch" aria-hidden="true"></span>{sourceLabel}
+  <span class="tag tag--{segment.source}">
+    <span class="tag__swatch" aria-hidden="true"></span>{sourceLabel}
   </span>
   <span class="tnum rhead__index">#{segment.segmentIndex}</span>
   <span class="rhead__sep" aria-hidden="true">·</span>
@@ -134,7 +134,7 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .pill {
+  .tag {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -146,18 +146,18 @@
     letter-spacing: 0.08em;
   }
 
-  .pill__swatch {
+  .tag__swatch {
     width: 7px;
     height: 7px;
     border-radius: 999px;
     background: var(--app-text-subtle);
   }
 
-  .pill--microphone .pill__swatch {
+  .tag--microphone .tag__swatch {
     background: var(--app-source-mic);
   }
 
-  .pill--systemAudio .pill__swatch {
+  .tag--systemAudio .tag__swatch {
     background: var(--app-source-sysaudio);
   }
 

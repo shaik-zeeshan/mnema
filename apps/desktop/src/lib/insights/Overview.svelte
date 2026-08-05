@@ -3004,48 +3004,7 @@
   }
 
   /* ---- Free-tier enable-engine CTA button ---- */
-  .btn {
-    font: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 0 12px;
-    height: 28px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease,
-      transform 0.06s ease;
-  }
-  .btn:hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .btn:not(:disabled):active {
-    transform: translateY(1px);
-  }
-  .btn--accent {
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    color: var(--app-accent-strong);
-  }
-  .btn--accent:hover {
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
+  /* `.btn` + `--accent`: shared primitive (system.css §6, +layout.svelte). */
 
   /* ---- States ---- */
   .state {
