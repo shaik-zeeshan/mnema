@@ -47,6 +47,7 @@
     type OcrStatus,
   } from "$lib/frame-ocr";
   import { openCapturedUrl } from "$lib/open-captured-url";
+  import { pushToast } from "$lib/toast.svelte";
   import IconScanText from "~icons/lucide/scan-text";
   import IconMoreHorizontal from "~icons/lucide/ellipsis";
   import IconClapperboard from "~icons/lucide/clapperboard";
@@ -576,17 +577,12 @@
   // request per slot per scroll tick for the same id.
   const previewInFlight = new Set<number>();
   const scrubPreviewInFlight = new Set<number>();
-  type FrameActionStatus = {
-    message: string;
-    detail: string | null;
-    tone: "neutral" | "error";
-  };
-
-  let frameActionStatus = $state<FrameActionStatus | null>(null);
-  let frameActionStatusTimer: ReturnType<typeof setTimeout> | null = null;
-  let frameActionStatusHovered = $state(false);
+  // The active frame whose preview terminally failed (fetch error or decode
+  // exhaustion). Drives the stage placeholder's "preview unavailable" wording;
+  // the error details themselves surface as danger toasts.
+  let previewUnavailableFrameId = $state<number | null>(null);
   // In-flight latch for the stage's copy/download frame-image actions so the
-  // triggering menu item can show a "Copying…/Saving…" status and disable while
+  // triggering menu item can show a "Copying…/Saving…" label and disable while
   // the async clipboard/file write runs. Cleared in each action's finally.
   let frameImageActionBusy = $state<null | "copy" | "download">(null);
   // In-flight latch for the OCR "copy all recognized text" action.
@@ -669,9 +665,9 @@
       // Refetching keeps returning bytes the browser can't decode — stop the
       // loop and leave a terminal, visible error instead of churning silently.
       if (isTimelineActiveFrame(frameId)) {
-        setFrameActionStatus("Preview couldn't be displayed", {
+        previewUnavailableFrameId = frameId;
+        pushToast("danger", "Preview couldn't be displayed", {
           detail: "This frame's image failed to decode after several attempts.",
-          tone: "error",
         });
       }
       return;
@@ -845,17 +841,13 @@
     };
   });
 
-  // Preview load/error state belongs to the currently selected frame only.
-  // Clear it on frame switches so a stale message from an older request does
-  // not sit over the next frame while its own preview is still loading.
+  // The "preview unavailable" marker belongs to the currently selected frame
+  // only. Drop it on frame switches so a stale failure from an older frame
+  // does not label the next frame while its own preview is still loading.
   $effect(() => {
     const activeId = timelineActive?.id ?? null;
-    if (activeId == null) {
-      setFrameActionStatus(null);
-      return;
-    }
-    if (activePreviewLoadErrorFrameId !== activeId) {
-      setFrameActionStatus(null);
+    if (previewUnavailableFrameId !== null && previewUnavailableFrameId !== activeId) {
+      previewUnavailableFrameId = null;
     }
   });
 
@@ -2188,13 +2180,13 @@
   });
 
   // Open the audio drawer on the segment that covers the active frame and seek
-  // to the matching offset. Surfaces a status ack when no audio covers the
+  // to the matching offset. Surfaces an info toast when no audio covers the
   // frame so the control never silently no-ops. Reuses the pinned-segment slot
   // so the selection survives a window that hasn't refreshed the segment list.
   function playActiveFrameMoment(): void {
     const moment = activeFrameAudioMoment;
     if (!moment) {
-      setFrameActionStatus("No audio captured at this moment.", {
+      pushToast("info", "No audio captured at this moment.", {
         detail: "This frame isn't covered by a microphone or system-audio segment.",
       });
       return;
@@ -2829,52 +2821,6 @@
     return path.split(/[\\/]/).pop() ?? path;
   }
 
-  function clearFrameActionStatusTimer() {
-    if (frameActionStatusTimer) {
-      clearTimeout(frameActionStatusTimer);
-      frameActionStatusTimer = null;
-    }
-  }
-
-  function scheduleFrameActionStatusDismiss() {
-    clearFrameActionStatusTimer();
-    if (!frameActionStatus || frameActionStatusHovered) return;
-    // Error-tone messages must persist until the user dismisses them (X / hover
-    // is no longer the only escape) — only neutral success/progress acks
-    // auto-clear. The banner carries an explicit close affordance for errors.
-    if (frameActionStatus.tone === "error") return;
-    frameActionStatusTimer = setTimeout(() => {
-      frameActionStatus = null;
-      frameActionStatusTimer = null;
-    }, 2200);
-  }
-
-  function dismissFrameActionStatus() {
-    clearFrameActionStatusTimer();
-    frameActionStatus = null;
-    frameActionStatusHovered = false;
-  }
-
-  function setFrameActionStatus(
-    message: string | null,
-    options?: {
-      detail?: string | null;
-      tone?: FrameActionStatus["tone"];
-    },
-  ) {
-    frameActionStatus = message
-      ? {
-          message,
-          detail: options?.detail ?? null,
-          tone: options?.tone ?? "neutral",
-        }
-      : null;
-    frameActionStatusHovered = false;
-    clearFrameActionStatusTimer();
-    if (!message) return;
-    scheduleFrameActionStatusDismiss();
-  }
-
   function isTimelineActiveFrame(frameId: number): boolean {
     return timelineActive?.id === frameId;
   }
@@ -3292,16 +3238,6 @@
     return ids;
   }
 
-  function onFrameActionStatusPointerEnter() {
-    frameActionStatusHovered = true;
-    clearFrameActionStatusTimer();
-  }
-
-  function onFrameActionStatusPointerLeave() {
-    frameActionStatusHovered = false;
-    scheduleFrameActionStatusDismiss();
-  }
-
   function prettifyFramePreviewError(rawMessage: string): string {
     const message = rawMessage
       .replace(/^failed to get frame preview \d+:\s*/i, "")
@@ -3404,24 +3340,24 @@
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
-      setFrameActionStatus("Frame preview not ready yet");
+      pushToast("info", "Frame preview not ready yet");
       return;
     }
 
     frameImageActionBusy = "copy";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
-      setFrameActionStatus("Copying…");
       const image = await previewFilePathToClipboardImage(previewUrl);
       try {
         await writeImage(image);
       } finally {
         image.close();
       }
-      setFrameActionStatus(`Copied frame ${frame.id}`);
+      pushToast("success", `Copied frame ${frame.id}`);
       stageActionsMenuOpen = false;
     } catch (err) {
-      setFrameActionStatus(
+      pushToast(
+        "danger",
         `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
       );
     } finally {
@@ -3434,14 +3370,13 @@
     const frame = timelineActive;
     const previewUrl = frame ? previewCache.get(frame.id) : null;
     if (!frame || !previewUrl) {
-      setFrameActionStatus("Frame preview not ready yet");
+      pushToast("info", "Frame preview not ready yet");
       return;
     }
 
     frameImageActionBusy = "download";
     try {
       if (!(await confirmOriginalMediaAccessIfRedacted(frame.id))) return;
-      setFrameActionStatus("Saving…");
       await writeFile(
         activeFrameDownloadName(frame, previewMimeTypeCache.get(frame.id) ?? null),
         await readFramePreviewBytes(previewUrl),
@@ -3449,10 +3384,11 @@
         baseDir: BaseDirectory.Download,
         },
       );
-      setFrameActionStatus(`Saved frame ${frame.id} to Downloads`);
+      pushToast("success", `Saved frame ${frame.id} to Downloads`);
       stageActionsMenuOpen = false;
     } catch (err) {
-      setFrameActionStatus(
+      pushToast(
+        "danger",
         `Download failed: ${typeof err === "string" ? err : "file write was rejected"}`,
       );
     } finally {
@@ -3462,8 +3398,9 @@
 
   // Copy every recognized OCR text region for the active frame as one block.
   // The on-image overlay only reveals text on hover, so this gives a
-  // discoverable, single-shot way to lift all recognized text — with visible
-  // in-flight + success/failure feedback through the stage status banner.
+  // discoverable, single-shot way to lift all recognized text — with
+  // success/failure feedback through toasts (the menu item itself shows the
+  // in-flight "copying text…" label).
   async function copyAllRecognizedText(): Promise<void> {
     if (ocrCopyAllBusy) return;
     const text = ocrObservations
@@ -3471,18 +3408,18 @@
       .join("\n")
       .trim();
     if (!text) {
-      setFrameActionStatus("No recognized text to copy");
+      pushToast("info", "No recognized text to copy");
       return;
     }
     ocrCopyAllBusy = true;
-    setFrameActionStatus("Copying text…");
     try {
       await writeText(text);
       const count = ocrObservations.length;
-      setFrameActionStatus(`Copied ${count} text region${count === 1 ? "" : "s"}`);
+      pushToast("success", `Copied ${count} text region${count === 1 ? "" : "s"}`);
       stageActionsMenuOpen = false;
     } catch (err) {
-      setFrameActionStatus(
+      pushToast(
+        "danger",
         `Copy failed: ${typeof err === "string" ? err : "clipboard write was rejected"}`,
       );
     } finally {
@@ -3493,10 +3430,9 @@
   // Open the current frame's captured http(s) page in the default browser via
   // the shared brokered helper (the raw URL stays in Rust; only the guarded
   // host+path ever reaches the UI). Pass `{ silent: true }` so the helper does
-  // NOT pop its own dialog — the dashboard has its own inline frame-action
-  // status line, so it branches on the returned status instead: `no-url` and
-  // `error` surface that status (and leave the actions menu open), `opened`
-  // closes the menu.
+  // NOT pop its own dialog — the dashboard surfaces the outcome as toasts, so
+  // it branches on the returned status instead: `no-url` and `error` toast
+  // (and leave the actions menu open), `opened` closes the menu.
   async function openCurrentFrameUrl(): Promise<void> {
     const frame = timelineActive;
     if (!frame || openingCurrentFrameUrl) return;
@@ -3504,11 +3440,11 @@
     try {
       const { status, error } = await openCapturedUrl(frame.id, { silent: true });
       if (status === "no-url") {
-        setFrameActionStatus("No openable URL for this frame");
+        pushToast("info", "No openable URL for this frame");
         return;
       }
       if (status === "error") {
-        setFrameActionStatus(`Couldn't open URL: ${error}`);
+        pushToast("danger", `Couldn't open URL: ${error}`);
         return;
       }
       stageActionsMenuOpen = false;
@@ -3549,12 +3485,6 @@
     if (stageActionsMenuEl?.contains(target)) return;
     closeFrameActions();
   }
-
-  $effect(() => {
-    return () => {
-      clearFrameActionStatusTimer();
-    };
-  });
 
   $effect(() => {
     if (!activePreviewPath) {
@@ -3625,7 +3555,7 @@
         (await latestInRange(momentUnixMs - AUDIO_MOMENT_FRAME_LOOKBACK_MS, momentUnixMs)) ??
         (await latestInRange(momentUnixMs, momentUnixMs + AUDIO_MOMENT_FRAME_LOOKAHEAD_MS));
       if (!frame) return false;
-      await jumpToFrameWithBanner(frame);
+      await jumpToFrameWithToast(frame);
       return true;
     } catch {
       return false;
@@ -3638,10 +3568,10 @@
         request: { frameId: payload.frameId },
       });
       if (!frame) {
-        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        pushToast("danger", "That capture is no longer available.");
         return;
       }
-      await jumpToFrameWithBanner(frame);
+      await jumpToFrameWithToast(frame);
       return;
     }
     if (payload.kind === "audio" && payload.audioSegmentId != null) {
@@ -3649,7 +3579,7 @@
       const audio = await invoke<AudioSegmentDto | null>("get_audio_segment", { request });
       const mapped = audio ? mapAudioSegmentDto(audio) : null;
       if (!mapped) {
-        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        pushToast("danger", "That capture is no longer available.");
         return;
       }
       if (!audioSegments.some((segment) => segment.id === mapped.id)) {
@@ -3667,7 +3597,7 @@
           request: { frameId: payload.alignedFrameId },
         });
         if (alignedFrame) {
-          await jumpToFrameWithBanner(alignedFrame);
+          await jumpToFrameWithToast(alignedFrame);
           jumped = true;
         }
       }
@@ -3689,7 +3619,7 @@
         "drain_pending_broker_open_capture_results",
       );
     } catch {
-      setFrameActionStatus("Couldn't open that capture — please try again.", { tone: "error" });
+      pushToast("danger", "Couldn't open that capture — please try again.");
       return false;
     }
     for (const payload of payloads) {
@@ -3698,7 +3628,7 @@
       } catch {
         // get_frame / get_audio_segment threw (capture gone or DB error) — the
         // broker handoff must never fail silently, so surface a visible note.
-        setFrameActionStatus("That capture is no longer available.", { tone: "error" });
+        pushToast("danger", "That capture is no longer available.");
       }
     }
     return payloads.length > 0;
@@ -3814,10 +3744,6 @@
       return;
     }
     previewInFlight.add(frameId);
-    const isActiveFrame = isTimelineActiveFrame(frameId);
-    if (isActiveFrame) {
-      setFrameActionStatus("Loading frame preview...");
-    }
     try {
       const invokeStartedAt = performance.now();
       const dto = await invoke<FramePreviewDto | null>("get_frame_preview", {
@@ -3846,8 +3772,8 @@
       } else {
         previewGeneratedPathCount += 1;
       }
-      if (isTimelineActiveFrame(frameId)) {
-        setFrameActionStatus(null);
+      if (previewUnavailableFrameId === frameId) {
+        previewUnavailableFrameId = null;
       }
       scrubPerfLogSlow("exact_preview_loaded", loadMs, {
         frameId,
@@ -3868,9 +3794,9 @@
 
       rememberPreviewFailure(frameId);
       if (isTimelineActiveFrame(frameId)) {
-        setFrameActionStatus(prettifyFramePreviewError(message), {
+        previewUnavailableFrameId = frameId;
+        pushToast("danger", prettifyFramePreviewError(message), {
           detail: message,
-          tone: "error",
         });
       }
       scrubPerfLog("exact_preview_error", {
@@ -5020,7 +4946,7 @@
           request: { frameId: focus.frameId },
         });
         if (frame) {
-          await jumpToFrameWithBanner(frame);
+          await jumpToFrameWithToast(frame);
           return;
         }
       } catch {
@@ -5724,11 +5650,11 @@
   }
 
   // Surfaces a jump error from a NON-picker entry point (broker handoff,
-  // duplicate-frame link) on the always-visible stage status banner — the
-  // picker owns its own footer-strip error for picker-originated commits.
-  async function jumpToFrameWithBanner(target: FrameDto): Promise<void> {
+  // duplicate-frame link) as a danger toast — the picker owns its own
+  // footer-strip error for picker-originated commits.
+  async function jumpToFrameWithToast(target: FrameDto): Promise<void> {
     const err = await jumpToFrame(target);
-    if (err) setFrameActionStatus(err, { tone: "error" });
+    if (err) pushToast("danger", err);
   }
 
   // Bridges the jumper component's commit to the dashboard's timeline jump.
@@ -5949,15 +5875,11 @@
           }
           prunePreviewCache(timelineFrames);
           void syncTimelineScrollToActiveFrame();
-          // The active frame just vanished from under the user. The stage
-          // status banner only renders when a frame is shown, so surface the
+          // The active frame just vanished from under the user — surface the
           // acknowledgment in the nearest-frame case (the empty case already
           // collapses to the "No frames yet" empty state).
           if (activeWasDeleted && timelineFrames.length > 0) {
-            setFrameActionStatus(
-              "This capture was deleted — showing the nearest frame.",
-              { tone: "error" },
-            );
+            pushToast("danger", "This capture was deleted — showing the nearest frame.");
           }
         }
       }
@@ -6135,40 +6057,6 @@
     class:timeline__stage--stale={timelineError && timelineFrames.length > 0}
     bind:this={stageEl}
   >
-    <!-- Stage status banner is hoisted to a direct child of the stage (it is
-         absolutely positioned bottom-right, so DOM order doesn't move it) so
-         broker open-capture failures and deletion acks surface even when there
-         is no active frame (e.g. the "No frames yet" empty state). -->
-    {#if frameActionStatus}
-      <div
-        class="timeline__stage-status"
-        class:timeline__stage-status--error={frameActionStatus.tone === "error"}
-        role={frameActionStatus.tone === "error" ? "alert" : "status"}
-        aria-live={frameActionStatus.tone === "error" ? "assertive" : "polite"}
-        onpointerenter={onFrameActionStatusPointerEnter}
-        onpointerleave={onFrameActionStatusPointerLeave}
-      >
-        <div class="timeline__stage-status-body">
-          <div class="timeline__stage-status-summary">{frameActionStatus.message}</div>
-          {#if frameActionStatus.detail}
-            <div class="timeline__stage-status-detail">{frameActionStatus.detail}</div>
-          {/if}
-        </div>
-        {#if frameActionStatus.tone === "error"}
-          <button
-            type="button"
-            class="timeline__stage-status-close"
-            aria-label="Dismiss message"
-            use:tip={"Dismiss"}
-            onclick={dismissFrameActionStatus}
-          >
-            <svg width="11" height="11" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
-              <path d="M3.5 3.5l7 7M10.5 3.5l-7 7" />
-            </svg>
-          </button>
-        {/if}
-      </div>
-    {/if}
     {#if timelineLoading && timelineFrames.length === 0}
       <div class="timeline__preview-pending">
         <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
@@ -6355,11 +6243,12 @@
           </div>
         {/if}
       {:else}
+        {@const previewUnavailable = previewUnavailableFrameId !== null && previewUnavailableFrameId === timelineActive?.id}
         <div class="timeline__preview-pending">
-          {#if frameActionStatus?.tone !== "error"}
+          {#if !previewUnavailable}
             <span class="timeline__preview-pending-spinner" aria-hidden="true"></span>
           {/if}
-          <span>{frameActionStatus?.tone === "error" ? "preview unavailable" : "decoding preview…"}</span>
+          <span>{previewUnavailable ? "preview unavailable" : "decoding preview…"}</span>
         </div>
       {/if}
     {/if}
@@ -6493,7 +6382,7 @@
             <button
               type="button"
               class="timeline__overlay-link"
-              onclick={() => void jumpToFrameWithBanner(duplicateOf)}
+              onclick={() => void jumpToFrameWithToast(duplicateOf)}
             >{duplicateOf.id}</button>
           </div>
         {/if}
@@ -6875,7 +6764,7 @@
 
   /* Align bar-2 control typography with the app titlebar (10px). */
   .timeline__bar .btn--sm {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
   }
 
   /* ── Recording control cluster ─────────────────────────────
@@ -6905,7 +6794,7 @@
     padding: 8px 16px;
     border-radius: 4px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -6935,7 +6824,7 @@
     background: transparent;
     color: var(--app-text-muted);
     border-color: var(--app-border-strong);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   .btn--ghost:not(:disabled):hover {
@@ -6946,7 +6835,7 @@
 
   .btn--sm {
     padding: 3px 8px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
   }
 
   /* The previous dashboard-local settings/menu anchor moved into the shared
@@ -6963,7 +6852,7 @@
     background: var(--app-danger-bg-soft);
     border: 1px solid var(--app-danger-border);
     border-radius: 4px;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     color: var(--app-danger-text);
   }
 
@@ -6979,7 +6868,7 @@
   }
 
   .timeline__error-label {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -7019,7 +6908,7 @@
   .timeline__empty-title {
     margin: 0;
     font-family: inherit;
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     font-weight: 700;
     letter-spacing: 0.01em;
     color: var(--app-text);
@@ -7310,92 +7199,6 @@
     white-space: nowrap;
   }
 
-  .timeline__stage-status {
-    position: absolute;
-    right: 10px;
-    bottom: 10px;
-    z-index: 2;
-    max-width: min(60%, 360px);
-    padding: 7px 9px;
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    background: var(--app-overlay-bg-strong);
-    border: 1px solid var(--app-overlay-border);
-    border-radius: 8px;
-    color: var(--app-text);
-    font-size: 10px;
-    line-height: 1.35;
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    box-shadow: 0 10px 24px color-mix(in srgb, var(--app-bg) 28%, transparent);
-  }
-
-  .timeline__stage-status-body {
-    display: grid;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .timeline__stage-status-summary {
-    font-weight: 700;
-  }
-
-  .timeline__stage-status-detail {
-    max-height: 8.2em;
-    overflow: auto;
-    padding-top: 3px;
-    border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
-    color: var(--app-text-subtle);
-    font-family: var(--app-font-mono);
-    font-size: 9px;
-    line-height: 1.45;
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  /* Errors persist until dismissed, so they read at a more legible size than
-     the transient neutral acks and carry a close affordance. */
-  .timeline__stage-status--error {
-    color: color-mix(in srgb, var(--app-danger) 72%, var(--app-text) 28%);
-    border-color: color-mix(in srgb, var(--app-danger) 40%, var(--app-overlay-border));
-    font-size: 11px;
-    line-height: 1.4;
-  }
-
-  .timeline__stage-status--error .timeline__stage-status-detail {
-    font-size: 10px;
-  }
-
-  .timeline__stage-status-close {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 18px;
-    height: 18px;
-    margin: -1px -2px 0 0;
-    padding: 0;
-    border: none;
-    border-radius: 4px;
-    background: transparent;
-    color: inherit;
-    opacity: 0.75;
-    cursor: pointer;
-    transition: opacity 0.12s ease, background 0.12s ease;
-  }
-
-  .timeline__stage-status-close:hover {
-    opacity: 1;
-    background: color-mix(in srgb, currentColor 14%, transparent);
-  }
-
-  .timeline__stage-status-close:focus-visible {
-    outline: none;
-    opacity: 1;
-    box-shadow: var(--app-ring);
-  }
-
   .timeline__preview-pending {
     display: inline-flex;
     align-items: center;
@@ -7440,7 +7243,7 @@
   }
 
   .timeline__overlay-key {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -7716,7 +7519,7 @@
     border-radius: 4px;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--app-text);
@@ -7987,7 +7790,7 @@
     display: flex;
     flex-direction: column;
     padding: 0 4px 0 0;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8061,7 +7864,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8080,7 +7883,7 @@
   }
 
   .timeline-rail__audio-lane-error-label {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     font-weight: 600;
     letter-spacing: 0.16em;
     text-transform: uppercase;
@@ -8230,7 +8033,7 @@
     top: 4px;
     width: fit-content;
     padding: 2px 6px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     font-weight: 700;
     letter-spacing: 0.14em;
     text-transform: uppercase;
@@ -8487,11 +8290,6 @@
   }
   :global([data-theme="light"]) .timeline__preview-pending {
     color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline__stage-status {
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
   }
 
   :global([data-theme="light"]) .timeline__overlay {
