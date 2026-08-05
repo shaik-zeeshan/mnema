@@ -18,6 +18,8 @@ export type GlobalShortcutId =
   | "openDebug"
   | "toggleMainWindow"
   | "toggleQuickRecall"
+  | "openTimelineSurface"
+  | "openOverviewSurface"
   | "toggleSourceScreen"
   | "toggleSourceMicrophone"
   | "toggleSourceSystemAudio"
@@ -32,7 +34,11 @@ export type GlobalShortcutAction =
   | { type: "toggleMainWindow" }
   | { type: "openSettings" }
   | { type: "openDebug" }
+  | { type: "openSurface"; surface: MainSurface }
   | { type: "toggleSource"; source: SourceShortcutKey };
+
+/** The two peer surfaces the Main window switches between (⌘1 / ⌘2). */
+export type MainSurface = "timeline" | "overview";
 
 export type GlobalShortcutKeyEvent = Pick<
   KeyboardEvent,
@@ -74,6 +80,23 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
     id: "toggleQuickRecall",
     label: "Summon Quick Recall",
     bindings: [{ key: "Space", primary: true, alt: true }],
+    kind: "command",
+    scope: "global",
+  },
+  // Surface switching is structural (it names a place, like a tab), so unlike
+  // the command shortcuts these two are not rebindable — same reason
+  // `closeShortcutsHelp` isn't.
+  openTimelineSurface: {
+    id: "openTimelineSurface",
+    label: "Go to Timeline",
+    bindings: [{ key: "1", primary: true }],
+    kind: "command",
+    scope: "global",
+  },
+  openOverviewSurface: {
+    id: "openOverviewSurface",
+    label: "Go to Overview",
+    bindings: [{ key: "2", primary: true }],
     kind: "command",
     scope: "global",
   },
@@ -129,7 +152,13 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
 };
 
 export function getEffectiveGlobalShortcut(id: GlobalShortcutId): ShortcutDefinition {
-  if (id === "closeShortcutsHelp") return GLOBAL_SHORTCUTS[id];
+  if (
+    id === "closeShortcutsHelp" ||
+    id === "openTimelineSurface" ||
+    id === "openOverviewSurface"
+  ) {
+    return GLOBAL_SHORTCUTS[id];
+  }
   const binding = getShortcutBinding(keyboardBindings.settings, id);
   return shortcutDefinitionWithBinding(GLOBAL_SHORTCUTS[id], binding);
 }
@@ -153,7 +182,20 @@ export function getGlobalShortcutAction(
   }
   if (context.shortcutsHelpOpen) return null;
 
-  if (!context.isMainWindow || !context.isMainRoute) return null;
+  if (!context.isMainWindow) return null;
+
+  // Surface switching is checked before the Timeline-only gate below: it has to
+  // work *from* the other surfaces (⌘1 is how you get back, including from
+  // Settings), and from inside text fields — ⌘/Ctrl+digit steals nothing from
+  // text editing, unlike the bare 1/2/3 source toggles.
+  if (matchShortcut(event, effectiveShortcut("openTimelineSurface"), platform)) {
+    return { type: "openSurface", surface: "timeline" };
+  }
+  if (matchShortcut(event, effectiveShortcut("openOverviewSurface"), platform)) {
+    return { type: "openSurface", surface: "overview" };
+  }
+
+  if (!context.isMainRoute) return null;
 
   if (
     !context.isShortcutSuppressedTarget &&
