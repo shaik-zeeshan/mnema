@@ -300,6 +300,43 @@ pub struct DismissedView {
     pub dismissed_at_ms: i64,
 }
 
+/// A "conversation" for the Overview Conversations tile (redesign slice 9): an
+/// Activity whose time-overlapping diarized `speaker_turns` clear the 2-minute
+/// speech bar. Read-time projection — nothing is persisted; mirrored by hand in
+/// `apps/desktop/src/lib/types/recording.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DayConversation {
+    pub activity_id: i64,
+    pub title: String,
+    pub started_at_ms: i64,
+    /// The Activity row's own end (never mutated by this projection).
+    pub ended_at_ms: i64,
+    /// Display end: `ended_at_ms` extended to the latest turn that STARTED
+    /// inside the Activity window but ended after it (speech spilling past the
+    /// LLM's boundary). Equals `ended_at_ms` when nothing spills.
+    pub display_ended_at_ms: i64,
+    /// `COUNT(DISTINCT cluster)` among overlapping turns. No minimum: a
+    /// 1-cluster entry shows as "1 speaker" (see DECISIONS.md).
+    pub speaker_count: i64,
+    /// Total overlapping turn time in ms (the value tested against the bar).
+    pub speech_ms: i64,
+}
+
+/// One entry of the Overview "moments" frame strip (redesign slice 9): an
+/// Activity's engine-nominated headline frame, ordered by a dumb
+/// focus-weight × duration rule. Mirrored by hand in
+/// `apps/desktop/src/lib/types/recording.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DayMoment {
+    pub activity_id: i64,
+    pub activity_title: String,
+    pub frame_id: i64,
+    pub frame_path: String,
+    pub captured_at_ms: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +364,49 @@ mod tests {
         assert_eq!(
             serde_json::to_value(EvidenceStance::Contradict).unwrap(),
             json!("contradict")
+        );
+    }
+
+    #[test]
+    fn day_conversation_and_moment_exact_shape() {
+        let conversation = DayConversation {
+            activity_id: 3,
+            title: "Standup".to_string(),
+            started_at_ms: 1_000,
+            ended_at_ms: 2_000,
+            display_ended_at_ms: 2_500,
+            speaker_count: 2,
+            speech_ms: 130_000,
+        };
+        assert_eq!(
+            serde_json::to_value(&conversation).unwrap(),
+            json!({
+                "activityId": 3,
+                "title": "Standup",
+                "startedAtMs": 1_000,
+                "endedAtMs": 2_000,
+                "displayEndedAtMs": 2_500,
+                "speakerCount": 2,
+                "speechMs": 130_000
+            })
+        );
+
+        let moment = DayMoment {
+            activity_id: 3,
+            activity_title: "Standup".to_string(),
+            frame_id: 8,
+            frame_path: "/frames/a.jpg".to_string(),
+            captured_at_ms: 1_200,
+        };
+        assert_eq!(
+            serde_json::to_value(&moment).unwrap(),
+            json!({
+                "activityId": 3,
+                "activityTitle": "Standup",
+                "frameId": 8,
+                "framePath": "/frames/a.jpg",
+                "capturedAtMs": 1_200
+            })
         );
     }
 

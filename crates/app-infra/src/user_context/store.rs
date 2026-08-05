@@ -309,6 +309,11 @@ impl UserContextStore {
         Self { db }
     }
 
+    /// Read pool for sibling `user_context` modules (`day_views`).
+    pub(super) fn read_pool(&self) -> &SqlitePool {
+        self.db.read()
+    }
+
     // --- Local UTC offset (frontend-stamped) ------------------------------
 
     /// Persist the frontend-stamped local UTC offset (minutes to ADD to UTC to

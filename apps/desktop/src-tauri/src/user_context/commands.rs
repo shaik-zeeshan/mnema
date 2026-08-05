@@ -9,9 +9,10 @@
 use std::sync::Arc;
 
 use capture_types::{
-    Activity, ActivityCategory, AuthoredContext, Conclusion, DismissalState, DismissedView,
-    FocusLevel, SubjectTrajectory, SubjectView, UpdateAiRuntimeSettingsRequest, UserContextDigest,
-    UserContextDistillationSummary, UserContextStatus, UserContextTokenUsage,
+    Activity, ActivityCategory, AuthoredContext, Conclusion, DayConversation, DayMoment,
+    DismissalState, DismissedView, FocusLevel, SubjectTrajectory, SubjectView,
+    UpdateAiRuntimeSettingsRequest, UserContextDigest, UserContextDistillationSummary,
+    UserContextStatus, UserContextTokenUsage,
 };
 use serde::Serialize;
 use tauri::Emitter;
@@ -183,6 +184,39 @@ pub async fn get_user_context_status(
         local_offset_minutes,
         last_day_digest,
     })
+}
+
+/// The day's conversations (redesign slice 9): Activities overlapping the
+/// half-open `[start_ms, end_ms)` window whose overlapping diarized speech
+/// clears the 2-minute bar, chronological. Pure read-time projection — see
+/// `app_infra::user_context::day_views`.
+#[tauri::command]
+pub async fn list_conversations_for_day(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<DayConversation>, String> {
+    infra
+        .user_context()
+        .conversations_for_day(start_ms, end_ms)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// The day's moments strip (redesign slice 9): headline frames of the
+/// Activities overlapping `[start_ms, end_ms)`, best first by the dumb
+/// focus-weight × duration rule.
+#[tauri::command]
+pub async fn list_moments_for_day(
+    infra: tauri::State<'_, AppInfraState>,
+    start_ms: i64,
+    end_ms: i64,
+) -> Result<Vec<DayMoment>, String> {
+    infra
+        .user_context()
+        .moments_for_day(start_ms, end_ms)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// The most-recently-derived Activities (newest first) for the preview list.

@@ -261,6 +261,36 @@ export interface Activity {
 	evidence: ActivityEvidenceRef[];
 }
 
+/**
+ * A "conversation" for the Overview Conversations tile (redesign slice 9): an
+ * Activity whose overlapping diarized speech clears the 2-minute bar. Mirrors
+ * the Rust `DayConversation` (capture-types `user_context.rs`).
+ */
+export interface DayConversation {
+	activityId: number;
+	title: string;
+	startedAtMs: number;
+	/** The Activity row's own end (never mutated by this projection). */
+	endedAtMs: number;
+	/** End extended by turns spilling past the Activity; display-only. */
+	displayEndedAtMs: number;
+	speakerCount: number;
+	/** Total overlapping turn time in ms. */
+	speechMs: number;
+}
+
+/**
+ * One entry of the Overview moments strip (redesign slice 9): an Activity's
+ * headline frame, best first. Mirrors the Rust `DayMoment`.
+ */
+export interface DayMoment {
+	activityId: number;
+	activityTitle: string;
+	frameId: number;
+	framePath: string;
+	capturedAtMs: number;
+}
+
 /** One user-authored standing context statement (issue #107 backend DTO). */
 export interface AuthoredContext {
 	id: number;
