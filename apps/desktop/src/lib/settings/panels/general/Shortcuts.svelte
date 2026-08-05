@@ -42,13 +42,15 @@
   // first, not whatever order the issues map happens to enumerate in).
   const SHORTCUT_CATEGORIES = ["global", "app", "dashboard", "audioDrawer"] as const;
 
-  // The first action (in visual order) that currently carries an issue. The
+  // The first action (in visual order) that currently blocks the save. The
   // conflict banner is global, but the offending row can be scrolled off in a
-  // sibling category — so anchor a jump on this id.
+  // sibling category — so anchor a jump on this id. Registration failures are
+  // deliberately excluded: they report on an already-saved binding, so jumping
+  // to one from a "changes are not saved" banner would point at the wrong row.
   const firstConflictActionId = $derived.by(() => {
     for (const category of SHORTCUT_CATEGORIES) {
       for (const action of shortcutCategoryActions(category)) {
-        if (shortcutIssueFor(action.id)) return action.id;
+        if (keyboardShortcutIssues[action.id]) return action.id;
       }
     }
     return null;

@@ -45,6 +45,12 @@ export class KeyboardStore {
   shortcutCaptureActionId = $state<EditableShortcutActionId | null>(null);
   shortcutCaptureError = $state<{ actionId: EditableShortcutActionId; message: string } | null>(null);
 
+  // Global shortcuts the OS refused to register — another app already owns the
+  // combination. macOS has no API to say WHICH app, so the row never guesses a
+  // name (round-4 decision G9). This is a report on an already-saved binding,
+  // so it never blocks autosave the way `shortcutIssues()` does.
+  registrationFailures = $state<EditableShortcutActionId[]>([]);
+
   readonly keyboardPlatform = detectKeyboardPlatform();
 
   // ─── Build / snapshot / sync ────────────────────────────────────────────────
@@ -125,9 +131,12 @@ export class KeyboardStore {
         shortcutScopesConflict(shortcutConflictScope(previous), shortcutConflictScope(action)),
       );
       if (conflictingPreviousActions.length > 0) {
-        issues[action.id] = `Conflicts with ${conflictingPreviousActions[0].label}.`;
+        // Name the owner AND the combination (G9) — "already used by X" alone
+        // makes the user hunt for which row X is.
+        const combo = this.shortcutComboLabel(normalized);
+        issues[action.id] = `Already used by ${conflictingPreviousActions[0].label} — ${combo}.`;
         for (const previous of conflictingPreviousActions) {
-          issues[previous.id] = `Conflicts with ${action.label}.`;
+          issues[previous.id] = `Already used by ${action.label} — ${combo}.`;
         }
       }
       previousActions.push(action);
@@ -144,12 +153,20 @@ export class KeyboardStore {
 
   shortcutIssueFor(actionId: EditableShortcutActionId): string | null {
     if (this.shortcutCaptureError?.actionId === actionId) return this.shortcutCaptureError.message;
-    return this.keyboardShortcutIssues[actionId] ?? null;
+    const issue = this.keyboardShortcutIssues[actionId];
+    if (issue) return issue;
+    if (this.registrationFailures.includes(actionId)) {
+      return "This shortcut is taken by another app — try a different combination.";
+    }
+    return null;
   }
 
   setShortcutDraft(actionId: EditableShortcutActionId, binding: string): void {
     const base = withKeyboardBindingDefaults(this.keyboardBindingsSettings ?? DEFAULT_KEYBOARD_BINDINGS);
     this.keyboardBindingsSettings = setShortcutBinding(base, actionId, binding);
+    // The old failure described the old combination; the next save re-registers
+    // and reports afresh.
+    this.registrationFailures = this.registrationFailures.filter((id) => id !== actionId);
   }
 
   clearShortcut(actionId: EditableShortcutActionId): void {
@@ -170,6 +187,14 @@ export class KeyboardStore {
     if (!ok) return;
     this.keyboardBindingsSettings = withKeyboardBindingDefaults(DEFAULT_KEYBOARD_BINDINGS);
     this.draftGlobalShortcutsEnabled = DEFAULT_KEYBOARD_BINDINGS.globalShortcuts.enabled;
+  }
+
+  // "⌘⌥Space" on macOS, "Ctrl+Alt+Space" elsewhere — the same tokens the row's
+  // <kbd> caps render, flattened into a sentence.
+  shortcutComboLabel(binding: string): string {
+    const tokens = this.shortcutKeyTokens(binding);
+    if (!tokens) return binding;
+    return tokens.join(this.keyboardPlatform === "macos" ? "" : "+");
   }
 
   shortcutKeyTokens(binding: string): string[] | null {
@@ -226,6 +251,19 @@ export class KeyboardStore {
     } catch (err) {
       this.keyboardBindingsError = humanizeError(err);
     }
+    await this.refreshRegistrationFailures();
+  }
+
+  async refreshRegistrationFailures() {
+    try {
+      this.registrationFailures = await invoke<EditableShortcutActionId[]>(
+        "get_global_shortcut_registration_failures",
+      );
+    } catch {
+      // A failure to read the failures is not itself a settings error — the row
+      // just stays quiet.
+      this.registrationFailures = [];
+    }
   }
 
   async saveKeyboardBindingsSettings() {
@@ -263,6 +301,9 @@ export class KeyboardStore {
     } finally {
       this.savingKeyboardBindings = false;
     }
+    // The save just re-registered the global shortcuts; pick up whatever the OS
+    // refused so the offending row can say so.
+    await this.refreshRegistrationFailures();
   }
 
   // ─── Autosave registration ──────────────────────────────────────────────────
