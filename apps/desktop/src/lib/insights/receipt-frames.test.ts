@@ -169,6 +169,8 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 	function thumbHarness(previewFor: (fid: number) => unknown) {
 		const calls: number[][] = [];
 		const thumbs: Array<[number, string]> = [];
+		const revoked: string[] = [];
+		let minted = 0;
 		let resolveBatch: ((v: unknown) => void) | null = null;
 		const loader = new ReceiptFrameLoader(
 			{
@@ -191,9 +193,16 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 						});
 				});
 			}) as InvokeFn,
-			{ convertFileSrcImpl: (filePath: string) => `asset://${filePath}` },
+			{
+				// Thumbnails are painted as blob URLs, not `asset://` — the loader
+				// fetches the bytes so it owns (and can revoke) the decoded surface.
+				convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+				fetchImpl: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) }),
+				createObjectUrlImpl: () => `blob:thumb-${++minted}`,
+				revokeObjectUrlImpl: (url: string) => revoked.push(url),
+			},
 		);
-		return { loader, calls, thumbs, flush: () => resolveBatch?.(null) };
+		return { loader, calls, thumbs, revoked, flush: () => resolveBatch?.(null) };
 	}
 
 	const scrubPreview = (fid: number) => ({
@@ -220,9 +229,9 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 		flush();
 		await settle();
 		expect(thumbs).toEqual([
-			[1, "asset:///scrub/1-200.jpg"],
-			[2, "asset:///scrub/2-200.jpg"],
-			[3, "asset:///scrub/3-200.jpg"],
+			[1, "blob:thumb-1"],
+			[2, "blob:thumb-2"],
+			[3, "blob:thumb-3"],
 		]);
 		expect(calls[1]).toEqual([4]);
 	});
@@ -246,5 +255,22 @@ describe("ReceiptFrameLoader filmstrip thumbnails", () => {
 		loader.requestThumb(2); // had no preview → retried
 		await settle();
 		expect(calls[1]).toEqual([2]);
+	});
+
+	test("a new activity revokes the strip's thumbnail URLs", async () => {
+		// The strip was the last path here still painting `asset://`, which WebKit
+		// keeps a decoded surface for forever. Now the loader owns them, so moving
+		// to another activity must actually hand them back.
+		const { loader, thumbs, revoked, flush } = thumbHarness(scrubPreview);
+
+		for (const fid of [1, 2]) loader.requestThumb(fid);
+		await settle();
+		flush();
+		await settle();
+		expect(thumbs.map(([, url]) => url)).toEqual(["blob:thumb-1", "blob:thumb-2"]);
+		expect(revoked).toEqual([]);
+
+		loader.reset();
+		expect(revoked).toEqual(["blob:thumb-1", "blob:thumb-2"]);
 	});
 });

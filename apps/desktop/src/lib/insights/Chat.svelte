@@ -33,7 +33,7 @@
   import { listen } from "@tauri-apps/api/event";
   import { message } from "@tauri-apps/plugin-dialog";
   import { openSettings } from "$lib/surface-windows";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { FramePreviewUrlMap } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
   import { askAiClock } from "$lib/askAiClock";
   import { humanizeError } from "$lib/format-error";
@@ -242,6 +242,10 @@
 
   // Per-frame thumbnail cache for Answer Source cards (best-effort).
   let thumbnailCache = $state(new Map<number, string>());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  const thumbnailUrls = new FramePreviewUrlMap();
 
   let composerInput = $state("");
   let composerEl = $state<HTMLTextAreaElement | null>(null);
@@ -856,13 +860,11 @@
         "get_frame_scrub_previews",
         { request: { frameIds: uniqueIds } },
       );
-      const next = new Map(thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      thumbnailCache = next;
+      thumbnailCache = await thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+      );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

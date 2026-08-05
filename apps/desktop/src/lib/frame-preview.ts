@@ -1,5 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 
+import { LruCache } from "$lib/insights/receipt-playback";
+
 type FramePreviewFetchDependencies = {
   convertFileSrcImpl?: (filePath: string) => string;
   fetchImpl?: typeof fetch;
@@ -98,5 +100,87 @@ export class FramePreviewUrlHolder {
   #revoke(url: string): void {
     const revoke = this.#deps.revokeObjectUrlImpl ?? URL.revokeObjectURL;
     revoke(url);
+  }
+}
+
+/**
+ * How many thumbnail URLs stay live at once.
+ *
+ * Thumbnails come back from `get_frame_scrub_previews` at the backend's default
+ * 200 px, so a decoded one is roughly 160 KB — this cap bounds a grid to ~40 MB
+ * of decoded surface however long the session runs. Comfortably above a full
+ * screen of result cards, so scrolling back up never re-fetches.
+ */
+export const FRAME_PREVIEW_URL_CAP = 256;
+
+/**
+ * The frame-id → preview-URL map behind every thumbnail grid (Quick Recall
+ * results, Chat/Subject receipts, the scrub strip).
+ *
+ * Same lifetime problem as {@link FramePreviewUrlHolder}, one-per-frame instead
+ * of one-per-stage: painting `asset://` URLs parks a decoded IOSurface in the
+ * WebContent process for every URL it has ever loaded, and those are never
+ * revocable because the URL is a stable function of the file path — an afternoon
+ * of searching keeps every thumbnail the user has scrolled past. Measured on a
+ * 10h session: 271 MB of graphics memory across 680 regions in one WebContent
+ * process, none of it reclaimable.
+ *
+ * Blob URLs put the lifetime back under our control, and the bounded LRU decides
+ * when: eviction past {@link FRAME_PREVIEW_URL_CAP} (and `clear`) revokes, so the
+ * live set is capped rather than merely revocable.
+ *
+ * ponytail: reuses `LruCache`'s `onEvict` rather than tracking URLs here — that
+ * hook exists for exactly this ("values holding a resource GC cannot reclaim").
+ */
+export class FramePreviewUrlMap {
+  #deps: FramePreviewUrlDependencies;
+  #urls: LruCache<string>;
+
+  constructor(deps: FramePreviewUrlDependencies = {}, capacity = FRAME_PREVIEW_URL_CAP) {
+    this.#deps = deps;
+    this.#urls = new LruCache<string>(capacity, (url) => {
+      const revoke = this.#deps.revokeObjectUrlImpl ?? URL.revokeObjectURL;
+      revoke(url);
+    });
+  }
+
+  /**
+   * Mint a URL for each preview not already held, then return the full live map
+   * for the caller to assign to reactive state.
+   *
+   * A frame already in the map is only touched (marked most-recently-used), never
+   * re-fetched — repeated searches over the same results cost nothing. A fetch
+   * failure is swallowed per frame: thumbnails are best-effort and the card falls
+   * back to its glyph, exactly as before.
+   */
+  async merge(
+    entries: Iterable<{ frameId: number; preview: { filePath: string; mimeType: string } }>,
+  ): Promise<Map<number, string>> {
+    for (const { frameId, preview } of entries) {
+      if (this.#urls.get(frameId) !== undefined) continue;
+      try {
+        const bytes = await readFramePreviewBytes(preview.filePath, this.#deps);
+        const create = this.#deps.createObjectUrlImpl ?? URL.createObjectURL;
+        this.#urls.set(frameId, create(new Blob([bytes], { type: preview.mimeType })));
+      } catch {
+        // Best-effort: leave the frame out so a later pass can retry it.
+      }
+    }
+    return this.snapshot();
+  }
+
+  /** The live frame-id → URL pairs. Reads without disturbing LRU order. */
+  snapshot(): Map<number, string> {
+    const out = new Map<number, string>();
+    for (const frameId of this.#urls.keys()) {
+      const url = this.#urls.peek(frameId);
+      if (url !== undefined) out.set(frameId, url);
+    }
+    return out;
+  }
+
+  /** Revoke everything — call on unmount, or when results are discarded. */
+  clear(): void {
+    this.#urls.clear();
   }
 }

@@ -8,7 +8,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import {
-	framePreviewAssetUrl,
+	FramePreviewUrlMap,
 	readFramePreviewBytes,
 	type FramePreviewUrlDependencies,
 } from "$lib/frame-preview";
@@ -58,6 +58,12 @@ export class ReceiptFrameLoader {
 	#previews = new LruCache<CachedPreview>(PREVIEW_CACHE_CAP, (cached) =>
 		this.#revokeUrl(cached.url),
 	);
+	// Same reasoning as `#previews`, for the strip's thumbnails: they were the one
+	// path here still painting `asset://`, so a long receipt stranded a decoded
+	// surface per thumbnail on top of the full-size ones. Bounded + revoking.
+	// Built in the constructor, not here: `#urlDeps` is only assigned there, and a
+	// field initializer would capture it as `undefined`.
+	#thumbUrls: FramePreviewUrlMap;
 	#metaCache = new LruCache<FrameDto>(META_CACHE_CAP);
 	#inFlight = new Set<number>();
 	#failed = new Set<number>();
@@ -78,6 +84,7 @@ export class ReceiptFrameLoader {
 		this.#events = events;
 		this.#invoke = invokeFn;
 		this.#urlDeps = urlDeps;
+		this.#thumbUrls = new FramePreviewUrlMap(urlDeps);
 	}
 
 	/** New activity: drop caches/queues and invalidate all in-flight work. */
@@ -86,6 +93,7 @@ export class ReceiptFrameLoader {
 		// `clear()`, not a fresh LruCache: the cache owns live object URLs and
 		// replacing it would strand every one of them.
 		this.#previews.clear();
+		this.#thumbUrls.clear();
 		this.#metaCache.clear();
 		this.#inFlight.clear();
 		this.#failed.clear();
@@ -109,6 +117,7 @@ export class ReceiptFrameLoader {
 	dispose(): void {
 		this.#gen++;
 		this.#previews.clear();
+		this.#thumbUrls.clear();
 	}
 
 	// ── Bounded, cancellable preview prefetch ──────────────────────────────
@@ -216,15 +225,22 @@ export class ReceiptFrameLoader {
 				{ request: { frameIds: fids } satisfies GetFrameScrubPreviewsRequest },
 			);
 			if (gen !== this.#gen) return;
+			// A `missingReason` entry has no preview — leave it out of `#thumbDone`
+			// so a later re-intersection retries it.
+			const painted = await this.#thumbUrls.merge(
+				response.previews.flatMap((entry) =>
+					entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+				),
+			);
+			// Minting awaits, so re-check the generation before painting: a `reset`
+			// during the fetch already revoked these URLs.
+			if (gen !== this.#gen) return;
 			for (const entry of response.previews) {
-				// A `missingReason` entry has no preview — leave it out of
-				// `#thumbDone` so a later re-intersection retries it.
 				if (!entry.preview) continue;
+				const url = painted.get(entry.frameId);
+				if (url === undefined) continue; // mint failed; retried on re-intersection
 				this.#thumbDone.add(entry.frameId);
-				this.#events.onThumb(
-					entry.frameId,
-					framePreviewAssetUrl(entry.preview.filePath, this.#urlDeps),
-				);
+				this.#events.onThumb(entry.frameId, url);
 			}
 		} catch {
 			// cells keep their placeholders

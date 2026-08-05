@@ -34,7 +34,7 @@
     ActivityEvidenceRef,
   } from "$lib/types/recording";
   import type { FrameScrubPreviewsDto } from "$lib/types/app-infra";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
+  import { FramePreviewUrlMap } from "$lib/frame-preview";
   import Skeleton from "$lib/insights/Skeleton.svelte";
   import FrameDetailModal from "$lib/components/FrameDetailModal.svelte";
   import ConclusionStrip from "$lib/insights/ConclusionStrip.svelte";
@@ -72,6 +72,10 @@
   // Frame previews for screen-sourced timeline events. Maps frameId → asset URL.
   // Best-effort; events without a resolved preview keep the colored placeholder.
   let thumbnailCache = $state<Map<number, string>>(new Map());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  const thumbnailUrls = new FramePreviewUrlMap();
 
   const trajectoryById = $derived.by<Map<number, SubjectTrajectory>>(() => {
     const m = new Map<number, SubjectTrajectory>();
@@ -162,13 +166,11 @@
         "get_frame_scrub_previews",
         { request: { frameIds: uniqueIds } },
       );
-      const next = new Map(thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      thumbnailCache = next;
+      thumbnailCache = await thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+      );
     } catch {
       // Thumbnails are best-effort; events fall back to the colored placeholder.
     }

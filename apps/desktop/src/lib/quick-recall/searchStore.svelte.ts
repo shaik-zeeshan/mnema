@@ -10,7 +10,7 @@
 // (ResultsList / FilterPicker / SyntaxHelp) render off this singleton.
 import { invoke } from "@tauri-apps/api/core";
 import { message } from "@tauri-apps/plugin-dialog";
-import { framePreviewAssetUrl } from "$lib/frame-preview";
+import { FramePreviewUrlMap } from "$lib/frame-preview";
 import { openCapturedUrl } from "$lib/open-captured-url";
 import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
 import { humanizeError } from "$lib/format-error";
@@ -64,6 +64,10 @@ export class SearchStore {
   // The query string that the currently-displayed results belong to.
   resultsQuery = $state("");
   thumbnailCache = $state(new Map<number, string>());
+  // Owns the blob URLs behind `thumbnailCache`: bounded, and revoked on
+  // eviction. Painting `asset://` here instead parked one decoded surface per
+  // frame in the WebContent process for the life of the window.
+  readonly thumbnailUrls = new FramePreviewUrlMap();
 
   // Parsed search scope (advanced search syntax): `search_capture` runs the
   // backend operator parser on EVERY raw query and returns three fields we
@@ -282,13 +286,11 @@ export class SearchStore {
         return;
       }
 
-      const next = new Map(this.thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      this.thumbnailCache = next;
+      this.thumbnailCache = await this.thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+      );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

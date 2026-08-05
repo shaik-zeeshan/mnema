@@ -7,7 +7,6 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { appIconFallback } from "$lib/app-privacy-exclusion";
   import AnswerSourceCard from "$lib/components/AnswerSourceCard.svelte";
-  import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { closeCurrentWindow, openSettings } from "$lib/surface-windows";
   import type {
     SemanticSearchModelDownloadProgress,
@@ -155,13 +154,11 @@
         request: { frameIds: uniqueIds },
       });
 
-      const next = new Map(search.thumbnailCache);
-      for (const entry of response.previews) {
-        if (entry.preview) {
-          next.set(entry.frameId, framePreviewAssetUrl(entry.preview.filePath));
-        }
-      }
-      search.thumbnailCache = next;
+      search.thumbnailCache = await search.thumbnailUrls.merge(
+        response.previews.flatMap((entry) =>
+          entry.preview ? [{ frameId: entry.frameId, preview: entry.preview }] : [],
+        ),
+      );
     } catch {
       // Thumbnails are best-effort; the card falls back to its glyph.
     }

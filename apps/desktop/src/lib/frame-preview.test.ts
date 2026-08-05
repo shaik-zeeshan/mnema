@@ -1,7 +1,7 @@
 // @ts-nocheck — exercised by `bun test`; `bun:test` types aren't in the
 // svelte-check tsconfig (no @types/bun dependency), so skip static checking here.
 import { describe, expect, test } from "bun:test";
-import { FramePreviewUrlHolder } from "./frame-preview";
+import { FramePreviewUrlHolder, FramePreviewUrlMap } from "./frame-preview";
 
 /** A holder wired to fakes, plus the revoke log the assertions read. */
 function harness(options: { fetchImpl?: typeof fetch } = {}) {
@@ -109,6 +109,94 @@ describe("FramePreviewUrlHolder", () => {
     await holder.swap("/frames/1.png");
     expect(holder.swap("/frames/2.png")).rejects.toThrow("frame preview fetch failed");
     expect(holder.current).toBe("blob:1");
+    expect(revoked).toEqual([]);
+  });
+});
+
+/** A url map wired to fakes, plus the fetch/revoke logs the assertions read. */
+function mapHarness(capacity: number) {
+  const revoked: string[] = [];
+  const fetched: string[] = [];
+  let minted = 0;
+  const urls = new FramePreviewUrlMap(
+    {
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async (url: string) => {
+        fetched.push(url);
+        return { ok: true, arrayBuffer: async () => new ArrayBuffer(4) };
+      },
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: (url: string) => {
+        revoked.push(url);
+      },
+    },
+    capacity,
+  );
+  return { urls, revoked, fetched };
+}
+
+/** `n` thumbnail entries, frame ids 1..n. */
+function entries(from: number, to: number) {
+  const out = [];
+  for (let id = from; id <= to; id++) {
+    out.push({ frameId: id, preview: { filePath: `/frames/${id}.png`, mimeType: "image/png" } });
+  }
+  return out;
+}
+
+describe("FramePreviewUrlMap", () => {
+  test("the live set is capped, and eviction revokes what it drops", async () => {
+    // The whole point: an afternoon of scrolling must not grow the decoded-surface
+    // set without bound. Past the cap the oldest URL is revoked, not just dropped.
+    const { urls, revoked } = mapHarness(2);
+
+    await urls.merge(entries(1, 2));
+    expect(revoked).toEqual([]);
+    expect([...urls.snapshot().keys()]).toEqual([1, 2]);
+
+    await urls.merge(entries(3, 3));
+    expect(revoked).toEqual(["blob:1"]);
+    expect([...urls.snapshot().keys()]).toEqual([2, 3]);
+  });
+
+  test("a frame already held is neither re-fetched nor re-minted", async () => {
+    const { urls, fetched } = mapHarness(8);
+
+    const first = await urls.merge(entries(1, 2));
+    await urls.merge(entries(2, 3));
+
+    expect(fetched).toEqual(["asset:///frames/1.png", "asset:///frames/2.png", "asset:///frames/3.png"]);
+    expect(urls.snapshot().get(2)).toBe(first.get(2));
+  });
+
+  test("clear revokes every live URL", async () => {
+    const { urls, revoked } = mapHarness(8);
+
+    await urls.merge(entries(1, 3));
+    urls.clear();
+
+    expect(revoked).toEqual(["blob:1", "blob:2", "blob:3"]);
+    expect(urls.snapshot().size).toBe(0);
+  });
+
+  test("one frame failing to fetch leaves the rest painted", async () => {
+    // Thumbnails are best-effort: a broken frame must not blank its neighbours,
+    // and must stay out of the map so a later pass can retry it.
+    const revoked: string[] = [];
+    let minted = 0;
+    const urls = new FramePreviewUrlMap({
+      convertFileSrcImpl: (filePath: string) => `asset://${filePath}`,
+      fetchImpl: async (url: string) =>
+        url.includes("/2.png")
+          ? { ok: false, status: 404, statusText: "Not Found" }
+          : { ok: true, arrayBuffer: async () => new ArrayBuffer(4) },
+      createObjectUrlImpl: () => `blob:${++minted}`,
+      revokeObjectUrlImpl: (url: string) => revoked.push(url),
+    });
+
+    const painted = await urls.merge(entries(1, 3));
+
+    expect([...painted.keys()]).toEqual([1, 3]);
     expect(revoked).toEqual([]);
   });
 });
