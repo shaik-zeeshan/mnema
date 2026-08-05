@@ -1103,16 +1103,20 @@
      that reads as "the safe path". It's an accent-tinted OUTLINE: clearly the
      affirmative action, but with no more visual pull than Deny — which
      encourages a deliberate choice rather than a reflexive grant. */
+  /* `.btn` is borderless in this direction — its edge is an inset rim, so a
+     modifier that only set `border-color` would silently lose its outline. */
   .btn--allow {
     background: var(--app-accent-bg);
     color: var(--app-accent);
-    border-color: var(--app-accent-border);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .btn--allow:hover {
     background: color-mix(in srgb, var(--app-accent) 10%, var(--app-accent-bg));
     color: var(--app-accent);
-    border-color: var(--app-accent);
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.1),
+      inset 0 0 0 var(--hairline) var(--app-accent);
   }
 
   .btn__spinner {
