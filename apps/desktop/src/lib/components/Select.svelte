@@ -208,27 +208,34 @@
     color: var(--app-text-subtle);
   }
 
+  /* A native popup button (NSPopUpButton), not a recessed text field: RAISED,
+     with a hairline ring and a sans label. A recess means "you type here"; this
+     control opens a menu, so it must not look like an input. */
   :global(.select-trigger) {
     display: flex;
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 7px 10px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    cursor: pointer;
+    min-height: var(--h-md);
+    padding: 0 6px 0 9px;
+    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--r-md);
+    cursor: default;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
-    transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    gap: 8px;
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-border-strong),
+      0 1px 1px var(--ti-recess);
+    transition: box-shadow 0.15s;
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong);
+    gap: var(--s-8);
     text-align: left;
   }
 
   :global(.select-trigger:hover) {
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
   }
 
   :global(.select-trigger:active) {
@@ -267,22 +274,22 @@
     color: var(--app-text-subtle);
   }
 
+  /* The accent chevron block — the one place a popup button is allowed any
+     accent, and the signal that separates it from a plain button. */
   .select-chevron {
     display: block;
-    width: 14px;
-    height: 14px;
+    box-sizing: content-box;
+    width: 11px;
+    height: 11px;
+    padding: 3px 2px;
     flex-shrink: 0;
+    border-radius: 3px;
+    background: var(--app-accent);
     fill: none;
-    stroke: var(--app-text-muted);
-    stroke-width: 2;
+    stroke: var(--app-accent-contrast);
+    stroke-width: 2.4;
     stroke-linecap: round;
     stroke-linejoin: round;
-    transition: transform 0.15s, stroke 0.15s;
-  }
-
-  :global(.select-trigger[data-state="open"]) .select-chevron {
-    transform: rotate(180deg);
-    stroke: var(--app-accent);
   }
 
   /* Busy spinner shown on the closed trigger while a pick is in flight. Rotate
