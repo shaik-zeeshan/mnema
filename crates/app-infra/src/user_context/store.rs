@@ -2817,7 +2817,7 @@ fn focus_to_str(focus: FocusLevel) -> &'static str {
 
 /// Parses a stored focus string back to a [`FocusLevel`]; unknown / NULL values
 /// map to `None`.
-fn focus_from_str(value: Option<&str>) -> Option<FocusLevel> {
+pub(crate) fn focus_from_str(value: Option<&str>) -> Option<FocusLevel> {
     match value {
         Some("deep") => Some(FocusLevel::Deep),
         Some("mixed") => Some(FocusLevel::Mixed),

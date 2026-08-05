@@ -420,7 +420,7 @@ pub(crate) fn ms_to_rfc3339(ms: i64) -> String {
 
 /// Converts an RFC3339 TEXT timestamp to unix milliseconds; `None` on a parse
 /// failure (the row is then skipped rather than poisoning the window).
-fn rfc3339_to_ms(value: &str) -> Option<i64> {
+pub(crate) fn rfc3339_to_ms(value: &str) -> Option<i64> {
     OffsetDateTime::parse(value, &Rfc3339)
         .ok()
         .map(|dt| (dt.unix_timestamp_nanos() / 1_000_000) as i64)

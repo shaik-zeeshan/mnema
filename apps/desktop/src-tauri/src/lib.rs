@@ -11,6 +11,7 @@ mod debug_health;
 mod debug_pipeline;
 mod debug_status;
 mod general_app_log;
+mod highlights;
 mod keyboard_bindings;
 mod licensing;
 mod managed_storage_layout;
@@ -851,6 +852,8 @@ pub fn run() {
             conversation::commands::set_conversation_title,
             conversation::commands::delete_conversation,
             usage_charts::get_usage_charts,
+            highlights::get_conversations,
+            highlights::get_moments,
             privacy_redaction_sources::add_privacy_excluded_app,
             privacy_redaction_sources::set_privacy_excluded_app_enabled,
             privacy_redaction_sources::set_privacy_filter_system_audio,
