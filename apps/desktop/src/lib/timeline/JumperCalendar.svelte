@@ -74,8 +74,8 @@
 
 <style>
   .timeline__picker-cal {
-    padding: 12px;
-    border-top: 1px solid var(--app-border);
+    padding: var(--s-8);
+    border-top: var(--hairline) solid var(--app-border-strong);
     /* Top-align the calendar so its nav row sits level with the time pane
        header — no dead space above it. The grid's square cells fill the width. */
     display: flex;
@@ -128,8 +128,9 @@
     border-color: var(--app-accent-border);
   }
   :global(.cal__heading) {
+    font-family: var(--app-font-mono);
     font-size: var(--t-ui);
-    font-weight: 700;
+    font-weight: var(--w-medium);
     letter-spacing: 0.04em;
     color: var(--app-text-strong);
   }
@@ -162,9 +163,10 @@
     min-height: 0;
   }
   :global(.cal__weekday) {
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
     text-align: center;
@@ -191,13 +193,17 @@
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
+  /* Menu highlight: full accent fill. A day with no recording is a disabled
+     menu item — subtle, .45, unpickable (G6). */
   :global(.cal__day:hover:not([data-disabled])) {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-accent);
+    border-color: transparent;
+    color: var(--app-accent-contrast);
   }
   :global(.cal__day[data-disabled]),
   :global(.cal__day[data-outside-month]) {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
+    opacity: 0.45;
     cursor: not-allowed;
   }
   /* Previewing / selected — accent FILL recipe (matches shipped calendar). */

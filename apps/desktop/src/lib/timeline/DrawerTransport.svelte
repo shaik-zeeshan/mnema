@@ -70,13 +70,17 @@
 </footer>
 
 <style>
+  /* The 34px waveform strip: transport controls and the scrubber on one line,
+     no fill of its own — the drawer's surface carries it. */
   .transport {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
+    min-height: 34px;
+    padding: 4px 12px;
+    border-top: 0;
+    box-shadow: inset 0 1px 0 var(--app-border);
+    background: transparent;
   }
 
   .playbtn {

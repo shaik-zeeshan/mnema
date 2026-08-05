@@ -126,8 +126,8 @@
     align-items: baseline;
     justify-content: space-between;
     gap: 8px;
-    padding: 8px 12px 6px;
-    border-bottom: 1px solid var(--app-border);
+    padding: 6px var(--s-8) 4px;
+    border-bottom: var(--hairline) solid var(--app-border-strong);
   }
   .timeline__picker-day {
     font-size: var(--t-ui);
@@ -168,14 +168,14 @@
     width: 100%;
     text-align: left;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    color: var(--app-text);
+    border: 0;
+    border-radius: var(--r-sm);
+    color: var(--app-text-strong);
     font-family: var(--app-font-mono);
     font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
-    padding: 4px 8px;
-    margin-bottom: 1px;
+    height: 24px;
+    padding: 0 var(--s-8) 0 var(--s-6);
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
@@ -207,20 +207,28 @@
     color: var(--app-text-subtle);
     letter-spacing: 0.02em;
   }
+  /* Menu highlight: the whole row fills accent, as AppKit does. */
   .timeline__picker-hour:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  .timeline__picker-hour:not(:disabled):hover .timeline__picker-hour-count,
+  .timeline__picker-hour:not(:disabled):hover .timeline__picker-hour-tick {
+    color: inherit;
+    background: currentColor;
+    opacity: 0.8;
   }
   .timeline__picker-hour:disabled {
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
+    opacity: 0.45;
     cursor: not-allowed;
   }
   .timeline__picker-hour:disabled .timeline__picker-hour-tick {
-    background: var(--app-text-faint);
+    background: currentColor;
     opacity: 0.5;
   }
   .timeline__picker-hour:disabled .timeline__picker-hour-count {
-    color: var(--app-text-faint);
+    color: inherit;
   }
   /* "You are here" — accent LEFT BAR (no fill), echoing the playhead. */
   .timeline__picker-hour--here {
@@ -236,8 +244,8 @@
   }
   .timeline__picker-hour:focus-visible {
     outline: none;
-    box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
 
   .timeline__picker-msg {
@@ -253,7 +261,9 @@
     min-height: 140px;
   }
   .timeline__picker-msg-ico {
-    font-size: var(--t-display);
+    /* Not --t-display: the timeline's one display-size number is the readout
+       clock. */
+    font-size: var(--t-title);
     opacity: 0.5;
   }
   .timeline__picker-spinner {
@@ -276,9 +286,9 @@
   }
 
   .timeline__picker-time-foot {
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    padding: var(--s-4) var(--s-8);
+    border-top: var(--hairline) solid var(--app-border-strong);
+    background: transparent;
   }
   .timeline__picker-day-latest {
     width: 100%;

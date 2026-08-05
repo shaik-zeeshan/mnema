@@ -95,6 +95,10 @@
   <button type="button" class="ghost" aria-pressed={expanded} onclick={() => (expanded = !expanded)}>
     {expanded ? "collapse" : "expand"}
   </button>
+  <!-- Both keys are real drawer bindings: Space is `audioDrawer.playPause`,
+       Escape is handled in AudioDrawer's `onKeydown`. -->
+  <span class="hint rhead__hint"><span class="kbd">␣</span><span>play</span></span>
+  <span class="hint rhead__hint"><span class="kbd">esc</span><span>close</span></span>
   <button
     type="button"
     class="rhead__close"
@@ -118,16 +122,27 @@
 </header>
 
 <style>
+  /* One 36px row, never two: the drawer's header is chrome, and a wrapping
+     header pushed the transcript down every time a model label appeared. */
   .rhead {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
-    font-size: 11px;
+    flex: 0 0 36px;
+    height: 36px;
+    min-width: 0;
+    overflow: hidden;
+    flex-wrap: nowrap;
+    padding: 0 12px;
+    border-bottom: 0;
+    box-shadow: inset 0 -1px 0 var(--app-border);
+    background: transparent;
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
+  }
+
+  .rhead__hint {
+    flex: 0 0 auto;
   }
 
   .tnum {

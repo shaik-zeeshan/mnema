@@ -622,22 +622,24 @@
 </div>
 
 <style>
+  /* A panel that slides up out of the window's bottom edge: inset 12px on the
+     sides, flush to the bottom, so only its top corners are round. */
   .audio-drawer {
     position: fixed;
     left: 12px;
     right: 12px;
-    bottom: 12px;
+    bottom: 0;
     z-index: 30;
     display: flex;
     flex-direction: column;
     max-height: 50vh;
     overflow: hidden;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-xl) var(--r-xl) 0 0;
     box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
     animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
     outline: none;
   }
@@ -653,24 +655,9 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
     box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  /* The dark lift is far too heavy on paper. */
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-
-  :global([data-theme="light"]) .audio-drawer:focus-visible {
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-accent),
       var(--app-ring);
   }
 

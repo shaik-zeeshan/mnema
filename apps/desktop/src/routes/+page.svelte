@@ -46,6 +46,7 @@
     type SpeakerTranscriptGroup,
   } from "$lib/timeline/audio-drawer-view";
   import { framePreviewAssetUrl, readFramePreviewBytes } from "$lib/frame-preview";
+  import { setDeck, resetDeck, type DeckHint } from "$lib/deck.svelte";
   import {
     loadOcrForFrame,
     loadOcrFromJob,
@@ -2758,6 +2759,9 @@
     value: z,
     label: z.charAt(0).toUpperCase() + z.slice(1),
   }));
+  /** Keycaps rendered inside the zoom segments — bound in
+   *  `onDashboardWindowKeyDown` (⌥+digit), so each cap is a real shortcut. */
+  const TIMELINE_ZOOM_KEYS = ["⌥1", "⌥2", "⌥3"];
 
   /** How many slots the rail can show at the current density. */
   const timelineVisibleSlots = $derived(
@@ -4907,6 +4911,24 @@
     }
 
     const timelineShortcutSuppressed = isTimelineShortcutSuppressedTarget(event.target);
+
+    // ⌥1 / ⌥2 / ⌥3 → Hour / Day / Week. Matched on `code` because Option+digit
+    // rewrites `key` on macOS (⌥1 is "¡"). These are the keycaps drawn on the
+    // zoom segments; without the binding the caps would be decoration.
+    if (
+      !timelineShortcutSuppressed &&
+      event.altKey &&
+      !event.metaKey &&
+      !event.ctrlKey
+    ) {
+      const zoomIndex = ["Digit1", "Digit2", "Digit3"].indexOf(event.code);
+      if (zoomIndex >= 0) {
+        event.preventDefault();
+        setTimelineZoom(TIMELINE_ZOOMS[zoomIndex]);
+        return;
+      }
+    }
+
     if (!timelineShortcutSuppressed) {
       if (dashboardShortcutMatches(event, DASHBOARD_SHORTCUTS.openJumpPicker)) {
         event.preventDefault();
@@ -6098,6 +6120,32 @@
       clearInterval(driftTimer);
     };
   });
+
+  // ── The deck (direction 04) ───────────────────────────────────────────────
+  // Context is live: the day you are parked on. Every hint below is a key that
+  // really works — arrows and J/⌥1–3 are handled in `onDashboardWindowKeyDown`,
+  // ␣ by the audio drawer (so it only shows while the drawer is open), and the
+  // last two are the app-wide bindings from `keyboard-bindings.svelte.ts`.
+  const deckContext = $derived(
+    timelineActive
+      ? `Timeline · ${formatCapturedDateOnly(timelineActive.capturedAt)}`
+      : "Timeline",
+  );
+  $effect(() => {
+    const hints: DeckHint[] = [
+      { keys: "←→", label: "Frame" },
+      { keys: "J", label: "Jump" },
+    ];
+    if (selectedAudioSegmentId != null) {
+      hints.push({ keys: "␣", label: "Play audio" });
+    } else {
+      hints.push({ keys: "⌥1–3", label: "Zoom" });
+    }
+    hints.push({ keys: "⌘⌥Space", label: "Quick Access", separator: true });
+    hints.push({ keys: "⌘,", label: "Settings" });
+    setDeck({ context: deckContext, hints });
+    return resetDeck;
+  });
 </script>
 
 <!-- ── Timeline browser ──────────────────────────────────────────────────── -->
@@ -6117,16 +6165,9 @@
            recording affordance is visible regardless of which route is
            active. The timeline header retains only timeline-specific
            controls below (jump, OCR toggle, refresh). -->
-      <TimelineJumper
-        bind:this={jumperRef}
-        bind:open={pickerOpen}
-        bind:jumping={pickerJumping}
-        activeFrame={timelineActive}
-        timelineBusy={timelineLoading || timelineLoadingMore}
-        showLatest={showJumpToLatestButton}
-        onJump={onJumperJump}
-        onJumpToLatest={jumpToLatestFrame}
-      />
+      <!-- The position pill (TimelineJumper) is NOT here: direction 04 anchors
+           it to the playhead above the rail, so the readout and the control it
+           opens are never in different places. See `.timeline__nowband`. -->
       <!-- Zoom owns SPAN only (G5): Hour / Day / Week, no Month level — the
            jump menu's month grid covers month-scale navigation. The readout
            next to it states what is really on screen, since the rail's frame
@@ -6136,6 +6177,7 @@
         value={timelineZoom}
         onValueChange={setTimelineZoom}
         ariaLabel="Timeline zoom"
+        keys={TIMELINE_ZOOM_KEYS}
         compact
       />
       <span class="timeline__span-readout">{timelineSpanReadout}</span>
@@ -6178,13 +6220,17 @@
         {#if ocrStatus === "success" && ocrObservations.length > 0}
           <span class="timeline__ocr-count">{ocrCountLabel(ocrObservations.length)}</span>
         {/if}
+        <!-- Keycaps only where the binding is real: `O` toggles OCR and `R`
+             refreshes (see DASHBOARD_SHORTCUTS). Rerun-OCR has no binding, so
+             it wears no cap — a cap that does nothing is a lie. -->
+        <span class="kbd" aria-hidden="true">O</span>
       </button>
       <button
         class="btn btn--ghost btn--sm"
         onclick={refreshTimelineAndDashboard}
         disabled={timelineLoading || timelineLoadingMore || audioSegmentsLoading}
         use:tip={"Refresh dashboard timeline (R)"}
-      >refresh</button>
+      >refresh <span class="kbd" aria-hidden="true">R</span></button>
     </div>
   </header>
 
@@ -6332,7 +6378,7 @@
                 aria-label="Copy active frame image"
                 aria-busy={frameImageActionBusy === "copy"}
                 use:tip={"Copy image (C)"}
-              >{frameImageActionBusy === "copy" ? "copying…" : "copy"}</button>
+              >{frameImageActionBusy === "copy" ? "copying…" : "copy"}<span class="kbd" aria-hidden="true">C</span></button>
               <button
                 type="button"
                 class="timeline__stage-action-menu-item"
@@ -6341,7 +6387,7 @@
                 aria-label="Download active frame image"
                 aria-busy={frameImageActionBusy === "download"}
                 use:tip={"Download image (D)"}
-              >{frameImageActionBusy === "download" ? "saving…" : "download"}</button>
+              >{frameImageActionBusy === "download" ? "saving…" : "download"}<span class="kbd" aria-hidden="true">D</span></button>
               {#if ocrVisible && ocrStatus === "success" && ocrFrameId === timelineActive.id && ocrObservations.length > 0}
                 <button
                   type="button"
@@ -6591,6 +6637,32 @@
     class="timeline__rail-wrap"
     bind:this={timelineRailWrap}
   >
+    <!-- Position band: the pill rides the playhead (which is the rail's static
+         centre caret — the active frame is always the slot under it), reads out
+         where you are AND opens the jump menu. One control, two jobs. The
+         hover bubble shares the band so a ghost read never displaces the pill. -->
+    <div class="timeline__nowband">
+      {#if tooltipIsHovered && hoveredX != null && tooltipFrame}
+        <span class="timeline__bubble" style={`left: ${hoveredX}px`}>
+          {formatCapturedTimeOnly(tooltipFrame.capturedAt)}{timelineFrameAppLabel(tooltipFrame)
+            ? ` · ${timelineFrameAppLabel(tooltipFrame)}`
+            : ""}
+        </span>
+        <span class="timeline__ghost" style={`left: ${hoveredX}px`} aria-hidden="true"></span>
+      {/if}
+      <div class="timeline__nowpill">
+        <TimelineJumper
+          bind:this={jumperRef}
+          bind:open={pickerOpen}
+          bind:jumping={pickerJumping}
+          activeFrame={timelineActive}
+          timelineBusy={timelineLoading || timelineLoadingMore}
+          showLatest={showJumpToLatestButton}
+          onJump={onJumperJump}
+          onJumpToLatest={jumpToLatestFrame}
+        />
+      </div>
+    </div>
     {#if timelineFrames.length > 0}
       <div
         class="timeline-rail"
@@ -6786,59 +6858,49 @@
     {#if timelineLoadingMore}
       <div class="timeline-rail__loading">loading…</div>
     {/if}
+    <!-- Readout: app identity, then the screen's ONE display-size number (the
+         clock), then the detail line. Follows the hovered frame while the
+         pointer is on the rail, otherwise the active one — same `tooltipFrame`
+         the floating bubble used before it became hover-only. -->
     {#if timelineFrames.length > 0 && tooltipFrame}
-      {@const tooltipAppLabel = timelineFrameAppLabel(tooltipFrame)}
-      {@const tooltipAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
-      <div
-        id="timeline-rail-readout"
-        class="timeline-rail__tooltip"
-        class:timeline-rail__tooltip--pinned={!tooltipIsHovered}
-        style={tooltipIsHovered && hoveredX != null
-          ? `left: ${hoveredX}px; transform: translate(-50%, -100%);`
-          : "left: 50%; transform: translate(-50%, -100%);"}
-        role="tooltip"
-      >
-        {#if tooltipAppLabel}
+      {@const readoutAppLabel = timelineFrameAppLabel(tooltipFrame)}
+      {@const readoutAppIconSrc = timelineFrameAppIconSrc(tooltipFrame)}
+      <div id="timeline-rail-readout" class="timeline__readout" role="status">
+        {#if readoutAppLabel}
           <span
-            class="timeline-rail__tooltip-icon"
-            class:timeline-rail__tooltip-icon--image={!!tooltipAppIconSrc}
+            class="timeline__readout-icon"
+            class:timeline__readout-icon--image={!!readoutAppIconSrc}
             aria-hidden="true"
           >
             {#key tooltipAppKey}
               <span
-                class="timeline-rail__tooltip-icon-inner"
+                class="timeline__readout-icon-inner"
                 in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
                 out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
               >
-                {#if tooltipAppIconSrc}
-                  <img src={tooltipAppIconSrc} alt="" loading="lazy" />
+                {#if readoutAppIconSrc}
+                  <img src={readoutAppIconSrc} alt="" loading="lazy" />
                 {:else}
                   <span>{timelineFrameAppFallback(tooltipFrame)}</span>
                 {/if}
               </span>
             {/key}
           </span>
-          <span class="timeline-rail__tooltip-copy">
-            <span class="timeline-rail__tooltip-name-stack">
-              {#key tooltipAppKey}
-                <span
-                  class="timeline-rail__tooltip-app-name"
-                  in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-                  out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
-                >{tooltipAppLabel}</span>
-              {/key}
-            </span>
-            <span class="timeline-rail__tooltip-meta">
-              <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-              <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
-            </span>
-          </span>
-        {:else}
-          <span class="timeline-rail__tooltip-copy timeline-rail__tooltip-copy--solo">
-            <span class="timeline-rail__tooltip-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
-            <span class="timeline-rail__tooltip-date">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
+          <span class="timeline__readout-name-stack">
+            {#key tooltipAppKey}
+              <span
+                class="timeline__readout-app"
+                in:fly={{ x: -readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+                out:fly={{ x: readoutScrubDirection * READOUT_FLY_OFFSET_PX, duration: readoutFlyDurationMs, opacity: 0 }}
+              >{readoutAppLabel}</span>
+            {/key}
           </span>
         {/if}
+        <span class="timeline__readout-time">{formatCapturedTimeOnly(tooltipFrame.capturedAt)}</span>
+        <span class="timeline__readout-detail">{formatCapturedDateOnly(tooltipFrame.capturedAt)}</span>
+        <span class="timeline__readout-count">
+          frame {(timelineActiveIndex + 1).toLocaleString()} / {timelineFrames.length.toLocaleString()}{timelineHasMore ? "+" : ""}
+        </span>
       </div>
     {/if}
   </div>
@@ -6915,8 +6977,14 @@
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 4px;
-    padding: 4px 8px 6px;
+    /* Direction 04: each region owns its own padding (thin bar 0 12px, stage
+       12px inset, rail-wrap 8/12/12) so the column has none. */
+    gap: 0;
+    padding: 0;
+    /* The band the position pill rides in, and the rail it sits on. Shared by
+       the pill, the ghost playhead and the centre playline. */
+    --tl-band-h: 26px;
+    --tl-rail-h: 52px;
     background: var(--app-bg);
     /* Allow the stage child (flex: 1, min-height: 0) to actually shrink so
        the bottom rail stays in view regardless of preview intrinsic size. */
@@ -6939,14 +7007,18 @@
     align-items: center;
     justify-content: space-between;
     flex-wrap: wrap;
-    gap: 10px 16px;
+    gap: 6px 16px;
+    /* The thin bar: 36px, hairline underline, no fill of its own. */
+    min-height: 36px;
+    padding: 0 12px;
+    box-shadow: inset 0 -1px 0 var(--app-border);
   }
 
   .timeline__bar-group {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 6px;
     min-width: 0;
   }
 
@@ -7134,13 +7206,18 @@
   }
 
   /* ── Stage (preview dominates) ─────────────────────────────── */
+  /* The stage IS the mockup's `.stage__shot`: a bedded frame inset 12px from
+     the window, with a hairline ring instead of a border so the frame's own
+     pixels start at the radius. */
   .timeline__stage {
     position: relative;
     flex: 1 1 0;
     min-height: 0; /* allow the flex child to actually shrink as needed */
-    background: linear-gradient(135deg, var(--app-surface-raised) 0%, var(--app-surface) 100%);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
+    margin: 12px 12px 0;
+    background: var(--app-surface-subtle);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border);
     overflow: hidden;
     display: flex;
     align-items: center;
@@ -7175,8 +7252,8 @@
 
   .timeline__stage-actions {
     position: absolute;
-    top: 10px;
-    right: 10px;
+    top: 8px;
+    right: 8px;
     z-index: 2;
     display: flex;
     align-items: center;
@@ -7268,49 +7345,56 @@
     top: calc(100% + 8px);
     right: 0;
     display: grid;
-    min-width: 112px;
-    gap: 2px;
-    padding: 6px;
-    background: color-mix(in srgb, var(--app-surface) 94%, transparent);
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
+    min-width: 140px;
+    gap: 0;
+    padding: var(--s-4);
+    /* Same NSMenu material as the jump menu. */
+    background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+    border: 0;
+    border-radius: var(--r-lg);
     box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.28),
-      inset 0 1px 0 rgba(255, 255, 255, 0.04);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
+    backdrop-filter: blur(28px) saturate(160%);
+    -webkit-backdrop-filter: blur(28px) saturate(160%);
   }
 
   .timeline__stage-action-menu-item {
     display: flex;
     align-items: center;
     justify-content: flex-start;
+    gap: var(--s-6);
     width: 100%;
-    padding: 8px 10px;
+    height: 24px;
+    padding: 0 var(--s-8);
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
+    border: 0;
+    border-radius: var(--r-sm);
     font: inherit;
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
+    font-size: var(--t-ui);
+    font-weight: var(--w-regular);
+    letter-spacing: var(--ls-ui);
+    text-transform: none;
+    color: var(--app-text-strong);
     cursor: pointer;
   }
 
-  .timeline__stage-action-menu-item:hover {
-    background: var(--app-surface-hover);
-    border-color: color-mix(in srgb, var(--app-border-hover) 70%, transparent);
-    color: var(--app-text);
+  /* The keycap sits in the menu's right-hand key column. */
+  .timeline__stage-action-menu-item :global(.kbd) {
+    margin-left: auto;
   }
 
+  .timeline__stage-action-menu-item:hover,
   .timeline__stage-action-menu-item:focus-visible {
     outline: none;
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-border-hover) 32%, transparent);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  .timeline__stage-action-menu-item:hover :global(.kbd),
+  .timeline__stage-action-menu-item:focus-visible :global(.kbd) {
+    background: transparent;
+    color: inherit;
+    box-shadow: none;
   }
 
   /* Disabled menu item (preview-not-ready, or an open already in flight): dim it
@@ -7322,8 +7406,7 @@
 
   .timeline__stage-action-menu-item:disabled:hover {
     background: transparent;
-    border-color: transparent;
-    color: var(--app-text-muted);
+    color: var(--app-text-strong);
   }
 
   /* The "open in browser" peer reuses the menu-item shell so it reads as a
@@ -7569,18 +7652,22 @@
     letter-spacing: 0.04em;
   }
 
+  /* The engine chip (mockup `.ocrchip`): a quiet mono capsule naming which OCR
+     engine produced what you're looking at — a label, not a control. */
   .timeline__ocr-provider-chip {
     display: inline-flex;
     align-items: center;
-    min-height: 24px;
+    height: var(--h-sm);
     max-width: 240px;
-    padding: 0 8px;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    background: var(--app-accent-bg);
-    color: var(--app-accent);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -7828,36 +7915,173 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 0;
+    padding: 8px 12px 12px;
   }
 
-  /* Persistent center playhead: a pair of neutral carets framing the rail's
-     midpoint so the relationship "center = currently shown frame" is
-     self-evident without reading the floating tooltip. Carets sit over the
-     rail's top/bottom edges (rail height = 36px), never covering the active
-     tick body, and stay non-interactive. */
-  .timeline__rail-wrap::before,
-  .timeline__rail-wrap::after {
+  /* Persistent centre playhead — the mockup's `.playline`. The active frame is
+     always the slot under it, which is why the position pill can be pinned at
+     the same x and still be honest. Non-interactive. */
+  .timeline__rail-wrap::before {
     content: "";
     position: absolute;
     left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
+    top: calc(8px + var(--tl-band-h));
+    height: var(--tl-rail-h);
+    width: var(--hairline);
+    background: var(--app-text-strong);
+    opacity: 0.5;
     pointer-events: none;
     z-index: 4;
   }
 
-  .timeline__rail-wrap::before {
-    top: 0;
-    border-top: 5px solid var(--app-text-subtle);
+  /* ── Position band: the pill on the playhead, plus the hover ghost ───────── */
+  .timeline__nowband {
+    position: relative;
+    flex: 0 0 var(--tl-band-h);
+    height: var(--tl-band-h);
   }
 
-  .timeline__rail-wrap::after {
-    top: 31px;
-    border-bottom: 5px solid var(--app-text-subtle);
+  /* The pill is anchored to the playhead, not to a toolbar slot. Centred with
+     a flex row rather than `translateX(-50%)` on purpose: a transformed
+     ancestor becomes the containing block for `position: fixed`, which would
+     silently re-anchor the jump menu's popover. */
+  .timeline__nowpill {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    z-index: 5;
+  }
+
+  /* Hover, before commit: a ghost playhead down the rail and a time bubble
+     above it. Both ride `hoveredX`, which the rail already tracks. */
+  .timeline__ghost {
+    position: absolute;
+    top: 100%;
+    height: var(--tl-rail-h);
+    width: var(--hairline);
+    background: var(--app-text-strong);
+    opacity: 0.38;
+    pointer-events: none;
+    z-index: 3;
+  }
+
+  .timeline__bubble {
+    position: absolute;
+    bottom: calc(100% - 4px);
+    transform: translateX(-50%);
+    padding: 3px 6px;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    box-shadow:
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: 510;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  /* ── Readout: app · the one display-size number · detail ─────────────────── */
+  .timeline__readout {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 26px;
+    margin-top: 6px;
+    min-width: 0;
+  }
+
+  .timeline__readout-icon {
+    flex: 0 0 22px;
+    width: 22px;
+    height: 22px;
+    box-sizing: border-box;
+    display: grid;
+    overflow: hidden;
+    border-radius: 5px;
+    background: var(--app-surface-raised);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    color: var(--app-text);
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+  }
+
+  .timeline__readout-icon--image {
+    padding: 2px;
+  }
+
+  .timeline__readout-icon img {
+    width: 100%;
+    height: 100%;
+    display: block;
+    border-radius: 3px;
+    object-fit: contain;
+  }
+
+  /* Both copies of a cross-fading app identity share one grid cell. */
+  .timeline__readout-icon-inner {
+    grid-area: 1 / 1;
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+  }
+
+  .timeline__readout-name-stack {
+    display: grid;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .timeline__readout-app {
+    grid-area: 1 / 1;
+    font-size: var(--t-ui);
+    font-weight: var(--w-medium);
+    line-height: 1;
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
+  /* The screen's ONE display-size number. Nothing else on the timeline uses
+     --t-display. */
+  .timeline__readout-time {
+    margin-left: 4px;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-display);
+    font-weight: var(--w-semi);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: var(--ls-display);
+    line-height: 1;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
+  .timeline__readout-detail {
+    font-size: var(--t-meta);
+    line-height: 1;
+    color: var(--app-text-muted);
+    white-space: nowrap;
+  }
+
+  .timeline__readout-count {
+    margin-left: auto;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+    color: var(--app-text-subtle);
+    white-space: nowrap;
   }
 
   .timeline-rail {
@@ -7871,12 +8095,11 @@
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
-    /* Track is 34px + 1px top/bottom border = 36px. Locking the rail's
-       height (rather than letting it derive from content) ensures that
-       transient in-flow children (e.g. previous sticky loader, future
-       overlays) cannot grow the rail and ripple height into the stage. */
-    height: 36px;
-    flex: 0 0 36px;
+    /* Locking the rail's height (rather than letting it derive from content)
+       ensures that transient in-flow children (e.g. previous sticky loader,
+       future overlays) cannot grow the rail and ripple height into the stage. */
+    height: var(--tl-rail-h);
+    flex: 0 0 var(--tl-rail-h);
     box-sizing: border-box;
     /* Slot 0 (newest) is anchored to the right edge of the track via
        `right: i * SLOT_WIDTH` on each slot, with symmetric viewport-sized
@@ -7886,8 +8109,9 @@
        `maxScrollLeft`). The rail stays in normal LTR direction so all
        scrollLeft math is straightforward and browser-portable. */
     background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-md);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
     padding: 0;
     scrollbar-width: none;
     /* Establish a containment context so the track's spacer margins can be
@@ -7904,8 +8128,9 @@
 
   .timeline-rail:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      var(--app-ring);
   }
 
   .timeline-rail::-webkit-scrollbar {
@@ -7914,7 +8139,7 @@
 
   .timeline-rail__track {
     position: relative;
-    height: 34px;
+    height: 100%;
     /* Symmetric viewport-relative spacers so the first/last frames can sit
        under the centered cursor caret. Using `cqi` (rail's inline size)
        rather than `%` (which resolves against the track's own width and
@@ -7925,23 +8150,32 @@
     margin-right: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
   }
 
+  /* App bands fill the rail's full height — the run of frames spent in one app
+     IS the band, and the ticks and playhead paint over it. */
   .timeline-rail__app-group {
     position: absolute;
-    top: 8px;
+    top: 0;
+    bottom: 0;
     z-index: 1;
-    height: 20px;
+    background: var(--app-surface-raised);
     overflow: visible;
     pointer-events: none;
   }
 
+  /* One lone frame between two runs: a sliver, no icon, slightly darker so the
+     switch still reads. */
+  .timeline-rail__app-group--single {
+    background: var(--app-surface-hover);
+  }
+
   .timeline-rail__app-group-icon {
     position: absolute;
-    top: 0;
+    top: calc(50% - 9px);
     left: var(--timeline-app-icon-left);
-    width: 20px;
-    height: 20px;
-    min-width: 20px;
-    min-height: 20px;
+    width: 18px;
+    height: 18px;
+    min-width: 18px;
+    min-height: 18px;
     box-sizing: border-box;
     display: grid;
     place-items: center;
@@ -7972,10 +8206,10 @@
 
   .timeline-rail__slot {
     position: absolute;
-    top: 8px;
+    top: 0;
+    bottom: 0;
     /* Set by the Hour/Day/Week zoom (`--timeline-slot-w` on `.timeline`). */
     width: var(--timeline-slot-w, 8px);
-    height: 18px;
     margin: 0;
     padding: 0;
     background: transparent;
@@ -8004,30 +8238,24 @@
     flex: 0 0 auto;
     display: flex;
     align-items: stretch;
-    gap: 6px;
+    gap: 8px;
     width: 100%;
     min-width: 0;
-    /* Subtle inset background so the lane reads as a distinct surface
-       from the rail above without drawing a hard border. */
-    padding: 4px 0 4px 0;
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 0%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 30%,
-      color-mix(in srgb, var(--app-bg) 55%, transparent) 70%,
-      color-mix(in srgb, var(--app-bg) 0%, transparent) 100%
-    );
-    border-radius: 4px;
+    /* The lane is two rows of bars on the page, not a panel: no fill, no
+       border — the bars and their gutter labels are the whole drawing. */
+    padding: 6px 0 0;
   }
 
   .timeline-rail__audio-lane-labels {
-    flex: 0 0 28px;
+    flex: 0 0 22px;
     display: flex;
     flex-direction: column;
-    padding: 0 4px 0 0;
+    gap: 2px;
+    padding: 0;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     user-select: none;
   }
@@ -8036,10 +8264,11 @@
      vertical center of its row in the viewport (mic row center ~6.5px,
      sys row center ~19.5px within the 26px lane). */
   .timeline-rail__audio-lane-label {
-    flex: 1 1 0;
+    flex: 0 0 13px;
+    height: 13px;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
     line-height: 1;
   }
 
@@ -8055,20 +8284,19 @@
     position: relative;
     flex: 1 1 auto;
     min-width: 0;
-    height: 26px;
+    height: 28px;
     overflow: hidden;
     /* Same container context the rail uses, so the inner track-mirror's
        `cqi` margins resolve to the same pixel width and bars line up
        with the in-rail ticks. */
     container-type: inline-size;
     border-radius: 3px;
-    background: color-mix(in srgb, var(--app-surface-raised) 72%, transparent);
-    box-shadow: inset 0 0 0 1px var(--app-border);
+    background: transparent;
   }
 
   .timeline-rail__audio-lane-track {
     position: relative;
-    height: 26px;
+    height: 28px;
     /* Same spacers as `.timeline-rail__track` so a bar at `right: N*8px`
        from the track-mirror's right edge sits over the same screen
        position as the slot tick at `right: N*8px` inside the rail. */
@@ -8082,15 +8310,15 @@
     position: absolute;
     left: 0;
     right: 0;
-    height: 11px;
+    height: 13px;
   }
 
   .timeline-rail__audio-row--microphone {
-    top: 1px;
+    top: 0;
   }
 
   .timeline-rail__audio-row--systemAudio {
-    top: 14px;
+    top: 15px;
   }
 
   .timeline-rail__audio-lane-empty {
@@ -8133,21 +8361,23 @@
     pointer-events: auto;
   }
 
+  /* Bars sit at 45% so the selected one — recording red at full strength — is
+     the only thing on the lane that asks for attention. */
   .timeline-rail__audio-bar {
     position: absolute;
     top: 0;
-    height: 11px;
+    height: 13px;
     border-radius: 2px;
     padding: 0;
     border: 0;
     appearance: none;
     cursor: pointer;
+    opacity: 0.45;
     /* Larger hit area than the visual rectangle: a transparent ::before
        extends 3px above and below so even narrow bars are easy to grab,
        without shifting visual layout. */
-    box-shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.5);
     transition:
-      filter 90ms ease,
+      opacity 90ms ease,
       box-shadow 90ms ease,
       transform 90ms ease;
   }
@@ -8159,42 +8389,30 @@
   }
 
   .timeline-rail__audio-bar:hover {
-    filter: brightness(1.15);
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.55),
-      0 0 0 1px var(--app-border-hover);
+    opacity: 0.72;
   }
 
   .timeline-rail__audio-bar:focus-visible {
     outline: none;
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      var(--app-ring);
+    opacity: 1;
+    box-shadow: var(--app-ring);
     z-index: 2;
   }
 
-  .timeline-rail__audio-bar--selected {
-    box-shadow:
-      0 0 0 0.5px rgba(0, 0, 0, 0.6),
-      0 0 0 1.5px var(--app-record-glyph-start),
-      0 0 8px color-mix(in srgb, var(--app-record-glyph-start) 45%, transparent);
+  /* Two classes so the selected fill outranks the per-source fills below it,
+     whatever the source. */
+  .timeline-rail__audio-bar.timeline-rail__audio-bar--selected {
+    opacity: 1;
+    background: var(--app-record);
     z-index: 1;
   }
 
   .timeline-rail__audio-bar--microphone {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-mic),
-      var(--app-source-mic-strong)
-    );
+    background: var(--app-source-mic);
   }
 
   .timeline-rail__audio-bar--systemAudio {
-    background: linear-gradient(
-      180deg,
-      var(--app-source-sysaudio),
-      var(--app-source-sysaudio-strong)
-    );
+    background: var(--app-source-sysaudio);
   }
 
   /* Extend the pointer hit area beyond the visual 8px tick so dense ticks
@@ -8218,35 +8436,41 @@
     box-shadow: var(--app-ring);
   }
 
+  /* Minute ticks: hairline cuts in the band, drawn in the page background so
+     they read as gaps rather than marks. */
   .timeline-rail__tick {
     display: block;
-    width: 1px;
+    width: var(--hairline);
     height: 8px;
     background: var(--app-border-strong);
-    border-radius: 0.5px;
+    opacity: 0.7;
+    border-radius: 0;
     transition: height 0.12s ease-out, background 0.12s;
   }
 
   .timeline-rail__slot--major .timeline-rail__tick {
-    height: 14px;
-    background: var(--app-text-subtle);
+    height: 100%;
+    background: var(--app-bg);
   }
 
   .timeline-rail__slot:hover .timeline-rail__tick {
     background: var(--app-text-muted);
-    height: 12px;
+    height: 16px;
   }
 
   .timeline-rail__slot--app-boundary {
     z-index: 3;
   }
 
+  /* The active tick is the one piece of recording red on the rail: 2px, full
+     height, overshooting the rail's edges by 3px like the mockup's `.tickA`. */
   :global(.timeline-rail__slot--active) .timeline-rail__tick,
   :global(.timeline-rail__slot--active.timeline-rail__slot--major) .timeline-rail__tick {
     width: 2px;
-    height: 22px;
-    background: var(--app-record-glyph-start);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--app-record-glyph-start) 70%, transparent);
+    height: calc(100% + 6px);
+    border-radius: 1px;
+    background: var(--app-record);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--app-record) 55%, transparent);
   }
 
   .timeline-rail--placeholder {
@@ -8277,167 +8501,6 @@
     border: 1px solid var(--app-border);
     border-radius: 3px;
     pointer-events: none;
-  }
-
-  /* Custom hover/active tooltip for the rail. Anchored to the rail-wrap (not
-     the scrolling rail) so it never scrolls horizontally with the track.
-     Positioned via inline `left`/`transform` from script: when the user is
-     hovering a slot it follows the cursor; otherwise it pins above the center
-     caret to surface the active frame's timestamp without a hover gesture. */
-  .timeline-rail__tooltip {
-    position: absolute;
-    top: -6px;
-    z-index: 2;
-    display: grid;
-    grid-template-columns: 24px minmax(0, 1fr);
-    align-items: center;
-    column-gap: 9px;
-    min-width: 204px;
-    max-width: min(340px, calc(100vw - 24px));
-    min-height: 40px;
-    padding: 7px 10px 7px 7px;
-    box-sizing: border-box;
-    font-size: 10px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0;
-    color: var(--app-text-strong);
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-    pointer-events: none;
-    /* Subtle pointer hint below the bubble. */
-  }
-
-  .timeline-rail__tooltip-icon {
-    width: 24px;
-    height: 24px;
-    box-sizing: border-box;
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-    align-self: center;
-    border-radius: 4px;
-    color: var(--app-text);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    font-size: 10px;
-    font-weight: 800;
-    line-height: 1;
-  }
-
-  .timeline-rail__tooltip-icon--image {
-    padding: 3px;
-  }
-
-  .timeline-rail__tooltip-icon img {
-    width: 100%;
-    height: 100%;
-    display: block;
-    border-radius: 3px;
-    object-fit: contain;
-  }
-
-  /* Both the outgoing and incoming icon (during an app-change transition) are
-     pinned to the same grid cell so they cross-slide in place instead of
-     stacking into two rows; the icon container's `overflow: hidden` clips the
-     slide. */
-  .timeline-rail__tooltip-icon-inner {
-    grid-area: 1 / 1;
-    width: 100%;
-    height: 100%;
-    display: grid;
-    place-items: center;
-  }
-
-  .timeline-rail__tooltip-copy {
-    min-width: 0;
-    display: grid;
-    gap: 4px;
-  }
-
-  /* When no app label is known there's no icon column, so the copy spans the
-     full bubble width instead of being squeezed into the 24px icon track. */
-  .timeline-rail__tooltip-copy--solo {
-    grid-column: 1 / -1;
-  }
-
-  .timeline-rail__tooltip-app-name,
-  .timeline-rail__tooltip-date {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  /* Overlap container for the keyed app name so the cross-slide copies share
-     one grid cell — the cell auto-sizes to the wider name (no width collapse)
-     and clips the horizontal slide. */
-  .timeline-rail__tooltip-name-stack {
-    min-width: 0;
-    display: grid;
-    overflow: hidden;
-  }
-
-  .timeline-rail__tooltip-app-name {
-    grid-area: 1 / 1;
-    color: var(--app-text-strong);
-    font-size: 11px;
-    font-weight: 760;
-    line-height: 1.05;
-  }
-
-  /* Time leads, date trails on the same baseline so the readout answers
-     "when" at a glance without a second wrapped line. */
-  .timeline-rail__tooltip-meta {
-    min-width: 0;
-    display: flex;
-    align-items: baseline;
-    gap: 6px;
-  }
-
-  .timeline-rail__tooltip-time {
-    flex: 0 0 auto;
-    color: var(--app-text-strong);
-    font-size: 10px;
-    font-weight: 720;
-    font-variant-numeric: tabular-nums;
-    line-height: 1;
-    white-space: nowrap;
-  }
-
-  .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-    font-size: 9px;
-    font-variant-numeric: tabular-nums;
-    font-weight: 680;
-    line-height: 1;
-  }
-
-  .timeline-rail__tooltip::after {
-    content: "";
-    position: absolute;
-    top: 100%;
-    left: 50%;
-    transform: translateX(-50%);
-    width: 0;
-    height: 0;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 4px solid var(--app-status-bg);
-  }
-
-  .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 20px color-mix(in srgb, var(--app-bg) 58%, transparent),
-      inset 0 1px 0 color-mix(in srgb, var(--app-text-strong) 6%, transparent);
-  }
-
-  .timeline-rail__tooltip--pinned::after {
-    border-top-color: var(--app-status-bg);
   }
 
   /* ── Light theme overrides ──────────────────────────────────
@@ -8565,25 +8628,9 @@
     color: var(--app-text-muted);
   }
 
-  :global([data-theme="light"]) .timeline__rail-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail {
-    background: var(--app-surface-raised);
-  }
-  :global([data-theme="light"]) .timeline-rail__track {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-  }
-  :global([data-theme="light"]) .timeline-rail__slot {
-    background: transparent;
-    border-color: var(--app-border-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__audio-lane-wrap {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-  }
+  /* The rail-wrap, the rail and the lane are token-driven in both themes now
+     (--app-bg / --app-surface / transparent), so they carry no light override.
+     Only copy colors that the tokens can't reach stay below. */
   :global([data-theme="light"]) .timeline-rail__audio-lane-labels {
     color: var(--app-text-subtle);
   }
@@ -8596,35 +8643,5 @@
   }
   :global([data-theme="light"]) .timeline-rail__loading {
     color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip {
-    background: var(--app-status-bg);
-    border-color: var(--app-status-border);
-    color: var(--app-text-strong);
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-icon {
-    background: var(--app-surface-raised);
-    border-color: var(--app-border);
-    color: var(--app-text);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-app-name {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-time {
-    color: var(--app-text-strong);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip-date {
-    color: var(--app-text-muted);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip::after {
-    border-top-color: var(--app-status-bg);
-  }
-  :global([data-theme="light"]) .timeline-rail__tooltip--pinned {
-    box-shadow:
-      0 8px 18px rgba(20, 28, 40, 0.12),
-      inset 0 1px 0 rgba(255, 255, 255, 0.72);
   }
 </style>

@@ -332,9 +332,9 @@
      `min(97%, 1400px)`) if long lines start to hurt. */
   .turn {
     display: grid;
-    grid-template-columns: 150px minmax(0, 1fr);
-    gap: 16px;
-    margin-bottom: 16px;
+    grid-template-columns: 120px minmax(0, 1fr);
+    gap: 12px;
+    margin-bottom: 14px;
     align-items: start;
   }
 
@@ -387,8 +387,13 @@
     background: transparent;
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 11px;
-    letter-spacing: 0.01em;
+    /* Mono, uppercase, small: the speaker column is a label track beside the
+       prose, never a second voice competing with it. */
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
     text-align: right;
     cursor: pointer;
   }
@@ -517,10 +522,13 @@
   /* ── the prose: the one house-style break, taken deliberately ───────────── */
   .para {
     margin: 0;
-    font-size: 13px;
-    line-height: 1.62;
+    /* Direction 04's ramp puts prose in sans and keeps mono for machine values
+       (the speaker column and the timestamps beside it stay mono). */
+    font-family: var(--app-font-sans);
+    font-size: var(--t-read);
+    line-height: var(--lh-read);
     color: var(--app-text);
-    letter-spacing: 0.005em;
+    letter-spacing: var(--ls-read);
     text-wrap: pretty;
   }
 

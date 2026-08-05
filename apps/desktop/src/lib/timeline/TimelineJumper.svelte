@@ -33,7 +33,6 @@
   import { invoke } from "@tauri-apps/api/core";
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
-  import IconCalendar from "~icons/lucide/calendar";
   import IconChevronDown from "~icons/lucide/chevron-down";
   import type {
     DayCoverage,
@@ -157,10 +156,21 @@
   }
 
   // ── Trigger readout + committed marker ──────────────────────────────────────
+  /** `13:07 · Mon, Aug 3` — the pill rides the playhead, so it reads position
+   *  at pill length, not at timestamp length. */
   function formatTriggerLabel(ts: string): string {
     const d = parseCapturedAt(ts);
     if (isNaN(d.getTime())) return ts;
-    return d.toLocaleString();
+    const time = d.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const day = d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    });
+    return `${time} · ${day}`;
   }
   const triggerLabel = $derived(
     activeFrame ? formatTriggerLabel(activeFrame.capturedAt) : "no active frame",
@@ -381,6 +391,16 @@
   function updatePickerPosition(): void {
     if (!pickerEl || !pickerTriggerEl) return;
     const viewportMargin = 12;
+    // The pill lives on the playhead now, near the bottom of the window, so the
+    // menu opens UPWARD — where the fixed titlebar would otherwise cover its
+    // head. Reserve the titlebar's height at the top.
+    // `--app-titlebar-height` is declared on `.app-shell`, not on :root.
+    const shellEl = document.querySelector(".app-shell") ?? document.documentElement;
+    const titlebarPx =
+      parseFloat(
+        getComputedStyle(shellEl).getPropertyValue("--app-titlebar-height"),
+      ) || 0;
+    const topMargin = viewportMargin + titlebarPx;
     const triggerGap = 6;
     const triggerRect = pickerTriggerEl.getBoundingClientRect();
     const pickerRect = pickerEl.getBoundingClientRect();
@@ -406,13 +426,13 @@
     );
     const availableAbove = Math.max(
       160,
-      triggerRect.top - triggerGap - viewportMargin,
+      triggerRect.top - triggerGap - topMargin,
     );
     const maxHeight = Math.min(420, Math.max(availableBelow, availableAbove));
     const openAbove = availableBelow < 260 && availableAbove > availableBelow;
     const top = openAbove
       ? Math.max(
-          viewportMargin,
+          topMargin,
           triggerRect.top - triggerGap - Math.min(pickerRect.height, maxHeight),
         )
       : Math.min(
@@ -532,7 +552,7 @@
        One control owns both jobs — there is no second date input and no from/to
        pair anywhere on the timeline. -->
   <button
-    class="pill pill--quiet timeline__jump-trigger"
+    class="timeline__jump-trigger"
     class:timeline__jump-trigger--open={open}
     onclick={toggle}
     bind:this={pickerTriggerEl}
@@ -541,8 +561,7 @@
     aria-controls="timeline-jump-picker"
     use:tip={"Jump to date and time (J)"}
   >
-    <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
+    <span class="timeline__jump-label">{triggerLabel}</span>
     <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
     <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
   </button>
@@ -553,7 +572,7 @@
       onclick={() => void onJumpToLatest()}
       disabled={timelineBusy || jumping}
       use:tip={"Jump to latest frame (L)"}
-    >latest</button>
+    >latest <span class="kbd" aria-hidden="true">L</span></button>
   {/if}
 
   {#if open}
@@ -642,40 +661,73 @@
     gap: 6px;
     position: relative;
   }
-  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
-     reset and the open ring are local. */
+  /* The position pill. It rides the playhead (see `.timeline__nowpill` in the
+     dashboard), so it is sized to be read at a glance without covering the
+     rail: 22px, raised, mono tabular, one chevron. Deliberately NOT the shared
+     `.pill` primitive — that one is the 24px recording capsule, and inheriting
+     it only meant overriding every line of it. */
   .timeline__jump-trigger {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    border-radius: var(--r-pill);
+    height: 22px;
+    padding: 0 var(--s-6) 0 var(--s-8);
     border: 0;
     cursor: pointer;
+    background: var(--app-surface-raised);
+    box-shadow:
+      0 1px 3px var(--app-shadow-color, rgba(0, 0, 0, 0.4)),
+      0 0 0 var(--hairline) var(--app-border-strong);
+    color: var(--app-text-strong);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
+    font-weight: var(--w-medium);
     font-variant-numeric: tabular-nums;
+    line-height: 1;
     max-width: 260px;
   }
-  .timeline__jump-trigger:hover {
-    background: var(--app-surface-active);
+  .timeline__jump-trigger:hover:not(.timeline__jump-trigger--open) {
+    background: var(--app-surface-hover);
   }
-  .timeline__jump-trigger--open {
+  .timeline__jump-trigger:focus-visible {
+    outline: none;
     box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+  }
+  /* Open outranks hover: the menu is showing, so the pill is the menu's title. */
+  .timeline__jump-trigger--open,
+  .timeline__jump-trigger--open:hover {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent-strong), var(--app-ring);
+  }
+  .timeline__jump-trigger--open .timeline__jump-chevron {
+    color: currentColor;
+  }
+  .timeline__jump-trigger--open .kbd {
+    background: color-mix(in srgb, var(--app-accent-contrast) 22%, transparent);
+    color: inherit;
+    box-shadow: none;
   }
   .timeline__jump-chevron {
     display: inline-flex;
     align-items: center;
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
   .timeline__jump-chevron :global(svg) {
-    width: 11px;
-    height: 11px;
+    width: 9px;
+    height: 12px;
   }
+  /* Floated out of the flow so the pill stays centred on the playhead whether
+     or not "latest" is showing — a pill that shifts sideways when a sibling
+     appears would be lying about where you are. */
   .timeline__jump-latest {
+    position: absolute;
+    left: 100%;
+    top: 0;
+    margin-left: 6px;
+    height: 22px;
     flex: 0 0 auto;
-  }
-  .timeline__jump-icon {
-    display: inline-flex;
-    align-items: center;
-    color: var(--app-accent);
-  }
-  .timeline__jump-icon :global(svg) {
-    width: 13px;
-    height: 13px;
   }
   .timeline__jump-label {
     overflow: hidden;
@@ -688,7 +740,10 @@
     margin-left: 2px;
   }
 
-  /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* ── Popover shell: real NSMenu anatomy ─────────────────────────────────────
+     Translucent, blurred, hairline-ringed, 4px inner padding — the same
+     material AppKit gives a menu, so the jump menu reads as a menu and not as
+     a dialog that happens to hold a calendar. */
   .timeline__picker {
     position: fixed;
     z-index: 20;
@@ -697,25 +752,31 @@
     width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    padding: var(--s-4);
+    background: color-mix(in srgb, var(--app-surface) 92%, transparent);
+    backdrop-filter: blur(28px) saturate(160%);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow:
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text);
   }
   .timeline__picker-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    padding: 6px var(--s-8) 4px;
+    background: transparent;
+    border-bottom: 0;
   }
+  /* Menu section head. */
   .timeline__picker-title {
     flex: 1;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
   }
@@ -735,7 +796,7 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid var(--app-border);
+    border-right: var(--hairline) solid var(--app-border-strong);
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
   }
@@ -757,11 +818,12 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    padding: 6px var(--s-8);
+    border-top: var(--hairline) solid var(--app-border-strong);
+    background: transparent;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    min-height: 32px;
+    min-height: 26px;
   }
   .timeline__picker-foot-span {
     color: var(--app-text-subtle);
