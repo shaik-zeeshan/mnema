@@ -364,7 +364,7 @@
   <div class="totals">
     <div class="bar">
       {#each BAR as [id, colour] (id)}
-        <span class="seg" style={`width:${barWidth(id).toFixed(1)}%;background:${colour}`}
+        <span class="bar__seg" style={`width:${barWidth(id).toFixed(1)}%;background:${colour}`}
         ></span>
       {/each}
     </div>
@@ -606,7 +606,7 @@
     display: flex;
     margin: 0 0 8px;
   }
-  .seg {
+  .bar__seg {
     display: block;
     height: 100%;
     transition: width 0.22s ease;
@@ -624,7 +624,7 @@
   @media (prefers-reduced-motion: reduce) {
     .kid::before,
     .grp,
-    .seg {
+    .bar__seg {
       transition: none;
     }
   }

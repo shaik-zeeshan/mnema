@@ -437,18 +437,18 @@
 {#if open}
   <div
     id="recording-popover"
-    class="recpop"
+    class="menu recpop"
     role="dialog"
     aria-label="Recording"
     style="left: {anchorLeft}px; top: {anchorTop}px;"
     bind:this={popoverEl}
   >
-    <p class="recpop__head">{detail}</p>
+    <p class="menu__hd recpop__head">{detail}</p>
 
     {#if privacySuspended && screenReason === "privacy_recovery_restart_required"}
       <button
         type="button"
-        class="btn btn--sm recpop__restart"
+        class="btn btn--sm btn--push recpop__restart"
         aria-busy={restarting}
         disabled={restarting || captureControls.loadingStart || captureControls.loadingStop}
         onclick={() => void restartForPrivacyRecovery()}
@@ -458,71 +458,95 @@
     {#if captureControls.isRunning}
       <button
         type="button"
-        class="recpop__item"
+        class="menu__i"
+        class:is-dis={pauseDisabled}
         disabled={pauseDisabled}
         aria-busy={captureControls.loadingPause}
         onclick={() => void runPause()}
       >
-        <svg class="recpop__glyph" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-          {#if captureControls.isUserPaused}
-            <path d="M7 4.5 19 12 7 19.5Z" fill="currentColor" stroke-linejoin="round" />
-          {:else}
-            <path d="M9 5v14" /><path d="M15 5v14" />
-          {/if}
-        </svg>
+        <span class="menu__ck" aria-hidden="true"></span>
+        <span class="menu__gl" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            {#if captureControls.isUserPaused}
+              <path d="M7 4.5 19 12 7 19.5Z" fill="currentColor" stroke-linejoin="round" />
+            {:else}
+              <path d="M9 5v14" /><path d="M15 5v14" />
+            {/if}
+          </svg>
+        </span>
         <span>{pauseLabel}</span>
         {#if shortcutFor("pauseResumeRecording")}
-          <kbd class="kbd recpop__kbd">{shortcutFor("pauseResumeRecording")}</kbd>
+          <span class="menu__kbd">{shortcutFor("pauseResumeRecording")}</span>
         {/if}
       </button>
     {/if}
     <button
       type="button"
-      class="recpop__item"
+      class="menu__i"
       disabled={captureControls.loadingStart ||
         captureControls.loadingStop ||
         captureControls.loadingSettings}
       aria-busy={captureControls.loadingStart || captureControls.loadingStop}
       onclick={() => void runPrimary()}
     >
-      <svg class="recpop__glyph" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
-        {#if captureControls.isRunning}
-          <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
-        {:else}
-          <circle cx="12" cy="12" r="6" fill="currentColor" />
-        {/if}
-      </svg>
+      <span class="menu__ck" aria-hidden="true"></span>
+      <span class="menu__gl" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          {#if captureControls.isRunning}
+            <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" />
+          {:else}
+            <circle cx="12" cy="12" r="6" fill="currentColor" />
+          {/if}
+        </svg>
+      </span>
       <span>{primaryLabel}</span>
       {#if shortcutFor("toggleRecording")}
-        <kbd class="kbd recpop__kbd">{shortcutFor("toggleRecording")}</kbd>
+        <span class="menu__kbd">{shortcutFor("toggleRecording")}</span>
       {/if}
     </button>
 
-    <div class="recpop__sep" role="presentation"></div>
-    <p class="recpop__label">Sources</p>
+    <div class="menu__sep" role="presentation"></div>
+    <p class="menu__hd">Sources</p>
     {#each SOURCES as source (source.key)}
       {@const on = sourceSelection.isSelected(source.key)}
       {@const outOfSession =
         captureControls.isRunning && !sourceSelection.isInSession(source.key)}
       {@const lastOne = on && liveCount <= 1}
+      {@const off =
+        outOfSession ||
+        lastOne ||
+        captureControls.loadingSettings ||
+        sourceSelection.isSaving(source.key)}
       <button
         type="button"
-        class="recpop__item"
+        class="menu__i"
+        class:is-dis={off}
         role="menuitemcheckbox"
         aria-checked={on}
-        disabled={outOfSession ||
-          lastOne ||
-          captureControls.loadingSettings ||
-          sourceSelection.isSaving(source.key)}
+        disabled={off}
         use:tip={sourceTip(source)}
         onclick={() => void toggleSourceSelected(source.key)}
       >
-        <span class="recpop__check" aria-hidden="true">
+        <span class="menu__ck" aria-hidden="true">
           {#if on}
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <path d="M2 6.4 4.6 9 10 3" />
             </svg>
           {/if}
+        </span>
+        <!-- Each source keeps its own ink (`--app-src-*`) — the same identity
+             the timeline lanes and the capture tiles use, so "screen" is one
+             colour everywhere in the app. -->
+        <span class="menu__gl srcg srcg--{source.key === 'systemAudio' ? 'sys' : source.key === 'microphone' ? 'mic' : 'screen'}" class:srcg--off={!on} aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            {#if source.key === "screen"}
+              <rect x="2.5" y="4" width="19" height="13" rx="2" /><path d="M8 20h8" />
+            {:else if source.key === "microphone"}
+              <rect x="9" y="2.5" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0" /><path d="M12 18v3.5" />
+            {:else}
+              <path d="M4 10v4" /><path d="M8 6.5v11" /><path d="M12 3.5v17" /><path d="M16 6.5v11" /><path d="M20 10v4" />
+            {/if}
+          </svg>
         </span>
         <span>{source.label}</span>
       </button>
@@ -565,7 +589,13 @@
     color: var(--app-text-strong);
   }
 
-  /* ── Popover ────────────────────────────────────────────────────────── */
+  /* ── Popover ──────────────────────────────────────────────────────────
+     NSMenu anatomy, straight off bento.css `.menu`: 24px rows, a 20px
+     checkmark gutter every row shares (so the labels align whether or not the
+     row is checkable), a right-aligned ⌘ column, separators inset by 8, and a
+     FULL-ROW accent highlight — never an underline. Nothing about that look is
+     re-stated here; what follows is only anchoring and the two blocks of prose
+     a menu has no vocabulary for. */
   .recpop {
     /* Fixed, not absolute: `.titlebar { overflow: hidden }` clips absolutely
        positioned descendants out of existence. Anchored from the trigger's
@@ -573,89 +603,48 @@
     position: fixed;
     z-index: 200;
     min-width: 252px;
-    padding: var(--s-6);
-    border: var(--hairline) solid var(--app-border-strong);
-    border-radius: var(--r-md);
-    background: var(--app-surface-raised);
-    box-shadow: var(--shadow-popover);
     display: flex;
     flex-direction: column;
-    gap: 2px;
   }
 
+  /* The head is a sentence, not a menu title, so it wraps — the one place this
+     popover departs from a literal NSMenu. */
   .recpop__head {
-    margin: 0;
-    padding: var(--s-4) var(--s-8) var(--s-6);
     max-width: 34ch;
-    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
-    color: var(--app-text-muted);
-  }
-
-  .recpop__label {
-    margin: var(--s-4) 0 2px;
-    padding: 0 var(--s-8);
-    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
-    letter-spacing: var(--ls-label);
-    text-transform: uppercase;
-    color: var(--app-text-faint);
+    padding-bottom: var(--s-6);
   }
 
   .recpop__note {
-    margin: var(--s-6) 0 0;
-    padding: 0 var(--s-8);
+    margin: var(--s-6) 0 var(--s-2);
+    padding: 0 var(--s-8) 0 20px;
     max-width: 34ch;
     font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
-    color: var(--app-text-faint);
+    color: var(--app-text-subtle);
   }
 
-  .recpop__sep {
-    height: var(--hairline);
-    margin: var(--s-6) var(--s-8);
-    background: var(--app-border);
+  /* On the accent-filled row the source glyph drops its own ink — the src
+     colours are tuned for the menu material, not for the accent fill. */
+  .menu__i:hover:not(.is-dis) .srcg,
+  .menu__i:focus-visible .srcg {
+    color: inherit;
   }
-
-  .recpop__item {
-    display: flex;
-    align-items: center;
-    gap: var(--gap-inline);
-    width: 100%;
-    height: var(--h-md);
-    padding: 0 var(--s-8);
-    border: 0;
-    border-radius: var(--r-sm);
-    background: transparent;
-    color: var(--app-text-strong);
-    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
-    letter-spacing: var(--ls-ui);
-    text-align: left;
-  }
-  .recpop__item:hover:not(:disabled) {
-    background: var(--app-surface-hover);
-  }
-  .recpop__item:focus-visible {
-    outline: none;
-    box-shadow: var(--ring);
-  }
-  .recpop__item:disabled {
+  /* `.is-dis` only dims the label; a source row also carries a coloured glyph,
+     so the whole row fades — the affordance the old popover had. */
+  .menu__i:disabled {
     opacity: var(--opacity-disabled);
   }
-
-  .recpop__glyph,
-  .recpop__check {
-    flex: 0 0 auto;
-    width: 14px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--app-text-muted);
+  .menu__i:focus-visible {
+    outline: none;
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
-
-  .recpop__kbd {
-    margin-left: auto;
+  .menu__i:focus-visible .menu__kbd {
+    color: inherit;
+    opacity: 0.8;
   }
 
   .recpop__restart {
-    margin: 0 var(--s-4) var(--s-4);
+    margin: var(--s-2) var(--s-4) var(--s-6);
     justify-content: center;
   }
 </style>

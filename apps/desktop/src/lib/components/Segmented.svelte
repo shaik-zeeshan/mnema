@@ -80,7 +80,7 @@
   // focus is already inside this group, so we never steal focus on mount or on
   // a programmatic value change.
   function focusSelected(index: number) {
-    const group = segEls[index]?.closest(".segmented");
+    const group = segEls[index]?.closest(".seg");
     if (group && group.contains(document.activeElement)) {
       segEls[index]?.focus();
     }
@@ -110,8 +110,16 @@
   }
 </script>
 
+<!--
+  Bento Native: this component IS the direction's NSSegmentedControl. The
+  container is `.seg` and each option is `.seg__i` / `.seg__i.on`, so the look
+  comes from `lib/bento/bento.css` and nothing about it is forked here. The
+  legacy `.segmented` class rides along as an alias — consumers style through it
+  (e.g. ThemeModeControl's full-width variant) and the props/API are unchanged.
+-->
 <div
-  class="segmented"
+  class="seg segmented"
+  class:seg--sm={compact}
   class:segmented--compact={compact}
   class:segmented--disabled={disabled}
   role="radiogroup"
@@ -121,8 +129,8 @@
     <button
       type="button"
       bind:this={segEls[index]}
-      class="seg"
-      class:seg--active={value === option.value}
+      class="seg__i"
+      class:on={value === option.value}
       class:seg--off={isOff(option.value)}
       role="radio"
       aria-checked={value === option.value}
@@ -137,75 +145,29 @@
         <span class="seg__icon" aria-hidden="true">{@render icon(option.value)}</span>
       {/if}
       {#if option.label}
-        <span class="seg__label">{option.label}</span>
+        <span>{option.label}</span>
       {/if}
     </button>
   {/each}
 </div>
 
 <style>
+  /* Everything visual — the track, the raised "on" chip, the type, the focus
+     ring — is bento.css `.seg` / `.seg__i`. What lives here is only what a
+     shared stylesheet cannot know about this component. */
   .segmented {
-    display: inline-flex;
-    /* Hug the options even inside a stretch flex column, so the pill doesn't
+    /* Hug the options even inside a stretch flex column, so the track doesn't
        blow out to full width with the segments packed on one side. Callers that
-       want a full-width control opt in by setting width:100% (+ flex segments),
-       as ThemeModeControl does. */
+       want a full-width control opt in by setting width:100%, and the segments
+       share it (`.seg__i` is flex:1 1 auto). */
     width: fit-content;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .segmented--disabled {
     opacity: var(--app-disabled-opacity);
     pointer-events: none;
-  }
-
-  .seg {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 5px 12px;
-    border: 0;
-    border-radius: 6px;
-    background: transparent;
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 540;
-    line-height: 1;
-    cursor: pointer;
-    user-select: none;
-    outline: none;
-    transition: background 0.15s, color 0.15s, box-shadow 0.15s;
-  }
-
-  .seg:hover:not(.seg--active) {
-    color: var(--app-text);
-    background: var(--app-surface-hover);
-  }
-
-  .seg:not(.seg--active):not(:disabled):active {
-    background: var(--app-surface-active);
-  }
-
-  .seg:focus-visible {
-    box-shadow: var(--app-ring);
-    outline: 2px solid var(--app-accent);
-    outline-offset: -2px;
-  }
-
-  .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-
-  .seg:disabled {
-    cursor: not-allowed;
   }
 
   /* Individually disabled segment (group stays interactive). */
@@ -229,41 +191,11 @@
     stroke-linejoin: round;
   }
 
-  /* ── Compact (titlebar pill) ─────────────────────────────────── */
-  .segmented--compact {
-    padding: 2px;
-    gap: 2px;
-    border-radius: 999px;
-    border-color: var(--app-icon-border-hover);
-    background: var(--app-surface-raised);
-  }
-
-  .segmented--compact .seg {
-    padding: 4px 7px;
-    border-radius: 999px;
-    color: var(--app-icon-fg);
-  }
-
-  .segmented--compact .seg:hover:not(.seg--active) {
-    background: var(--app-icon-bg-hover);
-    color: var(--app-icon-fg-hover);
-  }
-
-  .segmented--compact .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
-  }
-
+  /* Compact = the mockup's `.seg--sm` at 24px; its icons are the only local
+     override, since an icon-only segment needs a bigger glyph than a label. */
   .segmented--compact .seg__icon,
   .segmented--compact .seg__icon :global(svg) {
     width: 16px;
     height: 16px;
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .seg {
-      transition: none;
-    }
   }
 </style>

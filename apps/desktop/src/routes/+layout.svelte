@@ -880,38 +880,49 @@
     <div class="titlebar__drag" data-tauri-drag-region>
       <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
            Insights stays reachable here until Ask moves into Quick Access.
-           "dashboard" retired (#103). The shortcut rides in the tooltip rather
-           than a visible ⌘1 chip: the segments are 22px tall and a direction
-           skin may render the chip in phase 2. -->
+           "dashboard" retired (#103). Bento Native renders it as the direction's
+           NSSegmentedControl (`.seg`), with the two peers' shortcuts as visible
+           keycaps inside the segment (the mockup's `.seg__i .kbd` rule) — the
+           bar is 38px now, so the chip fits. Insights has no global shortcut,
+           so it carries no keycap rather than an invented one. -->
       <div
-        class="surface-toggle"
+        class="seg surface-toggle"
         class:surface-toggle--muted={isSettingsRoute}
         role="navigation"
         aria-label="Main surface"
       >
         <button
           type="button"
-          class:active={isMainRoute}
+          class="seg__i"
+          class:on={isMainRoute}
           class:return-target={isSettingsRoute && settingsReturnTarget === "timeline"}
           aria-current={isMainRoute ? "page" : undefined}
           use:tip={`Timeline (${shortcutDisplay("openTimelineSurface")})`}
           onclick={() => goToSurface("timeline")}
         >
           Timeline
+          {#if shortcutDisplay("openTimelineSurface") !== "—"}
+            <span class="kbd surface-toggle__kbd" aria-hidden="true">{shortcutDisplay("openTimelineSurface")}</span>
+          {/if}
         </button>
         <button
           type="button"
-          class:active={isOverviewRoute}
+          class="seg__i"
+          class:on={isOverviewRoute}
           class:return-target={isSettingsRoute && settingsReturnTarget === "overview"}
           aria-current={isOverviewRoute ? "page" : undefined}
           use:tip={`Overview (${shortcutDisplay("openOverviewSurface")})`}
           onclick={() => goToSurface("overview")}
         >
           Overview
+          {#if shortcutDisplay("openOverviewSurface") !== "—"}
+            <span class="kbd surface-toggle__kbd" aria-hidden="true">{shortcutDisplay("openOverviewSurface")}</span>
+          {/if}
         </button>
         <button
           type="button"
-          class:active={isInsightsRoute}
+          class="seg__i"
+          class:on={isInsightsRoute}
           class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
           aria-current={isInsightsRoute ? "page" : undefined}
           onclick={() => goToSurface("insights")}
@@ -923,7 +934,7 @@
            shortcut, which a new user can't discover. -->
       <button
         type="button"
-        class="titlebar__search"
+        class="btn btn--push titlebar__search"
         use:tip={`Search · Recall (${shortcutDisplay("toggleQuickRecall")})`}
         aria-label={`Search and recall (${shortcutDisplay("toggleQuickRecall")})`}
         onclick={() => void summonQuickRecall()}
@@ -1007,21 +1018,22 @@
           {#if notificationsOpen}
             <div
               id="notification-popover"
-              class="notification-popover"
+              class="menu notification-popover"
               role="dialog"
               aria-label="Notifications"
               tabindex="-1"
               bind:this={notificationsPopoverEl}
               onkeydown={onNotificationsPopoverKeydown}
             >
-              <div class="notification-popover__head">
+              <div class="menu__hd notification-popover__head">
                 <span>Notifications</span>
                 {#if hasNotifications}
-                  <button type="button" class="notification-popover__clear" onclick={() => { clearToastArchive(); void clearAppNotifications(); }}>
+                  <button type="button" class="btn btn--sm btn--ghost notification-popover__clear" onclick={() => { clearToastArchive(); void clearAppNotifications(); }}>
                     Clear all
                   </button>
                 {/if}
               </div>
+              <div class="menu__sep" role="presentation"></div>
               {#if notificationActionError}
                 <div class="notification-popover__error" role="alert">
                   <span class="notification-popover__error-text">{notificationActionError}</span>
@@ -1037,12 +1049,13 @@
               <div class="notification-popover__list">
                 {#if notificationLoadError}
                   <div class="notification-item notification-item--error" role="alert">
+                    <span class="notification-item__dot" aria-hidden="true"></span>
                     <div class="notification-item__body">
                       <span class="notification-item__title">Couldn't load notifications</span>
                       <span class="notification-item__message">{notificationLoadError}</span>
                       <button
                         type="button"
-                        class="notification-item__action"
+                        class="btn btn--sm notification-item__action"
                         onclick={() => void reloadAppNotifications()}
                       >
                         Try again
@@ -1052,6 +1065,7 @@
                 {/if}
                 {#each bellRows as row (row.key)}
                   <div class="notification-item notification-item--{row.severity}">
+                    <span class="notification-item__dot" aria-hidden="true"></span>
                     <div class="notification-item__body">
                       <span class="notification-item__title">{row.title}</span>
                       <span class="notification-item__message">{row.message}</span>
@@ -1063,7 +1077,7 @@
                       {#if row.notification?.action?.type === "open_settings_tab"}
                         <button
                           type="button"
-                          class="notification-item__action"
+                          class="btn btn--sm notification-item__action"
                           onclick={() => void runNotificationAction(row.notification!)}
                         >
                           {notificationActionLabel(row.notification!)}
@@ -1202,7 +1216,7 @@
       />
       <button
         type="button"
-        class="surface-titlebar__close"
+        class="btn btn--sm btn--push surface-titlebar__close"
         aria-label="Close window"
         use:tip={"Close"}
         onclick={() => void closeCurrentWindow()}
@@ -1276,7 +1290,7 @@
               <h3 id={`shortcut-help-group-${group.id}`}>{group.title}</h3>
               <dl class="shortcut-help__list">
                 {#each group.rows as row (row.id)}
-                  <div class="shortcut-help__row">
+                  <div class="row row--static shortcut-help__row">
                     <dt>
                       {#each formatShortcut(row.bindings[0], windowPlatform) as token}
                         <kbd class="kbd kbd--help">{token}</kbd>
@@ -1321,9 +1335,8 @@
     --app-fg-muted: #8a8aaa;
     --app-fg-subtle: #45455a;
 
-    --app-titlebar-bg: #08080c;
-    --app-titlebar-border: #15151f;
-    --app-titlebar-title: #45455a;
+    /* No `--app-titlebar-*` fill: the toolbar is a MATERIAL now
+       (`--mat-toolbar`), and its seam is the shared `--app-border`. */
 
     --app-status-bg: #0a0a10;
     --app-status-border: #161624;
@@ -1641,10 +1654,6 @@
     --app-fg: #14141a;
     --app-fg-muted: #5a5a6a;
     --app-fg-subtle: #8a8a9a;
-
-    --app-titlebar-bg: #ececea;
-    --app-titlebar-border: #d4d4d2;
-    --app-titlebar-title: #9a9aa8;
 
     --app-status-bg: #ffffff;
     --app-status-border: #d8d8dc;
@@ -2013,6 +2022,23 @@
      is a STATE, never an error: transient liveness tints via `--warn`, not
      danger. RecordingPill.svelte is the one consumer; the pieces live here
      because §6 owns the primitive's vocabulary. */
+  /* The direction layer draws `.seg__i` and `.menu__i` as spans; in the real app
+     they are <button>s, so they need the one reset the mockup never had to
+     write. Nothing else about them is redefined here — bento.css stays the one
+     source for their look. Native chrome takes the arrow cursor, not a hand. */
+  :global(.seg__i),
+  :global(.menu__i) {
+    border: 0;
+    background: transparent;
+    cursor: default;
+  }
+  /* A stretched `.seg` (a caller that sets width:100%) shares the width between
+     its segments; at the default fit-content width this is a no-op. */
+  :global(.seg__i) {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
   :global(.pill) {
     position: relative;
     display: inline-flex;
@@ -2062,13 +2088,21 @@
   }
 
   /* The one word the capsule carries: "Paused", "Low disk", "screen asleep".
-     Three of the five directions spell it sans/t-meta/muted; that is the
-     phase-1 neutral, per-direction skins are phase 2. */
+     Bento Native spells it as the mockup's `.pill__w` — mono, uppercase, at the
+     label size, in the record ink. A machine readout, matching the mono elapsed
+     and mono cost beside it. */
   :global(.pill__w) {
-    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
-    letter-spacing: var(--ls-meta);
-    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-record-fg);
     white-space: nowrap;
+  }
+  :global(.pill--quiet .pill__w) {
+    color: var(--app-text-muted);
+  }
+  :global(.pill--warn .pill__w) {
+    color: var(--app-warn);
   }
   /* The "Rec" rung: the word only appears once the timer has been dropped. */
   :global(.pill__w--rung) {
@@ -2291,7 +2325,8 @@
   }
 
   .app-shell {
-    --app-titlebar-height: 36px;
+    /* One toolbar height for the whole app (the direction's `--h-titlebar`). */
+    --app-titlebar-height: var(--h-titlebar);
     --app-window-radius: 10px;
     display: flex;
     flex-direction: column;
@@ -2325,19 +2360,23 @@
      Tauri's `decorations: false` window means this is the only chrome the
      user sees; the inert filler area carries `data-tauri-drag-region` so
      dragging the empty space moves the window, while the controls on
-     either side remain ordinary (clickable) interactive elements. */
+     either side remain ordinary (clickable) interactive elements.
+
+     Bento Native: this is a MATERIAL toolbar (the mockup's `.tbar`), one of
+     the four places in the whole app allowed a material — toolbar, menus,
+     popovers, HUD. Everything else stays opaque. Depth here is one hairline
+     seam, never a drop shadow. */
   .titlebar {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-12);
     height: var(--app-titlebar-height);
     /* Reserve ~72px on the left so our content never collides with the
        macOS native traffic lights drawn by Tauri's overlay title-bar. The
        right side keeps its tighter inset since nothing native sits there. */
-    padding: 0 8px 0 78px;
-    background: var(--app-titlebar-bg);
-    border-bottom: 1px solid var(--app-titlebar-border);
+    padding: 0 var(--s-12) 0 78px;
+    box-shadow: 0 var(--hairline) 0 var(--app-border);
     /* Hard backstop: a tiling WM (e.g. aerospace) can force the window below the
        640px app minimum, and flex items can't shrink past their content width —
        clip rather than let the row spill the right-hand controls off-screen.
@@ -2353,22 +2392,49 @@
     z-index: 100;
   }
 
+  /* The material rides on a pseudo-element, NOT on `.titlebar` itself.
+     `backdrop-filter` makes its element a containing block for
+     `position: fixed` descendants — which would re-anchor the notifications
+     and recording popovers inside the bar and then let `overflow: hidden`
+     clip them out of existence, the exact bug both of them already carry a
+     comment about. A pseudo-element is not an ancestor of either. */
+  .titlebar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background: var(--mat-toolbar);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
+  }
+
   .surface-titlebar {
     flex: 0 0 auto;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    height: 40px;
-    padding: 0 10px 0 14px;
-    background: var(--app-titlebar-bg);
+    gap: var(--s-12);
+    height: var(--h-titlebar);
+    padding: 0 var(--s-8) 0 var(--s-16);
     border-radius: var(--app-window-radius) var(--app-window-radius) 0 0;
-    box-shadow: inset 0 -1px 0 var(--app-titlebar-border);
+    box-shadow: inset 0 calc(var(--hairline) * -1) 0 var(--app-border);
     user-select: none;
     -webkit-user-select: none;
     position: sticky;
     top: 0;
     z-index: 100;
+  }
+
+  /* Same material, same pseudo-element reason as `.titlebar::before`. */
+  .surface-titlebar::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    background: var(--mat-toolbar);
+    backdrop-filter: blur(20px) saturate(1.4);
+    -webkit-backdrop-filter: blur(20px) saturate(1.4);
   }
 
   .surface-titlebar__drag {
@@ -2386,40 +2452,10 @@
     flex: 0 0 auto;
   }
 
+  /* The shared `.btn` with the AppKit push bezel; only its minimum width is
+     local, so the label never jitters the bar. */
   .surface-titlebar__close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
     min-width: 72px;
-    height: 28px;
-    padding: 0 10px;
-    border-radius: 999px;
-    border: 1px solid var(--app-icon-border-hover);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
-    font-family: inherit;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
-  }
-
-  .surface-titlebar__close:hover {
-    background: var(--app-icon-bg-hover);
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
-  }
-  .surface-titlebar__close:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .surface-titlebar__close:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
   }
 
   .titlebar__group {
@@ -2452,100 +2488,40 @@
     cursor: default;
   }
 
-  /* ── Surface toggle (Timeline ⇄ Insights) ─────────────────────
-     The canonical segmented control from the Insights mockups (app.css
-     `.surface-toggle`), token-driven. The active segment is signalled by an
-     accent fill alone so the segments stay even-width. Shared visual contract
-     with the Insights sub-nav switcher. */
+  /* ── Surface toggle (Timeline ⇄ Overview ⇄ Insights) ──────────
+     It IS the direction's `.seg` now (bento.css owns the geometry, the raised
+     "on" segment and the keycap treatment). Only the two things `.seg` cannot
+     know live here: that this instance never shrinks, and the Settings-route
+     muting. */
   .surface-toggle {
     flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
   }
-  .surface-toggle button {
-    font: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
-    letter-spacing: 0.02em;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 13px;
-    height: 22px;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
-  }
-  .surface-toggle button:hover {
-    color: var(--app-text-strong);
-  }
-  .surface-toggle button:not(.active):hover {
-    background: var(--app-surface-hover);
-  }
-  .surface-toggle button:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .surface-toggle button:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .surface-toggle button.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    /* Active = "you are here": use the brighter --app-accent (AA-legible on
-       accent-bg) + 600 weight. --app-accent-strong is a fill/border tone, not
-       body text, and reads ~4:1 here. */
-    color: var(--app-accent);
-    font-weight: 600;
+  .surface-toggle__kbd {
+    flex: 0 0 auto;
   }
   /* On the Settings route neither surface is the current page; de-emphasize the
      whole toggle so it doesn't read as a live selection, and quietly mark the
-     surface "Back to app" returns to (no accent fill — that's reserved for the
-     active page). */
+     surface "Back to app" returns to (never the raised "on" chip — that is
+     reserved for the page you are actually on). */
   .surface-toggle--muted {
     opacity: 0.72;
   }
-  .surface-toggle--muted button.return-target {
+  .surface-toggle--muted .seg__i.return-target {
     color: var(--app-text);
-    border-color: var(--app-border);
-    background: var(--app-surface-raised);
   }
 
   /* ── Quick Recall door ─────────────────────────────────────────
      A visible, mouse-discoverable entry to Quick Recall; the global ⌥Space
-     shortcut alone is undiscoverable for a new user. */
+     shortcut alone is undiscoverable for a new user. It is the shared `.btn`
+     wearing the AppKit push bezel (`.btn--push`) — everything below is only
+     its place in the row. */
   .titlebar__search {
     flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    height: 26px;
-    padding: 0 8px 0 9px;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    background: var(--app-surface-subtle);
+    padding-right: var(--s-4);
     color: var(--app-text-muted);
-    font: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
-    cursor: pointer;
-    transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
   }
   .titlebar__search-icon {
     flex: 0 0 auto;
-  }
-  .titlebar__search-label {
-    letter-spacing: 0.02em;
   }
   /* Keycap is the shared `.kbd` primitive; only its place in the row is here. */
   .titlebar__search-kbd {
@@ -2563,18 +2539,7 @@
     border: 0;
   }
   .titlebar__search:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
     color: var(--app-text-strong);
-  }
-  .titlebar__search:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .titlebar__search:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
   }
 
   /* ── Responsive title-bar degradation ─────────────────────────
@@ -2684,45 +2649,40 @@
     }
   }
 
-  /* ── Surface actions ──────────────────────────────────────── */
+  /* ── Surface actions ──────────────────────────────────────────
+     Borderless toolbar glyph buttons — the NSToolbar idiom: no resting bezel,
+     a fill on hover, an accent fill when the surface they open is showing.
+     No press transform, no brightness filter: macOS chrome does not bounce. */
   .titlebar__settings {
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 0;
-    width: 28px;
-    height: 28px;
-    border-radius: 4px;
+    width: var(--h-md);
+    height: var(--h-md);
+    border-radius: var(--r-md);
     color: var(--app-icon-fg);
-    border: 1px solid transparent;
+    border: 0;
     background: transparent;
-    cursor: pointer;
     padding: 0;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    transition: background-color var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
   }
   .titlebar__settings--labelled {
-    gap: 6px;
+    gap: var(--gap-inline);
     width: auto;
-    padding: 0 12px 0 10px;
+    padding: 0 var(--s-12) 0 var(--s-8);
   }
   .titlebar__settings:hover {
-    background: var(--app-icon-bg-hover);
+    background: var(--app-surface-hover);
     color: var(--app-icon-fg-hover);
-    border-color: var(--app-icon-border-hover);
   }
   .titlebar__settings.active {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-    color: var(--app-accent-strong);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
   .titlebar__settings:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .titlebar__settings:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
+    box-shadow: var(--ring);
   }
   .titlebar__settings-icon {
     display: block;
@@ -2767,6 +2727,16 @@
     background: var(--app-danger);
     color: var(--app-bg);
   }
+  /* ── Notifications popover ────────────────────────────────────
+     NSMenu anatomy (bento.css `.menu` supplies the material, the radius, the
+     edge and the floating shadow): a `.menu__hd` title, a `.menu__sep`, then
+     rows sharing the menu's 20px leading gutter — here a severity dot rather
+     than a checkmark, the same 7px dot the toast uses. The rows are the one
+     stated departure from a literal 24px menu row: an alert carries a title,
+     a message, an age and sometimes an action, so it wraps.
+
+     Depth is a surface step, never a card shadow — the rows are borderless
+     fills separated by an inset hairline, not stacked bordered boxes. */
   .notification-popover {
     /* Fixed, not absolute: `.titlebar { overflow: hidden }` (the tiling-WM
        spill backstop) clips absolutely-positioned descendants, which clipped
@@ -2774,8 +2744,8 @@
        viewport and escapes the clip; the titlebar is sticky at the top with a
        fixed height, so anchoring just below it lands in the same spot. */
     position: fixed;
-    top: calc(var(--app-titlebar-height) + 8px);
-    right: 8px;
+    top: calc(var(--app-titlebar-height) + var(--s-6));
+    right: var(--s-8);
     /* Above the sticky titlebar's z-index: 100. */
     z-index: 200;
     width: min(340px, calc(100vw - 24px));
@@ -2783,179 +2753,143 @@
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
   }
   .notification-popover__head {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
-    padding: 10px 12px;
-    border-bottom: 1px solid var(--app-border);
-    font-size: var(--t-meta);
-    font-weight: 700;
-    color: var(--app-text-strong);
-  }
-  .notification-popover__clear,
-  .notification-item__clear {
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    font: inherit;
-    border-radius: 4px;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    gap: var(--s-8);
+    /* `.menu__hd` already sets the type and the 20px gutter inset. */
+    padding-right: var(--s-4);
+    min-height: var(--h-sm);
   }
   .notification-popover__clear {
-    font-size: var(--t-meta);
-    font-weight: 700;
-    padding: 4px 7px;
-  }
-  .notification-popover__clear:hover,
-  .notification-item__clear:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-    border-color: var(--app-border);
-  }
-  .notification-popover__clear:focus-visible,
-  .notification-item__clear:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .notification-popover__list {
-    overflow-y: auto;
-    padding: 6px;
-  }
-  .notification-item {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 9px 10px;
-    border-radius: 6px;
-    border: 1px solid var(--app-border);
-    background: var(--app-surface);
-  }
-  .notification-item + .notification-item {
-    margin-top: 6px;
-  }
-  .notification-item--warning {
-    border-color: var(--app-warn-border);
-    background: var(--app-warn-bg);
-  }
-  .notification-item--error {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg-soft);
-  }
-  .notification-item--error .notification-item__title {
-    color: var(--app-danger-text);
-  }
-  .notification-item--info {
-    border-color: var(--app-info-border);
-    background: var(--app-info-bg);
-  }
-  .notification-item--info .notification-item__title {
-    color: var(--app-info);
-  }
-  .notification-item__body {
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-  }
-  .notification-item__title {
-    color: var(--app-text-strong);
-    font-size: var(--t-meta);
-    font-weight: 700;
-    line-height: 1.2;
-  }
-  .notification-item__message {
-    color: var(--app-text-muted);
-    font-size: var(--t-meta);
-    line-height: 1.35;
-  }
-  .notification-item__time {
-    margin-top: 2px;
-    color: var(--app-text-faint, var(--app-text-muted));
-    font-size: var(--t-label);
-    letter-spacing: 0.04em;
-    font-variant-numeric: tabular-nums;
-  }
-  .notification-popover__error {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    margin: 6px 6px 0;
-    padding: 7px 9px;
-    border-radius: 6px;
-    border: 1px solid var(--app-danger-border);
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger-text);
-    font-size: var(--t-meta);
-  }
-  .notification-popover__error-text {
-    min-width: 0;
-  }
-  .notification-popover__error-dismiss {
-    flex: 0 0 auto;
-    border: 1px solid currentColor;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    font-size: var(--t-label);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    padding: 3px 7px;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  .notification-popover__error-dismiss:hover {
-    background: color-mix(in srgb, currentColor 14%, transparent);
-  }
-  .notification-popover__error-dismiss:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
-  }
-  .notification-item__action {
-    align-self: flex-start;
-    margin-top: 4px;
-    padding: 4px 7px;
-    border-radius: 4px;
-    border: 1px solid var(--app-border-strong);
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: var(--t-label);
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-  .notification-item__action:hover {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-  }
-  .notification-item__action:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    margin: -2px 0;
   }
   .notification-item__clear {
     align-self: start;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 24px;
-    height: 24px;
+    width: var(--h-sm);
+    height: var(--h-sm);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: transparent;
+    color: var(--app-text-subtle);
+    font: inherit;
+    transition: background-color var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
+  }
+  .notification-item__clear:hover {
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
+  }
+  .notification-item__clear:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  .notification-popover__list {
+    overflow-y: auto;
+    padding-bottom: var(--s-4);
+  }
+  .notification-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 20px minmax(0, 1fr) auto;
+    align-items: start;
+    gap: var(--s-4);
+    padding: var(--s-8) var(--s-4) var(--s-8) 0;
+  }
+  /* Separators inset past the gutter — the System Settings rule: one group,
+     not a stack of boxes. */
+  .notification-item + .notification-item::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 20px;
+    right: var(--s-4);
+    height: var(--hairline);
+    background: var(--app-border);
+  }
+  /* Severity lives in the dot alone; a tinted row would fight the material. */
+  .notification-item__dot {
+    justify-self: center;
+    margin-top: 5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-info);
+  }
+  .notification-item--warning .notification-item__dot {
+    background: var(--app-warn);
+  }
+  .notification-item--error .notification-item__dot {
+    background: var(--app-danger);
+  }
+  .notification-item__body {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+  }
+  .notification-item__title {
+    color: var(--app-text-strong);
+    font: var(--w-medium) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+  }
+  .notification-item__message {
+    color: var(--app-text-muted);
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+  }
+  .notification-item__time {
+    margin-top: var(--s-2);
+    color: var(--app-text-subtle);
+    font: var(--w-regular) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    font-variant-numeric: tabular-nums;
+  }
+  .notification-popover__error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--s-8);
+    margin: var(--s-4) var(--s-4) 0 20px;
+    padding: var(--s-6) var(--s-8);
+    border-radius: var(--r-md);
+    background: var(--app-danger-bg-soft);
+    color: var(--app-danger-text);
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+  }
+  .notification-popover__error-text {
+    min-width: 0;
+  }
+  .notification-popover__error-dismiss {
+    flex: 0 0 auto;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    padding: var(--s-4) var(--s-6);
+    border-radius: var(--r-sm);
+  }
+  .notification-popover__error-dismiss:hover {
+    background: color-mix(in srgb, currentColor 14%, transparent);
+  }
+  .notification-popover__error-dismiss:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+  .notification-item__action {
+    align-self: flex-start;
+    margin-top: var(--s-4);
   }
   .titlebar__settings-label {
     display: block;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     white-space: nowrap;
   }
@@ -3032,21 +2966,26 @@
     z-index: 2000;
     display: grid;
     place-items: center;
-    padding: 24px;
-    background: var(--app-overlay-bg);
+    padding: var(--s-24);
+    /* The scrim is the direction's dim material — the fourth and last place a
+       material is allowed (toolbar, menus, popovers, HUD). */
+    background: var(--mat-dim);
     backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
   }
 
+  /* A HUD: it genuinely floats, so a shadow is legitimate here. */
   .shortcut-help__panel {
     width: min(560px, 100%);
     max-height: min(680px, calc(100vh - 48px));
     overflow-y: auto;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 12px;
-    background: var(--app-surface-raised);
+    border-radius: var(--tile-r);
+    background: var(--mat-hud);
+    backdrop-filter: blur(30px) saturate(1.5);
+    -webkit-backdrop-filter: blur(30px) saturate(1.5);
     color: var(--app-text);
-    box-shadow: var(--app-shadow-popover);
-    padding: 18px;
+    box-shadow: var(--hud-shadow);
+    padding: var(--s-16);
   }
 
   .shortcut-help__header {
@@ -3058,39 +2997,36 @@
   }
 
   .shortcut-help__eyebrow {
-    color: var(--app-text-muted);
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    line-height: 1;
-    margin-bottom: 6px;
+    color: var(--app-text-subtle);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    margin-bottom: var(--s-6);
     text-transform: uppercase;
   }
 
   .shortcut-help h2 {
     color: var(--app-text-strong);
-    font-size: var(--t-title);
-    line-height: 1.15;
-    letter-spacing: -0.02em;
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
   }
 
   .shortcut-help__close {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 30px;
-    height: 30px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface-raised);
+    width: var(--h-md);
+    height: var(--h-md);
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
     color: var(--app-text-muted);
-    cursor: pointer;
     font: inherit;
+    transition: background-color var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
   }
 
   .shortcut-help__close:hover,
   .shortcut-help__close:focus-visible {
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-hover);
     color: var(--app-text-strong);
     outline: none;
   }
@@ -3106,41 +3042,39 @@
   }
 
   .shortcut-help__group h3 {
-    color: var(--app-text-muted);
-    font-size: var(--t-label);
-    font-weight: 800;
-    letter-spacing: 0.12em;
-    line-height: 1;
+    color: var(--app-text-subtle);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
   }
 
+  /* One borderless grouped fill per section, rows separated by an inset
+     hairline — not a stack of bordered cards. */
   .shortcut-help__list {
     display: grid;
-    gap: 8px;
+    border-radius: var(--tile-r);
+    background: var(--tile-fill);
+    overflow: hidden;
   }
 
+  /* Geometry and the inset separator come from bento.css `.row`; only the
+     two-column split is local. */
   .shortcut-help__row {
-    display: flex;
-    align-items: center;
     justify-content: space-between;
-    gap: 18px;
-    padding: 9px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    background: var(--app-surface-raised);
+    gap: var(--s-16);
   }
 
   .shortcut-help__row dt {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--s-4);
     min-width: 72px;
   }
 
   .shortcut-help__row dd {
     color: var(--app-text);
-    font-size: var(--t-ui);
-    line-height: 1.3;
+    font: var(--w-regular) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     text-align: right;
   }
 
@@ -3153,9 +3087,9 @@
   }
 
   .shortcut-help__note {
-    margin-top: 14px;
+    margin-top: var(--s-16);
     color: var(--app-text-muted);
-    font-size: var(--t-meta);
-    line-height: 1.45;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
   }
 </style>

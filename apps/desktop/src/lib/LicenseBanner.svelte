@@ -67,10 +67,10 @@
       license to resume recording.
     </p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
         Buy a license
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -83,10 +83,10 @@
       license to resume recording.
     </p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
         Buy a license
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -101,13 +101,13 @@
     <div class="license-banner__actions">
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--primary"
+        class="btn btn--sm btn--push license-banner__btn license-banner__btn--primary"
         disabled={rechecking}
         onclick={() => void recheck()}
       >
         {rechecking ? "Checking…" : "Re-check license"}
       </button>
-      <button type="button" class="license-banner__btn" onclick={enterLicense}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn" onclick={enterLicense}>
         Enter license
       </button>
     </div>
@@ -122,7 +122,7 @@
     <div class="license-banner__actions">
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--dismiss"
+        class="btn btn--sm btn--ghost license-banner__btn"
         aria-label="Dismiss"
         onclick={dismiss}
       >
@@ -135,12 +135,12 @@
     <span class="license-banner__dot" aria-hidden="true"></span>
     <p class="license-banner__text">{banner.message}</p>
     <div class="license-banner__actions">
-      <button type="button" class="license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
+      <button type="button" class="btn btn--sm btn--push license-banner__btn license-banner__btn--primary" onclick={openCheckout}>
         Buy Mnema
       </button>
       <button
         type="button"
-        class="license-banner__btn license-banner__btn--dismiss"
+        class="btn btn--sm btn--ghost license-banner__btn"
         aria-label="Dismiss"
         onclick={dismiss}
       >
@@ -151,14 +151,18 @@
 {/if}
 
 <style>
+  /* Bento Native: a banner is chrome under the toolbar, so it is an opaque
+     surface step with one hairline seam — never a bordered card, never a
+     shadow. Its tone lives in the dot and (for the firm end) the fill. */
   .license-banner {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 7px 14px;
-    border-bottom: 1px solid var(--app-border);
+    gap: var(--s-12);
+    padding: var(--s-8) var(--s-16);
+    box-shadow: 0 var(--hairline) 0 var(--app-border);
     background: var(--app-surface-subtle);
-    font-size: var(--t-meta);
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
     color: var(--app-text);
   }
 
@@ -174,51 +178,27 @@
   .license-banner__text {
     margin: 0;
     flex: 1 1 auto;
-    line-height: 1.4;
   }
 
   .license-banner__actions {
     flex: none;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--s-6);
   }
 
-  .license-banner__btn {
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--t-label);
-    padding: 4px 10px;
-    border-radius: 6px;
-    border: 1px solid var(--app-border-strong);
-    background: transparent;
-    color: var(--app-text);
-    cursor: pointer;
-    white-space: nowrap;
-  }
-
-  .license-banner__btn:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
+  /* The actions are the shared `.btn`; only the tone tint on the primary one
+     is local, so a firm banner's call to action wears the banner's colour. */
   .license-banner__btn--primary {
     background: var(--tone-accent);
-    border-color: var(--tone-accent);
+    background-image: none;
+    border-color: transparent;
     color: var(--app-accent-contrast);
   }
 
   .license-banner__btn--primary:hover {
     background: var(--tone-accent);
     filter: brightness(1.08);
-  }
-
-  .license-banner__btn--dismiss {
-    color: var(--app-text-muted);
-  }
-
-  .license-banner__btn:focus-visible {
-    outline: none;
-    box-shadow: var(--app-ring);
   }
 
   /* Tone ramp — info → warn → urgent → the firm Read-Only end. */
@@ -228,12 +208,12 @@
   .license-banner--warn {
     --tone-accent: var(--app-warn);
     background: var(--app-warn-bg);
-    border-bottom-color: var(--app-warn-border);
+    box-shadow: 0 var(--hairline) 0 var(--app-warn-border);
   }
   .license-banner--urgent,
   .license-banner--readonly {
     --tone-accent: var(--app-danger);
     background: var(--app-danger-bg);
-    border-bottom-color: var(--app-danger-border);
+    box-shadow: 0 var(--hairline) 0 var(--app-danger-border);
   }
 </style>

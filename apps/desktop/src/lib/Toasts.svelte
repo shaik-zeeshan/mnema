@@ -27,7 +27,7 @@
             {#if item.action}
               <button
                 type="button"
-                class="btn btn--sm"
+                class="btn btn--sm btn--push"
                 onclick={() => {
                   void item.action?.run();
                   dismissToast(item.id);
@@ -58,16 +58,20 @@
     justify-items: end;
     pointer-events: none;
   }
+  /* Bento Native `.toast`: 320px, `--r-xl`, an opaque raised surface and the
+     popover shadow — a toast genuinely floats, so a shadow is legitimate here
+     (it is not the elevation-by-shadow the direction bans on flat chrome). No
+     ring: the shadow alone separates it, and an outline would read as a card. */
   .toast {
     pointer-events: auto;
     display: grid;
     gap: var(--gap-label);
-    width: 344px;
+    width: 320px;
     max-width: calc(100vw - 2 * var(--pad-window));
-    padding: var(--pad-panel);
+    padding: var(--s-12);
     border-radius: var(--r-xl);
     background: var(--app-surface-raised);
-    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--app-border-strong);
+    box-shadow: var(--shadow-popover);
   }
   .toast__title {
     display: flex;
