@@ -885,6 +885,7 @@ pub fn run() {
             managed_storage_layout::probe_storage_path,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
+            keyboard_bindings::get_global_shortcut_registration_failures,
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
             drain_pending_insights_open_conversations,

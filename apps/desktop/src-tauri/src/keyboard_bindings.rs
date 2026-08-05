@@ -107,6 +107,11 @@ pub struct AudioDrawerShortcutBindings {
 pub struct KeyboardBindingsRuntime {
     settings: Option<KeyboardBindingsSettings>,
     registered_shortcuts: Vec<String>,
+    /// Action ids whose accelerator the OS refused on the last registration
+    /// pass — i.e. another app already owns the combination. macOS gives us no
+    /// way to learn WHICH app, so the settings row says so without guessing a
+    /// name (round-4 decision G9).
+    registration_failures: Vec<String>,
 }
 
 pub type KeyboardBindingsState = Mutex<KeyboardBindingsRuntime>;
@@ -1022,7 +1027,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) {
 fn refresh_global_shortcuts(
     app: &tauri::AppHandle,
     settings: &KeyboardBindingsSettings,
-) -> Result<(), Vec<String>> {
+) -> Result<(), Vec<RegisteredShortcut>> {
     let previous = {
         let state = app.state::<KeyboardBindingsState>();
         let mut runtime = state.lock().expect("keyboard bindings state poisoned");
@@ -1052,7 +1057,7 @@ fn refresh_global_shortcuts(
             crate::native_capture::debug_log::log_warn(format!(
                 "failed to register global shortcut '{shortcut_string}': {error}"
             ));
-            failures.push(entry.display_label());
+            failures.push(entry.clone());
             continue;
         }
         registered.push(shortcut_string);
@@ -1061,6 +1066,10 @@ fn refresh_global_shortcuts(
     let state = app.state::<KeyboardBindingsState>();
     let mut runtime = state.lock().expect("keyboard bindings state poisoned");
     runtime.registered_shortcuts = registered;
+    runtime.registration_failures = failures
+        .iter()
+        .map(|entry| entry.action_id.to_string())
+        .collect();
     drop(runtime);
 
     if failures.is_empty() {
@@ -1147,24 +1156,31 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
     });
 }
 
-fn warn_registration_failure(app: &tauri::AppHandle, failures: &[String]) {
+fn warn_registration_failure(app: &tauri::AppHandle, failures: &[RegisteredShortcut]) {
     if failures.is_empty() {
         return;
     }
 
-    let names = failures.join(", ");
+    let names = failures
+        .iter()
+        .map(RegisteredShortcut::display_label)
+        .collect::<Vec<_>>()
+        .join(", ");
     crate::native_capture::debug_log::log_warn(format!(
         "global shortcut registration failed: {names}"
     ));
 
     let plural = failures.len() > 1;
+    // Never name the other app: macOS exposes no way to learn who owns a hotkey,
+    // and guessing is worse than saying nothing (round-4 decision G9).
     let body = format!(
-        "Mnema could not register {}: {names}. Another app may already be using the same shortcut.",
+        "Mnema could not register {}: {names}. {} taken by another app — try a different combination.",
         if plural {
             "these global shortcuts"
         } else {
             "this global shortcut"
-        }
+        },
+        if plural { "They are" } else { "It is" }
     );
     crate::native_capture::push_warning_app_notification(
         app,
@@ -1186,6 +1202,16 @@ fn now_unix_ms() -> u64 {
 #[tauri::command]
 pub fn get_keyboard_bindings_settings(app: tauri::AppHandle) -> KeyboardBindingsSettings {
     current_settings(&app)
+}
+
+/// Action ids the OS refused to register on the last pass. The settings row
+/// turns these into "taken by another app" copy — we never name the app,
+/// because macOS cannot tell us which one it is (G9).
+#[tauri::command]
+pub fn get_global_shortcut_registration_failures(app: tauri::AppHandle) -> Vec<String> {
+    let state = app.state::<KeyboardBindingsState>();
+    let runtime = state.lock().expect("keyboard bindings state poisoned");
+    runtime.registration_failures.clone()
 }
 
 #[tauri::command]
