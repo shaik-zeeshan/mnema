@@ -82,6 +82,20 @@
       Esc
     </button>
   </div>
+{:else}
+  <!-- Closed: the affordance that says the shortcut exists. Clicking it is the
+       same door as ⌘F, so the field is discoverable without the keystroke. -->
+  <button
+    class="setsearch"
+    type="button"
+    onclick={() => {
+      settingsFind.open = true;
+    }}
+  >
+    <IconSearch aria-hidden="true" />
+    Search settings
+    <span class="kbd">⌘F</span>
+  </button>
 {/if}
 
 <style>

@@ -141,7 +141,9 @@ describe("⌘F matcher", () => {
     expect(
       rowMatchesQuery("capture", "Microphone Voice Detection", "vad"),
     ).toBe(true);
-    expect(rowMatchesQuery("storage", "Retention", "delete old")).toBe(true);
+    // Retention is indexed under Capture › Video, not Data › Storage — the
+    // direction-01 IA move (it is the second half of the frame-rate decision).
+    expect(rowMatchesQuery("video", "Retention", "delete old")).toBe(true);
   });
 
   test("matches the section and group name, so a section query keeps its rows", () => {

@@ -10,31 +10,15 @@
   import { open, confirm } from "@tauri-apps/plugin-dialog";
   import { humanizeError } from "$lib/format-error";
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
-  import RetentionPicker from "$lib/components/RetentionPicker.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
-  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { retentionConsequence } from "$lib/settings/state/system-facts";
 
   const c = getSettingsController();
   const rec = c.rec;
 
-  const retentionCleanupSummary = $derived(c.retentionCleanupSummary);
-  const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
-  const retentionCleanupError = $derived(c.retentionCleanupError);
-
-  // G8: what this window actually keeps, at the rate this machine measured.
-  // Null until a complete capture day exists — then the row simply says nothing.
-  void systemFacts.ensureLoaded();
-  const retentionHint = $derived(
-    retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
-  );
-
-  // A cleanup changes what is on disk, so the measured rate is re-read after it.
-  const runRetentionCleanupNow = async () => {
-    await c.runRetentionCleanupNow();
-    await systemFacts.refresh();
-  };
+  // Retention moved to Capture › Video (a stated IA deviation for direction 01):
+  // the keep-window is the second half of the frame-rate decision, so the cost
+  // and the window belong on one pane. Data keeps the storage LOCATION.
 
   // The resolved on-disk storage root, fetched from the backend so it reflects
   // the env-honoring resolution (MNEMA_SAVE_DIRECTORY, else ~/.mnema) rather
@@ -122,12 +106,13 @@
 <SettingGroup
   id="settings-section-storage"
   title="Storage"
-  hint="Where capture files live on disk and how long they are kept."
+  hint="Where capture files live on disk."
 >
   <SettingRow
     label="Save Directory"
     description="Where captures, the database, and model caches live on disk."
     full
+    divider={false}
   >
     {#snippet control()}
       <div class="storage-control">
@@ -176,44 +161,6 @@
     {/snippet}
   </SettingRow>
 
-  <SettingRow
-    label="Retention"
-    description="Automatically delete captured data after the chosen window."
-    full
-    divider={false}
-  >
-    {#snippet control()}
-      <div class="retention-control">
-        <RetentionPicker bind:value={rec.draftRetentionPolicy} />
-        {#if retentionHint}
-          <p class="group-hint">{retentionHint}</p>
-        {/if}
-        <div class="row-actions">
-          <button
-            type="button"
-            class="btn btn--ghost btn--sm"
-            onclick={runRetentionCleanupNow}
-            disabled={retentionCleanupRunning}
-            aria-busy={retentionCleanupRunning}
-          >
-            {#if retentionCleanupRunning}<ButtonSpinner />Running…{:else}Run cleanup now{/if}
-          </button>
-        </div>
-        {#if retentionCleanupSummary}
-          <div class="cleanup-result" aria-live="polite">
-            <strong>Latest cleanup</strong>
-            <p>
-              {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
-              frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
-            </p>
-          </div>
-        {/if}
-        {#if retentionCleanupError}
-          <p class="error-text">{retentionCleanupError}</p>
-        {/if}
-      </div>
-    {/snippet}
-  </SettingRow>
 </SettingGroup>
 
 <style>
@@ -246,20 +193,6 @@
 
   .path-field .btn {
     flex-shrink: 0;
-  }
-
-  /* The retention control stacks its picker, the run-now action, and any
-     summary/error hint. The shared row primitive already gives a full-width
-     column; this just spaces the parts. */
-  .retention-control {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    width: 100%;
-  }
-
-  .retention-control .row-actions {
-    justify-content: flex-start;
   }
 
   /* The pending-restart notice stacks its warning copy above an inline

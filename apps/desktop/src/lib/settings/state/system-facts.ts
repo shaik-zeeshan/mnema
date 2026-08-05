@@ -91,6 +91,84 @@ export function retentionConsequence(
 }
 
 /**
+ * The retention ladder's footprint bar: what the chosen window keeps, against
+ * the free space it has to fit into, on ONE axis (direction 01's instrument
+ * rule — name the physical quantity, write the consequence as a fraction of
+ * something real).
+ *
+ * `null` whenever either half is unmeasurable, or when the policy has no day
+ * count ("keep forever" has no ceiling to draw). Both numbers are real: the
+ * measured daily rate times the window, and the volume's actual free bytes.
+ */
+export interface RetentionFootprint {
+	keptBytes: number;
+	freeBytes: number;
+	/** 0–100 — the kept share of (kept + free), i.e. of the axis drawn. */
+	keptPercent: number;
+	keptLabel: string;
+	freeLabel: string;
+}
+
+export function retentionFootprint(
+	facts: SystemFacts | null,
+	policy: RetentionPolicy,
+): RetentionFootprint | null {
+	if (!facts || facts.measuredBytesPerDay === null || facts.diskFreeBytes === null) return null;
+	const days = retentionToDays(policy);
+	if (days == null) return null;
+	const keptBytes = facts.measuredBytesPerDay * days;
+	const freeBytes = facts.diskFreeBytes;
+	const axis = keptBytes + freeBytes;
+	if (axis <= 0) return null;
+	return {
+		keptBytes,
+		freeBytes,
+		keptPercent: Math.min(100, Math.max(0, (keptBytes / axis) * 100)),
+		keptLabel: `≈ ${formatBytes(keptBytes)} kept at this window`,
+		freeLabel: `${formatBytes(freeBytes)} free`,
+	};
+}
+
+/** A model's fit on THIS machine — the verdict a model row is chosen on. */
+export interface ModelFitVerdict {
+	/** Maps onto the `.chip--ok / --warn / --bad` verdict tones. */
+	tone: "ok" | "warn" | "bad";
+	label: string;
+}
+
+/**
+ * Is this model's footprint comfortable on this Mac? Only ever a statement
+ * about two measured numbers — the download size against free disk, and against
+ * physical RAM. It never claims a speed, a battery cost or a temperature: none
+ * of those is measured anywhere, and G8 bans the invented denominator.
+ *
+ * `null` for a model with no size (OS-managed, or a cloud provider) and for a
+ * machine whose limits could not be read.
+ */
+export function modelFitVerdict(
+	facts: SystemFacts | null,
+	byteSize: number | null | undefined,
+): ModelFitVerdict | null {
+	if (!byteSize || byteSize <= 0) return null;
+	const free = facts?.diskFreeBytes ?? null;
+	const ram = facts?.totalRamBytes ?? null;
+	if (free === null && ram === null) return null;
+	if (free !== null && byteSize > free) {
+		return { tone: "bad", label: "not enough disk" };
+	}
+	// Weights are memory-mapped at load, so a model approaching half of physical
+	// RAM is the honest "this will squeeze" line — stated as the comparison it
+	// is, never as a speed claim.
+	if (ram !== null && byteSize > ram * 0.5) {
+		return { tone: "bad", label: `over half your ${formatBytes(ram)} RAM` };
+	}
+	if (ram !== null && byteSize > ram * 0.2) {
+		return { tone: "warn", label: `large for ${formatBytes(ram)} RAM` };
+	}
+	return { tone: "ok", label: "fits easily" };
+}
+
+/**
  * The model-picker denominator: a download size against the two machine limits
  * it competes with. Whichever of the two is unmeasurable is simply left out.
  */

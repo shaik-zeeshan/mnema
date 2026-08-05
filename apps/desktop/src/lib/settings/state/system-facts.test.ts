@@ -5,8 +5,10 @@ import {
   backlogPhrase,
   captureRateConsequence,
   coarseRuntime,
+  modelFitVerdict,
   modelFootprint,
   projectedBytesPerDay,
+  retentionFootprint,
   retentionConsequence,
   semanticCoverage,
   semanticIndexPrice,
@@ -183,5 +185,54 @@ describe("semanticCoverage", () => {
     expect(semanticCoverage(facts({ semanticVectorCount: null }))).toBeNull();
     expect(semanticCoverage(facts({ semanticPendingCount: null }))).toBeNull();
     expect(semanticCoverage(facts())).toBeNull();
+  });
+});
+
+describe("retentionFootprint", () => {
+  it("puts the kept window and the free space on one axis", () => {
+    // 10 GB/day measured × 30 days = 300 GB kept, against 200 GB free.
+    const f = retentionFootprint(facts(), "days_30");
+    expect(f?.keptBytes).toBe(300 * GB);
+    expect(f?.freeBytes).toBe(200 * GB);
+    expect(f?.keptPercent).toBeCloseTo((300 / 500) * 100, 5);
+    expect(f?.keptLabel).toContain("kept at this window");
+    expect(f?.freeLabel).toContain("free");
+  });
+
+  it("draws nothing for a window with no ceiling, or with either half unmeasured", () => {
+    expect(retentionFootprint(facts(), "never")).toBeNull();
+    expect(retentionFootprint(null, "days_30")).toBeNull();
+    expect(retentionFootprint(facts({ measuredBytesPerDay: null }), "days_30")).toBeNull();
+    expect(retentionFootprint(facts({ diskFreeBytes: null }), "days_30")).toBeNull();
+  });
+});
+
+describe("modelFitVerdict", () => {
+  it("compares the download against free disk and physical RAM only", () => {
+    // 16 GiB RAM: 0.6 GB is under 20% -> comfortable.
+    expect(modelFitVerdict(facts(), 630_000_000)).toEqual({ tone: "ok", label: "fits easily" });
+    // 5 GB is over 20% but under half.
+    expect(modelFitVerdict(facts(), 5 * GB)?.tone).toBe("warn");
+    // 10 GB is over half of 16 GiB.
+    expect(modelFitVerdict(facts(), 10 * GB)?.tone).toBe("bad");
+    // Bigger than the volume has free.
+    expect(modelFitVerdict(facts({ diskFreeBytes: 2 * GB }), 5 * GB)).toEqual({
+      tone: "bad",
+      label: "not enough disk",
+    });
+  });
+
+  it("says nothing without a size or without a measurable machine (G8)", () => {
+    expect(modelFitVerdict(facts(), null)).toBeNull();
+    expect(modelFitVerdict(facts(), 0)).toBeNull();
+    expect(modelFitVerdict(facts({ diskFreeBytes: null, totalRamBytes: null }), 5 * GB)).toBeNull();
+    expect(modelFitVerdict(null, 5 * GB)).toBeNull();
+  });
+
+  it("never claims a speed, a battery cost or a temperature", () => {
+    for (const size of [100_000_000, 5 * GB, 20 * GB]) {
+      const label = modelFitVerdict(facts(), size)?.label ?? "";
+      expect(label).not.toMatch(/°C|slow|battery|fast|minute/i);
+    }
   });
 });

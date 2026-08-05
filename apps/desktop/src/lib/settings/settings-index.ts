@@ -54,6 +54,9 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	{ section: "capture", label: "Audio Activity Monitoring", synonyms: ["vad", "levels", "meter"] },
 	{ section: "capture", label: "Validation", synonyms: ["errors", "problems"] },
 	{ section: "video", label: "Screen Capture Rate", synonyms: ["fps", "frame rate", "snapshot", "interval"] },
+	// Retention lives under Capture › Video, not Data — a stated direction-01 IA
+	// deviation: it is the second half of the frame-rate decision.
+	{ section: "video", label: "Retention", synonyms: ["delete old", "keep", "days", "cleanup", "disk", "storage"] },
 	{ section: "video", label: "Screen Resolution", synonyms: ["size", "scaling", "1080p", "custom dimensions"] },
 	{ section: "video", label: "Bitrate", synonyms: ["quality", "mbps", "compression", "file size"] },
 	{ section: "audio", label: "Microphone", synonyms: ["mic", "enable microphone"] },
@@ -85,6 +88,7 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 	{ section: "userContext", label: "History Backfill", synonyms: ["past", "catch up", "reprocess"] },
 	{ section: "userContext", label: "Run derivation", synonyms: ["run now", "manual"] },
 	{ section: "ocr", label: "Enable OCR", synonyms: ["text recognition", "screen text"] },
+	{ section: "ocr", label: "Pacing", synonyms: ["duty cycle", "throttle", "cooldown", "cpu", "backlog", "queue"] },
 	{ section: "ocr", label: "Provider", synonyms: ["engine", "tesseract", "apple vision"] },
 	{ section: "ocr", label: "Model", synonyms: ["download", "weights"] },
 	{ section: "ocr", label: "Language", synonyms: ["languages", "locale"] },
@@ -118,7 +122,6 @@ export const SETTINGS_ROW_INDEX: readonly SettingsRowIndexEntry[] = [
 
 	// ── Data ──
 	{ section: "storage", label: "Save Directory", synonyms: ["location", "path", "folder", "where"] },
-	{ section: "storage", label: "Retention", synonyms: ["delete old", "keep", "days", "cleanup", "disk"] },
 	{ section: "access", label: "CLI Access", synonyms: ["agent", "broker", "mnema-cli", "grant", "terminal"] },
 
 	// ── About ──

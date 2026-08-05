@@ -96,45 +96,40 @@
     letter-spacing: 0.03em;
   }
 
+  /* NSSwitch, drawn to AppKit metrics: a 38×22 track carrying an 18px knob with
+     2px of inset, so the knob travels exactly 38 − 18 − 4 = 16px. Off is a
+     recessed neutral fill; on is the accent itself (not an accent tint) with a
+     white knob — the one accent-filled control in a settings row. */
   :global(.switch-track) {
     position: relative;
     display: inline-flex;
     align-items: center;
-    width: 36px;
-    height: 20px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
+    width: 38px;
+    height: 22px;
+    background: color-mix(in srgb, var(--app-text-strong) 12%, transparent);
+    border: 0;
     border-radius: 999px;
     cursor: pointer;
-    transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
-      transform 0.18s ease;
+    transition: background 0.18s ease, box-shadow 0.18s ease;
     flex-shrink: 0;
     padding: 0;
     outline: none;
   }
 
   :global(.switch-track:hover:not([data-disabled])) {
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
+    background: color-mix(in srgb, var(--app-text-strong) 17%, transparent);
   }
 
   :global(.switch-track:focus-visible) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  /* Momentary press cue before the state flips. */
-  :global(.switch-track:active:not([data-disabled])) {
-    transform: scale(0.96);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
 
   :global(.switch-track[data-state="checked"]) {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    background: var(--app-accent);
   }
 
   :global(.switch-track[data-state="checked"]:hover:not([data-disabled])) {
-    border-color: var(--app-accent);
+    background: var(--app-accent-strong, var(--app-accent));
   }
 
   :global(.switch-track[data-disabled]) {
@@ -144,18 +139,17 @@
   :global(.switch-thumb) {
     position: absolute;
     left: 2px;
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: var(--app-text-subtle);
-    transition: transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+    background: #fff;
+    box-shadow: 0 1px 2.5px rgba(0, 0, 0, 0.32), 0 0 0 0.5px rgba(0, 0, 0, 0.12);
+    transition: transform 0.18s ease;
     pointer-events: none;
   }
 
   :global(.switch-track[data-state="checked"] .switch-thumb) {
     transform: translateX(16px);
-    background: var(--app-accent);
-    box-shadow: 0 0 8px var(--app-accent-glow);
   }
 
   @media (prefers-reduced-motion: reduce) {

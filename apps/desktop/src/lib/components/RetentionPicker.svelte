@@ -107,13 +107,18 @@
 </div>
 
 <style>
-  /* A duration-preset picker over the four supported RetentionPolicy values,
-     styled in the gallery's preset-chip / segmented language. Chips wrap so the
-     control stays readable inside the full-width settings row. */
+  /* Custom input 2 of 5 — the retention LADDER.
+     Not a row of chips: the four keep-windows are ordered stops on one axis, so
+     they are drawn as one 28px segmented track with equal-width stops, in
+     ascending order. The caller draws the footprint bar directly underneath, on
+     the same axis, so the window and what it costs read as one instrument. */
   .retention-picker {
     display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
+    width: 100%;
+    height: var(--h-md);
+    padding: 2px;
+    border-radius: calc(var(--r-md) + 1px);
+    background: color-mix(in srgb, var(--app-text-strong) 7%, transparent);
   }
 
   .retention-picker--disabled {
@@ -122,47 +127,42 @@
   }
 
   .preset {
+    flex: 1 1 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    padding: 7px 14px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    min-width: 0;
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-md);
+    background: transparent;
     color: var(--app-text-muted);
     font: inherit;
     font-size: var(--t-ui);
-    font-weight: 540;
+    font-weight: var(--w-medium);
     line-height: 1;
-    letter-spacing: 0.01em;
+    letter-spacing: var(--ls-ui);
+    font-variant-numeric: tabular-nums;
     cursor: pointer;
     user-select: none;
     outline: none;
-    transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+    transition: color var(--dur-quick) var(--ease);
   }
 
   .preset:hover:not(.preset--active) {
-    color: var(--app-text);
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-  }
-
-  .preset:not(.preset--active):not(:disabled):active {
-    background: var(--app-surface-active);
+    color: var(--app-text-strong);
   }
 
   .preset:focus-visible {
-    box-shadow: var(--app-ring);
-    outline: 2px solid var(--app-accent);
-    outline-offset: 2px;
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
   }
 
+  /* The AppKit selected-segment treatment: a raised neutral cap, not a colour.
+     The accent is spent on the switch and the footprint bar. */
   .preset--active {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border),
-      0 0 10px color-mix(in srgb, var(--app-accent) 18%, transparent);
+    background: var(--seg-on-bg);
+    color: var(--app-text-strong);
+    box-shadow: var(--seg-on-shadow);
   }
 
   .preset:disabled {
@@ -171,5 +171,14 @@
 
   .preset__label {
     display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .preset {
+      transition: none;
+    }
   }
 </style>

@@ -118,12 +118,14 @@
         </p>
         {#if !rec.draftSemanticSearchEnabled}
           {#if semanticPrice}
-            <p class="group-hint">{semanticPrice}</p>
+            <!-- G10 price-before-enable: what switching it on costs, computed
+                 from this machine's real pending-capture count. -->
+            <p class="inst-cost">{semanticPrice}</p>
           {/if}
         {:else if coverage}
           <div class="download-progress" aria-live="polite">
             <div
-              class="download-progress__bar"
+              class="download-progress__bar meter"
               role="progressbar"
               aria-label="Semantic index coverage"
               aria-valuemin={0}

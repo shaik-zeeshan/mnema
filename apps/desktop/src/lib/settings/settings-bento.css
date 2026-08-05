@@ -1,0 +1,456 @@
+/* Settings — direction 01 (Bento Native) skin.
+ *
+ * Imported LAST by the shell (`routes/settings/+page.svelte`), after
+ * settings-theme.css, because it re-skins the shared parts above rather than
+ * replacing them: the panels, the group/row primitives and every control keep
+ * their markup and their class names, and this file re-draws them on the bento
+ * tile grid at AppKit metrics.
+ *
+ * THE THESIS: a settings group is the same object as a digest tile or a search
+ * result — `.tile` chrome (an 18px `.tile__h` header row) with a free payload
+ * under it, here a `.pay--rows` row list whose separators are inset by the tile
+ * pad (the System Settings idiom). Everything visual comes from `lib/bento/
+ * bento.css` primitives + the phase-1 token set.
+ *
+ * THEMING RULE: tokens only. Not one rule below branches on the theme —
+ * bento.css and +layout.svelte carry the `[data-theme="light"]` values.
+ */
+
+/* ═══ The sticky toolbar ═════════════════════════════════════════════════
+   Five tabs carry the top level; the autosave chip and the scoped ⌘F field
+   ride along in the same strip so neither can scroll away or clip off the
+   bottom of a short window (G7 — no bottom save bar, ever).
+   It spans the window edge-to-edge like a real toolbar, which means cancelling
+   whatever inset the surrounding `.app-content` variant applies — so the
+   negative margin is written against that variant, not assumed. */
+.settings-shell .setbar {
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  padding: 0 var(--s-12);
+  background: var(--mat-toolbar);
+  backdrop-filter: blur(30px) saturate(1.5);
+  box-shadow: 0 var(--hairline) 0 var(--app-border);
+  position: relative;
+  z-index: 10;
+}
+
+/* Settings inside the Main window: `.app-content--settings` insets it by
+   `8px 20px 0`. Nothing to cancel in the dedicated-window variant, which is
+   full-bleed already. */
+.app-content--settings .settings-shell .setbar {
+  margin: -8px -20px 0;
+}
+
+.settings-shell .setbar__back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  height: var(--h-md);
+  margin-right: var(--s-2);
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+.settings-shell .setbar__back:hover {
+  background: var(--app-surface-hover);
+  color: var(--app-text-strong);
+}
+.settings-shell .setbar__back:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--app-accent-glow);
+}
+.settings-shell .setbar__back svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.settings-shell .setbar__tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--s-4);
+  min-width: 0;
+}
+
+.settings-shell .stab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--gap-inline);
+  height: var(--h-md);
+  padding: 0 var(--s-8);
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--app-text-muted);
+  font-family: inherit;
+  font-size: var(--t-ui);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--ls-ui);
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease);
+}
+.settings-shell .stab svg {
+  width: 14px;
+  height: 14px;
+  opacity: 0.85;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.settings-shell .stab:hover {
+  background: var(--app-surface-hover);
+  color: var(--app-text-strong);
+}
+.settings-shell .stab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3.5px var(--app-accent-glow);
+}
+/* The selected tab is the one accent in the chrome. */
+.settings-shell .stab--on,
+.settings-shell .stab--on:hover {
+  background: var(--app-accent-bg);
+  color: var(--app-accent);
+}
+.settings-shell .stab--on svg {
+  opacity: 1;
+}
+
+/* ── the autosave chip, in the bar ─────────────────────────────────────── */
+.settings-shell .save-strip {
+  margin-left: auto;
+  min-height: 0;
+}
+.settings-shell .savechip {
+  height: var(--h-sm);
+  padding: 0 var(--s-8);
+  background: var(--app-surface-subtle);
+  box-shadow: none;
+  font-size: var(--t-meta);
+}
+.settings-shell .savechip--ok {
+  background: var(--app-surface-subtle);
+  color: var(--app-accent);
+}
+.settings-shell .savechip--error {
+  background: var(--app-danger-bg);
+  color: var(--app-danger);
+  box-shadow: none;
+}
+
+/* ── the scoped ⌘F field, in the same bar ──────────────────────────────── */
+.settings-shell .setsearch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-6);
+  flex: 0 0 auto;
+  width: 190px;
+  height: var(--h-sm);
+  padding: 0 var(--s-6) 0 var(--s-8);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--app-surface-subtle);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  color: var(--app-text-subtle);
+  font-family: inherit;
+  font-size: var(--t-ui);
+  cursor: text;
+}
+.settings-shell .setsearch:hover {
+  color: var(--app-text-muted);
+}
+.settings-shell .setsearch svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.settings-shell .setsearch .kbd {
+  margin-left: auto;
+  height: 16px;
+  min-width: 16px;
+}
+
+.settings-shell .find-strip {
+  flex: 0 0 auto;
+  width: 300px;
+  gap: var(--s-6);
+}
+.settings-shell .find-field {
+  max-width: none;
+}
+.settings-shell .find-field input {
+  height: var(--h-sm);
+  border-radius: var(--r-md);
+  background: var(--app-surface-subtle);
+}
+/* The bar already says what is being filtered; the running commentary would
+   only crowd it. */
+.settings-shell .find-count {
+  display: none;
+}
+
+/* ═══ The pane ═══════════════════════════════════════════════════════════ */
+.settings-shell .settings-scroll {
+  padding: var(--s-16) 0 0;
+}
+
+/* THE BENTO: two columns, one 16px gutter, tiles aligned to the top of their
+   row. A group opts into the 2-cell footprint with `wide` — the only other
+   legal footprint on this surface. */
+.settings-shell .settings-panel {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--cell-gutter);
+  align-items: start;
+  max-width: 1060px;
+  margin: 0 auto;
+  padding-bottom: var(--s-48);
+}
+.settings-shell .setting-group--wide {
+  grid-column: 1 / -1;
+}
+/* Narrow window: one column, same tiles. */
+@media (max-width: 860px) {
+  .settings-shell .settings-panel {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The group/row tile shape lives on the components themselves (SettingGroup /
+   SettingRow) — the Debug page reuses both outside this shell, so those rules
+   must travel with the component, not with the settings skin. */
+
+/* ═══ Native controls ════════════════════════════════════════════════════
+   Buttons wear the AppKit push bezel: a top-light gradient over the raised
+   surface. Ghost and danger keep their own treatment. */
+.settings-shell .btn:not(.btn--ghost):not(.btn--danger):not(.btn--primary) {
+  background-image: var(--push-grad);
+  box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
+}
+
+/* The segmented control inside a settings row is the dense variant. */
+.settings-shell .setting-row .seg {
+  height: var(--h-sm);
+}
+
+/* ═══ The five custom inputs ═════════════════════════════════════════════
+   The rule (mockup 06): a custom input earns its weight only when the stored
+   value and the value you care about are different units. Everything else
+   stays a switch, a popup or a segmented control. */
+
+/* The consequence line every instrument ends on. `<b>` carries the number.
+   (The frame-rate slider's own ladder ticks live in CaptureRateControl — it is
+   also mounted by onboarding, outside this shell.) */
+.settings-shell .inst-cost {
+  margin: var(--s-8) 0 0;
+  font-size: var(--t-meta);
+  line-height: 1.4;
+  color: var(--app-text-muted);
+}
+.settings-shell .inst-cost b {
+  font-family: var(--app-font-mono);
+  font-size: var(--t-ui);
+  font-weight: var(--w-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-strong);
+}
+
+/* 2 · the retention ladder — the keep-window and what it costs on one axis */
+.settings-shell .inst-bar {
+  display: flex;
+  height: 10px;
+  margin-top: var(--s-8);
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--app-border-strong);
+}
+.settings-shell .inst-bar i {
+  display: block;
+  height: 100%;
+  transition: width var(--dur-quick) var(--ease);
+}
+.settings-shell .inst-bar i.is-kept {
+  background: var(--app-accent);
+}
+.settings-shell .inst-bar i.is-free {
+  background: color-mix(in srgb, var(--app-accent) 34%, transparent);
+}
+.settings-shell .inst-key {
+  display: flex;
+  gap: var(--s-12);
+  flex-wrap: wrap;
+  margin-top: var(--s-6);
+  font-size: var(--t-meta);
+  color: var(--app-text-muted);
+}
+.settings-shell .inst-key i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 2px;
+  background: var(--app-border-strong);
+}
+.settings-shell .inst-key .is-kept {
+  background: var(--app-accent);
+}
+.settings-shell .inst-key .is-free {
+  background: color-mix(in srgb, var(--app-accent) 34%, transparent);
+}
+
+/* 4 · the OCR duty cycle — both halves of the cycle as one split bar */
+.settings-shell .duty {
+  display: flex;
+  flex: 1 1 auto;
+  height: 26px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--app-surface-raised);
+}
+.settings-shell .duty__w {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--app-accent);
+  color: var(--app-accent-contrast);
+  font-family: var(--app-font-mono);
+  font-size: var(--t-label);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.settings-shell .duty__c {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--app-text-muted);
+  font-family: var(--app-font-mono);
+  font-size: var(--t-label);
+  font-weight: var(--w-medium);
+  letter-spacing: var(--ls-label);
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.settings-shell .duty__grip {
+  width: 3px;
+  background: var(--app-bg);
+  opacity: 0.5;
+}
+.settings-shell .dutyrow {
+  display: flex;
+  align-items: center;
+  gap: var(--s-8);
+  margin-top: var(--s-6);
+}
+.settings-shell .dutyrow > span:first-child {
+  flex: 0 0 64px;
+  font-size: var(--t-meta);
+  color: var(--app-text-muted);
+}
+
+/* 5 · the shortcut recorder — real keycaps, a live capture state, and the
+   conflicting owner named inline (in-app only; an external register failure
+   never names an app, per G9). */
+.settings-shell .shortcut-capture {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-4);
+  height: var(--h-md);
+  min-width: 96px;
+  padding: 0 var(--s-6);
+  border: 0;
+  border-radius: var(--r-md);
+  background: var(--app-surface-subtle);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  color: var(--app-text-muted);
+  font-family: inherit;
+  cursor: pointer;
+}
+.settings-shell .shortcut-capture:hover {
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-hover);
+}
+.settings-shell .shortcut-capture--recording {
+  background: var(--app-accent-bg);
+  box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+}
+.settings-shell .shortcut-capture__hint {
+  padding: 0 var(--s-4);
+  font-size: var(--t-meta);
+  color: var(--app-accent);
+}
+.settings-shell .shortcut-capture--empty .shortcut-capture__hint {
+  color: var(--app-text-subtle);
+}
+.settings-shell .shortcut-editor-row--error .shortcut-capture {
+  box-shadow: 0 0 0 var(--hairline) var(--app-danger-border);
+}
+/* Real keycaps, not bold text: a raised cap with a hairline edge, in the UI
+   face at UI size — the same object the ⌘F chip in the toolbar wears. */
+.settings-shell .shortcut-cap {
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--s-4);
+  border: 0;
+  border-radius: var(--r-sm);
+  background: var(--app-surface-raised);
+  box-shadow: 0 0 0 var(--hairline) var(--app-border-strong), 0 0.5px 1px rgba(0, 0, 0, 0.2);
+  color: var(--app-text-strong);
+  font-family: var(--app-font-sans);
+  font-size: var(--t-meta);
+  font-weight: var(--w-medium);
+}
+
+/* A model row's machine facts: size · quantisation · RAM, in mono under the
+   label — the numbers you compare rows on. */
+.settings-shell .mrow__meta {
+  display: block;
+  margin-top: 3px;
+  font-family: var(--app-font-mono);
+  font-size: var(--t-meta);
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-subtle);
+}
+
+/* A small progress meter with its own denominator (semantic coverage). */
+.settings-shell .meter {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--app-border-strong);
+  overflow: hidden;
+}
+.settings-shell .meter > * {
+  display: block;
+  height: 100%;
+  background: var(--app-accent);
+}
+
+/* ⌘F: a hit renders in place, so the tiles it leaves behind must not keep a
+   half-empty header row. */
+.settings-shell.is-finding .setting-group:not(:has(.setting-row:not(.setting-row--miss))) {
+  display: none;
+}
+/* All five panels are mounted while filtering; keep one gutter between the
+   grids so the surviving tiles read as one continuous result set. */
+.settings-shell.is-finding .settings-panel + .settings-panel {
+  margin-top: var(--cell-gutter);
+}

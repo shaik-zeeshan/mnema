@@ -5,7 +5,14 @@
   import Privacy from "./Privacy.svelte";
 </script>
 
-<div class="settings-panel" id="settings-panel-capture">
+<!-- The mounted tab panel for the `capture` toolbar tab. Its groups lay out on
+     the bento grid (settings-bento.css). -->
+<div
+  class="settings-panel"
+  id="settings-panel-capture"
+  role="tabpanel"
+  aria-labelledby="settings-tab-capture"
+>
   <Capture />
   <Video />
   <Audio />

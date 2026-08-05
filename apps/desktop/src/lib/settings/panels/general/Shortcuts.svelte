@@ -90,6 +90,7 @@
 
 <SettingGroup
   id="settings-section-shortcuts"
+  wide
   title="Keyboard Shortcuts"
   hint="Click a shortcut to rebind it, then press the keys. Esc cancels, ⌫ clears. Changes save automatically."
 >
@@ -141,7 +142,7 @@
 
 {#if keyboardBindingsSettings !== null}
   {#each SHORTCUT_CATEGORIES as category (category)}
-    <SettingGroup title={shortcutCategoryLabel(category)} bare nested>
+    <SettingGroup title={shortcutCategoryLabel(category)} bare nested wide>
       <div class="shortcut-editor-list">
         {#each shortcutCategoryActions(category) as action (action.id)}
           {@const binding = shortcutDraftBinding(action.id)}

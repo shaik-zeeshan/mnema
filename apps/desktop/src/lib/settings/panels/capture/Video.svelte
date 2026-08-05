@@ -9,10 +9,16 @@
   import { captureRateShortLabel } from "$lib/components/capture-rate";
   import ScreenResolutionControl from "$lib/components/ScreenResolutionControl.svelte";
   import VideoBitrateControl from "$lib/components/VideoBitrateControl.svelte";
+  import RetentionPicker from "$lib/components/RetentionPicker.svelte";
+  import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { captureRateConsequence } from "$lib/settings/state/system-facts";
+  import {
+    captureRateConsequence,
+    retentionConsequence,
+    retentionFootprint,
+  } from "$lib/settings/state/system-facts";
   import IconInfo from "~icons/lucide/info";
   import IconLoader from "~icons/lucide/loader-circle";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -38,6 +44,30 @@
     captureRateConsequence(systemFacts.value, rec.draftFrameRate),
   );
 
+  // ── Retention, shown here rather than under Data (a STATED deviation from
+  // the IA, see 07-components.html): the keep-window is the second half of the
+  // frame-rate decision, and the two only make sense on one pane — the slider
+  // sets the daily cost, the ladder sets how many days of it survive.
+  const retentionCleanupSummary = $derived(c.retentionCleanupSummary);
+  const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
+  const retentionCleanupError = $derived(c.retentionCleanupError);
+
+  const retentionHint = $derived(
+    retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
+  );
+  // The footprint bar's two halves — both measured on this machine (the rate
+  // over your last complete capture days × the window, against the volume's
+  // real free bytes). Null when either is unknown, or when "Forever" leaves
+  // nothing to draw a ceiling against; then only the prose hint renders.
+  const retentionBar = $derived(
+    retentionFootprint(systemFacts.value, rec.draftRetentionPolicy),
+  );
+
+  // A cleanup changes what is on disk, so the measured rate is re-read after it.
+  const runRetentionCleanupNow = async () => {
+    await c.runRetentionCleanupNow();
+    await systemFacts.refresh();
+  };
 </script>
 
 <SettingGroup id="settings-section-video" title="Video Output">
@@ -50,7 +80,10 @@
       <div class="control-stack">
         <CaptureRateControl bind:value={rec.draftFrameRate} />
         {#if captureRateHint}
-          <p class="group-hint">{captureRateHint}</p>
+          <!-- The instrument's whole point: the stored value is fps, the value
+               you care about is GB a day. Measured on this Mac — no figure at
+               all until a complete capture day exists (G8). -->
+          <p class="inst-cost">{captureRateHint}</p>
         {/if}
       </div>
     {/snippet}
@@ -186,7 +219,79 @@
   </SettingRow>
 </SettingGroup>
 
+<!-- Custom input 2 of 5 — the retention ladder. Same tile grid, same rows; the
+     only thing it adds is the footprint bar, which puts the keep-window and the
+     free space it has to fit into on ONE axis. -->
+<SettingGroup title="Retention" hint="What survives, and what it costs.">
+  <SettingRow
+    label="Retention"
+    description="Captures older than the chosen window are deleted automatically. Context and subjects Mnema has already distilled are never touched by it."
+    full
+    divider={false}
+  >
+    {#snippet control()}
+      <div class="retention-control">
+        <RetentionPicker bind:value={rec.draftRetentionPolicy} />
+
+        {#if retentionBar}
+          <div>
+            <div class="inst-bar" aria-hidden="true">
+              <i class="is-kept" style:width="{retentionBar.keptPercent}%"></i>
+              <i class="is-free" style:width="{100 - retentionBar.keptPercent}%"></i>
+            </div>
+            <div class="inst-key">
+              <span><i class="is-kept"></i>{retentionBar.keptLabel}</span>
+              <span><i class="is-free"></i>{retentionBar.freeLabel}</span>
+            </div>
+          </div>
+        {/if}
+
+        {#if retentionHint}
+          <p class="inst-cost">{retentionHint}</p>
+        {/if}
+
+        <div class="row-actions">
+          <button
+            type="button"
+            class="btn btn--ghost btn--sm"
+            onclick={runRetentionCleanupNow}
+            disabled={retentionCleanupRunning}
+            aria-busy={retentionCleanupRunning}
+          >
+            {#if retentionCleanupRunning}<ButtonSpinner />Running…{:else}Run cleanup now{/if}
+          </button>
+        </div>
+        {#if retentionCleanupSummary}
+          <div class="cleanup-result" aria-live="polite">
+            <strong>Latest cleanup</strong>
+            <p>
+              {retentionCleanupSummary.deletedCaptureSegments} segment(s), {retentionCleanupSummary.deletedFrames}
+              frame(s), {retentionCleanupSummary.deletedAudioSegments} audio segment(s).
+            </p>
+          </div>
+        {/if}
+        {#if retentionCleanupError}
+          <p class="error-text">{retentionCleanupError}</p>
+        {/if}
+      </div>
+    {/snippet}
+  </SettingRow>
+</SettingGroup>
+
 <style>
+  /* The retention control stacks its ladder, the footprint bar, the consequence
+     line, and the run-now action. */
+  .retention-control {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+  }
+
+  .retention-control .row-actions {
+    justify-content: flex-start;
+  }
+
   /* SettingRow's full-mode control slot is a flex row; stack these wide custom
      blocks (notices, radio group, preset/custom inputs, hints) vertically. */
   .control-stack {

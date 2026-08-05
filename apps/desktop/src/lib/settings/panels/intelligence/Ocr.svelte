@@ -87,10 +87,44 @@
     {#snippet aside()}
       <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />
     {/snippet}
+    {#snippet control()}{/snippet}
+  </SettingRow>
+
+  <!-- Custom input 4 of 5 — the OCR duty cycle, drawn as one split bar per
+       half of the cycle. A stored "cooldown multiplier" is not a unit anyone
+       thinks in; the share of time OCR actually runs is.
+       READ-ONLY: the two multipliers are compiled-in constants
+       (`ocr_budget.rs`: 4.0 recording, 1.5 catch-up), and exposing them as a
+       setting would need a new backend field + command, which this slice does
+       not add. It reports the cycle; it does not set it.
+       G8: no temperature claim anywhere near it — nothing measures one. -->
+  <SettingRow
+    label="Pacing"
+    description="OCR runs in short bursts and idles in between, so it never takes the machine over. The idle is longer while you are recording."
+    full
+  >
     {#snippet control()}
-      {#if ocrBacklogHint}
-        <p class="group-hint">{ocrBacklogHint}</p>
-      {/if}
+      <div class="ocr-pacing">
+        <div class="dutyrow">
+          <span>recording</span>
+          <span class="duty" role="img" aria-label="While recording, OCR works 20% of the cycle and idles 80%">
+            <span class="duty__w" style:width="20%">work 20%</span>
+            <i class="duty__grip"></i>
+            <span class="duty__c">idle 80%</span>
+          </span>
+        </div>
+        <div class="dutyrow">
+          <span>paused</span>
+          <span class="duty" role="img" aria-label="While capture is paused, OCR works 40% of the cycle and idles 60%">
+            <span class="duty__w" style:width="40%">work 40%</span>
+            <i class="duty__grip"></i>
+            <span class="duty__c">idle 60%</span>
+          </span>
+        </div>
+        {#if ocrBacklogHint}
+          <p class="inst-cost">{ocrBacklogHint} It drains faster while capture is paused.</p>
+        {/if}
+      </div>
     {/snippet}
   </SettingRow>
 
@@ -394,6 +428,17 @@
 </SettingGroup>
 
 <style>
+  /* The duty-cycle instrument stacks its two halves and the backlog line. */
+  .ocr-pacing {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .ocr-pacing .dutyrow:first-child {
+    margin-top: 0;
+  }
+
   /* Wide rows stack a control over hints and the bordered model-status /
      download / cleanup sub-blocks; the primitives only gap whole rows. */
   .ocr-stack {

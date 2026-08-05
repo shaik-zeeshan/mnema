@@ -64,8 +64,11 @@
   );
 </script>
 
+<!-- A settings row IS a tile row (`.row`): the same object the digest and search
+     tiles list their contents with, so its separator is inset by the tile pad
+     and it shares the app's 40px row metric. -->
 <div
-  class="setting-row"
+  class="setting-row row row--static"
   class:setting-row--full={full}
   class:setting-row--warn={warn}
   class:setting-row--disabled={disabled}
@@ -77,13 +80,13 @@
   onclickcapture={() => noteRowEdit(rowId)}
 >
   <div class="setting-row__main">
-    <div class="setting-row__text">
+    <div class="setting-row__text row__txt">
       {#if crumb}
         <span class="setting-row__crumb">{crumb.group} › {crumb.section}</span>
       {/if}
-      <span class="setting-row__label">{label}</span>
+      <span class="setting-row__label row__lbl">{label}</span>
       {#if description}
-        <span class="setting-row__description">{description}</span>
+        <span class="setting-row__description row__sub">{description}</span>
       {/if}
     </div>
     {#if echoing}
@@ -93,49 +96,34 @@
       <div class="setting-row__aside">{@render aside()}</div>
     {/if}
   </div>
-  <div class="setting-row__control">
+  <div class="setting-row__control row__val">
     {@render control()}
   </div>
 </div>
 
 <style>
-  /* Rows are direct children of the card and sit flush; the card's padding
-     comes from these rows. */
+  /* Geometry (the 40px row, the tile-pad inset, and the separator inset by
+     that same pad) comes from `.row` in bento.css — the shared tile-row
+     primitive. Only `justify-content` is this component's own: the text
+     cluster and the control push apart.
+     `divider={false}` suppresses the separator `.row + .row` would draw above
+     this row. `:global` is required — each row is a separate <SettingRow>
+     instance, so Svelte's scoper can't see them as adjacent and would prune a
+     purely-scoped `+` selector. `.setting-row` is unique to this component,
+     so the global match is safe. */
   .setting-row {
-    position: relative;
-    display: flex;
-    align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 16px 20px;
     min-width: 0;
   }
 
-  /* Inset divider between consecutive rows — a 1px line at the top of each
-     non-first row, inset L/R so it doesn't touch the card edges.
-     `:global` on the sibling pair is required: each row is a separate
-     <SettingRow> instance, so Svelte's scoper can't see them as adjacent and
-     would prune (and strip) a purely-scoped `+` selector. The `.setting-row`
-     class is unique to this component, so the global match is safe. */
-  :global(.setting-row + .setting-row)::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 20px;
-    right: 20px;
-    height: 1px;
-    background: var(--app-border);
-    pointer-events: none;
-  }
-
-  /* `divider={false}` suppresses the divider that would otherwise sit above
-     this row. */
-  :global(.setting-row--no-divider)::before {
+  /* Three real classes so this reliably outweighs `.row + .row::before` (0,2,1)
+     wherever the two stylesheets happen to land in the cascade. */
+  :global(.setting-row.row.setting-row--no-divider)::before {
     display: none;
   }
 
   .setting-row--disabled {
-    opacity: 0.38;
+    opacity: var(--opacity-disabled);
     pointer-events: none;
   }
 
@@ -148,7 +136,7 @@
   .setting-row__main {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: var(--s-12);
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -156,7 +144,7 @@
   .setting-row__text {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -166,22 +154,24 @@
   .setting-row__echo {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: var(--s-4);
     flex: 0 0 auto;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
+    height: 18px;
+    padding: 0 var(--s-6);
+    border-radius: var(--r-sm);
+    background: var(--app-accent-bg);
     color: var(--app-accent);
-    font-size: var(--t-meta);
-    font-weight: 550;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
     white-space: nowrap;
   }
 
   .setting-row__echo :global(svg) {
-    width: 10px;
-    height: 10px;
+    width: 9px;
+    height: 9px;
     fill: none;
     stroke: currentColor;
     stroke-width: 2.4;
@@ -200,28 +190,41 @@
   .setting-row__crumb {
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-label);
-    letter-spacing: 0.08em;
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
+  /* Native density: 13px regular. The row label is content, so it carries the
+     strong tone — the mono eyebrow above it is the one that steps back. */
   .setting-row__label {
+    /* `.row__lbl` truncates to one line — right for a digest tile, wrong for a
+       settings label in a half-width column. */
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
     font-size: var(--t-ui);
-    font-weight: 550;
-    letter-spacing: 0.01em;
+    font-weight: var(--w-regular);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
-    line-height: 1.3;
+    line-height: var(--lh-ui);
   }
 
   .setting-row--warn .setting-row__label {
     color: var(--app-warn);
   }
 
+  /* Present-tense consequence line: what is happening now, not what the option
+     means in the abstract. Wraps (unlike the one-line `.row__sub` a digest tile
+     uses), so the flex split below bounds it against the control. */
   .setting-row__description {
-    font-size: 11px;
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
-    letter-spacing: 0.01em;
-    line-height: 1.45;
+    letter-spacing: var(--ls-meta);
+    line-height: var(--lh-meta);
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
     /* Fill the text column. The flex split (`.setting-row__text` is
        `flex: 1 1 auto`, `.setting-row__control` is `flex-shrink: 0`) already
        reserves room for a beside control, so 100% wraps against the toggle —

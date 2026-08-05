@@ -10,7 +10,14 @@
   import SemanticSearch from "./SemanticSearch.svelte";
 </script>
 
-<div class="settings-panel" id="settings-panel-intelligence">
+<!-- The mounted tab panel for the `intelligence` toolbar tab. Its groups lay out on
+     the bento grid (settings-bento.css). -->
+<div
+  class="settings-panel"
+  id="settings-panel-intelligence"
+  role="tabpanel"
+  aria-labelledby="settings-tab-intelligence"
+>
   <Providers />
   <McpConnectors />
   <AskAi />

@@ -37,17 +37,32 @@
         inset) so a group sitting under a parent section reads as its child,
         not a fifth equal-weight sibling. Used by the shortcut category lists. */
     nested?: boolean;
+    /** Take both bento cells instead of one — the 2×1 footprint. Opt-in, for
+        groups whose rows genuinely need the width (shortcut editors, connector
+        tables). Everything else is 1×1. */
+    wide?: boolean;
     /** The stack of <SettingRow>s. */
     children: Snippet;
   }
 
-  let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, bare = false, nested = false, children }: Props = $props();
+  let { title, hint, id, actions, titleExtra, cardClass, hintInline = false, onTitleClick, bare = false, nested = false, wide = false, children }: Props = $props();
 </script>
 
-<!-- `id` is the deeplink + scroll-spy anchor — it MUST stay on this outer
-     scrollable <section>, never on the inner card. -->
-<section class="setting-group" {id}>
-  <header class="setting-group__header" class:setting-group__header--inline={hintInline}>
+<!-- A settings group IS a bento tile: `.tile` chrome (the constant 18px
+     `.tile__h` header row — mono eyebrow left, actions right) over a
+     `.pay--rows` payload whose rows bleed to both tile edges with separators
+     inset by the tile pad. Identical object to a digest tile or a search
+     result; only the contents differ.
+     `id` is the deeplink anchor — it MUST stay on this outer <section>. -->
+<section
+  class="setting-group tile tile--static"
+  class:setting-group--wide={wide}
+  {id}
+>
+  <header
+    class="setting-group__header tile__h"
+    class:setting-group__header--inline={hintInline}
+  >
     <div class="setting-group__heading">
       <!-- The title and anything inline after it share one row so a trailing
            badge sits beside the title rather than under it. With no
@@ -65,10 +80,10 @@
           {@render titleExtra()}
         {/if}
       </div>
-      {#if hint}
-        <span class="setting-group__hint">{hint}</span>
-      {/if}
     </div>
+    {#if hint && hintInline}
+      <span class="setting-group__hint">{hint}</span>
+    {/if}
     {#if actions}
       <div class="setting-group__actions">
         {@render actions()}
@@ -76,48 +91,43 @@
     {/if}
   </header>
 
-  <div class="setting-group__card {cardClass ?? ''}" class:setting-group__card--bare={bare}>
+  <!-- Long prose hints are payload, not chrome: keeping them out of the header
+       is what holds every tile's header on one baseline across the grid. -->
+  {#if hint && !hintInline}
+    <p class="setting-group__hint">{hint}</p>
+  {/if}
+
+  <div
+    class="setting-group__card pay pay--rows {cardClass ?? ''}"
+    class:setting-group__card--bare={bare}
+  >
     {@render children()}
   </div>
 </section>
 
 <style>
+  /* Geometry (tile padding, radius, fill, the 18px header row) comes from
+     `.tile`/`.tile__h` in bento.css — this component only styles what is
+     genuinely its own, plus the two tile properties it must override. */
+
+  /* `.tile` clips to its radius; a settings tile must NOT — the app-exclusion
+     combobox and every Select popover are positioned, not portaled, and were
+     being cut at the tile's bottom edge. Nothing here relies on clipping: the
+     rows are `.row--static`, so no hover fill can escape a rounded corner. */
   .setting-group {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
+    overflow: visible;
   }
 
-  /* ── Section head (above the card) ─────────────────────────── */
+  /* ── Section head ──────────────────────────────────────────── */
   .setting-group__header {
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 0 4px;
+    min-width: 0;
   }
 
   .setting-group__heading {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
+    align-items: center;
     min-width: 0;
-  }
-
-  /* `hintInline`: the whole header becomes one baseline-aligned row —
-     title left, hint right (then `actions`, if any, further right). Reached
-     only via the opt-in prop, so every other caller keeps the stacked
-     heading above byte-for-byte. */
-  .setting-group__header--inline {
-    align-items: baseline;
-  }
-
-  .setting-group__header--inline .setting-group__heading {
-    flex: 1;
-    flex-direction: row;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
   }
 
   /* Short status, not prose: keep it on its line and let the title's flex
@@ -136,16 +146,16 @@
     min-width: 0;
   }
 
-  /* Eyebrow/overline: kept smaller than the row labels by design, but pushed to
-     the strong text tone so it registers on the squint test rather than reading
-     as the faintest line on the page. */
+  /* Eyebrow/overline — the mono tile label, at the same weight and tone every
+     tile header in the app uses (`.tile__h .t-label`). It is chrome: the row
+     labels below it are the content, so it sits a step back, not forward. */
   .setting-group__title {
     font-family: var(--app-font-mono, ui-monospace, monospace);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.13em;
+    font-weight: var(--w-semi);
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: var(--app-text-strong);
+    color: var(--app-text-subtle);
   }
 
   /* Drill-in title: same type as the inert one, plus a hit target and a
@@ -182,18 +192,25 @@
      so lighten + inset their titles to read one level down rather than as
      equal-weight siblings. */
   .setting-group__title--nested {
-    font-weight: 600;
+    font-weight: var(--w-medium);
     letter-spacing: 0.1em;
-    color: var(--app-text-muted);
-    padding-left: 8px;
+    color: var(--app-text-subtle);
   }
 
+  /* The hint is payload under the constant header row, not part of it — that is
+     what keeps every tile on the grid opening at the same baseline. */
   .setting-group__hint {
-    /* --t-meta is 11px — same value the mockup's `.group__hint` names. */
+    display: block;
+    margin: 0 0 8px;
     font-size: var(--t-meta);
     color: var(--app-text-muted);
-    letter-spacing: 0.01em;
-    line-height: 1.5;
+    letter-spacing: var(--ls-meta);
+    line-height: var(--lh-meta);
+  }
+
+  .setting-group__header--inline .setting-group__hint {
+    margin: 0 0 0 auto;
+    font-family: var(--app-font-mono, ui-monospace, monospace);
   }
 
   .setting-group__actions {
@@ -201,50 +218,33 @@
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
-    flex-wrap: wrap;
+    margin-left: auto;
     flex-shrink: 0;
   }
 
-  /* ── Card (wraps the rows) ─────────────────────────────────── */
-  /* NB: no `overflow: hidden` here. Controls that open a dropdown/popover
-     anchored inside a row (e.g. the app-exclusion combobox, which is
-     positioned, not portaled) must be able to overflow the card; clipping
-     them was cutting the menu at the card's bottom edge. The rows are
-     transparent and the accent hairline below is inset within the card
-     bounds, so nothing relies on clipping for the rounded-corner look. */
+  /* ── Card (wraps the rows) ─────────────────────────────────────
+     Direction 01: the card is no longer a bordered box inside a section — the
+     TILE is the box, and this is just its payload zone (`.pay--rows`, applied
+     in the markup, bleeds the rows out to both tile edges). No frame, no
+     background, no accent hairline: one surface per group, not two.
+     NB: still no `overflow: hidden` anywhere on the tile — controls that open
+     a positioned, non-portaled popover (the app-exclusion combobox, every
+     Select) must be able to overflow it. */
   .setting-group__card {
     position: relative;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
+    /* `.pay--rows` already bleeds the rows to both edges; this is the same
+       negative inset written where the component can guarantee it. */
+    margin: 0 calc(var(--tile-pad) * -1) calc(var(--tile-pad) * -1);
   }
 
-  /* Bare: no frame — children (which carry their own borders) sit flush. */
+  /* A `bare` group carries no tile fill at all: its children draw their own
+     frames, and a fill around them would be two boxes for one thing. */
   .setting-group__card--bare {
+    margin: 0;
+  }
+
+  .setting-group:has(> .setting-group__card--bare) {
+    padding: 0;
     background: none;
-    border: 0;
-    border-radius: 0;
-  }
-
-  .setting-group__card--bare::before {
-    display: none;
-  }
-
-  /* Faint top-edge accent hairline — Mnema signature, inset L/R. */
-  .setting-group__card::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 14px;
-    right: 14px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
-      transparent
-    );
-    pointer-events: none;
   }
 </style>

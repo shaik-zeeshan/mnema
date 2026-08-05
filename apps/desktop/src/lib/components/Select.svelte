@@ -110,9 +110,14 @@
       {#if loading}
         <span class="select-spinner" aria-hidden="true"><IconSpinner /></span>
       {:else}
-        <svg class="select-chevron" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="m6 9 6 6 6-6" />
-        </svg>
+        <!-- NSPopUpButton's accent chevron capsule: the up/down pair says "this
+             cycles through a list", and the accent fill is the one place a
+             settings row carries the accent besides the switch. -->
+        <span class="select-chevron-cap" aria-hidden="true">
+          <svg class="select-chevron" viewBox="0 0 10 12">
+            <path d="M2 4.5 5 1.5 8 4.5 M2 7.5 5 10.5 8 7.5" />
+          </svg>
+        </span>
       {/if}
     </BitsSelect.Trigger>
     <!-- Render inline (no body portal). bits-ui defaults to portaling the
@@ -208,22 +213,28 @@
     color: var(--app-text-subtle);
   }
 
+  /* NSPopUpButton: a 28px raised push bezel with the AppKit top-light gradient
+     (never a recessed text-field well — a popup is a button, not an input), sans
+     13px, and the accent chevron capsule pinned at the trailing edge. */
   :global(.select-trigger) {
     display: flex;
     align-items: center;
     justify-content: space-between;
     width: 100%;
-    padding: 7px 10px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    height: var(--h-md);
+    padding: 0 3px 0 var(--s-8);
+    background: var(--app-surface-raised);
+    background-image: var(--push-grad);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
     cursor: pointer;
     outline: none;
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25));
+    box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
     transition: border-color 0.15s, box-shadow 0.15s;
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: 12px;
-    gap: 8px;
+    font-family: var(--app-font-sans, inherit);
+    font-size: var(--t-ui);
+    letter-spacing: var(--ls-ui);
+    gap: var(--s-6);
     text-align: left;
   }
 
@@ -232,12 +243,12 @@
   }
 
   :global(.select-trigger:active) {
-    background: var(--app-surface-active);
+    background-color: var(--app-surface-active);
   }
 
   :global(.select-trigger:focus-visible) {
     border-color: var(--app-accent);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)), 0 0 0 3px var(--app-accent-glow);
+    box-shadow: 0 0 0 3.5px var(--app-accent-glow);
     outline: none;
   }
 
@@ -251,12 +262,11 @@
 
   :global(.select-trigger--warn:focus-visible) {
     border-color: var(--app-warn-strong);
-    box-shadow: inset 0 1px 2px var(--app-input-recess, rgba(0, 0, 0, 0.25)),
-      0 0 0 3px color-mix(in srgb, var(--app-warn) 18%, transparent);
+    box-shadow: 0 0 0 3.5px color-mix(in srgb, var(--app-warn) 18%, transparent);
   }
 
   .select-trigger-text {
-    color: var(--app-text);
+    color: var(--app-text-strong);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -267,22 +277,27 @@
     color: var(--app-text-subtle);
   }
 
-  .select-chevron {
-    display: block;
-    width: 14px;
-    height: 14px;
+  .select-chevron-cap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
-    fill: none;
-    stroke: var(--app-text-muted);
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-    transition: transform 0.15s, stroke 0.15s;
+    width: 16px;
+    height: 18px;
+    border-radius: var(--r-sm);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
 
-  :global(.select-trigger[data-state="open"]) .select-chevron {
-    transform: rotate(180deg);
-    stroke: var(--app-accent);
+  .select-chevron {
+    display: block;
+    width: 9px;
+    height: 11px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   /* Busy spinner shown on the closed trigger while a pick is in flight. Rotate
