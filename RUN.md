@@ -83,9 +83,41 @@ Rendered screenshots of the app itself, both themes, at 1100×720 and 800×600, 
 ## Deviations from the mockup, and why
 
 Where the mockups and the round-4 decisions (`docs/redesign/round4/DECISIONS.md`, G1–G11)
-disagreed, the decisions won. See the final section of this file's companion report for the
-full list; the substantive ones are: no temperature claims and no minute-precise ETAs (G8), no
-named external app in shortcut-conflict copy (G9), no type-a-date field in the jump menu (G6),
-no Search/Ask segmented control (G4), no settings save bar and no settings Undo (G7), the
-semantic coverage meter only when semantic search is enabled (G10), and Open Threads as digest
-prose rather than a structured tile (G11).
+disagreed, the decisions won.
+
+**Forced by a G-decision:**
+
+- **G8, honest numbers.** No temperature claim anywhere — the OCR duty-cycle bar shows both
+  halves of the cycle and the real backlog and says nothing about °C. No minute-precise ETAs.
+  Dropped because nothing measures them: the search field's "0.08 s", the Quick Access empty
+  state's frame and hour counts, the ask row's "2,140 frames read", the Overview Storage tile's
+  "270 MB today / 34.2 GB on disk / 90-day keep", the retention ladder's "34.2 GB kept now",
+  and the model rows' "slow on battery". What replaced them is measured on your machine.
+- **G6.** The jump menu has no type-a-date field.
+- **G4.** No Search/Ask segmented control; Ask is the first result row and ⌘⏎.
+- **G7.** No settings save bar and no settings Undo.
+- **G9.** Shortcut-conflict copy never names an external app.
+- **G10.** The semantic coverage meter renders only when semantic search is enabled.
+- **G11.** Open Threads is the digest's own sentence, not a structured tile.
+
+**Stated deviations the direction itself argues for** (see `07-components.html`): tile radius
+12 and inset 14 rather than 10/16; the AudioDrawer floating above the rail-wrap instead of
+covering it; retention living under Capture rather than Data.
+
+**Judgement calls worth knowing about:**
+
+- **The digest's inline frame citations are not rendered.** They are page 01's signature move,
+  but the digest carries narrative prose and no frame references — picking which clause points
+  at which frame would be a fabricated citation. Real citations need the digest to emit
+  grounded frame refs, which is a backend change.
+- **Danger styling was kept on Settings' destructive actions.** The mockup reserves danger for
+  Delete Recent Capture, but that action does not live in Settings, and Settings has nine
+  genuinely destructive confirm-gated actions. Demoting them removes a safety signifier rather
+  than a decoration.
+- **Select is a push-bezel NSPopUpButton while Combobox keeps a recessed well.** They look like
+  mismatched siblings but this is native-correct and matches the mockup's own `.pop` vs
+  `.input`: you choose from one and type into the other.
+- **The collapsed Quick Access window is centred, not pinned top-centre.** The centring is a
+  Rust constant, and this direction is a skin with no Rust changes.
+- **The timeline has no separate always-red "now" tick.** The rail already paints the active
+  tick record-red; a second permanent red mark would put two reds on one rail.
