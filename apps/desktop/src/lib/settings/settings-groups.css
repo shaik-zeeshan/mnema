@@ -47,25 +47,41 @@
     border-radius: 6px;
   }
 
+  /* A stack of flat rows, not a stack of little cards: the settings window's
+     ceiling is ONE bordered container (the window itself), so a shortcut row
+     is separated from its neighbour by a hairline and nothing else. */
   .settings-shell .shortcut-editor-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    background: var(--ti-grp-fill);
+    border-radius: var(--r-lg);
+    overflow: hidden;
   }
 
   .settings-shell .shortcut-editor-row {
+    position: relative;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px 14px;
+    gap: var(--s-8) var(--s-12);
     align-items: center;
-    padding: 9px 10px;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface-subtle);
+    padding: var(--s-8) var(--s-12);
   }
 
+  .settings-shell .shortcut-editor-row + .shortcut-editor-row::before {
+    content: "";
+    position: absolute;
+    left: var(--s-12);
+    right: 0;
+    top: 0;
+    height: var(--hairline);
+    background: var(--app-border);
+    pointer-events: none;
+  }
+
+  /* The conflict tint is a fill, not a frame — the danger hairline lives on
+     the recorder's own well, where the offending binding actually is. */
   .settings-shell .shortcut-editor-row--error {
-    border-color: var(--app-danger-border);
+    background: var(--app-danger-bg);
   }
 
   .settings-shell .shortcut-editor-row__main {
@@ -78,16 +94,15 @@
      weight ≤550 so it never out-weighs the parent section label, and route the
      size through the type scale. */
   .settings-shell .shortcut-editor-row__title {
-    color: var(--app-text);
-    font-size: var(--t-ui);
-    font-weight: 550;
-    line-height: 1.3;
+    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-ui) / 1.25 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
   }
 
   .settings-shell .shortcut-editor-row__description {
     color: var(--app-text-muted);
-    font-size: var(--t-label);
-    line-height: 1.35;
+    font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
   }
 
   .settings-shell .shortcut-editor-row__error {
@@ -105,76 +120,101 @@
   }
 
   .settings-shell .shortcut-editor-row--listening {
-    border-color: var(--app-accent-border);
+    background: color-mix(in srgb, var(--app-accent) 7%, transparent);
   }
 
+  /* ══ INSTRUMENT 5 of 6 — SHORTCUT RECORDER ══════════════════════════════
+     This control earns an instrument because it passes the rule: the physical
+     quantity is *which physical keys you press*, so the honest way to show it
+     is the keys themselves. The recorder is a WELL; the binding inside it is
+     real, raised KEYCAPS with a bottom edge and a top etch.
+
+     Three states: at rest, armed (accent ring, "Press keys…"), and conflicting
+     (a danger hairline). G9 governs the copy those states carry — an in-app
+     conflict names its owner and the combination; an external register-failure
+     says "taken by another app" and NEVER names one, because macOS has no API
+     to enumerate another app's hotkeys. */
   .settings-shell .shortcut-capture {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     min-width: 104px;
-    min-height: 30px;
-    padding: 0 10px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    background: var(--app-surface-raised);
+    height: 40px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--ti-well);
+    box-shadow:
+      inset 0 1px 2px var(--ti-recess),
+      inset 0 0 0 var(--hairline) var(--ti-well-line);
     color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: var(--t-meta);
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    cursor: pointer;
-    transition: border-color 0.12s ease, box-shadow 0.12s ease, color 0.12s ease, background 0.12s ease;
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    cursor: default;
+    transition: box-shadow 0.12s ease;
   }
 
-  .settings-shell .shortcut-capture:hover:not(:disabled), .settings-shell .shortcut-capture:focus-visible {
-    border-color: var(--app-accent-border);
-    box-shadow: var(--app-ring);
+  .settings-shell .shortcut-capture:hover:not(:disabled),
+  .settings-shell .shortcut-capture:focus-visible {
     outline: none;
+    box-shadow:
+      inset 0 1px 2px var(--ti-recess),
+      inset 0 0 0 var(--hairline) var(--ti-well-line),
+      0 0 0 3px var(--app-accent-glow);
   }
 
   /* Mid-save the whole row is read-only — dim the capture trigger to match the
      icon buttons beside it (which carry `.settings-icon-btn:disabled`). */
   .settings-shell .shortcut-capture:disabled {
-    opacity: 0.4;
+    opacity: var(--opacity-disabled);
     cursor: default;
   }
 
   .settings-shell .shortcut-capture--empty {
-    border-style: dashed;
-    color: var(--app-text-muted);
-    font-weight: 600;
+    color: var(--app-text-subtle);
   }
 
-  .settings-shell .shortcut-capture--recording, .settings-shell .shortcut-capture--recording:hover {
-    border-style: solid;
-    border-color: var(--app-accent);
-    background: var(--app-accent-bg);
+  /* Armed. The well itself lights; the keycaps are what you are about to
+     replace, so nothing inside it changes colour. */
+  .settings-shell .shortcut-capture--recording,
+  .settings-shell .shortcut-capture--recording:hover {
     color: var(--app-accent);
-    box-shadow: 0 0 0 2px var(--app-accent-glow);
+    box-shadow:
+      inset 0 1px 2px var(--ti-recess),
+      inset 0 0 0 var(--hairline) var(--ti-well-line),
+      0 0 0 3px var(--app-accent-glow);
+  }
+
+  /* Conflicting: a danger hairline INSIDE the recess, not a red fill — the
+     binding is still readable, which is the whole point of showing it. */
+  .settings-shell .shortcut-editor-row--error .shortcut-capture {
+    box-shadow:
+      inset 0 1px 2px var(--ti-recess),
+      inset 0 0 0 1px var(--app-danger);
   }
 
   .settings-shell .shortcut-capture__keys {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 5px;
   }
 
+  /* A real keycap: a raised face with a bottom edge and a top etch. */
   .settings-shell .shortcut-cap {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
-    background: var(--app-bg);
+    min-width: 26px;
+    height: 26px;
+    padding: 0 7px;
+    border: 0;
+    border-radius: 5px;
+    background: var(--ti-keycap-bg);
+    box-shadow:
+      0 1px 0 var(--ti-keycap-edge),
+      inset 0 1px 0 var(--ti-etch),
+      0 0 0 var(--hairline) var(--ti-keycap-ring);
     color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: var(--t-label);
-    font-weight: 700;
-    line-height: 1;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-mono);
   }
 
   .settings-shell .shortcut-capture__hint {

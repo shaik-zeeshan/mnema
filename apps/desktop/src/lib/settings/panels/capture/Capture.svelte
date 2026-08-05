@@ -8,6 +8,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import Slider from "$lib/components/Slider.svelte";
   import RadioGroup from "$lib/components/RadioGroup.svelte";
+  import SegmentLengthControl from "$lib/components/SegmentLengthControl.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
@@ -104,15 +105,7 @@
       divider={false}
     >
       {#snippet control()}
-        <Slider
-          bind:value={rec.draftSegmentDuration}
-          min={10}
-          max={300}
-          step={10}
-          label="Duration"
-          unit="s"
-          formatValue={(v) => v >= 60 ? `${Math.floor(v/60)}m ${v%60}s` : `${v}s`}
-        />
+        <SegmentLengthControl bind:value={rec.draftSegmentDuration} />
       {/snippet}
     </SettingRow>
   {/if}
