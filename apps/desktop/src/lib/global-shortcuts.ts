@@ -22,7 +22,9 @@ export type GlobalShortcutId =
   | "toggleSourceMicrophone"
   | "toggleSourceSystemAudio"
   | "toggleShortcutsHelp"
-  | "closeShortcutsHelp";
+  | "closeShortcutsHelp"
+  | "surfaceTimeline"
+  | "surfaceOverview";
 
 export type GlobalShortcutAction =
   | { type: "closeShortcutsHelp" }
@@ -32,7 +34,8 @@ export type GlobalShortcutAction =
   | { type: "toggleMainWindow" }
   | { type: "openSettings" }
   | { type: "openDebug" }
-  | { type: "toggleSource"; source: SourceShortcutKey };
+  | { type: "toggleSource"; source: SourceShortcutKey }
+  | { type: "goToSurface"; surface: "timeline" | "overview" };
 
 export type GlobalShortcutKeyEvent = Pick<
   KeyboardEvent,
@@ -44,6 +47,12 @@ export type GlobalShortcutContext = {
   isIdle: boolean;
   isMainRoute: boolean;
   isMainWindow: boolean;
+  /**
+   * Main window on any surface-switcher route (Timeline `/`, Overview
+   * `/insights`, or `/settings`) — the routes where ⌘1/⌘2 surface switching
+   * applies. Wider than `isMainRoute`, which is Timeline-only.
+   */
+  isSurfaceRoute: boolean;
   isShortcutSuppressedTarget: boolean;
   shortcutsHelpOpen: boolean;
 };
@@ -126,10 +135,28 @@ export const GLOBAL_SHORTCUTS: Record<GlobalShortcutId, ShortcutDefinition> = {
     kind: "behavior",
     scope: "global",
   },
+  // Surface switching (frame 07): fixed bindings, not user-editable — the
+  // switcher renders them as static ⌘1/⌘2 hints.
+  surfaceTimeline: {
+    id: "surfaceTimeline",
+    label: "Go to Timeline",
+    bindings: [{ key: "1", primary: true }],
+    kind: "command",
+    scope: "global",
+  },
+  surfaceOverview: {
+    id: "surfaceOverview",
+    label: "Go to Overview",
+    bindings: [{ key: "2", primary: true }],
+    kind: "command",
+    scope: "global",
+  },
 };
 
 export function getEffectiveGlobalShortcut(id: GlobalShortcutId): ShortcutDefinition {
-  if (id === "closeShortcutsHelp") return GLOBAL_SHORTCUTS[id];
+  if (id === "closeShortcutsHelp" || id === "surfaceTimeline" || id === "surfaceOverview") {
+    return GLOBAL_SHORTCUTS[id];
+  }
   const binding = getShortcutBinding(keyboardBindings.settings, id);
   return shortcutDefinitionWithBinding(GLOBAL_SHORTCUTS[id], binding);
 }
@@ -153,7 +180,20 @@ export function getGlobalShortcutAction(
   }
   if (context.shortcutsHelpOpen) return null;
 
-  if (!context.isMainWindow || !context.isMainRoute) return null;
+  if (!context.isMainWindow) return null;
+
+  // Surface switching works on all three main-window routes (Timeline,
+  // Overview, Settings) — everything below stays Timeline-gated as before.
+  if (!context.isShortcutSuppressedTarget && context.isSurfaceRoute) {
+    if (matchShortcut(event, effectiveShortcut("surfaceTimeline"), platform)) {
+      return { type: "goToSurface", surface: "timeline" };
+    }
+    if (matchShortcut(event, effectiveShortcut("surfaceOverview"), platform)) {
+      return { type: "goToSurface", surface: "overview" };
+    }
+  }
+
+  if (!context.isMainRoute) return null;
 
   if (
     !context.isShortcutSuppressedTarget &&

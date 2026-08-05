@@ -104,7 +104,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
         id: "startup",
         anchor: "settings-section-startup",
         label: "Startup",
-        keywords: ["auto-start", "launch", "login", "auto start recording"],
+        keywords: ["auto-start", "launch", "login", "auto start recording", "surface", "timeline", "overview", "open mnema on"],
       },
       {
         id: "shortcuts",
