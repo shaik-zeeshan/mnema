@@ -35,243 +35,15 @@
      the window and rail never scroll. */
 
 
-  /* ── Left rail (Codex-style) ──────────────────────────────────────── */
-  .settings-shell .settings-rail {
-    position: relative;
-    flex: 0 0 232px;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    padding-right: 18px;
-  }
-
-  /* Rail divider: a dashed hairline that fades toward the top and bottom
-     edges. Uses a repeating gradient for the dashes and a mask for the fade. */
-  .settings-shell .settings-rail::after {
-    content: "";
-    position: absolute;
-    inset: 0 0 0 auto;
-    width: 1px;
-    background: repeating-linear-gradient(
-      to bottom,
-      transparent 0px,
-      transparent 3px,
-      var(--app-border-strong) 3px,
-      var(--app-border-strong) 8px
-    );
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black 14%,
-      black 86%,
-      transparent
-    );
-  }
-
-  /* ── Fixed top zone: back link + search ───────────────────────────── */
-  .settings-shell .rail-top {
-    flex: 0 0 auto;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-    padding: 2px 2px 12px 2px;
-  }
-
-  .settings-shell .rail-back {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    width: fit-content;
-    padding: 3px 5px;
-    margin-left: -5px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    color: var(--app-text-muted);
-    font-family: inherit;
-    font-size: var(--t-ui);
-    cursor: pointer;
-    user-select: none;
-    transition: color 0.15s, background 0.15s;
-  }
-  .settings-shell .rail-back:hover {
-    color: var(--app-text-strong);
-    background: var(--app-surface-hover);
-  }
-  .settings-shell .rail-back:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .settings-shell .rail-back:active {
-    background: var(--app-surface-active);
-    transform: translateY(0.5px);
-  }
-  .settings-shell .rail-back svg {
-    width: 13px;
-    height: 13px;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-
-  .settings-shell .rail-search {
-    position: relative;
-    display: flex;
-    align-items: center;
-  }
-  /* Leading search glyph only (direct child) — the trailing clear button nests
-     its own svg and styles it itself. */
-  .settings-shell .rail-search > svg {
-    position: absolute;
-    left: 10px;
-    width: 14px;
-    height: 14px;
-    color: var(--app-text-muted);
-    pointer-events: none;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 2;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .settings-shell .rail-search input {
-    width: 100%;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
-    /* Right padding reserves room for the in-field clear (X) button. */
-    padding: 8px 32px 8px 32px;
-    color: var(--app-text);
-    font-family: inherit;
-    font-size: var(--t-ui);
-    outline: none;
-    transition: border-color 0.15s, box-shadow 0.15s;
-  }
-  .settings-shell .rail-search input::placeholder {
-    color: var(--app-text-faint);
-  }
-  .settings-shell .rail-search input:focus {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  /* ── Scrolling nav zone ───────────────────────────────────────────── */
-  .settings-shell .rail-nav {
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow-y: auto;
-    /* Right gutter keeps items clear of the scrollbar; left aligns the active
-       edge bar against the rail edge. */
-    padding: 2px 6px 8px 0;
-  }
-
-  .settings-shell .rail-nav__list {
-    display: flex;
-    flex-direction: column;
-  }
-
-  .settings-shell .nav-group {
-    margin-top: 14px;
-  }
-  .settings-shell .nav-group:first-child {
-    margin-top: 2px;
-  }
-
-  .settings-shell .nav-cat {
-    margin: 0 0 5px 8px;
-    font-size: var(--t-label);
-    font-weight: 600;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-  }
-
-  .settings-shell .nav-item {
-    position: relative;
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    width: 100%;
-    height: 32px;
-    padding: 6px 10px;
-    background: transparent;
-    border: 1px solid transparent;
-    border-radius: 6px;
-    cursor: pointer;
-    user-select: none;
-    font-family: inherit;
-    text-align: left;
-    color: var(--app-text-muted);
-    transition: background 0.15s, color 0.15s;
-  }
-  .settings-shell .nav-item svg {
-    flex: 0 0 16px;
-    width: 16px;
-    height: 16px;
-    color: inherit;
-    fill: none;
-    stroke: currentColor;
-    stroke-width: 1.7;
-    stroke-linecap: round;
-    stroke-linejoin: round;
-  }
-  .settings-shell .nav-item span {
-    font-size: var(--t-ui);
-    font-weight: 500;
-    line-height: 1;
-    color: inherit;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .settings-shell .nav-item:hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-  }
-  .settings-shell .nav-item:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  /* Momentary press cue so a click registers before a slow section switch. */
-  .settings-shell .nav-item:active {
-    background: var(--app-surface-active);
-  }
-
-  /* Active item — quiet neutral fill + a restrained Mnema cue: a 2px accent
-     left edge bar, accent-tinted icon, strong label. */
-  .settings-shell .nav-item--active,
-  .settings-shell .nav-item--active:hover {
-    background: color-mix(in srgb, var(--app-accent) 8%, transparent);
-    color: var(--app-text-strong);
-  }
-  .settings-shell .nav-item--active::before {
-    content: "";
-    position: absolute;
-    left: 0;
-    top: 6px;
-    bottom: 6px;
-    width: 2px;
-    border-radius: 2px;
-    background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
-  }
-  .settings-shell .nav-item--active svg {
-    color: var(--app-accent);
-  }
-  .settings-shell .nav-item--active span {
-    color: var(--app-text-strong);
-  }
+  /* ── The left rail is GONE (direction 05) ─────────────────────────────
+     Top-level navigation is now a toolbar of icon+label tabs pinned above
+     this pane (`SettingsTabs.svelte`, styled by `.ti-tabbar`/`.ti-tabb` in
+     lib/styles/tactile.css). ~240 lines of rail chrome — the back link, the
+     nav search, the category headers, the sub-section items and the dashed
+     divider — were deleted rather than hidden: navigation is horizontal at
+     the top and vertical in the content, never both at once, so there is no
+     second nav to keep alive. Section-level navigation is the sticky opaque
+     group headers you scroll past. */
 
   /* ── Content pane + scroll region ─────────────────────────────────── */
   .settings-shell .settings-content {
@@ -280,7 +52,6 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
-    gap: 14px;
   }
 
   /* A plain BLOCK scroll container — deliberately not flex. One tab panel
@@ -294,7 +65,9 @@
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
-    padding: 8px 24px 0;
+    /* No top padding: the first sticky group header must be able to reach
+       `top: 0` and sit flush under the toolbar, or it parks in mid-air. */
+    padding: 0 var(--s-24);
   }
 
   /* The centered content column: capped to a comfortable reading width and
@@ -303,17 +76,21 @@
      (Processing, Capture) they lay out in a column with an airy gap that reads
      as distinct sections. The trailing `padding-bottom` lives on this scrolling
      child so WebKit counts it in scrollHeight and the last row stays reachable. */
-  /* Group panels are plain content regions (not tabpanels — the rail is a
-     navigation landmark over one scrolling panel, not a tablist), so layout
-     keys off a class. */
+  /* Group panels are plain content regions (not tabpanels — the toolbar tabs
+     switch which single panel is mounted, and scroll-spy tracks the section
+     inside it), so layout keys off a class.
+
+     660px is direction 05's column: 24px between sections, 8px between the
+     groups inside one. Wider than the old 640 by design — the instruments carry
+     a gauge, a scale and a legend on one line and 640 crowded them. */
   .settings-shell .settings-panel {
     display: flex;
     flex-direction: column;
-    gap: 24px;
-    width: 100%;
-    max-width: 640px;
+    gap: var(--s-24);
+    width: 660px;
+    max-width: 100%;
     margin: 0 auto;
-    padding-bottom: 48px;
+    padding-bottom: var(--s-48);
   }
 
   /* Auto-hiding scrollbars: invisible at rest, fade in on hover or scroll,

@@ -85,16 +85,26 @@
   .setting-group {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--s-6);
   }
 
-  /* ── Section head (above the card) ─────────────────────────── */
+  /* ── Section head — an OPAQUE STICKY header ────────────────────────────
+     This is what replaced the left rail: with no second nav, the header that
+     pins itself under the toolbar is how you know where you are as you scroll.
+     Opaque is load-bearing — a translucent header lets rows ghost through it
+     and the whole illusion of a pinned label collapses. The soft downward
+     shadow is the only depth cue, and it only reads once content is behind it. */
   .setting-group__header {
+    position: sticky;
+    top: 0;
+    z-index: 4;
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
-    gap: 12px;
-    padding: 0 4px;
+    gap: var(--s-12);
+    padding: var(--s-16) var(--s-2) var(--s-6);
+    background: var(--app-bg);
+    box-shadow: 0 6px 8px -6px var(--ti-stick-shadow);
   }
 
   .setting-group__heading {
@@ -139,13 +149,13 @@
   /* Eyebrow/overline: kept smaller than the row labels by design, but pushed to
      the strong text tone so it registers on the squint test rather than reading
      as the faintest line on the page. */
+  /* The 10px mono eyebrow — quiet on purpose. An instrument outranks a group
+     by carrying a value in its own header, not by the group shouting. */
   .setting-group__title {
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.13em;
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    color: var(--app-text-strong);
+    color: var(--app-text-muted);
   }
 
   /* Drill-in title: same type as the inert one, plus a hit target and a
@@ -212,11 +222,14 @@
      them was cutting the menu at the card's bottom edge. The rows are
      transparent and the accent hairline below is inset within the card
      bounds, so nothing relies on clipping for the rounded-corner look. */
+  /* A group is a FILL, not a card. Direction 05's ceiling for a settings
+     window is ONE bordered container — the window ring — so depth here is a
+     surface step and nothing else: no border, no accent hairline. */
   .setting-group__card {
     position: relative;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
+    background: var(--ti-grp-fill);
+    border: 0;
+    border-radius: var(--r-lg);
   }
 
   /* Bare: no frame — children (which carry their own borders) sit flush. */
@@ -230,21 +243,7 @@
     display: none;
   }
 
-  /* Faint top-edge accent hairline — Mnema signature, inset L/R. */
-  .setting-group__card::before {
-    content: "";
-    position: absolute;
-    top: 0;
-    left: 14px;
-    right: 14px;
-    height: 1px;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 22%,
-      color-mix(in srgb, var(--app-accent) 12%, transparent) 78%,
-      transparent
-    );
-    pointer-events: none;
-  }
+  /* The accent top-edge hairline is deliberately gone: this direction spends
+     its accent budget (≤4 per window) on the active tab, the save chip and the
+     instrument values — not on decorating every container. */
 </style>

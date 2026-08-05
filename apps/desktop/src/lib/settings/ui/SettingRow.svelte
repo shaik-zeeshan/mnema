@@ -101,13 +101,18 @@
 <style>
   /* Rows are direct children of the card and sit flush; the card's padding
      comes from these rows. */
+  /* Native System-Settings density: a 40px row with a 12px inset, not the
+     16/20 airy card padding. The quiet majority of this direction is these
+     rows, so they have to read as stock macOS rows — the instruments are the
+     only things allowed to take up room. */
   .setting-row {
     position: relative;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
-    padding: 16px 20px;
+    gap: var(--s-12);
+    min-height: 40px;
+    padding: var(--s-8) var(--s-12);
     min-width: 0;
   }
 
@@ -121,8 +126,8 @@
     content: "";
     position: absolute;
     top: 0;
-    left: 20px;
-    right: 20px;
+    left: var(--s-12);
+    right: 0;
     height: 1px;
     background: var(--app-border);
     pointer-events: none;
@@ -148,7 +153,7 @@
   .setting-row__main {
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: var(--s-12);
     min-width: 0;
     flex: 1 1 auto;
   }
@@ -156,27 +161,29 @@
   .setting-row__text {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     min-width: 0;
     flex: 1 1 auto;
   }
 
   /* Transient "Saved ✓" echo — locality tells you WHICH row saved (the chip in
      the top strip tells you whether). Accent pill, matching the chip's weight. */
+  /* The row-level half of G7's autosave story: a bare "Saved ✓" in the row
+     that changed, plus a ~1.5s accent tint on the row itself. Bare, not a
+     pill — the chip in the toolbar already carries the pill weight, and two
+     pills saying the same thing is one too many. */
   .setting-row__echo {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 4px;
     flex: 0 0 auto;
-    height: 20px;
-    padding: 0 8px;
-    border-radius: var(--r-pill);
-    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
-    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
     color: var(--app-accent);
-    font-size: var(--t-meta);
-    font-weight: 550;
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
     white-space: nowrap;
+  }
+
+  .setting-row:has(.setting-row__echo) {
+    background: color-mix(in srgb, var(--app-accent) 7%, transparent);
   }
 
   .setting-row__echo :global(svg) {
@@ -205,12 +212,11 @@
     color: var(--app-text-muted);
   }
 
+  /* Regular weight, not semibold: a stock row's label is not a headline. */
   .setting-row__label {
-    font-size: var(--t-ui);
-    font-weight: 550;
-    letter-spacing: 0.01em;
+    font: var(--w-regular) var(--t-ui) / 1.25 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
-    line-height: 1.3;
   }
 
   .setting-row--warn .setting-row__label {
@@ -218,10 +224,9 @@
   }
 
   .setting-row__description {
-    font-size: 11px;
+    font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-sans);
     color: var(--app-text-muted);
-    letter-spacing: 0.01em;
-    line-height: 1.45;
+    letter-spacing: var(--ls-meta);
     /* Fill the text column. The flex split (`.setting-row__text` is
        `flex: 1 1 auto`, `.setting-row__control` is `flex-shrink: 0`) already
        reserves room for a beside control, so 100% wraps against the toggle —

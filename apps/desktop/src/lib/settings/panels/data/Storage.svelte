@@ -14,7 +14,6 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { retentionConsequence } from "$lib/settings/state/system-facts";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -25,10 +24,10 @@
 
   // G8: what this window actually keeps, at the rate this machine measured.
   // Null until a complete capture day exists — then the row simply says nothing.
+  // The phrase itself now lives inside the retention INSTRUMENT's readout
+  // (direction 05), so this row no longer prints it a second time; the facts
+  // are still loaded here because the cleanup button below re-reads them.
   void systemFacts.ensureLoaded();
-  const retentionHint = $derived(
-    retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
-  );
 
   // A cleanup changes what is on disk, so the measured rate is re-read after it.
   const runRetentionCleanupNow = async () => {
@@ -184,10 +183,10 @@
   >
     {#snippet control()}
       <div class="retention-control">
+        <!-- The instrument owns the consequence now: its readout states what
+             this window keeps, with its denominator. The old `retentionHint`
+             paragraph said the same thing a second time. -->
         <RetentionPicker bind:value={rec.draftRetentionPolicy} />
-        {#if retentionHint}
-          <p class="group-hint">{retentionHint}</p>
-        {/if}
         <div class="row-actions">
           <button
             type="button"

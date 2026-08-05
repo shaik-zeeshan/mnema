@@ -53,9 +53,7 @@
   import "$lib/settings/settings-controls-fields.css";
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
-  import SettingsRail from "$lib/settings/SettingsRail.svelte";
-  import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
-  import SettingsFindBar from "$lib/settings/ui/SettingsFindBar.svelte";
+  import SettingsTabs from "$lib/settings/SettingsTabs.svelte";
   import { settingsFind } from "$lib/settings/state/settings-find.svelte";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
@@ -588,31 +586,25 @@
   });
 </script>
 
-<!-- ── Settings shell ──────────────────────────────────────────────────────
-     A fixed left rail lists the 5 groups; only the right-hand content pane
-     scrolls. One group panel is mounted at a time, so the rail and window
-     chrome stay pinned. -->
+<!-- ── Settings shell — direction 05 "Tactile Instruments" ────────────────────
+     THE LEFT RAIL IS GONE. Top-level sections are a native toolbar of
+     icon+label tabs pinned to the top of the window; inside a tab there is ONE
+     660px scrolling column with opaque sticky group headers. Navigation is
+     horizontal at the top and vertical in the content, never both at once.
+
+     The toolbar also carries the scoped ⌘F field and the autosave chip, because
+     it is the one strip that is pinned at every window size — so neither can
+     clip (G7: no bottom save bar, ever). -->
 <div class="settings-shell" class:is-finding={settingsFind.active}>
   <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
        <h1>, so the route reads as untitled to a screen reader. Visually hidden —
-       the visible title is the window chrome + the rail's grouped sections. -->
+       the visible title is the window chrome + the toolbar's tabs. -->
   <h1 class="settings-page-title">Settings</h1>
-  <SettingsRail
-    {activeGroup}
-    {activeSection}
-    onNavigate={(section) => focusSettingsSection(section)}
-  />
+
+  <SettingsTabs {activeGroup} onNavigate={(section) => focusSettingsSection(section)} />
 
   <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
-    <!-- Top-anchored, outside the scroll region: the autosave chip can never
-         clip off a short window (G7 — no bottom save bar, ever). -->
-    <SettingsSaveChip />
-
-    <!-- ⌘F row filter (G7) — a state over the content pane, not a nav. Renders
-         nothing until ⌘F opens it. -->
-    <SettingsFindBar />
-
     <AppPrivacyExclusionPrompt
       controller={c.appPrivacyExclusion}
       onReview={() => focusSettingsSection("privacy")}
@@ -653,11 +645,13 @@
   /* The shell root rule lives here (its element is in this template); all other
      settings CSS is the shared, `.settings-shell`-namespaced
      lib/settings/settings-{layout,groups,controls,blocks,theme}.css imported above. */
+  /* One column: the pinned toolbar, then the one scrolling pane. The rail's
+     two-column split is gone with it. */
   .settings-shell {
     flex: 1 1 0;
     min-height: 0;
     display: flex;
-    gap: 18px;
+    flex-direction: column;
   }
 
   /* Visually-hidden page heading — present in the AT accessibility tree as the

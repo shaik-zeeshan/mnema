@@ -35,8 +35,14 @@
   );
 
   // Entering "ok" is the one success signal every autosaved surface shares.
+  // Direction 05 also stamps the clock: the mockup's at-rest chip reads
+  // "Saved 14:41", so the idle state answers *when* rather than going mute.
+  let savedAt = $state<string | null>(null);
   $effect(() => {
-    if (status === "ok") noteSaved();
+    if (status === "ok") {
+      noteSaved();
+      savedAt = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
   });
 
   // Autosave failures are the one persistent settings state, and they also raise
@@ -87,50 +93,34 @@
   });
 </script>
 
-<div class="save-strip">
-  <span class="savechip savechip--{status}" role="status" aria-live="polite">
-    {#if status === "error"}
-      <IconWarn aria-hidden="true" />
-      Not saved
-    {:else if status === "blocked"}
-      <IconWarn aria-hidden="true" />
-      Resolve issues to save
-    {:else if status === "saving"}
-      <span class="savechip__dot" aria-hidden="true"></span>
-      Saving…
-    {:else if status === "ok"}
-      <IconCheck aria-hidden="true" />
-      Saved
-    {:else}
-      <IconCheck aria-hidden="true" />
-      All changes saved
-    {/if}
-  </span>
-</div>
+<!-- Lives in the settings TOOLBAR — the strip pinned to the top of the window at
+     every size — so the save state can never fall off a short window. -->
+<span class="ti-savechip savechip savechip--{status}" role="status" aria-live="polite">
+  {#if status === "error"}
+    <IconWarn aria-hidden="true" />
+    Not saved
+  {:else if status === "blocked"}
+    <IconWarn aria-hidden="true" />
+    Resolve issues to save
+  {:else if status === "saving"}
+    <span class="savechip__dot" aria-hidden="true"></span>
+    Saving…
+  {:else if status === "ok"}
+    <IconCheck aria-hidden="true" />
+    Saved
+    {#if savedAt}<span class="t is-num">{savedAt}</span>{/if}
+  {:else}
+    <IconCheck aria-hidden="true" />
+    Saved
+    {#if savedAt}<span class="t is-num">{savedAt}</span>{/if}
+  {/if}
+</span>
 
 <style>
-  /* Top-anchored, outside the scroll region — the chip's whole point is that it
-     cannot clip. Right-aligned so it reads as chrome, not as content. */
-  .save-strip {
-    flex: 0 0 auto;
-    display: flex;
-    justify-content: flex-end;
-    align-items: center;
-    min-height: 24px;
-  }
-
+  /* Visual anatomy comes from `.ti-savechip` in the shared skin; this block only
+     carries the per-status tones and the saving pulse. */
   .savechip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    height: 24px;
-    padding: 0 10px;
-    border-radius: var(--r-pill);
-    background: var(--app-surface);
-    box-shadow: inset 0 0 0 1px var(--app-border);
-    font-size: var(--t-meta);
-    color: var(--app-text-muted);
-    white-space: nowrap;
+    flex: 0 0 auto;
     transition: color 0.15s ease, background 0.15s ease;
   }
 
@@ -144,20 +134,22 @@
     stroke-linejoin: round;
   }
 
-  .savechip--ok {
-    color: var(--app-accent);
-    background: color-mix(in srgb, var(--app-accent) 10%, var(--app-surface));
-  }
+  /* Idle and saved are the same quiet accent chip — the difference the user
+     cares about is the timestamp, not a colour change. */
   .savechip--saving {
     color: var(--app-accent);
   }
   .savechip--blocked {
-    color: var(--app-warn-strong);
+    background: var(--app-warn-bg);
+    color: var(--app-warn);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
   }
+  /* Failure is the ONLY persistent settings state (G7), so it is the only one
+     that changes colour — and it also raises a toast that never auto-dismisses. */
   .savechip--error {
-    color: var(--app-danger-text);
-    background: color-mix(in srgb, var(--app-danger) 12%, var(--app-surface));
-    box-shadow: inset 0 0 0 1px var(--app-danger);
+    background: var(--app-danger-bg);
+    color: var(--app-danger);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
   }
 
   .savechip__dot {
