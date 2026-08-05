@@ -22,7 +22,7 @@
   import { untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import { openSettings } from "$lib/surface-windows";
   import {
     appIconFallback,
@@ -956,9 +956,10 @@
       // Surface the failure — a silent no-op leaves the user thinking the
       // correction stuck. The event refresh will still reconcile state.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't update category",
-        kind: "error",
+        message: detail,
       });
     } finally {
       const done = new Set(correctingActivity);
@@ -983,9 +984,10 @@
       // Surface the failure — a silent no-op leaves the user thinking the
       // correction stuck. The event refresh will still reconcile state.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't update focus",
-        kind: "error",
+        message: detail,
       });
     } finally {
       const done = new Set(correctingActivity);
@@ -1007,9 +1009,10 @@
       revert.set(c.id, !next);
       pinnedOverride = revert;
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: next ? "Couldn't pin conclusion" : "Couldn't unpin conclusion",
-        kind: "error",
+        message: detail,
       });
     }
   }
@@ -1064,9 +1067,10 @@
       revert.delete(c.id);
       dismissedIds = revert;
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't dismiss conclusion",
-        kind: "error",
+        message: detail,
       });
     }
   }

@@ -31,7 +31,7 @@
   import { onMount, onDestroy, tick, untrack } from "svelte";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import { openSettings } from "$lib/surface-windows";
   import { framePreviewAssetUrl } from "$lib/frame-preview";
   import { openCapturedUrl } from "$lib/open-captured-url";
@@ -952,9 +952,10 @@
       // Opening the source in the timeline failed — surface it rather than
       // letting the click look like a no-op.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't open in timeline",
-        kind: "error",
+        message: detail,
       });
     }
   }

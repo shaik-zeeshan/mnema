@@ -19,7 +19,7 @@
   import Timeline from "$lib/insights/charts/Timeline.svelte";
   import ConfidenceBar from "$lib/insights/charts/ConfidenceBar.svelte";
   import { openUrl } from "@tauri-apps/plugin-opener";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import { humanizeError } from "$lib/format-error";
   import type {
     Conversation,
@@ -546,10 +546,11 @@
     try {
       await openUrl(href);
     } catch (err) {
-      await message(
-        `Couldn't open URL: ${humanizeError(err, "the link could not be opened")}`,
-        { title: "Couldn't open link", kind: "error" },
-      );
+      toast({
+        tone: "error",
+        title: "Couldn't open link",
+        message: `Couldn't open URL: ${humanizeError(err, "the link could not be opened")}`,
+      });
     }
   }
 
@@ -1053,10 +1054,11 @@
     } catch (err) {
       // Leave the Quick Recall thread open AND tell the user, so the action
       // doesn't appear to do nothing when the hand-off rejects.
-      await message(
-        `Couldn't open this in Chat: ${humanizeError(err, "please try again.")}`,
-        { title: "Couldn't continue in Chat", kind: "error" },
-      );
+      toast({
+        tone: "error",
+        title: "Couldn't continue in Chat",
+        message: humanizeError(err, "Please try again."),
+      });
       return;
     }
     await closeCurrentWindow();

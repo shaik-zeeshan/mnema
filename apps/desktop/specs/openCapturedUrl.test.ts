@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
-// Mock the Tauri surfaces the helper depends on BEFORE importing it, so the SUT
-// binds these mocks at import time. `invoke` drives the brokered open outcome;
-// `message` is the plugin-dialog feedback sink (never window.alert — see the
-// project rule). The reviewers verified `mock.module` works under this repo's bun.
+// Mock the surfaces the helper depends on BEFORE importing it, so the SUT binds
+// these mocks at import time. `invoke` drives the brokered open outcome; `toast`
+// is the feedback sink (the app-wide toast placement — never window.alert, and
+// no longer a modal dialog). The rune store itself can't be imported under bun.
+// The reviewers verified `mock.module` works under this repo's bun.
 const invoke = mock(
   async (_cmd: string, _args?: unknown): Promise<unknown> => false,
 );
 const message = mock(async (_msg: string, _opts?: unknown): Promise<void> => {});
+const toast = mock((_input: unknown): string => "id");
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke,
@@ -24,11 +26,14 @@ mock.module("@tauri-apps/plugin-dialog", () => ({
   ask: async () => false,
 }));
 
+mock.module("$lib/toast.svelte", () => ({ toast }));
+
 const { openCapturedUrl } = await import("../src/lib/open-captured-url");
 
 beforeEach(() => {
   invoke.mockReset();
   message.mockReset();
+  toast.mockReset();
 });
 
 describe("openCapturedUrl 3-state contract", () => {
@@ -41,22 +46,23 @@ describe("openCapturedUrl 3-state contract", () => {
     // The producer/consumer contract with the Rust `open_captured_url` command:
     // command name + the `{ frameId }` arg shape.
     expect(invoke).toHaveBeenCalledWith("open_captured_url", { frameId: 42 });
-    expect(message).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 
-  test("no-url: invoke -> false returns {status:'no-url'} and pops the info note", async () => {
+  test("no-url: invoke -> false returns {status:'no-url'} and raises the info toast", async () => {
     invoke.mockImplementation(async () => false);
 
     const result = await openCapturedUrl(7);
 
     expect(result).toEqual({ status: "no-url" });
-    expect(message).toHaveBeenCalledWith("No openable page for this result.", {
+    expect(toast).toHaveBeenCalledWith({
+      id: "open-captured-url",
       title: "Couldn't open page",
-      kind: "info",
+      message: "No openable page for this result.",
     });
   });
 
-  test("error (string): invoke throws a string -> {status:'error',error:<string>} + error dialog", async () => {
+  test("error (string): invoke throws a string -> {status:'error',error:<string>} + error toast", async () => {
     invoke.mockImplementation(async () => {
       throw "broker exploded";
     });
@@ -64,9 +70,11 @@ describe("openCapturedUrl 3-state contract", () => {
     const result = await openCapturedUrl(7);
 
     expect(result).toEqual({ status: "error", error: "broker exploded" });
-    expect(message).toHaveBeenCalledWith("Couldn't open URL: broker exploded", {
+    expect(toast).toHaveBeenCalledWith({
+      id: "open-captured-url",
+      tone: "error",
       title: "Couldn't open page",
-      kind: "error",
+      message: "Couldn't open URL: broker exploded",
     });
   });
 
@@ -82,24 +90,26 @@ describe("openCapturedUrl 3-state contract", () => {
       status: "error",
       error: "the page could not be opened",
     });
-    expect(message).toHaveBeenCalledWith(
-      "Couldn't open URL: the page could not be opened",
-      { title: "Couldn't open page", kind: "error" },
-    );
+    expect(toast).toHaveBeenCalledWith({
+      id: "open-captured-url",
+      tone: "error",
+      title: "Couldn't open page",
+      message: "Couldn't open URL: the page could not be opened",
+    });
   });
 });
 
 describe("openCapturedUrl silent mode (dashboard contract)", () => {
-  test("silent suppresses the no-url dialog but still returns the status", async () => {
+  test("silent suppresses the no-url toast but still returns the status", async () => {
     invoke.mockImplementation(async () => false);
 
     const result = await openCapturedUrl(7, { silent: true });
 
     expect(result).toEqual({ status: "no-url" });
-    expect(message).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 
-  test("silent suppresses the error dialog but still returns status + error", async () => {
+  test("silent suppresses the error toast but still returns status + error", async () => {
     invoke.mockImplementation(async () => {
       throw "kaboom";
     });
@@ -107,6 +117,6 @@ describe("openCapturedUrl silent mode (dashboard contract)", () => {
     const result = await openCapturedUrl(7, { silent: true });
 
     expect(result).toEqual({ status: "error", error: "kaboom" });
-    expect(message).not.toHaveBeenCalled();
+    expect(toast).not.toHaveBeenCalled();
   });
 });

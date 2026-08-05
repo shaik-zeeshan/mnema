@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { message } from "@tauri-apps/plugin-dialog";
 import { captureSession, setSession } from "$lib/session.svelte";
+import { toast } from "$lib/toast.svelte";
 import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
@@ -38,11 +38,16 @@ const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
 const NATIVE_CAPTURE_SESSION_CHANGED_EVENT = "native_capture_session_changed";
 let _settingsSyncInitialized = false;
 
-// Lifecycle failures (start/stop/pause/resume, source-toggle, bootstrap) are
-// surfaced through the project's native dialog so the user gets an explicit
-// alert instead of a silent snap-back. Fire-and-forget; callers don't await.
+// Lifecycle failures (start/stop/pause/resume, source-toggle, bootstrap) raise
+// the app-wide error toast instead of a modal alert: the user needs to see the
+// failure, not be blocked by it. One id, so a retry loop replaces its own row.
 function reportCaptureError(err: unknown): void {
-  void message(humanizeError(err), { title: "Recording error", kind: "error" });
+  toast({
+    id: "capture-error",
+    tone: "error",
+    title: "Recording error",
+    message: humanizeError(err),
+  });
 }
 
 export const captureControls = {

@@ -34,6 +34,8 @@
     reloadAppNotifications,
     type AppNotification,
   } from "$lib/notifications.svelte";
+  import Toasts from "$lib/Toasts.svelte";
+  import { clearArchivedToast, clearToastArchive, toasts } from "$lib/toast.svelte";
   import { initLicenseStatus } from "$lib/licensing-store.svelte";
   import LicenseBanner from "$lib/LicenseBanner.svelte";
   import LicenseDeepLinkModal from "$lib/LicenseDeepLinkModal.svelte";
@@ -283,7 +285,45 @@
   // and owns its own scroll region — the narrow column's max-width/padding would
   // shrink it and break the shell's `height:100%` fill.
   const isNarrow = $derived(isDebug);
-  const notificationCount = $derived(appNotifications.count);
+  type BellRow = {
+    key: string;
+    severity: AppNotification["severity"];
+    title: string;
+    message: string;
+    createdAtUnixMs: number;
+    /** Set for a backend notification — carries its action + backend clear. */
+    notification: AppNotification | null;
+    /** Set for an archived toast. */
+    toastId: string | null;
+  };
+  // The bell is the archive for BOTH backend notifications and past toasts: a
+  // toast that expired, was dismissed, or was pushed out of the three-deep stack
+  // has to remain readable somewhere, and this popover already is that place.
+  // Backend rows keep their action + backend-backed clear; toast rows are a
+  // record and clear locally.
+  const bellRows = $derived<BellRow[]>(
+    [
+      ...appNotifications.items.map((n) => ({
+        key: `n:${n.id}`,
+        severity: n.severity,
+        title: n.title,
+        message: n.message,
+        createdAtUnixMs: n.createdAtUnixMs,
+        notification: n,
+        toastId: null,
+      })),
+      ...toasts.archived.map((t) => ({
+        key: `t:${t.id}`,
+        severity: (t.tone === "error" ? "error" : "info") as AppNotification["severity"],
+        title: t.title,
+        message: t.message ?? "",
+        createdAtUnixMs: t.createdAtUnixMs,
+        notification: null,
+        toastId: t.id,
+      })),
+    ].sort((a, b) => b.createdAtUnixMs - a.createdAtUnixMs),
+  );
+  const notificationCount = $derived(bellRows.length);
   const hasNotifications = $derived(notificationCount > 0);
   const notificationLoadError = $derived(appNotifications.loadError);
   const notificationActionError = $derived(appNotifications.actionError);
@@ -294,10 +334,10 @@
     hasNotifications || notificationLoadError !== null,
   );
   const hasErrorNotification = $derived(
-    appNotifications.items.some((n) => n.severity === "error"),
+    bellRows.some((n) => n.severity === "error"),
   );
   const hasWarningNotification = $derived(
-    appNotifications.items.some((n) => n.severity === "warning"),
+    bellRows.some((n) => n.severity === "warning"),
   );
   // The count + worst-severity badge is `aria-hidden` (decorative), so assistive
   // tech otherwise hears only "Open notifications" with no sense of how many or
@@ -1298,7 +1338,7 @@
               <div class="notification-popover__head">
                 <span>Notifications</span>
                 {#if hasNotifications}
-                  <button type="button" class="notification-popover__clear" onclick={() => void clearAppNotifications()}>
+                  <button type="button" class="notification-popover__clear" onclick={() => { clearToastArchive(); void clearAppNotifications(); }}>
                     Clear all
                   </button>
                 {/if}
@@ -1331,23 +1371,23 @@
                     </div>
                   </div>
                 {/if}
-                {#each appNotifications.items as notification (notification.id)}
-                  <div class="notification-item notification-item--{notification.severity}">
+                {#each bellRows as row (row.key)}
+                  <div class="notification-item notification-item--{row.severity}">
                     <div class="notification-item__body">
-                      <span class="notification-item__title">{notification.title}</span>
-                      <span class="notification-item__message">{notification.message}</span>
+                      <span class="notification-item__title">{row.title}</span>
+                      <span class="notification-item__message">{row.message}</span>
                       <time
                         class="notification-item__time"
-                        datetime={new Date(notification.createdAtUnixMs).toISOString()}
-                        use:tip={formatNotificationTimestamp(notification.createdAtUnixMs)}
-                      >{formatNotificationAge(notification.createdAtUnixMs)}</time>
-                      {#if notification.action?.type === "open_settings_tab"}
+                        datetime={new Date(row.createdAtUnixMs).toISOString()}
+                        use:tip={formatNotificationTimestamp(row.createdAtUnixMs)}
+                      >{formatNotificationAge(row.createdAtUnixMs)}</time>
+                      {#if row.notification?.action?.type === "open_settings_tab"}
                         <button
                           type="button"
                           class="notification-item__action"
-                          onclick={() => void runNotificationAction(notification)}
+                          onclick={() => void runNotificationAction(row.notification!)}
                         >
-                          {notificationActionLabel(notification)}
+                          {notificationActionLabel(row.notification!)}
                         </button>
                       {/if}
                     </div>
@@ -1355,7 +1395,10 @@
                       type="button"
                       class="notification-item__clear"
                       aria-label="Clear notification"
-                      onclick={() => void clearAppNotification(notification.id)}
+                      onclick={() => {
+                        if (row.notification) void clearAppNotification(row.notification.id);
+                        else if (row.toastId) clearArchivedToast(row.toastId);
+                      }}
                     >
                       <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
                         <path d="M2.5 2.5 9.5 9.5" />
@@ -1511,6 +1554,12 @@
       {@render children()}
     {/if}
   </main>
+
+  <!-- The one app-wide toast placement (system.css §6). Mounted once, outside
+       `<main>`, so it overlays every route without reflowing any of them. Not
+       gated on `isMainWindow`: Quick Recall and the dedicated surfaces raise
+       toasts of their own. -->
+  <Toasts />
 
   {#if shortcutsHelpOpen && canShowShortcutsHelp}
     <div class="shortcut-help" role="presentation" onpointerdown={onShortcutsHelpPointerDown}>

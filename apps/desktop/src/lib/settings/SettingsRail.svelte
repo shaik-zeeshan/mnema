@@ -30,6 +30,7 @@
   import { filterGroups, flattenSections } from "./rail-filter";
   import { getSettingsController } from "./state/controller.svelte";
   import { getLastMainSurface } from "$lib/surface-windows";
+  import { dismissToast, toast } from "$lib/toast.svelte";
 
   interface Props {
     /** The active group (the one group panel currently mounted). */
@@ -61,6 +62,55 @@
             ? "ok"
             : "idle",
   );
+
+  // Autosave failures are raised as app toasts (DECISIONS.md G7: a save failure
+  // is the one persistent settings state, and it also raises a toast that never
+  // auto-dismisses). The footer dot above stays the at-rest persistent state;
+  // the message + Retry/Dismiss moved out of three stacked banners under the
+  // rail into the one app-wide placement. Dismissing the toast clears the same
+  // state the old Dismiss button did, so the dot can never outlive its message.
+  $effect(() => {
+    if (rec.recError) {
+      toast({
+        id: "settings-save-recording",
+        tone: "error",
+        title: "Couldn't save recording settings",
+        message: rec.recError,
+        action: c.lastFailedSaveDomain
+          ? { label: "Retry", run: () => c.retryFailedSave() }
+          : undefined,
+        onDismiss: () => c.dismissRecError(),
+      });
+    } else {
+      dismissToast("settings-save-recording");
+    }
+  });
+  $effect(() => {
+    if (keyboard.keyboardBindingsError) {
+      toast({
+        id: "settings-save-keyboard",
+        tone: "error",
+        title: "Couldn't save keyboard shortcuts",
+        message: keyboard.keyboardBindingsError,
+        onDismiss: () => (keyboard.keyboardBindingsError = null),
+      });
+    } else {
+      dismissToast("settings-save-keyboard");
+    }
+  });
+  $effect(() => {
+    if (audio.micError) {
+      toast({
+        id: "settings-save-microphone",
+        tone: "error",
+        title: "Couldn't save microphone settings",
+        message: audio.micError,
+        onDismiss: () => (audio.micError = null),
+      });
+    } else {
+      dismissToast("settings-save-microphone");
+    }
+  });
 
   // Slice 4: the search field narrows the nav as you type. The (pure) filter
   // helper lives in `rail-filter.ts`; here we only bind state + render.
@@ -283,63 +333,6 @@
     {/if}
   </div>
 
-  <!-- Autosave failure detail: the bare "save failed" dot above discards the
-       message, so surface the actual error here. Each of the three error sources
-       that light the footer dot (recording, keyboard, microphone) gets its own
-       detail line so none is left as just an unexplained dot. role="alert" so the
-       failure is announced, not just shown.
-
-       The recording path has a targeted Retry (re-runs the failed domain save,
-       bypassing the backoff window) + a Dismiss that reconciles the control back
-       to the last-saved value. The keyboard + microphone domains have no
-       equivalent manual-retry surface (their autosave engine re-attempts a dirty
-       save on its own), so they show the message text + a Dismiss that clears the
-       error — consistent with the recError treatment. -->
-  {#if rec.recError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{rec.recError}</p>
-      <div class="rail-foot-error__actions">
-        {#if c.lastFailedSaveDomain}
-          <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.retryFailedSave()}>
-            Retry
-          </button>
-        {/if}
-        <button class="btn btn--ghost btn--sm" type="button" onclick={() => c.dismissRecError()}>
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  {#if keyboard.keyboardBindingsError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{keyboard.keyboardBindingsError}</p>
-      <div class="rail-foot-error__actions">
-        <button
-          class="btn btn--ghost btn--sm"
-          type="button"
-          onclick={() => (keyboard.keyboardBindingsError = null)}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
-
-  {#if audio.micError}
-    <div class="rail-foot-error" role="alert">
-      <p class="rail-foot-error__msg">{audio.micError}</p>
-      <div class="rail-foot-error__actions">
-        <button
-          class="btn btn--ghost btn--sm"
-          type="button"
-          onclick={() => (audio.micError = null)}
-        >
-          Dismiss
-        </button>
-      </div>
-    </div>
-  {/if}
 </aside>
 
 <style>
@@ -402,32 +395,4 @@
     stroke-linejoin: round;
   }
 
-  /* Autosave failure banner pinned under the footer status line. Keeps the real
-     error message visible (it scrolls if long) with the Retry/Dismiss actions
-     directly beneath it. Tokens-only, namespaced under the rail. */
-  .rail-foot-error {
-    margin: 0 8px 8px;
-    padding: 8px 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    border: 1px solid var(--app-danger-border);
-    border-radius: 6px;
-    background: var(--app-danger-bg);
-  }
-
-  .rail-foot-error__msg {
-    margin: 0;
-    font-size: 12px;
-    line-height: 1.4;
-    color: var(--app-danger-text);
-    max-height: 6.4em;
-    overflow-y: auto;
-    word-break: break-word;
-  }
-
-  .rail-foot-error__actions {
-    display: flex;
-    gap: 6px;
-  }
 </style>

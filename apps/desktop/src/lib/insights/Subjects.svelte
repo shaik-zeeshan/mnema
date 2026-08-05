@@ -27,7 +27,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { message } from "@tauri-apps/plugin-dialog";
+  import { toast } from "$lib/toast.svelte";
   import { goto } from "$app/navigation";
   import { openSettings } from "$lib/surface-windows";
   import type {
@@ -350,9 +350,10 @@
       // Write failure must NOT blow away the loaded list — surface it in a
       // dialog (mirrors Context.svelte) and leave the rows intact.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: c.pinned ? "Couldn't unpin conclusion" : "Couldn't pin conclusion",
-        kind: "error",
+        message: detail,
       });
     } finally {
       actionId = null;
@@ -371,9 +372,10 @@
       // Write failure must NOT blow away the loaded list — surface it in a
       // dialog (mirrors Context.svelte) and leave the rows intact.
       const detail = humanizeError(error);
-      await message(detail, {
+      toast({
+        tone: "error",
         title: "Couldn't dismiss conclusion",
-        kind: "error",
+        message: detail,
       });
     } finally {
       actionId = null;
