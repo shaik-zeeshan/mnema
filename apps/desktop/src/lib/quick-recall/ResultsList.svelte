@@ -37,6 +37,10 @@
     }
     return "nothing matched — ask across everything you have captured";
   });
+
+  // ⌃↵ escalates from anywhere; but when the ask row IS the selection (nothing
+  // matched, or nothing typed yet) plain ⏎ takes it, so the cap says so.
+  const askRowKey = $derived(search.askRowSelected ? "↵" : "⌃↵");
 </script>
 
 <!-- The keyword-only hint, guarded by showSemanticSearchHint, shared by the
@@ -78,12 +82,30 @@
       tabindex="-1"
       onclick={onAskAi}
     >
-      <span class="quick-recall__ask-row-glyph" aria-hidden="true">✦</span>
-      <span class="quick-recall__ask-row-label"
-        >Ask AI about “{search.trimmedQuery}”</span
-      >
-      <span class="quick-recall__ask-row-hint">{askRowHint}</span>
-      <span class="kbd quick-recall__ask-row-key" aria-hidden="true">⌃↵</span>
+      <span class="quick-recall__ask-row-ic" aria-hidden="true">
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 16 16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.4"
+          stroke-linejoin="round"
+        >
+          <path d="M8 1.8 9.5 6 13.8 7.5 9.5 9 8 13.2 6.5 9 2.2 7.5 6.5 6z" />
+        </svg>
+      </span>
+      <span class="quick-recall__ask-row-t">
+        <span class="quick-recall__ask-row-label"
+          >Ask AI about “{search.trimmedQuery}”</span
+        >
+        <span class="quick-recall__ask-row-hint">{askRowHint}</span>
+      </span>
+      <!-- The promotion, made visible: with nothing matched the ask row IS the
+           selection, so its key drops the ⌃ modifier and becomes plain ⏎. -->
+      <span class="quick-recall__ask-row-k" aria-hidden="true">
+        <span class="kbd">{askRowKey}</span>
+      </span>
     </button>
   {/if}
 
@@ -279,59 +301,81 @@
     gap: var(--gap-group);
   }
 
-  /* G4's ranked ask row: rank 0 of this list, a full-width row so it reads as
-     the list's first entry rather than a second control. Accent-tinted because
-     it is the one escalation on the surface that costs a model call; the ring
-     only appears when the roving selection is actually on it. */
+  /* G4's ranked ask row (`.askrow`): rank 0 of this list, a 46px row so it
+     reads as the list's first entry rather than a second control. At rest it is
+     a quiet accent-tinted row; taken by the roving selection it fills solid
+     accent — the strongest thing on the surface, because it is the one action
+     here that costs a model call. */
   .quick-recall__ask-row {
     display: flex;
     align-items: center;
-    gap: var(--gap-inline);
+    gap: var(--s-12);
     width: 100%;
     min-width: 0;
-    padding: var(--s-8) var(--s-12);
+    flex: 0 0 46px;
+    height: 46px;
+    margin: var(--s-8) 0 var(--s-4);
+    padding: 0 var(--s-8);
     text-align: left;
     font: inherit;
-    color: var(--app-accent-strong);
+    color: var(--app-text-strong);
     background: var(--app-accent-bg);
-    border: var(--hairline) solid var(--app-accent-border);
+    border: 0;
     border-radius: var(--r-md);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     cursor: pointer;
   }
 
   .quick-recall__ask-row:hover {
-    border-color: var(--app-accent);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent);
   }
 
   .quick-recall__ask-row--selected,
+  .quick-recall__ask-row--selected:hover,
   .quick-recall__ask-row:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    background: var(--app-accent);
+    box-shadow: none;
   }
 
-  .quick-recall__ask-row-glyph {
+  /* The 30px accent-tinted icon square; it inverts on the filled row. */
+  .quick-recall__ask-row-ic {
     flex: none;
-    font-size: var(--t-ui);
-    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: var(--r-md);
+    background: var(--app-accent-bg);
     color: var(--app-accent);
   }
 
+  .quick-recall__ask-row--selected .quick-recall__ask-row-ic {
+    background: color-mix(in srgb, var(--app-accent-contrast) 22%, transparent);
+    color: var(--app-accent-contrast);
+  }
+
+  .quick-recall__ask-row-t {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
   .quick-recall__ask-row-label {
-    flex: none;
-    max-width: 55%;
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
-    line-height: 1.3;
+    line-height: 1.25;
     font-weight: var(--w-medium);
-    color: var(--app-accent-strong);
+    color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .quick-recall__ask-row-hint {
-    flex: 1;
-    min-width: 0;
+    font-family: var(--app-font-sans);
     font-size: var(--t-meta);
     line-height: 1.3;
     color: var(--app-text-muted);
@@ -340,11 +384,29 @@
     text-overflow: ellipsis;
   }
 
-  .quick-recall__ask-row-key {
+  .quick-recall__ask-row--selected .quick-recall__ask-row-label {
+    color: var(--app-accent-contrast);
+  }
+
+  .quick-recall__ask-row--selected .quick-recall__ask-row-hint {
+    color: var(--app-accent-contrast);
+    opacity: 0.78;
+  }
+
+  .quick-recall__ask-row-k {
+    margin-left: auto;
     flex: none;
-    color: var(--app-accent);
-    background: transparent;
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-6);
+  }
+
+  /* On the filled row the keycaps go translucent-on-accent rather than keeping
+     their own surface, which would read as a hole punched in the fill. */
+  .quick-recall__ask-row--selected :global(.kbd) {
+    background: color-mix(in srgb, var(--app-accent-contrast) 20%, transparent);
+    color: var(--app-accent-contrast);
+    box-shadow: none;
   }
 
   /* Refetch-in-flight: prior results stay on screen but dim slightly so the
@@ -359,25 +421,31 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+    /* Without this the flex item refuses to shrink below its grid's
+       min-content and the third column falls off the right edge at 800px. */
+    min-width: 0;
   }
 
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
+  /* Section header (`.qsec`): uppercase mono modality label left, tabular
+     result count right, both on the same baseline. */
   .quick-recall__section-label {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: var(--t-meta);
-    line-height: 1;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    line-height: 1.4;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-muted);
     padding: 0 2px;
   }
 
   .quick-recall__section-count {
     text-transform: none;
     letter-spacing: 0;
+    font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
   }
 
@@ -389,6 +457,7 @@
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 349px));
     gap: var(--grid-gutter);
+    min-width: 0;
   }
 
   /* Section show-more/show-less toggle (mockup `.more-row`): a quiet full-
@@ -449,17 +518,25 @@
     color: var(--app-warn);
   }
 
+  /* The centered states speak in prose, so they take the sans reading register
+     the mono chrome font would otherwise flatten. */
   .quick-recall__state-lead {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.4;
+    font-family: var(--app-font-sans);
+    font-size: var(--t-display);
+    font-weight: var(--w-semi);
+    line-height: var(--lh-display);
+    letter-spacing: var(--ls-display);
     color: var(--app-text-strong);
   }
 
   .quick-recall__state-sub {
     margin: 0;
-    font-size: var(--t-meta);
-    line-height: 1.5;
+    max-width: 52ch;
+    font-family: var(--app-font-sans);
+    font-size: var(--t-read);
+    line-height: var(--lh-read);
+    letter-spacing: var(--ls-read);
     color: var(--app-text-muted);
   }
 
@@ -469,21 +546,34 @@
 
   .quick-recall__state-faint {
     margin: 0;
-    font-size: var(--t-label);
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-subtle);
   }
 
+  /* The keycap, same physical treatment as the global .kbd — an inline <kbd>
+     in prose can't carry the class, so it carries the tones. */
   .quick-recall__state-center kbd {
-    font-family: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 17px;
+    height: 17px;
+    padding: 0 var(--s-4);
+    margin: 0 2px;
+    border-radius: var(--r-sm);
+    background: var(--kbd-bg);
+    color: var(--kbd-fg);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--kbd-edge),
+      0 1px 0 var(--kbd-drop);
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
+    font-weight: var(--w-medium);
     line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
-    margin: 0 1px;
+    letter-spacing: 0.02em;
+    vertical-align: middle;
   }
 
   .quick-recall__state-actions {

@@ -1,10 +1,10 @@
-<!-- Quick Recall search result TILE — the round-4 3-up grid cell (349 wide,
-     196-tall media). One anatomy for both modalities: a header row (app / source
-     eyebrow left, time right), one title line, one marked caption line, then the
-     media bleeding to the tile's bottom radius (screenshot for screen results,
-     source-coloured waveform for audio) with the match/meaning/redacted badges
-     floating over its bottom edge. The list/detail split is gone with the grid,
-     so the tile carries the accessories the detail pane used to duplicate. -->
+<!-- Quick Recall search result TILE — direction 04's `.qcell`: the frame IS the
+     cell. A 349×196 media block (screenshot for screen results, source-coloured
+     waveform for audio) carries the affordance keycaps bottom-left and the
+     duration chip bottom-right; the two-line caption sits UNDERNEATH it —
+     uppercase mono app name + title, then mono metadata and the matched snippet
+     with its <mark> highlights. Selection is a 2px accent ring on the frame, not
+     a box around the text. -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import type {
@@ -12,7 +12,7 @@
     AudioSearchResultDto,
   } from "$lib/types/app-infra";
   import { parseSearchSnippet } from "$lib/search-snippet";
-  import { formatRelativeTime } from "$lib/format-time";
+  import { formatRelativeTime, parseCapturedAt } from "$lib/format-time";
   import { appIcons } from "./app-icons.svelte";
 
   let {
@@ -48,6 +48,20 @@
     const m = Math.floor(total / 60);
     const s = total % 60;
     return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  // The caption's mono clock (`14:32:08`). The mockup leads line 2 with the
+  // wall-clock instant, not a relative age — a grid of frames is scanned by
+  // "when in the day", which "2d ago" can't answer.
+  function clockOf(ts: string): string {
+    const at = parseCapturedAt(ts);
+    if (Number.isNaN(at.getTime())) return "";
+    return at.toLocaleTimeString(undefined, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
   }
 
   // Deterministic waveform bars for the audio tile, ported from the mockup's
@@ -110,26 +124,6 @@
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
-        <img
-          class="search-card__appicon"
-          src={appIcons.src(frame.appBundleId ?? frame.appName)}
-          alt=""
-          aria-hidden="true"
-        />
-      {/if}
-      <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
-      <span class="search-card__time">{formatRelativeTime(frame.groupEndAt)}</span>
-    </span>
-    <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
-      {frame.windowTitle ?? frame.appName ?? "Screen"}
-    </span>
-    <span class="search-card__caption">
-      {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}
-    </span>
     <span class="search-card__media">
       <svg
         class="search-card__media-glyph"
@@ -156,12 +150,46 @@
           onload={() => (imgLoaded = true)}
         />
       {/if}
+      <!-- Affordance keycaps bottom-left: the selected cell says what ⏎ does
+           right on the picture, the direction's one rule applied to the grid. -->
+      {#if selected}
+        <span class="search-card__aff" aria-hidden="true">
+          <span class="kbd">↵</span><span class="kbd kbd--wide">open</span>
+        </span>
+      {/if}
       {@render badges(
         frame.matchCount,
         "matches",
         frame.foundByMeaning,
         frame.hasSecretRedactions,
       )}
+    </span>
+    <span class="search-card__cap">
+      <span class="search-card__l1">
+        {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
+          <img
+            class="search-card__appicon"
+            src={appIcons.src(frame.appBundleId ?? frame.appName)}
+            alt=""
+            aria-hidden="true"
+          />
+        {/if}
+        <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
+        <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
+          {frame.windowTitle ?? frame.appName ?? "Screen"}
+        </span>
+      </span>
+      <span class="search-card__l2">
+        <span>{clockOf(frame.groupEndAt)}</span><span
+          class="search-card__l2-dot">·</span
+        ><span>{formatRelativeTime(frame.groupEndAt)}</span><span
+          class="search-card__l2-dot">·</span
+        ><span class="search-card__q"
+          >{#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
+                >{segment.text}</mark
+              >{:else}{segment.text}{/if}{/each}</span
+        >
+      </span>
     </span>
   </button>
 {/if}
@@ -176,24 +204,6 @@
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      <span class="search-card__app"
-        >{audio.sourceKind === "microphone" ? "Microphone" : "System audio"}</span
-      >
-      <span class="search-card__time"
-        >{formatRelativeTime(audio.absoluteStartAt)}</span
-      >
-    </span>
-    <span class="search-card__title">
-      “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}”
-    </span>
-    <span class="search-card__caption"
-      >{formatDuration(
-        Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
-      )} of speech</span
-    >
     <span
       class="search-card__media search-card__media--wave"
       class:search-card__media--mic={audio.sourceKind === "microphone"}
@@ -216,6 +226,17 @@
           />
         {/each}
       </svg>
+      {#if selected}
+        <span class="search-card__aff" aria-hidden="true">
+          <span class="kbd">↵</span><span class="kbd kbd--wide">open</span>
+        </span>
+      {/if}
+      <!-- Duration chip, bottom-right of the frame (mockup `.qcell__dur`). -->
+      <span class="search-card__dur"
+        >{formatDuration(
+          Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
+        )}</span
+      >
       {@render badges(
         audio.matchCount,
         "adjacent",
@@ -223,75 +244,95 @@
         audio.hasSecretRedactions,
       )}
     </span>
+    <span class="search-card__cap">
+      <span class="search-card__l1">
+        <span class="search-card__app"
+          >{audio.sourceKind === "microphone" ? "Mic" : "System audio"}</span
+        >
+        <span class="search-card__title"
+          >“{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
+                >{segment.text}</mark
+              >{:else}{segment.text}{/if}{/each}”</span
+        >
+      </span>
+      <span class="search-card__l2">
+        <span>{clockOf(audio.absoluteStartAt)}</span><span
+          class="search-card__l2-dot">·</span
+        ><span>{formatRelativeTime(audio.absoluteStartAt)}</span><span
+          class="search-card__l2-dot">·</span
+        ><span class="search-card__q">speech</span>
+      </span>
+    </span>
   </button>
 {/if}
 
 <style>
-  /* One grid cell. The tile is a column: header / title / caption / media, with
-     the media bleeding to the left, right and bottom edges (negative margins
-     against the tile's padding) so it meets the bottom radius. */
+  /* One grid cell (`.qcell`): the 196px frame, then the caption under it. The
+     cell itself is bare — no card chrome — so the picture is the object and the
+     text is its label, which is what makes the grid read as media. */
   .search-card {
     display: flex;
     flex-direction: column;
-    gap: var(--s-4);
+    gap: var(--s-6);
     width: 100%;
     min-width: 0;
-    padding: var(--s-12);
-    overflow: hidden;
+    padding: 0;
     text-align: left;
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    border: 0;
+    background: none;
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
   }
 
-  @media (prefers-reduced-motion: no-preference) {
-    .search-card {
-      transition:
-        background var(--dur-quick) var(--ease),
-        border-color var(--dur-quick) var(--ease),
-        box-shadow var(--dur-quick) var(--ease);
-    }
-  }
-
-  .search-card:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
-  }
-
-  /* Selected is the roving highlight: the accent ring the mockups settle on. */
-  .search-card:focus-visible,
-  .search-card--selected,
-  .search-card--selected:hover {
+  .search-card:focus-visible {
     outline: none;
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  /* Header: app / source eyebrow left, time hard right. */
-  .search-card__head {
+  /* Selection is a 2px accent ring on the FRAME (`.qcell.is-sel .qcell__f`),
+     never a box drawn around the caption text. */
+  .search-card:hover .search-card__media {
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-hover);
+  }
+
+  .search-card:focus-visible .search-card__media,
+  .search-card--selected .search-card__media,
+  .search-card--selected:hover .search-card__media {
+    box-shadow: 0 0 0 2px var(--app-accent);
+  }
+
+  /* Caption, underneath: uppercase mono app name + title, then the mono
+     metadata line carrying the matched snippet. */
+  .search-card__cap {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .search-card__l1 {
+    display: flex;
+    align-items: baseline;
     gap: var(--gap-inline);
     min-width: 0;
   }
 
   .search-card__appicon {
     flex: none;
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     object-fit: contain;
+    align-self: center;
   }
 
   .search-card__app {
-    flex: 1;
-    min-width: 0;
+    flex: none;
+    max-width: 40%;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    line-height: 1;
-    letter-spacing: 0.06em;
+    font-weight: var(--w-medium);
+    line-height: 1.4;
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -299,60 +340,100 @@
     text-overflow: ellipsis;
   }
 
-  .search-card__time {
-    flex: none;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-
   /* One title line — the window title (screen) or the quoted transcript
-     (audio). Never wraps: the tile's height is fixed by the media block. */
+     (audio). Never wraps: the cell's height is fixed by the frame. */
   .search-card__title {
-    display: block;
     min-width: 0;
+    font-family: var(--app-font-sans);
     font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
+    line-height: 1.25;
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* The matched text, so "why did this hit?" is answered on the tile itself —
-     the detail pane that used to carry it is gone with the grid. */
-  .search-card__caption {
-    display: block;
+  /* Line 2: mono clock + age, then the matched text — so "why did this hit?"
+     is answered on the cell itself. */
+  .search-card__l2 {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     min-width: 0;
+    font-family: var(--app-font-mono);
     font-size: var(--t-meta);
-    line-height: 1.3;
-    color: var(--app-text-muted);
+    line-height: 1.35;
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
     white-space: nowrap;
+    overflow: hidden;
+  }
+
+  .search-card__l2-dot {
+    color: var(--app-text-faint);
+  }
+
+  .search-card__q {
+    min-width: 0;
+    font-family: var(--app-font-sans);
+    color: var(--app-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   .search-card mark {
     border-radius: 2px;
-    background: color-mix(in srgb, var(--app-accent) 26%, transparent);
-    color: var(--app-text-strong);
-    padding: 0 1px;
+    background: var(--app-accent-bg);
+    color: var(--app-accent);
+    padding: 0 2px;
   }
 
-  /* 196px media, full-bleed to the tile's bottom radius. The backing stays dark
-     in both themes (it holds a screenshot); the glyph is a fixed mid-gray
-     legible on that backing while the image loads or when no preview exists. */
+  /* The 196px frame. The backing stays dark in both themes (it holds a
+     screenshot); the glyph is a fixed mid-gray legible on that backing while
+     the image loads or when no preview exists. */
   .search-card__media {
     position: relative;
     display: grid;
     place-items: center;
     height: 196px;
-    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
+    border-radius: var(--r-lg);
     overflow: hidden;
     background: #101014;
     color: #6a6a74;
+    box-shadow: 0 0 0 var(--hairline) var(--app-border);
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .search-card__media {
+      transition: box-shadow var(--dur-quick) var(--ease);
+    }
+  }
+
+  /* Affordance keycaps, bottom-left of the frame (mockup `.qcell__aff`). */
+  .search-card__aff {
+    position: absolute;
+    left: var(--s-8);
+    bottom: var(--s-8);
+    display: inline-flex;
+    gap: var(--s-4);
+  }
+
+  /* Duration chip, bottom-right (mockup `.qcell__dur`). */
+  .search-card__dur {
+    position: absolute;
+    right: var(--s-8);
+    bottom: var(--s-8);
+    padding: 3px 5px;
+    border-radius: var(--r-sm);
+    background: rgba(10, 12, 16, 0.62);
+    backdrop-filter: blur(6px);
+    color: #fff;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
   }
 
   .search-card__media-glyph {
@@ -404,13 +485,13 @@
     fill: currentColor;
   }
 
-  /* Accessories float over the media's bottom edge rather than stealing a text
-     row — the tile's vertical budget is spent on the picture. */
+  /* Accessories float over the frame's TOP edge — the bottom belongs to the
+     affordance keycaps (left) and the duration chip (right). */
   .search-card__badges {
     position: absolute;
     left: var(--s-8);
     right: var(--s-8);
-    bottom: var(--s-8);
+    top: var(--s-8);
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-4);
@@ -419,15 +500,18 @@
   .search-card__badge {
     display: inline-flex;
     align-items: center;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
+    font-weight: var(--w-medium);
     line-height: 1;
-    padding: 3px 6px;
+    padding: 3px 5px;
     border-radius: var(--r-sm);
-    border: var(--hairline) solid var(--app-border-strong);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
+    background: rgba(10, 12, 16, 0.62);
+    backdrop-filter: blur(6px);
+    color: rgba(255, 255, 255, 0.86);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--ls-label);
+    font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
 

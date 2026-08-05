@@ -164,7 +164,9 @@
   .source-card-wrap {
     position: relative;
     flex: 0 0 auto;
-    width: 208px;
+    /* 208px in a horizontally-scrolling strip; the cited-moments rail overrides
+       this to 100% so the same card fills the rail's 280px column. */
+    width: var(--source-card-w, 208px);
   }
 
   /* Horizontal answer-source card: a compact, fixed-width tile meant to sit in a
