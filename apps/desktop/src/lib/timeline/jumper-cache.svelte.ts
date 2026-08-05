@@ -66,10 +66,6 @@ export function createJumperCache() {
       version;
       return core.load(value);
     },
-    isDateDisabled(d: CalendarFields) {
-      version;
-      return core.isDateDisabled(d);
-    },
     invalidateMonthsForFrames(frames: { capturedAt: string }[]) {
       core.invalidateMonthsForFrames(frames);
     },

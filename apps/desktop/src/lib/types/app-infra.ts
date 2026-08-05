@@ -161,6 +161,20 @@ export interface FrameRangeRequest {
 	capturedAtEnd: string;
 }
 
+/**
+ * One local calendar day that holds capture. Hand-mirrors
+ * `capture_types::DayCoverage` (`list_day_coverage`); days with no recording
+ * are absent from the response, which is what disables them in the jump menu.
+ */
+export interface DayCoverage {
+	/** `YYYY-MM-DD` in the user's local UTC offset. */
+	day: string;
+	/** Estimated wall-clock capture on that day (see the Rust store's docs). */
+	coveredMs: number;
+	/** Ascending local hours 0–23 that hold capture. */
+	hours: number[];
+}
+
 export interface ListFramesRequest {
 	sessionId?: string | null;
 	limit?: number | null;

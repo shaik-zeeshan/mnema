@@ -1,6 +1,7 @@
 mod ai_provider_key_store;
 mod audio_segments;
 pub mod brokered_access;
+mod capture_coverage;
 mod capture_index_key_store;
 mod capture_retention;
 mod captured_frame_equivalence;
@@ -58,6 +59,7 @@ pub use audio_segments::{
 /// public name external crates call to keep the raw URL off the cloud-facing
 /// data model (the raw URL is local-only, used only by `open_captured_url`).
 pub use brokered_access::guard_url as guard_browser_url;
+pub use capture_coverage::CaptureCoverageStore;
 pub use capture_retention::{
     delete_capture_artifact_path_if_safe, CaptureRetentionStore, CaptureSegment, CaptureSourceKind,
     NewCaptureSegment, NewCaptureSession, RetentionCleanupContext, RetentionCleanupMode,
@@ -312,6 +314,7 @@ pub struct AppInfra {
     audio_segments: AudioSegmentStore,
     frame_batches: FrameBatchStore,
     capture_retention: CaptureRetentionStore,
+    capture_coverage: CaptureCoverageStore,
     processing: ProcessingStore,
     search: SearchStore,
     semantic_search: SemanticSearchStore,
@@ -394,6 +397,7 @@ impl AppInfra {
         let audio_segments = AudioSegmentStore::new(database.handle().clone());
         let frame_batches = FrameBatchStore::new(database.handle().clone());
         let capture_retention = CaptureRetentionStore::new(database.handle().clone());
+        let capture_coverage = CaptureCoverageStore::new(database.handle().clone());
         let processing = ProcessingStore::new(database.handle().clone());
         let search = SearchStore::new(database.handle().clone());
         let semantic_search = SemanticSearchStore::new(database.handle().clone());
@@ -424,6 +428,7 @@ impl AppInfra {
             audio_segments,
             frame_batches,
             capture_retention,
+            capture_coverage,
             processing,
             search,
             semantic_search,
@@ -531,6 +536,11 @@ impl AppInfra {
 
     pub fn capture_retention(&self) -> &CaptureRetentionStore {
         &self.capture_retention
+    }
+
+    /// Per-day capture coverage powering the timeline jump menu (G6).
+    pub fn capture_coverage(&self) -> &CaptureCoverageStore {
+        &self.capture_coverage
     }
 
     pub fn user_context(&self) -> &user_context::UserContextStore {
