@@ -329,6 +329,35 @@ mod tests {
     }
 
     #[test]
+    fn excludes_the_reading_outline_overlay_along_with_mnemas_other_windows() {
+        // The "Mnema is reading this screen" outline (round-4 G3) is a full-screen
+        // window of this very process. The filter excludes whole APPS by pid and
+        // bundle id, so the overlay is blanked without opting in anywhere — the
+        // invariant that lets capture stay implicit while indication is explicit.
+        let plan = plan_current_frame_filter(
+            &[],
+            501,
+            "day.mnema",
+            &[
+                app(501, "day.mnema", "Mnema"),
+                app(700, "com.apple.Safari", "Safari"),
+            ],
+            &[
+                // Frontmost while the bar is collapsed: the outline, then the bar.
+                window(501, "mnema · reading this screen"),
+                window(501, "Quick Access"),
+                window(700, "Docs"),
+            ],
+        );
+
+        assert_eq!(plan.excluded_pids, vec![501]);
+        assert!(plan.excluded_app_names.is_empty());
+        // The shot is of what is BEHIND the indication, never of the indication.
+        assert_eq!(plan.app_name.as_deref(), Some("Safari"));
+        assert_eq!(plan.window_title.as_deref(), Some("Docs"));
+    }
+
+    #[test]
     fn excludes_mnema_by_bundle_id_when_the_pid_differs() {
         let plan = plan_current_frame_filter(
             &[],

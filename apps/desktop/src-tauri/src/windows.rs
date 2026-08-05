@@ -11,6 +11,9 @@ use std::{
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 use crate::native_capture;
+use crate::reading_overlay::{
+    hide_reading_overlay, show_reading_overlay, READING_OVERLAY_WINDOW_LABEL,
+};
 
 const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
@@ -847,6 +850,11 @@ fn summon_quick_recall_window(window: &WebviewWindow) {
 }
 
 fn dismiss_quick_recall_window(window: &WebviewWindow) {
+    // The one dismiss chokepoint (Escape, click-away blur, close, tray toggle),
+    // so hiding the reading outline here covers every way the bar can go away
+    // while collapsed. The frontend resets to search mode on the same event.
+    hide_reading_overlay(window.app_handle());
+
     #[cfg(target_os = "macos")]
     order_out_quick_recall_panel(window);
     #[cfg(not(target_os = "macos"))]
@@ -951,10 +959,17 @@ fn show_macos_dock_icon(_app: &tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
 fn refresh_macos_dock_icon_visibility(app: &tauri::AppHandle) {
+    // Quick Recall and the reading outline are both chrome-less floating
+    // surfaces, not app windows: neither should keep the Dock icon lit.
     let has_visible_window = app
         .webview_windows()
         .values()
-        .filter(|window| window.label() != QUICK_RECALL_WINDOW_LABEL)
+        .filter(|window| {
+            !matches!(
+                window.label(),
+                QUICK_RECALL_WINDOW_LABEL | READING_OVERLAY_WINDOW_LABEL
+            )
+        })
         .any(|window| window.is_visible().unwrap_or(false));
     let _ = app.set_dock_visibility(has_visible_window);
 }
@@ -1347,6 +1362,20 @@ pub fn quick_recall_set_collapsed(
         return Ok(());
     }
     let config = AppWindow::QuickRecall.config();
+
+    // The reading outline (G3) rides on this ONE seam rather than a second
+    // show/hide path of its own: collapsed == the screen is being read == the
+    // outline is up. Implicit capture is only defensible with explicit
+    // indication, and a lifecycle that can drift from the bar's is how the
+    // indication goes missing. Toggled BEFORE the resize, which can fail and
+    // return early — a failed restore must not leave the outline stranded.
+    let app = window.app_handle();
+    if height.is_some() {
+        show_reading_overlay(app);
+    } else {
+        hide_reading_overlay(app);
+    }
+
     let (width, height) = match height {
         Some(height) => (
             COLLAPSED_QUICK_RECALL_WIDTH,
