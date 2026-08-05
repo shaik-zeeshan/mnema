@@ -116,10 +116,15 @@
      {@html} content need `:global(...)`, since Svelte prunes scoped styles that
      don't appear in the component's own template markup. Every color comes from
      the app theme vars (which flip dark/light via `data-theme`) — never hex. */
+  /* An answer is PROSE, so it takes the read role — 14px on the app's reading
+     line-height and tracking — rather than a hard-coded UI size. The 68ch column
+     width is the CALLER's job (the surface knows how wide its stage is); this
+     component only owns the voice. */
   .answer-prose {
-    font-size: 13px;
+    font-size: var(--t-read);
+    letter-spacing: var(--ls-read);
     color: var(--app-text);
-    line-height: 1.6;
+    line-height: var(--lh-read);
     word-break: break-word;
     overflow-wrap: anywhere;
   }

@@ -17,6 +17,8 @@
     FRAME_VISIBLE_CAP,
     moreRowLabel,
   } from "$lib/quick-recall/result-sections";
+  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
+  import { formatBytes } from "$lib/settings/state/format";
 
   let {
     askAvailable,
@@ -25,6 +27,62 @@
     askAvailable: boolean;
     onAskAi: () => void;
   } = $props();
+
+  // The no-match state is where search earns its trust, and the only way it can
+  // is with REAL figures (G8). These come from `get_system_facts`; every one of
+  // them is nullable, and a null renders NOTHING — not a placeholder, not a
+  // zero, and never the mockup's invented 1,284,406 frames / 98.2% / 412 h.
+  $effect(() => {
+    void systemFacts.ensureLoaded();
+  });
+
+  // What Mnema honestly knows about the corpus it just searched. Each entry is
+  // dropped entirely when its fact is missing, so the panel can shrink to
+  // nothing rather than lie about coverage.
+  const searchedFacts = $derived.by(() => {
+    const facts = systemFacts.value;
+    if (facts === null) return [];
+    const rows: { label: string; value: string; note: string }[] = [];
+    if (facts.ocrBacklog !== null) {
+      rows.push({
+        label: "Screen text",
+        value:
+          facts.ocrBacklog === 0 ? "all read" : facts.ocrBacklog.toLocaleString(),
+        note:
+          facts.ocrBacklog === 0
+            ? "every captured frame has been read"
+            : "frames still queued for text recognition",
+      });
+    }
+    if (facts.transcriptionBacklog !== null) {
+      rows.push({
+        label: "Audio",
+        value:
+          facts.transcriptionBacklog === 0
+            ? "all transcribed"
+            : facts.transcriptionBacklog.toLocaleString(),
+        note:
+          facts.transcriptionBacklog === 0
+            ? "every recording has a transcript"
+            : "recordings still queued for transcription",
+      });
+    }
+    if (facts.databaseBytes !== null) {
+      rows.push({
+        label: "Index",
+        value: formatBytes(facts.databaseBytes),
+        note: "everything Mnema kept, on this disk",
+      });
+    }
+    if (facts.measuredBytesPerDay !== null && facts.measuredDays > 0) {
+      rows.push({
+        label: "Measured over",
+        value: `${facts.measuredDays} ${facts.measuredDays === 1 ? "day" : "days"}`,
+        note: `about ${formatBytes(facts.measuredBytesPerDay)} of capture a day`,
+      });
+    }
+    return rows;
+  });
 
   // The ask row's subordinate line: what taking it would actually cost/do. It
   // is the one place the search↔ask escalation is priced, so it names the real
@@ -112,11 +170,11 @@
       <div class="quick-recall__grid">
         {#each [70, 58, 76] as width, i (i)}
           <div class="quick-recall__skeleton-tile">
+            <div class="quick-recall__sk quick-recall__skeleton-media"></div>
             <span
               class="quick-recall__sk quick-recall__skeleton-line"
               style={`width:${width}%`}
             ></span>
-            <div class="quick-recall__sk quick-recall__skeleton-media"></div>
           </div>
         {/each}
       </div>
@@ -167,20 +225,37 @@
          used to live here as a button is GONE — the ranked ask row above is
          already selected in this state (selection index -1), so duplicating it
          as a second control would be the competing mode affordance G4 kills. -->
+    <!-- Direction 05: the empty state answers the only question a recall app's
+         empty state HAS to answer — "did you actually look everywhere?" — by
+         printing what was searched instead of shrugging. G8 binds every figure
+         in `searchedFacts`: they come from `get_system_facts`, and any one that
+         is null is simply absent (never a placeholder, never a zero). -->
     <div class="quick-recall__state-center">
-      <span class="quick-recall__state-glyph" aria-hidden="true">⌀</span>
+      <span class="quick-recall__state-ring" aria-hidden="true">⌀</span>
       <p class="quick-recall__state-lead">
-        No matches for “{search.resultsQuery}”
+        Nothing recorded matches “{search.resultsQuery}”
       </p>
       <p class="quick-recall__state-sub">
-        Nothing captured matches all terms{search.activeFilterChips.length > 0
-          ? " and filters"
-          : ""}.
+        {#if search.activeFilterChips.length > 0}
+          {search.activeFilterChips.length}
+          {search.activeFilterChips.length === 1 ? "filter is" : "filters are"} narrowing
+          this search — clearing {search.activeFilterChips.length === 1 ? "it" : "them"}
+          searches everything Mnema kept.
+        {:else}
+          The words have not been on your screen or in your audio, across
+          everything Mnema kept.
+        {/if}
       </p>
-      {#if search.activeFilterChips.length > 0}
-        <p class="quick-recall__state-faint">try removing a filter</p>
-      {:else if !askAvailable}
-        <p class="quick-recall__state-faint">try fewer or broader words</p>
+      {#if searchedFacts.length > 0}
+        <div class="quick-recall__searched">
+          {#each searchedFacts as fact (fact.label)}
+            <div class="quick-recall__searched-cell">
+              <span class="quick-recall__searched-label">{fact.label}</span>
+              <b class="quick-recall__searched-value is-num">{fact.value}</b>
+              <span class="quick-recall__searched-note">{fact.note}</span>
+            </div>
+          {/each}
+        </div>
       {/if}
       {@render semanticHint()}
     </div>
@@ -283,19 +358,23 @@
      the list's first entry rather than a second control. Accent-tinted because
      it is the one escalation on the surface that costs a model call; the ring
      only appears when the roving selection is actually on it. */
+  /* This row and the selected cell's ring are the ONLY two places the accent
+     appears on the search surface, and this row is the second (and last) of the
+     window's two bordered containers per the direction's own audit. */
   .quick-recall__ask-row {
     display: flex;
     align-items: center;
-    gap: var(--gap-inline);
+    gap: var(--s-8);
     width: 100%;
     min-width: 0;
-    padding: var(--s-8) var(--s-12);
+    height: 40px;
+    padding: 0 var(--s-12);
     text-align: left;
     font: inherit;
     color: var(--app-accent-strong);
     background: var(--app-accent-bg);
     border: var(--hairline) solid var(--app-accent-border);
-    border-radius: var(--r-md);
+    border-radius: var(--r-lg);
     cursor: pointer;
   }
 
@@ -310,20 +389,29 @@
     box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
+  /* Ask's glyph, the same mark the Ask field wears — the escalation is legible
+     as the SAME thing in both places. */
   .quick-recall__ask-row-glyph {
     flex: none;
-    font-size: var(--t-ui);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--r-md);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font-size: var(--t-meta);
     line-height: 1;
-    color: var(--app-accent);
   }
 
   .quick-recall__ask-row-label {
     flex: none;
     max-width: 55%;
     font-size: var(--t-ui);
-    line-height: 1.3;
+    line-height: 1.25;
     font-weight: var(--w-medium);
-    color: var(--app-accent-strong);
+    color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -361,30 +449,31 @@
     gap: 8px;
   }
 
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
+  /* Section headers are BARE LABELS — no rule, no chip, no box: mono uppercase
+     left, the count in tabular mono right. */
   .quick-recall__section-label {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    font-size: var(--t-meta);
-    line-height: 1;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    line-height: 1.4;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
-    padding: 0 2px;
+    padding: 0 var(--s-2);
   }
 
   .quick-recall__section-count {
     text-transform: none;
-    letter-spacing: 0;
-    color: var(--app-text-subtle);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-faint);
   }
 
-  /* Round-4 result grid: 3-up tiles on the Overview's cell unit (349 wide,
-     16px gutter). The tracks cap at 349px and shrink evenly below it, so the
-     window's 960px minimum width still shows three columns instead of
-     overflowing or dropping to two. */
+  /* The 3-up grid. At the fixed 1120 window this is exactly 3 × 349 with a 20px
+     inset and a 16px gutter — the one documented exemption to "one inset per
+     surface", because a fixed window's grid has to divide exactly. Below that
+     width the tracks shrink evenly rather than dropping to two columns. */
   .quick-recall__grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 349px));
@@ -439,6 +528,76 @@
     font-size: var(--t-display);
     line-height: 1;
     color: var(--app-text-subtle);
+  }
+
+  /* The no-match glyph sits in a ring rather than floating bare — it is the one
+     thing on an otherwise empty stage, so it gets a shape to be. */
+  .quick-recall__state-ring {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 50%;
+    background: var(--app-surface);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    font-size: var(--t-title);
+    line-height: 1;
+    color: var(--app-text-subtle);
+  }
+
+  /* WHAT WAS ACTUALLY SEARCHED. A fill, not a card — one surface step, no
+     border, matching every other group in this direction. It renders only the
+     facts this machine could answer (G8), so it may hold four cells or one. */
+  .quick-recall__searched {
+    /* A grid, not a wrapping flex row: the number of cells depends on which
+       facts this machine could answer, and auto-fit keeps 1, 2, 3 or 4 of them
+       in an even row instead of leaving one orphan centred under the others. */
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+    /* The centred stack is a flex column, so without this the grid collapses to
+       its min-content width and every cell stacks. */
+    align-self: stretch;
+    max-width: 760px;
+    margin: var(--s-4) auto 0;
+    gap: var(--s-12) var(--s-24);
+    padding: var(--s-12) var(--s-16);
+    border-radius: var(--r-lg);
+    /* One surface STEP up from the window, not a bordered card — and raised
+       rather than `--ti-grp-fill`, which on this window equals the background
+       it would have to be distinguishable from. */
+    background: var(--app-surface-raised);
+  }
+
+  .quick-recall__searched-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    text-align: left;
+  }
+
+  .quick-recall__searched-label {
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    line-height: 1.4;
+    text-transform: uppercase;
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-muted);
+  }
+
+  .quick-recall__searched-value {
+    font-family: var(--app-font-mono);
+    font-weight: var(--w-semi);
+    font-size: var(--t-ui);
+    line-height: 1;
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__searched-note {
+    font-size: var(--t-meta);
+    line-height: 1.35;
+    color: var(--app-text-muted);
   }
 
   .quick-recall__state-glyph--danger {
@@ -599,20 +758,16 @@
     width: 56px;
   }
 
-  /* One skeleton tile per grid cell: a caption line over the 196px media block,
-     the same shape a real tile settles into. */
+  /* One skeleton per grid cell — the SAME shape a real cell settles into (frame
+     first, caption under), borderless like the cell, so the swap doesn't jump. */
   .quick-recall__skeleton-tile {
     display: flex;
     flex-direction: column;
-    gap: var(--s-8);
-    padding: var(--s-12);
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    gap: var(--s-6);
   }
 
   .quick-recall__skeleton-media {
-    height: 196px;
+    aspect-ratio: 16 / 9;
     border-radius: var(--r-md);
   }
 

@@ -1,10 +1,16 @@
-<!-- Quick Recall search result TILE — the round-4 3-up grid cell (349 wide,
-     196-tall media). One anatomy for both modalities: a header row (app / source
-     eyebrow left, time right), one title line, one marked caption line, then the
-     media bleeding to the tile's bottom radius (screenshot for screen results,
-     source-coloured waveform for audio) with the match/meaning/redacted badges
-     floating over its bottom edge. The list/detail split is gone with the grid,
-     so the tile carries the accessories the detail pane used to duplicate. -->
+<!-- Quick Recall search result CELL — the 3-up grid cell (349 wide, 196-tall
+     frame at 16:9). Direction 05: SEARCH RETURNS THINGS, so the cell is not a
+     card. It is the frame itself with two caption lines under it — no border, no
+     fill, no shadow, nothing competing with the picture. Depth is a surface step
+     everywhere in this direction; here the only "container" is the image well's
+     tonal bezel, which is a control bezel and free by the audit's own rule.
+     Selection is one accent ring on the frame — one of the two places the accent
+     is spent on this whole surface. -->
+<!-- One anatomy for both modalities: frame (screenshot for screen results,
+     source-coloured waveform for audio, badges floating over its bottom edge),
+     then app eyebrow + title, then the mono meta line carrying the time and the
+     matched text. The list/detail split is gone with the grid, so the cell
+     carries the accessories the detail pane used to duplicate. -->
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import type {
@@ -102,35 +108,15 @@
 
 {#if kind === "frame" && frame}
   <button
-    class="search-card"
-    class:search-card--selected={selected}
+    class="ti-qcell search-card"
+    class:is-sel={selected}
     {id}
     role="option"
     aria-selected={selected}
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
-        <img
-          class="search-card__appicon"
-          src={appIcons.src(frame.appBundleId ?? frame.appName)}
-          alt=""
-          aria-hidden="true"
-        />
-      {/if}
-      <span class="search-card__app">{frame.appName ?? "Unknown app"}</span>
-      <span class="search-card__time">{formatRelativeTime(frame.groupEndAt)}</span>
-    </span>
-    <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
-      {frame.windowTitle ?? frame.appName ?? "Screen"}
-    </span>
-    <span class="search-card__caption">
-      {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}
-    </span>
-    <span class="search-card__media">
+    <span class="ti-qcell__f search-card__media">
       <svg
         class="search-card__media-glyph"
         width="22"
@@ -163,39 +149,44 @@
         frame.hasSecretRedactions,
       )}
     </span>
+    <span class="search-card__l1">
+      {#if appIcons.src(frame.appBundleId ?? frame.appName) !== null}
+        <img
+          class="search-card__appicon"
+          src={appIcons.src(frame.appBundleId ?? frame.appName)}
+          alt=""
+          aria-hidden="true"
+        />
+      {/if}
+      <span class="ti-qcell__app">{frame.appName ?? "Unknown app"}</span>
+      <span class="ti-qcell__ttl" use:tip={frame.windowTitle ?? undefined}>
+        {frame.windowTitle ?? frame.appName ?? "Screen"}
+      </span>
+    </span>
+    <span class="ti-qcell__l2">
+      <span>{formatRelativeTime(frame.groupEndAt)}</span>
+      <span aria-hidden="true">·</span>
+      <span class="search-card__caption">
+        {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
+              >{segment.text}</mark
+            >{:else}{segment.text}{/if}{/each}
+      </span>
+    </span>
   </button>
 {/if}
 
 {#if kind === "audio" && audio}
   <button
-    class="search-card"
-    class:search-card--selected={selected}
+    class="ti-qcell search-card"
+    class:is-sel={selected}
     {id}
     role="option"
     aria-selected={selected}
     tabindex="-1"
     onclick={onselect}
   >
-    <span class="search-card__head">
-      <span class="search-card__app"
-        >{audio.sourceKind === "microphone" ? "Microphone" : "System audio"}</span
-      >
-      <span class="search-card__time"
-        >{formatRelativeTime(audio.absoluteStartAt)}</span
-      >
-    </span>
-    <span class="search-card__title">
-      “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}”
-    </span>
-    <span class="search-card__caption"
-      >{formatDuration(
-        Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
-      )} of speech</span
-    >
     <span
-      class="search-card__media search-card__media--wave"
+      class="ti-qcell__f search-card__media search-card__media--wave"
       class:search-card__media--mic={audio.sourceKind === "microphone"}
       class:search-card__media--sys={audio.sourceKind !== "microphone"}
     >
@@ -216,6 +207,11 @@
           />
         {/each}
       </svg>
+      <span class="ti-qcell__dur"
+        >{formatDuration(
+          Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
+        )}</span
+      >
       {@render badges(
         audio.matchCount,
         "adjacent",
@@ -223,25 +219,30 @@
         audio.hasSecretRedactions,
       )}
     </span>
+    <span class="search-card__l1">
+      <span class="ti-qcell__app"
+        >{audio.sourceKind === "microphone" ? "Mic" : "System audio"}</span
+      >
+      <span class="ti-qcell__ttl">
+        “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
+              >{segment.text}</mark
+            >{:else}{segment.text}{/if}{/each}”
+      </span>
+    </span>
+    <!-- The duration moved onto the waveform (`.ti-qcell__dur`), where the
+         mockup's grid puts a clip length, so this line carries the time alone
+         rather than repeating it. -->
+    <span class="ti-qcell__l2">
+      <span>{formatRelativeTime(audio.absoluteStartAt)}</span>
+    </span>
   </button>
 {/if}
 
 <style>
-  /* One grid cell. The tile is a column: header / title / caption / media, with
-     the media bleeding to the left, right and bottom edges (negative margins
-     against the tile's padding) so it meets the bottom radius. */
+  /* The cell's own shape comes from the shared skin (`.ti-qcell`): borderless,
+     transparent, frame-first. Only what the skin can't know lives here. */
   .search-card {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-4);
     width: 100%;
-    min-width: 0;
-    padding: var(--s-12);
-    overflow: hidden;
-    text-align: left;
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
     color: var(--app-text);
     font: inherit;
     cursor: pointer;
@@ -249,89 +250,55 @@
 
   @media (prefers-reduced-motion: no-preference) {
     .search-card {
-      transition:
-        background var(--dur-quick) var(--ease),
-        border-color var(--dur-quick) var(--ease),
-        box-shadow var(--dur-quick) var(--ease);
+      transition: box-shadow var(--dur-quick) var(--ease);
     }
   }
 
-  .search-card:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+  /* Hover is a hint on the frame, never a fill on the cell — a fill would put a
+     rectangle back around a thing whose whole point is not having one. */
+  .search-card:hover .search-card__media {
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
 
-  /* Selected is the roving highlight: the accent ring the mockups settle on. */
-  .search-card:focus-visible,
-  .search-card--selected,
-  .search-card--selected:hover {
+  /* Selection is ONE accent ring on the frame. This is one of exactly two places
+     the accent appears on the search surface (the other is the Ask row). */
+  .search-card:focus-visible {
     outline: none;
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  /* Header: app / source eyebrow left, time hard right. */
-  .search-card__head {
+  .search-card:focus-visible .search-card__media,
+  .search-card.is-sel .search-card__media,
+  .search-card.is-sel:hover .search-card__media {
+    box-shadow: 0 0 0 2px var(--app-accent);
+  }
+
+  /* Line 1: the app eyebrow and the title share a baseline. */
+  .search-card__l1 {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: var(--gap-inline);
     min-width: 0;
   }
 
   .search-card__appicon {
     flex: none;
-    width: 14px;
-    height: 14px;
+    width: 12px;
+    height: 12px;
     object-fit: contain;
+    align-self: center;
   }
 
-  .search-card__app {
-    flex: 1;
+  .search-card__l1 .ti-qcell__ttl {
     min-width: 0;
-    font-size: var(--t-label);
-    line-height: 1;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--app-text-subtle);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
-  .search-card__time {
-    flex: none;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-subtle);
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* One title line — the window title (screen) or the quoted transcript
-     (audio). Never wraps: the tile's height is fixed by the media block. */
-  .search-card__title {
-    display: block;
-    min-width: 0;
-    font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
-    color: var(--app-text-strong);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* The matched text, so "why did this hit?" is answered on the tile itself —
+  /* The matched text, so "why did this hit?" is answered on the cell itself —
      the detail pane that used to carry it is gone with the grid. */
   .search-card__caption {
-    display: block;
     min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1.3;
-    color: var(--app-text-muted);
-    white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .search-card mark {
@@ -341,18 +308,20 @@
     padding: 0 1px;
   }
 
-  /* 196px media, full-bleed to the tile's bottom radius. The backing stays dark
-     in both themes (it holds a screenshot); the glyph is a fixed mid-gray
-     legible on that backing while the image loads or when no preview exists. */
+  /* The frame well. `.ti-qcell__f` gives it the 16:9 box and the radius; the
+     backing stays dark in both themes (it holds a screenshot), and the tonal
+     bezel is what gives a near-black terminal frame bounds on a dark surface —
+     a control bezel, not a container border. */
   .search-card__media {
-    position: relative;
     display: grid;
     place-items: center;
-    height: 196px;
-    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
-    overflow: hidden;
     background: #101014;
     color: #6a6a74;
+    box-shadow: inset 0 0 0 var(--hairline) rgba(255, 255, 255, 0.13);
+  }
+
+  :global([data-theme="light"]) .search-card__media {
+    box-shadow: inset 0 0 0 var(--hairline) rgba(0, 0, 0, 0.13);
   }
 
   .search-card__media-glyph {
@@ -404,42 +373,45 @@
     fill: currentColor;
   }
 
-  /* Accessories float over the media's bottom edge rather than stealing a text
-     row — the tile's vertical budget is spent on the picture. */
+  /* Accessories float over the frame's bottom-LEFT edge (the duration chip owns
+     bottom-right), so the cell's vertical budget is spent entirely on the
+     picture. They wear the same over-media chip as `.ti-qcell__dur`: a dark
+     translucent pill, legible on any screenshot, in both themes. */
   .search-card__badges {
     position: absolute;
-    left: var(--s-8);
-    right: var(--s-8);
-    bottom: var(--s-8);
+    left: var(--s-6);
+    bottom: var(--s-6);
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-4);
+    max-width: calc(100% - 76px);
   }
 
   .search-card__badge {
     display: inline-flex;
     align-items: center;
+    font-family: var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--w-medium);
     font-size: var(--t-label);
-    line-height: 1;
-    padding: 3px 6px;
+    line-height: 1.5;
+    padding: 1px 5px;
+    border: 0;
     border-radius: var(--r-sm);
-    border: var(--hairline) solid var(--app-border-strong);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
+    background: rgba(8, 8, 12, 0.62);
+    color: #fff;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    letter-spacing: var(--ls-label);
     white-space: nowrap;
   }
 
+  /* Lightened toward white: the badge always sits on a dark translucent pill, so
+     the LIGHT theme's dark-green accent would be unreadable at 10px on it. */
   .search-card__badge--meaning {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    color: color-mix(in srgb, var(--app-accent) 55%, #ffffff);
   }
 
   .search-card__badge--redacted {
     color: var(--app-warn);
-    background: var(--app-warn-bg);
-    border-color: var(--app-warn-border);
   }
 </style>

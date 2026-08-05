@@ -37,11 +37,36 @@ export function setQuickRecallCollapsed(height: number | null): Promise<void> {
   return invoke<void>("quick_recall_set_collapsed", { height });
 }
 
-/** Collapsed heights. Bar alone, and bar plus the detached answer piece. */
-export const CURRENT_FRAME_BAR_HEIGHT = 96;
+/**
+ * Collapsed heights. Bar alone, and bar plus the detached answer piece.
+ *
+ * Direction 05's bar is three stacked pieces — the control pill ("Seeing your
+ * screen"), the composer holding the frame chip in its sentence, and the
+ * freshness readout — so it is taller than the plain phase-1 bar was.
+ */
+export const CURRENT_FRAME_BAR_HEIGHT = 136;
 /** Extra height for the non-vision disclosure line, which sits under the bar. */
 export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 30;
-export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
+export const CURRENT_FRAME_ANSWER_HEIGHT = 500;
+
+/**
+ * When the grab stops being trustworthy. Past this the control pill flips to
+ * its warn face and offers a re-grab — the screen has almost certainly moved on.
+ */
+export const FRAME_STALE_MS = 45_000;
+
+/**
+ * The freshness readout's age, phrased at the precision the clock can support.
+ * This is a MEASURED elapsed time, not an ETA, so tenths are honest under ten
+ * seconds; past a minute nobody cares about the seconds (G8: round coarsely).
+ */
+export function frameAgePhrase(ageMs: number): string {
+	const ms = Math.max(0, ageMs);
+	if (ms < 10_000) return `${(Math.round(ms / 100) / 10).toFixed(1)} s`;
+	if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
+	const minutes = Math.round(ms / 60_000);
+	return `${minutes} min`;
+}
 
 /** The chip's primary label: what the shot is of. */
 export function frameChipLabel(frame: CurrentFrameCapture): string {

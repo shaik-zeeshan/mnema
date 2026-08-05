@@ -53,6 +53,8 @@
     frameChipLabel,
     frameExclusionNote,
     frameVisionNote,
+    frameAgePhrase,
+    FRAME_STALE_MS,
     CURRENT_FRAME_BAR_HEIGHT,
     CURRENT_FRAME_DISCLOSURE_HEIGHT,
     CURRENT_FRAME_ANSWER_HEIGHT,
@@ -67,6 +69,25 @@
   // This page keeps the window shell, the mode cross-fade, the whole Ask AI
   // mode, root/window keydown routing, focus management, and the idle-clear.
   const filters = search.filters;
+
+  // ── The match meter (direction 05's one search-surface instrument) ────────
+  // It passes the instrument rule: the quantity is "how many things matched",
+  // and the consequence is written as its real parts rather than one opaque
+  // number. Both parts are counts this window already holds, so nothing here is
+  // projected or guessed (G8). Null while there is nothing to decompose.
+  const searchMeter = $derived.by(() => {
+    const screen = search.frames.length;
+    const audio = search.audio.length;
+    const total = screen + audio;
+    if (total === 0) return null;
+    return {
+      screen,
+      audio,
+      total,
+      screenPct: (screen / total) * 100,
+      title: `${screen} screen · ${audio} audio`,
+    };
+  });
 
 
   // The window is reused across summons (hidden, not destroyed), so its state
@@ -1508,6 +1529,57 @@
   let frameExclusion = $derived(frameCapture === null ? null : frameExclusionNote(frameCapture));
   let frameVision = $derived(frameCapture === null ? null : frameVisionNote(frameCapture));
 
+  // ── The freshness readout (direction 05's one instrument on this surface) ──
+  // Age is a measured elapsed time, so it ticks; the wall clock is the only
+  // input. The interval only runs while the bar is actually on screen.
+  let frameNowMs = $state(Date.now());
+  let frameRegrabbing = $state(false);
+  $effect(() => {
+    if (mode !== "frame" || frameCapture === null) return;
+    frameNowMs = Date.now();
+    const id = setInterval(() => (frameNowMs = Date.now()), 500);
+    return () => clearInterval(id);
+  });
+  let frameAgeMs = $derived(
+    frameCapture === null ? null : frameNowMs - frameCapture.capturedAtUnixMs,
+  );
+  let frameAge = $derived(frameAgeMs === null ? "" : frameAgePhrase(frameAgeMs));
+  let frameStale = $derived(frameAgeMs !== null && frameAgeMs >= FRAME_STALE_MS);
+
+  // The shot's real pixel size, read off the decoded image rather than asserted.
+  // G8: if it never decodes the readout simply omits the dimensions — there is
+  // no plausible default for "how big is your screen".
+  let frameDims = $state<{ w: number; h: number } | null>(null);
+  $effect(() => {
+    const capture = frameCapture;
+    frameDims = null;
+    if (capture === null) return;
+    const img = new Image();
+    let cancelled = false;
+    img.onload = () => {
+      if (!cancelled) frameDims = { w: img.naturalWidth, h: img.naturalHeight };
+    };
+    img.src = convertFileSrc(capture.imagePath);
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  // Take the shot again. The stale pill's only job is to make this one keystroke
+  // obvious; nothing else about the turn changes.
+  async function regrabFrame(): Promise<void> {
+    if (frameRegrabbing) return;
+    frameRegrabbing = true;
+    try {
+      frameCapture = await captureCurrentFrame();
+      frameCaptureError = null;
+    } catch (error) {
+      frameCaptureError = humanizeError(error);
+    } finally {
+      frameRegrabbing = false;
+    }
+  }
+
   // The collapsed window's height follows what the bar currently shows. Kept in
   // an effect so growing for the answer and shrinking on dismiss are the same
   // one rule rather than two call sites that can disagree.
@@ -2111,8 +2183,14 @@
         <span class="quick-recall__sr-status" role="status" aria-live="polite"
           >{searchStatusAnnouncement}</span
         >
+        <!-- Direction 05: the top strip is chrome; the field itself is the one
+             pill inside it (`.ti-qfield`). Search's chrome stays MONOCHROME —
+             the frames in the grid below carry all the colour, and the accent
+             is spent only twice on this surface (the selected cell's ring and
+             the ranked Ask row). -->
         <div class="quick-recall__field">
-          <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
+          <div class="quick-recall__pill ti-qfield">
+            <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
           <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
                target; the absolutely-positioned mirror behind it renders the
                typed text invisibly then the dimmed ghost suffix, matching the
@@ -2162,6 +2240,33 @@
                 void search.ensureSearchableAppsLoaded();
               }}
             />
+          </div>
+            <!-- THE MATCH METER — the one instrument on the search surface. It
+                 refuses to print a bare count: the total is decomposed into the
+                 sources it actually came from, so "14" is never a mystery. Two
+                 segments, not the mockup's three: Mnema has exactly two searched
+                 modalities (screen text and audio transcript), and G8 forbids a
+                 "documents" bar that stands for nothing on this machine. -->
+            {#if searchMeter !== null}
+              <span
+                class="ti-meter quick-recall__meter"
+                use:tip={searchMeter.title}
+                aria-label={searchMeter.title}
+              >
+                <span class="ti-meter__bar" aria-hidden="true">
+                  {#if searchMeter.screen > 0}
+                    <i class="scr" style:width="{searchMeter.screenPct}%"></i>
+                  {/if}
+                  {#if searchMeter.audio > 0}
+                    <i class="aud" style:width="{100 - searchMeter.screenPct}%"></i>
+                  {/if}
+                </span>
+                <span class="quick-recall__meter-n">{searchMeter.total}</span>
+                <span class="quick-recall__meter-u"
+                  >{searchMeter.total === 1 ? "match" : "matches"}</span
+                >
+              </span>
+            {/if}
           </div>
           <!-- Visible Filter Picker trigger: the picker was previously reachable
                only via ⌘F / `/`, advertised nowhere — a funnel in the field row
@@ -2232,6 +2337,13 @@
             <span class="quick-recall__chip-hint" aria-hidden="true"
               >typed filters become chips · ? for syntax</span
             >
+            {#if searchMeter !== null}
+              <!-- The scope row states, at its right edge, what the narrowing
+                   actually left — the same decomposition the meter draws. -->
+              <span class="quick-recall__scope-count is-mono" aria-hidden="true"
+                >{searchMeter.title}</span
+              >
+            {/if}
           </div>
         {/if}
 
@@ -2297,9 +2409,58 @@
         out:fade={{ duration: modeFadeMs }}
       >
         <div class="quick-recall__frame-bar">
-          <div class="quick-recall__field quick-recall__field--frame">
+          <!-- 1 · THE CONTROL PILL. G3.4: capture is implicit (collapsing IS the
+               gesture) so indication has to be maximally explicit — this states
+               the watching fact in words while the reading-overlay outlines the
+               region on the screen itself. It survives the answer being
+               dismissed, and it carries Stop. Past FRAME_STALE_MS it flips to
+               its warn face and offers the re-grab. -->
+          <div
+            class="quick-recall__frame-pill"
+            class:quick-recall__frame-pill--stale={frameStale}
+          >
+            <span class="quick-recall__frame-pill-glyph" aria-hidden="true"
+              >{frameStale ? "⚠" : "✦"}</span
+            >
+            <span class="quick-recall__frame-pill-state">
+              {#if frameCapture === null}
+                Reading your screen…
+              {:else if frameStale}
+                Frame is <span class="is-mono is-num">{frameAge}</span> old
+              {:else}
+                Seeing your screen
+              {/if}
+            </span>
+            {#if frameCapture !== null && frameStale}
+              <span class="quick-recall__frame-pill-div" aria-hidden="true"></span>
+              <button
+                type="button"
+                class="quick-recall__frame-btn"
+                onclick={() => void regrabFrame()}
+                disabled={frameRegrabbing}
+              >
+                Re-grab
+              </button>
+            {/if}
+            {#if askStreaming}
+              <span class="quick-recall__frame-pill-div" aria-hidden="true"></span>
+              <button
+                type="button"
+                class="quick-recall__frame-btn"
+                onclick={() => void stopActiveAsk()}
+              >
+                Stop
+              </button>
+            {/if}
+          </div>
+
+          <!-- 2 · THE SENTENCE. The shot rides as ONE small chip inside the
+               prompt (G3.2) — the same cite-chip shape the digest uses, never a
+               full-width thumbnail. You edit the context by editing the
+               sentence; ✕ or Backspace-at-caret-0 deletes it like a word. -->
+          <div class="quick-recall__field--frame ti-qfield ti-qfield--ask">
             {#if frameCapture !== null}
-              <span class="quick-recall__frame-chip" data-testid="frame-chip">
+              <span class="quick-recall__frame-chip ti-cite" data-testid="frame-chip">
                 <span class="quick-recall__frame-chip-glyph" aria-hidden="true">⧉</span>
                 <span class="quick-recall__frame-chip-label">{frameChip}</span>
                 {#if frameExclusion !== null}
@@ -2336,16 +2497,23 @@
               disabled={askStreaming}
               onkeydown={handleFrameInputKeydown}
             ></textarea>
-            {#if askStreaming}
-              <button
-                type="button"
-                class="quick-recall__frame-stop"
-                onclick={() => void stopActiveAsk()}
-              >
-                Stop
-              </button>
-            {/if}
           </div>
+
+          <!-- 3 · THE FRESHNESS READOUT — the one instrument on this surface.
+               A frame's age and pixel size are physical facts about the thing
+               the model is about to look at, and they are the only way to know
+               it is looking at what you think it is. G8 binds: the recognised-
+               word count the mockup printed is not a number this window holds,
+               so it renders NOTHING rather than a plausible fiction, and a
+               dimension that never resolved simply drops out. -->
+          <p class="quick-recall__frame-readout ti-instr__out">
+            {#if frameCapture !== null}
+              captured <b class="is-num">{frameAge}</b> ago{#if frameDims !== null}<span
+                  >{" · "}</span
+                ><b class="is-num">{frameDims.w}×{frameDims.h}</b>{/if}
+            {/if}
+          </p>
+
           <!-- Upfront disclosure (G2): stated before the user types, not after
                the answer comes back wrong. -->
           {#if frameVision !== null}
@@ -2387,6 +2555,9 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
+        <!-- Ask's ONE identity is the accent-tinted field with its own glyph —
+             the single colour difference from Search. Search returns things and
+             stays monochrome; Ask returns a claim and says so at the top. -->
         <div class="quick-recall__field quick-recall__field--ask">
           <button
             type="button"
@@ -2397,6 +2568,8 @@
           >
             ← Back
           </button>
+          <div class="quick-recall__pill ti-qfield ti-qfield--ask">
+            <span class="quick-recall__ask-glyph" aria-hidden="true">✦</span>
           {#if askSubmitted}
             <!-- Once the thread exists the header is just the Back affordance —
                  each turn's question renders as its own header in the transcript. -->
@@ -2430,6 +2603,7 @@
               onkeydown={handleAskInputKeydown}
             ></textarea>
           {/if}
+          </div>
         </div>
 
         <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
@@ -2631,6 +2805,11 @@
                            blocks carry already-parsed data. The streaming caret
                            rides only the LAST prose block, and only until the turn
                            settles. -->
+                      <!-- Direction 05: the claim is ONE prose column at 68ch and
+                           the evidence stands beside it, smaller — so the answer
+                           and its cited moments share one flex row rather than
+                           stacking the sources under the paragraph. -->
+                      <div class="quick-recall__evidence">
                       {@render answerBody(turn)}
 
                       <!-- Per-turn answer sources: the captures this turn drew on,
@@ -2682,6 +2861,7 @@
                           {/if}
                         </div>
                       {/if}
+                      </div>
 
                       <!-- Empty-answer fallback: a settled turn that produced no
                            answer blocks and no sources (e.g. the model returned
@@ -2863,6 +3043,13 @@
     overflow: hidden;
     color: var(--app-text);
     font-family: inherit;
+
+    /* THE ONE DOCUMENTED EXEMPTION to "one inset per surface": Quick Access is
+       a fixed, non-resizable 1120-wide window whose 3-up grid must divide
+       exactly — 20px inset + 16px gutter puts each cell at exactly 349px. Every
+       other surface in this direction keeps inset == gutter. */
+    --grid-inset: var(--s-20);
+    --grid-gutter: var(--s-16);
   }
 
   /* Mode area: positioning context for the cross-fading panels. flex-1 so it
@@ -2911,17 +3098,31 @@
     border: 0;
   }
 
+  /* Direction 05: the top strip is CHROME, not a container — it is a fill with
+     one hairline under it, exactly like a native toolbar. Depth here is a
+     surface step; the only bordered container on this window is the window
+     itself (plus the ranked Ask row, which is the audit's second and last). */
   .quick-recall__field {
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 56px;
-    padding: 8px 16px;
+    gap: var(--s-12);
     flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    /* Mockup `.searchbar`: the chrome rows (search bar, footer) sit on the
-       subtle surface so the detail pane's plain surface reads as the stage. */
-    background: var(--app-surface-subtle);
+    padding: var(--s-12) var(--grid-inset);
+    box-shadow: inset 0 -1px 0 var(--app-border);
+    background: var(--app-surface);
+  }
+
+  /* The field itself: one pill (`.ti-qfield` — the shared skin's shape). The
+     focus ring lives HERE rather than on the strip, which is why the strip can
+     stay borderless. */
+  .quick-recall__pill {
+    min-width: 0;
+  }
+
+  .quick-recall__pill:focus-within {
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent-border),
+      var(--ring);
   }
 
   /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
@@ -2934,18 +3135,53 @@
      on. The blinking accent caret already signals focus. */
 
   .quick-recall__glyph {
-    font-size: var(--t-title);
+    font-size: var(--t-ui);
     line-height: 1;
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
     flex-shrink: 0;
     transform: rotate(-45deg);
-    transition: color 0.12s ease;
   }
 
-  /* Mockup `.searchbar:focus-within svg.magnifier`: the magnifier warms to the
-     accent while the input has focus. */
-  .quick-recall__field:focus-within .quick-recall__glyph {
-    color: var(--app-accent);
+  /* Search's chrome is MONOCHROME on purpose — the accent is spent twice on this
+     surface and both are in the results (the selected cell's ring, the Ask row),
+     so the magnifier stays neutral even while focused. Ask's field is the one
+     tinted thing, and that is exactly what makes the two modes tell apart. */
+
+  /* THE MATCH METER. Mono + tabular, sitting at the right end of the field —
+     an instrument reads a value in its header, it does not shout. */
+  .quick-recall__meter {
+    flex: none;
+    margin-left: auto;
+    padding-left: var(--s-8);
+  }
+
+  .quick-recall__meter-n {
+    font-family: var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--w-medium);
+    font-size: var(--t-ui);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__meter-u {
+    font-family: var(--app-font-sans);
+    font-size: var(--t-meta);
+    color: var(--app-text-muted);
+  }
+
+  /* Ask's glyph — the mark that, with the tint, is Ask's whole identity. */
+  .quick-recall__ask-glyph {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--r-md);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font-size: var(--t-meta);
+    line-height: 1;
   }
 
   /* Slice 4: wrapper that establishes the positioning context for the ghost
@@ -2965,8 +3201,9 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    /* Mockup `.searchbar input`: 16px query text. */
-    font-size: 16px;
+    /* The query is title-role type: one size below the display, tracked in. */
+    font-size: var(--t-title);
+    letter-spacing: var(--ls-title);
     line-height: 1.4;
     padding: 0;
     caret-color: var(--app-accent);
@@ -2993,7 +3230,8 @@
     pointer-events: none;
     font-family: inherit;
     /* Must mirror .quick-recall__input's font metrics exactly. */
-    font-size: 16px;
+    font-size: var(--t-title);
+    letter-spacing: var(--ls-title);
     line-height: 1.4;
     white-space: pre;
     overflow: hidden;
@@ -3010,35 +3248,39 @@
     color: var(--app-text-muted);
   }
 
+  /* The footer is chrome too: a fill with one hairline over it, never a bar
+     with a border. Key hints are the machine voice, so they are mono. */
   .quick-recall__footer {
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    gap: var(--s-16);
+    height: 34px;
+    padding: 0 var(--grid-inset);
+    box-shadow: inset 0 1px 0 var(--app-border);
+    background: var(--app-surface);
   }
 
   .quick-recall__hint-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--t-label);
+    gap: var(--s-4);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-subtle);
     white-space: nowrap;
   }
 
   .quick-recall__footer kbd {
-    font-family: inherit;
+    font-family: var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     font-size: var(--t-label);
     line-height: 1;
-    text-transform: lowercase;
     color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
+    background: var(--app-surface-raised);
+    border: 0;
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    border-radius: var(--r-sm);
     padding: 3px 5px;
     min-width: 9px;
     text-align: center;
@@ -3052,31 +3294,33 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 12px 14px;
+    padding: var(--s-12) var(--grid-inset);
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--gap-group);
   }
 
   .quick-recall__section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--s-8);
   }
 
+  /* Section headers are BARE LABELS — mono, uppercase, no rule, no chip. */
   .quick-recall__section-label {
-    font-size: var(--t-meta);
-    line-height: 1;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    line-height: 1.4;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
-    padding: 0 2px;
+    padding: 0 var(--s-2);
   }
 
   .quick-recall__state {
     margin: 0;
-    padding: 8px 2px;
-    font-size: var(--t-ui);
+    padding: var(--s-8) var(--s-2);
+    font-size: var(--t-meta);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
@@ -3098,57 +3342,56 @@
     font-size: var(--t-meta);
     line-height: 1;
     white-space: nowrap;
-    color: var(--app-text-muted);
+    height: var(--h-sm);
+    color: var(--app-text-strong);
     background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 5px 10px;
+    border: 0;
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-border-strong),
+      0 1px 1px var(--ti-recess);
+    border-radius: var(--r-md);
+    padding: 0 9px;
     cursor: pointer;
     transition:
-      border-color 0.12s ease,
       color 0.12s ease,
       background 0.12s ease;
   }
 
   .quick-recall__filter-trigger kbd {
-    font-family: inherit;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
     line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    padding: 2px 4px;
+    color: var(--app-text-subtle);
+    background: transparent;
+    border: 0;
+    padding: 0;
   }
 
   .quick-recall__filter-trigger:hover {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
   }
 
   .quick-recall__filter-trigger:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-accent-border),
+      var(--ring);
   }
 
   .quick-recall__filter-trigger:active,
   .quick-recall__filter-trigger--active {
     background: var(--app-surface-active);
-    border-color: var(--app-accent);
     color: var(--app-accent);
   }
 
   .quick-recall__filter-trigger--filtered {
     color: var(--app-accent);
     background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .quick-recall__filter-trigger--filtered kbd {
     color: var(--app-accent);
-    background: transparent;
-    border-color: var(--app-accent-border);
   }
 
   .quick-recall__ask-hint {
@@ -3182,28 +3425,42 @@
      the subtle surface under the input; every chip is an accent-tinted pill
      with its × remover, trailed by the quiet hint line. Shares its slot with
      the inline parse-error line. */
+  /* The scope row. Borderless chrome again — chips are the only shapes in it,
+     and each is a stock pill (the shared skin's `.ti-chip` geometry). */
   .quick-recall__chips {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
+    gap: var(--s-6);
+    padding: var(--s-8) var(--grid-inset);
     flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
+    box-shadow: inset 0 -1px 0 var(--app-border);
   }
 
   .quick-recall__chip {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--s-4);
+    height: 22px;
     font-size: var(--t-meta);
+    font-weight: var(--w-medium);
     line-height: 1;
     color: var(--app-accent);
     background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    padding: 4px 5px 4px 10px;
+    border: 0;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    border-radius: var(--r-pill);
+    padding: 0 4px 0 9px;
+    white-space: nowrap;
+  }
+
+  /* What the narrowing actually left, at the row's right edge. */
+  .quick-recall__scope-count {
+    margin-left: auto;
+    font-size: var(--t-meta);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-muted);
     white-space: nowrap;
   }
 
@@ -3292,48 +3549,146 @@
      answer. Nothing about dismissing the second touches the first. Geometry
      stays plain — per-direction bar shapes land in phase 2. */
   .quick-recall__panel--frame {
-    background: var(--app-surface-raised);
+    background: var(--app-surface);
     display: flex;
     flex-direction: column;
     min-height: 0;
   }
 
+  /* The bar is three stacked pieces: the control pill, the sentence, and the
+     freshness readout. It is a FILL, not a card — the only thing that reads as
+     floating on this surface is the answer below, which genuinely is detached. */
   .quick-recall__frame-bar {
     flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    padding: var(--s-8) var(--s-12) var(--s-8);
   }
 
-  .quick-recall__field--frame {
-    gap: 8px;
+  /* 1 · the control pill — outlined, not filled, so the tinted composer under
+     it stays the only coloured object in the bar. */
+  .quick-recall__frame-pill {
+    display: flex;
     align-items: center;
-    background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
+    gap: var(--s-8);
+    align-self: flex-start;
+    height: var(--h-sm);
+    padding: 0 var(--s-4) 0 var(--s-8);
+    border-radius: var(--r-pill);
+    background: var(--app-surface-raised);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  }
+
+  .quick-recall__frame-pill-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--r-sm);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font-size: 9px;
+    line-height: 1;
+  }
+
+  .quick-recall__frame-pill--stale .quick-recall__frame-pill-glyph {
+    background: var(--app-warn);
+    color: var(--app-warn-bg);
+  }
+
+  .quick-recall__frame-pill-state {
+    font-size: var(--t-meta);
+    font-weight: var(--w-medium);
+    line-height: 1;
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
+  .quick-recall__frame-pill-div {
+    width: var(--hairline);
+    height: 14px;
+    background: var(--app-border);
+  }
+
+  .quick-recall__frame-btn {
+    border: 0;
+    background: transparent;
+    border-radius: var(--r-sm);
+    color: var(--app-text-muted);
+    font-family: inherit;
+    font-size: var(--t-meta);
+    line-height: 1;
+    padding: 4px 6px;
+    cursor: pointer;
+  }
+
+  .quick-recall__frame-btn:hover:not(:disabled) {
+    background: var(--app-surface-hover);
+    color: var(--app-text-strong);
+  }
+
+  .quick-recall__frame-btn:disabled {
+    opacity: var(--opacity-disabled);
+  }
+
+  .quick-recall__frame-btn:focus-visible {
+    outline: none;
+    box-shadow: var(--ring);
+  }
+
+  /* 2 · the sentence. `.ti-qfield--ask` supplies the tint: this composer IS an
+     Ask field, so it wears Ask's one identity. */
+  .quick-recall__field--frame {
+    height: auto;
+    min-height: 34px;
+    padding: var(--s-6) var(--s-8) var(--s-6) var(--s-8);
+    gap: var(--s-6);
+    align-items: center;
     flex-wrap: nowrap;
+    font-size: var(--t-ui);
+  }
+
+  .quick-recall__field--frame:focus-within {
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      var(--ring);
+  }
+
+  /* 3 · the readout slot. It exists at rest and never reflows — an instrument's
+     consequence line is a fixture of its anatomy, not a state. */
+  .quick-recall__frame-readout {
+    margin: 0;
+    padding: 0 var(--s-2);
+    min-height: 15px;
   }
 
   /* Chip-in-sentence: an inline word-sized token sitting where a word would,
      never a thumbnail. Backspace at caret 0 deletes it like a word. */
+  /* The context chip is the SAME cite chip the digest uses (`.ti-cite`), sitting
+     where a word would sit. It carries the excluded-app naming (G1) inline, so
+     a blanked frontmost app is stated in the sentence rather than dropped. */
   .quick-recall__frame-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
     flex-shrink: 0;
     max-width: 55%;
-    padding: 2px 6px;
-    border-radius: 6px;
-    border: 1px solid var(--app-accent-border);
-    background: color-mix(in srgb, var(--app-accent) 14%, transparent);
-    font-size: var(--t-meta);
     line-height: 1.4;
-    color: var(--app-text);
+    color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
   }
 
   .quick-recall__frame-chip--pending,
   .quick-recall__frame-chip--error {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 6px;
+    border-radius: var(--r-sm);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
-    border-color: var(--app-border);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   .quick-recall__frame-chip--error {
@@ -3384,54 +3739,44 @@
     background: none;
     resize: none;
     padding: 0;
-    color: var(--app-text);
+    color: var(--app-text-strong);
     font: inherit;
-    font-size: var(--t-body);
-    line-height: 1.5;
+    font-size: var(--t-ui);
+    line-height: 1.4;
     outline: none;
     max-height: 60px;
   }
 
   .quick-recall__frame-input::placeholder {
-    color: var(--app-text-muted);
-  }
-
-  .quick-recall__frame-stop {
-    flex-shrink: 0;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: var(--t-meta);
-    padding: 3px 9px;
-    cursor: pointer;
+    color: var(--app-text-subtle);
   }
 
   /* Upfront non-vision disclosure (G2), stated before the user types. */
   .quick-recall__frame-disclosure {
     margin: 0;
-    padding: 6px 16px;
+    padding: 0 var(--s-2);
     font-size: var(--t-meta);
     line-height: 1.4;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    color: var(--app-warn);
   }
 
-  /* The detached second piece. Its own card, its own dismiss; the bar above is
-     untouched by anything that happens here. */
+  /* The detached second piece (G3.3). This is one of the few things in the whole
+     direction that genuinely floats, so it is the one place a shadow is earned. */
   .quick-recall__frame-answer {
     position: relative;
     flex: 1 1 auto;
     min-height: 0;
     overflow-y: auto;
-    margin: 10px;
-    padding: 12px 34px 12px 14px;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    font-size: var(--t-body);
-    line-height: 1.55;
+    margin: 0 var(--s-12) var(--s-12);
+    padding: var(--s-12) var(--s-32) var(--s-12) var(--s-12);
+    border: 0;
+    border-radius: var(--r-xl);
+    background: var(--app-surface-raised);
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-border-strong),
+      var(--shadow-popover);
+    font-size: var(--t-read);
+    line-height: var(--lh-read);
   }
 
   .quick-recall__frame-answer-dismiss {
@@ -3467,22 +3812,22 @@
      app's one accent-filled bar over a raised stage — the posture change all
      five directions converged on, spent entirely in existing tokens. */
   .quick-recall__panel--ask {
-    background: var(--app-surface-raised);
+    background: var(--app-bg);
   }
 
-  .quick-recall__field--ask {
-    gap: 12px;
-    background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
-  }
+  /* Ask's strip is the same chrome as Search's; the DIFFERENCE is entirely in
+     the pill inside it, which is tinted (`.ti-qfield--ask`). That single colour
+     change is the whole mode identity — no second bar, no segmented control. */
 
   /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
-     the bar it sits in, mirroring the follow-up composer. Scoped to the input
-     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
-     buttons — which carry their own focus chrome — take focus. */
-  .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+     the pill it sits in. Scoped to the input (not bare :focus-within) so the
+     ring doesn't fire when the sibling Back/Stop buttons — which carry their own
+     focus chrome — take focus. */
+  .quick-recall__field--ask:has(.quick-recall__ask-input:focus)
+    .quick-recall__pill {
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent),
+      var(--ring);
   }
 
   .quick-recall__back {
@@ -3490,24 +3835,28 @@
     font-family: inherit;
     font-size: var(--t-ui);
     line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 8px;
+    height: var(--h-sm);
+    color: var(--app-text-strong);
+    background: var(--app-surface-raised);
+    border: 0;
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-border-strong),
+      0 1px 1px var(--ti-recess);
+    border-radius: var(--r-md);
+    padding: 0 9px;
     cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
+    transition: background 0.12s ease;
   }
 
   .quick-recall__back:hover {
-    border-color: var(--app-accent);
-    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
   }
 
   .quick-recall__back:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow:
+      0 0 0 var(--hairline) var(--app-accent-border),
+      var(--ring);
   }
 
   .quick-recall__back:not(:disabled):active {
@@ -3576,7 +3925,8 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    font-size: 14px;
+    font-size: var(--t-title);
+    letter-spacing: var(--ls-title);
     line-height: 1.4;
     padding: 0;
     resize: none;
@@ -3616,11 +3966,38 @@
   .quick-recall__turn-question {
     margin: 0;
     padding-right: 34px;
-    font-size: 14px;
-    line-height: 1.4;
+    font-size: var(--t-ui);
+    line-height: 1.35;
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
-    font-weight: 600;
+    font-weight: var(--w-medium);
     overflow-wrap: anywhere;
+  }
+
+  /* THE CLAIM AND ITS EVIDENCE. One prose column at 68ch with the cited moments
+     standing beside it, smaller — Ask returns an argument, and its sources are
+     the margin notes, not the payload. The rail folds under the column when the
+     window is too narrow to hold both. */
+  .quick-recall__evidence {
+    display: flex;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: var(--s-20);
+    min-width: 0;
+  }
+
+  /* The COLUMN fills the space the rail leaves (so the rail is pinned to the
+     window's right edge, not floating mid-stage); the 68ch cap lives on the
+     PROSE inside it, which is the thing that actually has to be readable.
+     min-width is what makes the wrap real: below ~500px the rail drops under
+     the column instead of squeezing the prose into a gutter. */
+  .quick-recall__evidence .quick-recall__answer {
+    flex: 1 1 280px;
+    min-width: 0;
+  }
+
+  .quick-recall__evidence .quick-recall__answer :global(.answer-prose) {
+    max-width: 68ch;
   }
 
   /* "Stopped early" tag on a turn the user cut off mid-stream. The partial
@@ -3640,15 +4017,20 @@
     flex-shrink: 0;
     display: flex;
     align-items: center;
-    padding: 10px 15px;
-    border-top: 1px solid var(--app-border);
+    min-height: 34px;
+    margin: 0 var(--grid-inset) var(--s-12);
+    padding: var(--s-6) var(--s-12);
+    border-radius: var(--r-lg);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
   }
 
   /* WKWebView focus idiom: the borderless composer input delegates its focus ring
      to the bar it sits in. */
   .quick-recall__composer:focus-within {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent-border),
+      var(--ring);
   }
 
   .quick-recall__composer-input {
@@ -3659,7 +4041,7 @@
     background: transparent;
     color: var(--app-text-strong);
     font-family: inherit;
-    font-size: 14px;
+    font-size: var(--t-ui);
     line-height: 1.4;
     padding: 0;
     resize: none;
@@ -3745,35 +4127,36 @@
     flex: 0 0 auto;
   }
 
-  /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.
-     Each section's cards scroll horizontally (AnswerSourceCard is fixed-width),
-     separated from the prose by a hairline rule. */
+  /* CITED MOMENTS — the evidence rail beside the claim, not a strip under it.
+     208px is AnswerSourceCard's own fixed width, so the cards stack without
+     being squeezed. No border: the rail is set apart by being narrower and
+     quieter, which is the whole point of "evidence is smaller and to the side". */
   .quick-recall__sources {
-    flex-shrink: 0;
+    flex: 0 0 208px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 4px;
-    padding-top: 14px;
-    border-top: 1px solid var(--app-border);
+    gap: var(--s-8);
+    min-width: 0;
   }
 
   .quick-recall__sources-heading {
-    font-size: var(--t-meta);
-    line-height: 1;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    line-height: 1.4;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
-    padding: 0 2px;
+    padding: 0 var(--s-2);
   }
 
-  /* Horizontally-scrolling card row. The thin scrollbar stays out of the way
-     until hover, matching the quiet terminal aesthetic of the surface. */
+  /* Stacked in the rail. The horizontal-scroll chrome below is inert here and
+     kept only so a narrow window (where the rail wraps full-width) still
+     behaves if the cards ever overflow. */
   .quick-recall__source-row {
     display: flex;
-    gap: 8px;
+    flex-direction: column;
+    gap: var(--s-8);
     overflow-x: auto;
-    padding-bottom: 4px;
     scrollbar-width: thin;
     scrollbar-color: var(--app-border) transparent;
   }
