@@ -6874,9 +6874,9 @@
   }
 
   /* ── Recording control cluster ─────────────────────────────
-     Recording status + start/stop now live in the app-wide title bar
-     (see `routes/+layout.svelte`); the previous `.timeline__capture*`
-     styles moved alongside as `.titlebar__status*` / `.titlebar__record*`. */
+     Recording status + transport live in the app-wide title bar's state pill
+     (see `lib/components/RecordingPill.svelte`); the previous
+     `.timeline__capture*` styles left with them. */
 
   /* The drawer itself is styled inside lib/timeline/AudioDrawer.svelte and its
      children; only the reduced-motion rules for the timeline's own animations

@@ -468,6 +468,33 @@
 .pill--quiet { background: var(--app-surface-hover); box-shadow: none; }   /* idle / paused */
 .pill--warn  { background: var(--app-warn-bg);
                box-shadow: 0 0 0 var(--hairline) var(--app-warn-border); } /* low disk, device lost */
+/* Added 2026-08-05 when the pill was built: every direction invented a word
+   span and a dot; three of five spell the word sans/t-meta/muted, which is the
+   phase-1 neutral. `--rung` is the ladder's "Rec" glyph — hidden until the
+   timer has been dropped. The dot never goes. */
+.pill__w { font: var(--w-medium) var(--t-meta)/1 var(--app-font-sans);
+           letter-spacing: var(--ls-meta); color: var(--app-text-muted);
+           white-space: nowrap; }
+.pill__w--rung { display: none; }
+.pill__w--info { color: var(--app-info); }   /* screen asleep — liveness, not failure */
+.pill__w--warn { color: var(--app-warn); }   /* source lost — rebuilding */
+.pill__t--dim  { color: var(--app-text-subtle); }
+/* A quiet pill leads with its word ("Paused 2:14:07"); a live one leads with
+   the numbers ("2:14:07 screen asleep"). Ordering, not two markup branches. */
+.pill--quiet .pill__t { order: 1; }
+.pill__dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
+             background: var(--app-record); }
+.pill__dot--live { box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-record) 18%, transparent);
+                   animation: pill-pulse 2.4s var(--ease) infinite; }
+.pill__dot--off  { background: var(--app-text-subtle); }
+.pill__dot--warn { background: var(--app-warn); }
+.pill__dot--current { background: currentColor; }  /* inside idle's filled Record button */
+@keyframes pill-pulse { 50% { opacity: .5; } }
+.pill__spin { flex: 0 0 auto; width: 10px; height: 10px; border-radius: 50%;
+              border: 1.5px solid var(--app-border-hover);
+              border-top-color: var(--app-accent);
+              animation: pill-spin .8s linear infinite; }
+@keyframes pill-spin { to { transform: rotate(360deg); } }
 
 /* Icons — the shipping convention is the design (FEEDBACK-3). UI icons are
    monochrome line glyphs (the Lucide family in section-icons.ts): 16px,

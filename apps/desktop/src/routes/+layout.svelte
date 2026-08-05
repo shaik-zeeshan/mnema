@@ -1,5 +1,6 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
+  import RecordingPill from "$lib/components/RecordingPill.svelte";
   import { page } from "$app/stores";
   import { goto } from "$app/navigation";
   import { tick, type Snippet } from "svelte";
@@ -19,6 +20,7 @@
     stopCapture,
     subscribeRuntimeSources,
     toggleSourceSelected,
+    type SourceKey,
   } from "$lib/capture-controls.svelte";
   import { initTheme } from "$lib/theme.svelte";
   import { theme, persistAppearance } from "$lib/theme.svelte";
@@ -95,7 +97,6 @@
   let notificationsButtonEl = $state<HTMLButtonElement | null>(null);
   let notificationsPopoverEl = $state<HTMLDivElement | null>(null);
   let settingsButtonEl = $state<HTMLButtonElement | null>(null);
-  let restartingPrivacyCapture = $state(false);
   let shortcutsHelpOpen = $state(false);
   let shortcutsHelpPanelEl = $state<HTMLDivElement | null>(null);
   let shortcutsHelpCloseEl = $state<HTMLButtonElement | null>(null);
@@ -360,37 +361,6 @@
   const captureLoadingStop = $derived(captureControls.loadingStop);
   const captureLoadingPause = $derived(captureControls.loadingPause);
   const captureLoadingSettings = $derived(captureControls.loadingSettings);
-  const captureStatusLabel = $derived(captureControls.statusLabel);
-  const captureStatusModifier = $derived(captureControls.statusModifier);
-
-  // ── Pause / resume control ──────────────────────────────────────────────
-  // Pause is a *whole-session* control and must stay available even while an
-  // inactivity auto-pause has idled one or more sources: inactivity pausing is
-  // per-source (the session reports `is_inactivity_paused` when *any* source
-  // idles, even though others may still be recording), so it must not steal the
-  // user's ability to deliberately pause the entire session. This matches the
-  // pause/resume keyboard shortcut, which already keys off the user pause alone.
-  //
-  // The button reads "Resume" only when the *user* paused, or when a low-disk
-  // suspension (which the user cannot clear from here) holds the session — that
-  // is the one case the control is disabled. An inactivity pause leaves the
-  // button as an enabled "Pause" so the user can lock the whole session paused.
-  const showResume = $derived(
-    captureControls.isUserPaused || captureControls.isLowDiskSuspended,
-  );
-  const pauseDisabled = $derived(
-    captureLoadingPause ||
-      (captureControls.isLowDiskSuspended && !captureControls.isUserPaused),
-  );
-  const pauseButtonTitle = $derived(
-    captureControls.isUserPaused
-      ? "Resume recording"
-      : captureControls.isLowDiskSuspended
-        ? "Paused — free up disk space to resume recording"
-        : captureControls.isInactivityPaused
-          ? "Pause the whole session (recording auto-paused while you're away)"
-          : "Pause recording",
-  );
 
   // ── Per-source runtime indicators ──────────────────────────────────────
   // While a capture session is running, fetch `get_idle_debug` periodically
@@ -403,122 +373,6 @@
     return release;
   });
 
-  type SourceLane = {
-    key: "screen" | "microphone" | "systemAudio";
-    label: string;
-  };
-  type PrivacyVisualCaptureStatus = {
-    modifier: "retrying" | "restart-required";
-    label: string;
-    detail: string;
-  };
-  const sourceLanes: SourceLane[] = [
-    { key: "screen", label: "Screen" },
-    { key: "microphone", label: "Microphone" },
-    { key: "systemAudio", label: "System audio" },
-  ];
-
-  // While recording, each pill reflects the *live* runtime status of the
-  // source. While idle/stopped, each pill reflects whether that source is
-  // *selected* for the next session — clicking the pill toggles the
-  // corresponding `RecordingSettings` flag through the same Tauri command
-  // the settings page uses.
-  type LiveState = "running" | "paused" | "starting" | "off";
-  type SelectState = "selected" | "unselected";
-
-  function liveStateFor(key: SourceLane["key"]): LiveState {
-    const rs = captureControls.runtimeSources;
-    if (!rs) return "off";
-    const src = rs[key];
-    if (!src.requested) return "off";
-    if (src.paused) return "paused";
-    if (src.sessionActive && src.writerActive) return "running";
-    return "starting";
-  }
-  function selectStateFor(key: SourceLane["key"]): SelectState {
-    return sourceSelection.isSelected(key) ? "selected" : "unselected";
-  }
-
-  function liveTitleFor(lane: SourceLane, state: LiveState): string {
-    const verb =
-      state === "running"
-        ? "recording"
-        : state === "paused"
-          ? "paused"
-          : state === "starting"
-            ? "starting…"
-            : "off";
-    return `${lane.label}: ${verb}`;
-  }
-
-  function isPrivacySuspensionReason(reason: string | null): boolean {
-    return (
-      reason === "privacy_filter_apply_failed" ||
-      reason === "privacy_recovery_restart_required"
-    );
-  }
-
-  function isPrivacySuspendedSource(src: {
-    requested: boolean;
-    reason: string | null;
-  }): boolean {
-    return src.requested && isPrivacySuspensionReason(src.reason);
-  }
-
-  function formatSuspendedVisualSources(keys: SourceLane["key"][]): string {
-    const labels = keys.map((key) => {
-      if (key === "systemAudio") return "system audio";
-      return key;
-    });
-    if (labels.length === 0) return "visual capture";
-    if (labels.length === 1) return labels[0];
-    return `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`;
-  }
-
-  const privacyVisualCaptureStatus = $derived.by<PrivacyVisualCaptureStatus | null>(() => {
-    if (!isCapturing) return null;
-    const rs = captureControls.runtimeSources;
-    if (!rs) return null;
-
-    const suspendedSources: SourceLane["key"][] = [];
-    if (isPrivacySuspendedSource(rs.screen)) {
-      suspendedSources.push("screen");
-    }
-    if (isPrivacySuspendedSource(rs.systemAudio)) {
-      suspendedSources.push("systemAudio");
-    }
-    if (suspendedSources.length === 0) return null;
-
-    const reason = suspendedSources
-      .map((key) => rs[key].reason)
-      .find((value) => value === "privacy_recovery_restart_required")
-      ?? "privacy_filter_apply_failed";
-    const sources = formatSuspendedVisualSources(suspendedSources);
-    const suffix = rs.microphone.requested
-      ? " Microphone can keep recording."
-      : "";
-
-    if (reason === "privacy_recovery_restart_required") {
-      return {
-        modifier: "restart-required",
-        label: `Restart recording to resume ${sources}`,
-        detail: `Privacy filter recovery failed. Stop and start recording to resume ${sources}.${suffix}`,
-      };
-    }
-
-    return {
-      modifier: "retrying",
-      label: `Privacy filter failed; retrying ${sources}`,
-      detail: `Mnema stopped ${sources} because the privacy filter could not be applied. It is retrying recovery.${suffix}`,
-    };
-  });
-
-  function selectTitleFor(lane: SourceLane, state: SelectState): string {
-    return state === "selected"
-      ? `${lane.label}: enabled — click to skip on next recording`
-      : `${lane.label}: disabled — click to include in next recording`;
-  }
-
   const canUseGlobalShortcuts = $derived(isMainWindow && isMainRoute);
   const canToggleSourcesByShortcut = $derived(
     canUseGlobalShortcuts && !isCapturing && !captureLoadingSettings,
@@ -526,12 +380,6 @@
   const canToggleRecordingByShortcut = $derived(
     isCapturing ? !captureLoadingStop : !captureLoadingStart && !captureLoadingSettings,
   );
-
-  function sourceShortcutIdFor(key: SourceLane["key"]): GlobalShortcutId {
-    if (key === "screen") return "toggleSourceScreen";
-    if (key === "microphone") return "toggleSourceMicrophone";
-    return "toggleSourceSystemAudio";
-  }
 
   function shortcutDisplay(id: GlobalShortcutId): string {
     const binding = getEffectiveGlobalShortcut(id).bindings[0];
@@ -610,7 +458,7 @@
     await startCapture();
   }
 
-  async function toggleSourceShortcut(key: SourceLane["key"]): Promise<void> {
+  async function toggleSourceShortcut(key: SourceKey): Promise<void> {
     if (!canToggleSourcesByShortcut || sourceSelection.isSaving(key)) return;
     await toggleSourceSelected(key);
   }
@@ -621,21 +469,6 @@
       await resumeCapture();
     } else {
       await pauseCapture();
-    }
-  }
-
-  async function restartCaptureForPrivacyRecovery(): Promise<void> {
-    if (captureLoadingStart || captureLoadingStop || restartingPrivacyCapture || !isCapturing) return;
-    restartingPrivacyCapture = true;
-    try {
-      // stop/start funnel any failure into the shared capture-error dialog
-      // (capture-controls.svelte.ts) — so a failed restart is now visible.
-      await stopCapture();
-      if (!captureControls.isRunning) {
-        await startCapture();
-      }
-    } finally {
-      restartingPrivacyCapture = false;
     }
   }
 
@@ -958,217 +791,10 @@
   {#if showMainTitlebar}
   <header class="titlebar">
     <div class="titlebar__group titlebar__group--left">
-      {#if showMainTitlebar}
-        <span
-          class="titlebar__status titlebar__status--{captureStatusModifier}"
-          aria-live="polite"
-          use:tip={"Recording status"}
-        >
-          <span class="titlebar__status-dot" aria-hidden="true"></span>
-          <span class="titlebar__status-label">{captureStatusLabel}</span>
-        </span>
-        {#if isCapturing}
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--pause"
-            class:titlebar__record--resume={showResume}
-            onclick={showResume ? resumeCapture : pauseCapture}
-            disabled={pauseDisabled}
-            aria-busy={captureLoadingPause}
-            use:tip={pauseButtonTitle}
-            aria-label={pauseButtonTitle}
-          >
-            {#if captureLoadingPause}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingPause ? (showResume ? "Resuming…" : "Pausing…") : showResume ? "Resume" : "Pause"}</span>
-          </button>
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--stop"
-            onclick={stopCapture}
-            disabled={captureLoadingStop}
-            aria-busy={captureLoadingStop}
-            use:tip={`Stop recording (${shortcutDisplay("toggleRecording")})`}
-            aria-label="Stop recording"
-          >
-            {#if captureLoadingStop}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {:else}
-              <span class="titlebar__record-glyph titlebar__record-glyph--square" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingStop ? "Stopping…" : "Stop"}</span>
-          </button>
-        {:else}
-          <button
-            type="button"
-            class="titlebar__record titlebar__record--start"
-            onclick={startCapture}
-            disabled={captureLoadingStart || captureLoadingSettings}
-            aria-busy={captureLoadingStart || captureLoadingSettings}
-            use:tip={captureLoadingSettings ? "Preparing recording controls…" : `Start recording (${shortcutDisplay("toggleRecording")})`}
-            aria-label="Start recording"
-          >
-            {#if captureLoadingStart || captureLoadingSettings}
-              <span class="titlebar__record-spinner" aria-hidden="true"></span>
-            {:else}
-              <span class="titlebar__record-glyph" aria-hidden="true"></span>
-            {/if}
-            <span>{captureLoadingStart ? "Starting…" : captureLoadingSettings ? "Loading…" : "Record"}</span>
-          </button>
-        {/if}
-        {#snippet sourceIcon(key: SourceLane["key"])}
-          {#if key === "screen"}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="2" y="4" width="20" height="13" rx="2" />
-              <path d="M8 21h8" />
-              <path d="M12 17v4" />
-            </svg>
-          {:else if key === "microphone"}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <rect x="9" y="2.5" width="6" height="12" rx="3" />
-              <path d="M5.5 11a6.5 6.5 0 0 0 13 0" />
-              <path d="M12 17.5v3.5" />
-              <path d="M9 21h6" />
-            </svg>
-          {:else}
-            <svg
-              class="titlebar__source-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M11 5 6.5 9H3v6h3.5L11 19z" />
-              <path d="M15.5 8.5a5 5 0 0 1 0 7" />
-              <path d="M18.5 5.5a9 9 0 0 1 0 13" />
-            </svg>
-          {/if}
-        {/snippet}
-        {#each sourceLanes as lane (lane.key)}
-          {#if isCapturing}
-            {@const state = liveStateFor(lane.key)}
-            <span
-              class="titlebar__source titlebar__source--{lane.key} titlebar__source--{state}"
-              use:tip={liveTitleFor(lane, state)}
-              aria-label={liveTitleFor(lane, state)}
-              role="status"
-            >
-              {@render sourceIcon(lane.key)}
-              <span class="titlebar__source-state" aria-hidden="true">
-                {#if state === "running"}
-                  <span class="titlebar__source-dot"></span>
-                {:else if state === "paused"}
-                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                    <rect x="1" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                    <rect x="5" y="1" width="2" height="6" rx="0.5" fill="currentColor" />
-                  </svg>
-                {:else if state === "starting"}
-                  <span class="titlebar__source-ring"></span>
-                {:else}
-                  <span class="titlebar__source-slash"></span>
-                {/if}
-              </span>
-            </span>
-          {:else}
-            {@const state = selectStateFor(lane.key)}
-            <button
-              type="button"
-              class="titlebar__source titlebar__source--toggle titlebar__source--{lane.key} titlebar__source--{state}"
-              use:tip={`${selectTitleFor(lane, state)} (${shortcutDisplay(sourceShortcutIdFor(lane.key))})`}
-              aria-label={selectTitleFor(lane, state)}
-              aria-pressed={state === "selected"}
-              disabled={sourceSelection.isSaving(lane.key) || captureControls.loadingSettings}
-              onclick={() => toggleSourceSelected(lane.key)}
-            >
-              {@render sourceIcon(lane.key)}
-              <span class="titlebar__source-state" aria-hidden="true">
-                {#if state === "selected"}
-                  <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
-                    <path
-                      d="M1.5 4.2 3.2 5.9 6.5 2.5"
-                      fill="none"
-                      stroke="currentColor"
-                      stroke-width="1.6"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                {:else}
-                  <span class="titlebar__source-slash"></span>
-                {/if}
-              </span>
-            </button>
-          {/if}
-        {/each}
-        {#if privacyVisualCaptureStatus}
-          <span
-            class="titlebar__privacy-warning titlebar__privacy-warning--{privacyVisualCaptureStatus.modifier}"
-            use:tip={privacyVisualCaptureStatus.detail}
-            aria-label={privacyVisualCaptureStatus.detail}
-            aria-live="polite"
-            role="status"
-          >
-            <svg
-              class="titlebar__privacy-warning-icon"
-              width="12"
-              height="12"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M12 9v4" />
-              <path d="M12 17h.01" />
-              <path d="M10.3 3.9 2.4 17.5A2 2 0 0 0 4.1 20h15.8a2 2 0 0 0 1.7-2.5L13.7 3.9a2 2 0 0 0-3.4 0Z" />
-            </svg>
-            <span class="titlebar__privacy-warning-label">{privacyVisualCaptureStatus.label}</span>
-            {#if privacyVisualCaptureStatus.modifier === "restart-required"}
-              <button
-                type="button"
-                class="titlebar__privacy-warning-action"
-                use:tip={privacyVisualCaptureStatus.detail}
-                aria-label={privacyVisualCaptureStatus.detail}
-                aria-busy={restartingPrivacyCapture}
-                disabled={captureLoadingStart || captureLoadingStop || restartingPrivacyCapture}
-                onclick={restartCaptureForPrivacyRecovery}
-              >
-                {restartingPrivacyCapture ? "Restarting…" : "Restart"}
-              </button>
-            {/if}
-          </span>
-        {/if}
-      {/if}
+      <!-- The whole recording chrome — state pill + transport popover. It
+           replaced a six-control cluster (status chip, Record/Pause/Stop,
+           three source pills, privacy warning chip); see RecordingPill.svelte. -->
+      <RecordingPill platform={windowPlatform} />
     </div>
 
     <!-- Inert centre area carries the drag region + the Timeline⇄Insights
@@ -2283,16 +1909,32 @@
 
   /* Recording state pill — dot + elapsed + cost in one capsule. Recording red
      is a STATE, never an error: transient liveness tints via `--warn`, not
-     danger. The transport popover that hangs off it is slice 5. */
+     danger. RecordingPill.svelte is the one consumer; the pieces live here
+     because §6 owns the primitive's vocabulary. */
   :global(.pill) {
+    position: relative;
     display: inline-flex;
     align-items: center;
     gap: var(--gap-inline);
     height: var(--h-sm);
     padding: 0 var(--s-8);
+    border: 0;
     border-radius: var(--r-pill);
     background: var(--app-record-bg);
     box-shadow: 0 0 0 var(--hairline) var(--app-record-border);
+    cursor: default;
+  }
+  /* §4 wants a 28px hit target; the capsule is --h-sm (24px). Grow the target
+     with transparent padding rather than the visual box. */
+  :global(.pill)::after {
+    content: "";
+    position: absolute;
+    inset: -2px 0;
+  }
+  :global(.pill:focus-visible),
+  :global(.pill--open) {
+    outline: none;
+    box-shadow: var(--ring);
   }
   :global(.pill__t) {
     font: var(--w-regular) var(--t-ui) / 1 var(--app-font-mono);
@@ -2311,6 +1953,80 @@
   :global(.pill--warn) {
     background: var(--app-warn-bg);
     box-shadow: 0 0 0 var(--hairline) var(--app-warn-border);
+  }
+  :global(.pill--quiet.pill--open),
+  :global(.pill--warn.pill--open) {
+    box-shadow: var(--ring);
+  }
+
+  /* The one word the capsule carries: "Paused", "Low disk", "screen asleep".
+     Three of the five directions spell it sans/t-meta/muted; that is the
+     phase-1 neutral, per-direction skins are phase 2. */
+  :global(.pill__w) {
+    font: var(--w-medium) var(--t-meta) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
+    color: var(--app-text-muted);
+    white-space: nowrap;
+  }
+  /* The "Rec" rung: the word only appears once the timer has been dropped. */
+  :global(.pill__w--rung) {
+    display: none;
+  }
+  :global(.pill__w--info) {
+    color: var(--app-info);
+  }
+  :global(.pill__w--warn) {
+    color: var(--app-warn);
+  }
+  :global(.pill__t--dim) {
+    color: var(--app-text-subtle);
+  }
+  /* A quiet pill leads with its word ("Paused 2:14:07"); a live one leads with
+     the numbers ("2:14:07 screen asleep"). Ordering, not two markup branches. */
+  :global(.pill--quiet .pill__t) {
+    order: 1;
+  }
+
+  /* The dot never goes — it is the last rung of the degradation ladder. */
+  :global(.pill__dot) {
+    flex: 0 0 auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--app-record);
+  }
+  :global(.pill__dot--live) {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-record) 18%, transparent);
+    animation: pill-pulse 2.4s var(--ease) infinite;
+  }
+  :global(.pill__dot--off) {
+    background: var(--app-text-subtle);
+  }
+  :global(.pill__dot--warn) {
+    background: var(--app-warn);
+  }
+  /* Inside a filled button (idle's Record), the dot takes the button's ink. */
+  :global(.pill__dot--current) {
+    background: currentColor;
+  }
+  @keyframes pill-pulse {
+    50% {
+      opacity: 0.5;
+    }
+  }
+  :global(.pill__spin) {
+    flex: 0 0 auto;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 1.5px solid var(--app-border-hover);
+    border-top-color: var(--app-accent);
+    animation: pill-spin 0.8s linear infinite;
+  }
+  @keyframes pill-spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   :global(html) {
@@ -2780,13 +2496,21 @@
      and the WM can force widths well below the app's 640px minimum, so the row
      sheds progressively. Always-visible at every width: record/pause/stop, the
      surface toggle, the settings gear, and notifications-when-present. Combined
-     with the base `.titlebar__status-label` ellipsis (left cluster yields
+     with the state pill's degradation ladder (left cluster yields
      first) and `.titlebar { overflow: hidden }`, nothing can spill off-screen.
      Breakpoints are tuned to real content widths — the labelled row overflows
      below ~820px, which includes the 800px default window. */
 
-  /* Compact ≤820px: drop the Search word + kbd to an icon-only button, hide the
-     status text (the colored dot still conveys state), tighten the row gap. */
+  /* Ladder rung 1 (≤1000px): the cost readout drops first, so the 800×600 floor
+     always renders dot + elapsed — the one breakpoint all five directions draw. */
+  @media (max-width: 1000px) {
+    .titlebar :global(.pill__gb) {
+      display: none;
+    }
+  }
+
+  /* Compact ≤820px: drop the Search word + kbd to an icon-only button and
+     tighten the row gap. */
   @media (max-width: 820px) {
     .titlebar {
       gap: 6px;
@@ -2799,8 +2523,17 @@
       gap: 0;
       padding: 0 6px;
     }
-    .titlebar__status-label {
+  }
+
+  /* Ladder rung 2 (≤760px): the timer goes, the word takes its place. Below the
+     app's own 640px minimum this only happens under a tiling WM — the 800×600
+     floor must still show dot + elapsed, which every direction draws. */
+  @media (max-width: 760px) {
+    .titlebar :global(.pill__t) {
       display: none;
+    }
+    .titlebar :global(.pill__w--rung) {
+      display: inline;
     }
   }
 
@@ -2818,6 +2551,10 @@
     .titlebar__theme {
       display: none;
     }
+    /* Idle's Record button sheds its label to the dot glyph. */
+    .titlebar :global(.rec__record-label) {
+      display: none;
+    }
   }
 
   /* Tight ≤600px (incl. WM-forced sub-minimum widths): drop the source toggles
@@ -2825,352 +2562,22 @@
      shrink the surface toggle's button padding so Timeline/Insights still fit
      beside the record control and gear. */
   @media (max-width: 600px) {
-    /* `.titlebar`-prefixed to outrank the later base `.titlebar__source`
-       display rule. */
-    .titlebar .titlebar__source {
+    /* Ladder rung 4: dot alone. The dot never goes. */
+    .titlebar :global(.pill__w) {
       display: none;
+    }
+    .titlebar :global(.pill) {
+      padding: 0 var(--s-6);
     }
     .surface-toggle button {
       padding: 0 8px;
     }
   }
 
-  /* ── Recording status indicator ───────────────────────────── */
-  .titlebar__status {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 8px;
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--app-status-fg);
-    font-variant-numeric: tabular-nums;
-    /* Let the status pill yield first under width pressure (its label width
-       varies with state — "Recording" is far wider than "Idle"), so the row
-       self-compresses before anything overflows, at any width. */
-    min-width: 0;
-  }
-
-  /* Base ellipsis so the label can shrink at any width (not just at a
-     breakpoint); the ≤820px tier hides it entirely in favour of the dot. */
-  .titlebar__status-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .titlebar__status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-status-dot);
-    flex: 0 0 auto;
-  }
-
-  .titlebar__status--running {
-    color: var(--app-status-running-fg);
-    border-color: var(--app-status-running-border);
-  }
-  .titlebar__status--running .titlebar__status-dot {
-    background: var(--app-status-running-dot);
-    box-shadow: 0 0 0 3px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
-  }
-  .titlebar__status--paused {
-    color: var(--app-status-paused-fg);
-    border-color: var(--app-status-paused-border);
-  }
-  .titlebar__status--paused .titlebar__status-dot {
-    background: var(--app-status-paused-dot);
-    box-shadow: 0 0 0 3px var(--app-status-paused-dot-glow);
-  }
-
-  @keyframes titlebar-pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.55; }
-  }
-
+  /* Reduced motion: the pill's live dot and busy spinner hold still. */
   @media (prefers-reduced-motion: reduce) {
-    .titlebar__status--running .titlebar__status-dot,
-    .titlebar__source-dot {
-      animation: none;
-    }
-  }
-
-  /* ── Per-source recording pills ───────────────────────────────
-     One pill per requested capture source (screen / microphone /
-     system audio), rendered after the Record/Stop button. Each pill
-     pairs the source's icon with a status icon: a pulsing red dot
-     while live, pause bars while inactivity-paused, or a hollow ring
-     while the source is still spinning up. Sources not requested for
-     the current session aren't rendered. The pill chrome mirrors
-     `.titlebar__status` so the title bar stays visually coherent. */
-  .titlebar__source {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 8px;
-    height: 24px;
-    background: var(--app-status-bg);
-    border: 1px solid var(--app-status-border);
-    border-radius: 4px;
-    color: var(--app-status-fg);
-  }
-  .titlebar__source-icon {
-    display: block;
-    flex: 0 0 auto;
-  }
-  .titlebar__source-state {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 8px;
-    height: 8px;
-    line-height: 1;
-    flex: 0 0 auto;
-  }
-  .titlebar__source-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--app-status-running-dot);
-    box-shadow: 0 0 0 2px var(--app-status-running-dot-glow);
-    animation: titlebar-pulse 1.4s ease-in-out infinite;
-  }
-  .titlebar__source-ring {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    border: 1.5px solid currentColor;
-    box-sizing: border-box;
-    opacity: 0.7;
-  }
-  .titlebar__source--running {
-    color: var(--app-status-running-fg);
-    border-color: var(--app-status-running-border);
-  }
-  .titlebar__source--paused {
-    color: var(--app-status-paused-fg);
-    border-color: var(--app-status-paused-border);
-  }
-  .titlebar__source--starting {
-    color: var(--app-fg-muted);
-  }
-  .titlebar__source--off {
-    color: var(--app-fg-subtle);
-    opacity: 0.55;
-  }
-
-  /* ── Toggle mode (idle / not recording) ───────────────────── */
-  .titlebar__source--toggle {
-    font-family: inherit;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s, opacity 0.12s;
-  }
-  .titlebar__source--toggle:disabled {
-    cursor: progress;
-    opacity: var(--app-busy-opacity);
-  }
-  .titlebar__source--toggle.titlebar__source--selected {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-strong);
-    background: var(--app-surface-raised);
-  }
-  .titlebar__source--toggle.titlebar__source--unselected {
-    /* "Off" must still be legible: --app-fg-subtle at 0.7 opacity rendered the
-       glyph near-invisible (well under the 3:1 non-text floor). --app-text-subtle
-       (~4.9:1) at near-full opacity reads clearly as a disabled-but-present
-       source while staying dimmer than the selected --app-text-strong. */
-    color: var(--app-text-subtle);
-    border-color: var(--app-status-border);
-    background: var(--app-status-bg);
-    opacity: 0.9;
-  }
-  .titlebar__source--toggle:not(:disabled):hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-    background: var(--app-surface-hover);
-    opacity: 1;
-  }
-  .titlebar__source--toggle:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .titlebar__privacy-warning {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    max-width: min(380px, 34vw);
-    height: 22px;
-    padding: 3px 8px;
-    border-radius: 4px;
-    border: 1px solid var(--app-warn-border);
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-  }
-  .titlebar__privacy-warning--restart-required {
-    border-color: var(--app-danger-border);
-    background: var(--app-danger-bg-soft);
-    color: var(--app-danger-text);
-  }
-  .titlebar__privacy-warning-icon {
-    flex: 0 0 auto;
-  }
-  .titlebar__privacy-warning-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .titlebar__privacy-warning-action {
-    flex: 0 0 auto;
-    height: 16px;
-    padding: 0 6px;
-    border-radius: 3px;
-    border: 1px solid currentColor;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    font-size: var(--t-label);
-    font-weight: 800;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  .titlebar__privacy-warning-action:hover:not(:disabled) {
-    background: color-mix(in srgb, currentColor 14%, transparent);
-  }
-  .titlebar__privacy-warning-action:disabled {
-    cursor: progress;
-    opacity: var(--app-busy-opacity);
-  }
-
-  /* Diagonal slash glyph used when a source is unselected (idle) or
-     forcibly off (live). Drawn as a thin rotated bar so it reads as
-     "muted/skipped" without bringing in another SVG. */
-  .titlebar__source-slash {
-    width: 8px;
-    height: 1.5px;
-    background: currentColor;
-    border-radius: 1px;
-    transform: rotate(-45deg);
-    opacity: 0.85;
-  }
-
-  /* ── Record / Stop button ─────────────────────────────────── */
-  .titlebar__record {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 4px 10px;
-    border-radius: 4px;
-    border: 1px solid transparent;
-    font-family: inherit;
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, opacity 0.12s, color 0.12s;
-  }
-  .titlebar__record:disabled {
-    opacity: var(--app-disabled-opacity);
-    cursor: not-allowed;
-  }
-  .titlebar__record:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-  .titlebar__record:not(:disabled):active {
-    transform: translateY(0.5px);
-    filter: brightness(0.92);
-  }
-  .titlebar__record--pause {
-    background: var(--app-surface-raised);
-    color: var(--app-text);
-    border-color: var(--app-border-strong);
-  }
-  .titlebar__record--pause:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-  .titlebar__record--resume {
-    background: var(--app-warn-bg);
-    color: var(--app-warn);
-    border-color: var(--app-warn-border);
-  }
-  .titlebar__record--resume:not(:disabled):hover {
-    background: color-mix(in srgb, var(--app-warn-bg) 74%, var(--app-warn) 26%);
-    color: var(--app-text-strong);
-    border-color: var(--app-warn-strong);
-  }
-  .titlebar__record--start {
-    background: var(--app-record-start-bg);
-    color: var(--app-record-start-fg);
-    border-color: var(--app-record-start-border);
-  }
-  .titlebar__record--start:not(:disabled):hover {
-    background: var(--app-record-start-bg-hover);
-    color: var(--app-record-start-fg-hover);
-    border-color: var(--app-record-start-border-hover);
-  }
-  .titlebar__record--stop {
-    background: var(--app-record-stop-bg);
-    color: var(--app-record-stop-fg);
-    border-color: var(--app-record-stop-border);
-  }
-  .titlebar__record--stop:not(:disabled):hover {
-    background: var(--app-record-stop-bg-hover);
-    border-color: var(--app-record-stop-border-hover);
-  }
-  .titlebar__record-glyph {
-    display: inline-block;
-    width: 7px;
-    height: 7px;
-    background: currentColor;
-    border-radius: 50%;
-    color: var(--app-record-glyph-start);
-  }
-  .titlebar__record--stop .titlebar__record-glyph {
-    color: var(--app-record-glyph-stop);
-  }
-  .titlebar__record-glyph--square {
-    border-radius: 1px;
-  }
-  /* In-flight spinner for the highest-stakes async actions (record / stop /
-     pause) so the button reads "busy", not frozen, while the lifecycle call is
-     outstanding. Inherits the button's text color via currentColor. */
-  .titlebar__record-spinner {
-    display: inline-block;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    border: 1.5px solid currentColor;
-    border-top-color: transparent;
-    animation: titlebar-spin 0.7s linear infinite;
-    flex: 0 0 auto;
-  }
-  @keyframes titlebar-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .titlebar__record-spinner {
+    :global(.pill__dot--live),
+    :global(.pill__spin) {
       animation: none;
     }
   }

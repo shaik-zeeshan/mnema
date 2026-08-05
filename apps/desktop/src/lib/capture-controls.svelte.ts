@@ -6,8 +6,10 @@ import { humanizeError } from "$lib/format-error";
 import type {
   CaptureSession,
   GetPermissionsResponse,
+  PermissionsMap,
   RecordingSettings,
   RecordingSettingsDomainUpdateResponse,
+  SourceSessions,
 } from "$lib/types";
 import type {
   IdleDebugInfo,
@@ -23,6 +25,8 @@ const _state = $state<{
   bootstrapped: boolean;
   sessionGeneration: number;
   runtimeSources: RuntimeSourcesStatus | null;
+  idleMs: number;
+  permissions: PermissionsMap | null;
 }>({
   recordingSettings: null,
   loadingStart: false,
@@ -32,6 +36,8 @@ const _state = $state<{
   bootstrapped: false,
   sessionGeneration: 0,
   runtimeSources: null,
+  idleMs: 0,
+  permissions: null,
 });
 
 const RECORDING_SETTINGS_CHANGED_EVENT = "recording_settings_changed";
@@ -92,40 +98,26 @@ export const captureControls = {
   get isLowDiskSuspended(): boolean {
     return captureSession.value?.isLowDiskSuspended === true;
   },
-  get statusLabel(): string {
-    if (captureControls.isRunning) {
-      // The low-disk liveness suspension keeps the session running, so this
-      // specific label takes precedence over the generic "Paused" (ADR 0040).
-      if (captureControls.isLowDiskSuspended) {
-        return "Paused — low disk";
-      }
-      // Differentiate WHY recording is paused so the pill explains itself:
-      // a manual pause vs. an automatic inactivity pause read very differently
-      // to the user. Low-disk keeps precedence above.
-      if (captureControls.isUserPaused) {
-        return "Paused — manual";
-      }
-      if (captureControls.isInactivityPaused) {
-        return "Paused — inactive";
-      }
-      return captureControls.paused ? "Paused" : "Recording";
-    }
-    // "Stopped" and "Idle" are visually identical (both render with the
-    // 'idle' modifier), so the copy is unified to match the single visual
-    // state rather than implying a distinction the chrome never shows.
-    return "Idle";
-  },
-  get statusModifier(): "idle" | "running" | "paused" {
-    if (captureControls.isRunning) {
-      return captureControls.paused ? "paused" : "running";
-    }
-    return "idle";
-  },
   get followTimelineLive(): boolean {
     return _state.recordingSettings?.followTimelineLive === true;
   },
   get runtimeSources(): RuntimeSourcesStatus | null {
     return _state.runtimeSources;
+  },
+  /** Per-source start stamps — the state pill's elapsed clock reads the earliest. */
+  get sourceSessions(): SourceSessions | null {
+    return captureSession.value?.sourceSessions ?? null;
+  },
+  /** How long the activity detector has seen nothing; drives "Idle 12m". */
+  get idleMs(): number {
+    return _state.idleMs;
+  },
+  /**
+   * Last-read TCC answers. Only hard `denied`/`restricted` are facts — system
+   * audio's `possibly_blocked` is an inference with no API behind it (ADR 0052).
+   */
+  get permissions(): PermissionsMap | null {
+    return _state.permissions;
   },
 };
 
@@ -141,6 +133,7 @@ export async function bootstrapCaptureControls(): Promise<void> {
     if (perm.session && _state.sessionGeneration === gen) {
       setSession(perm.session);
     }
+    _state.permissions = perm.permissions;
     _state.recordingSettings = settings;
   } catch (err) {
     reportCaptureError(err);
@@ -176,6 +169,7 @@ function applyCaptureSession(session: CaptureSession): void {
     void refreshRuntimeSources();
   } else {
     _state.runtimeSources = null;
+    _state.idleMs = 0;
   }
 }
 
@@ -257,6 +251,7 @@ export async function resyncCaptureSession(): Promise<void> {
   try {
     const result = await invoke<GetPermissionsResponse>("get_capture_permissions");
     if (_state.sessionGeneration !== gen) return;
+    _state.permissions = result.permissions;
     if (result.session) setSession(result.session);
   } catch {
     // Best-effort refresh only.
@@ -275,15 +270,18 @@ let _runtimeRefCount = 0;
 async function refreshRuntimeSources(): Promise<void> {
   if (!captureControls.isRunning) {
     _state.runtimeSources = null;
+    _state.idleMs = 0;
     return;
   }
   try {
     const info = await invoke<IdleDebugInfo>("get_idle_debug");
     if (!captureControls.isRunning) {
       _state.runtimeSources = null;
+      _state.idleMs = 0;
       return;
     }
     _state.runtimeSources = info.runtimeSources;
+    _state.idleMs = info.effectiveIdleMs;
   } catch {
     // Best-effort; keep last snapshot.
   }
@@ -309,6 +307,7 @@ export function subscribeRuntimeSources(): () => void {
       clearInterval(_runtimePollHandle);
       _runtimePollHandle = null;
       _state.runtimeSources = null;
+      _state.idleMs = 0;
     }
   };
 }
