@@ -12,6 +12,8 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import Combobox from "$lib/components/Combobox.svelte";
   import Stepper from "$lib/components/Stepper.svelte";
+  import TranscriptionModelPicker from "./TranscriptionModelPicker.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
@@ -48,7 +50,10 @@
 
   // Controller derived selectors.
   const transcriptionProviderOptions = $derived(c.transcriptionProviderOptions);
-  const transcriptionModelOptions = $derived(c.transcriptionModelOptions);
+  // The instrument draws every model of the selected provider as a row, so it
+  // takes the statuses themselves — the Combobox's flattened label list has no
+  // size, no management kind and no download to price.
+  const selectedTranscriptionModels = $derived(c.selectedTranscriptionModels);
   const selectedTranscriptionModel = $derived(c.selectedTranscriptionModel);
   const selectedAppleSpeechPermissionStatus = $derived(c.selectedAppleSpeechPermissionStatus);
   const selectedAppleSpeechNeedsPermission = $derived(c.selectedAppleSpeechNeedsPermission);
@@ -222,14 +227,18 @@
 
   <SettingRow label="Model" full>
     {#snippet control()}
-      <Combobox
-        value={rec.draftTranscriptionModelId ?? "__os_managed__"}
-        onValueChange={chooseTranscriptionModel}
-        searchPlaceholder="Search models…"
-        options={transcriptionModelOptions.length > 0 ? transcriptionModelOptions : [
-          { value: rec.draftTranscriptionModelId ?? "__os_managed__", label: "Loading model options" },
-        ]}
-      />
+      <!-- INSTRUMENT 6 of 6 — the model picker. It replaces a Combobox whose
+           labels ("large-v3 · Installed") said nothing about what the choice
+           costs this Mac. Same call on select, same sentinel. -->
+      {#if selectedTranscriptionModels.length > 0}
+        <TranscriptionModelPicker
+          models={selectedTranscriptionModels}
+          selectedModelId={rec.draftTranscriptionModelId}
+          onselect={chooseTranscriptionModel}
+        />
+      {:else}
+        <p class="group-hint">Loading model options…</p>
+      {/if}
     {/snippet}
   </SettingRow>
 
@@ -365,23 +374,23 @@
         {#if transcriptionModelError}
           <p class="group-hint group-hint--warn" role="alert">Failed to load model status: {transcriptionModelError}</p>
         {:else if selectedTranscriptionModel}
-          <div class="model-status" class:model-status--available={selectedTranscriptionModel.available}>
-            <div>
-              <div class="model-status__title">{selectedTranscriptionModel.displayName}</div>
-              <div class="model-status__meta">{transcriptionStatusLabel(selectedTranscriptionModel)}</div>
-            </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedTranscriptionModel.available}
-            >{selectedTranscriptionModel.available ? "available" : "unavailable"}</span>
-          </div>
+          <StatusLine
+            title={selectedTranscriptionModel.displayName}
+            meta={transcriptionStatusLabel(selectedTranscriptionModel)}
+            ok={selectedTranscriptionModel.available}
+          />
           <p class="group-hint">{selectedTranscriptionModel.description}</p>
           {#if selectedAppleSpeechPermissionStatus}
-            <div class="permission-callout" class:permission-callout--ok={selectedAppleSpeechPermissionStatus === "available"}>
-              <div class="permission-callout__copy">
-                <span class="permission-callout__eyebrow">Apple Speech status</span>
-                <strong>{appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}</strong>
-                <p>{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
+            <div class="tx-permission">
+              <div class="tx-permission__copy">
+                <StatusLine
+                  title={appleSpeechPermissionLabel(selectedAppleSpeechPermissionStatus)}
+                  meta="Apple Speech"
+                  ok={selectedAppleSpeechPermissionStatus === "available"}
+                  okLabel="granted"
+                  offLabel="not granted"
+                />
+                <p class="group-hint">{appleSpeechPermissionHint(selectedAppleSpeechPermissionStatus)}</p>
               </div>
               {#if selectedAppleSpeechNeedsPermission}
                 {#if selectedAppleSpeechPermissionStatus === "permission_not_determined"}
@@ -461,7 +470,7 @@
           </div>
           <p class="group-hint">Removes app-managed transcription model files except the model selected above.</p>
           {#if deleteUnusedTranscriptionModelsMessage}
-            <div class="cleanup-result" aria-live="polite">
+            <div class="tx-cleanup" aria-live="polite">
               <strong>{deleteUnusedTranscriptionModelsMessage}</strong>
               {#if deletedUnusedTranscriptionModelLabels.length > 0}
                 <p>Deleted:</p>
@@ -519,4 +528,46 @@
     word-break: break-all;
   }
 
+  /* Apple Speech permission: was a dashed warn-bordered callout. Direction 05
+     spends its one bordered container on the window ring, so the state lives
+     in the StatusLine's chip and the block is a plain row with its action. */
+  .tx-permission {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--s-12);
+    width: 100%;
+  }
+
+  .tx-permission__copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  /* Cleanup result: a fill, not a bordered card — depth is a surface step. */
+  .tx-cleanup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    font-size: var(--t-meta);
+    line-height: 1.45;
+    color: var(--app-text);
+  }
+
+  .tx-cleanup p {
+    margin: 0;
+    color: var(--app-text-muted);
+  }
+
+  .tx-cleanup ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--app-text-muted);
+  }
 </style>

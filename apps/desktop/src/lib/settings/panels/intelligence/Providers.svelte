@@ -11,6 +11,7 @@
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import IconCheck from "~icons/lucide/check";
   import IconAlert from "~icons/lucide/triangle-alert";
@@ -68,6 +69,19 @@
   const saveAiProviderKey = (p: string) => aiRuntime.saveAiProviderKey(p);
   const clearAiProviderKey = (p: string) => aiRuntime.clearAiProviderKey(p);
   const runAiRuntimeTestConnection = () => aiRuntime.runAiRuntimeTestConnection();
+
+  // The runtime status sub-line, composed once so the flat status row takes a
+  // string instead of a block of markup.
+  const runtimeMeta = $derived.by(() => {
+    if (aiRuntimeStatusLoading) return "Checking providers…";
+    if (aiRuntimeStatus?.available) {
+      const model = aiRuntimeStatus.defaultModel
+        ? `${aiProviderLabelById(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
+        : "(none)";
+      return `Default model ${model} is configured and reachable.`;
+    }
+    return aiRuntimeReasonLabel(aiRuntimeStatus?.reason);
+  });
 </script>
 
 <SettingGroup
@@ -93,7 +107,7 @@
       />
     {/snippet}
     {#snippet control()}
-      <div class="privacy-disclosure">
+      <div class="disclosure">
         <p>A cloud provider receives redacted capture text over HTTPS to reason about it — continuous outbound egress and per-token cost billed to your own key.</p>
         <p>A local runtime (Ollama or Llamafile) runs entirely on this machine — nothing is sent anywhere and no API key is needed.</p>
       </div>
@@ -120,7 +134,7 @@
         {:else}
           <ul class="provider-list">
             {#each rec.draftAiProviders as provider (provider.id)}
-              <li class="provider-row">
+              <li class="prov-card">
                 <div class="provider-row__head">
                   <span class="provider-row__name">{aiProviderInstanceLabel(provider)}</span>
                   <span class="provider-row__tag">{isCloudAiProviderKind(provider.kind) ? "cloud" : "local"}</span>
@@ -242,9 +256,9 @@
           <p class="error-text" role="alert">{aiProviderRemovalError}</p>
         {/if}
         {#if anyCloudAiProviderConnected}
-          <div class="cloud-egress-disclosure" role="note">
-            <span class="cloud-egress-disclosure__icon" aria-hidden="true"><IconAlert /></span>
-            <div class="cloud-egress-disclosure__body">
+          <div class="prov-egress" role="note">
+            <span class="prov-egress__icon" aria-hidden="true"><IconAlert /></span>
+            <div class="prov-egress__body">
               <strong>Cloud egress consent</strong>
               <p>
                 With a cloud provider connected and AI features on, <em>redacted</em> OCR and
@@ -311,26 +325,11 @@
   <SettingRow label="AI runtime" full divider={false}>
     {#snippet control()}
       <div class="prov-stack">
-        <div class="model-status" class:model-status--available={aiRuntimeStatus?.available}>
-          <div>
-            <div class="model-status__title">{aiRuntimeStatus?.available ? "AI runtime is ready" : "AI runtime isn’t ready yet"}</div>
-            <div class="model-status__meta">
-              {#if aiRuntimeStatusLoading}
-                Checking providers…
-              {:else if aiRuntimeStatus?.available}
-                Default model {aiRuntimeStatus.defaultModel
-                  ? `${aiProviderLabelById(aiRuntimeStatus.defaultModel.provider)} · ${aiRuntimeStatus.defaultModel.model}`
-                  : "(none)"} is configured and reachable.
-              {:else}
-                {aiRuntimeReasonLabel(aiRuntimeStatus?.reason)}
-              {/if}
-            </div>
-          </div>
-          <span
-            class="model-status__pill"
-            class:model-status__pill--ok={aiRuntimeStatus?.available}
-          >{aiRuntimeStatus?.available ? "available" : "unavailable"}</span>
-        </div>
+        <StatusLine
+          title={aiRuntimeStatus?.available ? "AI runtime is ready" : "AI runtime isn’t ready yet"}
+          meta={runtimeMeta}
+          ok={!!aiRuntimeStatus?.available}
+        />
         {#if aiRuntimeStatusError}
           <p class="error-text" role="alert">{aiRuntimeStatusError}</p>
         {/if}
@@ -356,7 +355,7 @@
           verifies that provider's key/endpoint even while AI features are off.
         </p>
         {#if aiRuntimeTestResult}
-          <div class="cleanup-result" aria-live="polite">
+          <div class="prov-result" aria-live="polite">
             <strong>{aiRuntimeTestResult.message || "Connection succeeded."}</strong>
             <p>Provider: {aiProviderLabelById(aiRuntimeTestResult.provider)} · Model: {aiRuntimeTestResult.model || "(none)"}</p>
             {#if aiRuntimeTestResult.rawJson}
@@ -389,4 +388,83 @@
     width: 100%;
   }
 
+  /* ── de-bordered blocks ───────────────────────────────────────────────────
+     Direction 05's ceiling for a settings window is ONE bordered container —
+     the window ring. Everything below used to be a bordered card; each is now
+     a surface step (a fill), which is the only depth this direction spends. */
+
+  .disclosure {
+    display: grid;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+  }
+
+  .disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: var(--t-meta);
+    line-height: 1.5;
+  }
+
+  /* One connected provider and its fields. */
+  .prov-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    padding: var(--s-12);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+  }
+
+  /* Cloud egress consent keeps its warn tint — it is a disclosure about data
+     leaving the machine — but carries it as a fill, not a frame. */
+  .prov-egress {
+    display: flex;
+    gap: var(--s-8);
+    align-items: flex-start;
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: color-mix(in srgb, var(--app-warn) 10%, transparent);
+  }
+
+  .prov-egress__icon {
+    display: inline-flex;
+    align-items: center;
+    color: var(--app-warn);
+    flex: 0 0 auto;
+  }
+
+  .prov-egress__body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-4);
+    min-width: 0;
+  }
+
+  .prov-egress__body p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: var(--t-meta);
+    line-height: 1.5;
+  }
+
+  /* Test-connection result. */
+  .prov-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    font-size: var(--t-meta);
+    line-height: 1.45;
+    color: var(--app-text);
+  }
+
+  .prov-result p {
+    margin: 0;
+    color: var(--app-text-muted);
+  }
 </style>

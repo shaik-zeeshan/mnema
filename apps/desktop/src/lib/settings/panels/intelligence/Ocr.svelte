@@ -15,8 +15,8 @@
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
-  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
-  import { backlogPhrase } from "$lib/settings/state/system-facts";
+  import OcrDutyMeter from "./OcrDutyMeter.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
@@ -56,13 +56,8 @@
   const cancelSelectedOcrModelDownload = () => c.cancelSelectedOcrModelDownload();
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
 
-  // G8: the processing row's real denominator — how much screen capture is
-  // still waiting for OCR right now. Deliberately no "finishes in N minutes":
-  // there is no measured throughput here, and G8 bans invented ETAs.
-  void systemFacts.ensureLoaded();
-  const ocrBacklogHint = $derived(
-    backlogPhrase(systemFacts.value?.ocrBacklog ?? null, "captured frame"),
-  );
+  // The backlog denominator (G8) moved into the duty-cycle instrument, which is
+  // the face that has to answer for it.
 </script>
 
 <SettingGroup
@@ -88,9 +83,10 @@
       <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />
     {/snippet}
     {#snippet control()}
-      {#if ocrBacklogHint}
-        <p class="group-hint">{ocrBacklogHint}</p>
-      {/if}
+      <!-- INSTRUMENT 4 of 6 — the OCR duty cycle. It sits under the switch that
+           turns it on, because the switch is what starts the cycle; the backlog
+           count it used to state on its own lives in the readout now. -->
+      <OcrDutyMeter idle={!rec.draftOcrEnabled} />
     {/snippet}
   </SettingRow>
 
@@ -252,16 +248,11 @@
         {#if ocrModelError}
           <p class="group-hint group-hint--warn">Failed to load OCR model status: {ocrModelError}</p>
         {:else if selectedOcrModel}
-          <div class="model-status" class:model-status--available={selectedOcrModel.available}>
-            <div>
-              <div class="model-status__title">{selectedOcrModel.displayName}</div>
-              <div class="model-status__meta">{ocrStatusLabel(selectedOcrModel)}</div>
-            </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedOcrModel.available}
-            >{selectedOcrModel.available ? "available" : "unavailable"}</span>
-          </div>
+          <StatusLine
+            title={selectedOcrModel.displayName}
+            meta={ocrStatusLabel(selectedOcrModel)}
+            ok={selectedOcrModel.available}
+          />
           <p class="group-hint">{selectedOcrModel.description}</p>
           {#if selectedOcrModel.runtimeMessage}
             <p class="group-hint group-hint--warn"><strong>Runtime:</strong> {selectedOcrModel.runtimeMessage}</p>
@@ -323,7 +314,7 @@
           </div>
           <p class="group-hint">Removes app-managed OCR model files except the model selected above.</p>
           {#if deleteUnusedOcrModelsMessage}
-            <div class="cleanup-result" aria-live="polite">
+            <div class="ocr-cleanup" aria-live="polite">
               <strong>{deleteUnusedOcrModelsMessage}</strong>
               {#if deletedUnusedOcrModelLabels.length > 0}
                 <p>Deleted:</p>
@@ -410,4 +401,27 @@
     word-break: break-all;
   }
 
+  /* Cleanup result: a fill, not a bordered card — depth is a surface step. */
+  .ocr-cleanup {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    font-size: var(--t-meta);
+    line-height: 1.45;
+    color: var(--app-text);
+  }
+
+  .ocr-cleanup p {
+    margin: 0;
+    color: var(--app-text-muted);
+  }
+
+  .ocr-cleanup ul {
+    margin: 0;
+    padding-left: 18px;
+    color: var(--app-text-muted);
+  }
 </style>

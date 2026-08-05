@@ -310,13 +310,19 @@
     gap: 12px;
     width: 100%;
   }
+  /* One connector list = one FILL with hairline row separators, the same
+     anatomy as every stock group in this direction. It used to be a stack of
+     bordered cards; a connector is a row, not a card, and the settings
+     window's ceiling is one bordered container (the window ring). */
   .mcp-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
     margin: 0;
     padding: 0;
     list-style: none;
+    border-radius: var(--r-lg);
+    background: var(--app-surface-subtle);
+    overflow: hidden;
   }
   .mcp-row {
     display: flex;
@@ -324,8 +330,16 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border: 1px solid var(--settings-border, rgba(255, 255, 255, 0.1));
-    border-radius: 8px;
+    position: relative;
+  }
+  .mcp-row + .mcp-row::before {
+    content: "";
+    position: absolute;
+    left: 12px;
+    right: 0;
+    top: 0;
+    height: var(--hairline);
+    background: var(--app-border);
   }
   /* Just-added row flash (mockup row-flash), cleared on animationend. */
   .mcp-row--new {

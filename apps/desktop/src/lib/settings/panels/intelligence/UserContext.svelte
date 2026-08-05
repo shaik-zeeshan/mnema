@@ -9,6 +9,7 @@
   import Segmented from "$lib/components/Segmented.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ButtonSpinner from "$lib/settings/ui/ButtonSpinner.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import { formatLastDerived, distillationWithheldLine } from "$lib/settings/state/user-context.svelte";
@@ -40,6 +41,21 @@
   // flag, so the ReloadButton would otherwise stay enabled and be double-fireable.
   // Track a local flag and feed it to the button's `busy` prop (which both spins
   // and disables) so rapid double-clicks are hard-prevented, not just debounced.
+  // The status sub-line, composed once so the flat StatusLine takes a string
+  // rather than a block of markup. Counts are real reads; "Loading…" is the
+  // only stand-in, and only before the first read lands.
+  const statusMeta = $derived.by(() => {
+    const s = userContextStatus;
+    if (!s) return "Loading…";
+    const parts = [
+      `${s.activityCount} ${s.activityCount === 1 ? "Activity" : "Activities"}`,
+      `${s.conclusionCount} ${s.conclusionCount === 1 ? "Conclusion" : "Conclusions"}`,
+      `last run ${formatLastDerived(s.lastDerivedAtMs)}`,
+    ];
+    if (!s.engineAvailable) parts.push(aiRuntimeReasonLabel(s.reason));
+    return parts.join(" · ");
+  });
+
   let refreshing = $state(false);
   async function refreshUserContext() {
     if (refreshing) return;
@@ -66,7 +82,8 @@
       <Switch bind:checked={rec.draftUserContextEnabled} ariaLabel="Derive context continuously" />
     {/snippet}
     {#snippet control()}
-      <div class="privacy-disclosure">
+      <!-- Flat consent disclosure: same weight, no bordered card. -->
+      <div class="disclosure">
         <p>While on, the default model runs over your redacted screen text and transcripts as a background trickle to derive Activities and Conclusions. With a cloud default that means continuous outbound egress billed to your key; a local default keeps everything on this machine.</p>
         <p>The derived understanding deliberately outlives raw-capture retention. Turning this off pauses derivation; it does not erase what was already learned — use Wipe User Context below for that.</p>
       </div>
@@ -76,36 +93,13 @@
   <SettingRow label="Derivation status" full>
     {#snippet control()}
       <div class="uc-stack">
-        <div
-          class="model-status"
-          class:model-status--available={userContextStatus?.engineAvailable}
-        >
-          <div>
-            <div class="model-status__title">
-              {userContextStatus?.engineAvailable ? "Deriving Activities" : "Derivation paused"}
-            </div>
-            <div class="model-status__meta">
-              {#if userContextStatus}
-                {userContextStatus.activityCount}
-                {userContextStatus.activityCount === 1 ? "Activity" : "Activities"} ·
-                {userContextStatus.conclusionCount}
-                {userContextStatus.conclusionCount === 1 ? "Conclusion" : "Conclusions"} ·
-                last run {formatLastDerived(userContextStatus.lastDerivedAtMs)}
-                {#if !userContextStatus.engineAvailable}
-                  · {aiRuntimeReasonLabel(userContextStatus.reason)}
-                {/if}
-              {:else}
-                Loading…
-              {/if}
-            </div>
-          </div>
-          <span
-            class="model-status__pill"
-            class:model-status__pill--ok={userContextStatus?.engineAvailable}
-          >
-            {userContextStatus?.engineAvailable ? "active" : "paused"}
-          </span>
-        </div>
+        <StatusLine
+          title={userContextStatus?.engineAvailable ? "Deriving Activities" : "Derivation paused"}
+          meta={statusMeta}
+          ok={!!userContextStatus?.engineAvailable}
+          okLabel="active"
+          offLabel="paused"
+        />
 
         {#if userContextStatus?.backfilling}
           <p class="group-hint" aria-live="polite">
@@ -256,5 +250,21 @@
     flex-direction: column;
     gap: 10px;
     width: 100%;
+  }
+
+  /* Flat consent disclosure — same copy, no bordered card. */
+  .disclosure {
+    display: grid;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+  }
+
+  .disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: var(--t-meta);
+    line-height: 1.5;
   }
 </style>

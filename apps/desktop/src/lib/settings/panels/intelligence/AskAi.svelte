@@ -10,6 +10,7 @@
   import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import {
     ASK_AI_DEFAULT_TOOL_CALL_LIMIT,
@@ -55,7 +56,9 @@
       <Switch bind:checked={rec.draftAskAiEnabled} ariaLabel="Enable Ask AI" />
     {/snippet}
     {#snippet control()}
-      <div class="privacy-disclosure">
+      <!-- The consent disclosure keeps its weight but loses its border: a fill
+           is a surface step, a border is a container. -->
+      <div class="disclosure">
         <p>Ask AI can answer with redacted screen text, audio transcripts, and timeline results from your retained history after redaction.</p>
         <p>Questions and the redacted context needed to answer them run through the providers configured above — a cloud provider with your own key, or a local model that never leaves this machine.</p>
       </div>
@@ -154,16 +157,11 @@
             Optional override for Quick Recall and Chat. "Global default model" follows the default chosen in Providers; a pinned chat thread still wins over this.
           </p>
         {/if}
-        <div class="model-status" class:model-status--available={askAiAvailable}>
-          <div>
-            <div class="model-status__title">{askAiAvailable ? "Ask AI is ready to answer" : "Ask AI isn’t ready yet"}</div>
-            <div class="model-status__meta">{askAiStatusDetail}</div>
-          </div>
-          <span
-            class="model-status__pill"
-            class:model-status__pill--ok={askAiAvailable}
-          >{askAiAvailable ? "available" : "unavailable"}</span>
-        </div>
+        <StatusLine
+          title={askAiAvailable ? "Ask AI is ready to answer" : "Ask AI isn’t ready yet"}
+          meta={askAiStatusDetail}
+          ok={askAiAvailable}
+        />
         {#if askAiAvailabilityError}
           <p class="error-text" role="alert">{askAiAvailabilityError}</p>
         {/if}
@@ -188,5 +186,21 @@
     flex-direction: column;
     gap: 12px;
     width: 100%;
+  }
+
+  /* Flat consent disclosure — same copy, no bordered card. */
+  .disclosure {
+    display: grid;
+    gap: var(--s-6);
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+  }
+
+  .disclosure p {
+    margin: 0;
+    color: var(--app-text-muted);
+    font-size: var(--t-meta);
+    line-height: 1.5;
   }
 </style>

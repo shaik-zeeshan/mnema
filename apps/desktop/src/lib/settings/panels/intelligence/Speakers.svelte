@@ -11,6 +11,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
@@ -63,25 +64,27 @@
 
   <SettingRow label="Speaker separation" full>
     {#snippet control()}
-      <div class="speaker-settings-hero">
-        <div>
-          <span class="group-label">Transcript speakers</span>
-          <h3>Split the room before naming anyone.</h3>
-          <p>Speaker separation runs locally after microphone transcription. Recognition uses only confirmed Person voice embeddings stored in this save directory.</p>
-        </div>
-        <div class="speaker-settings-hero__toggles">
-          <Switch
-            bind:checked={rec.draftSpeakerSeparateSpeakers}
-            label="Separate speakers in transcripts"
-            description="Queue local diarization after successful microphone transcription"
-          />
-          <Switch
-            bind:checked={rec.draftSpeakerRecognizeSavedPeople}
-            disabled={!rec.draftSpeakerSeparateSpeakers}
-            label="Recognize saved people"
-            description="Opt in to matching against confirmed local Person voice profiles"
-          />
-        </div>
+      <!-- Was a gradient-washed bordered hero — the loudest object on the page
+           for a pair of switches with nothing to meter. Direction 05 spends
+           loudness on instruments only, so this is two quiet rows and a line of
+           prose. -->
+      <div class="speaker-toggles">
+        <p class="group-hint">
+          Speaker separation runs locally after microphone transcription.
+          Recognition uses only confirmed Person voice embeddings stored in this
+          save directory.
+        </p>
+        <Switch
+          bind:checked={rec.draftSpeakerSeparateSpeakers}
+          label="Separate speakers in transcripts"
+          description="Queue local diarization after successful microphone transcription"
+        />
+        <Switch
+          bind:checked={rec.draftSpeakerRecognizeSavedPeople}
+          disabled={!rec.draftSpeakerSeparateSpeakers}
+          label="Recognize saved people"
+          description="Opt in to matching against confirmed local Person voice profiles"
+        />
       </div>
     {/snippet}
   </SettingRow>
@@ -125,16 +128,11 @@
         {#if speakerModelError}
           <p class="group-hint group-hint--warn">Failed to load speaker model status: {speakerModelError}</p>
         {:else if selectedSpeakerModel}
-          <div class="model-status" class:model-status--available={selectedSpeakerModel.available}>
-            <div>
-              <div class="model-status__title">{selectedSpeakerModel.displayName}</div>
-              <div class="model-status__meta">{speakerStatusLabel(selectedSpeakerModel)}</div>
-            </div>
-            <span
-              class="model-status__pill"
-              class:model-status__pill--ok={selectedSpeakerModel.available}
-            >{selectedSpeakerModel.available ? "available" : "unavailable"}</span>
-          </div>
+          <StatusLine
+            title={selectedSpeakerModel.displayName}
+            meta={speakerStatusLabel(selectedSpeakerModel)}
+            ok={selectedSpeakerModel.available}
+          />
           <p class="group-hint">{selectedSpeakerModel.description}</p>
           {#if selectedSpeakerModel.installPath}
             <p class="group-hint"><strong>Install path:</strong> <span class="model-path">{selectedSpeakerModel.installPath}</span></p>
@@ -210,4 +208,10 @@
     word-break: break-all;
   }
 
+  .speaker-toggles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-12);
+    width: 100%;
+  }
 </style>

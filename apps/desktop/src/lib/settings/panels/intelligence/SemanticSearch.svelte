@@ -10,6 +10,7 @@
   import Combobox from "$lib/components/Combobox.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import StatusLine from "./StatusLine.svelte";
   import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import { systemFacts } from "$lib/settings/state/system-facts.svelte";
   import { semanticCoverage, semanticIndexPrice } from "$lib/settings/state/system-facts";
@@ -80,6 +81,10 @@
   // ponytail: the counts refresh on toggle and on the group's Refresh button,
   // not on a timer — indexing progress polls if a static meter proves annoying.
   const coverage = $derived(semanticCoverage(systemFacts.value));
+
+  // The off-state scale's only denominator. Null (unreadable count) prints no
+  // scale at all — the ghost bar alone, which is honest about knowing nothing.
+  const pendingCount = $derived(systemFacts.value?.semanticPendingCount ?? null);
 </script>
 
 <SettingGroup
@@ -113,17 +118,66 @@
     {/snippet}
     {#snippet control()}
       <div class="ss-stack">
-        <p class="group-hint group-hint--warn">
+        <!-- Was amber. In this direction semantic colour is spent on fit
+             verdicts against real limits, and the instrument below now states
+             the cost in bytes and captures — so the caution reads as prose,
+             beside a face that quantifies it, rather than as a shout. -->
+        <p class="group-hint">
           Stays on as a background indexer — ongoing CPU/GPU and battery while it catches up, and switching models re-indexes every existing capture.
         </p>
+
+        <!-- ══ THE SEMANTIC INDEX GAUGE ══════════════════════════════════════
+             The third instrument on this page (with the OCR duty cycle and the
+             model picker), and the page-06 mockup's instrument 5. It is NOT a
+             seventh entry in tactile.css's canonical six: those six are the
+             app's *controls* that turn, and this one is the gauge readout the
+             semantic switch is priced against — the same posture as Overview's
+             two read-only readouts.
+             The physical quantity is *how much of your capture carries a search
+             vector*, and both faces state it as a fraction of a real count.
+
+             G10 binds the two states and amends the mockup:
+              · OFF (the shipping default — zero embeddings in prod) draws the
+                GHOST reading: what the gauge WOULD show, hatched, never a
+                coverage claim, plus the price of switching on — computed from
+                this machine's real un-indexed count, not the mockup's 1.24 M.
+              · ON draws the real fraction.
+             `semanticIndexPrice` is deliberately silent about how long indexing
+             takes, and so is this face: nothing measures embedding throughput,
+             so the mockup's "18 min of GPU" would be invented. -->
         {#if !rec.draftSemanticSearchEnabled}
           {#if semanticPrice}
-            <p class="group-hint">{semanticPrice}</p>
+            <div class="ti-instr ti-instr--bare ss-instr">
+              <div class="ti-instr__hd">
+                <span class="ti-instr__name">Index coverage</span>
+                <!-- No percentage here. G10 says the coverage meter renders
+                     only when the feature is on, and "0 %" would be a coverage
+                     reading; what this face shows off is a price, not a level. -->
+                <span class="ti-instr__sub">off — nothing is indexed, and keyword search is answering every query</span>
+              </div>
+              <div class="ti-well ti-gauge">
+                <span class="ti-gauge__track">
+                  <span class="ti-gauge__seg ti-gauge__seg--ghost" style:width="100%"></span>
+                </span>
+              </div>
+              {#if pendingCount !== null}
+                <div class="ti-gauge__scale">
+                  <span>0 indexed</span>
+                  <span>{pendingCount.toLocaleString()} captures — if switched on</span>
+                </div>
+              {/if}
+              <div class="ti-instr__out">{semanticPrice}</div>
+            </div>
           {/if}
         {:else if coverage}
-          <div class="download-progress" aria-live="polite">
+          <div class="ti-instr ti-instr--bare ss-instr">
+            <div class="ti-instr__hd">
+              <span class="ti-instr__name">Index coverage</span>
+              <span class="ti-instr__sub">how much of your capture is searchable by meaning</span>
+              <span class="ti-instr__v">{coverage.percent}<em>%</em></span>
+            </div>
             <div
-              class="download-progress__bar"
+              class="ti-well ti-gauge"
               role="progressbar"
               aria-label="Semantic index coverage"
               aria-valuemin={0}
@@ -131,11 +185,17 @@
               aria-valuenow={coverage.percent}
               aria-valuetext={coverage.phrase}
             >
-              {#if coverage.percent > 0}
-                <span style={`width: ${coverage.percent}%`}></span>
-              {/if}
+              <span class="ti-gauge__track">
+                {#if coverage.percent > 0}
+                  <span class="ti-gauge__seg ti-gauge__seg--a" style:width="{coverage.percent}%"></span>
+                {/if}
+              </span>
             </div>
-            <p class="group-hint">{coverage.phrase}</p>
+            <div class="ti-gauge__scale">
+              <span>{coverage.indexed.toLocaleString()} indexed</span>
+              <span>{coverage.total.toLocaleString()} captures</span>
+            </div>
+            <div class="ti-instr__out">{coverage.phrase}</div>
           </div>
         {/if}
       </div>
@@ -186,25 +246,23 @@
               (progress.status === "downloading" ||
                 progress.status === "starting" ||
                 progress.status === "installing")}
-            <div class="settings-group ss-picked" role="group" aria-label={picked.displayName}>
-              <div class="row-actions row-actions--between">
-                <div>
-                  <strong>{picked.displayName}</strong>
-                  <p class="group-hint">{picked.description}</p>
-                  <p class="group-hint">{picked.metaLine}</p>
-                </div>
-                <span class="badge {selected ? 'badge--ok' : 'badge--neutral'} badge--sm">
-                  {selected
-                    ? "Active"
-                    : installed
-                      ? "Installed"
-                      : downloading
-                        ? `Downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
-                        : progress && progress.status === "failed"
-                          ? "Failed"
-                          : "Not installed"}
-                </span>
-              </div>
+            <!-- Was a bordered card; now a fill, so the page keeps its one
+                 bordered container (the window ring). -->
+            <div class="ss-picked" role="group" aria-label={picked.displayName}>
+              <StatusLine
+                title={picked.displayName}
+                meta={picked.metaLine}
+                ok={selected}
+                okLabel="active"
+                offLabel={installed
+                  ? "installed"
+                  : downloading
+                    ? `downloading ${progress ? semanticSearchProgressPercent(progress) : 0}%`
+                    : progress && progress.status === "failed"
+                      ? "failed"
+                      : "not installed"}
+              />
+              <p class="group-hint">{picked.description}</p>
 
               {#if downloading && progress}
                 <div class="download-progress" aria-live="polite">
@@ -306,11 +364,18 @@
     width: 100%;
   }
 
-  /* Picked-model header lays its label/description column opposite the status
-     badge; override the shared .row-actions (which packs to the end). */
-  .row-actions.row-actions--between {
-    justify-content: space-between;
-    align-items: flex-start;
+  .ss-instr {
+    width: 100%;
+    min-width: 0;
   }
 
+  /* The picked model: a surface step, no border. */
+  .ss-picked {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-8);
+    padding: var(--s-12);
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+  }
 </style>
