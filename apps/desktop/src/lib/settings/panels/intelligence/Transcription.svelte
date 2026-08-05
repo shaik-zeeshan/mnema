@@ -9,6 +9,7 @@
   import Stepper from "$lib/components/Stepper.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import {
@@ -434,6 +435,7 @@
                 </button>
               {/if}
               <p class="group-hint">Download support validates sha256 before marking this model installed.</p>
+              <ModelFootprintHint byteSize={selectedTranscriptionModel.download.byteSize} />
             {:else if !selectedTranscriptionModel.available}
               <p class="group-hint group-hint--warn">
                 This app-managed model is missing, but no packaged download artifact is available in the current manifest.

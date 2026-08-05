@@ -9,6 +9,9 @@
   import { OCR_LANGUAGE_OPTIONS } from "$lib/settings/ocr-languages";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import ModelFootprintHint from "$lib/settings/ui/ModelFootprintHint.svelte";
+  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
+  import { backlogPhrase } from "$lib/settings/state/system-facts";
   import ReloadButton from "$lib/settings/ui/ReloadButton.svelte";
   import ModelMissingFiles from "$lib/settings/ui/ModelMissingFiles.svelte";
   import { ocrStatusLabel } from "$lib/settings/state/models-format";
@@ -47,6 +50,14 @@
   const startSelectedOcrModelDownload = () => c.startSelectedOcrModelDownload();
   const cancelSelectedOcrModelDownload = () => c.cancelSelectedOcrModelDownload();
   const requestDeleteUnusedOcrModels = () => c.requestDeleteUnusedOcrModels();
+
+  // G8: the processing row's real denominator — how much screen capture is
+  // still waiting for OCR right now. Deliberately no "finishes in N minutes":
+  // there is no measured throughput here, and G8 bans invented ETAs.
+  void systemFacts.ensureLoaded();
+  const ocrBacklogHint = $derived(
+    backlogPhrase(systemFacts.value?.ocrBacklog ?? null, "captured frame"),
+  );
 </script>
 
 <SettingGroup
@@ -66,9 +77,15 @@
   <SettingRow
     label="Enable OCR"
     description="Automatically queue OCR for captured screen frames when the selected engine is available"
+    full
   >
-    {#snippet control()}
+    {#snippet aside()}
       <Switch bind:checked={rec.draftOcrEnabled} ariaLabel="Enable OCR" />
+    {/snippet}
+    {#snippet control()}
+      {#if ocrBacklogHint}
+        <p class="group-hint">{ocrBacklogHint}</p>
+      {/if}
     {/snippet}
   </SettingRow>
 
@@ -287,6 +304,7 @@
                 {/if}
               </p>
             {/if}
+            <ModelFootprintHint byteSize={selectedOcrModel.download?.byteSize ?? null} />
             {#if ocrDownloadError}
               <p class="group-hint group-hint--warn">Download failed: {ocrDownloadError}</p>
             {/if}

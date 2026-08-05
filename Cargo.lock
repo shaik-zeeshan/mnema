@@ -4720,6 +4720,7 @@ dependencies = [
  "futures-util",
  "htmd",
  "image",
+ "libc",
  "licensegate",
  "objc",
  "ocr",

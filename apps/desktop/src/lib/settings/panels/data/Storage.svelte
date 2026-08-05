@@ -8,6 +8,8 @@
   import RetentionPicker from "$lib/components/RetentionPicker.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
   import SettingRow from "$lib/settings/ui/SettingRow.svelte";
+  import { systemFacts } from "$lib/settings/state/system-facts.svelte";
+  import { retentionConsequence } from "$lib/settings/state/system-facts";
 
   const c = getSettingsController();
   const rec = c.rec;
@@ -16,8 +18,18 @@
   const retentionCleanupRunning = $derived(c.retentionCleanupRunning);
   const retentionCleanupError = $derived(c.retentionCleanupError);
 
+  // G8: what this window actually keeps, at the rate this machine measured.
+  // Null until a complete capture day exists — then the row simply says nothing.
+  void systemFacts.ensureLoaded();
+  const retentionHint = $derived(
+    retentionConsequence(systemFacts.value, rec.draftRetentionPolicy),
+  );
 
-  const runRetentionCleanupNow = () => c.runRetentionCleanupNow();
+  // A cleanup changes what is on disk, so the measured rate is re-read after it.
+  const runRetentionCleanupNow = async () => {
+    await c.runRetentionCleanupNow();
+    await systemFacts.refresh();
+  };
 
   // The resolved on-disk storage root, fetched from the backend so it reflects
   // the env-honoring resolution (MNEMA_SAVE_DIRECTORY, else ~/.mnema) rather
@@ -168,6 +180,9 @@
     {#snippet control()}
       <div class="retention-control">
         <RetentionPicker bind:value={rec.draftRetentionPolicy} />
+        {#if retentionHint}
+          <p class="group-hint">{retentionHint}</p>
+        {/if}
         <div class="row-actions">
           <button
             type="button"

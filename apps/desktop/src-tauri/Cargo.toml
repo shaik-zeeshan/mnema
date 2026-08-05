@@ -41,6 +41,9 @@ tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-updater = "2"
 fs2 = "0.4"
+# `hw.memsize` sysctl for the system-facts service (G8 denominators). Already in
+# the tree via app-infra's machine_id, which reads `hw.model` the same way.
+libc = "0.2"
 futures-util = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # rustls alignment (ADR 0037): with fastembed/ort's `native-tls` gone, the model
