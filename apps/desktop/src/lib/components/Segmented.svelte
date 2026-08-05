@@ -144,6 +144,11 @@
 </div>
 
 <style>
+  /* A stock native segmented control: a recessed well with the selected
+     segment RAISED onto the surface — the macOS anatomy, not a tinted tab.
+     Direction 05 spends its accent budget on the active settings tab, the save
+     chip and the instrument values, so an ordinary segmented control does not
+     get to be green. */
   .segmented {
     display: inline-flex;
     /* Hug the options even inside a stretch flex column, so the pill doesn't
@@ -151,11 +156,12 @@
        want a full-width control opt in by setting width:100% (+ flex segments),
        as ThemeModeControl does. */
     width: fit-content;
-    gap: 2px;
+    gap: 0;
     padding: 2px;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-md);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
   }
 
   .segmented--disabled {
@@ -168,16 +174,16 @@
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 5px 12px;
+    height: 22px;
+    padding: 0 10px;
     border: 0;
-    border-radius: 6px;
+    border-radius: 4px;
     background: transparent;
     color: var(--app-text-muted);
-    font: inherit;
-    font-size: 12px;
-    font-weight: 540;
-    line-height: 1;
-    cursor: pointer;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    white-space: nowrap;
+    cursor: default;
     user-select: none;
     outline: none;
     transition: background 0.15s, color 0.15s, box-shadow 0.15s;
@@ -193,15 +199,17 @@
   }
 
   .seg:focus-visible {
-    box-shadow: var(--app-ring);
-    outline: 2px solid var(--app-accent);
-    outline-offset: -2px;
+    outline: none;
+    box-shadow: 0 0 0 2px var(--app-accent-glow);
   }
 
+  /* Raised, not tinted. */
   .seg--active {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    box-shadow: inset 0 0 0 1px var(--app-accent-border);
+    color: var(--app-text-strong);
+    background: var(--app-surface);
+    box-shadow:
+      0 1px 2px var(--ti-recess),
+      0 0 0 var(--hairline) var(--app-border-strong);
   }
 
   .seg:disabled {

@@ -84,27 +84,28 @@
   }
 
   .switch-label {
-    font-size: var(--t-ui);
-    font-weight: 500;
-    color: var(--app-text);
-    letter-spacing: 0.02em;
+    font: var(--w-regular) var(--t-ui) / 1.25 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong);
   }
 
   .switch-description {
-    font-size: var(--t-label);
+    font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-sans);
+    letter-spacing: var(--ls-meta);
     color: var(--app-text-muted);
-    letter-spacing: 0.03em;
   }
 
+  /* Stock macOS switch metrics: 38 × 22 with an 18px knob. */
   :global(.switch-track) {
     position: relative;
     display: inline-flex;
     align-items: center;
-    width: 36px;
-    height: 20px;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 999px;
+    width: 38px;
+    height: 22px;
+    background: var(--app-surface-hover);
+    border: 0;
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-strong);
+    border-radius: var(--r-pill);
     cursor: pointer;
     transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease,
       transform 0.18s ease;
@@ -128,13 +129,11 @@
     transform: scale(0.96);
   }
 
+  /* On = a filled accent track with a white knob. A macOS switch says "on" by
+     the whole track lighting up, not by a tinted outline. */
   :global(.switch-track[data-state="checked"]) {
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-
-  :global(.switch-track[data-state="checked"]:hover:not([data-disabled])) {
-    border-color: var(--app-accent);
+    background: var(--app-accent);
+    box-shadow: none;
   }
 
   :global(.switch-track[data-disabled]) {
@@ -144,18 +143,17 @@
   :global(.switch-thumb) {
     position: absolute;
     left: 2px;
-    width: 14px;
-    height: 14px;
+    width: 18px;
+    height: 18px;
     border-radius: 50%;
-    background: var(--app-text-subtle);
-    transition: transform 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    transition: transform 0.18s ease;
     pointer-events: none;
   }
 
   :global(.switch-track[data-state="checked"] .switch-thumb) {
     transform: translateX(16px);
-    background: var(--app-accent);
-    box-shadow: 0 0 8px var(--app-accent-glow);
   }
 
   @media (prefers-reduced-motion: reduce) {
