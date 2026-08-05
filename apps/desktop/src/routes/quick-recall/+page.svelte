@@ -44,10 +44,9 @@
     handleLauncherCaptureKeydown as captureKeydown,
   } from "$lib/quick-recall/search-keys";
   import ResultsList from "$lib/quick-recall/ResultsList.svelte";
-  import DetailPane from "$lib/quick-recall/DetailPane.svelte";
-  import TimelineStrip from "$lib/quick-recall/TimelineStrip.svelte";
   import FilterPicker from "$lib/quick-recall/FilterPicker.svelte";
   import SyntaxHelp from "$lib/quick-recall/SyntaxHelp.svelte";
+  import Chip from "$lib/components/Chip.svelte";
 
   // Search-mode extraction (slice 1): all search-mode state — query text,
   // debounce/scheduling, results, thumbnails cache, roving selection, filter
@@ -58,19 +57,21 @@
   // mode, root/window keydown routing, focus management, and the idle-clear.
   const filters = search.filters;
 
-  // Slice 2 (list + detail split): the two-pane body shows for the skeleton
-  // and results branches of the results region; the full-width states
-  // (orientation, error, results-paused, no-matches) keep the whole width,
-  // mirroring the mockup's states gallery. The branch order below mirrors
-  // ResultsList's own state branches exactly.
-  const searchSplitVisible = $derived.by(() => {
-    if (search.belowMinimum) return false;
-    if (search.loading && !search.hasResults) return true; // first-search skeleton
-    if (search.errorMessage) return false;
-    if (search.resultsPaused) return false;
-    if (search.showEmpty) return false;
-    return true; // results branch
-  });
+  // Redesign slice 7 (frame 08): the detail-pane split is gone — the results
+  // region is a full-width 3-up grid of frame cells; selection is the accent
+  // ring and ⏎/click hands straight off to the main-window Timeline.
+
+  // Typed operator chips beyond the fixed scope set (app chips, custom
+  // date/source shapes) carry into the scopes row as removable "on" chips so
+  // an active refinement is never invisible.
+  const extraScopeChips = $derived(
+    search.activeFilterChips.filter(
+      (chip) =>
+        chip.kind === "app" ||
+        (chip.kind === "date" && search.dateScope === "custom") ||
+        (chip.kind === "source" && search.sourceScope === "custom"),
+    ),
+  );
 
   // The window is reused across summons (hidden, not destroyed), so its state
   // persists while it's closed. Re-summoning within 5s resumes where you left
@@ -779,6 +780,51 @@
       await adoptLiveSnapshot(conversationId);
     } catch {
       // Best-effort: leave the (empty) thread as-is on a hydrate failure.
+    }
+  }
+
+  // Overview Ask launcher seed (redesign slice 10): the bento's Ask field /
+  // history rows call `open_quick_recall_ask`, which stashes a one-slot
+  // latest-wins payload and emits `quick_recall_seed`. Both the live listener
+  // and mount DRAIN the slot (the broker handoff pattern) so warm re-summons
+  // and a cold window both land, and nothing double-applies.
+  type QuickRecallSeed = {
+    question: string | null;
+    conversationId: string | null;
+  };
+
+  async function applyPendingQuickRecallSeed(): Promise<void> {
+    let seed: QuickRecallSeed | null;
+    try {
+      seed = await invoke<QuickRecallSeed | null>("take_pending_quick_recall_seed");
+    } catch {
+      return;
+    }
+    if (!seed) return;
+    if (seed.conversationId) {
+      // Reopen an existing conversation in Ask mode: tear down any live
+      // thread, arm the id, and hydrate the persisted turns (the re-summon
+      // hydration path).
+      const conversationId = seed.conversationId;
+      if (askConversationId !== null) {
+        await cancelActiveAsk();
+      }
+      resetAskThreadState();
+      mode = "ask";
+      askConversationId = conversationId;
+      askSubmitted = true;
+      await hydrateAskFromStore(conversationId);
+      // A finished thread counts as seen (it is history the user reopened);
+      // a still-streaming one stays pending via askStreaming.
+      askOutcomeSeen = !askStreaming;
+      await tick();
+      askAreaEl?.focus();
+    } else if (seed.question && seed.question.trim().length > 0) {
+      mode = "ask";
+      askInput = "";
+      await startAsk(seed.question);
+      await tick();
+      askAreaEl?.focus();
     }
   }
 
@@ -1659,6 +1705,9 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    // Cold-window drain of an Overview Ask-launcher seed (the emit may have
+    // fired while this webview was still loading).
+    void applyPendingQuickRecallSeed();
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
     void invoke("mcp_warm_connectors").catch(() => {});
@@ -1687,6 +1736,16 @@
     let unlistenDismiss: (() => void) | undefined;
     let unlistenSettings: (() => void) | undefined;
     let unlistenSemanticSearchDownload: (() => void) | undefined;
+    let unlistenSeed: (() => void) | undefined;
+
+    // Warm-window seed: the panel is reused (hidden/shown), so a later
+    // Overview Ask launch arrives as this event; drain the same slot.
+    listen("quick_recall_seed", () => {
+      void applyPendingQuickRecallSeed();
+    }).then((fn) => {
+      if (destroyed) fn();
+      else unlistenSeed = fn;
+    });
 
     // The window is hidden/re-shown rather than recreated across summons, so
     // re-grab focus each time it becomes key — onMount alone fires only once.
@@ -1816,6 +1875,7 @@
       unlistenDismiss?.();
       unlistenSettings?.();
       unlistenSemanticSearchDownload?.();
+      unlistenSeed?.();
     };
   });
 
@@ -1871,15 +1931,19 @@
         <span class="quick-recall__sr-status" role="status" aria-live="polite"
           >{searchStatusAnnouncement}</span
         >
-        <div class="quick-recall__field">
-          <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
-          <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
+        <!-- Frame 08 chrome: one 52px toolbar row — the oversized field
+             (--t-title @ regular, the system.css oversized-input gap), the
+             Search/Ask segmented mode control, and the summon keycap. -->
+        <div class="ql-top">
+          <div class="ql-field">
+            <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
+            <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
                target; the absolutely-positioned mirror behind it renders the
                typed text invisibly then the dimmed ghost suffix, matching the
                input's font metrics/padding so the ghost aligns under the caret.
                The mirror is aria-hidden and pointer-events:none so it never
                steals interaction or screen-reader attention. -->
-          <div class="quick-recall__input-wrap">
+            <div class="quick-recall__input-wrap">
             {#if filters.hasGhost}
               <div class="quick-recall__ghost" aria-hidden="true">
                 <span class="quick-recall__ghost-typed">{search.query}</span><span
@@ -1895,7 +1959,7 @@
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
-              placeholder="Search your captures…"
+              placeholder="Search everything you've seen or heard…"
               aria-label="Search your captures"
               role="combobox"
               aria-expanded={filters.pickerOpen ||
@@ -1922,95 +1986,139 @@
                 void search.ensureSearchableAppsLoaded();
               }}
             />
+            </div>
+            {#if !search.belowMinimum && search.totalResultCount > 0}
+              <span class="ql-field__count" aria-hidden="true"
+                >{search.totalResultCount}
+                {search.totalResultCount === 1 ? "match" : "matches"}</span
+              >
+            {/if}
           </div>
-          <!-- Visible Filter Picker trigger: the picker was previously reachable
-               only via ⌘F / `/`, advertised nowhere — a funnel in the field row
-               gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
-               its title). Click opens the same category picker as the key path; DOM
-               focus stays on the search input (openPicker refocuses it), so the
-               picker's aria-activedescendant navigation keeps working. -->
-          <button
-            type="button"
-            class="quick-recall__filter-trigger"
-            class:quick-recall__filter-trigger--active={filters.pickerOpen}
-            class:quick-recall__filter-trigger--filtered={search
-              .activeFilterChips.length > 0}
-            onclick={() =>
-              filters.pickerOpen ? filters.closePicker() : filters.openPicker()}
-            aria-label="Filter results"
-            use:tip={"Filter results (⌘F)"}
-            aria-expanded={filters.pickerOpen}
-            aria-controls={filters.pickerOpen ? "quick-recall-picker" : undefined}
-            aria-keyshortcuts="Control+F"
-          >
-            <svg
-              width="11"
-              height="11"
-              viewBox="0 0 12 12"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="1.2"
-              stroke-linejoin="round"
-              aria-hidden="true"
+          <!-- Frame 08 mode control: Search | Ask ⌃⏎. Clicking Ask pivots with
+               the current query; the disabled state carries the setup hint. -->
+          <div class="mseg" role="group" aria-label="Search or Ask">
+            <button type="button" class="mseg__i mseg__i--on" aria-pressed="true"
+              >Search</button
             >
-              <path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" />
-            </svg>
-            Filter <kbd aria-hidden="true">⌘F</kbd>
-          </button>
-          <!-- Syntax-help affordance (`?` trigger + static popover), extracted
-               to a component; its open state lives on the search store so the
-               keydown routing can close it. -->
-          <SyntaxHelp fadeMs={modeFadeMs} />
-          {#if askAvailable}
-            <button
-              type="button"
-              class="quick-recall__ask-button"
-              onclick={() => void activateAskAi()}
-              aria-label="Ask AI"
-              aria-keyshortcuts="Control+Enter"
-            >
-              Ask AI <span class="quick-recall__ask-key" aria-hidden="true">⌃↵</span>
-            </button>
-          {:else}
-            <button
-              type="button"
-              class="quick-recall__ask-button quick-recall__ask-button--disabled"
-              disabled
-              aria-label={askUnavailableHint ?? "Ask AI unavailable"}
-              aria-describedby={ASK_UNAVAILABLE_HINT_ID}
-              use:tip={askUnavailableHint ?? "Ask AI unavailable"}
-            >
-              Ask AI
-            </button>
-          {/if}
+            {#if askAvailable}
+              <button
+                type="button"
+                class="mseg__i"
+                aria-pressed="false"
+                onclick={() => void activateAskAi()}
+                aria-keyshortcuts="Control+Enter"
+              >
+                Ask <span class="kbd" aria-hidden="true">⌃⏎</span>
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="mseg__i"
+                aria-pressed="false"
+                disabled
+                aria-describedby={ASK_UNAVAILABLE_HINT_ID}
+                use:tip={askUnavailableHint ?? "Ask AI unavailable"}
+              >
+                Ask
+              </button>
+            {/if}
+          </div>
+          <span class="kbd kbd--mod" aria-hidden="true">⌘⌥Space</span>
         </div>
 
-        <!-- Slice 2: active filter chip band. A thin row under the search input
-             rendering each applied refinement (from the backend desugar) as a
-             plain-language pill with an × that strips its operator token(s) from
-             the query. This band shares its vertical slot with the inline parse
-             error line (added in slice 3); a chip and a live error never apply to
-             the same token, so they can coexist here. Only rendered when at least
-             one chip is active. -->
-        {#if search.activeFilterChips.length > 0}
-          <div class="quick-recall__chips" role="list" aria-label="Active filters">
-            {#each search.activeFilterChips as chip (chip.id)}
-              <span class="quick-recall__chip" role="listitem">
-                <span class="quick-recall__chip-label">{chip.label}</span>
-                <button
-                  type="button"
-                  class="quick-recall__chip-remove"
-                  onclick={() => search.removeChip(chip)}
-                  aria-label={`Remove ${chip.label} filter`}
-                  use:tip={`Remove ${chip.label} filter`}
-                >
-                  ×
-                </button>
-              </span>
+        <!-- Frame 08 scopes row: fixed scope chips (sugar over the same
+             operator tokens the typed syntax uses) + any typed refinements the
+             fixed set doesn't cover, with the window's key contract at the
+             right. The Filter Picker / syntax-help doors live here — chrome,
+             not media. Hidden until a query is live (frame 10's empty state
+             shows no scopes). -->
+        {#if !search.belowMinimum}
+          <div class="ql-scopes">
+            <Chip
+              label="All"
+              on={search.sourceScope === "all" && search.dateScope === "any"}
+              onclick={() => {
+                search.applySourceScope("all");
+                search.applyDateScope("any");
+              }}
+            />
+            <Chip
+              label="Screen"
+              on={search.sourceScope === "screen"}
+              onclick={() =>
+                search.applySourceScope(
+                  search.sourceScope === "screen" ? "all" : "screen",
+                )}
+            />
+            <Chip
+              label="Audio"
+              on={search.sourceScope === "audio"}
+              onclick={() =>
+                search.applySourceScope(
+                  search.sourceScope === "audio" ? "all" : "audio",
+                )}
+            />
+            <Chip
+              label="Today"
+              on={search.dateScope === "today"}
+              onclick={() =>
+                search.applyDateScope(
+                  search.dateScope === "today" ? "any" : "today",
+                )}
+            />
+            <Chip
+              label="This week"
+              on={search.dateScope === "week"}
+              onclick={() =>
+                search.applyDateScope(search.dateScope === "week" ? "any" : "week")}
+            />
+            {#each extraScopeChips as chip (chip.id)}
+              <Chip
+                label={chip.label}
+                on
+                title={`Remove ${chip.label} filter`}
+                onclick={() => search.removeChip(chip)}
+                onremove={() => search.removeChip(chip)}
+              />
             {/each}
-            <span class="quick-recall__chip-hint" aria-hidden="true"
-              >typed filters become chips · ? for syntax</span
-            >
+            <span class="ql-scopes__end">
+              <button
+                type="button"
+                class="quick-recall__filter-trigger"
+                class:quick-recall__filter-trigger--active={filters.pickerOpen}
+                class:quick-recall__filter-trigger--filtered={search
+                  .activeFilterChips.length > 0}
+                onclick={() =>
+                  filters.pickerOpen
+                    ? filters.closePicker()
+                    : filters.openPicker()}
+                aria-label="Filter results"
+                use:tip={"Filter results (⌘F)"}
+                aria-expanded={filters.pickerOpen}
+                aria-controls={filters.pickerOpen
+                  ? "quick-recall-picker"
+                  : undefined}
+                aria-keyshortcuts="Control+F"
+              >
+                <svg
+                  width="11"
+                  height="11"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.2"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" />
+                </svg>
+                Filter <kbd aria-hidden="true">⌘F</kbd>
+              </button>
+              <SyntaxHelp fadeMs={modeFadeMs} />
+              <span class="ql-scopes__hint" aria-hidden="true"
+                >⏎ open · ⌘⏎ timeline · esc close</span
+              >
+            </span>
           </div>
         {/if}
 
@@ -2040,41 +2148,16 @@
           </button>
         {/if}
 
-        <!-- Slice 2: two-pane body (mockup `.qr-body`). The results list is
-             the fixed-width left column and the detail pane fills the right
-             whenever the list shows rows (or the first-search skeleton); the
-             full-width states and the Filter Picker span the whole body. -->
+        <!-- The media surface (frame 08): the full-width 3-up grid with its
+             temporal sections and the frame-10 states, or the Filter Picker /
+             Filter Value List while a filter sub-surface owns the region. -->
         <div class="quick-recall__body">
           {#if filters.pickerOpen || filters.valueListActive}
-            <!-- Filter Picker / Filter Value List: replaces the results region
-                 while a filter sub-surface owns it. Extracted component; the
-                 picker branch wins while open (the two are mutually exclusive
-                 by construction), preserving the original branch order. -->
             <FilterPicker />
           {:else}
-            <!-- The search results region with all its state branches
-                 (orientation / skeleton / error+Retry / results-paused /
-                 no-matches recovery / semantic hint / Screen+Audio sections),
-                 extracted to a component rendering off the search store. -->
-            <ResultsList
-              {askAvailable}
-              onAskAi={() => void activateAskAi()}
-              split={searchSplitVisible}
-            />
-            {#if searchSplitVisible}
-              <DetailPane dim={search.loading && !search.hasResults} />
-            {/if}
+            <ResultsList {askAvailable} onAskAi={() => void activateAskAi()} />
           {/if}
         </div>
-
-        <!-- Slice 6: thin 8-day timeline strip between the body and the footer
-             (mockup `.timeline` + `.tl-preview`): one dot per fetched result at
-             its true time, hover previews, click selects (auto-expanding a
-             collapsed section). Rendered whenever results exist, staying put
-             under the Filter Picker like the mockup's always-present strip. -->
-        {#if search.hasResults}
-          <TimelineStrip />
-        {/if}
       </div>
     {:else}
       <div
@@ -2082,49 +2165,63 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
-        <div class="quick-recall__field quick-recall__field--ask">
-          <button
-            type="button"
-            class="quick-recall__back"
-            onclick={() => void backToSearch()}
-            aria-label="Back to search"
-            aria-keyshortcuts="Escape"
-          >
-            ← Back
-          </button>
-          {#if askSubmitted}
-            <!-- Once the thread exists the header is just the Back affordance —
-                 each turn's question renders as its own header in the transcript. -->
-            <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
-            {#if askStreaming}
-              <!-- Interrupt a streaming answer in place (keeps the partial answer
-                   visible) instead of forcing Escape, which abandons the surface. -->
-              <button
-                type="button"
-                class="quick-recall__stop"
-                onclick={() => void stopActiveAsk()}
-                aria-label="Stop generating"
-                use:tip={"Stop generating"}
+        <!-- Frame 09 chrome: same 52px toolbar, same field, other segment.
+             Search (the other segment) is the Back affordance; Escape still
+             steps back via handleRootKeydown. -->
+        <div class="ql-top">
+          <div class="ql-field ql-field--ask">
+            <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
+            {#if askSubmitted}
+              <!-- Once the thread exists the field echoes the first question —
+                   each turn's question renders as its own header below. -->
+              <span class="ql-field__q" title={askTurns[0]?.question}
+                >{askTurns[0]?.question ?? "Ask AI"}</span
               >
-                <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
-                Stop
-              </button>
+              {#if askStreaming}
+                <!-- Interrupt a streaming answer in place (keeps the partial
+                     answer visible) instead of forcing Escape. -->
+                <button
+                  type="button"
+                  class="quick-recall__stop"
+                  onclick={() => void stopActiveAsk()}
+                  aria-label="Stop generating"
+                  use:tip={"Stop generating"}
+                >
+                  <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+                  Stop
+                </button>
+              {/if}
+            {:else}
+              <textarea
+                bind:this={askInputEl}
+                bind:value={askInput}
+                class="quick-recall__ask-input"
+                rows="1"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="Ask anything about your captures…"
+                aria-label="Ask AI a question"
+                aria-keyshortcuts="Enter Escape"
+                onkeydown={handleAskInputKeydown}
+              ></textarea>
             {/if}
-          {:else}
-            <textarea
-              bind:this={askInputEl}
-              bind:value={askInput}
-              class="quick-recall__ask-input"
-              rows="1"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Ask anything about your captures…"
-              aria-label="Ask AI a question"
-              aria-keyshortcuts="Enter Escape"
-              onkeydown={handleAskInputKeydown}
-            ></textarea>
-          {/if}
+          </div>
+          <div class="mseg" role="group" aria-label="Search or Ask">
+            <button
+              type="button"
+              class="mseg__i"
+              aria-pressed="false"
+              onclick={() => void backToSearch()}
+              aria-keyshortcuts="Escape"
+            >
+              Search
+            </button>
+            <button type="button" class="mseg__i mseg__i--on" aria-pressed="true">
+              Ask <span class="kbd" aria-hidden="true">⌃⏎</span>
+            </button>
+          </div>
+          <span class="kbd kbd--mod" aria-hidden="true">⌘⌥Space</span>
         </div>
 
         <!-- Visually-hidden polite live region announcing ONLY the Ask AI phase
@@ -2533,45 +2630,21 @@
     {/if}
   </div>
 
-  <div class="quick-recall__footer" aria-hidden="true">
-    {#if mode === "search"}
-      {#if filters.pickerOpen}
-        <!-- While the picker owns the keys, the footer reflects its own
-             navigation contract (no Ask AI pivot — Tab is suppressed). -->
-        <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> move</span>
-        <span class="quick-recall__hint-item"><kbd>↵</kbd> select</span>
-        <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
-      {:else if search.resultCount > 0}
-        <!-- Mockup footer wording exactly: select=preview, Enter opens in the
-             main-window timeline, ⌘1–9 jumps selection (no longer opens). -->
-        <span class="quick-recall__hint-item"><kbd>↑</kbd><kbd>↓</kbd> navigate</span>
-        <span class="quick-recall__hint-item"><kbd>↵</kbd> open in timeline</span>
-        {#if search.selectedResultIsOpenable}
-          <span class="quick-recall__hint-item"><kbd>⌘O</kbd> open page</span>
-        {/if}
-        {#if askAvailable}
-          <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> ask AI</span>
-        {/if}
-        <span class="quick-recall__hint-item"><kbd>⌘F</kbd> filter</span>
-        <span class="quick-recall__hint-item"><kbd>⌘1-9</kbd> jump</span>
-        <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
+  <!-- Frame 08 carries the search-mode key contract in the scopes row, so the
+       footer band survives only in Ask mode (its hints have no other home). -->
+  {#if mode === "ask"}
+    <div class="quick-recall__footer" aria-hidden="true">
+      {#if !askSubmitted}
+        <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
+        <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
       {:else}
-        <span class="quick-recall__hint-item"><kbd>⌘F</kbd> filter</span>
-        {#if askAvailable}
-          <span class="quick-recall__hint-item"><kbd>⌃↵</kbd> ask AI</span>
+        {#if askCopyAvailable}
+          <span class="quick-recall__hint-item"><kbd>⌃C</kbd> copy</span>
         {/if}
-        <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
+        <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
       {/if}
-    {:else if !askSubmitted}
-      <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
-      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
-    {:else}
-      {#if askCopyAvailable}
-        <span class="quick-recall__hint-item"><kbd>⌃C</kbd> copy</span>
-      {/if}
-      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
-    {/if}
-  </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -2636,30 +2709,139 @@
     border: 0;
   }
 
-  .quick-recall__field {
+  /* ── Frame 08 chrome: toolbar row · oversized field · mode seg ─────────── */
+  .ql-top {
+    flex: 0 0 52px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 56px;
-    padding: 8px 16px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    /* Mockup `.searchbar`: the chrome rows (search bar, footer) sit on the
-       subtle surface so the detail pane's plain surface reads as the stage. */
+    gap: var(--s-12);
+    padding: 0 20px;
+    position: relative;
+    z-index: 20;
     background: var(--app-surface-subtle);
   }
 
-  /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
-     style). We intentionally do NOT recolor it to the accent on :focus-within:
-     the field only has a `border-bottom`, so an accent border-color paints a
-     hard green line on that one edge rather than a ring, and the accompanying
-     box-shadow ring is clipped on three sides by the parent's `overflow: hidden`
-     rounded frame — leaving an asymmetric halo only below the field. The launcher
-     auto-focuses this input on open, so that focus chrome was effectively always
-     on. The blinking accent caret already signals focus. */
+  /* The oversized search field: borrows --t-title at regular weight (the
+     system.css oversized-input known gap), 36px tall on the subtle surface. */
+  .ql-field {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    height: 36px;
+    padding: 0 var(--s-12);
+    border-radius: var(--r-lg);
+    border: var(--hairline) solid var(--app-border-strong);
+    background: var(--app-surface);
+  }
+
+  .ql-field:focus-within {
+    border-color: var(--app-accent);
+    box-shadow: var(--app-ring);
+  }
+
+  /* The bare input/textarea delegate ALL focus chrome to the field they sit
+     in — suppress the layout's universal :focus-visible ring, which otherwise
+     paints a second box inside the field. */
+  .quick-recall__input:focus-visible,
+  .quick-recall__ask-input:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+
+  .ql-field__count {
+    flex: 0 0 auto;
+    margin-left: auto;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
+    white-space: nowrap;
+  }
+
+  /* The Search/Ask mode control (frame 08's segmented affordance). */
+  .mseg {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: var(--h-md);
+    padding: 2px;
+    border-radius: calc(var(--r-md) + 1px);
+    background: color-mix(in srgb, var(--app-text-strong) 7%, transparent);
+  }
+
+  .mseg__i {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    height: 100%;
+    padding: 0 var(--s-12);
+    border: none;
+    border-radius: var(--r-md);
+    background: transparent;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-muted);
+    cursor: pointer;
+  }
+
+  .mseg__i:disabled {
+    opacity: var(--opacity-disabled, 0.4);
+    cursor: not-allowed;
+  }
+
+  .mseg__i:focus-visible {
+    outline: none;
+    box-shadow: var(--ring, var(--app-ring));
+  }
+
+  .mseg__i--on {
+    background: var(--app-surface-raised);
+    color: var(--app-text-strong);
+    box-shadow:
+      0 1px 2.5px rgba(0, 0, 0, 0.35),
+      inset 0 0.5px 0 rgba(255, 255, 255, 0.08);
+  }
+
+  :global([data-theme="light"]) .mseg__i--on {
+    background: #fff;
+    box-shadow: 0 1px 2.5px rgba(21, 28, 38, 0.22);
+  }
+
+  .mseg__i :global(.kbd),
+  .mseg__i .kbd {
+    height: 16px;
+    min-width: 16px;
+    background: transparent;
+    color: var(--app-text-subtle);
+  }
+
+  /* ── Frame 08 scopes row ───────────────────────────────────────────────── */
+  .ql-scopes {
+    flex: 0 0 36px;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    padding: 0 20px;
+    overflow: hidden;
+  }
+
+  .ql-scopes__end {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-8);
+    flex: 0 0 auto;
+  }
+
+  .ql-scopes__hint {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-subtle);
+    white-space: nowrap;
+  }
 
   .quick-recall__glyph {
-    font-size: var(--text-lg);
+    font-size: var(--t-title);
     line-height: 1;
     color: var(--app-text-muted);
     flex-shrink: 0;
@@ -2667,9 +2849,8 @@
     transition: color 0.12s ease;
   }
 
-  /* Mockup `.searchbar:focus-within svg.magnifier`: the magnifier warms to the
-     accent while the input has focus. */
-  .quick-recall__field:focus-within .quick-recall__glyph {
+  /* The magnifier warms to the accent while the input has focus. */
+  .ql-field:focus-within .quick-recall__glyph {
     color: var(--app-accent);
   }
 
@@ -2689,10 +2870,9 @@
     outline: none;
     background: transparent;
     color: var(--app-text-strong);
-    font-family: inherit;
-    /* Mockup `.searchbar input`: 16px query text. */
-    font-size: 16px;
-    line-height: 1.4;
+    /* Oversized input role: --t-title at regular weight (system.css gap 2). */
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     padding: 0;
     caret-color: var(--app-accent);
     /* Sits above the ghost mirror so the real caret/text are what's interacted
@@ -2716,10 +2896,9 @@
     display: flex;
     align-items: center;
     pointer-events: none;
-    font-family: inherit;
     /* Must mirror .quick-recall__input's font metrics exactly. */
-    font-size: 16px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     white-space: pre;
     overflow: hidden;
     z-index: 0;
@@ -2749,7 +2928,7 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -2757,7 +2936,7 @@
 
   .quick-recall__footer kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     text-transform: lowercase;
     color: var(--app-text-muted);
@@ -2790,7 +2969,7 @@
   }
 
   .quick-recall__section-label {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -2801,75 +2980,13 @@
   .quick-recall__state {
     margin: 0;
     padding: 8px 2px;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1.5;
     color: var(--app-text-muted);
   }
 
   .quick-recall__state--error {
     color: var(--app-danger-text);
-  }
-
-  /* Ask AI door (mockup `.askai-btn`): the one accent-filled affordance in the
-     field row — accent text on the accent-tinted surface, glowing on hover. */
-  .quick-recall__ask-button {
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    line-height: 1;
-    white-space: nowrap;
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 6px;
-    padding: 6px 10px;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-
-  .quick-recall__ask-button:hover {
-    border-color: var(--app-accent-strong);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-
-  .quick-recall__ask-button:focus-visible {
-    outline: none;
-    border-color: var(--app-accent-strong);
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__ask-button:not(:disabled):not(.quick-recall__ask-button--disabled):active {
-    background: color-mix(in srgb, var(--app-accent) 14%, var(--app-accent-bg));
-  }
-
-  /* Mockup `.askai-btn kbd`: accent key cap on a transparent ground. */
-  .quick-recall__ask-key {
-    font-size: var(--text-xs);
-    line-height: 1;
-    color: var(--app-accent);
-    background: transparent;
-    border: 1px solid var(--app-accent-border);
-    border-radius: 4px;
-    padding: 2px 4px;
-  }
-
-  .quick-recall__ask-button--disabled,
-  .quick-recall__ask-button:disabled {
-    color: var(--app-text-subtle);
-    background: var(--app-surface-subtle);
-    border-color: var(--app-border);
-    cursor: not-allowed;
-  }
-
-  .quick-recall__ask-button--disabled:hover {
-    border-color: var(--app-border);
-    color: var(--app-text-subtle);
-    box-shadow: none;
   }
 
   /* Funnel Filter Picker trigger (mockup `.appfilter > button`): a quiet
@@ -2882,7 +2999,7 @@
     gap: 6px;
     flex-shrink: 0;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     white-space: nowrap;
     color: var(--app-text-muted);
@@ -2899,7 +3016,7 @@
 
   .quick-recall__filter-trigger kbd {
     font-family: inherit;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface);
@@ -2944,7 +3061,7 @@
     margin: 0;
     padding: 6px 18px 0;
     text-align: left;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-subtle);
     background: none;
@@ -2965,97 +3082,6 @@
     box-shadow: var(--app-ring);
   }
 
-  /* Active filter chip band (mockup `.chipband` + `.fchip`): a chrome band on
-     the subtle surface under the input; every chip is an accent-tinted pill
-     with its × remover, trailed by the quiet hint line. Shares its slot with
-     the inline parse-error line. */
-  .quick-recall__chips {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-
-  .quick-recall__chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--text-sm);
-    line-height: 1;
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    padding: 4px 5px 4px 10px;
-    white-space: nowrap;
-  }
-
-  .quick-recall__chip-label {
-    white-space: nowrap;
-  }
-
-  .quick-recall__chip-hint {
-    font-size: var(--text-xs);
-    line-height: 1;
-    color: var(--app-text-subtle);
-  }
-
-  /* Mockup `.fchip .x`: a round remover inheriting the chip's accent, resting
-     at 0.7 opacity and filling with an accent wash on hover/press. */
-  .quick-recall__chip-remove {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    font-family: inherit;
-    font-size: var(--text-base);
-    line-height: 1;
-    color: inherit;
-    background: transparent;
-    border: none;
-    border-radius: 50%;
-    padding: 0;
-    cursor: pointer;
-    opacity: 0.7;
-    transition:
-      opacity 0.12s ease,
-      background-color 0.12s ease;
-  }
-
-  /* Invisible hit area expanding the 16px glyph to the 24px comfortable minimum
-     without enlarging the chip itself. */
-  .quick-recall__chip-remove::before {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 24px;
-    height: 24px;
-    transform: translate(-50%, -50%);
-  }
-
-  .quick-recall__chip-remove:hover {
-    opacity: 1;
-    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
-  }
-
-  .quick-recall__chip-remove:focus-visible {
-    outline: none;
-    opacity: 1;
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__chip-remove:active {
-    opacity: 1;
-    background: color-mix(in srgb, var(--app-accent) 26%, transparent);
-  }
-
   /* Slice 3: inline parse-error line under the input. Styled as a band like
      the chip row (they can coexist — a chip and a live error never apply to
      the same token) and uses the danger ramp (same as
@@ -3065,7 +3091,7 @@
     margin: 0;
     padding: 8px 16px;
     flex-shrink: 0;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-danger-text);
     border-bottom: 1px solid var(--app-border);
@@ -3073,58 +3099,16 @@
   }
 
 
-  .quick-recall__field--ask {
-    gap: 12px;
-  }
-
-  /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
-     the bar it sits in, mirroring the follow-up composer. Scoped to the input
-     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
-     buttons — which carry their own focus chrome — take focus. */
-  .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__back {
-    flex-shrink: 0;
-    font-family: inherit;
-    font-size: var(--text-base);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 8px;
-    cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
-  }
-
-  .quick-recall__back:hover {
-    border-color: var(--app-accent);
-    color: var(--app-text-strong);
-  }
-
-  .quick-recall__back:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__back:not(:disabled):active {
-    background: var(--app-surface-active);
-  }
-
-  /* The thread header label once a thread is open (the per-turn question
-     headers live in the transcript, so this is just a quiet section marker). */
-  .quick-recall__ask-thread-label {
-    flex: 1;
+  /* Ask-mode field: the question echo fills it once the thread exists. */
+  .ql-field__q {
+    flex: 1 1 auto;
     min-width: 0;
-    font-size: var(--text-sm);
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   /* Stop the streaming answer in place — quiet by default, shifting to the danger
@@ -3135,7 +3119,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -3169,6 +3153,22 @@
     background: var(--app-surface-active);
   }
 
+  /* The ask textarea can outgrow one line, so the ask field (and its toolbar
+     row) release the fixed heights while keeping the 52px resting size. */
+  .ql-field--ask {
+    height: auto;
+    min-height: 36px;
+    padding-top: var(--s-6);
+    padding-bottom: var(--s-6);
+  }
+
+  .ql-top:has(.ql-field--ask) {
+    flex: 0 0 auto;
+    min-height: 52px;
+    padding-top: var(--s-8);
+    padding-bottom: var(--s-8);
+  }
+
   .quick-recall__ask-input {
     flex: 1;
     min-width: 0;
@@ -3176,9 +3176,8 @@
     outline: none;
     background: transparent;
     color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: 14px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     padding: 0;
     resize: none;
     /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
@@ -3298,7 +3297,7 @@
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.04em;
     text-transform: uppercase;
     color: var(--app-text-muted);
@@ -3319,7 +3318,7 @@
     gap: 9px;
   }
   .quick-recall__dossier-statement {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     color: var(--app-text-strong);
     line-height: 1.5;
     margin: 0;
@@ -3334,7 +3333,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    font-size: var(--text-xs);
+    font-size: var(--t-label);
     letter-spacing: 0.02em;
     padding: 2px 8px;
     border-radius: 4px;
@@ -3360,7 +3359,7 @@
   }
 
   .quick-recall__sources-heading {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -3459,7 +3458,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     letter-spacing: 0.02em;
     color: var(--app-text-muted);
@@ -3488,7 +3487,7 @@
   }
 
   .quick-recall__handoff-arrow {
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
   }
 
@@ -3499,7 +3498,7 @@
 
   .quick-recall__retry {
     font-family: inherit;
-    font-size: var(--text-base);
+    font-size: var(--t-ui);
     line-height: 1;
     color: var(--app-text);
     background: var(--app-surface-subtle);
@@ -3555,7 +3554,7 @@
     border-radius: 6px;
     background: var(--app-surface-subtle);
     color: var(--app-text-muted);
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.5;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -3568,7 +3567,7 @@
     align-items: center;
     gap: 6px;
     font-family: inherit;
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1;
     color: var(--app-text-muted);
     background: var(--app-surface-subtle);
@@ -3623,7 +3622,7 @@
   /* The expanded disclosure exists to show the full filter detail, so its rows
      wrap rather than truncate (unlike the one-line live working label). */
   .quick-recall__activity-item {
-    font-size: var(--text-sm);
+    font-size: var(--t-meta);
     line-height: 1.4;
     color: var(--app-text-subtle);
     min-width: 0;
@@ -3715,15 +3714,12 @@
       opacity: 1;
     }
 
-    .quick-recall__ask-button,
-    .quick-recall__back,
     .quick-recall__copy,
     .quick-recall__retry,
     .quick-recall__activity-chip,
     .quick-recall__activity-caret,
     .quick-recall__filter-trigger,
     .quick-recall__glyph,
-    .quick-recall__chip-remove,
     .quick-recall__stop {
       transition: none;
     }

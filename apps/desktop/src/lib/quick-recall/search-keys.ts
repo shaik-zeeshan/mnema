@@ -123,10 +123,11 @@ export function handleSearchKeydown(
     }
   }
 
-  // The Ask AI pivot is Ctrl/Cmd+Enter ONLY (ADR 0025). Tab is reserved for
-  // ghost-text accept (handled below), never the pivot. The Filter Value List
-  // block above suppresses this pivot while it's up (Enter is consumed there).
-  if (askAvailable && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+  // The Ask AI pivot is ⌃⏎ (Control+Enter) ONLY — frame 08's mode affordance.
+  // ⌘⏎ is the Timeline open (it falls through to the Enter case below). Tab is
+  // reserved for ghost-text accept (handled below), never the pivot. The
+  // Filter Value List block above suppresses this pivot while it's up.
+  if (askAvailable && event.key === "Enter" && event.ctrlKey && !event.metaKey) {
     event.preventDefault();
     onAskAi();
     return;
@@ -229,13 +230,31 @@ export function handleSearchKeydown(
   }
 
   switch (event.key) {
+    // 2D grid navigation (frame 08): ↑/↓ move by row across the day sections;
+    // ←/→ move by cell — but ONLY while the caret sits at end-of-input, so a
+    // caret placed inside the text keeps native ←/→ editing (matching the
+    // ghost-accept's caretAtEnd gate).
     case "ArrowDown":
       event.preventDefault();
-      search.moveSelection(1);
+      search.moveSelectionInGrid("down");
       break;
     case "ArrowUp":
       event.preventDefault();
-      search.moveSelection(-1);
+      search.moveSelectionInGrid("up");
+      break;
+    case "ArrowLeft":
+      if (search.caretAtEnd && search.resultCount > 0) {
+        event.preventDefault();
+        search.moveSelectionInGrid("left");
+      }
+      break;
+    case "ArrowRight":
+      // The end-of-input ghost accept already returned above when a ghost is
+      // showing; a plain → at end-of-input walks the grid instead.
+      if (search.caretAtEnd && search.resultCount > 0) {
+        event.preventDefault();
+        search.moveSelectionInGrid("right");
+      }
       break;
     case "Home":
       if (search.resultCount > 0) {

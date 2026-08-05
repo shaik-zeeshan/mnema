@@ -1,44 +1,55 @@
-<!-- Quick Recall search-mode results region (extracted from the quick-recall
-     +page.svelte in the search-mode extraction slice — no behavior/visual
-     change). Renders every results-region state branch off the search store
-     singleton: orientation (below-minimum), loading skeleton, error + Retry,
-     results-paused parse error, no-matches recovery, the semantic hint, and
-     the Screen/Audio result sections. DOM focus stays on the page's search
-     input; this listbox is driven via aria-activedescendant. -->
+<!-- Quick Look results region (redesign slice 7, frames 08 + 10). The media
+     surface: naked 349×196 cells in a 3-up grid, temporal day sections as
+     --t-label lines with spacing (no fills, no rules), screen and audio in ONE
+     grid. Also owns the full-width states: empty orientation, first-search
+     skeleton, error, results-paused, and no-match (frame 10). DOM focus stays
+     on the page's search input; this listbox is driven via
+     aria-activedescendant.
+
+     Grid arithmetic (fixed 1120×720 window, §3 density-rule exemption): 3×349
+     cells + 2×16 gutters = 1079; insets 20 left + 20 right = 1119 ≤ 1120 (the
+     1px slack rides the right inset; the 8px overlay scrollbar paints inside
+     it). Inset 20 > gutter 16 is the one sanctioned exemption. -->
 <script lang="ts">
-  import SearchResultCard from "$lib/quick-recall/SearchResultCard.svelte";
+  import ResultCell from "$lib/quick-recall/ResultCell.svelte";
   import {
     quickRecallSearch as search,
     OPTION_ID_PREFIX,
   } from "$lib/quick-recall/searchStore.svelte";
-  import {
-    AUDIO_VISIBLE_CAP,
-    FRAME_VISIBLE_CAP,
-    moreRowLabel,
-  } from "$lib/quick-recall/result-sections";
 
   let {
     askAvailable,
     onAskAi,
-    split = false,
   }: {
     askAvailable: boolean;
     onAskAi: () => void;
-    // True when the page shows the list/detail two-pane split (skeleton or
-    // results branches): the list becomes the fixed-width left column with
-    // the mockup's divider + subtle background. False for the full-width
-    // states (orientation, error, paused, no matches).
-    split?: boolean;
   } = $props();
+
+  // Frame 10's no-match widening: name the narrowing scope and offer the one
+  // useful widening (drop the date scope).
+  let dateScopeLabel = $derived(
+    search.dateScope === "today"
+      ? "Today"
+      : search.dateScope === "week"
+        ? "This week"
+        : search.dateScope === "custom"
+          ? "a date range"
+          : null,
+  );
+
+  function thumbnailFor(index: number): string | null {
+    const item = search.gridItems[index];
+    if (item === undefined || item.kind !== "frame") return null;
+    return search.thumbnailCache.get(item.frame.thumbnailFrameId) ?? null;
+  }
 </script>
 
-<!-- The keyword-only hint, guarded by showSemanticSearchHint, shared by the
-     empty and results branches so there is one source of truth. -->
+<!-- The keyword-only hint, shared by the no-match and results branches. -->
 {#snippet semanticHint()}
   {#if search.showSemanticSearchHint}
     <button
       type="button"
-      class="quick-recall__semantic-hint"
+      class="ql-hint"
       onclick={() => void search.openSemanticSearchSettings()}
     >
       Searching keywords only. Turn on meaning-based search in Settings →
@@ -49,75 +60,44 @@
 
 <div
   id="quick-recall-results-list"
-  class="quick-recall__results"
-  class:quick-recall__results--refetching={search.loading && search.hasResults}
-  class:quick-recall__results--split={split}
+  class="ql-body"
+  class:ql-body--refetching={search.loading && search.hasResults}
   role="listbox"
   aria-label="Search results"
   aria-busy={search.loading}
 >
   {#if search.belowMinimum}
-    <!-- Feature-teaching orientation view for the pristine / short-query
-         state (mockup state A): centered glyph / lead / sub / faint stack.
-         No clickable canned queries — calm cues only. -->
-    <div class="quick-recall__state-center">
-      <span class="quick-recall__state-glyph" aria-hidden="true">⌕</span>
-      <p class="quick-recall__state-lead">Search everything you've captured</p>
-      <p class="quick-recall__state-sub">Screen · Audio · Ask AI</p>
-      <p class="quick-recall__state-faint">
-        Type to find a moment{askAvailable ? ", or press " : "."}{#if askAvailable}<kbd
-            >⌃↵</kbd
-          > to ask AI.{/if}
+    <!-- Empty — orientation (frame 10): the two verbs this window knows. -->
+    <div class="ql-state">
+      <p class="ql-state__read">
+        Type to search your screen, mic and system audio.
+        {#if askAvailable}<span class="is-mono">⌃⏎</span> asks a question instead.{/if}
       </p>
+      <p class="ql-state__meta">⏎ opens a moment · esc closes</p>
     </div>
   {:else if search.loading && !search.hasResults}
-    <!-- Skeleton rows mirroring the redesigned row anatomy (mockup state B):
-         a section-label bar, then rows with the 150×94 thumb block and two
-         shimmer lines. Only the FIRST search (no prior results) shows the
-         full skeleton; a refetch on a subsequent keystroke keeps the prior
-         results visible-but-dimmed (the `--refetching` class on the list) so
-         the surface doesn't flash empty between keystrokes. The page dims the
-         detail pane alongside (DetailPane's `dim` prop). -->
-    <div class="quick-recall__skeletons" aria-hidden="true">
-      <div class="quick-recall__sk quick-recall__sk-label"></div>
-      {#each [
-        [70, 92],
-        [58, 84],
-        [76, 64],
-      ] as widths, i (i)}
-        <div class="quick-recall__skeleton-row">
-          <div class="quick-recall__sk quick-recall__skeleton-thumb"></div>
-          <div class="quick-recall__skeleton-body">
-            <span
-              class="quick-recall__sk quick-recall__skeleton-line"
-              style={`width:${widths[0]}%`}
-            ></span>
-            <span
-              class="quick-recall__sk quick-recall__skeleton-line"
-              style={`width:${widths[1]}%`}
-            ></span>
-          </div>
+    <!-- First-search skeleton: one shimmer row of grid cells, so the settle
+         into real cells doesn't jump. Refetches keep prior results dimmed
+         (the --refetching class) instead. -->
+    <div class="qgrid qgrid--skeleton" aria-hidden="true">
+      {#each [0, 1, 2] as i (i)}
+        <div class="ql-sk-cell">
+          <div class="ql-sk ql-sk__f"></div>
+          <div class="ql-sk ql-sk__l1"></div>
+          <div class="ql-sk ql-sk__l2"></div>
         </div>
       {/each}
     </div>
   {:else if search.errorMessage}
-    <!-- A backend search failure (mockup state C): centered danger glyph +
-         lead + danger detail, with an explicit recovery (re-issue the same
-         query) mirroring the Ask AI "Retry" so the path isn't a soft dead end
-         the user has to guess at by editing the query. -->
-    <div class="quick-recall__state-center">
-      <span
-        class="quick-recall__state-glyph quick-recall__state-glyph--danger"
-        aria-hidden="true">⚠</span
-      >
-      <p class="quick-recall__state-lead">Search failed</p>
-      <p class="quick-recall__state-sub quick-recall__state-sub--danger">
-        {search.errorMessage}
-      </p>
-      <div class="quick-recall__state-actions">
+    <!-- Error (frame 10): honest about the index, the field stays usable.
+         The Retry rides inline until the toast system (slice 8) lands. -->
+    <div class="ql-state">
+      <p class="ql-state__title">Search didn't run</p>
+      <p class="ql-state__meta">{search.errorMessage}</p>
+      <div class="ql-state__actions">
         <button
           type="button"
-          class="quick-recall__state-btn quick-recall__state-btn--accent"
+          class="btn btn--primary"
           onclick={() => void search.runSearch(search.resultsQuery)}
         >
           Retry
@@ -125,406 +105,222 @@
       </div>
     </div>
   {:else if search.resultsPaused}
-    <!-- Paused-results state. The backend suppressed results for a malformed
-         filter, so we render neither stale cards nor the bare "No matches"
-         empty state. No mockup panel exists for this branch — it borrows the
-         error/no-match centered pattern (warn-tinted glyph: user-fixable, not
-         a failure) pointing back at the inline error above. This branch
-         precedes showEmpty / the normal results branch so a parse error
-         always wins here. Ask AI stays reachable, so the question path is
-         open even while search results are paused. -->
-    <div class="quick-recall__state-center">
-      <span
-        class="quick-recall__state-glyph quick-recall__state-glyph--warn"
-        aria-hidden="true">⚠</span
-      >
-      <p class="quick-recall__state-lead">Results paused</p>
-      <p class="quick-recall__state-sub">Fix the filter above to search.</p>
+    <!-- The backend suppressed results for a malformed filter: neither stale
+         cells nor a bare "no matches". Points back at the inline error. -->
+    <div class="ql-state">
+      <p class="ql-state__title">Results paused</p>
+      <p class="ql-state__meta">Fix the filter above to search.</p>
     </div>
   {:else if search.showEmpty}
-    <!-- No-matches recovery (mockup state D): centered ⌀ + lead + sub, then
-         the recovery paths — loosening a filter when chips narrow the query,
-         and the accent Ask AI pivot so the empty result isn't a dead end. -->
-    <div class="quick-recall__state-center">
-      <span class="quick-recall__state-glyph" aria-hidden="true">⌀</span>
-      <p class="quick-recall__state-lead">
-        No matches for “{search.resultsQuery}”
+    <!-- No match (frame 10): names the query and offers the one useful
+         widening when a date scope is narrowing it. -->
+    <div class="ql-state">
+      <p class="ql-state__title">
+        No matches for “{search.residualQuery.trim() || search.resultsQuery}”{search.dateScope === "today"
+          ? " today"
+          : search.dateScope === "week"
+            ? " this week"
+            : ""}
       </p>
-      <p class="quick-recall__state-sub">
-        Nothing captured matches all terms{search.activeFilterChips.length > 0
-          ? " and filters"
-          : ""}.
+      <p class="ql-state__meta">
+        {#if dateScopeLabel !== null}
+          Scope is set to {dateScopeLabel}.
+        {:else}
+          Nothing captured matches all terms{search.activeFilterChips.length > 0
+            ? " and filters"
+            : ""}.
+        {/if}
       </p>
-      {#if search.activeFilterChips.length > 0}
-        <p class="quick-recall__state-faint">try removing a filter</p>
-      {/if}
-      {#if askAvailable}
-        <div class="quick-recall__state-actions">
+      <div class="ql-state__actions">
+        {#if dateScopeLabel !== null}
           <button
             type="button"
-            class="quick-recall__state-btn quick-recall__state-btn--accent"
-            onclick={onAskAi}
+            class="btn btn--primary"
+            onclick={() => search.applyDateScope("any")}
           >
-            Ask AI instead <kbd>⌃↵</kbd>
+            Search All Time
           </button>
-        </div>
-      {/if}
+        {/if}
+        {#if askAvailable}
+          <button type="button" class="btn" onclick={onAskAi}>
+            Ask AI instead <span class="kbd">⌃⏎</span>
+          </button>
+        {/if}
+      </div>
       {@render semanticHint()}
     </div>
   {:else}
     {@render semanticHint()}
-    <!-- Rows render the VISIBLE slices only; the flattened selection index
-         space is visible frames first, then visible audio. Clicking a row
-         SELECTS it (previews in the detail pane) — Enter is the open action.
-         The show-more row (mockup `.more-row`) reveals the already-fetched
-         remainder client-side; per the mockup it is click-only and NOT part
-         of the arrow-key roving order. -->
-    {#if search.frames.length > 0}
-      <div class="quick-recall__section" role="presentation">
-        <span class="quick-recall__section-label"
-          >Screen<span class="quick-recall__section-count"
-            >{search.frames.length}</span
-          ></span
+    {#each search.gridSections as section (section.label)}
+      <div class="qsec">
+        <span class="qsec__label">{section.label}</span>
+        <span class="qsec__count"
+          >{section.count} {section.count === 1 ? "result" : "results"}</span
         >
-        <div class="quick-recall__list" role="presentation">
-          {#each search.visibleFrames as result, i (result.groupKey)}
-            <SearchResultCard
-              kind="frame"
-              frame={result}
-              thumbnailUrl={search.thumbnailCache.get(result.thumbnailFrameId) ??
-                null}
-              id={`${OPTION_ID_PREFIX}${i}`}
-              selected={search.selectedIndex === i}
-              onselect={() => search.selectResultAt(i)}
-            />
-          {/each}
-        </div>
-        {#if moreRowLabel(search.frames.length, FRAME_VISIBLE_CAP, search.framesExpanded, "screen") !== null}
-          <button
-            type="button"
-            class="quick-recall__more-row"
-            tabindex="-1"
-            onclick={() => search.toggleFramesExpanded()}
-          >
-            {moreRowLabel(
-              search.frames.length,
-              FRAME_VISIBLE_CAP,
-              search.framesExpanded,
-              "screen",
-            )}
-          </button>
-        {/if}
       </div>
-    {/if}
-
-    {#if search.audio.length > 0}
-      <div class="quick-recall__section" role="presentation">
-        <span class="quick-recall__section-label"
-          >Audio<span class="quick-recall__section-count"
-            >{search.audio.length}</span
-          ></span
-        >
-        <div class="quick-recall__list" role="presentation">
-          {#each search.visibleAudio as result, i (result.groupKey)}
-            <SearchResultCard
-              kind="audio"
-              audio={result}
-              id={`${OPTION_ID_PREFIX}${search.visibleFrames.length + i}`}
-              selected={search.selectedIndex === search.visibleFrames.length + i}
-              onselect={() => search.selectResultAt(search.visibleFrames.length + i)}
-            />
-          {/each}
-        </div>
-        {#if moreRowLabel(search.audio.length, AUDIO_VISIBLE_CAP, search.audioExpanded, "audio") !== null}
-          <button
-            type="button"
-            class="quick-recall__more-row"
-            tabindex="-1"
-            onclick={() => search.toggleAudioExpanded()}
-          >
-            {moreRowLabel(
-              search.audio.length,
-              AUDIO_VISIBLE_CAP,
-              search.audioExpanded,
-              "audio",
-            )}
-          </button>
-        {/if}
+      <div class="qgrid" role="presentation">
+        {#each search.gridItems.slice(section.start, section.start + section.count) as item, i (item.kind === "frame" ? `f-${item.frame.groupKey}` : `a-${item.audio.groupKey}`)}
+          {@const index = section.start + i}
+          <ResultCell
+            {item}
+            thumbnailUrl={thumbnailFor(index)}
+            id={`${OPTION_ID_PREFIX}${index}`}
+            selected={search.selectedIndex === index}
+            onopen={() => search.openResultAt(index)}
+          />
+        {/each}
       </div>
-    {/if}
+    {/each}
   {/if}
 </div>
 
 <style>
-  .quick-recall__results {
-    flex: 1;
+  /* The scrollable media surface. Inset arithmetic in the header comment. */
+  .ql-body {
+    flex: 1 1 auto;
     min-height: 0;
-    overflow-y: auto;
-    padding: 12px 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  /* Left column of the list/detail split (mockup `.result-list`): fixed
-     ~700px at the 1120 design width, hairline divider against the detail
-     pane, subtle background so the pane split reads. */
-  .quick-recall__results--split {
-    flex: 0 0 700px;
     min-width: 0;
-    border-right: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    overflow-y: auto;
+    overflow-x: hidden;
+    position: relative;
+    padding: var(--s-4) 20px 20px;
   }
 
-  /* Refetch-in-flight: prior results stay on screen but dim slightly so the
-     keystroke-driven refresh reads as "updating" without the surface flashing
-     empty between every keystroke. */
-  .quick-recall__results--refetching {
+  /* Overlay-style scrollbar painting inside the right inset. */
+  .ql-body::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .ql-body::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--app-text-subtle) 45%, transparent);
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  .ql-body::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .ql-body--refetching {
     opacity: 0.55;
     transition: opacity 0.12s ease;
   }
 
-  .quick-recall__section {
+  /* Temporal section line: a --t-label mono line with a right-aligned count,
+     spacing only — no fills, no rules (the group idiom stays out of the media
+     surface). */
+  .qsec {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
-  .quick-recall__section-label {
-    display: flex;
-    justify-content: space-between;
     align-items: baseline;
-    font-size: var(--text-sm);
-    line-height: 1;
+    justify-content: space-between;
+    margin: var(--gap-section) 0 var(--s-12);
+  }
+
+  .qsec:first-child {
+    margin-top: var(--s-8);
+  }
+
+  .qsec__label {
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-    padding: 0 2px;
-  }
-
-  .quick-recall__section-count {
-    text-transform: none;
-    letter-spacing: 0;
     color: var(--app-text-subtle);
   }
 
-  .quick-recall__list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  /* Section show-more/show-less toggle (mockup `.more-row`): a quiet full-
-     width centered text row that reveals the already-fetched overflow. */
-  .quick-recall__more-row {
-    display: block;
-    width: 100%;
-    text-align: center;
-    font: inherit;
-    font-size: var(--text-sm);
-    line-height: 1;
+  .qsec__count {
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
-    background: none;
-    border: none;
-    border-radius: 7px;
-    padding: 8px 0;
-    cursor: pointer;
-    transition:
-      color 0.12s,
-      background 0.12s;
   }
 
-  .quick-recall__more-row:hover {
-    color: var(--app-accent);
-    background: var(--app-surface-hover);
+  /* 3-up fixed-cell grid: 3×349 + 2×16 = 1079 wide, row-aligned (no masonry);
+     row gap 22 leaves the caption air below each cell. */
+  .qgrid {
+    display: grid;
+    grid-template-columns: repeat(3, 349px);
+    gap: 22px 16px;
   }
 
-  .quick-recall__more-row:active {
-    background: var(--app-surface-active);
-  }
-
-  /* Shared centered state pattern (mockup `.sp-center`): glyph / lead / sub /
-     faint stack with an optional actions row, used by orientation, error,
-     results-paused, and no-matches. */
-  .quick-recall__state-center {
-    flex: 1;
-    min-height: 0;
+  /* ── Full-width states (frame 10) ─────────────────────────────────────── */
+  .ql-state {
+    min-height: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 8px;
+    gap: var(--s-12);
     text-align: center;
-    padding: 8px 40px 18px;
+    padding: var(--s-16) 40px;
   }
 
-  .quick-recall__state-glyph {
-    font-size: var(--text-xl);
-    line-height: 1;
-    color: var(--app-text-subtle);
-  }
-
-  .quick-recall__state-glyph--danger {
-    color: var(--app-danger-text);
-  }
-
-  .quick-recall__state-glyph--warn {
-    color: var(--app-warn);
-  }
-
-  .quick-recall__state-lead {
+  .ql-state__read {
     margin: 0;
-    font-size: var(--text-base);
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
+    color: var(--app-text-muted);
+  }
+
+  .ql-state__read .is-mono {
+    font-family: var(--app-font-mono);
+  }
+
+  .ql-state__title {
+    margin: 0;
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     color: var(--app-text-strong);
   }
 
-  .quick-recall__state-sub {
+  .ql-state__meta {
     margin: 0;
-    font-size: var(--text-sm);
-    line-height: 1.5;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-text-muted);
   }
 
-  .quick-recall__state-sub--danger {
-    color: var(--app-danger-text);
-  }
-
-  .quick-recall__state-faint {
-    margin: 0;
-    font-size: var(--text-xs);
-    line-height: 1.5;
-    color: var(--app-text-subtle);
-  }
-
-  .quick-recall__state-center kbd {
-    font-family: inherit;
-    font-size: var(--text-xs);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
-    margin: 0 1px;
-  }
-
-  .quick-recall__state-actions {
+  .ql-state__actions {
     display: flex;
-    gap: 8px;
-    margin-top: 4px;
-  }
-
-  /* Mockup `.sp-btn` / `.sp-btn.accent`: the accent variant carries the
-     recovery CTAs (Retry, Ask AI instead) in the mockup's Ask-AI-door idiom. */
-  .quick-recall__state-btn {
-    display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-family: inherit;
-    font-size: var(--text-sm);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 6px 11px;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
+    gap: var(--s-8);
+    margin-top: var(--s-4);
   }
 
-  .quick-recall__state-btn:hover {
-    color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
-  }
-
-  .quick-recall__state-btn:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__state-btn:active {
-    background: var(--app-surface-active);
-  }
-
-  .quick-recall__state-btn--accent {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-
-  .quick-recall__state-btn--accent:hover {
-    color: var(--app-accent);
-    border-color: var(--app-accent-strong);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-
-  .quick-recall__state-btn--accent:active {
-    background: color-mix(in srgb, var(--app-accent) 14%, var(--app-accent-bg));
-  }
-
-  .quick-recall__state-btn--accent kbd {
-    color: var(--app-accent);
-    background: transparent;
-    border-color: var(--app-accent-border);
-  }
-
-  /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
-  .quick-recall__semantic-hint {
+  /* In-search discoverability hint (keyword-only → Settings). */
+  .ql-hint {
     display: block;
     width: 100%;
-    margin: 4px 0 8px;
-    padding: 8px 10px;
+    margin: var(--s-8) 0 0;
+    padding: var(--s-8) var(--s-12);
     text-align: left;
-    font-size: var(--text-base);
-    line-height: 1.5;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-text-muted);
     background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    border: var(--hairline) solid var(--app-border);
+    border-radius: var(--r-md);
     cursor: pointer;
   }
 
-  /* Inside the centered no-matches state the hint is a bounded card below the
-     actions rather than a full-width band. */
-  .quick-recall__state-center .quick-recall__semantic-hint {
+  .ql-state .ql-hint {
     max-width: 420px;
-    margin: 8px 0 0;
+    text-align: center;
   }
 
-  .quick-recall__semantic-hint:hover {
+  .ql-hint:hover {
     color: var(--app-text);
     border-color: var(--app-accent);
   }
 
-  .quick-recall__semantic-hint:focus-visible {
-    outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+  /* ── First-search skeleton cells ──────────────────────────────────────── */
+  .qgrid--skeleton {
+    margin-top: var(--s-8);
   }
 
-  .quick-recall__semantic-hint:active {
-    background: var(--app-surface-active);
+  .ql-sk-cell {
+    width: 349px;
   }
 
-  /* Loading skeleton (mockup state B / `.sk`): a section-label bar plus rows
-     mirroring the redesigned row anatomy (150×94 thumb + two lines) so the
-     transition from skeleton to real cards doesn't jump. The shimmer is the
-     mockup's sweeping background-position gradient. */
-  .quick-recall__skeletons {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .quick-recall__sk {
-    border-radius: 5px;
+  .ql-sk {
+    border-radius: var(--r-md);
     background: linear-gradient(
       90deg,
       var(--app-surface-hover) 25%,
@@ -532,44 +328,29 @@
       var(--app-surface-hover) 75%
     );
     background-size: 400px 100%;
-    animation: quick-recall-shimmer 1.4s linear infinite;
+    animation: ql-shimmer 1.4s linear infinite;
   }
 
-  .quick-recall__sk-label {
+  .ql-sk__f {
+    width: 349px;
+    height: 196px;
+  }
+
+  .ql-sk__l1 {
+    width: 70%;
+    height: 10px;
+    margin-top: var(--s-8);
+    border-radius: 4px;
+  }
+
+  .ql-sk__l2 {
+    width: 45%;
     height: 9px;
-    width: 56px;
-    margin: 10px 8px 6px;
+    margin-top: var(--s-6);
+    border-radius: 4px;
   }
 
-  .quick-recall__skeleton-row {
-    display: flex;
-    gap: 12px;
-    align-items: center;
-    padding: 8px 12px;
-    border-radius: 9px;
-  }
-
-  .quick-recall__skeleton-thumb {
-    flex-shrink: 0;
-    width: 150px;
-    height: 94px;
-    border-radius: 6px;
-  }
-
-  .quick-recall__skeleton-body {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .quick-recall__skeleton-line {
-    display: block;
-    height: 9px;
-  }
-
-  @keyframes quick-recall-shimmer {
+  @keyframes ql-shimmer {
     from {
       background-position: -200px 0;
     }
@@ -578,16 +359,12 @@
     }
   }
 
-  /* Reduced-motion gating for this region's animations/transitions (the rest
-     of the surface is gated in the page / sibling components). */
   @media (prefers-reduced-motion: reduce) {
-    .quick-recall__sk {
+    .ql-sk {
       animation: none;
     }
 
-    .quick-recall__state-btn,
-    .quick-recall__more-row,
-    .quick-recall__results--refetching {
+    .ql-body--refetching {
       transition: none;
     }
   }

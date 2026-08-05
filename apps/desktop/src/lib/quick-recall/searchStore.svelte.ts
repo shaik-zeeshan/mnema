@@ -41,6 +41,19 @@ import {
 } from "./result-sections";
 import { FilterSurfaces } from "./filterSurfaces.svelte";
 import { appIcons } from "./app-icons.svelte";
+import {
+  buildGridItems,
+  buildGridSections,
+  moveInGrid,
+  type GridItem,
+  type GridMove,
+} from "./grid";
+import {
+  sourceScopeOf,
+  dateScopeOf,
+  setSourceScope as rewriteSourceScope,
+  setDateScope as rewriteDateScope,
+} from "./scope-chips";
 
 export const MIN_QUERY_LENGTH = 2;
 const DEBOUNCE_MS = 250;
@@ -372,23 +385,27 @@ export class SearchStore {
       visibleCount(this.audio.length, AUDIO_VISIBLE_CAP, this.audioExpanded),
     ),
   );
-  // The selection space (visible rows only). The total fetched count lives in
-  // `totalResultCount` (section headers / SR announcement).
-  resultCount = $derived(this.visibleFrames.length + this.visibleAudio.length);
+  // ── Quick Look grid (redesign slice 7, frame 08) ──────────────────────────
+  // Screen and audio results share ONE grid, merged newest-first and grouped
+  // into temporal day sections. `selectedIndex` indexes into this flattened
+  // grid order; the legacy visibleFrames/visibleAudio slices remain only for
+  // the pre-redesign list components' typechecking.
+  gridItems = $derived<GridItem[]>(buildGridItems(this.frames, this.audio));
+  gridSections = $derived(buildGridSections(this.gridItems));
+
+  // The selection space IS the grid; the DOM cell cap makes the two equal.
+  resultCount = $derived(this.gridItems.length);
   totalResultCount = $derived(this.frames.length + this.audio.length);
 
-  // The selected result (kind + DTO) — select = PREVIEW: this is what the
-  // detail pane renders from (Slice 5); nothing opens until Enter.
+  // The selected result (kind + DTO): the accent-ringed grid cell.
   selectedResult = $derived.by<SelectedSearchResult | null>(() => {
-    const index = this.selectedIndex;
-    if (index < 0) {
+    const item = this.gridItems[this.selectedIndex];
+    if (item === undefined) {
       return null;
     }
-    if (index < this.visibleFrames.length) {
-      return { kind: "frame", frame: this.visibleFrames[index] };
-    }
-    const audio = this.visibleAudio[index - this.visibleFrames.length];
-    return audio !== undefined ? { kind: "audio", audio } : null;
+    return item.kind === "frame"
+      ? { kind: "frame", frame: item.frame }
+      : { kind: "audio", audio: item.audio };
   });
 
   // The currently-selected result is an openable frame carrying a captured
@@ -463,16 +480,17 @@ export class SearchStore {
     });
   }
 
-  // Enter's action: open the visible result at `index` in the main-window
-  // timeline (frame or audio) and close Quick Recall.
+  // Enter's / a cell click's action: open the grid result at `index` in the
+  // main-window timeline (frame or audio) and close Quick Recall.
   openResultAt(index: number): void {
-    if (index < 0 || index >= this.resultCount) {
+    const item = this.gridItems[index];
+    if (item === undefined) {
       return;
     }
-    if (index < this.visibleFrames.length) {
-      void this.openFrameResult(this.visibleFrames[index]);
+    if (item.kind === "frame") {
+      void this.openFrameResult(item.frame);
     } else {
-      void this.openAudioResult(this.visibleAudio[index - this.visibleFrames.length]);
+      void this.openAudioResult(item.audio);
     }
   }
 
@@ -493,14 +511,31 @@ export class SearchStore {
     });
   }
 
-  moveSelection(delta: number): void {
-    if (this.resultCount === 0) {
-      return;
-    }
-    // Wrap around the ends; a first ArrowDown from -1 lands on the top result.
-    const base =
-      this.selectedIndex < 0 ? (delta > 0 ? -1 : 0) : this.selectedIndex;
-    this.selectedIndex = (base + delta + this.resultCount) % this.resultCount;
+  // 2D selection movement over the sectioned 3-up grid (frame 08): up/down by
+  // row (hopping sections at the boundary), left/right by cell.
+  moveSelectionInGrid(move: GridMove): void {
+    this.selectedIndex = moveInGrid(
+      this.selectedIndex,
+      move,
+      this.gridSections.map((s) => s.count),
+    );
+  }
+
+  // ── Scope chips (frame 08: All · Screen · Audio · Today · This week) ──────
+  // Sugar over the same operator tokens the typed syntax uses: the chip state
+  // is read from the query text and toggling rewrites those tokens, so chips,
+  // typed operators, and the Filter Picker stay one model.
+  sourceScope = $derived(sourceScopeOf(this.query));
+  dateScope = $derived(dateScopeOf(this.query));
+
+  applySourceScope(scope: "all" | "screen" | "audio"): void {
+    this.query = rewriteSourceScope(this.query, scope);
+    this.inputEl?.focus();
+  }
+
+  applyDateScope(scope: "any" | "today" | "week"): void {
+    this.query = rewriteDateScope(this.query, scope);
+    this.inputEl?.focus();
   }
 
   // ── Caret / app-catalog helpers ────────────────────────────────────────────
