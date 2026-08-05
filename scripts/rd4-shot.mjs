@@ -98,7 +98,9 @@ const TL_COVERAGE = (() => {
     const d = new Date(TL_NOW - back * 86400000);
     const key = d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") +
       "-" + String(d.getDate()).padStart(2, "0");
-    const first = 8 + (back % 3);
+    // Today's hours must start at 0: the hour list caps today at the CURRENT
+    // hour, so a fixture that only covers 8am+ reads "no frames" all morning.
+    const first = back === 0 ? 0 : 8 + (back % 3);
     const last = first + 3 + ((back * 5) % 7);
     const hours = [];
     for (let h = first; h <= Math.min(22, last); h++) hours.push(h);
@@ -123,6 +125,14 @@ const TL_SUMMARIES = (range) => {
   }
   return out;
 };
+// OCR observations for the active frame, in the payload's normalized space
+// (origin bottom-left). Enough regions for the overlay to have something real.
+const TL_OCR = Array.from({ length: 14 }, (_, i) => ({
+  text: ["fn verify_signature", "let raw = secret.as_bytes()", "// hash the raw whsec_ string",
+    "assert_eq!(sig, expected)", "webhook.rs", "cargo test -p licensegate"][i % 6],
+  confidence: 0.82 + (i % 7) * 0.02,
+  boundingBox: { x: 0.28 + (i % 3) * 0.02, y: 0.86 - i * 0.037, width: 0.12 + ((i * 7) % 30) / 100, height: 0.014 },
+}));
 // A real (silent) WAV so the drawer's <audio> loads instead of erroring.
 const TL_WAV = (() => {
   const n = 8000, b = new Uint8Array(44 + n * 2), dv = new DataView(b.buffer);
@@ -257,7 +267,15 @@ const TL_SETTINGS = {
   metadata: { enabled: true, browserUrlMode: "off" },
   privacy: { excludedApps: [], filterSystemAudio: true },
   access: { askAiEnabled: true, askAiMaxToolCalls: 12, askAiWebFetchEnabled: false },
-  aiRuntime: { enabled: false, providers: [], defaultModel: null, mcpServers: [] },
+  aiRuntime: { enabled: false, providers: [], defaultModel: null, mcpServers: [
+    // Two connectors so the MCP list draws its rows (hairline-separated, one
+    // fill) instead of only its empty hint. One OAuth, one stdio.
+    { id: "notion", label: "Notion", transport: "http", url: "https://mcp.notion.com/mcp",
+      command: null, args: [], env: [], enabled: true, authMode: "oauth", enabledTools: null },
+    { id: "filesystem", label: "Filesystem", transport: "stdio", url: null,
+      command: "npx", args: ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you"],
+      env: [], enabled: false, authMode: "none", enabledTools: null },
+  ] },
   userContext: { enabled: false, derivationBudgetTier: "balanced", backfillWindowDays: 7, backfillGoDeeper: false },
   semanticSearch: { enabled: SEM === "on", provider: "candle", modelId: SEM === "on" ? "nomic-embed-text-v1.5" : null },
   previewCacheTtlSeconds: 60, followTimelineLive: true,
@@ -305,10 +323,165 @@ const TX_MODELS = { modelsDirectory: "/Users/you/.mnema/models", providers: [
   ] },
 ] };
 
+// ── Quick Access fixture (additive) ─────────────────────────────────────────
+// Enough for search to return a drawable 3-up grid of REAL frames (the cells
+// carry pictures, not grey rectangles), for the no-match state to have a query
+// that genuinely matches nothing, and for the current-frame bar to have a shot
+// with real pixel dimensions. Set QA=empty to shoot the no-match face.
+const QA_MODE = ${JSON.stringify(process.env.QA ?? "")};
+const QA_EMPTY = QA_MODE === "empty";
+const QA_SHOT = (fill, ink, accent) => "data:image/svg+xml;base64," + btoa(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="698" height="392">' +
+  '<rect width="698" height="392" fill="' + fill + '"/>' +
+  '<rect width="698" height="34" fill="' + ink + '" opacity=".5"/>' +
+  '<rect width="150" height="392" y="34" fill="' + ink + '" opacity=".28"/>' +
+  Array.from({ length: 13 }, (_, i) =>
+    '<rect x="180" y="' + (58 + i * 24) + '" width="' + (120 + ((i * 83) % 420)) +
+    '" height="9" rx="2" fill="' + (i % 4 === 1 ? accent : ink) + '" opacity="' +
+    (i % 4 === 1 ? ".9" : ".55") + '"/>').join("") +
+  Array.from({ length: 9 }, (_, i) =>
+    '<rect x="24" y="' + (58 + i * 26) + '" width="' + (60 + ((i * 47) % 80)) +
+    '" height="8" rx="2" fill="' + ink + '" opacity=".4"/>').join("") +
+  '</svg>');
+const QA_APPS = [
+  ["com.microsoft.VSCode", "Code", "webhook.rs — mnema", "#1b1b24", "#6fb8f0", "#8fd694"],
+  ["com.apple.Safari", "Safari", "Polar webhook signatures — docs", "#f5f5f2", "#3d3d46", "#2c8ef3"],
+  ["com.tinyspeck.slackmacgap", "Slack", "#mnema-dev — webhook thread", "#3b2544", "#e7e7e2", "#4ade80"],
+  ["com.apple.Terminal", "Terminal", "cargo test webhook_verifier", "#0c0e0d", "#4ade80", "#f87171"],
+  ["md.obsidian", "Obsidian", "Q3 launch — webhook checklist", "#f5f5f2", "#3d3d46", "#a259ff"],
+  ["com.figma.Desktop", "Figma", "Checkout flow — webhook states", "#2c2c33", "#e7e7e2", "#f24e1e"],
+];
+const QA_SNIPPETS = [
+  "the <mark>webhook</mark> verifier hashes the raw whsec_ string",
+  "verifying a <mark>webhook</mark> signature requires the raw secret",
+  "the <mark>webhook</mark> is still 400-ing on retries",
+  "test webhook_verifier::<mark>webhook</mark>_raw_secret ... ok",
+  "ship the <mark>webhook</mark> retry budget before Friday",
+  "<mark>webhook</mark> failure state — inline error row",
+];
+const QA_FRAMES = QA_APPS.map(([appBundleId, appName, windowTitle, fill, ink, accent], i) => ({
+  groupKey: "qa-frame-" + i,
+  representativeFrame: {
+    id: 5000 + i, sessionId: "sess-fixture", filePath: "/fixture/qa-" + i + ".png",
+    capturedAt: new Date(TL_NOW - (i + 1) * 1800000).toISOString(),
+    width: 2560, height: 1440, appBundleId, appName, windowTitle,
+    url: null, ocrText: null, processorVersion: null, equivalenceHint: null,
+    createdAt: new Date(TL_NOW).toISOString(), updatedAt: new Date(TL_NOW).toISOString(),
+  },
+  groupStartAt: new Date(TL_NOW - (i + 1) * 1800000 - 240000).toISOString(),
+  groupEndAt: new Date(TL_NOW - (i + 1) * 1800000).toISOString(),
+  matchCount: [3, 1, 5, 1, 2, 1][i], snippet: QA_SNIPPETS[i],
+  appBundleId, appName, windowTitle,
+  url: i === 1 ? "docs.polar.sh/webhooks" : null,
+  thumbnailFrameId: 5000 + i, textSourceKind: "direct",
+  hasSecretRedactions: i === 3, secretRedactionCount: i === 3 ? 1 : 0,
+  foundByMeaning: i === 4,
+}));
+const QA_SHOTS = new Map(QA_APPS.map(([, , , fill, ink, accent], i) =>
+  [5000 + i, QA_SHOT(fill, ink, accent)]));
+const QA_AUDIO = [
+  ["microphone", "the <mark>webhook</mark> is still 400-ing on the raw secret", 298],
+  ["systemAudio", "we agreed the <mark>webhook</mark> retry budget stays at five", 154],
+  ["microphone", "delivery ids in the <mark>webhook</mark> log line, please", 96],
+].map(([sourceKind, snippet, seconds], i) => ({
+  groupKey: "qa-audio-" + i,
+  audioSegment: { ...TL_SEGS[0], id: 950 + i, sourceKind },
+  sourceKind, spanStartMs: 0, spanEndMs: seconds * 1000,
+  absoluteStartAt: new Date(TL_NOW - (i + 2) * 3600000).toISOString(),
+  absoluteEndAt: new Date(TL_NOW - (i + 2) * 3600000 + seconds * 1000).toISOString(),
+  matchCount: i + 1, snippet, alignedFrame: null,
+  hasSecretRedactions: false, secretRedactionCount: 0, foundByMeaning: false,
+}));
+const QA_SEARCH = (query) => ({
+  normalizedQuery: query, snapshotDocumentId: 1,
+  frames: QA_EMPTY ? [] : QA_FRAMES, audio: QA_EMPTY ? [] : QA_AUDIO,
+  hasMoreFrames: false, hasMoreAudio: false,
+  appliedRefinements: {}, residualQuery: query, parseErrors: [],
+});
+// The current-frame shot: a real image, so the freshness readout can report a
+// real pixel size instead of guessing one.
+// QA=stale ages the grab past the staleness threshold (the warn pill + re-grab);
+// QA=novision drops vision support (G2's upfront disclosure, before you type).
+const QA_CURRENT_FRAME = () => ({
+  imagePath: QA_SHOT("#2c2c33", "#e7e7e2", "#f24e1e"),
+  capturedAtUnixMs: Date.now() - (QA_MODE === "stale" ? 46000 : 400),
+  appName: "Figma", windowTitle: "Checkout flow — webhook states",
+  excludedAppNames: ["1Password"], visionSupported: QA_MODE !== "novision",
+  modelLabel: "gpt-oss-20b (local)",
+});
+
+// ── OCR / speaker / semantic model fixtures (additive) ───────────────────────
+// These three commands used to fall through to the generic "anything matching
+// /models|providers/ is an array" rule, which returns [] — the WRONG SHAPE.
+// A status?.providers.find(...) / status?.models.find(...) chain then threw
+// "Cannot read properties of undefined (reading 'find')" inside a $derived,
+// which aborts the whole settings derivation chain: every panel silently fell
+// back to its hardcoded defaults and no screenshot of Settings was true.
+const OCR_MODELS = { modelsDirectory: "/Users/you/.mnema/models", providers: [
+  { provider: "apple_vision", displayName: "Apple Vision", models: [{
+    provider: "apple_vision", modelId: null, displayName: "Apple Vision (system)",
+    description: "macOS-managed text recognition — no download.",
+    management: "os_managed", status: "os_managed", available: true,
+    installPath: null, missingFiles: [], failureMessage: null,
+    licenseLabel: null, sourceUrl: null, download: null, runtimeMessage: null,
+  }] },
+  { provider: "tesseract", displayName: "Tesseract", models: [{
+    provider: "tesseract", modelId: "tesseract-5.5.2", displayName: "Tesseract 5.5.2",
+    description: "Bundled OCR engine for non-Apple-Vision workflows.",
+    management: "app_managed", status: "missing", available: false,
+    installPath: null, missingFiles: ["tesseract"], failureMessage: null,
+    licenseLabel: "Apache-2.0", sourceUrl: null,
+    download: { byteSize: 90000000, sha256: "0".repeat(64), url: "https://example.invalid" },
+    runtimeMessage: null,
+  }] },
+] };
+const SPK_MODELS = { modelsDirectory: "/Users/you/.mnema/models", providers: [
+  { provider: "speakrs", displayName: "speakrs", models: [{
+    provider: "speakrs", modelId: null,
+    displayName: "speakrs · pyannote-community-1 + WeSpeaker",
+    description: "On-device diarization and speaker embeddings on CoreML.",
+    status: "installed", available: true,
+    installPath: "/Users/you/.mnema/models/speakrs", missingFiles: [],
+    failureMessage: null, licenseLabel: "MIT", sourceUrl: null,
+    // 419 MB — the corrected registry figure (G8), not the old 31 MB.
+    download: { byteSize: 419000000, sha256: "0".repeat(64), url: "https://example.invalid" },
+  }] },
+] };
+const SEM_MODELS = { modelsDirectory: "/Users/you/.mnema/models", models: [{
+  provider: "candle", modelId: "nomic-embed-text-v1.5", displayName: "Nomic Embed v1.5",
+  description: "English embedding model, 768 dimensions.", tier: "english",
+  dimension: 768, maxTokens: 2048, modelCode: "nomic-ai/nomic-embed-text-v1.5",
+  approxDownloadBytes: 274000000, licenseLabel: "Apache-2.0",
+  status: SEM === "on" ? "installed" : "missing", available: SEM === "on",
+  installPath: "/Users/you/.mnema/models/nomic", missingFiles: [],
+}] };
+
 window.__TAURI_INTERNALS__ = {
   invoke: async (cmd, args) => {
     const req = (args && (args.request ?? args.payload ?? args)) || {};
+    // Capture every Tauri event listener so EVAL can drive a streaming surface
+    // (\`__RD4_EMIT("ask_ai_update", payload)\`) without a backend.
+    if (cmd === "plugin:event|listen") {
+      (window.__RD4_LISTENERS[args.event] ??= []).push(args.handler);
+      return window.__RD4_LISTENERS.__n++;
+    }
     if (cmd === "take_pending_license_deep_link") return null;          // the one legal null
+    if (cmd === "search_capture") return QA_SEARCH(req.query ?? "");
+    if (cmd === "get_frame_scrub_previews")
+      return { previews: (req.frameIds ?? []).map((frameId) => ({
+        frameId,
+        preview: QA_SHOTS.has(frameId)
+          ? { mimeType: "image/svg+xml", filePath: QA_SHOTS.get(frameId),
+              sourceKind: "original_frame", hasSecretRedactions: false, secretRedactionCount: 0 }
+          : null,
+        missingReason: QA_SHOTS.has(frameId) ? null : "not_indexed",
+      })) };
+    if (cmd === "capture_current_frame") return QA_CURRENT_FRAME();
+    if (cmd === "quick_recall_set_collapsed") return null;
+    if (cmd === "ask_ai_availability") return { available: true, reason: null };
+    if (cmd === "ask_ai_start" || cmd === "ask_ai_followup" || cmd === "ask_ai_cancel") return null;
+    if (cmd === "ask_ai_snapshot") return null;
+    if (cmd === "get_semantic_search_model_status") return { installed: true, downloading: false };
     if (cmd === "get_moments") return OV_EMPTY ? [] : OV_MOMENTS;
     if (cmd === "get_conversations") return OV_EMPTY ? [] : OV_CONVERSATIONS;
     if (cmd === "list_conversations") return OV_EMPTY ? [] : OV_ASKS;
@@ -331,6 +504,18 @@ window.__TAURI_INTERNALS__ = {
       return Array.from({ length: req.bucketCount ?? 96 }, (_, i) =>
         0.12 + 0.78 * Math.abs(Math.sin(i / 3.7)) * (0.45 + 0.55 * Math.abs(Math.cos(i / 11))));
     if (cmd === "list_speaker_turns") return TL_TURNS;
+    // One completed OCR job per frame, so the rail's OCR cluster renders its
+    // real face (engine label + rerun + region count) instead of "no OCR data".
+    if (cmd === "list_processing_jobs" && req.subjectType === "frame")
+      return [{ id: 61, subjectType: "frame", subjectId: req.subjectId, processor: "ocr",
+        status: "completed", attempts: 1, payloadJson: JSON.stringify({ provider: "apple_vision" }),
+        queuedAt: new Date(TL_NOW - 60000).toISOString(), startedAt: null, finishedAt: null,
+        lastError: null, createdAt: new Date(TL_NOW).toISOString(), updatedAt: new Date(TL_NOW).toISOString() }];
+    if (cmd === "get_processing_result")
+      return { id: 61, jobId: 61, processorVersion: "apple-vision", structuredPayloadJson: JSON.stringify({
+        provider: "apple_vision",
+        observations: TL_OCR,
+      }), createdAt: new Date(TL_NOW).toISOString() };
     if (cmd === "get_recording_settings") return TL_SETTINGS;
     if (cmd === "get_microphone_controller_state" || cmd === "update_microphone_controller")
       return { devices: [TL_MIC], preference: { mode: "default", deviceId: null },
@@ -339,6 +524,11 @@ window.__TAURI_INTERNALS__ = {
     if (cmd === "get_app_notifications") return [];
     if (cmd === "get_license_status") return { licensed: { kind: "purchased", updatesUntilMs: Date.now() + 3.15e10 } };
     if (cmd === "get_audio_transcription_model_status") return TX_MODELS;
+    if (cmd === "get_ocr_model_status") return OCR_MODELS;
+    if (cmd === "mcp_oauth_statuses") return [{ id: "notion", state: "authorized" }];
+    if (cmd === "get_speaker_analysis_model_status") return SPK_MODELS;
+    if (cmd === "get_semantic_search_model_status") return SEM_MODELS;
+    if (cmd === "list_semantic_search_supported_models") return SEM_MODELS.models;
     if (cmd.startsWith("update_"))
       return { domain: req.domain ?? args?.domain ?? "capture_sources", settings: { ...TL_SETTINGS, ...req } };
     if (cmd.startsWith("list_")) return [];
@@ -350,6 +540,20 @@ window.__TAURI_INTERNALS__ = {
   },
   transformCallback: (c) => c,
   convertFileSrc: (x) => x,
+  // getCurrentWindow() reads this synchronously; without it every surface that
+  // touches its own window throws inside an $effect and the effects AFTER it
+  // never run (which is why search looked dead here before).
+  metadata: { currentWindow: { label: "main" }, currentWebview: { windowLabel: "main", label: "main" } },
+};
+window.__RD4_LISTENERS = { __n: 1 };
+// Remember the last generated id. Ask AI keys its whole stream on a UUID minted
+// inside the component, so EVAL has no other way to address the live turn.
+const __rd4_uuid = crypto.randomUUID.bind(crypto);
+crypto.randomUUID = () => (window.__RD4_LAST_UUID = __rd4_uuid());
+// Deliver a fake backend event to every listener registered for it. The one
+// door EVAL uses to shoot a mid-stream surface without a running backend.
+window.__RD4_EMIT = (event, payload) => {
+  for (const h of window.__RD4_LISTENERS[event] ?? []) h({ event, id: 0, payload });
 };
 window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: async () => {} };
 `;
@@ -415,6 +619,15 @@ if (process.env.PRESS) {
   }
   await page.waitForTimeout(600);
 }
+// HOVER parks the pointer a quarter of the way into an element — the only way
+// to photograph a hover-only state (the timeline's ghost playhead + its time
+// bubble). The pointer stays put through the screenshot.
+if (process.env.HOVER) {
+  const box = await page.locator(process.env.HOVER).first().boundingBox().catch(() => null);
+  if (box) await page.mouse.move(box.x + box.width * 0.25, box.y + box.height / 2);
+  else errors.push(`HOVER ${process.env.HOVER}: no box`);
+  await page.waitForTimeout(700);
+}
 
 // Settings is one long scrolling column, so most sections are below the fold.
 // SCROLL is a selector scrolled to the top of its pane before the shot — the
@@ -427,6 +640,15 @@ if (process.env.SCROLL) {
     .evaluate((el) => el.scrollIntoView({ block: "start" }))
     .catch((e) => errors.push(`SCROLL ${process.env.SCROLL}: ${e.message}`));
   await page.waitForTimeout(500);
+}
+
+// Last resort for a state no click/keypress can reach — chiefly a MID-STREAM
+// surface, which only exists while a backend is pushing events. EVAL is page JS
+// run just before the shot; `window.__RD4_EMIT(event, payload)` delivers a fake
+// backend event to the app's real listeners.
+if (process.env.EVAL) {
+  await page.evaluate(process.env.EVAL).catch((e) => errors.push(`EVAL: ${e.message}`));
+  await page.waitForTimeout(700);
 }
 
 const name = `${route.replace(/\W+/g, "_") || "root"}${process.env.SUFFIX ? "-" + process.env.SUFFIX : ""}-${theme}-${size}.png`;

@@ -532,7 +532,7 @@
        One control owns both jobs — there is no second date input and no from/to
        pair anywhere on the timeline. -->
   <button
-    class="pill pill--quiet timeline__jump-trigger"
+    class="ti-pop timeline__jump-trigger"
     class:timeline__jump-trigger--open={open}
     onclick={toggle}
     bind:this={pickerTriggerEl}
@@ -542,7 +542,7 @@
     use:tip={"Jump to date and time (J)"}
   >
     <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
+    <span class="is-mono is-num timeline__jump-label">{triggerLabel}</span>
     <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
     <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
   </button>
@@ -571,7 +571,7 @@
       <div class="timeline__picker-head">
         <span class="timeline__picker-title">Jump to date &amp; time</span>
         <button
-          class="btn btn--accent btn--sm timeline__picker-global-latest"
+          class="btn btn--ghost btn--sm timeline__picker-global-latest"
           onclick={() => void commitGlobalLatest()}
           disabled={timelineBusy || jumping}
           use:tip={"Jump to latest frame"}
@@ -642,16 +642,17 @@
     gap: 6px;
     position: relative;
   }
-  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
-     reset and the open ring are local. */
+  /* `.ti-pop`: the direction's popup button (tactile-surfaces.css). The position
+     pill IS a popup button — the label is where you are, the chevron is the
+     jump — so it takes that primitive rather than a bespoke one. */
   .timeline__jump-trigger {
-    border: 0;
     cursor: pointer;
+    padding: 0 6px 0 8px;
     font-variant-numeric: tabular-nums;
     max-width: 260px;
   }
   .timeline__jump-trigger:hover {
-    background: var(--app-surface-active);
+    background: var(--app-surface-hover);
   }
   .timeline__jump-trigger--open {
     box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
@@ -662,8 +663,8 @@
     color: var(--app-text-muted);
   }
   .timeline__jump-chevron :global(svg) {
-    width: 11px;
-    height: 11px;
+    width: 10px;
+    height: 10px;
   }
   .timeline__jump-latest {
     flex: 0 0 auto;
@@ -671,7 +672,7 @@
   .timeline__jump-icon {
     display: inline-flex;
     align-items: center;
-    color: var(--app-accent);
+    color: var(--app-text-muted);
   }
   .timeline__jump-icon :global(svg) {
     width: 13px;
@@ -688,7 +689,11 @@
     margin-left: 2px;
   }
 
-  /* ── Popover shell ──────────────────────────────────────────────────────── */
+  /* ── Popover shell ──────────────────────────────────────────────────────────
+     TACTILE: the jump menu is one of the three things on this surface allowed
+     to be a bordered container — it genuinely floats. NSMenu anatomy: a
+     translucent raised material, a hairline ring, 4px of padding around the
+     rows, section headers as mono eyebrows, hairline separators. */
   .timeline__picker {
     position: fixed;
     z-index: 20;
@@ -697,25 +702,30 @@
     width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    box-shadow: var(--app-shadow-popover);
+    padding: var(--s-4);
+    background: color-mix(in srgb, var(--app-surface-raised) 92%, transparent);
+    backdrop-filter: saturate(180%) blur(24px);
+    border: 0;
+    border-radius: var(--r-lg);
+    box-shadow:
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text);
   }
   .timeline__picker-head {
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 8px 12px;
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    padding: var(--s-6) var(--s-8) var(--s-3);
+    background: none;
+    border-bottom: 0;
   }
   .timeline__picker-title {
     flex: 1;
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
   }
@@ -735,7 +745,7 @@
     min-width: 0;
     min-height: 0;
     overflow-y: auto;
-    border-right: 1px solid var(--app-border);
+    border-right: var(--hairline) solid var(--app-border);
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
   }
@@ -753,19 +763,23 @@
   }
 
   /* ── Footer state strip ─────────────────────────────────────────────────── */
+  /* The footer is a menu footnote, not a strip: one hairline separator above
+     it, no fill, no border. */
   .timeline__picker-foot {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    margin-top: var(--s-4);
+    padding: var(--s-6) var(--s-8) var(--s-3);
+    border-top: var(--hairline) solid var(--app-border);
+    background: none;
     font-size: var(--t-label);
-    min-height: 32px;
+    min-height: 28px;
   }
   .timeline__picker-foot-span {
     color: var(--app-text-subtle);
-    letter-spacing: 0.03em;
+    font-family: var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     font-variant-numeric: tabular-nums;
   }
   .timeline__picker-foot-msg {

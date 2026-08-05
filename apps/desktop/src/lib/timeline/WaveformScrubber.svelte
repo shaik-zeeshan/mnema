@@ -28,7 +28,15 @@
   const currentMs = $derived(currentTime * 1000);
 </script>
 
-<div class="wave" class:wave--bars={bars.length > 0} class:wave--compact={compact}>
+<!-- TACTILE: with real peaks the scrubber is a WELL — the one recess treatment
+     every instrument face in this direction shares. Empty peaks keep the plain
+     track (no well around nothing). -->
+<div
+  class="wave"
+  class:wave--bars={bars.length > 0}
+  class:ti-well={bars.length > 0}
+  class:wave--compact={compact}
+>
   {#if bars.length > 0}
     <div class="wave__bars" aria-hidden="true">
       {#each bars as bar, i (i)}
@@ -76,24 +84,22 @@
   }
 
   .wave--bars {
-    height: 30px;
-    border-radius: 4px;
-    padding: 0 1px;
+    height: 34px;
+    padding: 0 var(--s-6);
   }
 
   .wave--bars.wave--compact {
-    height: 20px;
+    height: 24px;
   }
 
   .wave__bars {
     position: absolute;
-    inset: 0;
+    inset: 0 var(--s-6);
     display: flex;
     align-items: center;
     gap: 1px;
     pointer-events: none;
     overflow: hidden;
-    border-radius: 4px;
   }
 
   .wave__bar {
@@ -123,7 +129,7 @@
     margin: 0;
     background: transparent;
     cursor: pointer;
-    color: var(--app-status-running-fg);
+    color: var(--app-accent);
   }
 
   .wave__range:disabled {
@@ -136,8 +142,8 @@
     border-radius: 2px;
     background: linear-gradient(
       to right,
-      var(--app-record-glyph-start) 0%,
-      var(--app-record-glyph-start) var(--audio-progress, 0%),
+      var(--app-accent) 0%,
+      var(--app-accent) var(--audio-progress, 0%),
       var(--app-surface-hover) var(--audio-progress, 0%),
       var(--app-surface-hover) 100%
     );
@@ -152,7 +158,7 @@
   .wave__range::-moz-range-progress {
     height: 4px;
     border-radius: 2px;
-    background: var(--app-record-glyph-start);
+    background: var(--app-accent);
   }
 
   .wave__range::-webkit-slider-thumb {
@@ -161,7 +167,7 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-status-running-fg);
+    background: var(--app-accent);
     border: 2px solid var(--app-surface-raised);
     margin-top: -3px;
     transition: transform 0.12s, box-shadow 0.12s;
@@ -171,7 +177,7 @@
     width: 10px;
     height: 10px;
     border-radius: 50%;
-    background: var(--app-status-running-fg);
+    background: var(--app-accent);
     border: 2px solid var(--app-surface-raised);
     transition: transform 0.12s, box-shadow 0.12s;
   }
@@ -179,13 +185,13 @@
   .wave__range:hover::-webkit-slider-thumb,
   .wave__range:focus-visible::-webkit-slider-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
+    box-shadow: 0 0 0 4px var(--app-accent-glow);
   }
 
   .wave__range:hover::-moz-range-thumb,
   .wave__range:focus-visible::-moz-range-thumb {
     transform: scale(1.15);
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
+    box-shadow: 0 0 0 4px var(--app-accent-glow);
   }
 
   .wave__range:focus-visible {
@@ -211,14 +217,14 @@
     box-shadow: var(--app-ring);
   }
 
+  /* The drawer's playhead — the mockup draws it in recording red, flat. */
   .wave__head {
     position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 1px;
-    background: var(--app-accent-strong, var(--app-accent));
+    top: 2px;
+    bottom: 2px;
+    width: 2px;
+    background: var(--app-record);
     pointer-events: none;
-    box-shadow: 0 0 0 1px var(--app-accent-glow);
   }
 
   .wave--compact .wave__head::after {
@@ -233,7 +239,7 @@
     width: 7px;
     height: 7px;
     border-radius: 999px;
-    background: var(--app-accent-strong, var(--app-accent));
+    background: var(--app-record);
   }
 
   @media (prefers-reduced-motion: reduce) {

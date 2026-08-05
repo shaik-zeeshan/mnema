@@ -70,13 +70,14 @@
 </footer>
 
 <style>
+  /* TACTILE: no strip, no rule — the transport sits on the drawer surface. */
   .transport {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
+    padding: var(--s-6) var(--s-12) var(--s-12);
+    border-top: 0;
+    background: none;
   }
 
   .playbtn {
@@ -85,10 +86,11 @@
     flex: none;
     display: grid;
     place-items: center;
-    border: 1px solid var(--app-status-running-border);
-    border-radius: 999px;
-    background: color-mix(in srgb, var(--app-record-glyph-start) 10%, transparent);
-    color: var(--app-status-running-fg);
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--app-surface-raised);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    color: var(--app-text-strong);
     cursor: pointer;
     transition:
       background 0.12s,
@@ -96,7 +98,7 @@
   }
 
   .playbtn:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--app-record-glyph-start) 18%, transparent);
+    background: var(--app-surface-hover);
   }
 
   .playbtn:active:not(:disabled) {
@@ -115,7 +117,8 @@
 
   .time {
     min-width: 5ch;
-    font-size: 11px;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
     color: var(--app-text-muted);
   }
@@ -125,9 +128,9 @@
     display: inline-flex;
     align-items: center;
     gap: 8px;
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: var(--t-meta);
+    text-transform: none;
+    letter-spacing: 0;
     color: var(--app-text-muted);
   }
 

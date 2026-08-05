@@ -632,12 +632,15 @@
     flex-direction: column;
     max-height: 50vh;
     overflow: hidden;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
+    /* TACTILE: the drawer genuinely floats over the timeline, so it earns a
+       shadow and a hairline ring — the one depth cue this direction allows on
+       something detached. Everything INSIDE it is flat. */
+    background: var(--app-surface);
+    border: 0;
+    border-radius: var(--r-lg);
     box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      0 2px 0 rgba(255, 255, 255, 0.02) inset;
+      var(--app-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.32)),
+      0 0 0 var(--hairline) var(--app-border-strong);
     animation: audio-drawer-rise 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
     outline: none;
   }
@@ -653,24 +656,9 @@
   }
 
   .audio-drawer:focus-visible {
-    border-color: var(--app-accent);
     box-shadow:
-      0 18px 40px rgba(0, 0, 0, 0.55),
-      var(--app-ring);
-  }
-
-  /* The dark lift is far too heavy on paper. */
-  :global([data-theme="light"]) .audio-drawer {
-    background: var(--app-surface);
-    border-color: var(--app-border);
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
-      0 2px 0 rgba(255, 255, 255, 0.6) inset;
-  }
-
-  :global([data-theme="light"]) .audio-drawer:focus-visible {
-    box-shadow:
-      0 18px 40px rgba(20, 28, 40, 0.12),
+      var(--app-shadow-popover, 0 8px 24px rgba(0, 0, 0, 0.32)),
+      0 0 0 var(--hairline) var(--app-accent-border),
       var(--app-ring);
   }
 
@@ -729,15 +717,16 @@
     right: 14px;
     bottom: 52px;
     padding: 4px 10px;
-    border: 1px solid var(--app-border-hover, var(--app-border-strong));
-    border-radius: 999px;
+    border: 0;
+    border-radius: var(--r-pill);
     background: var(--app-surface-raised);
-    box-shadow: var(--app-shadow-popover);
+    box-shadow:
+      var(--app-shadow-popover),
+      0 0 0 var(--hairline) var(--app-border-strong);
     color: var(--app-text-strong);
     font: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: var(--t-meta);
+    letter-spacing: 0;
     cursor: pointer;
   }
 

@@ -118,32 +118,39 @@
 </header>
 
 <style>
+  /* TACTILE: the drawer's identity strip sits ON the drawer — no second fill,
+     no rule under it. Every number in it is mono + tabular. */
   .rhead {
     display: flex;
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle, var(--app-surface));
-    font-size: 11px;
+    padding: var(--s-8) var(--s-12) var(--s-6);
+    border-bottom: 0;
+    background: none;
+    font-size: var(--t-meta);
     color: var(--app-text-muted);
   }
 
   .tnum {
+    font-family: var(--app-font-mono);
     font-variant-numeric: tabular-nums;
   }
 
   .tag {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    gap: 5px;
+    height: 22px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
+    font-size: var(--t-meta);
+    color: var(--app-text-muted);
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   .tag__swatch {
@@ -163,7 +170,7 @@
 
   .rhead__index {
     color: var(--app-text-strong);
-    font-weight: 700;
+    font-weight: var(--w-medium);
   }
 
   .rhead__sep {
@@ -171,8 +178,9 @@
   }
 
   .rhead__model {
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
   }
 
@@ -182,7 +190,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--app-font-mono);
-    font-size: 10px;
+    font-size: var(--t-label);
     color: var(--app-text-subtle);
   }
 
@@ -194,14 +202,16 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-neutral-border, var(--app-border-strong));
-    border-radius: 999px;
-    background: var(--app-neutral-bg, transparent);
+    height: 22px;
+    padding: 0 9px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--app-surface-subtle);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border);
     color: var(--app-text-muted);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: var(--t-meta);
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   .statuspill__dot {
@@ -213,46 +223,48 @@
   }
 
   .statuspill--ok {
-    border-color: var(--app-accent-border);
     background: var(--app-accent-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
     color: var(--app-accent);
   }
 
   .statuspill--work {
-    border-color: var(--app-info-border, var(--app-border-strong));
-    background: color-mix(in srgb, var(--app-info) 10%, transparent);
+    background: var(--app-info-bg, color-mix(in srgb, var(--app-info) 10%, transparent));
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-info-border, var(--app-border-strong));
     color: var(--app-info);
   }
 
   .statuspill--warn {
-    border-color: var(--app-warn-border);
-    background: color-mix(in srgb, var(--app-warn) 10%, transparent);
+    background: var(--app-warn-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-warn-border);
     color: var(--app-warn);
   }
 
   .statuspill--bad {
-    border-color: var(--app-danger-border);
-    background: color-mix(in srgb, var(--app-danger) 10%, transparent);
+    background: var(--app-danger-bg, color-mix(in srgb, var(--app-danger) 10%, transparent));
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-danger-border);
     color: var(--app-danger-text, var(--app-danger));
   }
 
+  /* Chrome actions are quiet ghost buttons in the house voice — sentence case,
+     no uppercase tracking. */
   .ghost {
-    padding: 3px 9px;
-    border: 1px solid transparent;
-    border-radius: 5px;
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
     color: var(--app-text-muted);
     font: inherit;
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
+    font-size: var(--t-meta);
+    text-transform: none;
+    letter-spacing: 0;
     cursor: pointer;
   }
 
   .ghost:hover:not(:disabled),
   .ghost:focus-visible:not(:disabled) {
     background: var(--app-surface-hover);
-    border-color: var(--app-border-strong);
     color: var(--app-text-strong);
     outline: none;
   }
@@ -263,19 +275,18 @@
   }
 
   .ghost[aria-pressed="true"] {
-    color: var(--app-accent);
-    border-color: var(--app-accent-border);
-    background: var(--app-accent-bg);
+    color: var(--app-accent-contrast);
+    background: var(--app-accent);
   }
 
   .rhead__close {
-    width: 24px;
-    height: 24px;
+    width: var(--h-sm);
+    height: var(--h-sm);
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid var(--app-border-strong);
-    border-radius: 4px;
+    border: 0;
+    border-radius: var(--r-md);
     background: transparent;
     color: var(--app-text-muted);
     cursor: pointer;
@@ -283,9 +294,8 @@
 
   .rhead__close:hover,
   .rhead__close:focus-visible {
-    color: var(--app-danger);
-    border-color: var(--app-danger-strong);
-    background: color-mix(in srgb, var(--app-danger-strong) 8%, transparent);
+    color: var(--app-text-strong);
+    background: var(--app-surface-hover);
     outline: none;
   }
 

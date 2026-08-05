@@ -121,24 +121,30 @@
     overflow: hidden;
   }
 
+  /* TACTILE: a menu section header — mono eyebrow, no fill, no rule. */
   .timeline__picker-time-head {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 8px;
-    padding: 8px 12px 6px;
-    border-bottom: 1px solid var(--app-border);
+    padding: var(--s-6) var(--s-8) var(--s-3);
+    border-bottom: 0;
   }
   .timeline__picker-day {
-    font-size: var(--t-ui);
-    color: var(--app-text-strong);
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
   .timeline__picker-day-count {
+    font-family: var(--app-font-mono);
     font-size: var(--t-label);
-    color: var(--app-text-subtle);
-    letter-spacing: 0.04em;
+    color: var(--app-text-faint);
+    letter-spacing: var(--ls-label);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
   }
@@ -146,7 +152,7 @@
   .timeline__picker-scroll {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: 6px 8px;
+    padding: 0 var(--s-4);
     min-height: 160px;
     scrollbar-width: thin;
     scrollbar-color: var(--app-border-strong) transparent;
@@ -160,24 +166,25 @@
     border: 2px solid var(--app-surface);
   }
 
+  /* 24px menu rows, same as the day rows above them. */
   .timeline__picker-hour {
     position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
     width: 100%;
+    height: 24px;
     text-align: left;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    color: var(--app-text);
+    border: 0;
+    border-radius: var(--r-sm);
+    color: var(--app-text-strong);
     font-family: var(--app-font-mono);
     font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
-    padding: 4px 8px;
-    margin-bottom: 1px;
+    padding: 0 var(--s-8);
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    transition: background 0.12s, color 0.12s;
   }
   /* Neutral density fill (NEVER accent) — pre-attentive "where was I busy". */
   .timeline__picker-hour-density {
@@ -208,8 +215,14 @@
     letter-spacing: 0.02em;
   }
   .timeline__picker-hour:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+  .timeline__picker-hour:not(:disabled):hover .timeline__picker-hour-count {
+    color: color-mix(in srgb, var(--app-accent-contrast) 75%, transparent);
+  }
+  .timeline__picker-hour:not(:disabled):hover .timeline__picker-hour-tick {
+    background: var(--app-accent-contrast);
   }
   .timeline__picker-hour:disabled {
     color: var(--app-text-faint);
@@ -237,7 +250,6 @@
   .timeline__picker-hour:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
   }
 
   .timeline__picker-msg {
@@ -276,9 +288,10 @@
   }
 
   .timeline__picker-time-foot {
-    padding: 8px 12px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    margin-top: var(--s-4);
+    padding: var(--s-4) var(--s-8) var(--s-6);
+    border-top: var(--hairline) solid var(--app-border);
+    background: none;
   }
   .timeline__picker-day-latest {
     width: 100%;

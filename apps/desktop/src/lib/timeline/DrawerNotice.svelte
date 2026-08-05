@@ -56,18 +56,21 @@
     text-align: center;
   }
 
+  /* TACTILE: a state panel is prose on the drawer surface — the type ramp does
+     the work, so no box, no tint, no glyph. */
   .notice h3 {
     margin: 0;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: var(--t-ui);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
   }
 
   .notice p {
     margin: 0;
-    max-width: 44ch;
-    font-size: 11px;
-    line-height: 1.6;
+    max-width: 52ch;
+    font-size: var(--t-meta);
+    line-height: 1.55;
     color: var(--app-text-muted);
   }
 
@@ -81,8 +84,9 @@
 
   .notice__mono {
     font-family: var(--app-font-mono);
-    font-size: 10px;
-    letter-spacing: 0.04em;
+    font-size: var(--t-label);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
   }
 

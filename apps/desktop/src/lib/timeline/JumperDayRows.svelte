@@ -40,26 +40,34 @@
 </script>
 
 <div class="jrows">
+  <!-- NSMenu anatomy: 24px rows, the shortcut column right-aligned, hairline
+       separators between the sections. "Now" carries the real L binding; the
+       other two have no shortcut and leave the column empty rather than
+       inventing one. -->
   <div class="jrows__targets">
+    <button type="button" class="jrows__row" onclick={onJumpNow} disabled={busy}>
+      <span class="jrows__day">Now</span>
+      <span class="jrows__kbd">L</span>
+    </button>
     <button
       type="button"
-      class="btn btn--ghost btn--sm jrows__target"
-      onclick={onJumpNow}
-      disabled={busy}>now</button
-    >
-    <button
-      type="button"
-      class="btn btn--ghost btn--sm jrows__target"
+      class="jrows__row"
       onclick={onJumpMorning}
-      disabled={busy || !morningEnabled}>this morning</button
+      disabled={busy || !morningEnabled}
     >
+      <span class="jrows__day">This morning</span>
+    </button>
     <button
       type="button"
-      class="btn btn--ghost btn--sm jrows__target"
+      class="jrows__row"
       onclick={onJumpYesterday}
-      disabled={busy || !yesterdayEnabled}>yesterday</button
+      disabled={busy || !yesterdayEnabled}
     >
+      <span class="jrows__day">Yesterday</span>
+    </button>
   </div>
+
+  <div class="jrows__sep" aria-hidden="true"></div>
 
   <div class="jrows__list">
     {#if loading}
@@ -87,51 +95,49 @@
 </div>
 
 <style>
-  /* `.btn` + `--ghost` / `--sm`: shared primitive (system.css §6). */
+  /* TACTILE — NSMenu anatomy. A menu row is 24px tall, highlights as a FULL-ROW
+     accent fill (never a border), and keeps its numbers mono + tabular. Depth
+     here is the menu's own material; nothing inside it is a box. */
   .jrows {
     display: flex;
     flex-direction: column;
     min-width: 0;
   }
 
-  .jrows__targets {
-    display: flex;
-    gap: 4px;
-    padding: 8px 8px 6px;
-    border-bottom: 1px solid var(--app-border);
-  }
-  .jrows__target {
-    flex: 1 1 0;
-    min-width: 0;
-    justify-content: center;
-  }
-
+  .jrows__targets,
   .jrows__list {
-    padding: 6px 8px;
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    padding: 0 var(--s-4);
+  }
+
+  .jrows__sep {
+    height: var(--hairline);
+    background: var(--app-border);
+    margin: var(--s-4) var(--s-8);
   }
 
   .jrows__row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-8);
     width: 100%;
+    height: 24px;
     text-align: left;
     background: transparent;
-    border: 1px solid transparent;
-    border-radius: 3px;
-    color: var(--app-text);
-    font-size: var(--t-meta);
-    padding: 4px 8px;
+    border: 0;
+    border-radius: var(--r-sm);
+    color: var(--app-text-strong);
+    font-size: var(--t-ui);
+    line-height: 1;
+    padding: 0 var(--s-8);
     cursor: pointer;
-    transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   .jrows__row:not(:disabled):hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
   }
+  /* A day with nothing recorded is DISABLED — you can never land on it (G6). */
   .jrows__row:disabled {
     color: var(--app-text-faint);
     cursor: not-allowed;
@@ -139,7 +145,6 @@
   .jrows__row:focus-visible {
     outline: none;
     box-shadow: var(--app-ring);
-    border-color: var(--app-accent-border);
   }
   /* "You are here" — the same accent LEFT BAR the calendar and hour list use. */
   .jrows__row--here {
@@ -152,13 +157,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* The ⌘ column: right-aligned, and empty when there is no real binding. */
+  .jrows__kbd,
   .jrows__hours {
     margin-left: auto;
     font-family: var(--app-font-mono);
-    font-size: var(--t-label);
+    font-size: var(--t-meta);
     font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
     white-space: nowrap;
+  }
+  .jrows__row:not(:disabled):hover .jrows__kbd,
+  .jrows__row:not(:disabled):hover .jrows__hours {
+    color: color-mix(in srgb, var(--app-accent-contrast) 75%, transparent);
   }
   .jrows__row:disabled .jrows__hours {
     color: var(--app-text-faint);
@@ -182,12 +193,16 @@
     background: var(--app-accent);
     opacity: 1;
   }
-  .jrows__row--here .jrows__bar i.jrows__cell--on {
-    background: var(--app-accent);
+  .jrows__row:not(:disabled):hover .jrows__bar i {
+    background: color-mix(in srgb, var(--app-accent-contrast) 40%, transparent);
+    opacity: 1;
+  }
+  .jrows__row:not(:disabled):hover .jrows__bar i.jrows__cell--on {
+    background: var(--app-accent-contrast);
   }
 
   .jrows__msg {
-    padding: 12px 8px;
+    padding: var(--s-12) var(--s-8);
     color: var(--app-text-subtle);
     font-size: var(--t-meta);
     text-align: center;
