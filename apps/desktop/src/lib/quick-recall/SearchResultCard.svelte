@@ -125,11 +125,6 @@
     <span class="search-card__title" use:tip={frame.windowTitle ?? undefined}>
       {frame.windowTitle ?? frame.appName ?? "Screen"}
     </span>
-    <span class="search-card__caption">
-      {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}
-    </span>
     <span class="search-card__media">
       <svg
         class="search-card__media-glyph"
@@ -156,12 +151,23 @@
           onload={() => (imgLoaded = true)}
         />
       {/if}
-      {@render badges(
-        frame.matchCount,
-        "matches",
-        frame.foundByMeaning,
-        frame.hasSecretRedactions,
-      )}
+      <span class="search-card__over">
+        {@render badges(
+          frame.matchCount,
+          "matches",
+          frame.foundByMeaning,
+          frame.hasSecretRedactions,
+        )}
+        <span class="search-card__aff" aria-hidden="true">⏎ open</span>
+      </span>
+      <!-- Text over an image gets an OPAQUE plate, never a soft scrim: a scrim
+           only dims what is under it, so the contrast is whatever the pixels
+           happen to be. -->
+      <span class="search-card__plate">
+        {#each parseSearchSnippet(frame.snippet) as segment}{#if segment.marked}<mark
+              >{segment.text}</mark
+            >{:else}{segment.text}{/if}{/each}
+      </span>
     </span>
   </button>
 {/if}
@@ -185,15 +191,10 @@
       >
     </span>
     <span class="search-card__title">
-      “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
-            >{segment.text}</mark
-          >{:else}{segment.text}{/if}{/each}”
-    </span>
-    <span class="search-card__caption"
-      >{formatDuration(
+      {audio.sourceKind === "microphone" ? "Microphone" : "System audio"} · {formatDuration(
         Math.max(0, (audio.spanEndMs - audio.spanStartMs) / 1000),
-      )} of speech</span
-    >
+      )} of speech
+    </span>
     <span
       class="search-card__media search-card__media--wave"
       class:search-card__media--mic={audio.sourceKind === "microphone"}
@@ -216,63 +217,70 @@
           />
         {/each}
       </svg>
-      {@render badges(
-        audio.matchCount,
-        "adjacent",
-        audio.foundByMeaning,
-        audio.hasSecretRedactions,
-      )}
+      <span class="search-card__over">
+        {@render badges(
+          audio.matchCount,
+          "adjacent",
+          audio.foundByMeaning,
+          audio.hasSecretRedactions,
+        )}
+        <span class="search-card__aff" aria-hidden="true">⏎ open</span>
+      </span>
+      <!-- The spoken words ARE the audio result, so they take the plate. -->
+      <span class="search-card__plate">
+        “{#each parseSearchSnippet(audio.snippet) as segment}{#if segment.marked}<mark
+              >{segment.text}</mark
+            >{:else}{segment.text}{/if}{/each}”
+      </span>
     </span>
   </button>
 {/if}
 
 <style>
-  /* One grid cell. The tile is a column: header / title / caption / media, with
-     the media bleeding to the left, right and bottom edges (negative margins
-     against the tile's padding) so it meets the bottom radius. */
+  /* One grid cell — and a TILE like every other tile in the app: a grouped
+     borderless fill, a constant 18px header row, then a payload that bleeds to
+     the tile edge and clips on the radius. Never a bordered card. */
   .search-card {
     display: flex;
     flex-direction: column;
-    gap: var(--s-4);
     width: 100%;
     min-width: 0;
-    padding: var(--s-12);
+    padding: var(--tile-pad) var(--tile-pad) 0;
     overflow: hidden;
     text-align: left;
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    border: 0;
+    border-radius: var(--tile-r);
+    background: var(--tile-fill);
     color: var(--app-text);
     font: inherit;
-    cursor: pointer;
+    cursor: default;
   }
 
   @media (prefers-reduced-motion: no-preference) {
     .search-card {
       transition:
-        background var(--dur-quick) var(--ease),
-        border-color var(--dur-quick) var(--ease),
+        background-color var(--dur-quick) var(--ease),
         box-shadow var(--dur-quick) var(--ease);
     }
   }
 
   .search-card:hover {
-    background: var(--app-surface-hover);
-    border-color: var(--app-border-hover);
+    background-color: var(--tile-fill-hover);
   }
 
-  /* Selected is the roving highlight: the accent ring the mockups settle on. */
+  /* Selected is the roving highlight: a 2px accent ring on the tile, the one
+     selection idiom on the surface. */
   .search-card:focus-visible,
   .search-card--selected,
   .search-card--selected:hover {
     outline: none;
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow: 0 0 0 2px var(--app-accent);
   }
 
-  /* Header: app / source eyebrow left, time hard right. */
+  /* The constant tile header row: mono app eyebrow left, mono time right, on
+     the one baseline every tile in the app shares. */
   .search-card__head {
+    flex: 0 0 var(--tile-hd);
     display: flex;
     align-items: center;
     gap: var(--gap-inline);
@@ -281,17 +289,16 @@
 
   .search-card__appicon {
     flex: none;
-    width: 14px;
-    height: 14px;
+    width: 13px;
+    height: 13px;
     object-fit: contain;
   }
 
   .search-card__app {
     flex: 1;
     min-width: 0;
-    font-size: var(--t-label);
-    line-height: 1;
-    letter-spacing: 0.06em;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-subtle);
     white-space: nowrap;
@@ -301,62 +308,55 @@
 
   .search-card__time {
     flex: none;
-    font-size: var(--t-label);
-    line-height: 1;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
     color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
 
-  /* One title line — the window title (screen) or the quoted transcript
+  /* One title line — the window title (screen) or the source + duration
      (audio). Never wraps: the tile's height is fixed by the media block. */
   .search-card__title {
     display: block;
     min-width: 0;
-    font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
+    margin-top: var(--s-4);
+    font: var(--w-medium) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
-  /* The matched text, so "why did this hit?" is answered on the tile itself —
-     the detail pane that used to carry it is gone with the grid. */
-  .search-card__caption {
-    display: block;
-    min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1.3;
-    color: var(--app-text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
+  /* Match highlight: accent at 26% plus a hairline, so it reads as a mark on
+     both a light plate and a dark screenshot. */
   .search-card mark {
     border-radius: 2px;
     background: color-mix(in srgb, var(--app-accent) 26%, transparent);
-    color: var(--app-text-strong);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    color: inherit;
     padding: 0 1px;
   }
 
-  /* 196px media, full-bleed to the tile's bottom radius. The backing stays dark
-     in both themes (it holds a screenshot); the glyph is a fixed mid-gray
-     legible on that backing while the image loads or when no preview exists. */
+  /* 196px of media, bleeding to the tile's left/right/bottom edges so it clips
+     on the tile radius. `--media-void` is what a frame that has not decoded
+     looks like: a hole in the tile, not a flash. */
   .search-card__media {
     position: relative;
-    display: grid;
-    place-items: center;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
     height: 196px;
-    margin: var(--s-4) calc(var(--s-12) * -1) calc(var(--s-12) * -1);
+    margin: 10px calc(var(--tile-pad) * -1) 0;
     overflow: hidden;
-    background: #101014;
-    color: #6a6a74;
+    background: var(--media-void);
+    color: var(--app-text-faint);
   }
 
   .search-card__media-glyph {
-    position: relative;
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
   }
 
   .search-card__thumb-img {
@@ -381,18 +381,27 @@
 
   /* Audio media: a source-coloured waveform field — deliberately NOT a
      screenshot (the words are the content). mic = green, sys = olive. */
+  .search-card__media--wave {
+    justify-content: flex-end;
+  }
+
   .search-card__media--mic {
-    background: var(--app-source-mic-bg);
-    color: var(--app-source-mic);
+    background: var(--app-src-mic-bg);
+    color: var(--app-src-mic);
   }
 
   .search-card__media--sys {
-    background: var(--app-source-sysaudio-bg);
-    color: var(--app-source-sysaudio);
+    background: var(--app-src-sys-bg);
+    color: var(--app-src-sys);
   }
 
   .search-card__wave {
-    width: calc(100% - var(--s-24));
+    position: absolute;
+    top: 50%;
+    left: var(--s-12);
+    right: var(--s-12);
+    transform: translateY(-50%);
+    width: auto;
     height: 56px;
   }
 
@@ -404,42 +413,88 @@
     fill: currentColor;
   }
 
-  /* Accessories float over the media's bottom edge rather than stealing a text
-     row — the tile's vertical budget is spent on the picture. */
+  /* The accessory strip floats over the media: badges left, the affordance
+     right. It names what ⏎ does on the tile the pointer is over. */
+  .search-card__over {
+    position: relative;
+    z-index: 2;
+    display: flex;
+    align-items: flex-end;
+    gap: var(--s-8);
+    padding: var(--s-8);
+  }
+
   .search-card__badges {
-    position: absolute;
-    left: var(--s-8);
-    right: var(--s-8);
-    bottom: var(--s-8);
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-4);
+    min-width: 0;
   }
 
   .search-card__badge {
     display: inline-flex;
     align-items: center;
-    font-size: var(--t-label);
-    line-height: 1;
-    padding: 3px 6px;
+    height: var(--o-badge);
+    padding: 0 var(--s-6);
     border-radius: var(--r-sm);
-    border: var(--hairline) solid var(--app-border-strong);
-    background: var(--app-surface-raised);
-    color: var(--app-text-muted);
+    background: rgba(10, 10, 14, 0.78);
+    color: #f2f2f5;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    letter-spacing: 0.05em;
     white-space: nowrap;
   }
 
   .search-card__badge--meaning {
     color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
   }
 
   .search-card__badge--redacted {
     color: var(--app-warn);
-    background: var(--app-warn-bg);
-    border-color: var(--app-warn-border);
+  }
+
+  .search-card__aff {
+    margin-left: auto;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: var(--o-badge);
+    padding: 0 var(--s-6);
+    border-radius: var(--r-sm);
+    background: rgba(10, 10, 14, 0.78);
+    color: #f2f2f5;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    opacity: 0;
+  }
+
+  .search-card:hover .search-card__aff,
+  .search-card--selected .search-card__aff {
+    opacity: 1;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .search-card__aff {
+      transition: opacity var(--dur-quick) var(--ease);
+    }
+  }
+
+  /* The matched text, so "why did this hit?" is answered on the tile itself.
+     An OPAQUE plate — a soft scrim leaves the contrast up to the screenshot. */
+  .search-card__plate {
+    position: relative;
+    z-index: 2;
+    padding: var(--s-6) var(--s-12);
+    background: rgba(8, 8, 12, 0.84);
+    backdrop-filter: blur(6px);
+    font: var(--w-regular) var(--t-meta) / 1.35 var(--app-font-sans);
+    color: #f2f2f5;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .search-card__plate mark {
+    color: #f2f2f5;
   }
 </style>

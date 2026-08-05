@@ -74,9 +74,8 @@
     display: flex;
     width: 100%;
     height: 24px;
-    border-radius: 6px;
+    border-radius: var(--r-md);
     overflow: hidden;
-    border: 1px solid var(--app-border);
     background: var(--app-surface-subtle);
   }
   .stacked.fill .bar {
@@ -94,8 +93,8 @@
     margin-top: 11px;
     display: flex;
     flex-wrap: wrap;
-    gap: 6px 14px;
-    font-size: 11px;
+    gap: var(--s-6) var(--s-16);
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-text-muted);
   }
   .item {
@@ -110,6 +109,7 @@
     flex: 0 0 auto;
   }
   .v {
+    font-family: var(--app-font-mono);
     color: var(--app-text-strong);
     font-variant-numeric: tabular-nums;
   }

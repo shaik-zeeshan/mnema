@@ -78,12 +78,16 @@
       tabindex="-1"
       onclick={onAskAi}
     >
-      <span class="quick-recall__ask-row-glyph" aria-hidden="true">✦</span>
+      <span class="quick-recall__ask-row-glyph" aria-hidden="true">
+        <svg viewBox="0 0 14 14" aria-hidden="true">
+          <path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor" />
+        </svg>
+      </span>
       <span class="quick-recall__ask-row-label"
         >Ask AI about “{search.trimmedQuery}”</span
       >
       <span class="quick-recall__ask-row-hint">{askRowHint}</span>
-      <span class="kbd quick-recall__ask-row-key" aria-hidden="true">⌃↵</span>
+      <span class="kbd kbd--mod quick-recall__ask-row-key" aria-hidden="true">⌃ ⏎</span>
     </button>
   {/if}
 
@@ -194,11 +198,13 @@
          of the arrow-key roving order. -->
     {#if search.frames.length > 0}
       <div class="quick-recall__section" role="presentation">
-        <span class="quick-recall__section-label"
-          >Screen<span class="quick-recall__section-count"
-            >{search.frames.length}</span
-          ></span
-        >
+        <span class="quick-recall__section-label">
+          <span class="t-label">Screen</span>
+          <span class="t-meta is-mono is-num quick-recall__section-count"
+            >{search.frames.length}
+            {search.frames.length === 1 ? "result" : "results"}</span
+          >
+        </span>
         <div class="quick-recall__grid" role="presentation">
           {#each search.visibleFrames as result, i (result.groupKey)}
             <SearchResultCard
@@ -232,11 +238,13 @@
 
     {#if search.audio.length > 0}
       <div class="quick-recall__section" role="presentation">
-        <span class="quick-recall__section-label"
-          >Audio<span class="quick-recall__section-count"
-            >{search.audio.length}</span
-          ></span
-        >
+        <span class="quick-recall__section-label">
+          <span class="t-label">Audio</span>
+          <span class="t-meta is-mono is-num quick-recall__section-count"
+            >{search.audio.length}
+            {search.audio.length === 1 ? "result" : "results"}</span
+          >
+        </span>
         <div class="quick-recall__grid" role="presentation">
           {#each search.visibleAudio as result, i (result.groupKey)}
             <SearchResultCard
@@ -269,61 +277,76 @@
 </div>
 
 <style>
+  /* The one allowed grid exemption in the app: a 20px inset with the standard
+     16px gutter, because this window's width is FIXED and 3×349 + 2×16 + 2×20
+     must divide 1120 exactly. Every other surface holds inset == gutter. */
   .quick-recall__results {
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: var(--s-12) var(--grid-inset);
+    padding: var(--s-4) 20px 20px;
     display: flex;
     flex-direction: column;
-    gap: var(--gap-group);
+    gap: var(--cell-gutter);
   }
 
   /* G4's ranked ask row: rank 0 of this list, a full-width row so it reads as
      the list's first entry rather than a second control. Accent-tinted because
      it is the one escalation on the surface that costs a model call; the ring
      only appears when the roving selection is actually on it. */
+  /* G4's ranked ask row — rank 0 of this list, and the ONE accent object on the
+     search screen. It is a tile-height row on the tile fill with an accent wash,
+     never a control competing with the field for the same query. */
   .quick-recall__ask-row {
     display: flex;
     align-items: center;
-    gap: var(--gap-inline);
+    gap: var(--s-8);
     width: 100%;
     min-width: 0;
-    padding: var(--s-8) var(--s-12);
+    height: 44px;
+    padding: 0 var(--tile-pad);
     text-align: left;
     font: inherit;
-    color: var(--app-accent-strong);
-    background: var(--app-accent-bg);
-    border: var(--hairline) solid var(--app-accent-border);
-    border-radius: var(--r-md);
-    cursor: pointer;
-  }
-
-  .quick-recall__ask-row:hover {
-    border-color: var(--app-accent);
+    border: 0;
+    border-radius: var(--tile-r);
+    background:
+      linear-gradient(to bottom, var(--app-accent-glow), transparent 70%),
+      var(--tile-fill);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    cursor: default;
   }
 
   .quick-recall__ask-row--selected,
   .quick-recall__ask-row:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
+    box-shadow:
+      inset 0 0 0 var(--hairline) var(--app-accent-border),
+      0 0 0 2px var(--app-accent);
   }
 
   .quick-recall__ask-row-glyph {
     flex: none;
-    font-size: var(--t-ui);
-    line-height: 1;
-    color: var(--app-accent);
+    width: var(--o-icon);
+    height: var(--o-icon);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-md);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+
+  .quick-recall__ask-row-glyph svg {
+    width: 12px;
+    height: 12px;
   }
 
   .quick-recall__ask-row-label {
     flex: none;
     max-width: 55%;
-    font-size: var(--t-ui);
-    line-height: 1.3;
-    font-weight: var(--w-medium);
-    color: var(--app-accent-strong);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -332,8 +355,7 @@
   .quick-recall__ask-row-hint {
     flex: 1;
     min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1.3;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
     color: var(--app-text-muted);
     white-space: nowrap;
     overflow: hidden;
@@ -342,9 +364,7 @@
 
   .quick-recall__ask-row-key {
     flex: none;
-    color: var(--app-accent);
-    background: transparent;
-    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    margin-left: auto;
   }
 
   /* Refetch-in-flight: prior results stay on screen but dim slightly so the
@@ -358,26 +378,19 @@
   .quick-recall__section {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--s-8);
   }
 
-  /* Section header (mockup `.section-label`): uppercase modality label left,
-     plain result count right on the same baseline. */
+  /* Section header: mono modality label left, mono count right, on one
+     baseline — the same eyebrow/meta pair every tile header carries. */
   .quick-recall__section-label {
     display: flex;
-    justify-content: space-between;
     align-items: baseline;
-    font-size: var(--t-meta);
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-    padding: 0 2px;
+    gap: var(--s-8);
+    padding: 0 var(--s-2);
   }
 
   .quick-recall__section-count {
-    text-transform: none;
-    letter-spacing: 0;
     color: var(--app-text-subtle);
   }
 
@@ -388,7 +401,7 @@
   .quick-recall__grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 349px));
-    gap: var(--grid-gutter);
+    gap: var(--cell-gutter);
   }
 
   /* Section show-more/show-less toggle (mockup `.more-row`): a quiet full-
@@ -397,18 +410,16 @@
     display: block;
     width: 100%;
     text-align: center;
-    font: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
     color: var(--app-text-subtle);
     background: none;
     border: none;
-    border-radius: 7px;
-    padding: 8px 0;
-    cursor: pointer;
+    border-radius: var(--r-md);
+    padding: var(--s-8) 0;
+    cursor: default;
     transition:
-      color 0.12s,
-      background 0.12s;
+      color var(--dur-quick) var(--ease),
+      background var(--dur-quick) var(--ease);
   }
 
   .quick-recall__more-row:hover {
@@ -436,8 +447,7 @@
   }
 
   .quick-recall__state-glyph {
-    font-size: var(--t-display);
-    line-height: 1;
+    font: var(--w-regular) var(--t-display) / 1 var(--app-font-sans);
     color: var(--app-text-subtle);
   }
 
@@ -451,15 +461,16 @@
 
   .quick-recall__state-lead {
     margin: 0;
-    font-size: var(--t-ui);
-    line-height: 1.4;
+    font: var(--w-semi) var(--t-title) / var(--lh-title) var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     color: var(--app-text-strong);
   }
 
   .quick-recall__state-sub {
     margin: 0;
-    font-size: var(--t-meta);
-    line-height: 1.5;
+    max-width: 52ch;
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
     color: var(--app-text-muted);
   }
 
@@ -475,15 +486,17 @@
   }
 
   .quick-recall__state-center kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 var(--s-4);
     margin: 0 1px;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__state-actions {
@@ -492,36 +505,28 @@
     margin-top: 4px;
   }
 
-  /* Mockup `.sp-btn` / `.sp-btn.accent`: the accent variant carries the
-     recovery CTAs (Retry, Ask AI instead) in the mockup's Ask-AI-door idiom. */
+  /* The recovery CTAs. Native push-bezel buttons; the accent variant is the
+     one that costs a model call. */
   .quick-recall__state-btn {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-family: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 6px 11px;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-
-  .quick-recall__state-btn:hover {
+    gap: var(--gap-inline);
+    height: var(--h-lg);
+    padding: 0 var(--s-12);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
-    border-color: var(--app-border-hover);
+    background: var(--app-surface-raised) var(--push-grad);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
+    cursor: default;
+    transition: box-shadow var(--dur-quick) var(--ease);
   }
 
   .quick-recall__state-btn:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
   .quick-recall__state-btn:active {
@@ -529,35 +534,25 @@
   }
 
   .quick-recall__state-btn--accent {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-
-  .quick-recall__state-btn--accent:hover {
-    color: var(--app-accent);
-    border-color: var(--app-accent-strong);
-    box-shadow: 0 0 0 3px var(--app-accent-glow);
-  }
-
-  .quick-recall__state-btn--accent:active {
-    background: color-mix(in srgb, var(--app-accent) 14%, var(--app-accent-bg));
+    color: var(--app-accent-contrast);
+    background: var(--app-accent) var(--push-grad);
+    border-color: transparent;
   }
 
   /* In-search discoverability hint (issue #125): keyword-only search → Settings. */
   .quick-recall__semantic-hint {
     display: block;
     width: 100%;
-    margin: 4px 0 8px;
-    padding: 8px 10px;
+    margin: 0;
+    padding: var(--s-8) var(--s-12);
     text-align: left;
-    font-size: var(--t-ui);
-    line-height: 1.5;
+    font: var(--w-regular) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
-    cursor: pointer;
+    background: var(--tile-fill);
+    border: 0;
+    border-radius: var(--tile-r);
+    cursor: default;
   }
 
   /* Inside the centered no-matches state the hint is a bounded card below the
@@ -568,14 +563,13 @@
   }
 
   .quick-recall__semantic-hint:hover {
-    color: var(--app-text);
-    border-color: var(--app-accent);
+    color: var(--app-text-strong);
+    background: var(--tile-fill-hover);
   }
 
   .quick-recall__semantic-hint:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 2px var(--app-accent);
   }
 
   .quick-recall__semantic-hint:active {
@@ -605,15 +599,16 @@
     display: flex;
     flex-direction: column;
     gap: var(--s-8);
-    padding: var(--s-12);
-    border: var(--hairline) solid var(--app-border);
-    border-radius: var(--r-lg);
-    background: var(--app-surface-subtle);
+    padding: var(--tile-pad) var(--tile-pad) 0;
+    border-radius: var(--tile-r);
+    background: var(--tile-fill);
+    overflow: hidden;
   }
 
   .quick-recall__skeleton-media {
     height: 196px;
-    border-radius: var(--r-md);
+    margin: var(--s-4) calc(var(--tile-pad) * -1) 0;
+    border-radius: 0;
   }
 
   .quick-recall__skeleton-line {

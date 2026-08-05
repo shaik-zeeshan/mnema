@@ -37,11 +37,17 @@ export function setQuickRecallCollapsed(height: number | null): Promise<void> {
   return invoke<void>("quick_recall_set_collapsed", { height });
 }
 
-/** Collapsed heights. Bar alone, and bar plus the detached answer piece. */
-export const CURRENT_FRAME_BAR_HEIGHT = 96;
-/** Extra height for the non-vision disclosure line, which sits under the bar. */
+/**
+ * Collapsed heights. Bar alone, and bar plus the detached answer piece.
+ *
+ * Direction 01 (Bento Native) geometry: a 40px control pill, a 12px gap, then
+ * the ~124px panel — the pill and the panel are separate floating pieces, so
+ * the gap is real window height, not padding.
+ */
+export const CURRENT_FRAME_BAR_HEIGHT = 176;
+/** Extra height for the non-vision disclosure line, which sits inside the panel. */
 export const CURRENT_FRAME_DISCLOSURE_HEIGHT = 30;
-export const CURRENT_FRAME_ANSWER_HEIGHT = 460;
+export const CURRENT_FRAME_ANSWER_HEIGHT = 540;
 
 /** The chip's primary label: what the shot is of. */
 export function frameChipLabel(frame: CurrentFrameCapture): string {

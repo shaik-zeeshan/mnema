@@ -158,11 +158,11 @@
     flex-direction: column;
   }
   .timeline-title {
-    font-size: 10.5px;
-    letter-spacing: 0.04em;
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-muted);
-    margin: 0 0 10px;
+    margin: 0 0 var(--s-8);
   }
   .rail {
     list-style: none;
@@ -227,11 +227,10 @@
     padding-bottom: 0;
   }
   .time {
-    font-size: 10.5px;
-    font-weight: 500;
-    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label) / var(--lh-label) var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
-    letter-spacing: 0.02em;
   }
   .label {
     display: flex;
@@ -241,9 +240,9 @@
     flex-wrap: wrap;
   }
   .label-text {
-    font-size: 12.5px;
+    font: var(--w-regular) var(--t-ui) / 1.45 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text);
-    line-height: 1.45;
     min-width: 0;
   }
   .app-chip {
@@ -253,12 +252,11 @@
     flex: 0 0 auto;
     max-width: 100%;
     min-width: 0;
-    font-size: 9.5px;
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
     color: var(--app-text-muted);
     padding: 1px 6px 1px 2px;
-    border: 1px solid var(--app-border);
-    border-radius: 999px;
-    background: var(--app-surface);
+    border-radius: var(--r-pill);
+    background: var(--app-surface-hover);
     white-space: nowrap;
   }
   .app-chip-icon {

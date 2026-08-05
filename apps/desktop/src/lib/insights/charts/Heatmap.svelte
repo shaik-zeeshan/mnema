@@ -145,8 +145,9 @@
     gap: 8px;
   }
   .rlabel {
-    font-size: var(--t-label);
-    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    color: var(--app-text-subtle);
     white-space: nowrap;
   }
   .cells {
@@ -156,12 +157,11 @@
   .cell {
     flex: 1 1 0;
     height: 12px;
-    border-radius: 3px;
-    border: 1px solid var(--app-border);
+    border-radius: var(--r-sm);
   }
   .legend {
-    margin-top: 9px;
-    font-size: var(--t-label);
+    margin-top: var(--s-8);
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
     color: var(--app-text-subtle);
   }
   /* Focus-mode key: colored swatch + label per intensity band. */

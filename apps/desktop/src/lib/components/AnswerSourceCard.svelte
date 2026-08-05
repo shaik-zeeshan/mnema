@@ -167,40 +167,33 @@
     width: 208px;
   }
 
-  /* Horizontal answer-source card: a compact, fixed-width tile meant to sit in a
-     horizontally-scrolling strip. Thumbnail on top, metadata stacked below. */
+  /* A cited MOMENT: the frame first, its identity underneath as a mono eyebrow
+     plus one title line. Borderless — the surrounding tile is the container, so
+     a border here would be a box inside a box. */
   .source-card {
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 8px;
+    gap: var(--s-4);
+    padding: 0;
     overflow: hidden;
     text-align: left;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
-    background: var(--app-surface-raised);
+    border: 0;
+    border-radius: var(--tile-r-in);
+    background: transparent;
     color: var(--app-text);
     font: inherit;
-    cursor: pointer;
-    transition:
-      background 0.12s ease,
-      border-color 0.12s ease,
-      box-shadow 0.12s ease;
-  }
-
-  .source-card:hover {
-    border-color: var(--app-accent-border);
+    cursor: default;
+    transition: box-shadow var(--dur-quick) var(--ease);
   }
 
   .source-card:focus-visible {
     outline: none;
-    border-color: var(--app-accent-border);
-    box-shadow:
-      0 0 0 1px var(--app-accent-border),
-      0 0 0 4px color-mix(in srgb, var(--app-accent) 12%, transparent);
+    box-shadow: 0 0 0 2px var(--app-accent);
   }
 
+  /* The frame sits on `--media-void`, so one that has not decoded reads as a
+     hole rather than a flash. */
   .source-card__thumb {
     position: relative;
     width: 100%;
@@ -208,11 +201,14 @@
     flex: 0 0 auto;
     display: grid;
     place-items: center;
-    border: 1px solid var(--app-border);
-    border-radius: 7px;
+    border-radius: var(--tile-r-in);
     overflow: hidden;
-    background: var(--app-bg);
+    background: var(--media-void);
     color: var(--app-text-faint);
+  }
+
+  .source-card:hover .source-card__thumb {
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-border-hover);
   }
 
   /* The image sits above the always-present glyph placeholder and fades in once
@@ -248,57 +244,52 @@
   }
 
   .source-card__thumb--mic {
-    border-color: var(--app-source-mic-border);
-    background: var(--app-source-mic-bg);
-    color: var(--app-source-mic);
+    background: var(--app-src-mic-bg);
+    color: var(--app-src-mic);
   }
 
   .source-card__thumb--sysaudio {
-    border-color: var(--app-source-sysaudio-border);
-    background: var(--app-source-sysaudio-bg);
-    color: var(--app-source-sysaudio);
+    background: var(--app-src-sys-bg);
+    color: var(--app-src-sys);
   }
 
+  /* The caption: mono source eyebrow + mono time on one baseline, the plain
+     title under it — the same eyebrow/meta pair every tile header carries. */
   .source-card__body {
     min-width: 0;
     width: 100%;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: var(--s-2);
     overflow: hidden;
   }
 
   .source-card__line {
     display: flex;
     align-items: baseline;
-    gap: 8px;
+    gap: var(--s-8);
     min-width: 0;
   }
 
-  .source-card__app {
+  .source-card__app,
+  .source-card__source {
     flex: 0 1 auto;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--app-text-strong);
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .source-card__source {
-    flex: 0 0 auto;
-    font-size: var(--t-meta);
-    font-weight: 600;
-    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label) / 1.4 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+    color: var(--app-text-subtle);
   }
 
   .source-card__source--mic {
-    color: var(--app-source-mic);
+    color: var(--app-src-mic);
   }
 
   .source-card__source--sysaudio {
-    color: var(--app-source-sysaudio);
+    color: var(--app-src-sys);
   }
 
   .source-card__sub {
@@ -306,13 +297,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    color: var(--app-text-subtle);
-    font-size: 11px;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    color: var(--app-text-muted);
   }
 
   .source-card__time {
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--app-text-subtle);
-    font-size: 10px;
     white-space: nowrap;
   }
 
@@ -321,22 +313,22 @@
      hover/focus so it never competes with the card's own hover/focus state. */
   .source-card__open {
     position: absolute;
-    top: 13px;
-    right: 13px;
+    top: var(--s-6);
+    right: var(--s-6);
     z-index: 1;
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    max-width: calc(100% - 26px);
-    padding: 1px 6px;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    background: var(--app-surface);
-    color: var(--app-text-muted);
-    font: inherit;
-    font-size: 10px;
-    line-height: 1.6;
-    cursor: pointer;
+    gap: var(--s-4);
+    max-width: calc(100% - var(--s-12));
+    height: var(--o-badge);
+    padding: 0 var(--s-6);
+    border: 0;
+    border-radius: var(--r-sm);
+    background: rgba(10, 10, 14, 0.78);
+    color: #f2f2f5;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    cursor: default;
     opacity: 0.35;
     transition:
       opacity 0.12s ease,
@@ -357,10 +349,8 @@
   .source-card__open:focus-visible {
     outline: none;
     opacity: 1;
-    border-color: var(--app-accent-border);
-    background: var(--app-surface-raised);
     color: var(--app-accent);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-accent) 12%, transparent);
+    box-shadow: 0 0 0 2px var(--app-accent);
   }
 
   /* In-flight open: the chip is disabled while the brokered open is pending, so a

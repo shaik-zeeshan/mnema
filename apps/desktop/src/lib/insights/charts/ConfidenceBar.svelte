@@ -55,9 +55,8 @@
     position: relative;
     width: 56px;
     height: 5px;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
     overflow: hidden;
     flex: 0 0 auto;
   }
@@ -70,8 +69,8 @@
     box-shadow: 0 0 8px var(--app-accent-glow);
   }
   .pct {
-    font-size: 10.5px;
-    color: var(--app-text-muted);
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
+    color: var(--app-text-subtle);
     font-variant-numeric: tabular-nums;
   }
   .trend {

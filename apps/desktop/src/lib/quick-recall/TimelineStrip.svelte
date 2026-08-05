@@ -302,14 +302,14 @@
   .timeline-strip__bar {
     height: 36px;
     position: relative;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    background: var(--app-surface);
+    box-shadow: 0 calc(var(--hairline) * -1) 0 var(--app-border);
   }
 
   .timeline-strip__axis {
     position: absolute;
-    left: 16px;
-    right: 16px;
+    left: 20px;
+    right: 20px;
     top: 16px;
     height: 1px;
     background: var(--app-border-strong);
@@ -327,8 +327,8 @@
     position: absolute;
     top: 22px;
     transform: translateX(-50%);
-    font-size: 10px;
-    letter-spacing: 0.05em;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     color: var(--app-text-subtle);
     text-transform: uppercase;
     white-space: nowrap;
@@ -345,8 +345,8 @@
   .timeline-strip__legend {
     position: absolute;
     top: 1px;
-    right: 16px;
-    font-size: 10px;
+    right: 20px;
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
     color: var(--app-text-subtle);
     white-space: nowrap;
   }
@@ -397,10 +397,10 @@
     bottom: calc(100% + 6px);
     z-index: 20;
     width: 152px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    background: var(--mat-pop);
+    backdrop-filter: blur(30px) saturate(1.5);
+    border-radius: var(--r-lg);
+    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge);
     padding: 5px;
     pointer-events: none;
   }
@@ -409,13 +409,12 @@
     position: relative;
     width: 140px;
     height: 88px;
-    border-radius: 5px;
+    border-radius: var(--tile-r-in);
     overflow: hidden;
-    border: 1px solid var(--app-border);
-    background: #101014;
+    background: var(--media-void);
     display: grid;
     place-items: center;
-    color: #6a6a74;
+    color: var(--app-text-faint);
   }
 
   .timeline-strip__pimg {
@@ -427,15 +426,13 @@
   }
 
   .timeline-strip__pthumb--mic {
-    background: var(--app-source-mic-bg);
-    border-color: var(--app-source-mic-border);
-    color: var(--app-source-mic);
+    background: var(--app-src-mic-bg);
+    color: var(--app-src-mic);
   }
 
   .timeline-strip__pthumb--sys {
-    background: var(--app-source-sysaudio-bg);
-    border-color: var(--app-source-sysaudio-border);
-    color: var(--app-source-sysaudio);
+    background: var(--app-src-sys-bg);
+    color: var(--app-src-sys);
   }
 
   .timeline-strip__pwave {
@@ -454,7 +451,8 @@
   }
 
   .timeline-strip__ptime {
-    font-size: 11px;
+    font: var(--w-medium) var(--t-meta) / 1.3 var(--app-font-mono);
+    font-variant-numeric: tabular-nums;
     color: var(--app-text-strong);
     padding: 5px 3px 0;
     white-space: nowrap;
@@ -463,7 +461,7 @@
   }
 
   .timeline-strip__plabel {
-    font-size: 10px;
+    font: var(--w-regular) var(--t-meta) / 1.3 var(--app-font-sans);
     color: var(--app-text-muted);
     padding: 2px 3px 2px;
     white-space: nowrap;

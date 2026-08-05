@@ -13,6 +13,7 @@
     SemanticSearchModelDownloadProgress,
     RecordingSettingsDomainUpdateResponse,
   } from "$lib/types";
+  import type { AiRuntimeStatus } from "$lib/types/recording";
   import { askAiClock } from "$lib/askAiClock";
   import AnswerProse from "$lib/AnswerProse.svelte";
   import MiniBars from "$lib/insights/charts/MiniBars.svelte";
@@ -674,6 +675,22 @@
       ? friendlyAskReason(askAvailability.reason)
       : null,
   );
+
+  // The active model as a CHROME PILL (direction 01): the model that will answer
+  // is a fact about this surface, not a buried setting. Read from the same
+  // runtime status Settings/Insights already use — no new command, and it stays
+  // null (pill hidden) when nothing is configured, so it never states a model
+  // that isn't there.
+  let aiDefaultModel = $state<string | null>(null);
+
+  async function loadDefaultModel(): Promise<void> {
+    try {
+      const status = await invoke<AiRuntimeStatus>("get_ai_runtime_status");
+      aiDefaultModel = status.defaultModel?.model ?? null;
+    } catch {
+      aiDefaultModel = null;
+    }
+  }
 
   async function loadAskAvailability(): Promise<void> {
     try {
@@ -1501,12 +1518,55 @@
   // The answer is a DETACHED second piece: dismissing it leaves the bar, the
   // composer, and Stop exactly where they were.
   let frameAnswerDismissed = $state(false);
+  // True once the user has deleted the frame chip, so the panel can tell
+  // "removed" apart from "still capturing".
+  let frameChipRemoved = $state(false);
 
   let frameAnswerTurn = $derived(askTurns.length > 0 ? askTurns[askTurns.length - 1] : null);
   let frameAnswerVisible = $derived(mode === "frame" && !frameAnswerDismissed && frameAnswerTurn !== null);
   let frameChip = $derived(frameCapture === null ? null : frameChipLabel(frameCapture));
   let frameExclusion = $derived(frameCapture === null ? null : frameExclusionNote(frameCapture));
   let frameVision = $derived(frameCapture === null ? null : frameVisionNote(frameCapture));
+
+  // The moment the shot froze, named on the chip and in the HUD context line —
+  // the panel half of the on-screen outline's "frozen at hh:mm:ss" label, so the
+  // two never disagree about which instant the model is looking at.
+  let frameFrozenAt = $derived(
+    frameCapture === null
+      ? null
+      : new Date(frameCapture.capturedAtUnixMs).toLocaleTimeString(undefined, {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
+  );
+
+  // ── Chrome readouts (direction 01) ────────────────────────────────────────
+  // The match count is mono and lives IN the field; the scope summary is the
+  // second row's right-hand meta and the footer's crumb. Both are read off real
+  // state — no fictional denominators (G8).
+  let matchCountLabel = $derived.by(() => {
+    if (search.belowMinimum) return null;
+    if (search.loading && !search.hasResults) return "searching…";
+    if (search.errorMessage !== null || search.resultsPaused) return null;
+    const matches = search.frames.length + search.audio.length;
+    return `${matches} ${matches === 1 ? "match" : "matches"}`;
+  });
+
+  let scopeSummary = $derived.by(() => {
+    const chips = search.activeFilterChips;
+    if (chips.length === 0) return "Screen & audio · all time";
+    return chips.map((chip) => chip.label).join(" · ");
+  });
+
+  // The Ask footer crumb: how many moments the finished turn actually cited.
+  let citedSummary = $derived.by(() => {
+    const turn = askTurns.length > 0 ? askTurns[askTurns.length - 1] : null;
+    if (turn === null || turn.phase !== "done") return null;
+    const n = turn.sources.length;
+    if (n === 0) return "no sources cited";
+    return `${n} ${n === 1 ? "source" : "sources"} cited`;
+  });
 
   // The collapsed window's height follows what the bar currently shows. Kept in
   // an effect so growing for the answer and shrinking on dismiss are the same
@@ -1536,6 +1596,7 @@
     filters.pickerOpen = false;
     frameCapture = null;
     frameCaptureError = null;
+    frameChipRemoved = false;
     frameInput = "";
     frameAnswerDismissed = false;
     mode = "frame";
@@ -1573,6 +1634,11 @@
   function removeFrameChip(): void {
     frameCapture = null;
     frameCaptureError = null;
+    // Deleting the chip is not the same state as "the shot has not come back
+    // yet", and the HUD context line says which — an indicator that claims the
+    // screen is attached when it is not is the one thing implicit capture
+    // cannot afford (G3: capture implicit, indication explicit).
+    frameChipRemoved = true;
     frameInputEl?.focus();
   }
 
@@ -1842,6 +1908,7 @@
   onMount(() => {
     void focusQuickRecall();
     void loadAskAvailability();
+    void loadDefaultModel();
     // MCP connectors (Workstream C): warm-on-open discovery — background-connect
     // enabled MCP servers so a turn finds their tools ready. Fire-and-forget.
     void invoke("mcp_warm_connectors").catch(() => {});
@@ -1886,6 +1953,7 @@
           // and the user may have enabled Ask AI or fixed PI/auth since the last
           // summon. Without this the stale disabled hint would persist forever.
           void loadAskAvailability();
+          void loadDefaultModel();
           // Same staleness applies to the "turn on meaning search" hint: a model
           // can be installed/removed in Settings while this (reused) window stays
           // hidden, so re-probe model status on focus too — otherwise the hint
@@ -2093,7 +2161,11 @@
 
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="quick-recall" onkeydown={handleRootKeydown}>
+<div
+  class="quick-recall"
+  class:quick-recall--hud={mode === "frame"}
+  onkeydown={handleRootKeydown}
+>
   <!-- The search↔Ask AI swap is the one hero transition: a brief cross-fade
        between the two mode subtrees, gated to instant when reduced-motion is on
        (modeFadeMs → 0). Each panel fills the mode area so they overlap cleanly
@@ -2111,70 +2183,119 @@
         <span class="quick-recall__sr-status" role="status" aria-live="polite"
           >{searchStatusAnnouncement}</span
         >
-        <div class="quick-recall__field">
-          <span class="quick-recall__glyph" aria-hidden="true">⌕</span>
-          <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
-               target; the absolutely-positioned mirror behind it renders the
-               typed text invisibly then the dimmed ghost suffix, matching the
-               input's font metrics/padding so the ghost aligns under the caret.
-               The mirror is aria-hidden and pointer-events:none so it never
-               steals interaction or screen-reader attention. -->
-          <div class="quick-recall__input-wrap">
-            {#if filters.hasGhost}
-              <div class="quick-recall__ghost" aria-hidden="true">
-                <span class="quick-recall__ghost-typed">{search.query}</span><span
-                  class="quick-recall__ghost-suffix">{filters.ghostCompletion}</span
-                >
-              </div>
+        <!-- The toolbar row: one neutral field carrying the mode chip, the query
+             and the mono match count. Search chrome is deliberately QUIET — the
+             one accent element on this screen is the ranked ask row below. -->
+        <div class="quick-recall__top">
+          <div class="quick-recall__field">
+            <span class="quick-recall__modechip" aria-hidden="true">
+              <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <circle cx="6" cy="6" r="4.2" stroke="currentColor" stroke-width="1.4" />
+                <path
+                  d="M9.2 9.2 12.6 12.6"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                />
+              </svg>
+              Search
+            </span>
+            <!-- Slice 4: input + ghost overlay. The real <input> stays the focus
+                 target; the absolutely-positioned mirror behind it renders the
+                 typed text invisibly then the dimmed ghost suffix, matching the
+                 input's font metrics/padding so the ghost aligns under the caret.
+                 The mirror is aria-hidden and pointer-events:none so it never
+                 steals interaction or screen-reader attention. -->
+            <div class="quick-recall__input-wrap">
+              {#if filters.hasGhost}
+                <div class="quick-recall__ghost" aria-hidden="true">
+                  <span class="quick-recall__ghost-typed">{search.query}</span><span
+                    class="quick-recall__ghost-suffix">{filters.ghostCompletion}</span
+                  >
+                </div>
+              {/if}
+              <input
+                bind:this={search.inputEl}
+                bind:value={search.query}
+                class="quick-recall__input"
+                type="text"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="Search your captures…"
+                aria-label="Search your captures"
+                role="combobox"
+                aria-expanded={filters.pickerOpen ||
+                  filters.valueListActive ||
+                  search.resultCount > 0}
+                aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
+                aria-controls={filters.pickerOpen
+                  ? "quick-recall-picker"
+                  : filters.valueListActive
+                    ? "quick-recall-value-list"
+                    : "quick-recall-results-list"}
+                aria-activedescendant={filters.pickerOpen
+                  ? filters.pickerActiveOptionId
+                  : filters.valueListActive
+                    ? filters.valueListActiveOptionId
+                    : search.activeOptionId}
+                onkeydown={handleSearchKeydown}
+                oninput={() => search.updateCaretAtEnd()}
+                onkeyup={() => search.updateCaretAtEnd()}
+                onclick={() => search.updateCaretAtEnd()}
+                onselect={() => search.updateCaretAtEnd()}
+                onfocus={() => {
+                  search.updateCaretAtEnd();
+                  void search.ensureSearchableAppsLoaded();
+                }}
+              />
+            </div>
+            <!-- G4: the field row's "Ask AI" button is GONE. Ask is a ranked row
+                 inside the results list (ResultsList), never a control competing
+                 with the field for the same query. ⌃↵ stays the accelerator. -->
+            {#if matchCountLabel !== null}
+              <span class="quick-recall__count is-mono is-num" aria-hidden="true"
+                >{matchCountLabel}</span
+              >
             {/if}
-            <input
-              bind:this={search.inputEl}
-              bind:value={search.query}
-              class="quick-recall__input"
-              type="text"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Search your captures…"
-              aria-label="Search your captures"
-              role="combobox"
-              aria-expanded={filters.pickerOpen ||
-                filters.valueListActive ||
-                search.resultCount > 0}
-              aria-keyshortcuts="ArrowUp ArrowDown Enter Escape Control+Enter Control+O"
-              aria-controls={filters.pickerOpen
-                ? "quick-recall-picker"
-                : filters.valueListActive
-                  ? "quick-recall-value-list"
-                  : "quick-recall-results-list"}
-              aria-activedescendant={filters.pickerOpen
-                ? filters.pickerActiveOptionId
-                : filters.valueListActive
-                  ? filters.valueListActiveOptionId
-                  : search.activeOptionId}
-              onkeydown={handleSearchKeydown}
-              oninput={() => search.updateCaretAtEnd()}
-              onkeyup={() => search.updateCaretAtEnd()}
-              onclick={() => search.updateCaretAtEnd()}
-              onselect={() => search.updateCaretAtEnd()}
-              onfocus={() => {
-                search.updateCaretAtEnd();
-                void search.ensureSearchableAppsLoaded();
-              }}
-            />
           </div>
+          <!-- Syntax-help affordance (`?` trigger + static popover), extracted
+               to a component; its open state lives on the search store so the
+               keydown routing can close it. -->
+          <SyntaxHelp fadeMs={modeFadeMs} />
+        </div>
+
+        <!-- The SCOPE row: what the query is being asked of. Every applied
+             refinement is a scope chip with its × (the backend desugar's plain
+             language), the Filter trigger is the chip that adds one, and the
+             right-hand meta names the scope in one line. In Ask mode this same
+             row switches from scope to CONTEXT — same geometry, different
+             question. -->
+        <div class="quick-recall__scopes" role="list" aria-label="Active filters">
+          {#each search.activeFilterChips as chip (chip.id)}
+            <span class="chip on quick-recall__chip" role="listitem">
+              <span class="quick-recall__chip-label">{chip.label}</span>
+              <button
+                type="button"
+                class="quick-recall__chip-remove"
+                onclick={() => search.removeChip(chip)}
+                aria-label={`Remove ${chip.label} filter`}
+                use:tip={`Remove ${chip.label} filter`}
+              >
+                ×
+              </button>
+            </span>
+          {/each}
           <!-- Visible Filter Picker trigger: the picker was previously reachable
-               only via ⌘F / `/`, advertised nowhere — a funnel in the field row
+               only via ⌘F / `/`, advertised nowhere — a chip in the scope row
                gives it a mouse-discoverable door (and surfaces the ⌘F shortcut via
                its title). Click opens the same category picker as the key path; DOM
                focus stays on the search input (openPicker refocuses it), so the
                picker's aria-activedescendant navigation keeps working. -->
           <button
             type="button"
-            class="quick-recall__filter-trigger"
-            class:quick-recall__filter-trigger--active={filters.pickerOpen}
-            class:quick-recall__filter-trigger--filtered={search
-              .activeFilterChips.length > 0}
+            class="chip quick-recall__filter-trigger"
+            class:on={filters.pickerOpen}
             onclick={() =>
               filters.pickerOpen ? filters.closePicker() : filters.openPicker()}
             aria-label="Filter results"
@@ -2195,45 +2316,14 @@
             >
               <path d="M1 2h10L7.5 6.5V10l-3-1.5V6.5L1 2z" />
             </svg>
-            Filter <kbd aria-hidden="true">⌘F</kbd>
+            Filter <kbd class="kbd" aria-hidden="true">⌘F</kbd>
           </button>
-          <!-- Syntax-help affordance (`?` trigger + static popover), extracted
-               to a component; its open state lives on the search store so the
-               keydown routing can close it. -->
-          <SyntaxHelp fadeMs={modeFadeMs} />
-          <!-- G4: the field row's "Ask AI" button is GONE. Ask is a ranked row
-               inside the results list (ResultsList), never a control competing
-               with the field for the same query. ⌃↵ stays the accelerator. -->
+          <span class="t-meta quick-recall__scopes-meta" aria-hidden="true"
+            >{search.activeFilterChips.length > 0
+              ? `${search.activeFilterChips.length} ${search.activeFilterChips.length === 1 ? "scope" : "scopes"} active`
+              : "? for syntax · typed filters become chips"}</span
+          >
         </div>
-
-        <!-- Slice 2: active filter chip band. A thin row under the search input
-             rendering each applied refinement (from the backend desugar) as a
-             plain-language pill with an × that strips its operator token(s) from
-             the query. This band shares its vertical slot with the inline parse
-             error line (added in slice 3); a chip and a live error never apply to
-             the same token, so they can coexist here. Only rendered when at least
-             one chip is active. -->
-        {#if search.activeFilterChips.length > 0}
-          <div class="quick-recall__chips" role="list" aria-label="Active filters">
-            {#each search.activeFilterChips as chip (chip.id)}
-              <span class="quick-recall__chip" role="listitem">
-                <span class="quick-recall__chip-label">{chip.label}</span>
-                <button
-                  type="button"
-                  class="quick-recall__chip-remove"
-                  onclick={() => search.removeChip(chip)}
-                  aria-label={`Remove ${chip.label} filter`}
-                  use:tip={`Remove ${chip.label} filter`}
-                >
-                  ×
-                </button>
-              </span>
-            {/each}
-            <span class="quick-recall__chip-hint" aria-hidden="true"
-              >typed filters become chips · ? for syntax</span
-            >
-          </div>
-        {/if}
 
         <!-- Slice 3: inline parse-error line. When the backend reports a
              malformed operator it ALSO suppresses results (paused), so we surface
@@ -2296,14 +2386,83 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
-        <div class="quick-recall__frame-bar">
-          <div class="quick-recall__field quick-recall__field--frame">
+        <!-- The persistent control pill (560×40, top-centre). It is a piece of
+             its own: the answer below can be dismissed and the pill — with Stop
+             on it — never goes with it (G3). -->
+        <div class="quick-recall__hudbar">
+          <span class="quick-recall__hudbar-glyph" aria-hidden="true">
+            <svg viewBox="0 0 14 14" aria-hidden="true">
+              <path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor" />
+            </svg>
+          </span>
+          <span class="quick-recall__hudbar-title">Ask about this screen</span>
+          <span class="quick-recall__hudbar-div" aria-hidden="true"></span>
+          <span class="t-meta is-mono quick-recall__hudbar-key" aria-hidden="true"
+            >⌘O full window</span
+          >
+          {#if askStreaming}
+            <button
+              type="button"
+              class="quick-recall__hudstop"
+              onclick={() => void stopActiveAsk()}
+              aria-label="Stop generating"
+              use:tip={"Stop generating"}
+            >
+              <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+            </button>
+          {/if}
+        </div>
+
+        <!-- The panel, 12px below the pill. What the model can SEE is outlined on
+             the screen itself (the reading overlay), so this line only names it;
+             the frozen frame rides as a 26×16 chip inside the sentence. -->
+        <div class="quick-recall__hudpanel">
+          <span class="quick-recall__hudtab" aria-hidden="true">
+            <svg width="10" height="10" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+              <path
+                d="M4 1.2v11.6M10 1.2v11.6M1.2 4h11.6M1.2 10h11.6"
+                stroke="currentColor"
+                stroke-width="1.3"
+                stroke-linecap="round"
+              />
+            </svg>
+            Screen
+          </span>
+          <p class="quick-recall__hudctx">
+            <svg
+              class="quick-recall__hudctx-eye"
+              viewBox="0 0 14 14"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.3"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M1 7s2.3-4 6-4 6 4 6 4-2.3 4-6 4-6-4-6-4z" />
+              <circle cx="7" cy="7" r="1.7" />
+            </svg>
             {#if frameCapture !== null}
+              Viewed screen{frameCapture.appName ? ` · ${frameCapture.appName}` : ""}{frameFrozenAt
+                ? ` · ${frameFrozenAt}`
+                : ""}{frameExclusion !== null ? ` · ${frameExclusion}` : ""}
+            {:else if frameCaptureError !== null}
+              <span class="quick-recall__hudctx--error">{frameCaptureError}</span>
+            {:else if frameChipRemoved}
+              No screen attached · answering from your captures
+            {:else}
+              Reading this screen…
+            {/if}
+          </p>
+          <div class="quick-recall__hudin">
+            {#if frameCapture !== null}
+              <!-- Chip-in-sentence: word-sized, deleted the way you delete a
+                   word (backspace at caret 0). Never a large thumbnail — you
+                   already know what is on your screen. -->
               <span class="quick-recall__frame-chip" data-testid="frame-chip">
-                <span class="quick-recall__frame-chip-glyph" aria-hidden="true">⧉</span>
+                <span class="quick-recall__frame-chip-shot" aria-hidden="true"></span>
                 <span class="quick-recall__frame-chip-label">{frameChip}</span>
-                {#if frameExclusion !== null}
-                  <span class="quick-recall__frame-chip-note">· {frameExclusion}</span>
+                {#if frameFrozenAt !== null}
+                  <span class="quick-recall__frame-chip-note is-num">{frameFrozenAt}</span>
                 {/if}
                 <button
                   type="button"
@@ -2312,14 +2471,6 @@
                   aria-label="Remove the screen from this question"
                   use:tip={"Remove the screen from this question"}>✕</button
                 >
-              </span>
-            {:else if frameCaptureError !== null}
-              <span class="quick-recall__frame-chip quick-recall__frame-chip--error">
-                {frameCaptureError}
-              </span>
-            {:else}
-              <span class="quick-recall__frame-chip quick-recall__frame-chip--pending">
-                Reading this screen…
               </span>
             {/if}
             <textarea
@@ -2330,27 +2481,29 @@
               autocomplete="off"
               autocapitalize="off"
               spellcheck="false"
-              placeholder="Ask about this screen…"
+              placeholder="Ask about your screen…"
               aria-label="Ask about this screen"
               aria-keyshortcuts="Enter Escape Meta+O"
               disabled={askStreaming}
               onkeydown={handleFrameInputKeydown}
             ></textarea>
-            {#if askStreaming}
-              <button
-                type="button"
-                class="quick-recall__frame-stop"
-                onclick={() => void stopActiveAsk()}
-              >
-                Stop
-              </button>
-            {/if}
+            <span class="quick-recall__send" aria-hidden="true">↵</span>
           </div>
           <!-- Upfront disclosure (G2): stated before the user types, not after
                the answer comes back wrong. -->
           {#if frameVision !== null}
-            <p class="quick-recall__frame-disclosure">{frameVision}</p>
+            <p class="quick-recall__hudctx quick-recall__frame-disclosure">{frameVision}</p>
           {/if}
+          <p class="quick-recall__hudfoot" aria-hidden="true">
+            {#if aiDefaultModel !== null}
+              <span class="quick-recall__mpill"
+                ><span class="quick-recall__mpill-dot"></span>{aiDefaultModel}</span
+              >
+            {/if}
+            <span class="t-meta is-mono quick-recall__hudfoot-keys"
+              >⏎ ask · ⌘O full window · esc close</span
+            >
+          </p>
         </div>
 
         {#if frameAnswerVisible && frameAnswerTurn !== null}
@@ -2387,7 +2540,10 @@
         in:fade={{ duration: modeFadeMs }}
         out:fade={{ duration: modeFadeMs }}
       >
-        <div class="quick-recall__field quick-recall__field--ask">
+        <!-- ASK is the loud posture in the same window: the field is the ONE
+             accent-filled field in the app, the mode chip is accent, and the
+             active model is a chrome pill rather than a buried setting. -->
+        <div class="quick-recall__top">
           <button
             type="button"
             class="quick-recall__back"
@@ -2395,40 +2551,91 @@
             aria-label="Back to search"
             aria-keyshortcuts="Escape"
           >
-            ← Back
+            ←
           </button>
-          {#if askSubmitted}
-            <!-- Once the thread exists the header is just the Back affordance —
-                 each turn's question renders as its own header in the transcript. -->
-            <span class="quick-recall__ask-thread-label" aria-hidden="true">Ask AI</span>
-            {#if askStreaming}
-              <!-- Interrupt a streaming answer in place (keeps the partial answer
-                   visible) instead of forcing Escape, which abandons the surface. -->
-              <button
-                type="button"
-                class="quick-recall__stop"
-                onclick={() => void stopActiveAsk()}
-                aria-label="Stop generating"
-                use:tip={"Stop generating"}
+          <div class="quick-recall__field quick-recall__field--ask">
+            <span
+              class="quick-recall__modechip quick-recall__modechip--ask"
+              aria-hidden="true"
+            >
+              <svg viewBox="0 0 14 14" aria-hidden="true">
+                <path d="M7 1.5 8.4 5.6 12.5 7 8.4 8.4 7 12.5 5.6 8.4 1.5 7 5.6 5.6z" fill="currentColor" />
+              </svg>
+              Ask
+            </span>
+            {#if askSubmitted}
+              <!-- Once the thread exists the header is just the Back affordance —
+                   each turn's question renders as its own header in the transcript. -->
+              <span class="quick-recall__ask-thread-label" aria-hidden="true"
+                >{askTurns.length}
+                {askTurns.length === 1 ? "question" : "questions"} in this thread</span
               >
-                <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
-                Stop
-              </button>
+            {:else}
+              <textarea
+                bind:this={askInputEl}
+                bind:value={askInput}
+                class="quick-recall__ask-input"
+                rows="1"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="Ask anything about your captures…"
+                aria-label="Ask AI a question"
+                aria-keyshortcuts="Enter Escape"
+                onkeydown={handleAskInputKeydown}
+              ></textarea>
             {/if}
-          {:else}
-            <textarea
-              bind:this={askInputEl}
-              bind:value={askInput}
-              class="quick-recall__ask-input"
-              rows="1"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder="Ask anything about your captures…"
-              aria-label="Ask AI a question"
-              aria-keyshortcuts="Enter Escape"
-              onkeydown={handleAskInputKeydown}
-            ></textarea>
+          </div>
+          {#if askStreaming}
+            <!-- Interrupt a streaming answer in place (keeps the partial answer
+                 visible) instead of forcing Escape, which abandons the surface. -->
+            <button
+              type="button"
+              class="quick-recall__stop"
+              onclick={() => void stopActiveAsk()}
+              aria-label="Stop generating"
+              use:tip={"Stop generating"}
+            >
+              <span class="quick-recall__stop-glyph" aria-hidden="true"></span>
+              Stop
+            </button>
+          {/if}
+          {#if aiDefaultModel !== null}
+            <span class="quick-recall__mpill" aria-hidden="true">
+              <span class="quick-recall__mpill-dot"></span>{aiDefaultModel}
+            </span>
+          {/if}
+        </div>
+
+        <!-- The second row switches from SCOPE to CONTEXT: what the model is
+             being handed. Ask gathers its own context through tool calls, so the
+             honest statement is "everything you have captured" plus the one
+             context you can add by hand — this screen (G3's implicit capture). -->
+        <div class="quick-recall__scopes">
+          <span class="t-label">Context</span>
+          <span class="chip on">Everything you have captured</span>
+          {#if askAvailable}
+            <button
+              type="button"
+              class="chip"
+              onclick={() => void enterCurrentFrame()}
+              use:tip={"Ask about what is on screen right now (⌘⇧O)"}
+            >
+              <svg width="11" height="11" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                <path
+                  d="M4 1.2v11.6M10 1.2v11.6M1.2 4h11.6M1.2 10h11.6"
+                  stroke="currentColor"
+                  stroke-width="1.3"
+                  stroke-linecap="round"
+                />
+              </svg>
+              This screen <kbd class="kbd" aria-hidden="true">⌘⇧O</kbd>
+            </button>
+          {/if}
+          {#if citedSummary !== null}
+            <span class="t-meta quick-recall__scopes-meta" aria-hidden="true"
+              >{citedSummary}</span
+            >
           {/if}
         </div>
 
@@ -2456,7 +2663,25 @@
                  summary, and copy/error affordances. Stream events feed the LAST
                  turn (the live one). Keyed by index — turns are append-only. -->
             {#each askTurns as turn, ti (ti)}
-              <div class="quick-recall__turn">
+              <!-- One turn is a heterogeneous tile COMPOSITION, not a grid row:
+                   the answer tile spans two cells and holds the only prose; the
+                   citations are subordinate at one cell. Same three-column cell
+                   unit as Search, so the two modes are the same grid seen
+                   differently. With nothing cited the answer takes all three. -->
+              <div class="bento bento--3 quick-recall__turn">
+                <div
+                  class="tile tile--static quick-recall__turn-tile"
+                  class:tile--w2={turn.phase === "done" && turn.sources.length > 0}
+                  class:tile--w3={!(turn.phase === "done" && turn.sources.length > 0)}
+                >
+                <div class="tile__h">
+                  <span class="t-label">{ti === 0 ? "Answer" : "Follow-up"}</span>
+                  {#if turn.phase === "thinking" || turn.phase === "streaming"}
+                    <span class="tile__more"
+                      >{turn.phase === "thinking" ? "reading your captures…" : "writing…"}</span
+                    >
+                  {/if}
+                </div>
                 <p class="quick-recall__turn-question" use:tip={turn.question}>
                   {turn.question}
                 </p>
@@ -2633,55 +2858,6 @@
                            settles. -->
                       {@render answerBody(turn)}
 
-                      <!-- Per-turn answer sources: the captures this turn drew on,
-                           surfaced only once the turn is done. -->
-                      {#if turn.phase === "done" && turn.sources.length > 0}
-                        <div class="quick-recall__sources">
-                          <span class="quick-recall__sources-heading">Sources</span>
-                          {#if turnFrameSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Screen</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="frame"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    thumbnailUrl={s.frameId != null
-                                      ? (search.thumbnailCache.get(s.frameId) ?? null)
-                                      : null}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                    onopenurl={() => openSourceUrl(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-
-                          {#if turnAudioSources(turn).length > 0}
-                            <div class="quick-recall__section" role="presentation">
-                              <span class="quick-recall__section-label">Audio</span>
-                              <div class="quick-recall__source-row" role="presentation">
-                                {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
-                                  <AnswerSourceCard
-                                    kind="audio"
-                                    appName={s.appName}
-                                    windowTitle={s.windowTitle}
-                                    startedAt={s.startedAt}
-                                    endedAt={s.endedAt}
-                                    sourceKind={s.sourceKind}
-                                    url={s.url}
-                                    onselect={() => void selectSource(s)}
-                                  />
-                                {/each}
-                              </div>
-                            </div>
-                          {/if}
-                        </div>
-                      {/if}
 
                       <!-- Empty-answer fallback: a settled turn that produced no
                            answer blocks and no sources (e.g. the model returned
@@ -2739,6 +2915,67 @@
                     Stopped early
                   </p>
                 {/if}
+                </div>
+
+                <!-- Per-turn answer sources as the subordinate CITED tile: one
+                     cell beside the two-cell answer, surfaced only once the turn
+                     is done. It is a peer tile of the answer, not a strip inside
+                     it — that is what makes the turn a composition. -->
+                {#if turn.phase === "done" && turn.sources.length > 0}
+                  <div class="tile tile--static quick-recall__cited">
+                    <div class="tile__h">
+                      <span class="t-label">Cited</span>
+                      <span class="tile__more is-num"
+                        >{turn.sources.length}
+                        {turn.sources.length === 1 ? "moment" : "moments"}</span
+                      >
+                    </div>
+                    <div class="pay scroll quick-recall__sources">
+                      {#if turnFrameSources(turn).length > 0}
+                        <div class="quick-recall__section" role="presentation">
+                          <span class="quick-recall__section-label t-label">Screen</span>
+                          <div class="quick-recall__source-row" role="presentation">
+                            {#each turnFrameSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                              <AnswerSourceCard
+                                kind="frame"
+                                appName={s.appName}
+                                windowTitle={s.windowTitle}
+                                startedAt={s.startedAt}
+                                endedAt={s.endedAt}
+                                thumbnailUrl={s.frameId != null
+                                  ? (search.thumbnailCache.get(s.frameId) ?? null)
+                                  : null}
+                                url={s.url}
+                                onselect={() => void selectSource(s)}
+                                onopenurl={() => openSourceUrl(s)}
+                              />
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+
+                      {#if turnAudioSources(turn).length > 0}
+                        <div class="quick-recall__section" role="presentation">
+                          <span class="quick-recall__section-label t-label">Audio</span>
+                          <div class="quick-recall__source-row" role="presentation">
+                            {#each turnAudioSources(turn) as s, si (`${s.kind}-${s.frameId}-${s.audioSegmentId}-${s.startedAt}-${si}`)}
+                              <AnswerSourceCard
+                                kind="audio"
+                                appName={s.appName}
+                                windowTitle={s.windowTitle}
+                                startedAt={s.startedAt}
+                                endedAt={s.endedAt}
+                                sourceKind={s.sourceKind}
+                                url={s.url}
+                                onselect={() => void selectSource(s)}
+                              />
+                            {/each}
+                          </div>
+                        </div>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
               </div>
             {/each}
           {/if}
@@ -2768,29 +3005,54 @@
              routes the raw question through ask_ai_followup; the backend reloads
              history server-side, so a follow-up always works. -->
         {#if askComposerVisible}
-          <div class="quick-recall__composer">
-            <textarea
-              bind:this={followupInputEl}
-              bind:value={followupInput}
-              class="quick-recall__composer-input"
-              rows="1"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-              placeholder={askStreaming
-                ? "Answering…"
-                : "Ask a follow-up…"}
-              aria-label="Ask a follow-up question"
-              disabled={askStreaming}
-              onkeydown={handleFollowupKeydown}
-            ></textarea>
+          <div class="tile tile--static quick-recall__composer">
+            <div class="tile__h">
+              <span class="t-label">Ask again</span>
+              <span class="tile__more">this conversation keeps its context</span>
+            </div>
+            <div class="quick-recall__composer-row">
+              <textarea
+                bind:this={followupInputEl}
+                bind:value={followupInput}
+                class="quick-recall__composer-input"
+                rows="1"
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder={askStreaming
+                  ? "Answering…"
+                  : "Ask a follow-up…"}
+                aria-label="Ask a follow-up question"
+                disabled={askStreaming}
+                onkeydown={handleFollowupKeydown}
+              ></textarea>
+              <span class="kbd" aria-hidden="true">⏎</span>
+            </div>
           </div>
         {/if}
       </div>
     {/if}
   </div>
 
+  <!-- The bottom bar ALWAYS states what ⏎ will do, and names the scope it is
+       acting on (left crumb). In the collapsed current-frame geometry there is
+       no bottom bar — the HUD panel carries its own key line, because a chrome
+       strip under a floating pill would be a second window's worth of frame. -->
+  {#if mode !== "frame"}
   <div class="quick-recall__footer" aria-hidden="true">
+    <span class="quick-recall__crumb">
+      {#if mode === "search"}
+        <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
+          <circle cx="6" cy="6" r="4.2" stroke="currentColor" stroke-width="1.4" />
+          <path d="M9.2 9.2 12.6 12.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" />
+        </svg>
+        {scopeSummary}
+      {:else}
+        <span class="quick-recall__crumb-glyph" aria-hidden="true">✦</span>
+        Ask{citedSummary === null ? "" : ` · ${citedSummary}`}
+      {/if}
+    </span>
+    <span class="quick-recall__hints">
     {#if mode === "search"}
       {#if filters.pickerOpen}
         <!-- While the picker owns the keys, the footer reflects its own
@@ -2833,10 +3095,6 @@
         {/if}
         <span class="quick-recall__hint-item"><kbd>esc</kbd> close</span>
       {/if}
-    {:else if mode === "frame"}
-      <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
-      <span class="quick-recall__hint-item"><kbd>⌘O</kbd> full window</span>
-      <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {:else if !askSubmitted}
       <span class="quick-recall__hint-item"><kbd>↵</kbd> ask</span>
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
@@ -2846,10 +3104,15 @@
       {/if}
       <span class="quick-recall__hint-item"><kbd>esc</kbd> back</span>
     {/if}
+    </span>
   </div>
+  {/if}
 </div>
 
 <style>
+  /* The window shell. Direction 01 is an OPAQUE window with grouped borderless
+     fills inside it — no card border on the frame itself; the OS draws the
+     corner and the shadow. */
   .quick-recall {
     height: 100vh;
     height: 100dvh;
@@ -2857,12 +3120,20 @@
     display: flex;
     flex-direction: column;
     box-sizing: border-box;
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 12px;
+    background: var(--app-bg);
+    border-radius: 10px;
     overflow: hidden;
     color: var(--app-text);
-    font-family: inherit;
+    font-family: var(--app-font-sans);
+  }
+
+  /* Collapsed current-frame geometry: the window is a 640-wide transparent
+     stage and the pill/panel/answer FLOAT on it. Overlay panels float; they are
+     not boxes, so the shell contributes no surface of its own here. */
+  .quick-recall--hud {
+    background: transparent;
+    border-radius: 0;
+    overflow: visible;
   }
 
   /* Mode area: positioning context for the cross-fading panels. flex-1 so it
@@ -2911,17 +3182,90 @@
     border: 0;
   }
 
-  .quick-recall__field {
+  /* The toolbar row. Materials live in CHROME ONLY: this is the one blurred
+     surface on the search screen; every content surface below stays opaque. */
+  .quick-recall__top {
+    flex: 0 0 52px;
     display: flex;
     align-items: center;
-    gap: 10px;
-    min-height: 56px;
-    padding: 8px 16px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    /* Mockup `.searchbar`: the chrome rows (search bar, footer) sit on the
-       subtle surface so the detail pane's plain surface reads as the stage. */
+    gap: var(--s-12);
+    padding: 0 20px;
+    position: relative;
+    z-index: 20;
+    background: var(--mat-toolbar);
+    backdrop-filter: blur(20px) saturate(1.4);
+  }
+
+  /* The field is a neutral pill in Search — quiet by construction, so the one
+     accent object on the screen is the ranked ask row. */
+  .quick-recall__field {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    height: 34px;
+    padding: 0 var(--s-8) 0 var(--s-6);
+    border-radius: var(--r-lg);
     background: var(--app-surface-subtle);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+  }
+
+  .quick-recall__field:focus-within {
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-hover);
+  }
+
+  /* The mode chip: which door you are standing in, stated in the machine voice
+     — NOT a switch. There is no Search|Ask segmented control (G4). */
+  .quick-recall__modechip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border-radius: var(--r-md);
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+  }
+
+  .quick-recall__modechip svg {
+    width: 11px;
+    height: 11px;
+  }
+
+  .quick-recall__modechip--ask {
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+
+  /* The match count is the machine's answer to the query: mono, tabular, in the
+     field itself rather than floating over the results. */
+  .quick-recall__count {
+    margin-left: auto;
+    flex: 0 0 auto;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
+  }
+
+  /* The scope row (Search) / context row (Ask): same geometry, different
+     question. */
+  .quick-recall__scopes {
+    flex: 0 0 36px;
+    display: flex;
+    align-items: center;
+    gap: var(--s-6);
+    padding: 0 20px;
+    min-width: 0;
+  }
+
+  .quick-recall__scopes-meta {
+    margin-left: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
 
   /* The search row keeps a constant neutral hairline divider (Spotlight/Raycast
@@ -2932,21 +3276,6 @@
      rounded frame — leaving an asymmetric halo only below the field. The launcher
      auto-focuses this input on open, so that focus chrome was effectively always
      on. The blinking accent caret already signals focus. */
-
-  .quick-recall__glyph {
-    font-size: var(--t-title);
-    line-height: 1;
-    color: var(--app-text-muted);
-    flex-shrink: 0;
-    transform: rotate(-45deg);
-    transition: color 0.12s ease;
-  }
-
-  /* Mockup `.searchbar:focus-within svg.magnifier`: the magnifier warms to the
-     accent while the input has focus. */
-  .quick-recall__field:focus-within .quick-recall__glyph {
-    color: var(--app-accent);
-  }
 
   /* Slice 4: wrapper that establishes the positioning context for the ghost
      overlay. Takes the flex slot the input used to own; the input fills it. */
@@ -2964,10 +3293,8 @@
     outline: none;
     background: transparent;
     color: var(--app-text-strong);
-    font-family: inherit;
-    /* Mockup `.searchbar input`: 16px query text. */
-    font-size: 16px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     padding: 0;
     caret-color: var(--app-accent);
     /* Sits above the ghost mirror so the real caret/text are what's interacted
@@ -2977,7 +3304,7 @@
   }
 
   .quick-recall__input::placeholder {
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
   /* Slice 4: ghost-text mirror. Overlays the input exactly, rendering the typed
@@ -2991,10 +3318,9 @@
     display: flex;
     align-items: center;
     pointer-events: none;
-    font-family: inherit;
     /* Must mirror .quick-recall__input's font metrics exactly. */
-    font-size: 16px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     white-space: pre;
     overflow: hidden;
     z-index: 0;
@@ -3010,38 +3336,68 @@
     color: var(--app-text-muted);
   }
 
+  /* The bottom bar: the scope crumb left, what the keys do right. It always
+     states what ⏎ will do — that promise is the reason it exists. */
   .quick-recall__footer {
-    flex-shrink: 0;
+    flex: 0 0 40px;
     display: flex;
     align-items: center;
-    gap: 14px;
-    padding: 8px 14px;
-    border-top: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
+    gap: var(--s-8);
+    padding: 0 20px;
+    background: var(--app-surface);
+  }
+
+  .quick-recall__crumb {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    min-width: 0;
+    font: var(--w-regular) var(--t-meta) / 1 var(--app-font-sans);
+    color: var(--app-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .quick-recall__crumb svg {
+    flex: 0 0 auto;
+    width: 12px;
+    height: 12px;
+  }
+
+  .quick-recall__crumb-glyph {
+    color: var(--app-accent);
+  }
+
+  .quick-recall__hints {
+    margin-left: auto;
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-12);
   }
 
   .quick-recall__hint-item {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-subtle);
+    gap: var(--s-4);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-muted);
     white-space: nowrap;
   }
 
   .quick-recall__footer kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
-    text-transform: lowercase;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 3px 5px;
-    min-width: 9px;
-    text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 var(--s-4);
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__answer-area:focus {
@@ -3085,84 +3441,93 @@
     color: var(--app-danger-text);
   }
 
-  /* Funnel Filter Picker trigger (mockup `.appfilter > button`): a quiet
-     labeled "Filter ⌘F" button on the raised surface. The active variant marks
-     it pressed while the picker overlay is open; the filtered variant turns
-     accent while any chip narrows the query (mockup `.appfilter.filtered`). */
+  /* The Filter trigger is a scope CHIP that adds a scope — same object as the
+     chips beside it, so the row reads as one control family. `.chip` carries
+     the look; this only adds the button reset and the filtered tint. */
   .quick-recall__filter-trigger {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-    font-family: inherit;
-    font-size: var(--t-meta);
-    line-height: 1;
-    white-space: nowrap;
-    color: var(--app-text-muted);
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 6px;
-    padding: 5px 10px;
-    cursor: pointer;
-    transition:
-      border-color 0.12s ease,
-      color 0.12s ease,
-      background 0.12s ease;
+    flex: 0 0 auto;
+    border: 0;
+    cursor: default;
   }
 
-  .quick-recall__filter-trigger kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
-    padding: 2px 4px;
-  }
-
-  .quick-recall__filter-trigger:hover {
-    border-color: var(--app-border-hover);
-    color: var(--app-text-strong);
+  .quick-recall__filter-trigger svg {
+    flex: 0 0 auto;
   }
 
   .quick-recall__filter-trigger:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
-  .quick-recall__filter-trigger:active,
-  .quick-recall__filter-trigger--active {
-    background: var(--app-surface-active);
-    border-color: var(--app-accent);
-    color: var(--app-accent);
-  }
-
-  .quick-recall__filter-trigger--filtered {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border-color: var(--app-accent-border);
-  }
-
-  .quick-recall__filter-trigger--filtered kbd {
-    color: var(--app-accent);
+  .quick-recall__filter-trigger kbd {
     background: transparent;
-    border-color: var(--app-accent-border);
+    color: inherit;
+    opacity: 0.7;
+  }
+
+  /* An applied scope: an accent chip carrying its own remover. */
+  .quick-recall__chip {
+    padding-right: var(--s-3);
+  }
+
+  .quick-recall__chip-label {
+    white-space: nowrap;
+  }
+
+  .quick-recall__chip-remove {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    color: inherit;
+    background: transparent;
+    border: none;
+    border-radius: 50%;
+    padding: 0;
+    cursor: default;
+    opacity: 0.7;
+    transition:
+      opacity var(--dur-quick) var(--ease),
+      background-color var(--dur-quick) var(--ease);
+  }
+
+  /* Invisible hit area expanding the 16px glyph to the comfortable minimum
+     without enlarging the chip itself. */
+  .quick-recall__chip-remove::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 24px;
+    height: 24px;
+    transform: translate(-50%, -50%);
+  }
+
+  .quick-recall__chip-remove:hover {
+    opacity: 1;
+    background: color-mix(in srgb, var(--app-accent-contrast) 18%, transparent);
+  }
+
+  .quick-recall__chip-remove:focus-visible {
+    outline: none;
+    opacity: 1;
+    box-shadow: var(--app-ring);
   }
 
   .quick-recall__ask-hint {
     display: block;
     width: 100%;
     margin: 0;
-    padding: 6px 18px 0;
+    padding: var(--s-4) 20px 0;
     text-align: left;
-    font-size: var(--t-meta);
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-text-subtle);
     background: none;
     border: none;
-    cursor: pointer;
+    cursor: default;
     flex-shrink: 0;
   }
 
@@ -3178,97 +3543,6 @@
     box-shadow: var(--app-ring);
   }
 
-  /* Active filter chip band (mockup `.chipband` + `.fchip`): a chrome band on
-     the subtle surface under the input; every chip is an accent-tinted pill
-     with its × remover, trailed by the quiet hint line. Shares its slot with
-     the inline parse-error line. */
-  .quick-recall__chips {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 8px;
-    padding: 8px 16px;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
-  }
-
-  .quick-recall__chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: var(--t-meta);
-    line-height: 1;
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
-    border: 1px solid var(--app-accent-border);
-    border-radius: 999px;
-    padding: 4px 5px 4px 10px;
-    white-space: nowrap;
-  }
-
-  .quick-recall__chip-label {
-    white-space: nowrap;
-  }
-
-  .quick-recall__chip-hint {
-    font-size: var(--t-label);
-    line-height: 1;
-    color: var(--app-text-subtle);
-  }
-
-  /* Mockup `.fchip .x`: a round remover inheriting the chip's accent, resting
-     at 0.7 opacity and filling with an accent wash on hover/press. */
-  .quick-recall__chip-remove {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 16px;
-    height: 16px;
-    font-family: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
-    color: inherit;
-    background: transparent;
-    border: none;
-    border-radius: 50%;
-    padding: 0;
-    cursor: pointer;
-    opacity: 0.7;
-    transition:
-      opacity 0.12s ease,
-      background-color 0.12s ease;
-  }
-
-  /* Invisible hit area expanding the 16px glyph to the 24px comfortable minimum
-     without enlarging the chip itself. */
-  .quick-recall__chip-remove::before {
-    content: "";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    width: 24px;
-    height: 24px;
-    transform: translate(-50%, -50%);
-  }
-
-  .quick-recall__chip-remove:hover {
-    opacity: 1;
-    background: color-mix(in srgb, var(--app-accent) 18%, transparent);
-  }
-
-  .quick-recall__chip-remove:focus-visible {
-    outline: none;
-    opacity: 1;
-    box-shadow: var(--app-ring);
-  }
-
-  .quick-recall__chip-remove:active {
-    opacity: 1;
-    background: color-mix(in srgb, var(--app-accent) 26%, transparent);
-  }
-
   /* Slice 3: inline parse-error line under the input. Styled as a band like
      the chip row (they can coexist — a chip and a live error never apply to
      the same token) and uses the danger ramp (same as
@@ -3276,72 +3550,193 @@
      it reads as a correction prompt, not success chrome. */
   .quick-recall__parse-error {
     margin: 0;
-    padding: 8px 16px;
+    padding: 0 20px var(--s-6);
     flex-shrink: 0;
-    font-size: var(--t-meta);
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-danger-text);
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-subtle);
   }
 
 
-  /* ── Current-frame ask (round-4 G1–G3) ───────────────────────────────────
-     The window is already collapsed to this bar, so the panel is a stack of two
-     independent pieces: the bar (chip + composer + Stop), and the detached
-     answer. Nothing about dismissing the second touches the first. Geometry
-     stays plain — per-direction bar shapes land in phase 2. */
+  /* ── Current-frame ask (round-4 G1–G3, direction 01 geometry) ────────────
+     The 1120×720 palette collapses to a 560×40 control pill pinned top-centre
+     with a 620px panel 12px below it, and the answer as a third floating piece.
+     Three pieces, not one box: dismissing the answer cannot touch the pill, so
+     Stop is never hidden with it. This is the one place a shadow is legitimate
+     — these genuinely float over the user's screen. */
   .quick-recall__panel--frame {
-    background: var(--app-surface-raised);
     display: flex;
     flex-direction: column;
-    min-height: 0;
-  }
-
-  .quick-recall__frame-bar {
-    flex: 0 0 auto;
-  }
-
-  .quick-recall__field--frame {
-    gap: 8px;
     align-items: center;
-    background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
-    flex-wrap: nowrap;
+    gap: 12px;
+    min-height: 0;
+    background: transparent;
   }
 
-  /* Chip-in-sentence: an inline word-sized token sitting where a word would,
-     never a thumbnail. Backspace at caret 0 deletes it like a word. */
+  .quick-recall__hudbar {
+    flex: 0 0 40px;
+    width: 560px;
+    max-width: 100%;
+    display: flex;
+    align-items: center;
+    gap: var(--s-8);
+    padding: 0 var(--s-6) 0 var(--s-8);
+    border-radius: var(--r-pill);
+    background: var(--mat-hud);
+    backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: var(--hud-shadow);
+  }
+
+  .quick-recall__hudbar-glyph {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-pill);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+  }
+
+  .quick-recall__hudbar-glyph svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .quick-recall__hudbar-title {
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
+  .quick-recall__hudbar-div {
+    width: var(--hairline);
+    height: 18px;
+    background: var(--app-border-strong);
+  }
+
+  .quick-recall__hudbar-key {
+    margin-left: auto;
+  }
+
+  .quick-recall__hudstop {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: var(--app-surface-hover);
+    color: var(--app-text-muted);
+    cursor: default;
+  }
+
+  .quick-recall__hudstop:hover {
+    color: var(--app-danger-text);
+  }
+
+  .quick-recall__hudstop:focus-visible {
+    outline: none;
+    box-shadow: var(--app-ring-danger);
+  }
+
+  .quick-recall__hudpanel {
+    position: relative;
+    flex: 0 0 auto;
+    width: 620px;
+    max-width: 100%;
+    padding: var(--s-12);
+    border-radius: var(--tile-r);
+    background: var(--mat-hud);
+    backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: var(--hud-shadow);
+  }
+
+  /* The mode tab overhangs the corner so the panel is identifiable at a glance
+     even at the edge of a busy screen. */
+  .quick-recall__hudtab {
+    position: absolute;
+    top: -11px;
+    right: 14px;
+    height: 22px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-sm);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-4);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
+    text-transform: uppercase;
+  }
+
+  .quick-recall__hudctx {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    margin: 0;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
+    color: var(--app-text-muted);
+    min-width: 0;
+  }
+
+  .quick-recall__hudctx-eye {
+    flex: 0 0 auto;
+    width: 11px;
+    height: 11px;
+    color: var(--app-accent);
+  }
+
+  .quick-recall__hudctx--error {
+    color: var(--app-danger-text);
+  }
+
+  .quick-recall__hudin {
+    display: flex;
+    align-items: center;
+    gap: var(--s-6);
+    min-height: 34px;
+    margin-top: var(--s-8);
+    padding: var(--s-4) var(--s-8);
+    border-radius: var(--r-lg);
+    background: var(--app-surface-subtle);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    flex-wrap: wrap;
+  }
+
+  .quick-recall__hudin:focus-within {
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border);
+  }
+
+  /* Chip-in-sentence: word-sized, sitting where a word would, carrying a 26×16
+     stand-in for the frozen frame. Never a large thumbnail. */
   .quick-recall__frame-chip {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    flex-shrink: 0;
-    max-width: 55%;
-    padding: 2px 6px;
-    border-radius: 6px;
-    border: 1px solid var(--app-accent-border);
-    background: color-mix(in srgb, var(--app-accent) 14%, transparent);
-    font-size: var(--t-meta);
-    line-height: 1.4;
-    color: var(--app-text);
+    gap: var(--s-4);
+    flex: 0 0 auto;
+    max-width: 60%;
+    height: 22px;
+    padding: 0 var(--s-6) 0 2px;
+    border-radius: var(--r-sm);
+    background: var(--app-accent-bg);
+    box-shadow: inset 0 0 0 var(--hairline) var(--app-accent-border);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-accent);
     white-space: nowrap;
     overflow: hidden;
   }
 
-  .quick-recall__frame-chip--pending,
-  .quick-recall__frame-chip--error {
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border-color: var(--app-border);
-  }
-
-  .quick-recall__frame-chip--error {
-    color: var(--app-danger-text);
-  }
-
-  .quick-recall__frame-chip-glyph {
-    opacity: 0.7;
+  .quick-recall__frame-chip-shot {
+    flex: 0 0 auto;
+    width: 26px;
+    height: 16px;
+    border-radius: 2px;
+    background: var(--media-void);
   }
 
   .quick-recall__frame-chip-label {
@@ -3350,19 +3745,17 @@
   }
 
   .quick-recall__frame-chip-note {
-    color: var(--app-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__frame-chip-remove {
     border: 0;
     background: none;
     padding: 0 1px;
-    cursor: pointer;
+    cursor: default;
     color: inherit;
-    opacity: 0.55;
-    font-size: 10px;
+    opacity: 0.6;
+    font-size: 9px;
     line-height: 1;
   }
 
@@ -3378,78 +3771,89 @@
   }
 
   .quick-recall__frame-input {
-    flex: 1 1 auto;
+    flex: 1 1 120px;
     min-width: 0;
     border: 0;
     background: none;
     resize: none;
     padding: 0;
-    color: var(--app-text);
-    font: inherit;
-    font-size: var(--t-body);
-    line-height: 1.5;
+    color: var(--app-text-strong);
+    font: var(--w-regular) var(--t-ui) / 1.6 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     outline: none;
     max-height: 60px;
+    caret-color: var(--app-accent);
   }
 
   .quick-recall__frame-input::placeholder {
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
-  .quick-recall__frame-stop {
-    flex-shrink: 0;
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    background: var(--app-surface);
-    color: var(--app-text);
-    font-size: var(--t-meta);
-    padding: 3px 9px;
-    cursor: pointer;
+  .quick-recall__send {
+    flex: 0 0 auto;
+    margin-left: auto;
+    width: 22px;
+    height: 22px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--r-pill);
+    background: var(--app-accent);
+    color: var(--app-accent-contrast);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
   }
 
   /* Upfront non-vision disclosure (G2), stated before the user types. */
   .quick-recall__frame-disclosure {
-    margin: 0;
-    padding: 6px 16px;
-    font-size: var(--t-meta);
-    line-height: 1.4;
-    color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border-bottom: 1px solid var(--app-border);
+    margin-top: var(--s-8);
   }
 
-  /* The detached second piece. Its own card, its own dismiss; the bar above is
-     untouched by anything that happens here. */
+  .quick-recall__hudfoot {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    margin: var(--s-8) 0 0;
+    padding-top: var(--s-8);
+    box-shadow: 0 -1px 0 var(--tile-sep);
+  }
+
+  .quick-recall__hudfoot-keys {
+    margin-left: auto;
+    color: var(--app-text-subtle);
+  }
+
+  /* The detached third piece. Its own floating panel, its own dismiss; nothing
+     that happens here touches the pill or the composer above it. */
   .quick-recall__frame-answer {
     position: relative;
     flex: 1 1 auto;
+    width: 620px;
+    max-width: 100%;
     min-height: 0;
     overflow-y: auto;
-    margin: 10px;
-    padding: 12px 34px 12px 14px;
-    border: 1px solid var(--app-border);
-    border-radius: 10px;
-    background: var(--app-surface);
-    font-size: var(--t-body);
-    line-height: 1.55;
+    padding: var(--s-12) var(--s-32) var(--s-12) var(--s-12);
+    border-radius: var(--tile-r);
+    background: var(--mat-hud);
+    backdrop-filter: blur(30px) saturate(1.5);
+    box-shadow: var(--hud-shadow);
   }
 
   .quick-recall__frame-answer-dismiss {
     position: absolute;
-    top: 8px;
-    right: 8px;
+    top: var(--s-8);
+    right: var(--s-8);
     border: 0;
     background: none;
-    color: var(--app-text-muted);
-    cursor: pointer;
+    color: var(--app-text-subtle);
+    cursor: default;
     font-size: 11px;
     line-height: 1;
     padding: 3px;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
   }
 
   .quick-recall__frame-answer-dismiss:hover {
-    color: var(--app-text);
+    color: var(--app-text-strong);
   }
 
   .quick-recall__frame-answer-dismiss:focus-visible {
@@ -3463,86 +3867,101 @@
   }
 
   /* G4: taking the ask row TRANSFORMS the surface, so ask must not read as a
-     second search screen. Search is a neutral field over a grid; ask is the
-     app's one accent-filled bar over a raised stage — the posture change all
-     five directions converged on, spent entirely in existing tokens. */
-  .quick-recall__panel--ask {
-    background: var(--app-surface-raised);
-  }
-
+     second search screen. Search is a quiet field over a homogeneous grid; Ask
+     is the app's ONE accent-filled field over a heterogeneous tile composition
+     — the posture change all five directions converged on. */
   .quick-recall__field--ask {
-    gap: 12px;
     background: var(--app-accent-bg);
-    border-bottom-color: var(--app-accent-border);
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
-  /* WKWebView focus idiom: the borderless ask input delegates its focus ring to
-     the bar it sits in, mirroring the follow-up composer. Scoped to the input
-     (not bare :focus-within) so the ring doesn't fire when the sibling Back/Stop
-     buttons — which carry their own focus chrome — take focus. */
   .quick-recall__field--ask:has(.quick-recall__ask-input:focus) {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent);
   }
 
   .quick-recall__back {
-    flex-shrink: 0;
-    font-family: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
+    flex: 0 0 auto;
+    width: var(--h-md);
+    height: var(--h-md);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
     color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 8px;
-    cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
+    background: var(--app-surface-raised) var(--push-grad);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.25);
+    cursor: default;
+    transition: color var(--dur-quick) var(--ease);
   }
 
   .quick-recall__back:hover {
-    border-color: var(--app-accent);
     color: var(--app-text-strong);
   }
 
   .quick-recall__back:focus-visible {
     outline: none;
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 3px var(--app-accent-glow);
   }
 
   .quick-recall__back:not(:disabled):active {
     background: var(--app-surface-active);
   }
 
-  /* The thread header label once a thread is open (the per-turn question
-     headers live in the transcript, so this is just a quiet section marker). */
+  /* The model that will answer is a CHROME PILL, not a buried setting. */
+  .quick-recall__mpill {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--gap-inline);
+    height: var(--h-sm);
+    padding: 0 var(--s-8);
+    border-radius: var(--r-pill);
+    background: var(--app-surface-raised);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    color: var(--app-text-strong);
+    white-space: nowrap;
+  }
+
+  .quick-recall__mpill-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--app-accent);
+    flex: 0 0 auto;
+  }
+
+  /* The thread header once a thread is open (the per-turn question headers live
+     in the tiles, so this is just a quiet marker). */
   .quick-recall__ask-thread-label {
     flex: 1;
     min-width: 0;
-    font-size: var(--t-meta);
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
+    font: var(--w-regular) var(--t-ui) / 1 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
+    color: var(--app-text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
-  /* Stop the streaming answer in place — quiet by default, shifting to the danger
-     register on hover since it interrupts an in-flight action. */
+  /* Stop the streaming answer in place — quiet by default, shifting to the
+     danger register on hover since it interrupts an in-flight action. */
   .quick-recall__stop {
-    flex-shrink: 0;
+    flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-family: inherit;
-    font-size: var(--t-ui);
-    line-height: 1;
+    gap: var(--gap-inline);
+    height: var(--h-md);
+    padding: 0 var(--s-8);
+    font: var(--w-medium) var(--t-ui) / 1 var(--app-font-sans);
     color: var(--app-text-muted);
-    background: var(--app-surface-subtle);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    padding: 6px 9px;
-    cursor: pointer;
-    transition: border-color 0.12s ease, color 0.12s ease;
+    background: var(--app-surface-raised) var(--push-grad);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    cursor: default;
+    transition: color var(--dur-quick) var(--ease), border-color var(--dur-quick) var(--ease);
   }
 
   .quick-recall__stop-glyph {
@@ -3575,9 +3994,8 @@
     outline: none;
     background: transparent;
     color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: 14px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-title) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-title);
     padding: 0;
     resize: none;
     /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
@@ -3589,66 +4007,66 @@
   }
 
   .quick-recall__ask-input::placeholder {
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__answer-area {
-    gap: 18px;
+    padding: var(--s-4) 20px 20px;
+    gap: var(--cell-gutter);
     position: relative;
   }
 
-  /* One transcript turn: question header + answer + sources/activity. The turn
-     is the positioning context for its own copy button (top-right). Turns are
-     separated by a hairline rule so the back-and-forth reads as a transcript. */
+  /* One transcript turn IS a bento composition: the answer tile (2 cells, or 3
+     when nothing was cited) beside the Cited tile (1 cell). No rule between
+     turns — the gutter and the tile fills already separate them. */
   .quick-recall__turn {
-    position: relative;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
+    flex: 0 0 auto;
   }
 
-  .quick-recall__turn:not(:first-child) {
-    padding-top: 18px;
-    border-top: 1px solid var(--app-border);
+  .quick-recall__turn-tile {
+    min-height: 0;
   }
 
   /* Read-only question header above each turn's answer. */
   .quick-recall__turn-question {
-    margin: 0;
-    padding-right: 34px;
-    font-size: 14px;
-    line-height: 1.4;
+    margin: 0 0 var(--s-8);
+    padding-right: 30px;
+    font: var(--w-medium) var(--t-ui) / var(--lh-ui) var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: var(--app-text-strong);
-    font-weight: 600;
     overflow-wrap: anywhere;
   }
 
   /* "Stopped early" tag on a turn the user cut off mid-stream. The partial
      answer below stays kept and continuable; this just acknowledges the cut. */
   .quick-recall__stopped-tag {
-    margin: 8px 0 0;
-    font-size: 12px;
-    color: var(--app-text-muted);
+    margin: var(--s-8) 0 0;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    color: var(--app-text-subtle);
   }
 
-  /* Follow-up composer: pinned beneath the scrolling transcript. Mirrors the
-     ask input but framed as its own bottom bar. Disabled (dimmed) while
-     a turn streams. */
+  /* Follow-up composer: its own tile, pinned beneath the scrolling transcript,
+     present once the first answer completes. Disabled while a turn streams. */
   .quick-recall__composer {
-    flex-shrink: 0;
+    flex: 0 0 auto;
+    margin: 0 20px 20px;
+  }
+
+  .quick-recall__composer-row {
     display: flex;
     align-items: center;
-    padding: 10px 15px;
-    border-top: 1px solid var(--app-border);
+    gap: var(--s-8);
+    height: 32px;
+    padding: 0 var(--s-8);
+    border-radius: var(--r-lg);
+    background: var(--app-surface-subtle);
+    box-shadow: 0 0 0 var(--hairline) var(--app-border-strong);
   }
 
-  /* WKWebView focus idiom: the borderless composer input delegates its focus ring
-     to the bar it sits in. */
-  .quick-recall__composer:focus-within {
-    border-color: var(--app-accent);
-    box-shadow: var(--app-ring);
+  .quick-recall__composer-row:focus-within {
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border);
   }
 
   .quick-recall__composer-input {
@@ -3658,9 +4076,8 @@
     outline: none;
     background: transparent;
     color: var(--app-text-strong);
-    font-family: inherit;
-    font-size: 14px;
-    line-height: 1.4;
+    font: var(--w-regular) var(--t-ui) / 1.4 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     padding: 0;
     resize: none;
     /* Auto-grown to content in JS (autosizeAskTextarea); the cap + hidden
@@ -3672,7 +4089,7 @@
   }
 
   .quick-recall__composer-input::placeholder {
-    color: var(--app-text-muted);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__composer-input:disabled {
@@ -3687,13 +4104,12 @@
   .quick-recall__answer {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: var(--s-12);
   }
   .quick-recall__graphic {
     margin: 0;
-    padding: 12px 13px;
-    border: 1px solid var(--app-border);
-    border-radius: 9px;
+    padding: var(--s-12);
+    border-radius: var(--tile-r-in);
     background: var(--app-surface-subtle);
   }
   .quick-recall__graphic-title {
@@ -3709,9 +4125,8 @@
     gap: 9px;
   }
   .quick-recall__dossier-card {
-    padding: 11px 12px;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    padding: var(--s-12);
+    border-radius: var(--tile-r-in);
     background: var(--app-surface);
     display: flex;
     flex-direction: column;
@@ -3748,71 +4163,45 @@
   /* Answer sources strip: sectioned Screen/Audio rows beneath the answer prose.
      Each section's cards scroll horizontally (AnswerSourceCard is fixed-width),
      separated from the prose by a hairline rule. */
+  /* The Cited tile's payload: the moment cards stack full-width in the tile
+     (they are 208px flex tiles in the Insights strip, so the width is forced
+     here rather than in the shared component). */
   .quick-recall__sources {
-    flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-top: 4px;
-    padding-top: 14px;
-    border-top: 1px solid var(--app-border);
+    gap: var(--s-12);
+    max-height: 420px;
+    overflow-y: auto;
   }
 
-  .quick-recall__sources-heading {
-    font-size: var(--t-meta);
-    line-height: 1;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--app-text-subtle);
-    padding: 0 2px;
-  }
-
-  /* Horizontally-scrolling card row. The thin scrollbar stays out of the way
-     until hover, matching the quiet terminal aesthetic of the surface. */
   .quick-recall__source-row {
     display: flex;
-    gap: 8px;
-    overflow-x: auto;
-    padding-bottom: 4px;
-    scrollbar-width: thin;
-    scrollbar-color: var(--app-border) transparent;
+    flex-direction: column;
+    gap: var(--s-8);
   }
 
-  .quick-recall__source-row::-webkit-scrollbar {
-    height: 6px;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-track {
-    background: transparent;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-thumb {
-    background: var(--app-border);
-    border-radius: 3px;
-  }
-
-  .quick-recall__source-row::-webkit-scrollbar-thumb:hover {
-    background: var(--app-border-hover);
+  .quick-recall__source-row :global(.source-card-wrap) {
+    width: 100%;
   }
 
   /* Copy button: pinned to the top-right of the answer region, only visible at
      askPhase === "done" (gated in markup). Quiet by default, accent on hover. */
   .quick-recall__copy {
     position: absolute;
-    top: 8px;
-    right: 10px;
+    top: var(--tile-pad);
+    right: var(--tile-pad);
     z-index: 2;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 26px;
-    height: 26px;
+    width: 24px;
+    height: 24px;
     padding: 0;
     color: var(--app-text-subtle);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 6px;
-    cursor: pointer;
+    background: var(--app-surface-raised);
+    border: var(--hairline) solid var(--app-border-strong);
+    border-radius: var(--r-md);
+    cursor: default;
     transition: color 0.15s ease, border-color 0.15s ease;
   }
 
@@ -3850,7 +4239,7 @@
     display: flex;
     justify-content: flex-end;
     flex-shrink: 0;
-    padding: 4px 2px 0;
+    padding: 0 20px var(--s-8);
   }
 
   .quick-recall__handoff {
@@ -4119,8 +4508,6 @@
     .quick-recall__retry,
     .quick-recall__activity-chip,
     .quick-recall__activity-caret,
-    .quick-recall__filter-trigger,
-    .quick-recall__glyph,
     .quick-recall__chip-remove,
     .quick-recall__stop {
       transition: none;

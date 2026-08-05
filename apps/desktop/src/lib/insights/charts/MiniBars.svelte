@@ -101,7 +101,7 @@
     align-items: center;
     gap: 5px;
     min-width: 0;
-    font-size: 11.5px;
+    font: var(--w-regular) var(--t-meta) / var(--lh-meta) var(--app-font-sans);
     color: var(--app-text-muted);
   }
   /* The dominant row reads as the focal point: stronger label, full-opacity fill. */
@@ -122,13 +122,10 @@
     flex: 0 0 16px;
     place-items: center;
     overflow: hidden;
-    border: 1px solid var(--app-border);
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     background: var(--app-surface);
     color: var(--app-text-muted);
-    font-size: var(--t-label);
-    font-weight: 800;
-    line-height: 1;
+    font: var(--w-semi) var(--t-label) / 1 var(--app-font-mono);
   }
   .icon img {
     width: 13px;
@@ -137,9 +134,8 @@
   }
   .track {
     height: 10px;
-    border-radius: 999px;
+    border-radius: var(--r-pill);
     background: var(--app-surface-hover);
-    border: 1px solid var(--app-border);
     overflow: hidden;
   }
   /* The ramp itself carries rank (rank 0 = brightest), so the fill needs no
@@ -152,8 +148,8 @@
     transition: width 0.18s ease;
   }
   .val {
-    font-size: 10px;
-    color: var(--app-text-muted);
+    font: var(--w-regular) var(--t-label) / 1.4 var(--app-font-mono);
+    color: var(--app-text-subtle);
     text-align: right;
     font-variant-numeric: tabular-nums;
   }

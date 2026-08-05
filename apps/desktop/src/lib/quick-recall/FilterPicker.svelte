@@ -165,19 +165,22 @@
     min-height: 0;
   }
 
+  /* An NSMenu, anchored under the Filter chip in the scope row: menu material,
+     a hairline edge, and full-row accent highlighting. A menu genuinely floats,
+     so this is one of the few places a shadow is legitimate. */
   .quick-recall__picker {
     flex: 0 1 auto;
     align-self: flex-start;
-    margin: 8px 16px auto auto;
-    width: min(320px, calc(100% - 32px));
-    max-height: calc(100% - 24px);
+    margin: var(--s-8) auto auto 20px;
+    width: min(320px, calc(100% - 40px));
+    max-height: calc(100% - var(--s-24));
     overflow-y: auto;
     gap: 2px;
-    padding: 6px;
-    background: var(--app-surface-raised);
-    border: 1px solid var(--app-border-strong);
-    border-radius: 8px;
-    box-shadow: var(--app-shadow-popover);
+    padding: 5px;
+    background: var(--mat-menu);
+    backdrop-filter: blur(30px) saturate(1.5);
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-popover), 0 0 0 var(--hairline) var(--menu-edge);
   }
 
   /* Mockup `.app-menu .cat`: uppercase category header inside the card. */
@@ -190,10 +193,9 @@
   }
 
   .quick-recall__picker-title {
-    font-size: var(--t-label);
-    line-height: 1;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    letter-spacing: 0.08em;
     color: var(--app-text-subtle);
   }
 
@@ -221,11 +223,12 @@
   .quick-recall__picker-item {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 6px 9px;
+    gap: var(--s-8);
+    min-height: 24px;
+    padding: var(--s-4) var(--s-8);
     border-radius: 5px;
-    color: var(--app-text-muted);
-    cursor: pointer;
+    color: var(--app-text);
+    cursor: default;
   }
 
   /* Real app icon on `app:` value rows (resolved by display name). */
@@ -251,9 +254,16 @@
     background: var(--app-surface-active);
   }
 
+  /* Full-row accent selection — the native menu rule. Never an underline. */
   .quick-recall__picker-item--selected {
-    color: var(--app-accent);
-    background: var(--app-accent-bg);
+    color: var(--app-accent-contrast);
+    background: var(--app-accent);
+  }
+
+  .quick-recall__picker-item--selected .quick-recall__picker-item-hint,
+  .quick-recall__picker-item--selected .quick-recall__picker-item-chevron {
+    color: var(--app-accent-contrast);
+    opacity: 0.8;
   }
 
   /* A value-list row that would conflict with an active chip (app + audio
@@ -292,8 +302,8 @@
   }
 
   .quick-recall__picker-item-label {
-    font-size: var(--t-ui);
-    line-height: 1.3;
+    font: var(--w-regular) var(--t-ui) / 1.3 var(--app-font-sans);
+    letter-spacing: var(--ls-ui);
     color: inherit;
     white-space: nowrap;
     overflow: hidden;
@@ -321,9 +331,8 @@
     margin: 2px 0 0;
     padding: 5px 9px 3px;
     flex-shrink: 0;
-    border-top: 1px solid var(--app-border);
-    font-size: var(--t-label);
-    line-height: 1;
+    box-shadow: 0 calc(var(--hairline) * -1) 0 var(--app-border-strong);
+    font: var(--w-regular) var(--t-label) / 1 var(--app-font-mono);
     color: var(--app-text-subtle);
     display: flex;
     align-items: center;
@@ -331,16 +340,17 @@
   }
 
   .quick-recall__picker-cue kbd {
-    font-family: inherit;
-    font-size: var(--t-label);
-    line-height: 1;
-    text-transform: lowercase;
-    color: var(--app-text-muted);
-    background: var(--app-surface);
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
-    padding: 2px 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 var(--s-4);
     margin: 0 1px;
+    border-radius: var(--r-sm);
+    background: var(--app-surface-raised);
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    color: var(--app-text-subtle);
   }
 
   .quick-recall__state {

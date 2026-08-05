@@ -116,10 +116,13 @@
      {@html} content need `:global(...)`, since Svelte prunes scoped styles that
      don't appear in the component's own template markup. Every color comes from
      the app theme vars (which flip dark/light via `data-theme`) — never hex. */
+  /* The answer is the app's PROSE role: sans, --t-read, measure-capped. The
+     body default is mono (the machine voice), which an answer is not. */
   .answer-prose {
-    font-size: 13px;
+    font: var(--w-regular) var(--t-read) / var(--lh-read) var(--app-font-sans);
+    letter-spacing: var(--ls-read);
     color: var(--app-text);
-    line-height: 1.6;
+    max-width: 70ch;
     word-break: break-word;
     overflow-wrap: anywhere;
   }
@@ -195,13 +198,11 @@
   /* Inline code — explicitly NOT the code inside `.answer-code` blocks (those are
      re-styled below). */
   .answer-prose :global(code:not(.answer-code code)) {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      monospace;
-    font-size: 0.88em;
+    font-family: var(--app-font-mono);
+    font-size: 0.86em;
     padding: 0.1em 0.35em;
-    border-radius: 4px;
+    border-radius: var(--r-sm);
     background: var(--app-surface-raised);
-    border: 1px solid var(--app-border);
     color: var(--app-text-strong);
   }
 
@@ -218,14 +219,15 @@
   .answer-prose :global(table) {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
+    font-size: var(--t-ui);
     line-height: 1.45;
     font-variant-numeric: tabular-nums;
   }
   .answer-prose :global(thead th) {
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.05em;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-weight: var(--w-medium);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
     color: var(--app-text-muted);
     text-align: left;
@@ -255,8 +257,7 @@
   /* ── Code-block chrome (emitted by markdown.ts) ──────────────────────── */
   .answer-prose :global(.answer-code) {
     margin: 0 0 0.7em;
-    border: 1px solid var(--app-border);
-    border-radius: 8px;
+    border-radius: var(--tile-r-in);
     overflow: hidden;
     background: var(--app-surface-subtle);
   }
@@ -264,27 +265,25 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 5px 10px;
-    border-bottom: 1px solid var(--app-border);
-    background: var(--app-surface-raised);
+    height: 24px;
+    padding: 0 var(--s-8) 0 var(--s-12);
+    box-shadow: 0 var(--hairline) 0 var(--app-border);
   }
   .answer-prose :global(.answer-code__lang) {
-    font-size: 10px;
-    letter-spacing: 0.05em;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    letter-spacing: var(--ls-label);
     text-transform: uppercase;
-    color: var(--app-text-muted);
-    font-family: ui-monospace, monospace;
+    color: var(--app-text-subtle);
   }
   .answer-prose :global(.answer-code__copy) {
-    font: inherit;
-    font-size: 10.5px;
-    padding: 2px 8px;
-    border: 1px solid var(--app-border);
-    border-radius: 5px;
+    font: var(--w-medium) var(--t-label) / 1 var(--app-font-mono);
+    padding: var(--s-3) var(--s-8);
+    border: 0;
+    border-radius: var(--r-sm);
     background: transparent;
-    color: var(--app-text-muted);
-    cursor: pointer;
-    transition: color 0.12s ease, border-color 0.12s ease;
+    color: var(--app-text-subtle);
+    cursor: default;
+    transition: color var(--dur-quick) var(--ease);
   }
   .answer-prose :global(.answer-code__copy:hover) {
     color: var(--app-text-strong);
@@ -300,9 +299,8 @@
     background: transparent;
   }
   .answer-prose :global(.answer-code__pre code) {
-    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-      monospace;
-    font-size: 11.5px;
+    font-family: var(--app-font-mono);
+    font-size: var(--t-meta);
     line-height: 1.55;
     color: var(--app-text);
     padding: 0;
@@ -321,7 +319,7 @@
   .answer-prose :global(.hljs-string),
   .answer-prose :global(.hljs-meta-string),
   .answer-prose :global(.hljs-regexp) {
-    color: var(--app-source-mic);
+    color: var(--app-src-mic);
   }
   .answer-prose :global(.hljs-number) {
     color: var(--cat-personal);
