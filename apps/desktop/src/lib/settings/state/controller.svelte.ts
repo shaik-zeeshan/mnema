@@ -173,7 +173,7 @@ export class SettingsController {
   // A failed recording-domain save leaves the domain dirty, so the autosave
   // engine's re-tick (on the `savingRecDomains` flag flipping back to false)
   // would re-fire the save every ~450ms forever — a silent hammer. These track
-  // the failed domain (so the rail footer can offer a targeted Retry/Dismiss),
+  // the failed domain (so the failure toast can offer a targeted Retry/Dismiss),
   // the consecutive-failure count, and the per-domain "don't retry before"
   // timestamp that throttles the loop with capped exponential backoff.
   lastFailedSaveDomain = $state<AutosaveRecordingDomain | null>(null);
@@ -186,9 +186,6 @@ export class SettingsController {
     AutosaveRecordingDomain,
     ReturnType<typeof setTimeout>
   >();
-  // The domain whose save most recently succeeded — drives a near-the-control
-  // "Saved" micro-affordance (the rail footer status is remote from the edit).
-  recSavedDomain = $state<AutosaveRecordingDomain | null>(null);
 
   // Ask AI / AI model picker open state.
   askAiModelOpen = $state(false);
@@ -614,11 +611,9 @@ export class SettingsController {
         this.rec.recordingSettings = updated;
         this.rec.syncRecordingDomainFromCanonical(response.domain, updated, { dispatchedSnapshot });
         this.rec.recSaved = true;
-        this.recSavedDomain = domain;
         this.clearSaveFailure(domain);
         setTimeout(() => {
           this.rec.recSaved = false;
-          if (this.recSavedDomain === domain) this.recSavedDomain = null;
         }, 2200);
 
         // Only run cleanup when retention was TIGHTENED (same predicate that
@@ -645,7 +640,7 @@ export class SettingsController {
   }
 
   // Record a failed recording-domain save: surface the message, remember the
-  // domain (so the rail footer can target Retry/Dismiss), and arm capped
+  // domain (so the failure toast can target Retry/Dismiss), and arm capped
   // exponential backoff with a single one-shot re-tick so the retry resumes
   // once — not as a tight ~450ms hammer — when the window elapses.
   private noteSaveFailure(domain: AutosaveRecordingDomain, message: string) {

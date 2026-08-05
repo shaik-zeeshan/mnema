@@ -54,6 +54,7 @@
   import "$lib/settings/settings-blocks.css";
   import "$lib/settings/settings-theme.css";
   import SettingsRail from "$lib/settings/SettingsRail.svelte";
+  import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
@@ -599,6 +600,10 @@
 
   <!-- ── Content pane — only this column scrolls. -->
   <div class="settings-content">
+    <!-- Top-anchored, outside the scroll region: the autosave chip can never
+         clip off a short window (G7 — no bottom save bar, ever). -->
+    <SettingsSaveChip />
+
     <AppPrivacyExclusionPrompt
       controller={c.appPrivacyExclusion}
       onReview={() => focusSettingsSection("privacy")}

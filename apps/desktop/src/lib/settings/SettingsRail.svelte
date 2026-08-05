@@ -13,8 +13,10 @@
   // `onNavigate(section)`.
   //
   // The rail is always expanded (the collapse-to-icons feature was dropped).
-  // A fixed top zone holds the "← Back to app" link + a search field; a pinned
-  // footer shows the live auto-save status, styled per the mockup.
+  // A fixed top zone holds the "← Back to app" link + a search field. The rail
+  // carries NO save state: G7 puts the whole autosave story in the top-anchored
+  // chip (`ui/SettingsSaveChip.svelte`) — a pinned footer is a bottom strip, and
+  // there is no bottom save bar, ever.
 
   import { goto } from "$app/navigation";
   import IconBack from "~icons/lucide/chevron-left";
@@ -28,9 +30,7 @@
     type SettingsSectionId,
   } from "./groups";
   import { filterGroups, flattenSections } from "./rail-filter";
-  import { getSettingsController } from "./state/controller.svelte";
   import { getLastMainSurface } from "$lib/surface-windows";
-  import { dismissToast, toast } from "$lib/toast.svelte";
 
   interface Props {
     /** The active group (the one group panel currently mounted). */
@@ -42,75 +42,6 @@
   }
 
   let { activeGroup, activeSection, onNavigate }: Props = $props();
-
-  const c = getSettingsController();
-  const rec = c.rec;
-  const keyboard = c.keyboard;
-  const audio = c.audio;
-
-  // The single auto-save status that drives the footer dot + label. Hoisted to a
-  // derived so the footer element can carry a matching status modifier class
-  // (raising salience on a change instead of leaning on the 6px dot alone).
-  const footStatus = $derived<"error" | "blocked" | "saving" | "ok" | "idle">(
-    rec.recError || keyboard.keyboardBindingsError || audio.micError
-      ? "error"
-      : c.recSaveBlocked || audio.micApplyBlocked
-        ? "blocked"
-        : c.savingRecSettings || keyboard.savingKeyboardBindings || audio.savingMicSettings
-          ? "saving"
-          : rec.recSaved || keyboard.keyboardBindingsSaved || audio.micSaved
-            ? "ok"
-            : "idle",
-  );
-
-  // Autosave failures are raised as app toasts (DECISIONS.md G7: a save failure
-  // is the one persistent settings state, and it also raises a toast that never
-  // auto-dismisses). The footer dot above stays the at-rest persistent state;
-  // the message + Retry/Dismiss moved out of three stacked banners under the
-  // rail into the one app-wide placement. Dismissing the toast clears the same
-  // state the old Dismiss button did, so the dot can never outlive its message.
-  $effect(() => {
-    if (rec.recError) {
-      toast({
-        id: "settings-save-recording",
-        tone: "error",
-        title: "Couldn't save recording settings",
-        message: rec.recError,
-        action: c.lastFailedSaveDomain
-          ? { label: "Retry", run: () => c.retryFailedSave() }
-          : undefined,
-        onDismiss: () => c.dismissRecError(),
-      });
-    } else {
-      dismissToast("settings-save-recording");
-    }
-  });
-  $effect(() => {
-    if (keyboard.keyboardBindingsError) {
-      toast({
-        id: "settings-save-keyboard",
-        tone: "error",
-        title: "Couldn't save keyboard shortcuts",
-        message: keyboard.keyboardBindingsError,
-        onDismiss: () => (keyboard.keyboardBindingsError = null),
-      });
-    } else {
-      dismissToast("settings-save-keyboard");
-    }
-  });
-  $effect(() => {
-    if (audio.micError) {
-      toast({
-        id: "settings-save-microphone",
-        tone: "error",
-        title: "Couldn't save microphone settings",
-        message: audio.micError,
-        onDismiss: () => (audio.micError = null),
-      });
-    } else {
-      dismissToast("settings-save-microphone");
-    }
-  });
 
   // Slice 4: the search field narrows the nav as you type. The (pure) filter
   // helper lives in `rail-filter.ts`; here we only bind state + render.
@@ -305,33 +236,6 @@
       {/if}
     </div>
   </nav>
-
-  <!-- Pinned footer: live auto-save status (relocated from the old rail head). -->
-  <div
-    class="rail-foot"
-    class:rail-foot--error={footStatus === "error"}
-    class:rail-foot--blocked={footStatus === "blocked"}
-    class:rail-foot--saving={footStatus === "saving"}
-    class:rail-foot--ok={footStatus === "ok"}
-    aria-live="polite"
-  >
-    {#if footStatus === "error"}
-      <span class="rail-foot__dot rail-foot__dot--error"></span>
-      <span class="rail-foot__label">save failed</span>
-    {:else if footStatus === "blocked"}
-      <span class="rail-foot__dot rail-foot__dot--blocked"></span>
-      <span class="rail-foot__label">resolve issues</span>
-    {:else if footStatus === "saving"}
-      <span class="rail-foot__dot rail-foot__dot--saving"></span>
-      <span class="rail-foot__label">saving</span>
-    {:else if footStatus === "ok"}
-      <span class="rail-foot__dot rail-foot__dot--ok"></span>
-      <span class="rail-foot__label">saved</span>
-    {:else}
-      <span class="rail-foot__dot"></span>
-      <span class="rail-foot__label">auto-save on</span>
-    {/if}
-  </div>
 
 </aside>
 

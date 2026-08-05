@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import IconCheck from "~icons/lucide/check";
+  import { claimRowId, isRowEchoing, noteRowEdit } from "../state/row-echo.svelte";
 
   interface Props {
     label: string;
@@ -37,6 +39,13 @@
     full = false,
     divider = true,
   }: Props = $props();
+
+  // Row-level "Saved ✓" echo (G7). Every row gets it for free: touching any
+  // control inside the row claims the echo, and the shared save-state chip
+  // hands it out when the next save lands. Capture-phase so a control that
+  // stops propagation still registers.
+  const rowId = claimRowId();
+  const echoing = $derived(isRowEchoing(rowId));
 </script>
 
 <div
@@ -46,6 +55,9 @@
   class:setting-row--disabled={disabled}
   class:setting-row--no-divider={!divider}
   {id}
+  oninputcapture={() => noteRowEdit(rowId)}
+  onchangecapture={() => noteRowEdit(rowId)}
+  onclickcapture={() => noteRowEdit(rowId)}
 >
   <div class="setting-row__main">
     <div class="setting-row__text">
@@ -54,6 +66,9 @@
         <span class="setting-row__description">{description}</span>
       {/if}
     </div>
+    {#if echoing}
+      <span class="setting-row__echo" role="status"><IconCheck aria-hidden="true" />Saved</span>
+    {/if}
     {#if aside}
       <div class="setting-row__aside">{@render aside()}</div>
     {/if}
@@ -124,6 +139,34 @@
     gap: 4px;
     min-width: 0;
     flex: 1 1 auto;
+  }
+
+  /* Transient "Saved ✓" echo — locality tells you WHICH row saved (the chip in
+     the top strip tells you whether). Accent pill, matching the chip's weight. */
+  .setting-row__echo {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex: 0 0 auto;
+    height: 20px;
+    padding: 0 8px;
+    border-radius: var(--r-pill);
+    background: color-mix(in srgb, var(--app-accent) 12%, transparent);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--app-accent) 34%, transparent);
+    color: var(--app-accent);
+    font-size: var(--t-meta);
+    font-weight: 550;
+    white-space: nowrap;
+  }
+
+  .setting-row__echo :global(svg) {
+    width: 10px;
+    height: 10px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .setting-row__aside {

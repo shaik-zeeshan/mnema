@@ -1,5 +1,5 @@
 /* Settings layout — shell, Codex-style left rail (back link + search + nav +
- * pinned auto-save footer), content/scroll. First part of the shared Settings
+ * nav), content/scroll. First part of the shared Settings
  * stylesheet.
  *
  * The Settings styles are split across cohesive concern files, each under the
@@ -22,9 +22,10 @@
  *
  * Rail design (mockup-2b "Codex rail"): a fixed top zone (← Back to app + a
  * search field), a scrolling nav of category headers (`.nav-cat`) + bare
- * sub-section items (`.nav-item`), and a pinned footer (`.rail-foot`) carrying
- * the live auto-save status. The rail is always expanded (the old
- * collapse-to-icons feature, capture-summary pills, and ⌘B toggle are gone). */
+ * sub-section items (`.nav-item`). The rail is always expanded (the old
+ * collapse-to-icons feature, capture-summary pills, and ⌘B toggle are gone), and
+ * it carries no save state — G7's autosave chip is a top-anchored strip in the
+ * content pane (`.save-strip`), never a bottom bar. */
 
   /* ── Settings shell ───────────────────────────────────────────────────
      Two columns: a fixed nav rail on the left, one scrolling content pane
@@ -270,122 +271,6 @@
   }
   .settings-shell .nav-item--active span {
     color: var(--app-text-strong);
-  }
-
-  /* ── Pinned footer: live auto-save status ─────────────────────────── */
-  .settings-shell .rail-foot {
-    position: relative;
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 11px 4px 2px 4px;
-  }
-
-  /* Footer divider: a dashed hairline that fades at both ends, matching the
-     rail divider treatment. */
-  .settings-shell .rail-foot::before {
-    content: "";
-    position: absolute;
-    inset: 0 18px auto 0;
-    height: 1px;
-    background: repeating-linear-gradient(
-      to right,
-      transparent 0px,
-      transparent 3px,
-      var(--app-border-strong) 3px,
-      var(--app-border-strong) 8px
-    );
-    -webkit-mask-image: linear-gradient(
-      to right,
-      transparent,
-      black 18%,
-      black 82%,
-      transparent
-    );
-    mask-image: linear-gradient(
-      to right,
-      transparent,
-      black 18%,
-      black 82%,
-      transparent
-    );
-  }
-
-  .settings-shell .rail-foot__dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--app-accent-strong);
-  }
-  .settings-shell .rail-foot__dot--ok {
-    background: var(--app-accent);
-    box-shadow: 0 0 6px var(--app-accent-glow);
-  }
-  .settings-shell .rail-foot__dot--saving {
-    background: var(--app-accent);
-    animation: status-pulse 1.1s ease-in-out infinite;
-  }
-  .settings-shell .rail-foot__dot--blocked {
-    background: var(--app-warn-strong);
-  }
-  .settings-shell .rail-foot__dot--error {
-    background: var(--app-danger);
-    box-shadow: 0 0 6px var(--app-danger);
-  }
-
-  .settings-shell .rail-foot__label {
-    font-size: var(--t-label);
-    font-weight: 700;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-    color: var(--app-text-muted);
-    font-family: var(--app-font-mono, ui-monospace, monospace);
-    white-space: nowrap;
-    transition: color 0.15s ease;
-  }
-
-  /* Raise footer salience on a state change so an edit near the bottom registers
-     as saved/saving rather than being acknowledged only by a far-off 6px dot.
-     The whole footer tints to the status color, and a "saved" change briefly
-     washes the footer background so it reads as a transient confirmation. */
-  .settings-shell .rail-foot--saving .rail-foot__label,
-  .settings-shell .rail-foot--ok .rail-foot__label {
-    color: var(--app-accent);
-  }
-  .settings-shell .rail-foot--blocked .rail-foot__label {
-    color: var(--app-warn-strong);
-  }
-  .settings-shell .rail-foot--error .rail-foot__label {
-    color: var(--app-danger-text);
-  }
-  .settings-shell .rail-foot--ok {
-    border-radius: 6px;
-    background: color-mix(in srgb, var(--app-accent) 9%, transparent);
-    animation: rail-foot-flash 1.6s ease-out;
-  }
-
-  @keyframes rail-foot-flash {
-    0% { background: color-mix(in srgb, var(--app-accent) 20%, transparent); }
-    100% { background: color-mix(in srgb, var(--app-accent) 9%, transparent); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .settings-shell .rail-foot--ok {
-      animation: none;
-    }
-  }
-
-  @keyframes status-pulse {
-    0%, 100% { opacity: 0.35; transform: scale(0.85); }
-    50% { opacity: 1; transform: scale(1.1); }
-  }
-
-  @media (prefers-reduced-motion: reduce) {
-    .settings-shell .rail-foot__dot--saving {
-      animation: none;
-    }
   }
 
   /* ── Content pane + scroll region ─────────────────────────────────── */
