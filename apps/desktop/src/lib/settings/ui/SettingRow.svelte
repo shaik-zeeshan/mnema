@@ -2,6 +2,8 @@
   import type { Snippet } from "svelte";
   import IconCheck from "~icons/lucide/check";
   import { claimRowId, isRowEchoing, noteRowEdit } from "../state/row-echo.svelte";
+  import { getSettingsSection, settingsFind } from "$lib/settings/state/settings-find.svelte";
+  import { rowMatchesQuery, sectionBreadcrumb } from "../settings-index";
 
   interface Props {
     label: string;
@@ -46,6 +48,20 @@
   // stops propagation still registers.
   const rowId = claimRowId();
   const echoing = $derived(isRowEchoing(rowId));
+
+  // ⌘F row filtering (G7). The row knows its own label; its section comes from
+  // the panel section's context, and its synonyms from the index keyed on that
+  // pair. A miss is hidden by CSS (`display: none`) rather than unmounted, so
+  // the control keeps its state and stays the same live control when it returns.
+  const section = getSettingsSection();
+  const miss = $derived(
+    settingsFind.active && !rowMatchesQuery(section, label, settingsFind.query),
+  );
+  // A hit renders its breadcrumb, so the row still says where it lives when the
+  // surrounding panels are filtered down to scattered rows.
+  const crumb = $derived(
+    settingsFind.active && !miss && section ? sectionBreadcrumb(section) : null,
+  );
 </script>
 
 <div
@@ -54,6 +70,7 @@
   class:setting-row--warn={warn}
   class:setting-row--disabled={disabled}
   class:setting-row--no-divider={!divider}
+  class:setting-row--miss={miss}
   {id}
   oninputcapture={() => noteRowEdit(rowId)}
   onchangecapture={() => noteRowEdit(rowId)}
@@ -61,6 +78,9 @@
 >
   <div class="setting-row__main">
     <div class="setting-row__text">
+      {#if crumb}
+        <span class="setting-row__crumb">{crumb.group} › {crumb.section}</span>
+      {/if}
       <span class="setting-row__label">{label}</span>
       {#if description}
         <span class="setting-row__description">{description}</span>
@@ -173,6 +193,16 @@
     display: flex;
     align-items: center;
     flex-shrink: 0;
+  }
+
+  /* ⌘F hit breadcrumb — where this row lives, since the filtered view has torn
+     it out of its usual neighbourhood. */
+  .setting-row__crumb {
+    font-family: var(--app-font-mono, ui-monospace, monospace);
+    font-size: var(--t-label);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--app-text-muted);
   }
 
   .setting-row__label {

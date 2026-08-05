@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { setSettingsSection } from "$lib/settings/state/settings-find.svelte";
+
+  // Every SettingRow below belongs to this section (⌘F row index scope, G7).
+  setSettingsSection("license");
+
   import { confirm } from "@tauri-apps/plugin-dialog";
   import { openUrl } from "@tauri-apps/plugin-opener";
   import type { LicenseDevices } from "$lib/licensing";

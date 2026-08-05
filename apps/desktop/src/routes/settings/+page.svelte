@@ -55,6 +55,8 @@
   import "$lib/settings/settings-theme.css";
   import SettingsRail from "$lib/settings/SettingsRail.svelte";
   import SettingsSaveChip from "$lib/settings/ui/SettingsSaveChip.svelte";
+  import SettingsFindBar from "$lib/settings/ui/SettingsFindBar.svelte";
+  import { settingsFind } from "$lib/settings/state/settings-find.svelte";
   import GeneralPanel from "$lib/settings/panels/general/GeneralPanel.svelte";
   import CapturePanel from "$lib/settings/panels/capture/CapturePanel.svelte";
   import IntelligencePanel from "$lib/settings/panels/intelligence/IntelligencePanel.svelte";
@@ -278,6 +280,9 @@
     activeGroup;
     const root = scrollRegion;
     if (!root || typeof IntersectionObserver === "undefined") return;
+    // While ⌘F filtering, every group's panel is mounted and most anchors are
+    // hidden — intersections would drag the rail highlight somewhere arbitrary.
+    if (settingsFind.active) return;
 
     let frame = 0;
     // Each callback reports only the entries that changed, so accumulate the
@@ -587,7 +592,7 @@
      A fixed left rail lists the 5 groups; only the right-hand content pane
      scrolls. One group panel is mounted at a time, so the rail and window
      chrome stay pinned. -->
-<div class="settings-shell">
+<div class="settings-shell" class:is-finding={settingsFind.active}>
   <!-- Page-level landmark heading for assistive tech: the shell otherwise has no
        <h1>, so the route reads as untitled to a screen reader. Visually hidden —
        the visible title is the window chrome + the rail's grouped sections. -->
@@ -604,6 +609,10 @@
          clip off a short window (G7 — no bottom save bar, ever). -->
     <SettingsSaveChip />
 
+    <!-- ⌘F row filter (G7) — a state over the content pane, not a nav. Renders
+         nothing until ⌘F opens it. -->
+    <SettingsFindBar />
+
     <AppPrivacyExclusionPrompt
       controller={c.appPrivacyExclusion}
       onReview={() => focusSettingsSection("privacy")}
@@ -614,8 +623,18 @@
       class:is-scrolling={scrollRegionScrolling}
       bind:this={scrollRegion}
       onscroll={handleScrollRegionScroll}
+      data-find-query={settingsFind.query}
     >
-      {#if activeGroup === "general"}
+      {#if settingsFind.active}
+        <!-- ⌘F: every group's panel is mounted so a hit in any section can
+             render WITH ITS LIVE CONTROL; the rows/groups that don't match hide
+             themselves (see `.is-finding` in settings-layout.css). -->
+        <GeneralPanel />
+        <CapturePanel />
+        <IntelligencePanel />
+        <DataPanel />
+        <AboutPanel />
+      {:else if activeGroup === "general"}
         <GeneralPanel />
       {:else if activeGroup === "capture"}
         <CapturePanel />

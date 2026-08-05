@@ -347,3 +347,44 @@
   .settings-shell .settings-scroll:hover, .settings-shell .settings-scroll.is-scrolling, .settings-shell .rail-nav:hover {
     scrollbar-color: var(--app-border-hover) transparent;
   }
+
+  /* ── ⌘F row filter (G7) ───────────────────────────────────────────────
+     Filtering is a STATE over the content pane, not a separate surface: every
+     group's panel is mounted, and the rows/cards that don't match hide
+     themselves. Hits therefore keep their real, live control — editing a row
+     straight out of the filtered view is the same control, autosave and all.
+
+     `SettingRow` marks a non-matching row `--miss`; a card with no surviving
+     row drops out via `:has()` (which also keeps a card alive when the hit is
+     in a nested group inside it). Hiding, not unmounting, so control state
+     survives typing. */
+  .settings-shell.is-finding .setting-row--miss {
+    display: none;
+  }
+
+  .settings-shell.is-finding .setting-group:not(:has(.setting-row:not(.setting-row--miss))) {
+    display: none;
+  }
+
+  /* No-match state. Derived from the DOM (":has()"), not from a counter: a
+     count kept in reactive state would have to be written by every row as it
+     mounts — a write into the very tree that is mounting. CSS reads the truth
+     for free, and the query text rides in on `data-find-query`. */
+  .settings-shell.is-finding .settings-scroll:not(:has(.setting-row:not(.setting-row--miss)))::after {
+    content: "No settings match \201C" attr(data-find-query) "\201D.";
+    display: block;
+    max-width: 640px;
+    margin: 24px auto;
+    text-align: center;
+    font-size: var(--t-ui);
+    color: var(--app-text-muted);
+  }
+
+  /* Five stacked panels would otherwise contribute five trailing gutters; move
+     the bottom padding to the scroll region for the duration. */
+  .settings-shell.is-finding .settings-panel {
+    padding-bottom: 0;
+  }
+  .settings-shell.is-finding .settings-scroll {
+    padding-bottom: 48px;
+  }

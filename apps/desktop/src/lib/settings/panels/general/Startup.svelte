@@ -1,4 +1,9 @@
 <script lang="ts">
+  import { setSettingsSection } from "$lib/settings/state/settings-find.svelte";
+
+  // Every SettingRow below belongs to this section (⌘F row index scope, G7).
+  setSettingsSection("startup");
+
   import { getSettingsController } from "$lib/settings/state/controller.svelte";
   import Switch from "$lib/components/Switch.svelte";
   import SettingGroup from "$lib/settings/ui/SettingGroup.svelte";
