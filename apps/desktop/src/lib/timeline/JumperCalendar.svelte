@@ -75,20 +75,13 @@
 <style>
   .timeline__picker-cal {
     padding: 12px;
-    border-right: 1px solid var(--app-border);
+    border-top: 1px solid var(--app-border);
     /* Top-align the calendar so its nav row sits level with the time pane
        header — no dead space above it. The grid's square cells fill the width. */
     display: flex;
     flex-direction: column;
     justify-content: flex-start;
   }
-  @media (max-width: 640px) {
-    .timeline__picker-cal {
-      border-right: none;
-      border-bottom: 1px solid var(--app-border);
-    }
-  }
-
   :global(.cal) {
     display: flex;
     flex-direction: column;

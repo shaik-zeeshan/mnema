@@ -4,8 +4,9 @@
 // under `bun test` (rune modules throw `$state is not defined` on import).
 //
 //   - Frame summaries (id + capturedAt) are loaded per visible calendar month
-//     and grouped by LOCAL date. The calendar disables dates with no frames in
-//     months already loaded.
+//     and grouped by LOCAL date, feeding the picker's per-hour buckets. Which
+//     DAYS are selectable is not decided here — that is per-day capture
+//     coverage (`jumper-coverage.ts`), the one authority for "has recording".
 //   - Stale-while-revalidate: months whose summaries are known out-of-date are
 //     marked stale (NOT deleted) so the open picker keeps rendering its
 //     disabled-date map until the replacement response lands — avoiding the
@@ -165,14 +166,6 @@ export class JumperCacheCore {
       if (isFirstLoad) this.loading = false;
       this.onMutate();
     }
-  }
-
-  isDateDisabled(d: CalendarFields): boolean {
-    // Pre-load: don't disable so the user can navigate into a month before its
-    // summaries arrive. Once a month is loaded, disable any local date not
-    // present in the dataset.
-    if (!this.loadedMonths.has(monthKeyOf(d))) return false;
-    return !this.summariesByDate.has(dateKeyOf(d));
   }
 
   invalidateMonthsForFrames(frames: { capturedAt: string }[]): void {

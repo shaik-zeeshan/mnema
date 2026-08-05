@@ -1,6 +1,15 @@
 <script lang="ts">
   import { tip } from "$lib/components/tooltip";
   import { timelineGapMs } from "$lib/components/capture-rate";
+  import Segmented from "$lib/components/Segmented.svelte";
+  import {
+    type TimelineZoom,
+    TIMELINE_ZOOMS,
+    formatSpan,
+    frameIntervalMs,
+    slotWidthForZoom,
+    visibleSpanMs,
+  } from "$lib/timeline/zoom";
   import { tick } from "svelte";
   import { fly } from "svelte/transition";
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
@@ -137,7 +146,11 @@
   // `idx = (maxScrollLeft - scrollLeft) / SLOT_WIDTH`. This avoids relying
   // on any browser-specific RTL `scrollLeft` convention.
 
-  const TIMELINE_SLOT_WIDTH = 8; // px, must match CSS `.timeline-rail__slot`
+  // Rail density in px per frame. Owned by the Hour/Day/Week zoom (G5 — zoom
+  // owns SPAN, the position pill owns POSITION); `day` reproduces the 8 px the
+  // rail always shipped. The value is published to CSS as `--timeline-slot-w`
+  // so `.timeline-rail__slot` and the track's centring margins follow it.
+  let timelineZoom = $state<TimelineZoom>("day");
   // Frames land one capture interval apart (2s at the default rate, up to 60s
   // at once-per-minute), so the app-run split threshold must comfortably exceed
   // one interval or a single skipped frame (privacy exclusion, self-capture
@@ -522,6 +535,18 @@
   let timelineScrollLeft = $state(0);
   let timelineRenderAnchorIndex = $state(0);
   let timelineViewportWidth = $state(0);
+  const timelineFrameIntervalMs = $derived(
+    frameIntervalMs(captureControls.recordingSettings?.screenFrameRate),
+  );
+  const timelineSlotWidth = $derived(
+    slotWidthForZoom(
+      timelineZoom,
+      timelineViewportWidth > 0
+        ? timelineViewportWidth
+        : TIMELINE_FALLBACK_VIEWPORT_WIDTH,
+      timelineFrameIntervalMs,
+    ),
+  );
   // Last `clientWidth` of the rail acknowledged by the `ResizeObserver`. Used
   // by `onTimelineScroll` to discriminate user-driven scroll events from
   // resize-induced ones: when the window grows, the rail's `cqi`-based track
@@ -2155,10 +2180,10 @@
       // is `SLOT_WIDTH` wide. To cover slots `[iNewest..iOldest]` we
       // anchor the bar at the newest slot's right edge and extend left
       // by one slot per covered frame.
-      const rightPx = iNewest * TIMELINE_SLOT_WIDTH;
+      const rightPx = iNewest * timelineSlotWidth;
       const widthPx = Math.max(
         2,
-        (iOldest - iNewest + 1) * TIMELINE_SLOT_WIDTH,
+        (iOldest - iNewest + 1) * timelineSlotWidth,
       );
       out.push({ ...seg, rightPx, widthPx, visible: true });
     }
@@ -2270,7 +2295,7 @@
   // scrollable width equal to `N*SLOT + (V - 8)`, hence `maxScroll = N*SLOT - 8`.
   // Clamped non-negative for the empty/short-list case.
   const timelineMaxScroll = $derived(
-    Math.max(0, timelineFrames.length * TIMELINE_SLOT_WIDTH - 8),
+    Math.max(0, timelineFrames.length * timelineSlotWidth - timelineSlotWidth),
   );
 
   // The active frame sits centered under the static cursor at the rail's
@@ -2288,7 +2313,7 @@
         ? timelineViewportWidth
         : TIMELINE_FALLBACK_VIEWPORT_WIDTH) /
         2 /
-        TIMELINE_SLOT_WIDTH,
+        timelineSlotWidth,
     ),
   );
   const timelineWindowStart = $derived(
@@ -2371,7 +2396,7 @@
       if (!runIdentity) return;
       const runEnd = endExclusive - 1;
       const frameCount = runEnd - runStart + 1;
-      const widthPx = frameCount * TIMELINE_SLOT_WIDTH;
+      const widthPx = frameCount * timelineSlotWidth;
       const label = runAppName ?? runBundleId ?? "Unknown app";
       const variant = frameCount === 1 ? "single" : "range";
       runs.push({
@@ -2383,7 +2408,7 @@
         frameCount,
         startIndex: runStart,
         endIndex: runEnd,
-        rightPx: runStart * TIMELINE_SLOT_WIDTH,
+        rightPx: runStart * timelineSlotWidth,
         widthPx,
         fallback: timelineAppIconFallback(runAppName, runBundleId),
         variant,
@@ -2476,9 +2501,9 @@
 
       const visibleStart = Math.max(run.startIndex, windowStart);
       const visibleEnd = Math.min(run.endIndex, windowEnd - 1);
-      const visibleWidthPx = (visibleEnd - visibleStart + 1) * TIMELINE_SLOT_WIDTH;
+      const visibleWidthPx = (visibleEnd - visibleStart + 1) * timelineSlotWidth;
       const iconCenterOffsetFromRight =
-        (visibleStart - run.startIndex) * TIMELINE_SLOT_WIDTH + visibleWidthPx / 2;
+        (visibleStart - run.startIndex) * timelineSlotWidth + visibleWidthPx / 2;
       groups.push({
         ...run,
         iconLeftPx: Math.max(
@@ -2728,6 +2753,46 @@
     activeTimelineSlotElement = next;
   }
 
+  // ── Hour / Day / Week zoom (G5) ───────────────────────────────────────────
+  const timelineZoomOptions = TIMELINE_ZOOMS.map((z) => ({
+    value: z,
+    label: z.charAt(0).toUpperCase() + z.slice(1),
+  }));
+
+  /** How many slots the rail can show at the current density. */
+  const timelineVisibleSlots = $derived(
+    Math.max(
+      1,
+      Math.round(
+        (timelineViewportWidth > 0
+          ? timelineViewportWidth
+          : TIMELINE_FALLBACK_VIEWPORT_WIDTH) / timelineSlotWidth,
+      ),
+    ),
+  );
+
+  /** `8 px/frame · 4h 12m visible` — measured, not assumed from the cadence. */
+  const timelineSpanReadout = $derived.by<string>(() => {
+    const density = `${timelineSlotWidth} px/frame`;
+    // Reuses the rail's existing parsed-timestamp array — no re-parsing.
+    const span = visibleSpanMs(
+      timelineFrameTimes,
+      timelineActiveIndex,
+      timelineVisibleSlots,
+    );
+    return span === null
+      ? density
+      : `${density} · ${formatSpan(span)} visible`;
+  });
+
+  function setTimelineZoom(next: string): void {
+    if (next === timelineZoom) return;
+    timelineZoom = next as TimelineZoom;
+    // Slot width just changed under the scroll position: re-pin the active
+    // frame to the caret so zooming keeps your place instead of teleporting.
+    void syncTimelineScrollToActiveFrame();
+  }
+
   function commitTimelineScrollPosition(scrollLeft: number): void {
     latestTimelineScrollLeft = scrollLeft;
     syncTimelineAudioLaneScroll(scrollLeft);
@@ -2745,7 +2810,7 @@
     const max = timelineRail.scrollWidth - timelineRail.clientWidth;
     const targetScrollLeft = Math.max(
       0,
-      Math.min(max, max - timelineActiveIndex * TIMELINE_SLOT_WIDTH),
+      Math.min(max, max - timelineActiveIndex * timelineSlotWidth),
     );
     // Explicit user jumps animate the playhead to the new moment (matching the
     // arrow-key scrub's smooth scroll); every other caller — initial load,
@@ -4556,7 +4621,7 @@
       0,
       Math.min(
         timelineFrames.length - 1,
-        Math.round(advance / TIMELINE_SLOT_WIDTH),
+        Math.round(advance / timelineSlotWidth),
       ),
     );
     const activeChanged = idx !== timelineActiveIndex;
@@ -4903,7 +4968,7 @@
     );
     const max = timelineRail.scrollWidth - timelineRail.clientWidth;
     timelineRail.scrollTo({
-      left: max - target * TIMELINE_SLOT_WIDTH,
+      left: max - target * timelineSlotWidth,
       behavior: "smooth",
     });
   }
@@ -4923,14 +4988,14 @@
     const rect = timelineRail.getBoundingClientRect();
     const clickX = event.clientX - rect.left;
     const caretX = rect.width / 2;
-    const offset = Math.round((caretX - clickX) / TIMELINE_SLOT_WIDTH);
+    const offset = Math.round((caretX - clickX) / timelineSlotWidth);
     const idx = Math.max(
       0,
       Math.min(timelineFrames.length - 1, timelineActiveIndex + offset),
     );
     const max = timelineRail.scrollWidth - timelineRail.clientWidth;
     timelineRail.scrollTo({
-      left: max - idx * TIMELINE_SLOT_WIDTH,
+      left: max - idx * timelineSlotWidth,
       behavior: "smooth",
     });
     // Move keyboard focus onto the rail so subsequent arrow-key scrubbing
@@ -6040,7 +6105,11 @@
   onpointerdown={onFrameActionsPointerDownOutside}
   onkeydown={onDashboardWindowKeyDown}
 />
-<section class="timeline" onwheel={onTimelineWheel}>
+<section
+  class="timeline"
+  onwheel={onTimelineWheel}
+  style="--timeline-slot-w: {timelineSlotWidth}px"
+>
   <header class="timeline__bar">
     <div class="timeline__bar-group timeline__bar-group--primary">
       <!-- Recording status indicator and start/stop controls now live in
@@ -6058,6 +6127,18 @@
         onJump={onJumperJump}
         onJumpToLatest={jumpToLatestFrame}
       />
+      <!-- Zoom owns SPAN only (G5): Hour / Day / Week, no Month level — the
+           jump menu's month grid covers month-scale navigation. The readout
+           next to it states what is really on screen, since the rail's frame
+           budget can't always reach the span the label names. -->
+      <Segmented
+        options={timelineZoomOptions}
+        value={timelineZoom}
+        onValueChange={setTimelineZoom}
+        ariaLabel="Timeline zoom"
+        compact
+      />
+      <span class="timeline__span-readout">{timelineSpanReadout}</span>
     </div>
 
     <div class="timeline__bar-group timeline__bar-group--secondary">
@@ -6532,7 +6613,7 @@
       >
         <div
           class="timeline-rail__track"
-          style="width: {timelineFrames.length * TIMELINE_SLOT_WIDTH}px"
+          style="width: {timelineFrames.length * timelineSlotWidth}px"
         >
           {#each timelineAppGroups as group (group.key)}
             <div
@@ -6571,7 +6652,7 @@
               class:timeline-rail__slot--major={isMajor}
               class:timeline-rail__slot--app-boundary={isAppGroupBoundary}
               data-timeline-slot-index={i}
-              style="right: {i * TIMELINE_SLOT_WIDTH}px"
+              style="right: {i * timelineSlotWidth}px"
               onpointerenter={(e) => onSlotPointerEnter(e, frame.id)}
               aria-hidden="true"
             >
@@ -6607,7 +6688,7 @@
               class="timeline-rail__audio-lane-track"
               bind:this={timelineAudioLaneTrack}
               style="width: {timelineFrames.length *
-                TIMELINE_SLOT_WIDTH}px"
+                timelineSlotWidth}px"
             >
               <div class="timeline-rail__audio-row timeline-rail__audio-row--microphone" role="presentation">
                 {#each positionedAudioSegments as seg (seg.id)}
@@ -6871,6 +6952,16 @@
 
   .timeline__bar-group--secondary {
     margin-left: auto;
+  }
+
+  /* Machine-units truth next to the zoom control: what is actually on screen,
+     not what the level is named (see `lib/timeline/zoom.ts` on the ceiling). */
+  .timeline__span-readout {
+    font-family: var(--app-font-mono);
+    font-size: var(--t-label);
+    font-variant-numeric: tabular-nums;
+    color: var(--app-text-subtle);
+    white-space: nowrap;
   }
 
   /* ── Recording control cluster ─────────────────────────────
@@ -7830,8 +7921,8 @@
        drifts wildly with frame count) makes both centering and click
        positioning reliable. Margin — not padding — is required because slot
        ticks are absolutely positioned and would ignore padding offsets. */
-    margin-left: calc(50cqi - 4px);
-    margin-right: calc(50cqi - 4px);
+    margin-left: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
+    margin-right: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
   }
 
   .timeline-rail__app-group {
@@ -7882,7 +7973,8 @@
   .timeline-rail__slot {
     position: absolute;
     top: 8px;
-    width: 8px;
+    /* Set by the Hour/Day/Week zoom (`--timeline-slot-w` on `.timeline`). */
+    width: var(--timeline-slot-w, 8px);
     height: 18px;
     margin: 0;
     padding: 0;
@@ -7980,8 +8072,8 @@
     /* Same spacers as `.timeline-rail__track` so a bar at `right: N*8px`
        from the track-mirror's right edge sits over the same screen
        position as the slot tick at `right: N*8px` inside the rail. */
-    margin-left: calc(50cqi - 4px);
-    margin-right: calc(50cqi - 4px);
+    margin-left: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
+    margin-right: calc(50cqi - var(--timeline-slot-w, 8px) / 2);
     transform: translateX(0px);
     will-change: transform;
   }

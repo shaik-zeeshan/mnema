@@ -34,7 +34,12 @@
   import { parseCapturedAt } from "$lib/format-time";
   import { humanizeError } from "$lib/format-error";
   import IconCalendar from "~icons/lucide/calendar";
-  import type { FrameDto, FrameRangeRequest } from "$lib/types/app-infra";
+  import IconChevronDown from "~icons/lucide/chevron-down";
+  import type {
+    DayCoverage,
+    FrameDto,
+    FrameRangeRequest,
+  } from "$lib/types/app-infra";
   import { createJumperCache } from "./jumper-cache.svelte";
   import {
     type HourBucket,
@@ -42,7 +47,18 @@
     dayRange,
     hourRange,
   } from "./jumper-time";
+  import {
+    type CoverageIndex,
+    type DayRow,
+    buildDayRows,
+    calendarFieldsOfDate,
+    dayHasCoverage,
+    dayKeyOfDate,
+    hasCoverageInHours,
+    indexCoverage,
+  } from "./jumper-coverage";
   import JumperCalendar from "./JumperCalendar.svelte";
+  import JumperDayRows from "./JumperDayRows.svelte";
   import JumperTimeList from "./JumperTimeList.svelte";
 
   interface Props {
@@ -77,6 +93,44 @@
   }: Props = $props();
 
   const cache = createJumperCache();
+
+  // ── Per-day coverage (G6) ───────────────────────────────────────────────────
+  // ONE cached GROUP BY over `capture_segments`, reloaded each time the menu
+  // opens. It is the single authority for "does this day hold recording": the
+  // day rows AND the month grid disable a day the same way, so you can never
+  // land on an empty day. `coverageAt` gets read inside $derived, so it is
+  // plain $state (the Map is replaced wholesale, never mutated in place).
+  let coverage = $state<CoverageIndex>(new Map());
+  let coverageLoading = $state(false);
+  let coverageToday = $state(new Date());
+
+  async function loadCoverage(): Promise<void> {
+    coverageLoading = coverage.size === 0;
+    try {
+      const days = await invoke<DayCoverage[]>("list_day_coverage");
+      coverage = indexCoverage(days);
+      coverageToday = new Date();
+    } catch (err) {
+      // Coverage is navigation sugar: a failure disables the day rows rather
+      // than blocking the calendar/hour panes, so surface it in the footer and
+      // keep going.
+      commitError = humanizeError(err);
+    } finally {
+      coverageLoading = false;
+    }
+  }
+
+  const dayRows = $derived<DayRow[]>(buildDayRows(coverage, coverageToday));
+  const todayFields = $derived(calendarFieldsOfDate(coverageToday));
+  const yesterdayFields = $derived.by(() => {
+    const d = new Date(coverageToday);
+    d.setDate(d.getDate() - 1);
+    return calendarFieldsOfDate(d);
+  });
+  const morningEnabled = $derived(
+    hasCoverageInHours(coverage, todayFields, 0, 11),
+  );
+  const yesterdayEnabled = $derived(dayHasCoverage(coverage, yesterdayFields));
 
   // The previewed day (preview-on-select; does NOT move the timeline).
   let pickerSelectedDate = $state<DateValue | undefined>(undefined);
@@ -117,6 +171,11 @@
     const d = parseCapturedAt(activeFrame.capturedAt);
     return isNaN(d.getTime()) ? null : d;
   });
+
+  /** "YYYY-MM-DD" of the committed moment — the day rows' "you are here". */
+  const hereKey = $derived(
+    committedMoment ? dayKeyOfDate(committedMoment) : null,
+  );
 
   function sameLocalDay(
     d: { year: number; month: number; day: number },
@@ -253,6 +312,18 @@
     await resolveAndCommit(start, end);
   }
 
+  /** A day row / quick target: preview the day, then land on its latest frame. */
+  async function commitDay(
+    date: { year: number; month: number; day: number },
+    endHour?: number,
+  ): Promise<void> {
+    pickerSelectedDate = new CalendarDate(date.year, date.month, date.day);
+    pickerPlaceholder = pickerSelectedDate;
+    const { start, end } =
+      endHour === undefined ? dayRange(date) : hourRange(date, endHour);
+    await resolveAndCommit(start, end);
+  }
+
   async function commitGlobalLatest(): Promise<void> {
     commitError = null;
     close();
@@ -285,6 +356,7 @@
       commitFlashHour = null;
       commitError = null;
       cache.clearError();
+      void loadCoverage();
       if (committedMoment) {
         const cd = new CalendarDate(
           committedMoment.getFullYear(),
@@ -456,8 +528,11 @@
 <svelte:window onpointerdown={onWindowPointerDown} />
 
 <div class="timeline__jump">
+  <!-- Position pill (G6): the label IS your position, the chevron is the jump.
+       One control owns both jobs — there is no second date input and no from/to
+       pair anywhere on the timeline. -->
   <button
-    class="btn btn--ghost btn--sm timeline__jump-trigger"
+    class="pill pill--quiet timeline__jump-trigger"
     class:timeline__jump-trigger--open={open}
     onclick={toggle}
     bind:this={pickerTriggerEl}
@@ -467,8 +542,9 @@
     use:tip={"Jump to date and time (J)"}
   >
     <span class="timeline__jump-icon" aria-hidden="true"><IconCalendar /></span>
-    <span class="timeline__jump-label">{triggerLabel}</span>
+    <span class="pill__t timeline__jump-label">{triggerLabel}</span>
     <span class="kbd timeline__jump-kbd" aria-hidden="true">J</span>
+    <span class="timeline__jump-chevron" aria-hidden="true"><IconChevronDown /></span>
   </button>
 
   {#if showLatest}
@@ -506,12 +582,26 @@
       </div>
 
       <div class="timeline__picker-panes">
-        <JumperCalendar
-          bind:value={pickerSelectedDate}
-          bind:placeholder={pickerPlaceholder}
-          isDateDisabled={cache.isDateDisabled}
-          {isCommittedDate}
-        />
+        <div class="timeline__picker-days">
+          <JumperDayRows
+            rows={dayRows}
+            loading={coverageLoading}
+            busy={jumping || timelineBusy}
+            {morningEnabled}
+            {yesterdayEnabled}
+            {hereKey}
+            onJumpNow={() => void commitGlobalLatest()}
+            onJumpMorning={() => void commitDay(todayFields, 11)}
+            onJumpYesterday={() => void commitDay(yesterdayFields)}
+            onJumpDay={(row) => void commitDay(row.date)}
+          />
+          <JumperCalendar
+            bind:value={pickerSelectedDate}
+            bind:placeholder={pickerPlaceholder}
+            isDateDisabled={(d) => !dayHasCoverage(coverage, d)}
+            {isCommittedDate}
+          />
+        </div>
         <JumperTimeList
           hasSelection={!!pickerSelectedDate}
           loading={cache.loading}
@@ -552,14 +642,28 @@
     gap: 6px;
     position: relative;
   }
+  /* `.pill` + `--quiet`: shared primitive (system.css §6). Only the button
+     reset and the open ring are local. */
   .timeline__jump-trigger {
-    gap: 6px;
+    border: 0;
+    cursor: pointer;
     font-variant-numeric: tabular-nums;
-    max-width: 240px;
+    max-width: 260px;
+  }
+  .timeline__jump-trigger:hover {
+    background: var(--app-surface-active);
   }
   .timeline__jump-trigger--open {
-    border-color: var(--app-accent-border);
-    box-shadow: var(--app-ring);
+    box-shadow: 0 0 0 var(--hairline) var(--app-accent-border), var(--app-ring);
+  }
+  .timeline__jump-chevron {
+    display: inline-flex;
+    align-items: center;
+    color: var(--app-text-muted);
+  }
+  .timeline__jump-chevron :global(svg) {
+    width: 11px;
+    height: 11px;
   }
   .timeline__jump-latest {
     flex: 0 0 auto;
@@ -590,7 +694,7 @@
     z-index: 20;
     display: flex;
     flex-direction: column;
-    width: min(520px, calc(100vw - 24px));
+    width: min(560px, calc(100vw - 24px));
     box-sizing: border-box;
     overflow: hidden;
     background: var(--app-surface);
@@ -623,9 +727,21 @@
     font-size: var(--t-ui);
     line-height: 1;
   }
+  /* Left column: quick targets + seven day rows + the month grid, scrolled as
+     one; right column: the hour list for the previewed day. */
+  .timeline__picker-days {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow-y: auto;
+    border-right: 1px solid var(--app-border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--app-border-strong) transparent;
+  }
   .timeline__picker-panes {
     display: grid;
-    grid-template-columns: 1fr 200px;
+    grid-template-columns: 1fr 190px;
     /* Bound the panes to the popover's fixed height (height set inline by
        updatePickerPosition) so the time list scrolls instead of the popover
        resizing with content. minmax(0,1fr) + min-height:0 break the default min-content
@@ -663,6 +779,11 @@
   @media (max-width: 640px) {
     .timeline__picker {
       width: min(320px, calc(100vw - 24px));
+    }
+    .timeline__picker-days {
+      border-right: none;
+      border-bottom: 1px solid var(--app-border);
+      overflow-y: visible;
     }
     .timeline__picker-panes {
       grid-template-columns: minmax(0, 1fr);
