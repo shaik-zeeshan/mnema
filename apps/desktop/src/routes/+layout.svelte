@@ -1626,6 +1626,39 @@
     --focus-deep: #3dffa0;
     --focus-mid: #d6a14a;
     --focus-distracted: #ff6b7a;
+
+    /* ── Direction 03 · LAYERED GLASS — the material ladder ────────────────
+       Depth comes from LAYERING, not edges. Five elevations, exactly two of
+       them translucent:
+
+         1  --app-bg              window floor            opaque
+         2  --app-surface         content plate           opaque  (--sh-tile)
+         3  --glass               chrome: toolbars, rails, drawers
+         4  --glass-hud           free-floating HUD over another app's window
+         5  --glass-pop           menus, popovers, toasts  (densest)
+
+       THE ONE RULE: content always lands on an opaque plate. A paragraph a
+       user reads never sits on material — its contrast would depend on the
+       wallpaper behind it, which is not a contrast decision at all. A border
+       is only ever the rim of a piece of glass; everything else is a shadow
+       plus a surface step. */
+    --glass: rgba(38, 38, 50, 0.58);
+    --glass-hud: rgba(30, 30, 40, 0.76);
+    --glass-pop: rgba(44, 44, 58, 0.84);
+    --glass-line: rgba(255, 255, 255, 0.1);
+    --glass-hi: rgba(255, 255, 255, 0.1);
+    --glass-blur: saturate(180%) blur(26px);
+    --glass-tint: rgba(255, 255, 255, 0.04);
+
+    /* Shadows only on things that FLOAT. --sh-tile is the plate's own depth
+       (the direction's one exemption to system.css "cards get no shadow":
+       here the shadow IS the border it replaces). */
+    --sh-tile: 0 1px 2px rgba(0, 0, 0, 0.34), 0 6px 18px rgba(0, 0, 0, 0.28);
+    --sh-float: 0 12px 38px rgba(0, 0, 0, 0.46), 0 2px 8px rgba(0, 0, 0, 0.34);
+    --sh-hud: 0 30px 80px rgba(0, 0, 0, 0.6), 0 4px 16px rgba(0, 0, 0, 0.44);
+
+    /* Every floating thing: tile, HUD, ask bar, answer panel, drawer, rail. */
+    --r-panel: 14px;
   }
 
   /* Light theme — bright, neutral, high contrast. The accent stays in the
@@ -1801,6 +1834,21 @@
        32%/48% reads as soot on near-white surfaces. */
     --shadow-popover: 0 8px 24px rgba(21, 28, 38, 0.14);
     --shadow-modal: 0 24px 64px rgba(21, 28, 38, 0.22);
+
+    /* Layered Glass, light. Same ladder, warmer glass — near-white material at
+       a HIGHER alpha than dark, because light material over a bright desktop
+       loses legibility faster than dark material over a dark one. */
+    --glass: rgba(252, 252, 251, 0.66);
+    --glass-hud: rgba(250, 250, 248, 0.8);
+    --glass-pop: rgba(253, 253, 252, 0.86);
+    --glass-line: rgba(20, 20, 26, 0.1);
+    --glass-hi: rgba(255, 255, 255, 0.85);
+    --glass-blur: saturate(180%) blur(26px);
+    --glass-tint: rgba(20, 20, 26, 0.03);
+
+    --sh-tile: 0 1px 2px rgba(21, 28, 38, 0.06), 0 4px 14px rgba(21, 28, 38, 0.05);
+    --sh-float: 0 10px 34px rgba(21, 28, 38, 0.16), 0 2px 6px rgba(21, 28, 38, 0.1);
+    --sh-hud: 0 28px 70px rgba(21, 28, 38, 0.28), 0 4px 14px rgba(21, 28, 38, 0.14);
   }
 
   /* A hairline is a physical half-pixel where the display has them. */
@@ -1854,6 +1902,38 @@
   }
   :global(.is-num) {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* ── The material ladder as four classes (direction 03) ──────────────────
+     Apply the elevation, never hand-roll the recipe: every translucent thing
+     in the app is one of these three, and every readable thing is `.plate`.
+     Each material carries its own rim (the inset hairline) — that rim is the
+     ONLY border this direction spends. */
+  :global(.glass-chrome) {
+    background: var(--glass);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 0 1px 0 var(--glass-hi);
+  }
+  :global(.glass-hud) {
+    background: var(--glass-hud);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-hud), inset 0 0 0 var(--hairline) var(--glass-line),
+      inset 0 1px 0 var(--glass-hi);
+  }
+  :global(.glass-pop) {
+    background: var(--glass-pop);
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--sh-float), inset 0 0 0 var(--hairline) var(--glass-line);
+  }
+  /* Level 2. Opaque, always — this is where prose, results and rows land. */
+  :global(.plate) {
+    background: var(--app-surface);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-tile);
   }
 
   /* ── Shared primitives (system.css §6) ──────────────────────────────────
