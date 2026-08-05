@@ -134,7 +134,8 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
   return query ? `/settings?${query}` : "/settings";
 }
 
-// The last main surface (Timeline `/` or Insights `/insights`) the user was on
+// The last main surface (Timeline `/`, Overview `/overview`, Insights
+// `/insights`) the user was on
 // before entering Settings, so the settings rail's "← Back to app" can return
 // there instead of always landing on Timeline. Only the two known main surfaces
 // are accepted; anything else (`/settings`, `/onboarding`, …) is rejected and we
@@ -143,9 +144,14 @@ export function settingsRoutePath(tab?: SettingsWindowTab, focus?: SettingsWindo
 // Settings), which is the desired fallback.
 let lastMainSurfacePath = "/";
 
-/** Is `pathname` one of the two main app surfaces (Timeline or Insights)? */
+/** Is `pathname` one of the main app surfaces (Timeline, Overview, Insights)? */
 function isMainSurface(pathname: string): boolean {
-  return isMainAppRoute(pathname) || normalizeAppPathname(pathname).startsWith("/insights");
+  const normalized = normalizeAppPathname(pathname);
+  return (
+    isMainAppRoute(pathname) ||
+    normalized.startsWith("/overview") ||
+    normalized.startsWith("/insights")
+  );
 }
 
 /**

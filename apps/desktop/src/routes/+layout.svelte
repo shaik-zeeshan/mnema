@@ -10,6 +10,7 @@
   import { developerOptions, loadDeveloperOptions } from "$lib/developer-options.svelte";
   import { closeCurrentWindow, getLastMainSurface, isDedicatedSurfaceWindow, isQuickRecallWindow, openDebugWindow, openSettings } from "$lib/surface-windows";
   import { createSettingsDeeplink } from "$lib/settings/deeplink.svelte";
+  import { getStartupSurface } from "$lib/startup-surface";
   import {
     bootstrapCaptureControls,
     captureControls,
@@ -75,6 +76,7 @@
   const normalizedPathname = $derived(normalizeAppPathname($page.url.pathname));
   const isMainRoute = $derived(isMainAppRoute($page.url.pathname));
   const isInsightsRoute = $derived(normalizeAppPathname($page.url.pathname).startsWith("/insights"));
+  const isOverviewRoute = $derived(normalizedPathname.startsWith("/overview"));
   const isSettings = $derived(normalizedPathname.startsWith("/settings"));
   // Settings renders inside the Main window as the `/settings` route. The Main
   // titlebar (record controls, source pills, surface toggle, gear) stays visible
@@ -84,10 +86,11 @@
   const isSettingsRoute = $derived(normalizedPathname === "/settings");
   const isDebug = $derived(normalizedPathname.startsWith("/debug"));
   const isPanelSurface = isQuickRecallWindow();
-  // The Main window now hosts two top-level Surfaces — Timeline (`/`) and
-  // Insights (`/insights`). The shared main titlebar (record controls, source
-  // pills, settings, the Timeline⇄Insights surface toggle) renders on both.
-  const isMainSurfaceRoute = $derived(isMainRoute || isInsightsRoute);
+  // The Main window hosts the top-level Surfaces — Timeline (`/`), its peer
+  // Overview (`/overview`), and Insights (`/insights`). The shared main titlebar
+  // (record controls, source pills, settings, the surface switcher) renders on
+  // all of them.
+  const isMainSurfaceRoute = $derived(isMainRoute || isOverviewRoute || isInsightsRoute);
   const showMainTitlebar = $derived((isMainSurfaceRoute || isSettingsRoute) && !isPanelSurface);
   const showDedicatedTitlebar = isDedicatedSurfaceWindow();
   const transparentSurface = $derived(showDedicatedTitlebar || isPanelSurface);
@@ -243,10 +246,13 @@
             normalizeAppPathname($page.url.pathname) === peekPathname;
           if (!destroyed && pending && routeUnchanged && !isInsightsRoute) {
             void goto("/insights");
+            return;
           }
+          if (!destroyed && routeUnchanged) applyStartupSurface();
         })
         .catch(() => {
           // Best-effort: leave the route as-is if the peek is unavailable.
+          if (!destroyed) applyStartupSurface();
         });
     }
 
@@ -456,6 +462,8 @@
 
     rows.push(getEffectiveGlobalShortcut("toggleMainWindow"));
     rows.push(getEffectiveGlobalShortcut("toggleQuickRecall"));
+    rows.push(getEffectiveGlobalShortcut("openTimelineSurface"));
+    rows.push(getEffectiveGlobalShortcut("openOverviewSurface"));
     rows.push(getEffectiveGlobalShortcut("openSettings"));
 
     if (devEnabled) {
@@ -512,32 +520,49 @@
     }
   }
 
-  // ── Main surface toggle (Timeline ⇄ Insights) ─────────────────────────
-  // "dashboard" is retired: the Main window hosts two switchable Surfaces.
-  // The active segment reflects the current route (the static `/index.html`
+  // ── Main surface switcher (Timeline ⌘1 · Overview ⌘2 · Insights) ──────
+  // "dashboard" is retired: the Main window hosts switchable Surfaces. The
+  // active segment reflects the current route (the static `/index.html`
   // production entry normalizes to `/` = Timeline).
-  function goToSurface(surface: "timeline" | "insights"): void {
-    const target = surface === "insights" ? "/insights" : "/";
+  const SURFACE_PATHS = {
+    timeline: "/",
+    overview: "/overview",
+    insights: "/insights",
+  } as const;
+
+  function goToSurface(surface: keyof typeof SURFACE_PATHS): void {
+    const target = SURFACE_PATHS[surface];
     if (normalizeAppPathname($page.url.pathname) === target) return;
     void goto(target);
+  }
+
+  // "Open Mnema on" (Settings → General → Startup). Runs once, on the Main
+  // window's cold start, and only while still on Timeline — anything that booted
+  // the window elsewhere (a Settings deeplink, a pending Insights handoff) wins.
+  // Every later navigation is the user's and is never overridden.
+  function applyStartupSurface(): void {
+    if (!isMainWindow || !isMainRoute) return;
+    if (getStartupSurface() !== "overview") return;
+    void goto("/overview", { replaceState: true });
   }
 
   // On the Settings route neither surface is the current page, so the toggle has
   // no active segment. Rather than leaving it blank we de-emphasize it and mark
   // the surface "Back to app" will return to (visually only — no `aria-current`,
   // since Settings is the page).
-  const settingsReturnsToInsights = $derived(
-    isSettingsRoute && normalizeAppPathname(getLastMainSurface()).startsWith("/insights"),
-  );
-  const settingsReturnsToTimeline = $derived(isSettingsRoute && !settingsReturnsToInsights);
+  const settingsReturnTarget = $derived.by<keyof typeof SURFACE_PATHS>(() => {
+    const last = normalizeAppPathname(getLastMainSurface());
+    if (last.startsWith("/insights")) return "insights";
+    if (last.startsWith("/overview")) return "overview";
+    return "timeline";
+  });
 
   // The gear is a real toggle: opening Settings from a surface, then clicking
-  // the gear again returns to the surface it was opened from (Timeline or
-  // Insights) instead of being a no-op with no obvious exit.
+  // the gear again returns to the surface it was opened from (Timeline,
+  // Overview, or Insights) instead of being a no-op with no obvious exit.
   function onSettingsButtonClick(): void {
     if (isSettings) {
-      const returnsToInsights = normalizeAppPathname(getLastMainSurface()).startsWith("/insights");
-      goToSurface(returnsToInsights ? "insights" : "timeline");
+      goToSurface(settingsReturnTarget);
       return;
     }
     void openSettings();
@@ -737,6 +762,11 @@
       return;
     }
 
+    if (action.type === "openSurface") {
+      goToSurface(action.surface);
+      return;
+    }
+
     if (action.type === "openSettings") {
       void openSettings();
       return;
@@ -837,10 +867,14 @@
       <RecordingPill platform={windowPlatform} />
     </div>
 
-    <!-- Inert centre area carries the drag region + the Timeline⇄Insights
-         surface toggle + the Quick Recall (Search) door. -->
+    <!-- Inert centre area carries the drag region + the surface switcher + the
+         Quick Recall (Search) door. -->
     <div class="titlebar__drag" data-tauri-drag-region>
-      <!-- Surface toggle — Main hosts Timeline + Insights; "dashboard" retired (#103). -->
+      <!-- Surface switcher — Timeline and Overview are the two peers (⌘1/⌘2);
+           Insights stays reachable here until Ask moves into Quick Access.
+           "dashboard" retired (#103). The shortcut rides in the tooltip rather
+           than a visible ⌘1 chip: the segments are 22px tall and a direction
+           skin may render the chip in phase 2. -->
       <div
         class="surface-toggle"
         class:surface-toggle--muted={isSettingsRoute}
@@ -850,16 +884,27 @@
         <button
           type="button"
           class:active={isMainRoute}
-          class:return-target={settingsReturnsToTimeline}
+          class:return-target={isSettingsRoute && settingsReturnTarget === "timeline"}
           aria-current={isMainRoute ? "page" : undefined}
+          use:tip={`Timeline (${shortcutDisplay("openTimelineSurface")})`}
           onclick={() => goToSurface("timeline")}
         >
           Timeline
         </button>
         <button
           type="button"
+          class:active={isOverviewRoute}
+          class:return-target={isSettingsRoute && settingsReturnTarget === "overview"}
+          aria-current={isOverviewRoute ? "page" : undefined}
+          use:tip={`Overview (${shortcutDisplay("openOverviewSurface")})`}
+          onclick={() => goToSurface("overview")}
+        >
+          Overview
+        </button>
+        <button
+          type="button"
           class:active={isInsightsRoute}
-          class:return-target={settingsReturnsToInsights}
+          class:return-target={isSettingsRoute && settingsReturnTarget === "insights"}
           aria-current={isInsightsRoute ? "page" : undefined}
           onclick={() => goToSurface("insights")}
         >
