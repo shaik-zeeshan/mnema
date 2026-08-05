@@ -892,6 +892,19 @@ fn should_dismiss_quick_recall_on_blur() -> bool {
     true
 }
 
+/// Summon the Quick Recall panel, building it if needed — never dismisses a
+/// visible panel (unlike the toggle). Used by the Overview Ask launcher, which
+/// must always end with the panel shown.
+pub(crate) fn summon_quick_recall_window_ensure(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(existing) = app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
+        summon_quick_recall_window(&existing);
+        return Ok(());
+    }
+    let window = build_quick_recall_window(app)?;
+    summon_quick_recall_window(&window);
+    Ok(())
+}
+
 pub(crate) fn toggle_quick_recall_window(app: &tauri::AppHandle) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window(QUICK_RECALL_WINDOW_LABEL) {
         if existing.is_visible().unwrap_or(false) {

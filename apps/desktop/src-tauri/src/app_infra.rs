@@ -3500,6 +3500,52 @@ async fn retention_context_for_app(
     }
 }
 
+/// Total on-disk bytes of capture media (screen video + mic/system audio)
+/// whose segments started at or after `since_unix_ms` — the title-bar pill's
+/// "270 MB today" readout. The frontend passes its local midnight so "today"
+/// follows the user's clock, matching the temporal-grounding convention.
+#[tauri::command]
+pub async fn get_bytes_captured_today(
+    since_unix_ms: i64,
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<u64, String> {
+    let since = OffsetDateTime::from_unix_timestamp_nanos(i128::from(since_unix_ms) * 1_000_000)
+        .map_err(|error| format!("invalid since_unix_ms: {error}"))?
+        .format(&Rfc3339)
+        .map_err(|error| format!("failed to format since timestamp: {error}"))?;
+    let paths = Arc::clone(&*infra)
+        .capture_retention()
+        .media_file_paths_started_since(&since)
+        .await
+        .map_err(|error| format!("failed to list capture media: {error}"))?;
+    Ok(paths
+        .iter()
+        .filter_map(|path| std::fs::metadata(path).ok())
+        .map(|meta| meta.len())
+        .sum())
+}
+
+/// Wall-clock milliseconds covered by capture segments started at/after
+/// `since_unix_ms` — the union of segment intervals across all sources, so
+/// simultaneous screen+mic+system segments count once. Feeds the Overview
+/// bento's "hours captured today" hero (redesign slice 10).
+#[tauri::command]
+pub async fn get_capture_coverage_ms(
+    since_unix_ms: i64,
+    infra: tauri::State<'_, AppInfraState>,
+) -> Result<u64, String> {
+    let since = OffsetDateTime::from_unix_timestamp_nanos(i128::from(since_unix_ms) * 1_000_000)
+        .map_err(|error| format!("invalid since_unix_ms: {error}"))?
+        .format(&Rfc3339)
+        .map_err(|error| format!("failed to format since timestamp: {error}"))?;
+    let now_unix_ms = OffsetDateTime::now_utc().unix_timestamp_nanos() as i64 / 1_000_000;
+    Arc::clone(&*infra)
+        .capture_retention()
+        .capture_coverage_ms_since(&since, now_unix_ms)
+        .await
+        .map_err(|error| format!("failed to compute capture coverage: {error}"))
+}
+
 #[tauri::command]
 pub async fn preview_retention_cleanup(
     request: Option<PreviewRetentionCleanupRequest>,
@@ -5667,6 +5713,7 @@ mod tests {
             is_user_paused: false,
             is_low_disk_suspended: false,
             requested_sources: None,
+            masked_sources: CaptureSources::default(),
             output_files: None,
             source_sessions: None,
         };
@@ -5682,6 +5729,7 @@ mod tests {
             is_user_paused: true,
             is_low_disk_suspended: false,
             requested_sources: None,
+            masked_sources: CaptureSources::default(),
             output_files: None,
             source_sessions: None,
         };

@@ -126,6 +126,54 @@ fn open_capture_result_in_main_window(
     let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
 }
 
+/// Event the Quick Recall window listens for to seed its Ask mode from the
+/// Overview bento's Ask launcher (redesign slice 10). The payload rides a
+/// one-slot latest-wins stash (`QuickRecallSeedState`): the live event tells a
+/// warm window to drain it, and a cold window drains it on mount.
+const QUICK_RECALL_SEED_EVENT: &str = "quick_recall_seed";
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickRecallSeedPayload {
+    /// A question to submit immediately in Ask mode (Overview Ask field ⏎).
+    question: Option<String>,
+    /// An existing conversation to reopen in Ask mode (Overview history row).
+    conversation_id: Option<String>,
+}
+
+#[derive(Default)]
+struct QuickRecallSeedState {
+    pending: Mutex<Option<QuickRecallSeedPayload>>,
+}
+
+#[tauri::command]
+fn take_pending_quick_recall_seed(
+    state: tauri::State<'_, QuickRecallSeedState>,
+) -> Option<QuickRecallSeedPayload> {
+    state.pending.lock().ok().and_then(|mut slot| slot.take())
+}
+
+/// Summon the Quick Recall window (never dismisses, unlike the toggle) seeded
+/// into Ask mode with either a question to submit or a conversation to reopen.
+#[tauri::command]
+fn open_quick_recall_ask(
+    question: Option<String>,
+    conversation_id: Option<String>,
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, QuickRecallSeedState>,
+) -> Result<(), String> {
+    let payload = QuickRecallSeedPayload {
+        question,
+        conversation_id,
+    };
+    if let Ok(mut slot) = state.pending.lock() {
+        *slot = Some(payload);
+    }
+    windows::summon_quick_recall_window_ensure(&app_handle)?;
+    let _ = app_handle.emit(QUICK_RECALL_SEED_EVENT, ());
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct InsightsOpenConversationPayload {
@@ -234,6 +282,49 @@ fn announce_license_deep_link(app_handle: &tauri::AppHandle, flow: &'static str)
         }
     }
     let _ = app_handle.emit(LICENSE_DEEP_LINK_EVENT, payload);
+}
+
+/// `app_settings` key for the surface the main window opens on
+/// (design frame 07 / PLAN slice 6). Values `"timeline" | "overview"`;
+/// a missing or unknown value reads as `"timeline"` (the out-of-box default).
+/// Mirrors the `local_offset_minutes` / `licensing.crl` upsert-read pattern
+/// over the migration-`0001` kv table.
+const MAIN_SURFACE_SETTING_KEY: &str = "ui.main_surface";
+
+#[tauri::command]
+async fn get_main_surface_setting(
+    infra: tauri::State<'_, app_infra::AppInfraState>,
+) -> Result<String, String> {
+    let value: Option<String> =
+        sqlx::query_scalar("SELECT value FROM app_settings WHERE key = ?1")
+            .bind(MAIN_SURFACE_SETTING_KEY)
+            .fetch_optional(infra.read_pool())
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(match value.as_deref() {
+        Some("overview") => "overview".to_string(),
+        _ => "timeline".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn set_main_surface_setting(
+    infra: tauri::State<'_, app_infra::AppInfraState>,
+    surface: String,
+) -> Result<(), String> {
+    if surface != "timeline" && surface != "overview" {
+        return Err(format!("unknown main surface: {surface}"));
+    }
+    sqlx::query(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP",
+    )
+    .bind(MAIN_SURFACE_SETTING_KEY)
+    .bind(surface)
+    .execute(infra.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn is_app_log_target(target: &str) -> bool {
@@ -588,6 +679,7 @@ pub fn run() {
         .manage(windows::AppExitCoordinatorState::default())
         .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
+        .manage(QuickRecallSeedState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(LicenseDeepLinkState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
@@ -676,6 +768,8 @@ pub fn run() {
             licensing::refresh_license_now,
             licensing::reset::reset_license_devices,
             licensing::reset::get_license_devices,
+            app_infra::get_bytes_captured_today,
+            app_infra::get_capture_coverage_ms,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
@@ -827,6 +921,8 @@ pub fn run() {
             ai_runtime::verify_ai_provider,
             user_context::commands::get_user_context_status,
             user_context::commands::list_user_context_activities,
+            user_context::commands::list_conversations_for_day,
+            user_context::commands::list_moments_for_day,
             user_context::commands::list_user_context_conclusions,
             user_context::commands::get_user_context_subject,
             user_context::commands::get_user_context_digest,
@@ -867,6 +963,7 @@ pub fn run() {
             native_capture::start_native_capture,
             native_capture::pause_native_capture,
             native_capture::resume_native_capture,
+            native_capture::set_native_capture_source_mask,
             native_capture::stop_native_capture,
             windows::focus_main_and_open_settings,
             windows::drain_pending_open_settings,
@@ -882,8 +979,12 @@ pub fn run() {
             managed_storage_layout::probe_storage_path,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
+            get_main_surface_setting,
+            set_main_surface_setting,
             drain_pending_broker_open_capture_results,
             open_capture_result_in_main_window,
+            take_pending_quick_recall_seed,
+            open_quick_recall_ask,
             drain_pending_insights_open_conversations,
             take_pending_license_deep_link,
             has_pending_insights_open_conversations,
